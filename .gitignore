@@ -3,4 +3,5 @@ runtime/
 .env
 *.log
 .DS_Store
+._*
 node_modules/
