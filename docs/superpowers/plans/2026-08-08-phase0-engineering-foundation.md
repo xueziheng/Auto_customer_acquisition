@@ -86,6 +86,8 @@ python3 scripts/check_boundaries.py --skeleton     # 仍全绿
 
 **push**：`git push`（本任务单独推送）
 
+**完成记录（任务 0.1，监督插入）**：监督验收发现 `target-version = "py312"` 下 Ruff PLC0105 提示「逆变 TypeVar 命名 `E` 未反映方差」。据此把 `shared/events/bus.py` 中的逆变 TypeVar 统一重命名为 `E_contra`（全文件 4 处，无语义变化）；commit `3232e70`，message `fix(shared): align contravariant TypeVar naming`，已推送。ADR 0007 决策代码片段已同步为 `E_contra`。
+
 ---
 
 ### 任务 1：pyproject.toml 工程配置

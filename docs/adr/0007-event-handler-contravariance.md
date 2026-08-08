@@ -30,7 +30,7 @@ class EventBus(Protocol):
 把 `shared/events/bus.py` 第 24 行改为：
 
 ```python
-E = TypeVar("E", bound=DomainEvent, contravariant=True)
+E_contra = TypeVar("E_contra", bound=DomainEvent, contravariant=True)
 ```
 
 只改这一行，其余代码与文档不改。mypy 实测从「1 error」变为「Success: no issues found in 137 source files」，`python3 scripts/check_boundaries.py --skeleton` 保持全绿。
