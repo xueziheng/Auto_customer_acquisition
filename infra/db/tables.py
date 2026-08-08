@@ -378,3 +378,72 @@ class OwnershipTransferHistoryRow(Base):
     transferred_by: Mapped[str] = mapped_column(String(32))
     transferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     reason: Mapped[str] = mapped_column(Text)
+
+
+class WorkflowRunRow(Base):
+    """``workflow_runs`` 行（引擎调度扫描主表）。
+
+    与 0004 迁移逐列一致；``UNIQUE(tenant_id, idempotency_key)`` 支撑 start 幂等，
+    ``UNIQUE(tenant_id, run_id)`` 供子表复合 FK 引用。``context`` JSONB 承载
+    run 级上下文与引擎保留键（事件指纹）。
+    """
+
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_workflow_runs_tenant_key"),
+        UniqueConstraint("tenant_id", "run_id", name="uq_workflow_runs_tenant_run"),
+        Index("ix_workflow_runs_tenant_status_poll", "tenant_id", "status", "next_poll_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    workflow_type: Mapped[str] = mapped_column(String(64))
+    workflow_version: Mapped[int] = mapped_column(Integer)
+    subject_ref: Mapped[str] = mapped_column(String(64))
+    current_step: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), server_default=text("'running'"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    context: Mapped[dict] = mapped_column(postgresql.JSONB)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+
+
+class WorkflowStepRow(Base):
+    """``workflow_steps`` 行（调度扫描单元；复合 FK → workflow_runs）。
+
+    与 0004 迁移逐列一致；``UNIQUE(tenant_id, idempotency_key)`` 防止同一
+    (run, step_name) 重复创建。``due_at`` 为下次可被 ``poll_due`` 领取的时间。
+    """
+
+    __tablename__ = "workflow_steps"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_workflow_steps_tenant_key"),
+        ForeignKeyConstraint(
+            ["tenant_id", "run_id"],
+            ["workflow_runs.tenant_id", "workflow_runs.run_id"],
+            ondelete="CASCADE",
+            name="fk_workflow_steps_run",
+        ),
+        Index("ix_workflow_steps_tenant_status_due", "tenant_id", "status", "due_at"),
+    )
+
+    step_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32))
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    step_name: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), server_default=text("'pending'"))
+    data: Mapped[dict] = mapped_column(postgresql.JSONB)
+    attempt: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )

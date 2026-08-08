@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from shared.schemas.identifiers import RunId, StepId, TenantId
+from shared.schemas.identifiers import RunId, TenantId
 
 
 class StepStatus(str, Enum):

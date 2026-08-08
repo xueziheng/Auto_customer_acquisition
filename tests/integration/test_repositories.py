@@ -482,7 +482,7 @@ async def test_assign_owner_records_actor(repo_session: AsyncSession) -> None:
 
 
 def test_orm_metadata_parity_with_head() -> None:
-    """ORM metadata 与迁移 head（0002+0003）一致：10 表列集合、11 索引名+列序、关键约束名。
+    """ORM metadata 与迁移 head（0004）一致：12 表列集合、13 索引名+列序、关键约束名。
 
     schema 仍由 Alembic 迁移管理（不用 create_all）；本断言防 ORM 与迁移漂移。
     """
@@ -549,6 +549,15 @@ def test_orm_metadata_parity_with_head() -> None:
             "transfer_id", "tenant_id", "account_id", "from_owner", "to_owner",
             "transferred_by", "transferred_at", "reason",
         },
+        "workflow_runs": {
+            "run_id", "tenant_id", "workflow_type", "workflow_version", "subject_ref",
+            "current_step", "status", "created_at", "next_poll_at", "retry_count",
+            "context", "last_error", "idempotency_key",
+        },
+        "workflow_steps": {
+            "step_id", "run_id", "tenant_id", "step_name", "status", "data", "attempt",
+            "error", "due_at", "idempotency_key", "created_at", "updated_at",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -573,6 +582,8 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_employees_tenant_active": ("tenant_id", "is_active"),
         "ix_territory_tenant_priority": ("tenant_id", "priority"),
         "ix_transfer_tenant_account": ("tenant_id", "account_id"),
+        "ix_workflow_runs_tenant_status_poll": ("tenant_id", "status", "next_poll_at"),
+        "ix_workflow_steps_tenant_status_due": ("tenant_id", "status", "due_at"),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
@@ -606,6 +617,8 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_transfer_reason_nonblank",
             "fk_transfer_from_owner", "fk_transfer_to_owner", "fk_transfer_transferred_by",
         },
+        "workflow_runs": {"uq_workflow_runs_tenant_key", "uq_workflow_runs_tenant_run"},
+        "workflow_steps": {"uq_workflow_steps_tenant_key", "fk_workflow_steps_run"},
     }
     for table, names in expected_constraints.items():
         actual = {

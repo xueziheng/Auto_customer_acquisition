@@ -64,7 +64,6 @@ ignore = ["EXE002"]
 "domains/outreach/schemas.py" = ["F401"]
 "domains/sourcing/service.py" = ["F401", "I001"]
 "tool_gateway/pipeline.py" = ["F401"]
-"workflows/engine/runner.py" = ["F401"]
 "scripts/check_boundaries.py" = ["FURB167"]
 
 [tool.mypy]
