@@ -71,7 +71,7 @@ SLA 指标：从 `HandoffRequested` 到 `HandoffAccepted` 的等待时长、队�
 
 ## 发布的事件
 
-`OpportunityQualified`、`OpportunityLost`、`HandoffRequested`、`HandoffAccepted`、`HandoffQueueBacklogged`
+`OpportunityQualified`、`OpportunityLost`、`OpportunityWon`、`HandoffRequested`、`HandoffAccepted`、`HandoffQueueBacklogged`
 
 ## 订阅的事件
 
