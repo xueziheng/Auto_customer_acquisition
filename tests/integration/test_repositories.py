@@ -1,4 +1,4 @@
-"""S2-4 仓储集成测试（Opportunity / ScoreSnapshot）。
+"""S2-4/S2-5 仓储集成测试（Opportunity / ScoreSnapshot / Handoff / Loss / Provenance）。
 
 行为断言，不依赖实现细节：
 - CRUD roundtrip：add → get → update（含 Money 往返）→ get。
@@ -11,12 +11,18 @@
 - 状态机原子推进：advance_state 条件更新；close_won 仅 NEGOTIATING；
   close_lost 需 expected；assign_owner 落 owner/assigned_by/assigned_at。
 
-强化验收（监督复核要求）：
+强化验收（监督复核要求 + S2-5）：
 - 同 (tenant_id, need_id) 真正并发：两个独立会话 gather，恰好一个 commit 成功。
 - ORM metadata 与 0002 逐表一致：六表列集合、7 索引名+列序、关键 unique/check/FK 名。
 - 方法 tenant_id 与绑定租户不一致：读/list/latest/backtest 返回空、条件更新 False；
   add/update 对象租户与绑定租户不一致 → ValueError（硬边界 8 写侧）。
 - 快照 add 要求 bound == method tenant == snapshot.tenant，否则 ValueError。
+- Handoff：CRUD / find_pending / list_pending 按 requested_at 升序 / count 按员工 /
+  accept_if_requested 两个独立会话并发仅一个 True。
+- LossRecord：add 只追加；count 二维 GROUP BY + since_days；DB 只增触发器拒
+  UPDATE/DELETE；add 三方租户一致。
+- FieldProvenance：shared.Provenance 全字段往返；同字段多版本保留且 extracted_at
+  新到旧；handoff/customer_verbatim 实体类型；租户隔离。
 
 RED 阶段仓储实现经 importlib 延迟导入（ModuleNotFoundError/AttributeError 转行为
 失败，非收集错误）。域私有模型（domains.opportunities.models）经 importlib 路由，
@@ -33,12 +39,15 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import InvalidStateTransition
 from shared.schemas.identifiers import (
     EmployeeId,
+    HandoffId,
+    LossRecordId,
     OpportunityId,
     ProspectAccountId,
     ScoreSnapshotId,
@@ -46,6 +55,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import Provenance, SourceType
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 _USD = CurrencyCode("USD")
@@ -56,8 +66,15 @@ _MODULE_BY_SYMBOL = {
     "LossReason": "domains.opportunities.models",
     "ScoreSnapshot": "domains.opportunities.models",
     "SortKey": "domains.opportunities.models",
+    "HandoffPacket": "domains.opportunities.models",
+    "HandoffState": "domains.opportunities.models",
+    "HandoffTrigger": "domains.opportunities.models",
+    "LossRecord": "domains.opportunities.models",
     "OpportunityRepositoryImpl": "infra.db.repositories.opportunities",
     "ScoreSnapshotRepositoryImpl": "infra.db.repositories.opportunities",
+    "HandoffRepositoryImpl": "infra.db.repositories.opportunities",
+    "LossRecordRepositoryImpl": "infra.db.repositories.opportunities",
+    "FieldProvenanceRepositoryImpl": "infra.db.repositories.opportunities",
 }
 
 
@@ -75,6 +92,10 @@ OpportunityState = _load("OpportunityState")
 LossReason = _load("LossReason")
 ScoreSnapshot = _load("ScoreSnapshot")
 SortKey = _load("SortKey")
+HandoffPacket = _load("HandoffPacket")
+HandoffState = _load("HandoffState")
+HandoffTrigger = _load("HandoffTrigger")
+LossRecord = _load("LossRecord")
 
 
 def _opp(opportunity_id: str, tenant_id: str, need_id: str, **overrides):
@@ -622,3 +643,398 @@ async def test_snapshot_tenant_binding_mismatch(repo_session: AsyncSession) -> N
         await repo.add(
             TenantId("tMs"), _snap("snap-ms-3", "tOther", "opp-ms-1", scored_at=_NOW)
         )
+
+
+# --- Batch 1：Handoff 仓储 ------------------------------------------------------
+
+
+def _handoff(handoff_id: str, tenant_id: str, opportunity_id: str, *, requested_at=_NOW, **overrides):
+    """构造最小合法接管包（可覆盖 assigned_to/state 等字段）。"""
+    return HandoffPacket(
+        handoff_id=HandoffId(handoff_id),
+        tenant_id=TenantId(tenant_id),
+        opportunity_id=OpportunityId(opportunity_id),
+        trigger=HandoffTrigger.QUOTE_REQUESTED,
+        requested_at=requested_at,
+        account_name="Acme",
+        country="US",
+        why_valuable="正在扩建第二座工厂",
+        customer_verbatim="we need hinges",
+        **overrides,
+    )
+
+
+async def _seed_opp(session: AsyncSession, opp_id: str, tenant_id: str, need_id: str) -> None:
+    """seed 一个机会（handoffs/loss_records 复合 FK 引用必需）。"""
+    OpportunityRepositoryImpl = _load("OpportunityRepositoryImpl")
+    await OpportunityRepositoryImpl(session, TenantId(tenant_id)).add(
+        _opp(opp_id, tenant_id, need_id)
+    )
+    await session.commit()
+
+
+async def test_handoff_crud_roundtrip(repo_session: AsyncSession) -> None:
+    """add → get → update（assigned_to 落库）→ get。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    await _seed_opp(repo_session, "opp-ho-1", "tHo", "need-ho-1")
+    repo = HandoffRepositoryImpl(repo_session, TenantId("tHo"))
+    packet = _handoff("ho-crud-1", "tHo", "opp-ho-1")
+    await repo.add(packet)
+    await repo_session.commit()
+
+    found = await repo.get(TenantId("tHo"), HandoffId("ho-crud-1"))
+    assert found is not None
+    assert found.account_name == "Acme"
+    assert found.state == HandoffState.REQUESTED
+
+    packet.assigned_to = EmployeeId("emp-1")
+    await repo.update(packet)
+    await repo_session.commit()
+
+    found = await repo.get(TenantId("tHo"), HandoffId("ho-crud-1"))
+    assert found is not None
+    assert found.assigned_to == EmployeeId("emp-1")
+
+
+async def test_handoff_find_pending_for_opportunity(repo_session: AsyncSession) -> None:
+    """未完成接管可查（幂等）；accept 后不再 pending。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    await _seed_opp(repo_session, "opp-ho2-1", "tHo2", "need-ho2-1")
+    repo = HandoffRepositoryImpl(repo_session, TenantId("tHo2"))
+    await repo.add(_handoff("ho-pend-1", "tHo2", "opp-ho2-1"))
+    await repo_session.commit()
+
+    pending = await repo.find_pending_for_opportunity(
+        TenantId("tHo2"), OpportunityId("opp-ho2-1")
+    )
+    assert pending is not None
+    assert pending.handoff_id == HandoffId("ho-pend-1")
+
+    ok = await repo.accept_if_requested(
+        TenantId("tHo2"), HandoffId("ho-pend-1"), EmployeeId("emp-1"), _NOW
+    )
+    assert ok is True
+    await repo_session.commit()
+    assert (
+        await repo.find_pending_for_opportunity(TenantId("tHo2"), OpportunityId("opp-ho2-1"))
+        is None
+    )
+
+
+async def test_handoff_list_pending_ordered_by_requested_at(repo_session: AsyncSession) -> None:
+    """待接管队列按 requested_at 升序（最久等待最前），不按分数。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    for opp, need in (("opp-ho3-1", "need-ho3-1"), ("opp-ho3-2", "need-ho3-2"), ("opp-ho3-3", "need-ho3-3")):
+        await _seed_opp(repo_session, opp, "tHo3", need)
+    repo = HandoffRepositoryImpl(repo_session, TenantId("tHo3"))
+    old = _NOW - timedelta(hours=2)
+    mid = _NOW - timedelta(hours=1)
+    await repo.add(_handoff("ho-p1", "tHo3", "opp-ho3-1", requested_at=old))
+    await repo.add(_handoff("ho-p2", "tHo3", "opp-ho3-2", requested_at=_NOW))
+    await repo.add(_handoff("ho-p3", "tHo3", "opp-ho3-3", requested_at=mid))
+    await repo_session.commit()
+
+    pending = await repo.list_pending(TenantId("tHo3"), limit=10)
+    assert [h.handoff_id for h in pending] == [
+        HandoffId("ho-p1"),
+        HandoffId("ho-p3"),
+        HandoffId("ho-p2"),
+    ]
+
+
+async def test_handoff_count_pending_by_employee(repo_session: AsyncSession) -> None:
+    """待接管按员工计数。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    for opp, need in (("opp-ho4-1", "need-ho4-1"), ("opp-ho4-2", "need-ho4-2"), ("opp-ho4-3", "need-ho4-3")):
+        await _seed_opp(repo_session, opp, "tHo4", need)
+    repo = HandoffRepositoryImpl(repo_session, TenantId("tHo4"))
+    await repo.add(_handoff("ho-c1", "tHo4", "opp-ho4-1", assigned_to=EmployeeId("emp-1")))
+    await repo.add(_handoff("ho-c2", "tHo4", "opp-ho4-2", assigned_to=EmployeeId("emp-1")))
+    await repo.add(_handoff("ho-c3", "tHo4", "opp-ho4-3", assigned_to=EmployeeId("emp-2")))
+    await repo_session.commit()
+
+    counts = await repo.count_pending_by_employee(TenantId("tHo4"))
+    assert counts == {"emp-1": 2, "emp-2": 1}
+
+
+async def test_handoff_accept_if_requested_atomic(db_url: str) -> None:
+    """两个独立会话并发 accept：恰好一个 True、一个 False（WHERE state='requested' 原子）。"""
+    from infra.db.session import create_engine_from
+
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    engine = create_engine_from(db_url)
+    session_a = AsyncSession(bind=engine, expire_on_commit=False)
+    session_b = AsyncSession(bind=engine, expire_on_commit=False)
+    try:
+        await _seed_opp(session_a, "opp-acc-1", "tAcc", "need-acc-1")
+        await HandoffRepositoryImpl(session_a, TenantId("tAcc")).add(
+            _handoff("ho-acc-1", "tAcc", "opp-acc-1")
+        )
+        await session_a.commit()
+
+        repo_a = HandoffRepositoryImpl(session_a, TenantId("tAcc"))
+        repo_b = HandoffRepositoryImpl(session_b, TenantId("tAcc"))
+
+        async def _try_accept(session: AsyncSession, repo) -> bool:
+            ok = await repo.accept_if_requested(
+                TenantId("tAcc"), HandoffId("ho-acc-1"), EmployeeId("emp-1"), _NOW
+            )
+            await session.commit()
+            return ok
+
+        results = await asyncio.gather(
+            _try_accept(session_a, repo_a), _try_accept(session_b, repo_b)
+        )
+        assert sorted(results) == [False, True], f"应恰好一个 accept 成功：{results}"
+
+        found = await repo_a.get(TenantId("tAcc"), HandoffId("ho-acc-1"))
+        assert found is not None
+        assert found.state == HandoffState.ACCEPTED
+    finally:
+        await session_a.close()
+        await session_b.close()
+        await engine.dispose()
+
+
+async def test_handoff_tenant_binding_mismatch(repo_session: AsyncSession) -> None:
+    """方法租户与绑定不一致：读空、条件更新 False、写拒绝。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    await _seed_opp(repo_session, "opp-hmb-1", "tHmbA", "need-hmb-1")
+    repo_a = HandoffRepositoryImpl(repo_session, TenantId("tHmbA"))
+    await repo_a.add(_handoff("ho-hmb-1", "tHmbA", "opp-hmb-1"))
+    await repo_session.commit()
+
+    assert await repo_a.get(TenantId("tHmbB"), HandoffId("ho-hmb-1")) is None
+    assert (
+        await repo_a.find_pending_for_opportunity(TenantId("tHmbB"), OpportunityId("opp-hmb-1"))
+        is None
+    )
+    assert await repo_a.list_pending(TenantId("tHmbB"), limit=10) == []
+    assert await repo_a.count_pending_by_employee(TenantId("tHmbB")) == {}
+    assert (
+        await repo_a.accept_if_requested(
+            TenantId("tHmbB"), HandoffId("ho-hmb-1"), EmployeeId("emp-1"), _NOW
+        )
+        is False
+    )
+
+    with pytest.raises(ValueError):
+        await repo_a.add(_handoff("ho-hmb-2", "tHmbB", "opp-hmb-2"))
+    with pytest.raises(ValueError):
+        await repo_a.update(_handoff("ho-hmb-1", "tHmbB", "opp-hmb-1"))
+
+
+# --- Batch 2：LossRecord 仓储 ---------------------------------------------------
+
+
+def _loss(
+    loss_record_id: str,
+    tenant_id: str,
+    opportunity_id: str,
+    *,
+    reason: str = "price_too_high",
+    died: str = "quoted",
+    recorded_at=_NOW,
+    **overrides,
+):
+    """构造最小合法归因记录（可覆盖 reason/died/recorded_at 等）。"""
+    return LossRecord(
+        loss_record_id=LossRecordId(loss_record_id),
+        tenant_id=TenantId(tenant_id),
+        opportunity_id=OpportunityId(opportunity_id),
+        loss_reason=LossReason(reason),
+        died_at_state=OpportunityState(died),
+        confirmed_by=EmployeeId("emp-1"),
+        confirmed_at=_NOW,
+        recorded_at=recorded_at,
+        **overrides,
+    )
+
+
+async def test_loss_record_add_and_count_2d(repo_session: AsyncSession) -> None:
+    """add 只追加；count_by_reason_and_state 按 (loss_reason, died_at_state) 二维 GROUP BY。"""
+    LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
+    await _seed_opp(repo_session, "opp-loss-a", "tLoss1", "need-loss-a")
+    repo = LossRecordRepositoryImpl(repo_session, TenantId("tLoss1"))
+    await repo.add(
+        TenantId("tLoss1"), _loss("loss-a1", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+    )
+    await repo.add(
+        TenantId("tLoss1"), _loss("loss-a2", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+    )
+    await repo.add(
+        TenantId("tLoss1"), _loss("loss-a3", "tLoss1", "opp-loss-a", reason="no_reply", died="contacted")
+    )
+    await repo_session.commit()
+
+    counts = await repo.count_by_reason_and_state(TenantId("tLoss1"), since_days=30)
+    assert sorted(counts) == [
+        ("no_reply", "contacted", 1),
+        ("price_too_high", "quoted", 2),
+    ]
+
+
+async def test_loss_record_count_since_days(repo_session: AsyncSession) -> None:
+    """since_days 过滤：窗口外的旧归因不计入。"""
+    LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
+    await _seed_opp(repo_session, "opp-loss-b", "tLoss2", "need-loss-b")
+    repo = LossRecordRepositoryImpl(repo_session, TenantId("tLoss2"))
+    now = datetime.now(UTC)
+    old = now - timedelta(days=40)
+    recent = now - timedelta(days=1)
+    await repo.add(
+        TenantId("tLoss2"), _loss("loss-b1", "tLoss2", "opp-loss-b", reason="no_reply", died="contacted", recorded_at=old)
+    )
+    await repo.add(
+        TenantId("tLoss2"), _loss("loss-b2", "tLoss2", "opp-loss-b", reason="price_too_high", died="quoted", recorded_at=recent)
+    )
+    await repo_session.commit()
+
+    counts = await repo.count_by_reason_and_state(TenantId("tLoss2"), since_days=30)
+    assert counts == [("price_too_high", "quoted", 1)]
+
+
+async def test_loss_record_db_trigger_rejects_update_delete(db_url: str) -> None:
+    """DB 只增触发器：loss_records UPDATE/DELETE 直接被拒（仓储无 update/delete 口）。"""
+    from infra.db.session import create_engine_from
+
+    LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
+    OpportunityRepositoryImpl = _load("OpportunityRepositoryImpl")
+    engine = create_engine_from(db_url)
+    session = AsyncSession(bind=engine, expire_on_commit=False)
+    try:
+        await OpportunityRepositoryImpl(session, TenantId("tTrg")).add(
+            _opp("opp-trg-1", "tTrg", "need-trg-1")
+        )
+        await session.commit()
+        await LossRecordRepositoryImpl(session, TenantId("tTrg")).add(
+            TenantId("tTrg"), _loss("loss-trg-1", "tTrg", "opp-trg-1")
+        )
+        await session.commit()
+
+        async def _rejected(sql: str, params: dict[str, object]) -> None:
+            async with engine.connect() as conn:
+                try:
+                    await conn.execute(text(sql), params)
+                except DBAPIError:
+                    await conn.rollback()
+                else:
+                    await conn.rollback()
+                    pytest.fail(f"应被 DB 只增触发器拒绝：{sql}")
+
+        await _rejected(
+            "UPDATE loss_records SET loss_reason = :r WHERE loss_record_id = :id",
+            {"r": "no_reply", "id": "loss-trg-1"},
+        )
+        await _rejected(
+            "DELETE FROM loss_records WHERE loss_record_id = :id",
+            {"id": "loss-trg-1"},
+        )
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+async def test_loss_record_tenant_binding_mismatch(repo_session: AsyncSession) -> None:
+    """方法租户与绑定不一致：count 空、add 三方租户不一致拒绝。"""
+    LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
+    await _seed_opp(repo_session, "opp-loss-mb", "tLmbA", "need-loss-mb")
+    repo_a = LossRecordRepositoryImpl(repo_session, TenantId("tLmbA"))
+    await repo_a.add(TenantId("tLmbA"), _loss("loss-mb-1", "tLmbA", "opp-loss-mb"))
+    await repo_session.commit()
+
+    assert await repo_a.count_by_reason_and_state(TenantId("tLmbB"), since_days=30) == []
+
+    with pytest.raises(ValueError):
+        await repo_a.add(TenantId("tLmbB"), _loss("loss-mb-2", "tLmbB", "opp-loss-mb"))
+    with pytest.raises(ValueError):
+        await repo_a.add(TenantId("tLmbA"), _loss("loss-mb-3", "tLmbB", "opp-loss-mb"))
+
+
+# --- Batch 3：FieldProvenance 仓储 -------------------------------------------------
+
+
+async def test_provenance_roundtrip_full_fields(repo_session: AsyncSession) -> None:
+    """shared.Provenance ↔ provenance_records 全字段无损往返（含 WEB_PAGE URL/hash）。"""
+    FieldProvenanceRepositoryImpl = _load("FieldProvenanceRepositoryImpl")
+    repo = FieldProvenanceRepositoryImpl(repo_session, TenantId("tProv"))
+    prov = Provenance(
+        source_type=SourceType.WEB_PAGE,
+        source_id="page-1",
+        extracted_by="model_v3",
+        extracted_at=_NOW,
+        confirmed_by=EmployeeId("emp-1"),
+        confirmed_at=_NOW,
+        source_url="https://example.com/company",
+        page_hash="abc123",
+    )
+    await repo.save(TenantId("tProv"), "opportunity", "opp-p1", "account_name", prov)
+    await repo_session.commit()
+
+    result = await repo.list_for_entity(TenantId("tProv"), "opportunity", "opp-p1")
+    assert result == [("account_name", prov)]
+
+
+async def test_provenance_same_field_multiple_versions_preserved(
+    repo_session: AsyncSession,
+) -> None:
+    """同字段多版本来源均保留（只增历史），且按 extracted_at 新到旧。"""
+    FieldProvenanceRepositoryImpl = _load("FieldProvenanceRepositoryImpl")
+    repo = FieldProvenanceRepositoryImpl(repo_session, TenantId("tProv2"))
+    earlier = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id="m1",
+        extracted_by="model_v3",
+        extracted_at=_NOW - timedelta(days=1),
+    )
+    later = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id="m2",
+        extracted_by="model_v3",
+        extracted_at=_NOW,
+    )
+    await repo.save(TenantId("tProv2"), "opportunity", "opp-p2", "account_name", earlier)
+    await repo.save(TenantId("tProv2"), "opportunity", "opp-p2", "account_name", later)
+    await repo_session.commit()
+
+    result = await repo.list_for_entity(TenantId("tProv2"), "opportunity", "opp-p2")
+    assert result == [("account_name", later), ("account_name", earlier)]
+
+
+async def test_provenance_entity_type_handoff_customer_verbatim(
+    repo_session: AsyncSession,
+) -> None:
+    """handoff 实体的 customer_verbatim 来源可保存与读取。"""
+    FieldProvenanceRepositoryImpl = _load("FieldProvenanceRepositoryImpl")
+    repo = FieldProvenanceRepositoryImpl(repo_session, TenantId("tProv3"))
+    prov = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id="m9",
+        extracted_by="model_v3",
+        extracted_at=_NOW,
+    )
+    await repo.save(TenantId("tProv3"), "handoff", "ho-p3", "customer_verbatim", prov)
+    await repo_session.commit()
+
+    result = await repo.list_for_entity(TenantId("tProv3"), "handoff", "ho-p3")
+    assert result == [("customer_verbatim", prov)]
+
+
+async def test_provenance_tenant_binding_mismatch(repo_session: AsyncSession) -> None:
+    """方法租户与绑定不一致：list 空、save 拒绝。"""
+    FieldProvenanceRepositoryImpl = _load("FieldProvenanceRepositoryImpl")
+    repo = FieldProvenanceRepositoryImpl(repo_session, TenantId("tPmbA"))
+    prov = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id="m1",
+        extracted_by="model_v3",
+        extracted_at=_NOW,
+    )
+    await repo.save(TenantId("tPmbA"), "opportunity", "opp-pmb", "account_name", prov)
+    await repo_session.commit()
+
+    assert (
+        await repo.list_for_entity(TenantId("tPmbB"), "opportunity", "opp-pmb") == []
+    )
+    with pytest.raises(ValueError):
+        await repo.save(TenantId("tPmbB"), "opportunity", "opp-pmb", "account_name", prov)
