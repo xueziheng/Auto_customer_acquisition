@@ -66,9 +66,6 @@ ignore = ["EXE002"]
 "tool_gateway/pipeline.py" = ["F401"]
 "workflows/engine/runner.py" = ["F401"]
 "shared/events/bus.py" = ["PYI013", "PIE790"]
-# shared/schemas/provenance.py 的 UP046（PEP 695 泛型风格建议）：骨架 stub 仍用
-# Generic[...] 写法；provenance 骨架实现/迁移到 PEP 695 时必须删除本行豁免。
-"shared/schemas/provenance.py" = ["UP046"]
 "scripts/check_boundaries.py" = ["FURB167"]
 
 [tool.mypy]

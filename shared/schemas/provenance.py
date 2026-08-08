@@ -15,12 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Generic, TypeVar
 
+from shared.errors import ValidationError
 from shared.schemas.evidence import EvidenceItem
 from shared.schemas.identifiers import EmployeeId
-
-T = TypeVar("T")
 
 
 class SourceType(str, Enum):
@@ -46,6 +44,11 @@ class SourceType(str, Enum):
     EXTERNAL_API = "external_api"
     """来自外部数据 API（联系人补全、供应商数据）。记录哪个 provider，
     便于评估数据源质量和成本。"""
+
+
+def _is_blank(value: str | None) -> bool:
+    """None 或 strip 后为空都视为未填写。"""
+    return value is None or not value.strip()
 
 
 @dataclass(frozen=True)
@@ -78,10 +81,21 @@ class Provenance:
     def __post_init__(self) -> None:
         """校验：
 
-        - ``source_type == WEB_PAGE`` 时 ``source_url`` 和 ``page_hash`` 必填
+        - ``source_id`` / ``extracted_by`` strip 后非空
+        - ``source_type == WEB_PAGE`` 时 ``source_url`` 与 ``page_hash``
+          均须提供（非 None 且 strip 后非空）
         - ``confirmed_by`` 与 ``confirmed_at`` 必须同时有或同时无
         """
-        raise NotImplementedError
+        if _is_blank(self.source_id):
+            raise ValidationError("source_id 不能为空")
+        if _is_blank(self.extracted_by):
+            raise ValidationError("extracted_by 不能为空")
+        if self.source_type == SourceType.WEB_PAGE and (
+            _is_blank(self.source_url) or _is_blank(self.page_hash)
+        ):
+            raise ValidationError("WEB_PAGE 来源必须同时提供 source_url 与 page_hash")
+        if (self.confirmed_by is None) != (self.confirmed_at is None):
+            raise ValidationError("confirmed_by 与 confirmed_at 必须同时有或同时无")
 
     @property
     def is_human_confirmed(self) -> bool:
@@ -90,11 +104,11 @@ class Provenance:
         用于判断能否用于对外承诺——未经确认的模型提取结果不能直接
         进客户可见报价。
         """
-        raise NotImplementedError
+        return self.confirmed_by is not None
 
 
 @dataclass(frozen=True)
-class FactualField(Generic[T]):
+class FactualField[T]:
     """事实字段：直接观察到的内容。
 
     例：客户在消息里写了 "we need 5000 units"，则 quantity 是事实。
@@ -107,11 +121,13 @@ class FactualField(Generic[T]):
     provenance: Provenance
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        """事实字段不得来自 Agent 推断——那属于 ``InferredField``。"""
+        if self.provenance.source_type == SourceType.AGENT_INFERENCE:
+            raise ValidationError("FactualField 不得使用 AGENT_INFERENCE 来源（属 InferredField）")
 
 
 @dataclass(frozen=True)
-class InferredField(Generic[T]):
+class InferredField[T]:
     """推断字段：由事实推出的结论。
 
     例：客户新增户外家具产品线（事实）→ 可能需要耐腐蚀五金（推断）。
@@ -136,12 +152,13 @@ class InferredField(Generic[T]):
     inferred_at: datetime
 
     def __post_init__(self) -> None:
-        """校验 ``based_on`` 非空。空推断说明调用方有 bug。"""
-        raise NotImplementedError
+        """``based_on`` 非空。空推断说明调用方有 bug。"""
+        if not self.based_on:
+            raise ValidationError("based_on 不能为空：推断必须指向证据")
 
 
 @dataclass(frozen=True)
-class ExtractionChain(Generic[T]):
+class ExtractionChain[T]:
     """提取链条。
 
     员工上传的资料经模型提取后，必须保留完整链条，**不能只存最终版本**：
@@ -168,3 +185,9 @@ class ExtractionChain(Generic[T]):
     employee_edited: T | None = None
     edited_by: EmployeeId | None = None
     edited_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """编辑三元组必须同有同无（全 None 或全非 None）。"""
+        edit_fields = [self.employee_edited, self.edited_by, self.edited_at]
+        if any(f is None for f in edit_fields) and any(f is not None for f in edit_fields):
+            raise ValidationError("employee_edited/edited_by/edited_at 必须同时有或同时无")
