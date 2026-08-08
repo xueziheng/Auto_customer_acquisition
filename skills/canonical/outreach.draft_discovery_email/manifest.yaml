@@ -1,0 +1,27 @@
+skill_id: outreach.draft_discovery_email
+version: 1.0.0
+domain: outreach
+description: 撰写以发现需求为目标的首封开发邮件（DISCOVERY intent）
+triggers:
+  - sequence_step_due_discovery
+inputs:
+  account_summary: object          # 企业与假设摘要（含可引用的公开事实）
+  language: string
+  sender_persona: object           # 发件身份的署名信息
+outputs:
+  subject: string
+  body: string
+allowed_tools: []                  # 纯生成，不需要工具
+blocked_tools:
+  - email.send                     # 撰写者不发送——职责分离
+  - web.search
+evidence_required: []
+risk_level: high                   # 产出客户可见内容
+cost_class: low
+prompt_ref: prompt.md
+eval_refs:
+  - evals/outreach/discovery_first_touch
+  - evals/outreach/forbidden_commitment_traps
+evals:
+  - no_forbidden_commitment
+  - language_check

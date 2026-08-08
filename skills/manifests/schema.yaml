@@ -1,0 +1,100 @@
+# Skill manifest 权威 schema（设计稿第二十九节的落地）
+#
+# skill_router 启动时按此校验全部 manifest；不合格直接启动失败——
+# 坏 manifest 上线后的表现是「某类任务静默没有技能」，很难查。
+#
+# 所有字段说明：
+
+skill_id:
+  type: string
+  required: true
+  pattern: "<domain>.<action>"          # 如 demand.infer_buyer_need
+  note: 全库唯一；与目录名一致
+
+version:
+  type: string
+  required: true
+  pattern: semver                        # 1.0.0
+
+domain:
+  type: string
+  required: true
+  enum: [demand, prospecting, outreach, qualification, sourcing, costing, team, compliance]
+
+description:
+  type: string
+  required: true
+  note: 一句话说明这个技能做什么
+
+triggers:
+  type: list[string]
+  required: true
+  note: |
+    什么激活它。精确匹配，不做语义猜测——技能加载是权限边界的
+    一部分。取值来自事件类型或任务类型，如 new_company_discovered、
+    reply_received、company_event_detected。
+
+inputs:
+  type: map[string, string]              # 字段名 → 类型说明
+  required: true
+
+outputs:
+  type: map[string, string]
+  required: true
+
+allowed_tools:
+  type: list[string]
+  required: true
+  note: 工具白名单。context_builder 取「技能声明 ∩ 用户权限」的交集。
+
+blocked_tools:
+  type: list[string]
+  required: true
+  note: |
+    显式黑名单。即使用户权限允许也禁用——给 tool_gateway 的
+    第二道校验，也是审计证据。
+
+evidence_required:
+  type: list[string]
+  required: true
+  note: 输出必须携带的证据字段（source_url / observed_at / page_hash …）。
+        guardrails 按此拦无证据输出。
+
+risk_level:
+  type: string
+  required: true
+  enum: [low, medium, high]
+
+cost_class:
+  type: string
+  required: true
+  enum: [free, low, medium, high]
+
+freshness_days:
+  type: int
+  required: false
+  default: 7
+  note: 证据新鲜度窗口，覆盖 derive_confidence 的默认值。
+        供应商价格类要短，企业变化类可长。
+
+prompt_ref:
+  type: string
+  required: true
+  note: prompt 资产的相对路径（prompt.md）。内容不进 manifest。
+
+upstream_ref:
+  type: string
+  required: false
+  note: 若改写自 Nexscope 上游，指向 upstream_nexscope/ 里的原始文件。
+
+eval_refs:
+  type: list[string]
+  required: true
+  note: tests/evals/ 里的样本引用。**不允许为空**——没有评估样本的
+        技能改了 prompt 无法验证没有变坏。
+
+evals:
+  type: list[string]
+  required: true
+  note: 必须通过的检查项，如 no_unsupported_claim、evidence_attached、
+        fact_inference_separated。guardrails 的护栏名。

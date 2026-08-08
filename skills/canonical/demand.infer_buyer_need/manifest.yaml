@@ -1,0 +1,35 @@
+skill_id: demand.infer_buyer_need
+version: 1.0.0
+domain: demand
+description: 依据企业公开信号推断可能的采购需求，生成需求假设
+triggers:
+  - new_company_discovered
+  - company_event_detected
+inputs:
+  company_profile: object          # 企业档案（名称、域名、行业、国家）
+  public_evidence: list            # 信号列表（含 URL、观察时间、哈希）
+outputs:
+  hypotheses: list                 # 假设列表，每条含 category、reasoning、
+                                   # evidence 引用、evidence_level
+allowed_tools:
+  - web.search
+  - web.read_page
+blocked_tools:
+  - email.send
+  - contact.enrich
+evidence_required:
+  - source_url
+  - observed_at
+  - page_hash
+risk_level: medium
+cost_class: medium
+freshness_days: 7
+prompt_ref: prompt.md
+eval_refs:
+  - evals/hypothesis/vague_signal_cases
+  - evals/hypothesis/industry_inference_cases
+evals:
+  - no_unsupported_claim
+  - evidence_attached
+  - fact_inference_separated
+  - no_probability_output

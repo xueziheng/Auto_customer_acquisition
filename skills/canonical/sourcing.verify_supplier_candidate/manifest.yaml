@@ -1,0 +1,32 @@
+skill_id: sourcing.verify_supplier_candidate
+version: 1.0.0
+domain: sourcing
+description: 分析候选供应商页面，产出规格比对与诱导价识别建议
+triggers:
+  - supplier_candidate_submitted
+inputs:
+  need_spec: object                # 已验证需求的规格
+  candidate_page: object           # 候选页面内容（artifact 引用 + 文本）
+outputs:
+  spec_comparisons: list           # 逐项 SpecMatchLevel
+  price_flags: list                # 诱导价/模糊区间/单位不明等标记
+  match_summary: string
+allowed_tools:
+  - web.read_page
+  - artifact.store
+blocked_tools:
+  - email.send
+evidence_required:
+  - source_url
+  - observed_at
+  - page_hash
+risk_level: medium
+cost_class: medium
+freshness_days: 3                  # 供应商价格新鲜度窗口短
+prompt_ref: prompt.md
+eval_refs:
+  - evals/sourcing/bait_price_cases
+  - evals/sourcing/spec_mismatch_cases
+evals:
+  - evidence_attached
+  - no_probability_output
