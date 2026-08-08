@@ -1,0 +1,10 @@
+{
+  "name": "tradeos-web",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "echo 'Phase 1 实现时接入 vite'",
+    "build": "echo 'Phase 1 实现时接入 vite'",
+    "gen:api": "echo 'openapi-typescript 从 api 进程的 openapi.json 生成 src/api/types.ts'"
+  }
+}
