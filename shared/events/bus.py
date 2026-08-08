@@ -17,8 +17,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol, TypeVar, runtime_checkable
 
+from shared.errors import ValidationError
 from shared.events.catalog import DomainEvent
 
 E_contra = TypeVar("E_contra", bound=DomainEvent, contravariant=True)
@@ -75,6 +78,7 @@ class EventBus(Protocol):
         ...
 
 
+@dataclass(frozen=True)
 class EventEnvelope:
     """投递信封。
 
@@ -90,4 +94,19 @@ class EventEnvelope:
     订阅方用 ``event_id`` 做幂等：记录已处理的 ID，重复投递直接跳过。
     """
 
-    ...
+    event: DomainEvent
+    event_id: str
+    attempt: int
+    published_at: datetime
+    trace_id: str
+
+    def __post_init__(self) -> None:
+        """attempt 必须真 int 且 >=1；event_id/trace_id strip 后非空（不改写原值）。"""
+        if isinstance(self.attempt, bool) or not isinstance(self.attempt, int):
+            raise ValidationError("attempt 必须是 int")
+        if self.attempt < 1:
+            raise ValidationError("attempt 必须 >= 1")
+        if not self.event_id or not self.event_id.strip():
+            raise ValidationError("event_id 不能为空")
+        if not self.trace_id or not self.trace_id.strip():
+            raise ValidationError("trace_id 不能为空")
