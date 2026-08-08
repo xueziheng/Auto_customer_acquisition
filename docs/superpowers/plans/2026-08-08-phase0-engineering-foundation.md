@@ -57,6 +57,8 @@
 
 **文件**
 - Modify: `shared/events/bus.py`（仅第 24 行）
+- Create: `docs/adr/0007-event-handler-contravariance.md`（理由见下）
+- Modify: 本计划文件（记录任务 0 的 ADR 决策）
 
 **实现**
 - 把 `E = TypeVar("E", bound=DomainEvent)` 改为 `E = TypeVar("E", bound=DomainEvent, contravariant=True)`。
@@ -64,8 +66,8 @@
 - 已实测：改动前 `mypy domains shared tool_gateway` 报 `shared/events/bus.py:28` 1 处错误；改动后 `Success: no issues found in 137 source files`；`python3 scripts/check_boundaries.py --skeleton` 保持全绿（本改动不在任何函数体，不影响 stub 纯度）。全库仅 bus.py 自身使用 `EventHandler`，改动无外溢。
 
 **ADR 判断（规则依据）**
-- HANDBOOK §五 列出必须写 ADR 的四类：① 改 shared/ 里的任何契约（事件字段、Provenance 结构、Money 语义）；② 放宽任何一条硬边界；③ 引入新的基础设施；④ 改变分层或插件点的设计。
-- 本次只改 TypeVar 的逆变声明：不改事件字段、Provenance 或 Money（运行时数据契约不变，`@runtime_checkable` 协议行为不变）；不放宽硬边界；不引入基础设施；不改变分层。故**不需要 ADR**。此判断是对 §五「任何契约」的解释性判断——§五的枚举样例均为运行时数据契约，本次是纯静态类型标注修正——如有异议，监督可在验收时指出，补 ADR 成本极低。
+- **需要 ADR。** `shared/AGENTS.md §改动约束`：`shared/` 的每一个改动都是**公共 API 变更**。`EventHandler` 是跨域订阅使用的公共契约（域 events.py 经 `shared.events.catalog` 订阅，装配依赖其泛型签名），泛型方差的任何变化都属于公共 API 变更，因此必须留 ADR。监督已据此收紧判断（原「不需要 ADR」的结论作废）。
+- 本任务随代码一并创建 `docs/adr/0007-event-handler-contravariance.md`，按模板记录背景、决策、理由、放弃的选项与后果。
 
 **失败命令 / 通过命令**
 ```bash
@@ -315,5 +317,5 @@ make migrate        # alembic upgrade head 成功
 
 - `--skeleton` 的 stub-purity 从任务 2 起会在真实基建文件（`migrations/env.py`、`infra/db/base.py`）上报——这是 HANDBOOK 明示的过渡点（开始实现后从 CI 移除），常规 `check_boundaries.py` 不受影响，CI 采用常规检查。任务 0 与任务 1 不改任何函数体，`--skeleton` 仍全绿。
 - `aiosqlite` 是 HANDBOOK 依赖清单外的小幅补充，换取 `make check` 与 CI 不依赖 Docker。
-- 任务 0 是本计划唯一触碰 shared 骨架的改动（监督已批准）；其 ADR 判断（不需要 ADR）及规则依据见任务 0。
+- 任务 0 是本计划唯一触碰 shared 骨架的改动（监督已批准），并随代码留 ADR `docs/adr/0007`（shared 每个改动都是公共 API 变更，见 `shared/AGENTS.md §改动约束`）。
 - 基线 ruff/mypy 处置均为配置/最小标注收敛，未改任何业务逻辑文件内容。

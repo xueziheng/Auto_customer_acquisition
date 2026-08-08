@@ -21,7 +21,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from shared.events.catalog import DomainEvent
 
-E = TypeVar("E", bound=DomainEvent)
+E = TypeVar("E", bound=DomainEvent, contravariant=True)
 
 
 @runtime_checkable
