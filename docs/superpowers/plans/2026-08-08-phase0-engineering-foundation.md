@@ -181,8 +181,9 @@ python3 scripts/check_boundaries.py
 - `infra/db/base.py` 定义 `TenantScopedRepository`，强类型租户/身份一律用 `shared.schemas.identifiers` 的 `NewType`：
   - `from shared.schemas.identifiers import TenantId, UserId`（`infra → shared` 为向下依赖，符合硬边界 9）。
   - 构造时绑定 `tenant_id: TenantId`（`TenantId = NewType("TenantId", str)`，运行时零开销，静态可区分）。
-  - `scoped_query(session, model)`：返回已自动注入 `WHERE tenant_id = :tenant_id` 的 `select`，调用方不得绕过该过滤。
-  - `unsafe_cross_tenant_query(session, model, actor_id: UserId, audit_reason: str)`：运维专用后门。**`actor_id` 与 `audit_reason` 都必须非空**（`strip()` 后仍为空即抛错）；两者有效时先写结构化审计日志（logger 名 `infra.db.audit`，**同时记录 `actor_id`、构造绑定的 `tenant_id`、`audit_reason`**）再返回未过滤查询。把后门做成显式、有操作者留痕、有理由留痕。
+  - `scoped_query(model)`：返回已自动注入 `WHERE tenant_id = :tenant_id` 的 `select`，调用方不得绕过该过滤。
+  - `unsafe_cross_tenant_query(model, actor_id: UserId, audit_reason: str)`：运维专用后门。**`actor_id` 与 `audit_reason` 都必须非空**（`strip()` 后仍为空即抛错）；两者有效时先写结构化审计日志（logger 名 `infra.db.audit`，**同时记录 `actor_id`、构造绑定的 `tenant_id`、`audit_reason`**）再返回未过滤查询。把后门做成显式、有操作者留痕、有理由留痕。
+  - **执行/会话所有权归调用方**：`scoped_query` 与 `unsafe_cross_tenant_query` 只负责**构造**租户限定的 SQLAlchemy `Select`，不持有会话——签名不含 `session`（无用且易误导）。执行（`session.execute(...)`）与事务生命周期由调用方掌握；Repository 的职责收敛为「集中构造带租户过滤的语句」，这正是 HANDBOOK「基类统一注入租户过滤」的要点。
   - 类型注解与 docstring 完整（中文写明要实现什么、边界、为什么）。
 - `tests/unit/test_infra_db.py`：不依赖数据库，用 SQLAlchemy 编译产物断言：
   1. `scoped_query` 生成 SQL 的 WHERE 子句含 `tenant_id`，且绑定值等于本仓库构造时传入的 `TenantId`；
