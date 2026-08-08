@@ -18,8 +18,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import (
+    ROUND_05UP,
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_FLOOR,
+    ROUND_HALF_DOWN,
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    ROUND_UP,
+    Decimal,
+)
 from typing import NewType
+
+from shared.errors import CurrencyMismatchError, ValidationError
 
 CurrencyCode = NewType("CurrencyCode", str)
 """ISO 4217 三字母币种代码，例如 ``USD``、``CNY``、``EUR``。
@@ -27,6 +39,30 @@ CurrencyCode = NewType("CurrencyCode", str)
 金额与币种必须成对出现。裸数字在跨境贸易场景里没有意义——
 "5000" 是美元还是人民币，差了七倍。
 """
+
+# 合法的 decimal 舍入策略（stdlib，无外部依赖）。
+_VALID_ROUNDING = {
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_FLOOR,
+    ROUND_HALF_DOWN,
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    ROUND_UP,
+    ROUND_05UP,
+}
+
+
+def _validate_currency(currency: CurrencyCode) -> None:
+    """币种必须是 3 位大写 ASCII 字母（对「ISO 4217 三字母」的最小约束）。"""
+    if (
+        not isinstance(currency, str)
+        or len(currency) != 3
+        or not currency.isascii()
+        or not currency.isalpha()
+        or not currency.isupper()
+    ):
+        raise ValidationError("币种必须是 3 位大写 ASCII 字母")
 
 
 @dataclass(frozen=True)
@@ -51,19 +87,39 @@ class Money:
     currency: CurrencyCode
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        if not isinstance(self.amount, Decimal):
+            raise ValidationError("amount 必须是 Decimal（硬边界 2，拒绝 float/int/bool）")
+        if not self.amount.is_finite():
+            raise ValidationError("amount 必须是有限 Decimal（拒绝 NaN/Infinity）")
+        _validate_currency(self.currency)
 
     def add(self, other: Money) -> Money:
         """同币种相加。币种不一致抛 ``CurrencyMismatchError``。"""
-        raise NotImplementedError
+        if self.currency != other.currency:
+            raise CurrencyMismatchError(
+                f"币种不匹配：{self.currency} 与 {other.currency} 不可直接相加",
+                context={"self_currency": self.currency, "other_currency": other.currency},
+            )
+        return Money(self.amount + other.amount, self.currency)
 
-    def multiply(self, factor: Decimal) -> Money:
-        """乘以数量或比例。"""
-        raise NotImplementedError
+    def multiply(self, factor: Decimal | int) -> Money:
+        """乘以数量或比例（Decimal 或 int，含负/零）；拒绝 float/bool/Money/非有限。"""
+        if isinstance(factor, bool) or not isinstance(factor, (Decimal, int)):
+            raise ValidationError("乘数只允许 Decimal 或 int")
+        if isinstance(factor, Decimal) and not factor.is_finite():
+            raise ValidationError("乘数必须是有限 Decimal")
+        return Money(self.amount * factor, self.currency)
 
     def round_to(self, places: int, strategy: str = "ROUND_HALF_UP") -> Money:
         """按指定精度和策略舍入。策略必须显式传入或使用本项目统一默认值。"""
-        raise NotImplementedError
+        if isinstance(places, bool) or not isinstance(places, int):
+            raise ValidationError("places 必须是 int")
+        if places < 0:
+            raise ValidationError("places 不能为负")
+        if strategy not in _VALID_ROUNDING:
+            raise ValidationError("未知的舍入策略")
+        quantum = Decimal(1).scaleb(-places)
+        return Money(self.amount.quantize(quantum, rounding=strategy), self.currency)
 
 
 @dataclass(frozen=True)
@@ -88,6 +144,20 @@ class FxRate:
     observed_at: datetime
     source: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.rate, Decimal):
+            raise ValidationError("rate 必须是 Decimal")
+        if not self.rate.is_finite():
+            raise ValidationError("rate 必须是有限 Decimal")
+        if self.rate <= 0:
+            raise ValidationError("rate 必须为正")
+        _validate_currency(self.base)
+        _validate_currency(self.quote)
+        if self.base == self.quote and self.rate != Decimal(1):
+            raise ValidationError("同币种汇率必须为 1")
+        if not self.source or not self.source.strip():
+            raise ValidationError("source 不能为空")
+
 
 def convert(amount: Money, to: CurrencyCode, rate: FxRate) -> Money:
     """按给定汇率快照换算币种。
@@ -99,7 +169,17 @@ def convert(amount: Money, to: CurrencyCode, rate: FxRate) -> Money:
       调用方负责把快照 ID 记进成本表或报价版本。
     - 不在这里做舍入，由调用方按业务场景决定精度。
     """
-    raise NotImplementedError
+    if rate.base != amount.currency:
+        raise CurrencyMismatchError(
+            f"汇率基准币种 {rate.base} 与金额币种 {amount.currency} 不匹配",
+            context={"rate_base": rate.base, "amount_currency": amount.currency, "to": to},
+        )
+    if rate.quote != to:
+        raise CurrencyMismatchError(
+            f"汇率报价币种 {rate.quote} 与目标币种 {to} 不匹配",
+            context={"rate_quote": rate.quote, "to": to, "amount_currency": amount.currency},
+        )
+    return Money(amount.amount * rate.rate, to)
 
 
 class PriceBasis:
