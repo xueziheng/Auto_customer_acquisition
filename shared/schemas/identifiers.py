@@ -8,7 +8,11 @@ ID 格式约定：``<前缀>_<唯一部分>``，例如 ``opp_01H2X...``。
 前缀便于日志排查和跨系统引用——看到 ``need_xxx`` 就知道该查哪张表。
 """
 
+import secrets
+import time
 from typing import NewType
+
+from shared.errors import ValidationError
 
 # --- 租户与身份 ---------------------------------------------------------
 
@@ -93,6 +97,24 @@ IdempotencyKey = NewType("IdempotencyKey", str)
 """
 
 
+# Crockford base32 字符集（ULID 标准，不含 I/L/O/U）。
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _encode_ulid(ts_ms: int, rand_bytes: bytes) -> str:
+    """把 48-bit 毫秒时间戳 + 80-bit 随机编码为 26 字符 Crockford base32（ULID）。
+
+    私有纯函数：位/字节边界属编程错误，抛内置 ``ValueError``。
+    """
+    if ts_ms < 0 or ts_ms >= 2**48:
+        raise ValueError("ts_ms 必须满足 0 <= ts_ms < 2^48")
+    if len(rand_bytes) != 10:
+        raise ValueError("rand_bytes 必须恰为 10 字节（80 位）")
+    value = (ts_ms << 80) | int.from_bytes(rand_bytes, "big")
+    chars = [_CROCKFORD[(value >> (5 * i)) & 0x1F] for i in range(25, -1, -1)]
+    return "".join(chars)
+
+
 def new_id(prefix: str) -> str:
     """生成带前缀的 ID。
 
@@ -100,5 +122,11 @@ def new_id(prefix: str) -> str:
     - 用时间有序的方案（ULID 或 UUIDv7），便于按主键范围扫描和分页
     - 不要用自增整数：会泄露业务量，且多租户下不便合并
     - 前缀与实体一一对应，见本模块各 ID 类型的命名
+    - prefix strip 后非空；空白前缀是调用方错误（ValidationError）
     """
-    raise NotImplementedError
+    cleaned = prefix.strip()
+    if not cleaned:
+        raise ValidationError("prefix 不能为空")
+    ts_ms = time.time_ns() // 1_000_000
+    ulid = _encode_ulid(ts_ms, secrets.token_bytes(10))
+    return f"{cleaned}_{ulid}"
