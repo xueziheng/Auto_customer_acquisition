@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 
 class TradeOSError(Exception):
     """所有自定义错误的根。
@@ -28,9 +30,21 @@ class TradeOSError(Exception):
 
     is_retryable: bool = False
 
+    def __init__(self, message: str, *, context: Mapping[str, str] | None = None) -> None:
+        """构造：消息进 Exception；context 存为拷贝，防外部可变引用污染。"""
+        super().__init__(message)
+        self.context: dict[str, str] = dict(context) if context else {}
+
 
 class ValidationError(TradeOSError):
     """输入不合法。不可重试。"""
+
+
+class CurrencyMismatchError(ValidationError):
+    """币种不匹配（输入错）。不可重试。
+
+    金额/汇率方向与要求不符时抛此错误，见 ``shared/schemas/money.py``。
+    """
 
 
 class PermissionDenied(TradeOSError):
