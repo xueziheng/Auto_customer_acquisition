@@ -17,7 +17,7 @@ from typing import Protocol, runtime_checkable
 
 from domains.opportunities.models import ScoreSnapshot, SortKey
 from domains.opportunities.repository import ScoreSnapshotRepository
-from shared.errors import ValidationError
+from shared.errors import CurrencyMismatchError, ValidationError
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import TenantId
 from shared.schemas.money import Money
@@ -68,6 +68,21 @@ MINIMUM_EVIDENCE_TIER = ConfidenceTier.LOW_MID
 宁可少联系，不要把预算花在随机推断上。
 """
 
+# 显式稳定档位序号（LOW=1 … EXTREME=7），与 ConfidenceTier 七枚举一一对应。
+# 只映射档位→序号，不复刻 shared 的 derive_confidence 推导规则。
+_TIER_RANK: dict[ConfidenceTier, int] = {
+    ConfidenceTier.LOW: 1,
+    ConfidenceTier.LOW_MID: 2,
+    ConfidenceTier.MID: 3,
+    ConfidenceTier.MID_HIGH: 4,
+    ConfidenceTier.HIGH: 5,
+    ConfidenceTier.VERY_HIGH: 6,
+    ConfidenceTier.EXTREME: 7,
+}
+
+# supply_available → sort_key.supply_rank（False/None/True → 0/1/2）。
+_SUPPLY_RANK: dict[bool | None, int] = {False: 0, None: 1, True: 2}
+
 
 @dataclass(frozen=True)
 class GateResult:
@@ -89,7 +104,7 @@ class GateResult:
 
     @property
     def all_passed(self) -> bool:
-        raise NotImplementedError
+        return not self.failed
 
 
 @dataclass(frozen=True)
@@ -126,8 +141,54 @@ def check_gates(input: ScoringInput) -> GateResult:
       否则 Agent 要试四轮才知道要补多少东西。
     - ``estimated_order_value`` 为 None 时 ``VALUE_ABOVE_FLOOR``
       算未通过，原因写「预计金额未知」——不要乐观地放过去。
+    - estimated 与 minimum 币种不一致抛 ``CurrencyMismatchError``（无法比较）。
     """
-    raise NotImplementedError
+    passed: list[Gate] = []
+    failed: list[Gate] = []
+    reasons: dict[str, str] = {}
+
+    if input.has_verified_contact:
+        passed.append(Gate.CONTACTABLE)
+    else:
+        failed.append(Gate.CONTACTABLE)
+        reasons[Gate.CONTACTABLE.value] = "没有已验证的联系方式（硬边界 6）"
+
+    if _TIER_RANK[input.evidence_tier] < _TIER_RANK[MINIMUM_EVIDENCE_TIER]:
+        failed.append(Gate.EVIDENCE_SUFFICIENT)
+        reasons[Gate.EVIDENCE_SUFFICIENT.value] = (
+            f"证据档位 {input.evidence_tier.value} 低于最低档 {MINIMUM_EVIDENCE_TIER.value}"
+        )
+    else:
+        passed.append(Gate.EVIDENCE_SUFFICIENT)
+
+    if input.category_allowed:
+        passed.append(Gate.CATEGORY_ALLOWED)
+    else:
+        failed.append(Gate.CATEGORY_ALLOWED)
+        reasons[Gate.CATEGORY_ALLOWED.value] = "品类在禁售或高风险清单中"
+
+    estimated = input.estimated_order_value
+    minimum = input.minimum_order_value
+    if estimated is None:
+        failed.append(Gate.VALUE_ABOVE_FLOOR)
+        reasons[Gate.VALUE_ABOVE_FLOOR.value] = "预计金额未知"
+    elif estimated.currency != minimum.currency:
+        raise CurrencyMismatchError(
+            f"预计金额币种 {estimated.currency} 与 Playbook 底线币种 {minimum.currency} 不一致",
+            context={
+                "estimated_currency": estimated.currency,
+                "minimum_currency": minimum.currency,
+            },
+        )
+    elif estimated.amount < minimum.amount:
+        failed.append(Gate.VALUE_ABOVE_FLOOR)
+        reasons[Gate.VALUE_ABOVE_FLOOR.value] = (
+            f"预计金额 {estimated.amount} 低于底线 {minimum.amount}"
+        )
+    else:
+        passed.append(Gate.VALUE_ABOVE_FLOOR)
+
+    return GateResult(passed=passed, failed=failed, reasons=reasons)
 
 
 @dataclass(frozen=True)
@@ -168,7 +229,30 @@ def compute_score(input: ScoringInput, policy: ScoringPolicy) -> SortKey:
       estimated value 币种不匹配抛 ``CurrencyMismatchError``
     - 排序键存进快照供回测；加新因子在此调整，调用方不改
     """
-    raise NotImplementedError
+    evidence_rank = _TIER_RANK[input.evidence_tier]
+    estimated = input.estimated_order_value
+    if estimated is None:
+        value_band = 0
+    else:
+        boundaries = policy.value_band_boundaries
+        if estimated.currency != boundaries[0].currency:
+            raise CurrencyMismatchError(
+                f"预计金额币种 {estimated.currency} 与价值带边界币种 "
+                f"{boundaries[0].currency} 不一致",
+                context={
+                    "estimated_currency": estimated.currency,
+                    "boundary_currency": boundaries[0].currency,
+                },
+            )
+        # value_band = 被严格越过的边界数：value 必须**大于**边界才计（等于不算）。
+        value_band = sum(1 for b in boundaries if b.amount < estimated.amount)
+    supply_rank = _SUPPLY_RANK[input.supply_available]
+    return SortKey(evidence_rank, value_band, supply_rank)
+
+
+def rank_bucket(evidence_rank: int, policy: ScoringPolicy) -> str:
+    """分桶：只由 ``evidence_rank`` 查注入 policy 的 bucket_map，不临场算档位。"""
+    return policy.bucket_map[evidence_rank]
 
 
 @runtime_checkable
