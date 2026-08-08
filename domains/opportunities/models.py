@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
-from shared.errors import ValidationError
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -238,8 +238,8 @@ class Opportunity:
     assigned_at: datetime | None = None
 
     def can_transition_to(self, target: OpportunityState) -> bool:
-        """查 ``ALLOWED_TRANSITIONS``。"""
-        raise NotImplementedError
+        """查 ``ALLOWED_TRANSITIONS``（C1：以本模块状态表为准）。"""
+        return target in ALLOWED_TRANSITIONS[self.state]
 
     def mark_lost(
         self, reason: LossReason, at: datetime
@@ -249,8 +249,17 @@ class Opportunity:
         实现要求：``died_at_state`` 记录**转入 lost 之前**的状态，
         不是 lost 本身。这个字段是归因分析的另一半——同一个
         ``PRICE_TOO_HIGH`` 在不同阶段意味着完全不同的改进方向。
+
+        终态（won/lost）重复终结抛 ``InvalidStateTransition``，防止改写历史。
         """
-        raise NotImplementedError
+        if self.state in (OpportunityState.WON, OpportunityState.LOST):
+            raise InvalidStateTransition(
+                f"机会已处于终态 {self.state.value}，不能重复终结（不得改写历史）"
+            )
+        self.died_at_state = self.state
+        self.loss_reason = reason
+        self.state = OpportunityState.LOST
+        self.closed_at = at
 
 
 @dataclass(frozen=True, order=True)
@@ -328,6 +337,20 @@ class HandoffState(str, Enum):
     ``CUSTOMER_WENT_SILENT`` 的真正原因。"""
 
 
+def _elapsed_seconds(start: datetime, end: datetime) -> int:
+    """两个 datetime 之间的秒数（end - start）。
+
+    naive 与 aware 混用、或结果为负（end 早于 start）均抛 ``ValidationError``——
+    时间口径不一致或负等待都是调用方错误，宁可显式报错也不静默截断。
+    """
+    if (start.tzinfo is None) != (end.tzinfo is None):
+        raise ValidationError("naive 与 aware datetime 不可混用：时间必须一致带时区或一致不带")
+    elapsed = (end - start).total_seconds()
+    if elapsed < 0:
+        raise ValidationError("等待时长不能为负：结束时间早于开始时间")
+    return int(elapsed)
+
+
 @dataclass
 class HandoffPacket:
     """人工接管包。
@@ -379,7 +402,17 @@ class HandoffPacket:
     evidence_links: list[str] = field(default_factory=list)
 
     def wait_seconds(self, now: datetime) -> int | None:
-        """等待时长（秒）。已接受按 accepted_at，未接受按传入 now——**这才是要盯的数**，
-        已完成的接管等待时长只有事后统计意义。显式时钟参数便于测试。
+        """等待时长（秒）。**以 ``accepted_at`` 是否存在为准**：非空即按它（无论
+        当前 state 是 ACCEPTED 还是 COMPLETED/REASSIGNED，历史 SLA 固定不随 now 增长）；
+        为空且非 ACCEPTED 才按传入 now。显式时钟参数便于测试。
+
+        负等待或 naive/aware 混用抛 ``ValidationError``；state 已是 ACCEPTED 却缺
+        ``accepted_at`` 属数据不一致，返回 None。
         """
-        raise NotImplementedError
+        if self.accepted_at is not None:
+            end = self.accepted_at
+        elif self.state == HandoffState.ACCEPTED:
+            return None
+        else:
+            end = now
+        return _elapsed_seconds(self.requested_at, end)
