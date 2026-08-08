@@ -683,7 +683,7 @@ class _FailingSelectSession(AsyncSession):
         raise DBAPIError(
             "SELECT",
             {},
-            RuntimeError("db select exploded postgresql://u:sk-dbselect-leak@db/app"),
+            RuntimeError("db select exploded INTERNAL_DB_SELECT_LEAK_MARKER"),
         )
 
 
@@ -1426,14 +1426,14 @@ async def test_db_select_failure_before_selection_terminates_cycle(
     回归：修复前 ``event_id`` 为空、无 event 记入 ``tried_event_ids``，循环无法
     取得进展 → 无限重试同一故障（tight loop）。修复后：回滚、发出固定结构化脱敏
     日志一次、``finally`` 关闭会话后终止当前 drain cycle——drain 及时返回 0（零
-    处理），事件保持 pending（未动过），日志不含 payload/异常文本/DSN；随后用
+    处理），事件保持 pending（未动过），日志不含 payload/异常文本/哨兵标记；随后用
     正常会话再次 drain 可全部投递成功（故障可恢复，不毒化后续投递）。
     """
     factory = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
     event_id = await _publish_event(
         engine_fx, "tSelErr", _opp_qualified("tSelErr", "opp-selerr")
     )
-    secret = "sk-dbselect-leak"
+    secret = "INTERNAL_DB_SELECT_LEAK_MARKER"
     poison_factory = async_sessionmaker(
         bind=engine_fx,
         expire_on_commit=False,
@@ -1456,7 +1456,7 @@ async def test_db_select_failure_before_selection_terminates_cycle(
     assert err is None
     assert await _count_deliveries(engine_fx, event_id) == 0
 
-    # 固定结构化脱敏日志恰好一次；未选中事件 → 标识键为空；不含 payload/异常/DSN
+    # 固定结构化脱敏日志恰好一次；未选中事件 → 标识键为空；不含 payload/异常/哨兵标记
     db_fail_records = [
         r for r in caplog.records if r.getMessage() == "outbox event skipped: db failure"
     ]
@@ -1469,16 +1469,14 @@ async def test_db_select_failure_before_selection_terminates_cycle(
         message = record.getMessage()
         assert "opp-selerr" not in message  # 不含 payload
         assert "exploded" not in message  # 不含异常文本
-        assert "postgresql://" not in message  # 不含 DSN
-        assert secret not in message  # 不含凭证文本
-    # 除三个标识键外的任何字段值都不含 payload/异常/DSN/凭证（log leak 断言）
+        assert secret not in message  # 不含哨兵标记
+    # 除三个标识键外的任何字段值都不含 payload/异常/哨兵标记（log leak 断言）
     for key, value in d.items():
         if key in ("event_id", "tenant_id", "event_type"):
             continue
         if isinstance(value, str):
             assert "opp-selerr" not in value
             assert "exploded" not in value
-            assert "postgresql://" not in value
             assert secret not in value
 
     # 故障可恢复：正常会话再次 drain → 事件 delivered
