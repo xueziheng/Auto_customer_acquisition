@@ -29,7 +29,7 @@
 | F11 | `InferredField` | `based_on` 不得为空。 |
 | F12 | `new_id` | 时间有序（ULID 或 UUIDv7）、`<前缀>_<唯一部分>` 格式。**Python 3.12 无 `uuid.uuid7`**，且应避免引入第三方依赖 → 提议用纯 stdlib ULID。 |
 | F13 | `TradeOSError` | docstring 要求「带结构化上下文（`tenant_id`、相关实体 ID）」；当前类只有 `is_retryable`，无上下文机制。 |
-| F14 | `EventEnvelope` | docstring 已定义字段 `event_id` / `attempt` / `published_at` / `trace_id`；当前是空 stub 类。 |
+| F14 | `EventEnvelope` | docstring「**除事件本身外**携带投递元数据」→ 信封 = `event: DomainEvent` + `event_id` / `attempt` / `published_at` / `trace_id`；当前是空 stub 类（没有载荷就无法投递任何东西）。 |
 | F15 | `EventBus` outbox | HANDBOOK 明确「依赖切片 2 的库，可后补」→ **延后到切片 2**。 |
 
 ### 二、提议类决策（文档未明确，本计划给出解释性选择，供监督确认）
@@ -39,17 +39,18 @@
 | P1 | `CurrencyMismatchError` 放 `shared/errors.py`，作为 `ValidationError` 子类（不可重试）。 | 币种不匹配是「输入错」→ 归 `ValidationError`；放 errors.py 使全库可统一引用。 |
 | P2 | `multiply` 签名改为 `factor: Decimal \| int`；运行时显式拒绝 `float` 与 `bool`（`bool` 是 `int` 子类，必须单独拦）。 | 对齐 F3 文档；`bool` 乘数会让数量语义错乱。 |
 | P3 | `Money`/`FxRate` 校验币种为 **3 位大写 ASCII**（对 `CurrencyCode` 文档「ISO 4217 三字母」的最小实现）。 | 不做 ISO 全表校验（维护成本高、收益低）；大写三字母是合理的最小约束。 |
-| P4 | `FxRate.__post_init__`：`rate` 必须为正 `Decimal`；`base != quote`。 | 文档未明说，但零/负汇率、同币种换算都是错误输入。 |
+| P4 | `FxRate.__post_init__`：`rate` 必须为正 `Decimal`；币种 3 位大写校验。**不限制 `base != quote`**（同币种 `rate=1` 是合法的归一化快照，文档未禁止）。 | `convert` 方向不匹配抛 `CurrencyMismatchError`。 |
 | P5 | `Money` 输入错误抛 `ValidationError`（float/int/bool amount、非法币种、负 `places`、非法舍入策略）；`round_to` 校验 `places >= 0` 且 `strategy` 是合法 `ROUND_*` 常量。 | 与 shared.errors 分类一致；`ROUND_HALF_UP` 为统一默认值（F5）。 |
-| P6 | 证据「独立」的操作定义：**`source_id` 不同即独立**（`source_id` 即页面哈希/消息 ID，「同一页面抓两次」→ 同 `source_id` → 不独立）；同级独立证据 ≥2 条只上浮**一档**（文档「可上浮一档」，不随条数累加）。 | 文档「且来源不是同一页面/同一条消息」是解释 `source_id` 为何能区分，操作上由 `source_id` 承载。 |
-| P7 | `conflicting_pairs` 中未出现在证据列表的 `source_id`：宽松忽略（不抛错）。 | 矛盾对是调用方业务语义的提示；多余条目不应让推导崩溃。 |
+| P6 | 证据「独立」的操作定义：**`source_id` 不同即独立**（`source_id` 即页面哈希/消息 ID，「同一页面抓两次」→ 同 `source_id` → 不独立）；**上浮只考察「当前最高等级」层**——该层存在 **≥2 条独立**证据才上浮一档（≥2 即触发，不随条数累加；**更低等级的多条独立证据不得抬升高等级的单一证据**）。 | 文档「且来源不是同一页面/同一条消息」由 `source_id` 承载；「只按最高等级层」防止 1 条强证据 + N 条弱证据被抬升。 |
+| P7 | `conflicting_pairs` **对顺序不敏感**（`("a","b")` 与 `("b","a")` 等价，按无序对处理）；未出现在证据列表的 `source_id`：宽松忽略（不抛错）。 | 矛盾是二元关系，与方向无关；多余条目不应让推导崩溃。 |
 | P8 | `applied_rules` 用稳定规则名：`base_from_highest` / `independence_boost` / `conflict_penalty` / `staleness_penalty` / `clamp`；`explanation` 断言非空且提及基准档等级与命中的规则。 | 便于单测回溯；解释要能回答「为什么是这一档」。 |
 | P9 | `Provenance` 补非空校验：`extracted_by`、`source_id` 非空（`strip()` 后）。 | 文档要求 `extracted_by` 记具体模型版本；空值会让留痕失效。 |
 | P10 | `ExtractionChain`：`employee_edited` / `edited_by` / `edited_at` **三者同有同无**。 | 对齐「`None` 表示未修改」；部分赋值是数据完整性错误。 |
-| P11 | `new_id` 用纯 stdlib ULID：48-bit 毫秒时间戳 + 80-bit 随机 + Crockford base32（26 字符）；暴露可测纯函数 `_encode_ulid(ts_ms, rand_bytes)`；`new_id(prefix)` 用 `time.time_ns()` + `secrets`；`prefix` 非空校验。 | 满足 F12 且零依赖；纯函数可测时间有序性。 |
-| P12 | `TradeOSError.__init__(message, *, context: Mapping[str, str] | None = None)` 存 `self.context: dict[str, str]`。 | 实现 F13 文档；additive、向后兼容（子类无需改动，`raise X("msg")` 照常）。 |
-| P13 | `EventEnvelope` 用 `@dataclass(frozen=True)`；`attempt` 校验 `>= 1`。 | 实现 F14；投递序号从 1 起。 |
+| P11 | `new_id` 用纯 stdlib ULID：48-bit 毫秒时间戳 + 80-bit 随机 + Crockford base32（26 字符）；暴露可测纯函数 `_encode_ulid(ts_ms, rand_bytes)`，**校验 `0 <= ts_ms < 2^48` 且 `rand_bytes` 恰为 10 字节**；`new_id(prefix)` 用 `time.time_ns()` + `secrets`；`prefix` **strip 后非空**，输出使用 strip 后的前缀（不做更宽的命名正则）。 | 满足 F12 且零依赖；边界校验防止坏时间戳/坏随机破坏排序与唯一性。 |
+| P12 | `TradeOSError.__init__(message, *, context: Mapping[str, str] | None = None)` 存**拷贝**的 `self.context: dict[str, str]`（入参 dict 后续改动不影响错误对象）；`str(error)` 仍只含消息、不含 context。 | 实现 F13 文档；additive、向后兼容（子类无需改动，`raise X("msg")` 照常）；拷贝防止上下文被外部可变引用污染。 |
+| P13 | `EventEnvelope` 用 `@dataclass(frozen=True)`，字段 **`event: DomainEvent`** + `event_id: str` / `attempt: int` / `published_at: datetime` / `trace_id: str`；`attempt` 校验 `>= 1`。 | 实现 F14（信封 = 事件本身 + 投递元数据，否则无法投递任何东西）；投递序号从 1 起。 |
 | P14 | `provenance.py` 的 `Generic[T]` 类（`FactualField`/`InferredField`/`ExtractionChain`）迁移为 **PEP 695** `class X[T]`，从而消除 `UP046`，并**在同一 commit 删除 pyproject 里该文件的 `UP046` 豁免**。 | 纯语法迁移、语义等价、公共表面不变；满足任务 1 的豁免退出条件。需以 mypy/pytest/`ruff --no-cache` 验证（3.12 下 dataclass + PEP 695 泛型按实测为准）。 |
+| P15 | 新鲜度边界：恰好 `now - freshness_window` 视为**新鲜**；只有**严格更早**（`observed_at < now - window`）才过期。 | 边界语义需确定，避免毫秒级相等时测试抖动。 |
 
 ### 三、ADR 决策（显式）
 
@@ -59,6 +60,7 @@
 - **新增 `CurrencyMismatchError`、`TradeOSError.context` → 无需 ADR**（additive、向后兼容，类比「加新事件不影响现有订阅方」）。
 - **`multiply` 标注 `Decimal | int` → 无需 ADR**（标注对齐 F3 文档，非语义变更）。
 - **PEP 695 语法迁移（P14）→ 无需 ADR**（纯语法、语义等价、公共表面不变）；与任务 0 方差修复（改变类型语义、需 ADR）相区分。若监督希望按「任何 shared 改动都留 ADR」的极严格解释执行，可补一张轻量 ADR，成本极低——计划已列明取舍。
+- **`EventEnvelope` 补 `event: DomainEvent` 载荷 → 无需 ADR**（其 docstring「除事件本身外携带投递元数据」已定义信封语义；实现 F14，不改 `catalog.py` 任何字段）。
 - **P3/P4/P5/P6/P7/P9/P10/P13 的新增校验 → 无需 ADR**（对既有字段施加约束，不改字段本身；作为解释性决策列于本节供监督确认）。
 - **`catalog.py` 事件字段不改**（改事件字段必须留 ADR，且骨架 `= None  # type: ignore[assignment]` / `= ""` / `= 0` 占位属于重新设计 → 延后到对应域实现时按 ADR 处理）。
 
@@ -95,7 +97,8 @@
 2. 子类 `ValidationError("m", context={...})` 继承同一机制。（变异：若只改基类不兼容子类）
 3. `TradeOSError.is_retryable is False`、`TransientError.is_retryable is True`。（变异：若重试标志被改）
 4. `issubclass(CurrencyMismatchError, ValidationError)` 且 `CurrencyMismatchError("m").is_retryable is False`。（变异：若错误挂错层级）
-5. 错误消息可读、不因 context 而包含密钥类内容（断言 context 与消息分离存）。 （变异：若把 context 拼进消息）
+5. **context 是拷贝**：构造后修改入参 dict，`err.context` 不变（且 `err.context is not 入参`）。（变异：若直接引用外部可变 dict）
+6. `str(err) == "m"`：`str(error)` 只含消息、不含 context。（变异：若把 context 拼进消息）
 
 **RED / GREEN**
 ```bash
@@ -126,8 +129,8 @@ python3 scripts/check_boundaries.py
 3. `multiply(Decimal("3"))`、`multiply(3)` 合法且值正确；`multiply(1.5)`（float）、`multiply(True)`（bool）、`multiply(Money(...))` 抛错。（变异：若放行 float/bool 或两个 Money 相乘）
 4. `round_to(2)` 用默认 `ROUND_HALF_UP`（如 `Decimal("1.005") → 1.01`）；`round_to(0, "ROUND_DOWN")` 生效；`places < 0`、非法 strategy 抛错。（变异：若依赖默认舍入或不校验策略）
 5. 币种非法（非 3 位大写）抛 `ValidationError`。（变异：若币种格式不校验）
-6. `FxRate`：合法构造；`rate=1.0`/`rate<=0`/`base==quote`/币种非法均抛错。（变异：若汇率校验缺失）
-7. `convert`：`rate.base == amount.currency` 且 `rate.quote == to` 时返回 `to` 币种、不做舍入；方向不匹配抛错（正向不取倒数）。（变异：若方向校验缺失或自动取倒数）
+6. `FxRate`：合法构造；`rate=1.0`/`rate<=0`/币种非法均抛错；**`base == quote` 且 `rate == 1` 合法**（同币种归一化快照）。（变异：若汇率校验缺失或误禁同币种）
+7. `convert`：`rate.base == amount.currency` 且 `rate.quote == to` 时返回 `to` 币种、不做舍入；方向不匹配抛 **`CurrencyMismatchError`**（正向不取倒数）。（变异：若方向校验缺失、抛错类型错或自动取倒数）
 8. `PriceBasis.INDICATIVE == "indicative"`、`QUOTED == "quoted"`。（变异：若硬边界 7 常量被改）
 
 **RED / GREEN**
@@ -155,9 +158,9 @@ python3 scripts/check_boundaries.py
 
 **测试（行为 / 拦截的变异）**
 1. 等级→基准档映射：7 个 `EvidenceLevel` 分别推导到 `LOW`/`LOW_MID`/`MID`/`MID_HIGH`/`HIGH`/`VERY_HIGH`/`EXTREME`。（变异：若映射错位）
-2. 同级独立证据上浮一档：2 条不同 `source_id` → +1；同 `source_id` 两次 → 不浮动；3 条独立 → 仍只 +1。（变异：若独立性判断错或累加上浮）
-3. 矛盾证据下浮一档并 `has_conflict=True`；`conflicting_pairs` 含未知 `source_id` 时忽略。（变异：若矛盾处理错）
-4. 全部证据过期 → 下浮一档并 `is_stale=True`；至少一条新鲜 → 不置 stale。（变异：若过期判定错）
+2. 同级独立证据上浮一档：**最高等级层**有 2 条不同 `source_id` → +1；同 `source_id` 两次 → 不浮动；3 条独立 → 仍只 +1；**1 条高等级 + 2 条更低等级独立证据 → 不浮动**（上浮只看最高等级层）。（变异：若独立性判断错、累加上浮、或低等级证据抬升高等级）
+3. 矛盾证据下浮一档并 `has_conflict=True`；`conflicting_pairs` **顺序不敏感**（`("a","b")` 与 `("b","a")` 等价）；含未知 `source_id` 时忽略。（变异：若矛盾处理错或方向敏感）
+4. 全部证据**严格早于** `now - freshness_window` 才过期（下浮一档、`is_stale=True`）；**恰好等于边界算新鲜**；至少一条新鲜 → 不置 stale。（变异：若过期判定错或边界抖动）
 5. 钳制：`EXTREME` 基准 + 独立上浮仍为 `EXTREME`；`LOW` 基准 + 矛盾/过期下浮仍为 `LOW`。（变异：若越界）
 6. 空证据列表抛错（不是返回 LOW）。（变异：若把「无证据」当 LOW）
 7. `explanation` 非空且提及基准等级描述；`applied_rules` 含命中规则名（P8）。（变异：若解释空洞/规则名不稳定）
@@ -226,7 +229,8 @@ python3 scripts/check_boundaries.py
 2. `_encode_ulid(t1, r) < _encode_ulid(t2, r)` 当 `t1 < t2`（时间有序）。（变异：若时间戳不占高位）
 3. `_encode_ulid(t, r1) != _encode_ulid(t, r2)` 当 `r1 != r2`（同毫秒随机）。（变异：若随机位丢失）
 4. 解码首 10 字符还原时间戳（供日志/排序核验）。（变异：若编码错位）
-5. `new_id("opp")` 形如 `opp_` + 26 字符 base32；两次调用不同；空 prefix 抛错。（变异：若格式/前缀校验缺失）
+5. `_encode_ulid` 边界校验：`ts_ms < 0`、`ts_ms >= 2**48`、`len(rand_bytes) != 10` 均抛错。（变异：若边界校验缺失）
+6. `new_id("opp")` 形如 `opp_` + 26 字符 base32；两次调用不同；`new_id("   ")`（纯空白）抛错；`new_id("  opp  ")` 输出以 **strip 后** `opp_` 开头。（变异：若前缀校验/输出未 strip）
 
 **RED / GREEN**
 ```bash
@@ -253,7 +257,7 @@ python3 scripts/check_boundaries.py
 - Modify: `pyproject.toml`（删除 `"shared/events/bus.py" = ["PYI013", "PIE790"]`）
 
 **测试（行为 / 拦截的变异）**
-1. `EventEnvelope(event_id=..., attempt=1, published_at=..., trace_id=...)` 可构造，字段正确。（变异：若字段未实现）
+1. `EventEnvelope(event=_test_event, event_id=..., attempt=1, published_at=..., trace_id=...)` 可构造，`event` 为传入的 `DomainEvent` 且四个元数据字段正确（`_test_event` 为测试内定义的最小 `DomainEvent` 子类，不改 catalog）。（变异：若信封不含事件载荷或字段未实现）
 2. frozen：构造后赋值抛 `FrozenInstanceError`。（变异：若可修改）
 3. `attempt < 1` 抛错（P13）。（变异：若投递序号不校验）
 4. 事件处理器运行时检查：实现 `async def handle(self, event)` 的类被 `isinstance(x, EventHandler)` 识别（`@runtime_checkable`）。（变异：若协议装饰器丢失）
@@ -262,7 +266,7 @@ python3 scripts/check_boundaries.py
 **RED / GREEN**
 ```bash
 conda run -n tradeos-py312 pytest tests/unit/test_events.py -q     # RED：EventEnvelope 是空 stub
-# 实现 bus.py：EventEnvelope 为 frozen dataclass（F14/P13）；同 commit 删除 pyproject 豁免
+# 实现 bus.py：EventEnvelope 为 frozen dataclass，含 event: DomainEvent + 四个元数据字段（F14/P13）；同 commit 删除 pyproject 豁免
 conda run -n tradeos-py312 pytest tests/unit/test_events.py -q     # GREEN
 conda run -n tradeos-py312 ruff check . --no-cache                # 0 错误
 ```
