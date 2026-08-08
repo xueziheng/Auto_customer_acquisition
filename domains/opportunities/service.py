@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from domains.opportunities.models import LossReason, OpportunityState
+from domains.opportunities.permissions import Actor
 from domains.opportunities.schemas import (
     HandoffCreateRequest,
     HandoffPacketView,
@@ -23,10 +24,18 @@ from shared.schemas.identifiers import (
 
 @runtime_checkable
 class OpportunityService(Protocol):
-    """机会域服务。"""
+    """机会域服务。
+
+    所有公开读写方法都必须带显式 ``actor``（``permissions.Actor``）并经
+    注入的 authorizer 判权；拒绝抛 ``PermissionDenied``（fail closed）。
+    """
 
     async def create_from_need(
-        self, tenant_id: TenantId, request: OpportunityCreateRequest
+        self,
+        tenant_id: TenantId,
+        request: OpportunityCreateRequest,
+        *,
+        actor: Actor,
     ) -> OpportunityId | None:
         """从已验证需求创建机会。
 
@@ -47,8 +56,13 @@ class OpportunityService(Protocol):
         opportunity_id: OpportunityId,
         owner: EmployeeId,
         assigned_by: EmployeeId,
+        *,
+        actor: Actor,
     ) -> None:
         """分配负责人（``assigned_by`` 人工审计主体**必填**；``assigned_at`` 由实现用注入时钟生成）。
+
+        ``actor`` 是授权身份，``assigned_by`` 是业务审计主体——两者分离，
+        禁止一个参数兼任两种身份。
 
         分配优先级由 ``domains/employees`` 的 Territory Matrix 决定，
         **本域不实现分配算法**——它需要国家、品类、语言、工作量等
@@ -61,6 +75,8 @@ class OpportunityService(Protocol):
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
         target: OpportunityState,
+        *,
+        actor: Actor,
     ) -> None:
         """状态转换。非法转换抛 ``InvalidStateTransition``。
 
@@ -74,15 +90,20 @@ class OpportunityService(Protocol):
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
         reason: LossReason | None,
-        actor: EmployeeId,
+        *,
+        actor: Actor,
+        confirmed_by: EmployeeId,
         confirmed_at: datetime,
         detail: str | None = None,
     ) -> None:
         """终结机会（**人工确认动作**）。``reason`` 为 None 抛 ``MissingLossReasonError``。
 
+        ``actor`` 是授权身份；``confirmed_by``/``confirmed_at`` 是业务确认主体，
+        两者分离——禁止一个参数兼任两种身份。
+
         实现要求：
         - 记录 ``died_at_state``（转入 lost 之前的状态）、``closed_by``/``closed_at``
-        - 写 ``loss_records``（confirmed_by/confirmed_at 必填，与 ``actor``/``confirmed_at`` 一致）
+        - 写 ``loss_records``（confirmed_by/confirmed_at 必填，与 ``confirmed_by``/``confirmed_at`` 一致）
         - 发布 ``OpportunityLost``
         - ``detail`` 存自由文本补充，尤其 ``LOST_TO_COMPETITOR``
           时要尽量记下输在哪（价格/交期/规格/信任）
@@ -93,10 +114,14 @@ class OpportunityService(Protocol):
         self,
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
-        actor: EmployeeId,
+        *,
+        actor: Actor,
+        confirmed_by: EmployeeId,
         confirmed_at: datetime,
     ) -> None:
         """终结机会为成交（**人工确认动作**，仅从 ``negotiating`` 转入）。
+
+        ``actor`` 是授权身份；``confirmed_by`` 是业务确认主体，两者分离。
 
         实现要求：
         - 记录 ``closed_by``/``closed_at``
@@ -110,6 +135,8 @@ class OpportunityService(Protocol):
         self,
         tenant_id: TenantId,
         request: HandoffCreateRequest,
+        *,
+        actor: Actor,
     ) -> HandoffId:
         """请求人工接管。
 
@@ -129,17 +156,25 @@ class OpportunityService(Protocol):
         tenant_id: TenantId,
         handoff_id: HandoffId,
         accepted_by: EmployeeId,
+        *,
+        actor: Actor,
     ) -> None:
-        """员工接受接管。发布 ``HandoffAccepted``，SLA 计时结束。"""
+        """员工接受接管。发布 ``HandoffAccepted``，SLA 计时结束。
+
+        ``actor`` 是授权身份；``accepted_by`` 是业务审计主体（事件中的
+        ``accepted_by``），两者分离。
+        """
         ...
 
     async def get_handoff_packet(
-        self, tenant_id: TenantId, handoff_id: HandoffId
+        self, tenant_id: TenantId, handoff_id: HandoffId, *, actor: Actor
     ) -> HandoffPacketView:
         """读取接管包。"""
         ...
 
-    async def get_queue_stats(self, tenant_id: TenantId) -> HandoffQueueStats:
+    async def get_queue_stats(
+        self, tenant_id: TenantId, *, actor: Actor
+    ) -> HandoffQueueStats:
         """待接管队列统计。
 
         实现要求：
@@ -155,7 +190,11 @@ class OpportunityService(Protocol):
     # --- 查询 -----------------------------------------------------------
 
     async def get(
-        self, tenant_id: TenantId, opportunity_id: OpportunityId
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: Actor,
     ) -> OpportunityView:
         """读取机会。View 要带打分快照摘要——老板点「为什么是高意向」
         时要能展开看门槛和因子。"""
@@ -166,6 +205,7 @@ class OpportunityService(Protocol):
         tenant_id: TenantId,
         employee_id: EmployeeId,
         *,
+        actor: Actor,
         states: list[OpportunityState] | None = None,
         limit: int = 50,
     ) -> list[OpportunityView]:
@@ -176,6 +216,7 @@ class OpportunityService(Protocol):
         self,
         tenant_id: TenantId,
         *,
+        actor: Actor,
         since_days: int = 30,
     ) -> dict[str, dict[str, int]]:
         """按 ``(loss_reason, died_at_state)`` 交叉统计。

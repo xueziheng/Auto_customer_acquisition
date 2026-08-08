@@ -358,8 +358,30 @@ def test_field_provenance_repo_exists() -> None:
 
 def test_opportunity_service_terminal_and_handoff_signatures() -> None:
     assert hasattr(OpportunityService, "mark_won")
-    assert "actor" in inspect.signature(OpportunityService.mark_lost).parameters
-    assert "confirmed_at" in inspect.signature(OpportunityService.mark_lost).parameters
+    for name in (
+        "create_from_need",
+        "assign",
+        "transition",
+        "mark_lost",
+        "mark_won",
+        "request_handoff",
+        "accept_handoff",
+        "get_handoff_packet",
+        "get_queue_stats",
+        "get",
+        "list_for_employee",
+        "loss_reason_breakdown",
+    ):
+        params = inspect.signature(getattr(OpportunityService, name)).parameters
+        assert "actor" in params, f"{name} 必须带显式授权 actor"
+        assert params["actor"].default is inspect.Parameter.empty, f"{name} 的 actor 必须显式传"
+    mark_lost_params = inspect.signature(OpportunityService.mark_lost).parameters
+    assert "confirmed_by" in mark_lost_params  # 业务确认人（与授权 actor 分离）
+    assert "confirmed_at" in mark_lost_params
+    assert "detail" in mark_lost_params
+    assert "confirmed_by" in inspect.signature(OpportunityService.mark_won).parameters
+    assign_params = inspect.signature(OpportunityService.assign).parameters
+    assert "assigned_by" in assign_params  # 业务审计主体与授权 actor 分离
     request_params = set(inspect.signature(OpportunityService.request_handoff).parameters)
     assert "request" in request_params
     assert not {"opportunity_id", "trigger"} & request_params
@@ -429,3 +451,5 @@ def test_assign_requires_assigned_by() -> None:
     params = inspect.signature(OpportunityService.assign).parameters
     assert "assigned_by" in params
     assert params["assigned_by"].default is inspect.Parameter.empty  # 人工审计主体必填
+    assert "actor" in params  # 授权 actor 与 assigned_by 分离，均必填
+    assert params["actor"].default is inspect.Parameter.empty

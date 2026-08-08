@@ -1,8 +1,15 @@
-"""OpportunityService 实现（S2-10 核心 + S2-11 handoff/查询）。
+"""OpportunityService 实现（S2-10 核心 + S2-11 handoff/查询 + S3-5 全服务授权）。
 
 依赖注入：``uow_factory``（返回绑定同租户的 ``OpportunityUnitOfWork``）、``scorer``
 （策略注入的 ``OpportunityScorer``）、``handoff_policy``（接管 SLA 与积压阈值，
-``get_queue_stats`` 使用）、``now``（时钟，默认 ``datetime.now``）。
+``get_queue_stats`` 使用）、``authorizer``（``OpportunityAuthorizer``，所有公开读写
+先判权，默认拒绝）、``audit``（``AuditLogger``，仅 actor/action/tenant/scope/rule，
+无敏感值）、``now``（时钟，默认 ``datetime.now``）。
+
+授权契约：每个公开读写入口在**任何仓储读取或业务副作用之前**调用 ``authorizer.require``
+（拒绝抛 ``PermissionDenied`` 且不进入 UoW）；允许与拒绝都写授权审计（拒绝
+``rule="deny"``）。查询按 ``actor.scope`` 做 ABAC 判权：``list_for_employee`` 受
+``scope.allowed_owners`` 限制（``None`` 放行、集合不含目标即拒绝）。
 
 硬边界：领域层不 import 外部 SDK。唯一并发恢复**仅限** ``sqlalchemy.exc.IntegrityError``
 且 ``orig`` SQLSTATE 为 23505（unique_violation）时重查既有记录；其余异常（领域错误、
@@ -34,6 +41,12 @@ from domains.opportunities.models import (
     OpportunityState,
     ScoreSnapshot,
 )
+from domains.opportunities.permissions import (
+    Actor,
+    AuditLogger,
+    OpportunityAction,
+    OpportunityAuthorizer,
+)
 from domains.opportunities.repository import OpportunityUnitOfWork
 from domains.opportunities.schemas import (
     HandoffCreateRequest,
@@ -44,7 +57,12 @@ from domains.opportunities.schemas import (
     ScoreExplanation,
 )
 from domains.opportunities.scoring import OpportunityScorer, ScoringInput
-from shared.errors import InvalidStateTransition, TradeOSError, ValidationError
+from shared.errors import (
+    InvalidStateTransition,
+    PermissionDenied,
+    TradeOSError,
+    ValidationError,
+)
 from shared.events.catalog import (
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -153,22 +171,81 @@ def _explanation(snapshot: ScoreSnapshot) -> ScoreExplanation:
 
 
 class OpportunityServiceImpl:
-    """``OpportunityService`` 的完整实现（S2-10 核心 + S2-11 handoff 与查询）。"""
+    """``OpportunityService`` 的完整实现（S2-10 核心 + S2-11 handoff/查询 + S3-5 授权）。"""
 
     def __init__(
         self,
         uow_factory: Callable[[], OpportunityUnitOfWork],
         scorer: OpportunityScorer,
         handoff_policy: HandoffPolicy,
+        *,
+        authorizer: OpportunityAuthorizer,
+        audit: AuditLogger,
         now: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._uow_factory = uow_factory
         self._scorer = scorer
         self._handoff_policy = handoff_policy  # 接管 SLA/积压阈值（get_queue_stats 使用）
+        self._authorizer = authorizer
+        self._audit = audit
         self._now = now
 
+    # --- 授权与审计 -----------------------------------------------------------
+
+    def _authorize(
+        self, actor: Actor, action: OpportunityAction, tenant_id: TenantId
+    ) -> str:
+        """判权并写授权审计；返回判权所用规则标识。
+
+        拒绝（``PermissionDenied``）时同样写审计，``rule="deny"``，
+        不记录任何业务/异常内容。必须在任何仓储读取/副作用之前调用。
+        """
+        try:
+            rule = self._authorizer.require(actor, action, actor.scope, tenant_id)
+        except PermissionDenied:
+            self._audit.log(
+                actor=actor.actor_id,
+                action=action.value,
+                tenant_id=tenant_id,
+                scope=actor.scope.label,
+                rule="deny",
+            )
+            raise
+        self._audit.log(
+            actor=actor.actor_id,
+            action=action.value,
+            tenant_id=tenant_id,
+            scope=actor.scope.label,
+            rule=rule,
+        )
+        return rule
+
+    def _enforce_owner_abac(
+        self, actor: Actor, employee_id: EmployeeId, tenant_id: TenantId
+    ) -> None:
+        """``list_for_employee`` 的 ABAC 维度判权（查询同样做 scope 判权）。
+
+        ``scope.allowed_owners`` 为 ``None`` = 该维度不限制；限制集合不含目标
+        owner → 拒绝（fail closed）。owner 是强类型 ``EmployeeId``，直接成员比较，
+        不在字符串上做转换（避免 S3-13 SQL scope 翻译时丢类型）。
+        """
+        allowed = actor.scope.allowed_owners
+        if allowed is not None and employee_id not in allowed:
+            self._audit.log(
+                actor=actor.actor_id,
+                action=OpportunityAction.OPPORTUNITY_LIST.value,
+                tenant_id=tenant_id,
+                scope=actor.scope.label,
+                rule="deny:abac:owner",
+            )
+            raise PermissionDenied("ABAC 拒绝：无权查看该负责人的机会列表")
+
     async def create_from_need(
-        self, tenant_id: TenantId, request: OpportunityCreateRequest
+        self,
+        tenant_id: TenantId,
+        request: OpportunityCreateRequest,
+        *,
+        actor: Actor,
     ) -> OpportunityId | None:
         """从已验证需求创建机会。
 
@@ -178,6 +255,7 @@ class OpportunityServiceImpl:
         - 唯一并发：commit 阶段的 DB 异常（``IntegrityError`` 属非领域异常）→ 新 UoW
           重查既有；只有确实找到才返回既有，否则原异常重抛。
         """
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(
@@ -266,8 +344,14 @@ class OpportunityServiceImpl:
         opportunity_id: OpportunityId,
         owner: EmployeeId,
         assigned_by: EmployeeId,
+        *,
+        actor: Actor,
     ) -> None:
-        """分配负责人并落审计字段（``assigned_at`` 用注入时钟）；失败不静默。"""
+        """分配负责人并落审计字段（``assigned_at`` 用注入时钟）；失败不静默。
+
+        ``actor`` 授权身份，``assigned_by`` 业务审计主体（两者分离）。
+        """
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id)
         async with self._uow_factory() as uow:
             ok = await uow.opportunities.assign_owner(
                 tenant_id, opportunity_id, owner, assigned_by, self._now()
@@ -282,8 +366,11 @@ class OpportunityServiceImpl:
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
         target: OpportunityState,
+        *,
+        actor: Actor,
     ) -> None:
         """状态推进：拒绝 WON/LOST 走普通转换；读当前态→状态机校验→原子 advance_state。"""
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id)
         if target in (OpportunityState.WON, OpportunityState.LOST):
             raise InvalidStateTransition(
                 f"终态 {target.value} 不能走普通 transition；必须经 mark_lost / mark_won"
@@ -311,16 +398,19 @@ class OpportunityServiceImpl:
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
         reason: LossReason | None,
-        actor: EmployeeId,
+        *,
+        actor: Actor,
+        confirmed_by: EmployeeId,
         confirmed_at: datetime,
         detail: str | None = None,
     ) -> None:
         """终结机会（**人工确认动作**）：close_lost_if_state → 只增 LossRecord → 发布 OpportunityLost。
 
-        ``reason=None`` 先抛 ``MissingLossReasonError``（反馈闭环）。``died_at_state`` 记录
-        关闭前状态；``confirmed_by/confirmed_at`` 与 ``actor/confirmed_at`` 一致；
-        ``recorded_at`` 用注入时钟。终态只能走 close_*，禁止普通 update。
+        ``actor`` 授权身份，``confirmed_by``/``confirmed_at`` 业务确认主体（两者分离）。
+        ``reason=None`` 先抛 ``MissingLossReasonError``（反馈闭环）。``died_at_state``
+        记录关闭前状态；``recorded_at`` 用注入时钟。终态只能走 close_*，禁止普通 update。
         """
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id)
         if reason is None:
             raise MissingLossReasonError("终结机会必须带 LossReason（反馈闭环）")
         async with self._uow_factory() as uow:
@@ -332,7 +422,7 @@ class OpportunityServiceImpl:
                     f"机会已处于终态 {opp.state.value}，不能重复终结"
                 )
             ok = await uow.opportunities.close_lost_if_state(
-                tenant_id, opportunity_id, opp.state, reason, detail, actor, confirmed_at
+                tenant_id, opportunity_id, opp.state, reason, detail, confirmed_by, confirmed_at
             )
             if not ok:
                 raise InvalidStateTransition(
@@ -344,7 +434,7 @@ class OpportunityServiceImpl:
                 opportunity_id=opportunity_id,
                 loss_reason=reason,
                 died_at_state=opp.state,  # 关闭前状态
-                confirmed_by=actor,
+                confirmed_by=confirmed_by,
                 confirmed_at=confirmed_at,
                 recorded_at=self._now(),
                 detail=detail,
@@ -365,10 +455,16 @@ class OpportunityServiceImpl:
         self,
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
-        actor: EmployeeId,
+        *,
+        actor: Actor,
+        confirmed_by: EmployeeId,
         confirmed_at: datetime,
     ) -> None:
-        """终结为成交（**人工确认动作**）：仅 NEGOTIATING → close_won_if_state → 发布 OpportunityWon。"""
+        """终结为成交（**人工确认动作**）：仅 NEGOTIATING → close_won_if_state → 发布 OpportunityWon。
+
+        ``actor`` 授权身份，``confirmed_by`` 业务确认主体（两者分离）。
+        """
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
@@ -378,7 +474,7 @@ class OpportunityServiceImpl:
                     f"mark_won 仅能从 negotiating 转入；当前状态 {opp.state.value}"
                 )
             ok = await uow.opportunities.close_won_if_state(
-                tenant_id, opportunity_id, actor, confirmed_at
+                tenant_id, opportunity_id, confirmed_by, confirmed_at
             )
             if not ok:
                 raise InvalidStateTransition(f"并发已变更：机会 {opportunity_id} 未成交")
@@ -388,14 +484,14 @@ class OpportunityServiceImpl:
                     occurred_at=confirmed_at,
                     run_id=None,
                     opportunity_id=opportunity_id,
-                    closed_by=actor,
+                    closed_by=confirmed_by,
                 )
             )
 
     # --- 人工接管 / 查询（S2-11） ------------------------------------------------
 
     async def request_handoff(
-        self, tenant_id: TenantId, request: HandoffCreateRequest
+        self, tenant_id: TenantId, request: HandoffCreateRequest, *, actor: Actor
     ) -> HandoffId:
         """请求人工接管。
 
@@ -403,6 +499,7 @@ class OpportunityServiceImpl:
         已有 pending 幂等返回；新建前确认机会存在且属于租户（避免 FK 错误推迟到 commit）。
         顺序：``provenance.save`` → ``handoffs.add`` → ``bus.publish(HandoffRequested)``。
         """
+        self._authorize(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id)
         async with self._uow_factory() as uow:
             existing = await uow.handoffs.find_pending_for_opportunity(
                 tenant_id, OpportunityId(request.opportunity_id)
@@ -466,8 +563,14 @@ class OpportunityServiceImpl:
         tenant_id: TenantId,
         handoff_id: HandoffId,
         accepted_by: EmployeeId,
+        *,
+        actor: Actor,
     ) -> None:
-        """员工接受接管：原子 ``accept_if_requested``；并发已被接受抛 HandoffAlreadyAcceptedError。"""
+        """员工接受接管：原子 ``accept_if_requested``；并发已被接受抛 HandoffAlreadyAcceptedError。
+
+        ``actor`` 授权身份，``accepted_by`` 业务审计主体（事件 accepted_by，两者分离）。
+        """
+        self._authorize(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id)
         async with self._uow_factory() as uow:
             accepted_at = self._now()
             ok = await uow.handoffs.accept_if_requested(
@@ -486,9 +589,10 @@ class OpportunityServiceImpl:
             )
 
     async def get_handoff_packet(
-        self, tenant_id: TenantId, handoff_id: HandoffId
+        self, tenant_id: TenantId, handoff_id: HandoffId, *, actor: Actor
     ) -> HandoffPacketView:
         """读取接管包：完整映射、list 字段复制、wait_seconds 用注入 now。"""
+        self._authorize(actor, OpportunityAction.HANDOFF_READ, tenant_id)
         async with self._uow_factory() as uow:
             packet = await uow.handoffs.get(tenant_id, handoff_id)
             if packet is None:
@@ -515,7 +619,9 @@ class OpportunityServiceImpl:
                 assigned_to_name=None,  # 无员工域数据
             )
 
-    async def get_queue_stats(self, tenant_id: TenantId) -> HandoffQueueStats:
+    async def get_queue_stats(
+        self, tenant_id: TenantId, *, actor: Actor
+    ) -> HandoffQueueStats:
         """待接管队列统计：全部基于同一 now 调 wait_seconds。
 
         ``by_employee`` 用仓储聚合接口 ``count_pending_by_employee``（不受扫描列表截断）。
@@ -524,6 +630,7 @@ class OpportunityServiceImpl:
         policy 语义「超过」：``wait_seconds > sla_seconds`` 才 breached、``queue_depth >
         backlog_threshold`` 才 backlogged（等于不算）。超阈值发布 ``HandoffQueueBacklogged``。
         """
+        self._authorize(actor, OpportunityAction.HANDOFF_QUEUE_READ, tenant_id)
         async with self._uow_factory() as uow:
             pending = await uow.handoffs.list_pending(tenant_id, sys.maxsize)
             by_employee = await uow.handoffs.count_pending_by_employee(tenant_id)
@@ -555,8 +662,13 @@ class OpportunityServiceImpl:
             )
 
     async def get(
-        self, tenant_id: TenantId, opportunity_id: OpportunityId
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: Actor,
     ) -> OpportunityView:
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
@@ -612,10 +724,13 @@ class OpportunityServiceImpl:
         tenant_id: TenantId,
         employee_id: EmployeeId,
         *,
+        actor: Actor,
         states: list[OpportunityState] | None = None,
         limit: int = 50,
     ) -> list[OpportunityView]:
         """某员工负责的机会；单 UoW 内构造全部 View（不逐项另开 UoW）。"""
+        self._authorize(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id)
+        self._enforce_owner_abac(actor, employee_id, tenant_id)
         if limit <= 0:
             raise ValidationError("limit 必须 > 0")
         async with self._uow_factory() as uow:
@@ -625,9 +740,10 @@ class OpportunityServiceImpl:
             return [await self._build_view(uow, tenant_id, o) for o in opps]
 
     async def loss_reason_breakdown(
-        self, tenant_id: TenantId, *, since_days: int = 30
+        self, tenant_id: TenantId, *, actor: Actor, since_days: int = 30
     ) -> dict[str, dict[str, int]]:
         """按 ``(loss_reason, died_at_state)`` 二维交叉统计；同键安全累加。"""
+        self._authorize(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
         if since_days <= 0:
             raise ValidationError("since_days 必须 > 0")
         async with self._uow_factory() as uow:

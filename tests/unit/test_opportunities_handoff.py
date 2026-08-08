@@ -36,6 +36,7 @@ from domains.opportunities.errors import (
     HandoffAlreadyAcceptedError,
     IncompleteHandoffPacketError,
 )
+from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
 from domains.opportunities.schemas import HandoffCreateRequest
 from shared.errors import ValidationError
 from shared.events.catalog import (
@@ -446,12 +447,31 @@ class _UoWFactory:
         return uow
 
 
+class _AllowAuthorizer:
+    """放行 authorizer：本文件测业务行为；授权契约由 test_opportunities_permissions 覆盖。"""
+
+    def require(self, actor, action, scope, tenant_id) -> str:
+        return "test:allow"
+
+
+class _NoopAudit:
+    def log(self, **kwargs) -> None:
+        pass
+
+
+def _actor(actor_id: str = "e1") -> Actor:
+    """显式授权 actor：tenanted 作用域（无 ABAC 限制），不干扰既有行为断言。"""
+    return Actor(actor_id=actor_id, scope=OpportunityScope(level=ScopeLevel.TENANT))
+
+
 def _make_service(factory: _UoWFactory, **overrides):
     OpportunityServiceImpl = _load("OpportunityServiceImpl")
     return OpportunityServiceImpl(
         factory,
         _ScorerNeverUsed(),
         HandoffPolicy(sla_seconds=3600, backlog_threshold=40),
+        authorizer=_AllowAuthorizer(),
+        audit=_NoopAudit(),
         now=lambda: _NOW,
         **overrides,
     )
@@ -469,11 +489,17 @@ async def test_request_handoff_incomplete_rejected() -> None:
     service = _make_service(factory)
 
     with pytest.raises(IncompleteHandoffPacketError):
-        await service.request_handoff(TenantId("t1"), _request(account_name="   "))
+        await service.request_handoff(
+            TenantId("t1"), _request(account_name="   "), actor=_actor()
+        )
     with pytest.raises(IncompleteHandoffPacketError):
-        await service.request_handoff(TenantId("t1"), _request(why_valuable=" "))
+        await service.request_handoff(
+            TenantId("t1"), _request(why_valuable=" "), actor=_actor()
+        )
     with pytest.raises(IncompleteHandoffPacketError):
-        await service.request_handoff(TenantId("t1"), _request(customer_verbatim=""))
+        await service.request_handoff(
+            TenantId("t1"), _request(customer_verbatim=""), actor=_actor()
+        )
 
     uow = factory.created[0]
     assert uow.rolled_back == 1  # 单个 UoW 回滚
@@ -490,7 +516,9 @@ async def test_request_handoff_requires_verbatim_provenance() -> None:
     for source in (SourceType.WEB_PAGE, SourceType.EXTERNAL_API, SourceType.AGENT_INFERENCE):
         with pytest.raises(ValidationError):
             await service.request_handoff(
-                TenantId("t1"), _request(customer_verbatim_provenance=_conv_prov(source_type=source))
+                TenantId("t1"),
+                _request(customer_verbatim_provenance=_conv_prov(source_type=source)),
+                actor=_actor(),
             )
 
     uow = factory.created[0]
@@ -507,7 +535,7 @@ async def test_request_handoff_saves_verbatim_provenance() -> None:
     service = _make_service(factory)
     factory.seed_opp(_opp())
 
-    result = await service.request_handoff(TenantId("t1"), _request())
+    result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
 
     uow = factory.created[0]
     assert result == uow.handoffs.added[0].handoff_id
@@ -533,7 +561,7 @@ async def test_request_handoff_idempotent() -> None:
     existing = _packet("ho-1", opportunity_id="opp-1")
     factory.seed_pending(existing)
 
-    result = await service.request_handoff(TenantId("t1"), _request())
+    result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
 
     assert result == HandoffId("ho-1")
     uow = factory.created[0]
@@ -548,7 +576,7 @@ async def test_request_handoff_opportunity_not_found() -> None:
     service = _make_service(factory)
 
     with pytest.raises(ValidationError):
-        await service.request_handoff(TenantId("t1"), _request())
+        await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
     uow = factory.created[0]
     assert uow.rolled_back == 1
     assert uow.handoffs.added == []
@@ -562,7 +590,9 @@ async def test_request_handoff_invalid_trigger() -> None:
     service = _make_service(factory)
 
     with pytest.raises(ValidationError):
-        await service.request_handoff(TenantId("t1"), _request(trigger="not_a_trigger"))
+        await service.request_handoff(
+            TenantId("t1"), _request(trigger="not_a_trigger"), actor=_actor()
+        )
     uow = factory.created[0]
     assert uow.rolled_back == 1
     assert uow.committed == 0
@@ -583,7 +613,7 @@ async def test_request_handoff_idempotent_before_validation() -> None:
         trigger="not_a_trigger",  # 非法 trigger
     )
 
-    result = await service.request_handoff(TenantId("t1"), bad_request)
+    result = await service.request_handoff(TenantId("t1"), bad_request, actor=_actor())
 
     assert result == HandoffId("ho-1")
     uow = factory.created[0]
@@ -598,7 +628,7 @@ async def test_request_handoff_id_format() -> None:
     service = _make_service(factory)
     factory.seed_opp(_opp())
 
-    result = await service.request_handoff(TenantId("t1"), _request())
+    result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
 
     s = str(result)
     assert s.startswith("hand_")
@@ -615,7 +645,9 @@ async def test_request_handoff_allows_verbatim_sources(source: SourceType) -> No
     factory.seed_opp(_opp())
 
     result = await service.request_handoff(
-        TenantId("t1"), _request(customer_verbatim_provenance=_conv_prov(source_type=source))
+        TenantId("t1"),
+        _request(customer_verbatim_provenance=_conv_prov(source_type=source)),
+        actor=_actor(),
     )
 
     assert result is not None
@@ -640,6 +672,7 @@ async def test_request_handoff_copies_all_list_fields() -> None:
             commitments_made=commits,
             evidence_links=links,
         ),
+        actor=_actor(),
     )
 
     packet = factory.created[0].handoffs.added[0]
@@ -658,7 +691,9 @@ async def test_accept_handoff_concurrent() -> None:
     factory = _UoWFactory()
     service = _make_service(factory)
 
-    await service.accept_handoff(TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"))
+    await service.accept_handoff(
+        TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"), actor=_actor()
+    )
 
     uow = factory.created[0]
     assert uow.handoffs.accept_calls[0] == (
@@ -675,7 +710,9 @@ async def test_accept_handoff_concurrent() -> None:
     factory2.default_accept_result = False
     service2 = _make_service(factory2)
     with pytest.raises(HandoffAlreadyAcceptedError):
-        await service2.accept_handoff(TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"))
+        await service2.accept_handoff(
+            TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"), actor=_actor()
+        )
     assert factory2.created[0].bus.published == []
 
 
@@ -692,7 +729,7 @@ async def test_get_queue_stats_uses_policy() -> None:
     ])
     factory.seed_count_rows({"e1": 3, "e2": 5})  # 与 pending 内容故意不同 → 证明走聚合
 
-    stats = await service.get_queue_stats(TenantId("t1"))
+    stats = await service.get_queue_stats(TenantId("t1"), actor=_actor())
 
     assert stats.queue_depth == 1
     assert stats.oldest_wait_seconds == 3600
@@ -708,7 +745,7 @@ async def test_get_queue_stats_uses_policy() -> None:
         _packet("ho-2", requested_at=_NOW - timedelta(seconds=3601), assigned_to=EmployeeId("e1")),
     ])
     factory2.seed_count_rows({"e1": 1})
-    stats2 = await service2.get_queue_stats(TenantId("t1"))
+    stats2 = await service2.get_queue_stats(TenantId("t1"), actor=_actor())
     assert stats2.breached_count == 1  # 超过 sla 才算
 
 
@@ -719,7 +756,7 @@ async def test_get_queue_stats_depth_equals_threshold() -> None:
     factory.seed_pending_list([_packet(f"ho-{i}") for i in range(40)])  # depth == 40
     factory.seed_count_rows({"e1": 40})
 
-    stats = await service.get_queue_stats(TenantId("t1"))
+    stats = await service.get_queue_stats(TenantId("t1"), actor=_actor())
 
     assert stats.queue_depth == 40
     assert stats.is_backlogged is False  # 等于不算
@@ -729,7 +766,7 @@ async def test_get_queue_stats_depth_equals_threshold() -> None:
     service2 = _make_service(factory2)
     factory2.seed_pending_list([_packet(f"ho-{i}") for i in range(41)])  # depth 41 > 40
     factory2.seed_count_rows({"e1": 41})
-    stats2 = await service2.get_queue_stats(TenantId("t1"))
+    stats2 = await service2.get_queue_stats(TenantId("t1"), actor=_actor())
     assert stats2.is_backlogged is True
     evt = factory2.created[0].bus.published[0]
     assert isinstance(evt, HandoffQueueBacklogged)
@@ -747,7 +784,7 @@ async def test_get_queue_stats_oldest_is_max_not_order() -> None:
         _packet("ho-mid", requested_at=_NOW - timedelta(hours=2)),
     ])
 
-    stats = await service.get_queue_stats(TenantId("t1"))
+    stats = await service.get_queue_stats(TenantId("t1"), actor=_actor())
 
     assert stats.oldest_wait_seconds == 5 * 3600
     assert stats.queue_depth == 3
@@ -770,7 +807,7 @@ async def test_get_view_gate_explanation() -> None:
     factory.seed_opp(_opp())
     factory.seed_latest(snap)
 
-    view = await service.get(TenantId("t1"), OpportunityId("opp-1"))
+    view = await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_actor())
 
     assert view.score is not None
     assert view.score.sort_key == SortKey(5, 2, 2)
@@ -789,7 +826,7 @@ async def test_get_view_includes_score_summary() -> None:
     service = _make_service(factory)
     factory.seed_opp(_opp())
 
-    view = await service.get(TenantId("t1"), OpportunityId("opp-1"))
+    view = await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_actor())
     assert view.score is None
     assert view.state == "qualified"
     assert view.owner is None
@@ -799,7 +836,7 @@ async def test_get_view_includes_score_summary() -> None:
     service2 = _make_service(factory2)
     factory2.seed_opp(_opp())
     factory2.seed_pending(_packet("ho-1", opportunity_id="opp-1"))
-    view2 = await service2.get(TenantId("t1"), OpportunityId("opp-1"))
+    view2 = await service2.get(TenantId("t1"), OpportunityId("opp-1"), actor=_actor())
     assert view2.has_pending_handoff is True
 
 
@@ -821,7 +858,9 @@ async def test_get_handoff_packet_maps_and_copies() -> None:
     )
     factory.seed_row(packet)
 
-    view = await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"))
+    view = await service.get_handoff_packet(
+        TenantId("t1"), HandoffId("ho-1"), actor=_actor()
+    )
 
     assert view.handoff_id == HandoffId("ho-1")
     assert view.wait_seconds == 90
@@ -841,9 +880,9 @@ async def test_get_not_found_raises() -> None:
     service = _make_service(factory)
 
     with pytest.raises(ValidationError):
-        await service.get(TenantId("t1"), OpportunityId("opp-1"))
+        await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_actor())
     with pytest.raises(ValidationError):
-        await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"))
+        await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"), actor=_actor())
 
 
 # --- list_for_employee / loss_reason_breakdown ------------------------------------
@@ -855,13 +894,19 @@ async def test_list_for_employee_validates_limit_and_single_uow() -> None:
     factory = _UoWFactory()
     service = _make_service(factory)
     with pytest.raises(ValidationError):
-        await service.list_for_employee(TenantId("t1"), EmployeeId("e1"), limit=0)
+        await service.list_for_employee(
+            TenantId("t1"), EmployeeId("e1"), actor=_actor(), limit=0
+        )
 
     factory2 = _UoWFactory()
     service2 = _make_service(factory2)
     factory2.seed_owner_rows([_opp("opp-1"), _opp("opp-2")])  # 不 seed opportunities.get
     views = await service2.list_for_employee(
-        TenantId("t1"), EmployeeId("e1"), states=[OpportunityState.ASSIGNED], limit=10
+        TenantId("t1"),
+        EmployeeId("e1"),
+        actor=_actor(),
+        states=[OpportunityState.ASSIGNED],
+        limit=10,
     )
 
     assert [v.opportunity_id for v in views] == [OpportunityId("opp-1"), OpportunityId("opp-2")]
@@ -883,7 +928,9 @@ async def test_loss_reason_breakdown_2d() -> None:
         ("no_reply", "contacted", 3),
     ])
 
-    breakdown = await service.loss_reason_breakdown(TenantId("t1"), since_days=30)
+    breakdown = await service.loss_reason_breakdown(
+        TenantId("t1"), actor=_actor(), since_days=30
+    )
 
     assert breakdown == {
         "price_too_high": {"quoted": 3},
@@ -898,4 +945,4 @@ async def test_loss_reason_breakdown_validates_since_days() -> None:
     """since_days<=0 → ValidationError。"""
     service = _make_service(_UoWFactory())
     with pytest.raises(ValidationError):
-        await service.loss_reason_breakdown(TenantId("t1"), since_days=0)
+        await service.loss_reason_breakdown(TenantId("t1"), actor=_actor(), since_days=0)

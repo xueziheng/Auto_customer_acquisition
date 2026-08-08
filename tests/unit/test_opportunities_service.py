@@ -30,6 +30,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from domains.opportunities import models
+from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
 from domains.opportunities.schemas import OpportunityCreateRequest
 from domains.opportunities.scoring import ScoringInput
 from shared.errors import InvalidStateTransition
@@ -456,12 +457,31 @@ class _FakeScorer:
         return self.snapshot
 
 
+class _AllowAuthorizer:
+    """放行 authorizer：本文件测业务行为；授权契约由 test_opportunities_permissions 覆盖。"""
+
+    def require(self, actor, action, scope, tenant_id) -> str:
+        return "test:allow"
+
+
+class _NoopAudit:
+    def log(self, **kwargs) -> None:
+        pass
+
+
+def _actor(actor_id: str = "e1") -> Actor:
+    """显式授权 actor：本文件调用方统一显式传 actor（tenanted 作用域，无 ABAC 限制）。"""
+    return Actor(actor_id=actor_id, scope=OpportunityScope(level=ScopeLevel.TENANT))
+
+
 def _make_service(factory: _UoWFactory, scorer: _FakeScorer):
     OpportunityServiceImpl = _load("OpportunityServiceImpl")
     return OpportunityServiceImpl(
         factory,
         scorer,
         HandoffPolicy(sla_seconds=3600, backlog_threshold=40),
+        authorizer=_AllowAuthorizer(),
+        audit=_NoopAudit(),
         now=lambda: _NOW,
     )
 
@@ -477,7 +497,7 @@ async def test_create_idempotent() -> None:
     existing = _opp("opp-1", "t1", "need-1")
     factory.seed(existing)
 
-    result = await service.create_from_need(TenantId("t1"), _request())
+    result = await service.create_from_need(TenantId("t1"), _request(), actor=_actor())
 
     assert result == OpportunityId("opp-1")
     uow = factory.created[0]
@@ -496,7 +516,9 @@ async def test_create_unique_race_returns_existing() -> None:
     existing = _opp("opp-race", "t1", "need-race")
     factory.seed_after_first = existing
 
-    result = await service.create_from_need(TenantId("t1"), _request(need_id="need-race", account_id="acc-race"))
+    result = await service.create_from_need(
+    TenantId("t1"), _request(need_id="need-race", account_id="acc-race"), actor=_actor()
+)
 
     assert result == OpportunityId("opp-race")
     assert len(factory.created) == 2
@@ -512,7 +534,9 @@ async def test_create_unique_race_not_found_re_raises() -> None:
     factory.commit_error_on_first = _integrity_error()
 
     with pytest.raises(IntegrityError):
-        await service.create_from_need(TenantId("t1"), _request(need_id="need-race2"))
+        await service.create_from_need(
+            TenantId("t1"), _request(need_id="need-race2"), actor=_actor()
+        )
 
 
 async def test_create_failed_gates_returns_none_no_event() -> None:
@@ -526,7 +550,7 @@ async def test_create_failed_gates_returns_none_no_event() -> None:
     scorer = _FakeScorer(failed_snap)
     service = _make_service(factory, scorer)
 
-    result = await service.create_from_need(TenantId("t1"), _request())
+    result = await service.create_from_need(TenantId("t1"), _request(), actor=_actor())
 
     assert result is None
     uow = factory.created[0]
@@ -552,6 +576,7 @@ async def test_create_passed_publishes_and_saves_provenance() -> None:
                 "quantity": _conv_prov(),
             },
         ),
+        actor=_actor(),
     )
 
     assert result is not None
@@ -588,6 +613,7 @@ async def test_create_rejects_agent_inference_provenance() -> None:
         await service.create_from_need(
             TenantId("t1"),
             _request(field_provenance={"account_name": bad, "country": _conv_prov()}),
+            actor=_actor(),
         )
     assert scorer.calls == []
     assert factory.created[0].opportunities.added == []
@@ -602,7 +628,9 @@ async def test_create_requires_provenance_for_present_critical_fields() -> None:
 
     # quantity 为 present 关键字段但无 provenance
     with pytest.raises(MissingFieldProvenanceError):
-        await service.create_from_need(TenantId("t1"), _request(quantity=500))
+        await service.create_from_need(
+            TenantId("t1"), _request(quantity=500), actor=_actor()
+        )
 
 
 async def test_create_saves_account_name_and_country() -> None:
@@ -611,7 +639,9 @@ async def test_create_saves_account_name_and_country() -> None:
     scorer = _FakeScorer(_snap())
     service = _make_service(factory, scorer)
 
-    result = await service.create_from_need(TenantId("t1"), _request(account_name="Acme", country="US"))
+    result = await service.create_from_need(
+        TenantId("t1"), _request(account_name="Acme", country="US"), actor=_actor()
+    )
 
     opp = factory.created[0].opportunities.added[0]
     assert opp.account_name == "Acme"
@@ -630,9 +660,13 @@ async def test_transition_rejects_won_and_lost() -> None:
     service = _make_service(factory, _FakeScorer(_snap()))
 
     with pytest.raises(InvalidStateTransition):
-        await service.transition(TenantId("t1"), OpportunityId("opp-1"), OpportunityState.WON)
+        await service.transition(
+            TenantId("t1"), OpportunityId("opp-1"), OpportunityState.WON, actor=_actor()
+        )
     with pytest.raises(InvalidStateTransition):
-        await service.transition(TenantId("t1"), OpportunityId("opp-1"), OpportunityState.LOST)
+        await service.transition(
+            TenantId("t1"), OpportunityId("opp-1"), OpportunityState.LOST, actor=_actor()
+        )
     assert factory.created == []  # 守卫在进入 UoW 前
 
 
@@ -642,7 +676,9 @@ async def test_transition_atomic() -> None:
     service = _make_service(factory, _FakeScorer(_snap()))
     factory.seed(_opp("opp-1", "t1", "need-1", state=OpportunityState.QUALIFIED))
 
-    await service.transition(TenantId("t1"), OpportunityId("opp-1"), OpportunityState.ASSIGNED)
+    await service.transition(
+        TenantId("t1"), OpportunityId("opp-1"), OpportunityState.ASSIGNED, actor=_actor()
+    )
 
     uow = factory.created[0]
     assert uow.opportunities.advance_calls[0] == (
@@ -662,7 +698,9 @@ async def test_transition_concurrent_failure_not_silent() -> None:
     factory.seed(_opp("opp-1", "t1", "need-1", state=OpportunityState.QUALIFIED))
 
     with pytest.raises(InvalidStateTransition):
-        await service.transition(TenantId("t1"), OpportunityId("opp-1"), OpportunityState.ASSIGNED)
+        await service.transition(
+        TenantId("t1"), OpportunityId("opp-1"), OpportunityState.ASSIGNED, actor=_actor()
+    )
 
 
 # --- assign -------------------------------------------------------------------------
@@ -675,7 +713,11 @@ async def test_assign_records_actor() -> None:
     factory.seed(_opp("opp-1", "t1", "need-1"))
 
     await service.assign(
-        TenantId("t1"), OpportunityId("opp-1"), EmployeeId("emp-1"), EmployeeId("mgr-1")
+        TenantId("t1"),
+        OpportunityId("opp-1"),
+        EmployeeId("emp-1"),
+        EmployeeId("mgr-1"),
+        actor=_actor(),
     )
 
     uow = factory.created[0]
@@ -694,7 +736,11 @@ async def test_assign_records_actor() -> None:
     factory2.seed(_opp("opp-1", "t1", "need-1"))
     with pytest.raises(InvalidStateTransition):
         await service2.assign(
-            TenantId("t1"), OpportunityId("opp-1"), EmployeeId("emp-1"), EmployeeId("mgr-1")
+            TenantId("t1"),
+            OpportunityId("opp-1"),
+            EmployeeId("emp-1"),
+            EmployeeId("mgr-1"),
+            actor=_actor(),
         )
 
 
@@ -710,7 +756,12 @@ async def test_mark_lost_none_reason_raises_missing() -> None:
 
     with pytest.raises(MissingLossReasonError):
         await service.mark_lost(
-            TenantId("t1"), OpportunityId("opp-1"), None, EmployeeId("e1"), _NOW
+            TenantId("t1"),
+            OpportunityId("opp-1"),
+            None,
+            actor=_actor(),
+            confirmed_by=EmployeeId("e1"),
+            confirmed_at=_NOW,
         )
     assert factory.created == []
 
@@ -726,8 +777,9 @@ async def test_mark_lost_order_and_persistence() -> None:
         TenantId("t1"),
         OpportunityId("opp-1"),
         LossReason.PRICE_TOO_HIGH,
-        EmployeeId("e1"),
-        confirmed,
+        actor=_actor(),
+        confirmed_by=EmployeeId("e1"),
+        confirmed_at=confirmed,
         detail="输在价格",
     )
 
@@ -767,7 +819,13 @@ async def test_mark_won_only_from_negotiating() -> None:
     factory.seed(_opp("opp-1", "t1", "need-1", state=OpportunityState.QUALIFIED))
 
     with pytest.raises(InvalidStateTransition):
-        await service.mark_won(TenantId("t1"), OpportunityId("opp-1"), EmployeeId("e1"), _NOW)
+        await service.mark_won(
+            TenantId("t1"),
+            OpportunityId("opp-1"),
+            actor=_actor(),
+            confirmed_by=EmployeeId("e1"),
+            confirmed_at=_NOW,
+        )
     assert factory.created[0].opportunities.close_won_calls == []
 
 
@@ -778,7 +836,13 @@ async def test_mark_won_publishes_opportunity_won() -> None:
     factory.seed(_opp("opp-1", "t1", "need-1", state=OpportunityState.NEGOTIATING))
     confirmed = _NOW + timedelta(hours=2)
 
-    await service.mark_won(TenantId("t1"), OpportunityId("opp-1"), EmployeeId("e1"), confirmed)
+    await service.mark_won(
+        TenantId("t1"),
+        OpportunityId("opp-1"),
+        actor=_actor(),
+        confirmed_by=EmployeeId("e1"),
+        confirmed_at=confirmed,
+    )
 
     uow = factory.created[0]
     assert uow.sequence == ["close_won", "publish:OpportunityWon"]
@@ -808,7 +872,9 @@ async def test_create_unique_race_runtime_error_not_swallowed() -> None:
     factory.seed_after_first = _opp("opp-race", "t1", "need-race")
 
     with pytest.raises(RuntimeError):
-        await service.create_from_need(TenantId("t1"), _request(need_id="need-race"))
+        await service.create_from_need(
+            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+        )
     assert len(factory.created) == 1  # 不进入重查，原异常立即上抛
 
 
@@ -821,7 +887,9 @@ async def test_create_unique_race_non_unique_integrity_error_re_raises() -> None
     factory.seed_after_first = _opp("opp-race", "t1", "need-race")
 
     with pytest.raises(IntegrityError):
-        await service.create_from_need(TenantId("t1"), _request(need_id="need-race"))
+        await service.create_from_need(
+            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+        )
     assert len(factory.created) == 1  # 非 23505 不进入重查
 
 
@@ -839,7 +907,9 @@ async def test_create_unique_race_impersonated_integrity_error_re_raises() -> No
     factory.seed_after_first = _opp("opp-race", "t1", "need-race")
 
     with pytest.raises(IntegrityError):
-        await service.create_from_need(TenantId("t1"), _request(need_id="need-race"))
+        await service.create_from_need(
+            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+        )
     assert len(factory.created) == 1  # 模块不符 → 不进入重查，原异常上抛
 
 
@@ -860,6 +930,7 @@ async def test_create_does_not_save_unknown_provenance_keys() -> None:
                 "mystery_field": _conv_prov(),  # 非 CRITICAL_FIELDS 的未知键
             },
         ),
+        actor=_actor(),
     )
 
     assert result is not None
@@ -874,7 +945,9 @@ async def test_create_passes_is_repeat_buyer_likely_to_scorer() -> None:
     scorer = _FakeScorer(_snap())
     service = _make_service(factory, scorer)
 
-    await service.create_from_need(TenantId("t1"), _request(is_repeat_buyer_likely=True))
+    await service.create_from_need(
+        TenantId("t1"), _request(is_repeat_buyer_likely=True), actor=_actor()
+    )
 
     passed_input = scorer.calls[0][3]
     assert isinstance(passed_input, ScoringInput)
@@ -889,7 +962,10 @@ async def test_transition_error_includes_states_and_allowed() -> None:
 
     with pytest.raises(InvalidStateTransition) as excinfo:
         await service.transition(
-            TenantId("t1"), OpportunityId("opp-1"), OpportunityState.NEGOTIATING
+            TenantId("t1"),
+            OpportunityId("opp-1"),
+            OpportunityState.NEGOTIATING,
+            actor=_actor(),
         )
 
     msg = str(excinfo.value)
