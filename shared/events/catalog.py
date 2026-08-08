@@ -189,6 +189,13 @@ class SuppressionAdded(DomainEvent):
 
 
 @dataclass(frozen=True)
+class SendingIdentityActivated(DomainEvent):
+    """发件身份完成预热进入 active。订阅方：``domains/outreach``。"""
+
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
 class SendingIdentityThrottled(DomainEvent):
     """发件身份被降额或停发（自动熔断，不等人工）。
 
@@ -200,6 +207,91 @@ class SendingIdentityThrottled(DomainEvent):
     new_state: str = ""
     trigger_metric: str = ""
     metric_value: str = ""
+
+
+@dataclass(frozen=True)
+class SendingIdentitySuspended(DomainEvent):
+    """发件身份被自动停用（超 suspend 阈值 / 垃圾陷阱 / 黑名单）。
+
+    订阅方：``domains/outreach``（立刻停用该身份下所有序列发送）、
+    ``notification_gateway``（告警，需人工排查后才能恢复）。
+
+    熔断必须先落状态再发事件——事件投递失败时状态也要已生效，
+    否则告警发了但发送还在继续。
+    """
+
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ReputationThresholdBreached(DomainEvent):
+    """信誉指标越过阈值（含 watch 级预警，不只熔断级）。
+
+    订阅方：``notification_gateway``。watch 级预警的价值在于给人
+    留出调整时间——等到熔断才知道就晚了。
+    """
+
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    metric: str = ""
+    value: str = ""
+    threshold: str = ""
+    severity: str = ""
+
+
+# --- 投递事件（由 connectors 经 tool_gateway 写入后发布） ----------------
+
+
+@dataclass(frozen=True)
+class MessageDelivered(DomainEvent):
+    """消息确认送达。订阅方：``domains/sending_identity``（信誉计数）。"""
+
+    message_attempt_id: str = ""
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    dedup_key: str = ""
+
+
+@dataclass(frozen=True)
+class MessageBounced(DomainEvent):
+    """消息退信。
+
+    ``is_hard`` 区分硬退信（地址不存在，计入信誉惩罚并触发抑制）与
+    软退信（临时性，只计数）。混为一谈会让正常的临时退信拖垮身份状态。
+
+    订阅方：``domains/sending_identity``（信誉）、``domains/outreach``
+    （硬退信 → 抑制名单，软退信连续 3 次按硬退信处理）。
+    """
+
+    message_attempt_id: str = ""
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    is_hard: bool = False
+    dedup_key: str = ""
+
+
+@dataclass(frozen=True)
+class ComplaintReceived(DomainEvent):
+    """收到垃圾邮件投诉。
+
+    订阅方：``domains/sending_identity``（信誉，投诉杀伤力比退信大
+    一个量级）、``domains/outreach``（立即抑制该联系人）。
+    """
+
+    message_attempt_id: str = ""
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    dedup_key: str = ""
+
+
+@dataclass(frozen=True)
+class UnsubscribeReceived(DomainEvent):
+    """收到退订请求。
+
+    订阅方：``domains/outreach``（抑制联系人，必要时抑制整个企业）、
+    ``domains/sending_identity``（计数）。
+    """
+
+    contact_point_id: ContactPointId = None  # type: ignore[assignment]
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+    dedup_key: str = ""
 
 
 # --- 机会 ---------------------------------------------------------------
