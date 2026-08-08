@@ -13,7 +13,7 @@
 
 强化验收（监督复核要求 + S2-5）：
 - 同 (tenant_id, need_id) 真正并发：两个独立会话 gather，恰好一个 commit 成功。
-- ORM metadata 与 0002 逐表一致：六表列集合、7 索引名+列序、关键 unique/check/FK 名。
+- ORM metadata 与 head(0002+0003) 逐表一致：十表列集合、11 索引名+列序、关键 unique/check/FK 名。
 - 方法 tenant_id 与绑定租户不一致：读/list/latest/backtest 返回空、条件更新 False；
   add/update 对象租户与绑定租户不一致 → ValueError（硬边界 8 写侧）。
 - 快照 add 要求 bound == method tenant == snapshot.tenant，否则 ValueError。
@@ -478,11 +478,11 @@ async def test_assign_owner_records_actor(repo_session: AsyncSession) -> None:
     assert ok is False
 
 
-# --- 强化验收：ORM metadata 与 0002 逐表一致（列 / 7 索引 / 关键约束名）--------
+# --- 强化验收：ORM metadata 与 head(0002+0003) 逐表一致（列 / 11 索引 / 关键约束名）--------
 
 
-def test_orm_metadata_parity_with_0002() -> None:
-    """ORM metadata 与 0002 一致：六表列集合、7 索引名+列序、关键约束名。
+def test_orm_metadata_parity_with_head() -> None:
+    """ORM metadata 与迁移 head（0002+0003）一致：10 表列集合、11 索引名+列序、关键约束名。
 
     schema 仍由 Alembic 迁移管理（不用 create_all）；本断言防 ORM 与迁移漂移。
     """
@@ -532,6 +532,23 @@ def test_orm_metadata_parity_with_0002() -> None:
             "published_at", "trace_id", "run_id", "occurred_at", "status",
             "delivered_at",
         },
+        "employees": {
+            "employee_id", "tenant_id", "name", "role", "created_at", "user_id",
+            "team_id", "manager_id", "languages", "timezone", "is_active",
+            "max_active_accounts",
+        },
+        "territory_assignments": {
+            "assignment_id", "tenant_id", "employee_id", "priority", "effective_from",
+            "countries", "product_categories", "need_categories", "buyer_types",
+            "languages", "manager_id", "backup_employee_id", "effective_until",
+        },
+        "ownership_locks": {
+            "lock_id", "tenant_id", "account_id", "owner", "locked_at", "locked_by_rule",
+        },
+        "ownership_transfer_history": {
+            "transfer_id", "tenant_id", "account_id", "from_owner", "to_owner",
+            "transferred_by", "transferred_at", "reason",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -552,6 +569,10 @@ def test_orm_metadata_parity_with_0002() -> None:
             "tenant_id", "entity_type", "entity_id", "field_name", "extracted_at",
         ),
         "ix_outbox_tenant_status": ("tenant_id", "status"),
+        "ix_employees_tenant_role": ("tenant_id", "role"),
+        "ix_employees_tenant_active": ("tenant_id", "is_active"),
+        "ix_territory_tenant_priority": ("tenant_id", "priority"),
+        "ix_transfer_tenant_account": ("tenant_id", "account_id"),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
@@ -576,6 +597,15 @@ def test_orm_metadata_parity_with_0002() -> None:
         "loss_records": {"fk_loss_records_opportunity"},
         "outbox_events": {"ck_outbox_attempt_min", "ck_outbox_status"},
         "provenance_records": set(),
+        "employees": {"uq_employees_tenant_user", "uq_employees_tenant_employee"},
+        "territory_assignments": {
+            "fk_territory_employee", "fk_territory_manager", "fk_territory_backup",
+        },
+        "ownership_locks": {"uq_ownership_locks_tenant_account", "fk_ownership_locks_owner"},
+        "ownership_transfer_history": {
+            "ck_transfer_reason_nonblank",
+            "fk_transfer_from_owner", "fk_transfer_to_owner", "fk_transfer_transferred_by",
+        },
     }
     for table, names in expected_constraints.items():
         actual = {

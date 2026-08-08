@@ -260,3 +260,121 @@ class OutboxEventRow(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmployeeRow(Base):
+    """``employees`` 行。"""
+
+    __tablename__ = "employees"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", name="uq_employees_tenant_user"),
+        UniqueConstraint("tenant_id", "employee_id", name="uq_employees_tenant_employee"),
+        Index("ix_employees_tenant_role", "tenant_id", "role"),
+        Index("ix_employees_tenant_active", "tenant_id", "is_active"),
+    )
+
+    employee_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    user_id: Mapped[str | None] = mapped_column(String(32))
+    team_id: Mapped[str | None] = mapped_column(String(32))
+    manager_id: Mapped[str | None] = mapped_column(String(32))
+    languages: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    max_active_accounts: Mapped[int | None] = mapped_column(Integer)
+
+
+class TerritoryAssignmentRow(Base):
+    """``territory_assignments`` 行。"""
+
+    __tablename__ = "territory_assignments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "employee_id"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_territory_employee",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "manager_id"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_territory_manager",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "backup_employee_id"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_territory_backup",
+        ),
+        Index("ix_territory_tenant_priority", "tenant_id", "priority"),
+    )
+
+    assignment_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    employee_id: Mapped[str] = mapped_column(String(32))
+    priority: Mapped[int] = mapped_column(Integer)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    countries: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    product_categories: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    need_categories: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    buyer_types: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    languages: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    manager_id: Mapped[str | None] = mapped_column(String(32))
+    backup_employee_id: Mapped[str | None] = mapped_column(String(32))
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OwnershipLockRow(Base):
+    """``ownership_locks`` 行。"""
+
+    __tablename__ = "ownership_locks"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "account_id", name="uq_ownership_locks_tenant_account"),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_ownership_locks_owner",
+        ),
+    )
+
+    lock_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    account_id: Mapped[str] = mapped_column(String(32))
+    owner: Mapped[str] = mapped_column(String(32))
+    locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    locked_by_rule: Mapped[str] = mapped_column(String(64))
+
+
+class OwnershipTransferHistoryRow(Base):
+    """``ownership_transfer_history`` 行（只增；reason 去空白非空 CHECK）。"""
+
+    __tablename__ = "ownership_transfer_history"
+    __table_args__ = (
+        CheckConstraint("btrim(reason) <> ''", name="ck_transfer_reason_nonblank"),
+        ForeignKeyConstraint(
+            ["tenant_id", "from_owner"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_transfer_from_owner",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "to_owner"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_transfer_to_owner",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "transferred_by"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_transfer_transferred_by",
+        ),
+        Index("ix_transfer_tenant_account", "tenant_id", "account_id"),
+    )
+
+    transfer_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    account_id: Mapped[str] = mapped_column(String(32))
+    from_owner: Mapped[str | None] = mapped_column(String(32))
+    to_owner: Mapped[str] = mapped_column(String(32))
+    transferred_by: Mapped[str] = mapped_column(String(32))
+    transferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(Text)
