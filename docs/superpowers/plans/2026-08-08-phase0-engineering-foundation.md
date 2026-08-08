@@ -1,12 +1,12 @@
 # Phase 0 · 工程基建实施计划
 
-> **给执行者的说明**：本计划由零号任务（监督者 + 实现者）编写，覆盖 HANDBOOK「二、第 0 步：补齐工程基建」的全部交付。按 superpowers 计划约定逐任务打勾。**范围硬性限定在第 0 步工程基建**：不实现 shared 契约、不实现任何业务域、不改动既有业务骨架、不建业务迁移表。
+> **给执行者的说明**：本计划由零号任务（监督者 + 实现者）编写并已按监督验收意见修订，覆盖 HANDBOOK「二、第 0 步：补齐工程基建」的全部交付。按 superpowers 计划约定逐任务打勾。**范围硬性限定在第 0 步工程基建**：除任务 0 这一处经监督批准的 shared 类型标注修复外，不实现 shared 契约、不实现任何业务域、不改动既有业务骨架、不建业务迁移表。
 >
 > 每个任务独立可 review，格式统一为：文件 / 实现 / 失败预期与测试 / 验收命令 / commit / push。每任务提交前必须 `python3 scripts/check_boundaries.py` 全绿，每任务单独 commit、单独 push。
 
 **目标**：让 `make dev` 起数据库、`make test` 跑通测试、`make check` 四件全绿（ruff / mypy / check_boundaries / pytest），为后续切片实现提供可运行的工程地基。
 
-**执行环境**：`tradeos-py312`（conda，Python 3.12.13，零号任务已创建）。所有 Python 命令在该环境中执行；`python3 scripts/check_boundaries.py` 用系统 python3（结构检查脚本为纯 stdlib，与 Python 版本无关）。
+**执行环境**：`tradeos-py312`（conda，Python 3.12.13，零号任务已创建）。所有 Python 命令在该环境中执行；`python3 scripts/check_boundaries.py` 用系统 python3（结构检查脚本为纯 stdlib，与 Python 版本无关）。零号任务已在本环境预装 `ruff`、`mypy` 用于基线核验；任务 1 起由 pyproject 的 dev 依赖正式接管。
 
 ---
 
@@ -28,30 +28,63 @@
 
 - **Python 3.12+**：`requires-python = ">=3.12"`；所有代码与验收命令运行于 `tradeos-py312`。
 - **Decimal**：金额字段一律 Decimal/Money，不得出现 float（硬边界 2）。
-- **tenant_id**：新增表与查询路径预埋租户维度（硬边界 8）；Repository 基类统一注入，不靠每个查询点自觉。
+- **tenant_id 一律用强类型 `TenantId`**（`shared.schemas.identifiers.TenantId`，`NewType(str)`，运行时零开销）。禁止在 `infra/db`、测试夹具或任何新代码里把租户维度降级成裸 `str`——`infra → shared` 是向下依赖，符合硬边界 9 的依赖方向。同理，操作者/服务主体用 `UserId`。
 - **依赖方向**：新增代码不得引入反向导入、跨域导入或 SDK 越界（硬边界 9，`check_boundaries.py` 机检）。
 - **每任务提交前**：`python3 scripts/check_boundaries.py` 必须全绿。
-- **每任务单独 push**：一个任务一个 commit、一次 push，便于逐项 review。
+- **每任务单独 push**：一个任务一个 commit、一次 push，便于逐项 review。本计划共 7 个任务 → 7 个 commit、7 次 push。
 - **本机准备不提交**：不提交任何机器路径、凭证或 `.env`；`.env` 由本机从 `infra/.env.example` 复制填充且永不提交。
-- **不碰骨架**：不改 AGENTS.md 硬边界；不改动既有业务骨架文件内容。
+- **不碰骨架**：不改 AGENTS.md 硬边界；除任务 0 明确列出的单行改动外，不改动既有业务骨架文件内容。
+- **不新增全局豁免**：Phase 0 不新增全局 F401 或 mypy `misc` 类豁免；ruff 只允许逐文件豁免，mypy 不允许任何 `disable_error_code`。
 
-### 已知基线（本计划不修复，仅在任务 1 用工程配置收敛）
+### 已知基线
 
-- **ruff**：既有骨架报 243 处违规——230 处 EXE002（可执行位无 shebang，文件权限卫生）+ 13 处（骨架 stub 的预留导入 F401、`...` 占位 PIE790/PYI013、导入排序 I001、脚本别名 FURB167）。因禁止修改骨架，任务 1 通过 pyproject 配置忽略 EXE002 并按文件豁免其余 13 处。
-- **mypy**：`shared/events/bus.py:28` 有 1 处既有类型错误（Protocol 类型变量不变性）。任务 1 通过 `[tool.mypy.overrides]` 按模块豁免。
-- 上述豁免范围以「骨架期基线」为限，在配置注释中写明理由；不改变任何骨架文件内容。
+- **ruff**：既有骨架报 243 处违规——230 处 EXE002（可执行位无 shebang，文件权限卫生）+ 13 处（骨架 stub 的预留导入 F401、`...` 占位 PIE790/PYI013、导入排序 I001、脚本别名 FURB167）。任务 1 通过 pyproject 配置忽略 EXE002 并按文件豁免其余 13 处；**逐文件豁免均带退出条件**（见任务 1），不改任何骨架文件内容。
+- **mypy**：既有骨架在 `shared/events/bus.py:28` 有 1 处真实类型错误（Protocol 类型变量不变性）。**不用配置涂绿**——由前置任务 0 做最小类型标注修复使其真正通过（监督已批准这一处 shared 改动）。
 
 ---
 
 ## 前置条件（本机准备，不提交）
 
-- [x] conda 环境 `tradeos-py312`（Python 3.12.13）已创建并核验（零号任务完成）。
+- [x] conda 环境 `tradeos-py312`（Python 3.12.13）已创建并核验（零号任务完成）；`ruff`、`mypy` 已预装（基线核验用）。
 - [ ] `docker compose -f infra/docker-compose.yml up -d` 可启动 postgres/redis/minio（任务 2 验收用到）。
 - [ ] 根目录 `.env`：`cp infra/.env.example .env` 后填本地 `DATABASE_URL`（如 `postgresql+asyncpg://tradeos:tradeos_local@localhost:5432/tradeos`）。`.env` 永不提交。
 
 ---
 
 ## 任务列表
+
+### 任务 0：修正 EventHandler 泛型方差（shared 静态契约修复，监督批准的唯一一处骨架改动）
+
+**文件**
+- Modify: `shared/events/bus.py`（仅第 24 行）
+
+**实现**
+- 把 `E = TypeVar("E", bound=DomainEvent)` 改为 `E = TypeVar("E", bound=DomainEvent, contravariant=True)`。
+- 理由：`E` 在本文件只出现在参数位——`EventHandler.handle(self, event: E)`（第 38 行）与 `EventBus.subscribe(..., handler: EventHandler[E])`（第 68 行）——这是逆变位置，不变 TypeVar 在 Protocol 中触发 mypy `misc` 错误。改为 contravariant 让静态检查正确反映既有的运行期语义：处理器接受基类事件即可用于派生事件。仅类型标注层面的修正，不改变任何运行时行为、事件字段、Provenance 或 Money 语义。
+- 已实测：改动前 `mypy domains shared tool_gateway` 报 `shared/events/bus.py:28` 1 处错误；改动后 `Success: no issues found in 137 source files`；`python3 scripts/check_boundaries.py --skeleton` 保持全绿（本改动不在任何函数体，不影响 stub 纯度）。全库仅 bus.py 自身使用 `EventHandler`，改动无外溢。
+
+**ADR 判断（规则依据）**
+- HANDBOOK §五 列出必须写 ADR 的四类：① 改 shared/ 里的任何契约（事件字段、Provenance 结构、Money 语义）；② 放宽任何一条硬边界；③ 引入新的基础设施；④ 改变分层或插件点的设计。
+- 本次只改 TypeVar 的逆变声明：不改事件字段、Provenance 或 Money（运行时数据契约不变，`@runtime_checkable` 协议行为不变）；不放宽硬边界；不引入基础设施；不改变分层。故**不需要 ADR**。此判断是对 §五「任何契约」的解释性判断——§五的枚举样例均为运行时数据契约，本次是纯静态类型标注修正——如有异议，监督可在验收时指出，补 ADR 成本极低。
+
+**失败命令 / 通过命令**
+```bash
+# 失败（改动前）：
+conda run -n tradeos-py312 mypy domains shared tool_gateway
+#   预期输出：shared/events/bus.py:28: error: Invariant type variable "E" ... [misc]
+# 通过（改动后）：
+conda run -n tradeos-py312 mypy domains shared tool_gateway
+#   预期输出：Success: no issues found in 137 source files
+python3 scripts/check_boundaries.py --skeleton     # 仍全绿
+```
+
+**注意**：本任务不删除 bus.py 的 ruff 豁免——该文件仍是 stub，`...` 占位保留（PYI013/PIE790 豁免按退出条件在首次实现 bus.py 时移除，见任务 1）。
+
+**commit**：`fix(shared): make EventHandler TypeVar contravariant`
+
+**push**：`git push`（本任务单独推送）
+
+---
 
 ### 任务 1：pyproject.toml 工程配置
 
@@ -62,7 +95,7 @@
 - 构建：setuptools，flat layout；`[tool.setuptools.packages.find]` 纳入 `shared*`、`domains*`、`tool_gateway*`、`notification_gateway*`、`artifact_store*`、`connectors*`、`agent_runtime*`、`workflows*`、`apps*`、`infra*`，排除 `tests` 与 `scripts`。
 - `[project]`：`requires-python = ">=3.12"`；运行时依赖按 HANDBOOK：`fastapi`、`uvicorn`、`pydantic>=2`、`sqlalchemy>=2`、`asyncpg`、`alembic`、`redis`、`boto3`、`python-dotenv`、`openai`。
 - dev 依赖：`pytest`、`pytest-asyncio`、`testcontainers`、`ruff`、`mypy`、`aiosqlite`。其中 `aiosqlite` 是 HANDBOOK 清单外的小幅补充：为任务 4 的内存 SQLite 夹具提供异步驱动，使 `pytest` 与 CI 不依赖 Docker（HANDBOOK 允许「内存/容器数据库」两种夹具，取内存路径）。
-- `[tool.ruff.lint]`：`target-version = "py312"`；`ignore = ["EXE002"]`（可执行位无 shebang 属文件权限卫生，非代码质量）；`[tool.ruff.lint.per-file-ignores]` 对既有 stub 逐文件豁免：
+- `[tool.ruff.lint]`：`target-version = "py312"`；`ignore = ["EXE002"]`（可执行位无 shebang 属文件权限卫生，非代码质量）；`[tool.ruff.lint.per-file-ignores]` 对既有 stub 逐文件豁免，**每条豁免带退出条件（见下）**：
   - `agent_runtime/guardrails/rails.py` = `["F401"]`
   - `connectors/base.py` = `["F401"]`
   - `domains/conversations/models.py` = `["F401"]`
@@ -73,14 +106,15 @@
   - `workflows/engine/runner.py` = `["F401"]`
   - `shared/events/bus.py` = `["PYI013", "PIE790"]`
   - `scripts/check_boundaries.py` = `["FURB167"]`
-  - 逐文件豁免比全局关 F401 精确：不隐藏其它文件的真实死导入。
-- `[tool.mypy]`：`python_version = "3.12"`；`[[tool.mypy.overrides]]` 对 `module = "shared.events.bus"` 设 `disable_error_code = ["misc"]`，注释写明「既有骨架类型问题，不改动骨架，基线豁免」。
+- **豁免退出条件**：除 `scripts/check_boundaries.py` 外，以上均为骨架 stub 豁免。**后续任务首次实现对应文件（其函数体不再是 NotImplementedError/`...`）时，必须在同一 commit 删除该文件的豁免**；不得提前删（删早了会报错），也不得拖到实现之后再删。`scripts/check_boundaries.py` 的 FURB167 不是骨架豁免——该脚本是既有真实脚本，不是 stub，无「实现」任务，故不适用退出条件规则；属一次性风格容忍（`re.M` 别名），如需处理应在专门改动该脚本的提交中一并完成。
+- **Phase 0 不新增全局豁免**：不引入全局 `F401`，不引入任何 mypy `disable_error_code`（任务 0 已把唯一一处类型错误修掉）。
+- `[tool.mypy]`：`python_version = "3.12"`。**无任何 `overrides` / `disable_error_code`**。
 - `[tool.pytest.ini_options]`：`testpaths = ["tests"]`、`asyncio_mode = "auto"`、`markers = ["db: 需 Docker 后端的 Postgres 容器测试"]`。
 
 **失败预期 / 测试**
 - 本任务前：`python -m pip install -e ".[dev]"` 因无 `pyproject.toml` 而失败（无包可安装）。
-- 不加本配置时 `ruff check .` 报 243 处；加入配置后应为 0。
-- 不加 override 时 `mypy domains shared tool_gateway` 报 `shared/events/bus.py:28`；加 override 后应 clean。
+- 不加本配置时 `ruff check .` 报 243 处；加入配置后应为 0（逐文件豁免精确覆盖 13 处，EXE002 全局忽略覆盖 230 处）。
+- mypy：任务 0 已修复唯一错误，本任务不配置任何豁免，`mypy domains shared tool_gateway` 应直接 clean。
 
 **验收命令**
 ```bash
@@ -140,19 +174,21 @@ python3 scripts/check_boundaries.py
 - Create: `tests/unit/test_infra_db.py`
 
 **实现**（对应 HANDBOOK「最关键的一件」：租户过滤在基类统一注入，不靠每个查询点自觉）
-- `infra/db/base.py` 定义 `TenantScopedRepository`：
-  - 构造时绑定 `tenant_id: str`。Phase 1 单租户，以 UUID 文本承载租户维度即满足硬边界 8 的隔离要求；不依赖尚未实现的 shared 类型。
+- `infra/db/base.py` 定义 `TenantScopedRepository`，强类型租户/身份一律用 `shared.schemas.identifiers` 的 `NewType`：
+  - `from shared.schemas.identifiers import TenantId, UserId`（`infra → shared` 为向下依赖，符合硬边界 9）。
+  - 构造时绑定 `tenant_id: TenantId`（`TenantId = NewType("TenantId", str)`，运行时零开销，静态可区分）。
   - `scoped_query(session, model)`：返回已自动注入 `WHERE tenant_id = :tenant_id` 的 `select`，调用方不得绕过该过滤。
-  - `unsafe_cross_tenant_query(session, model, audit_reason)`：运维专用后门。缺 `audit_reason` 直接抛错；提供理由时先写结构化审计日志（logger 名 `infra.db.audit`，记录 tenant_id 与 reason）再返回未过滤查询。把后门做成显式且留痕。
+  - `unsafe_cross_tenant_query(session, model, actor_id: UserId, audit_reason: str)`：运维专用后门。**`actor_id` 与 `audit_reason` 都必须非空**（`strip()` 后仍为空即抛错）；两者有效时先写结构化审计日志（logger 名 `infra.db.audit`，**同时记录 `actor_id`、构造绑定的 `tenant_id`、`audit_reason`**）再返回未过滤查询。把后门做成显式、有操作者留痕、有理由留痕。
   - 类型注解与 docstring 完整（中文写明要实现什么、边界、为什么）。
 - `tests/unit/test_infra_db.py`：不依赖数据库，用 SQLAlchemy 编译产物断言：
-  1. `scoped_query` 生成 SQL 的 WHERE 子句含 `tenant_id`，且绑定值等于本仓库 tenant_id；
-  2. `unsafe_cross_tenant_query` 缺 `audit_reason` 抛错；
-  3. 提供 `audit_reason` 时返回未过滤查询，且用 caplog 断言审计日志记录了 tenant_id 与 reason。
+  1. `scoped_query` 生成 SQL 的 WHERE 子句含 `tenant_id`，且绑定值等于本仓库构造时传入的 `TenantId`；
+  2. `unsafe_cross_tenant_query` 拒绝空 `actor_id`（`UserId("")`）抛错；
+  3. 拒绝空 `audit_reason`（`""`）抛错；
+  4. `actor_id` 与 `audit_reason` 均有效时返回未过滤查询，且用 caplog 断言结构化审计日志同时记录了 `actor_id`、绑定的 `tenant_id`、`audit_reason`。
 
 **失败预期 / 测试**
 - 本任务前：`pytest tests/unit/test_infra_db.py` 报文件不存在。
-- 实现中：任何绕过基类租户注入的路径被测试 1 拦住；后门不留痕被测试 3 拦住。
+- 实现中：任何绕过基类租户注入的路径被测试 1 拦住；后门缺操作者或理由被测试 2/3 拦住；后门不留痕被测试 4 拦住。
 - `--skeleton` 会在 `infra/db/base.py` 报 stub-purity（真实基建代码，预期；过渡点已在任务 2 说明）。
 
 **验收命令**
@@ -178,11 +214,11 @@ python3 scripts/check_boundaries.py
 - `tests/conftest.py` 提供内存数据库夹具（HANDBOOK「内存/容器数据库」取内存路径，驱动为任务 1 补充的 `aiosqlite`）：
   - `db_engine`：async engine，`:memory:` + StaticPool（跨连接共享）；
   - `db_session`：绑定引擎的 async session，测试后回滚（async fixture 显式用 `@pytest_asyncio.fixture`）；
-  - `tenant_id`：Phase 1 单租户固定 ID 字符串。
-  - 夹具内的测试模型为最小声明式行模型（仅 `id` / `tenant_id` / `name`，非业务模型）。
+  - `tenant_id`：返回 `TenantId` 类型固定值（Phase 1 单租户），如 `TenantId("tenant_phase1")`——不得用裸 str。
+  - 夹具内的测试模型为最小声明式行模型（`id` / `tenant_id` / `name`；`tenant_id` 列 `Mapped[str]`，写入值用 `TenantId(...)`，运行时即 str、静态可区分），非业务模型。
 - `tests/unit/test_conftest_smoke.py`：
   1. 用 `db_session` 写入一行再读回，断言 round-trip 成立；
-  2. 写入租户 A 与租户 B 各一行，按租户过滤查询各自只能读回本租户行（数据层隔离预演硬边界 8）。
+  2. 写入租户 A 与租户 B（`TenantId("tenant_a")` / `TenantId("tenant_b")`）各一行，按租户过滤查询各自只能读回本租户行（数据层隔离预演硬边界 8）。
 - 目的：`pytest -q` 从此收集到真实通过的测试（不再以「no tests ran」退出码 5），且不依赖 Docker。
 
 **失败预期 / 测试**
@@ -218,7 +254,7 @@ python3 scripts/check_boundaries.py
 - 所有目标声明 `.PHONY`
 
 **失败预期 / 测试**
-- 本任务前：`make check` 因缺 Makefile 而失败；任务 1–4 未完成时 `make check` 的 pytest/mypy/ruff 环节会红。
+- 本任务前：`make check` 因缺 Makefile 而失败；任务 0–4 未完成时 `make check` 的 pytest/mypy/ruff 环节会红。
 - 完成后：`make check` 四件全绿，`make test` 全绿。
 
 **验收命令**
@@ -250,7 +286,7 @@ make dev
 
 **失败预期 / 测试**
 - 本任务前：无 `.github/workflows/ci.yml`。
-- 若四步命令中任何一步本地失败（即任务 1–5 未全绿），工作流在 GitHub 上必然失败——因此先保证本地全绿。
+- 若四步命令中任何一步本地失败（即任务 0–5 未全绿），工作流在 GitHub 上必然失败——因此先保证本地全绿。
 
 **验收命令**
 ```bash
@@ -264,7 +300,7 @@ make check                     # 四件在本地全绿
 
 ---
 
-## 验收汇总（全部任务完成后）
+## 验收汇总（全部 7 个任务完成后）
 
 ```bash
 make check          # ruff / mypy / check_boundaries / pytest 四件全绿
@@ -273,8 +309,11 @@ make dev            # postgres/redis/minio 启动
 make migrate        # alembic upgrade head 成功
 ```
 
+**提交/推送计数**：任务 0–6 共 7 个独立 commit、7 次独立 push（每个任务提交前 `python3 scripts/check_boundaries.py` 全绿）。
+
 ## 风险与说明
 
-- `--skeleton` 的 stub-purity 从任务 2 起会在真实基建文件（`migrations/env.py`、`infra/db/base.py`）上报——这是 HANDBOOK 明示的过渡点（开始实现后从 CI 移除），常规 `check_boundaries.py` 不受影响，CI 采用常规检查。
+- `--skeleton` 的 stub-purity 从任务 2 起会在真实基建文件（`migrations/env.py`、`infra/db/base.py`）上报——这是 HANDBOOK 明示的过渡点（开始实现后从 CI 移除），常规 `check_boundaries.py` 不受影响，CI 采用常规检查。任务 0 与任务 1 不改任何函数体，`--skeleton` 仍全绿。
 - `aiosqlite` 是 HANDBOOK 依赖清单外的小幅补充，换取 `make check` 与 CI 不依赖 Docker。
-- 基线 ruff/mypy 豁免（见「已知基线」）是配置层收敛，未改任何骨架文件。
+- 任务 0 是本计划唯一触碰 shared 骨架的改动（监督已批准）；其 ADR 判断（不需要 ADR）及规则依据见任务 0。
+- 基线 ruff/mypy 处置均为配置/最小标注收敛，未改任何业务逻辑文件内容。
