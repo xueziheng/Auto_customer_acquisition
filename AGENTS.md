@@ -154,6 +154,16 @@ apps  →  workflows / agent-runtime  →  domains  →  shared
 
 `CLAUDE.md` 只是指向本文件的指针，不维护第二份规则。
 
+要动手写实现代码时，除本文件外还要读 [HANDBOOK.md](HANDBOOK.md)：实现顺序、每步验收标准、二十条陷阱、四个插件点的操作步骤都在那里。
+
+改完任何代码，提交前跑一次结构自检：
+
+```bash
+python3 scripts/check_boundaries.py
+```
+
+它机检本文件里可机检的硬边界（依赖方向、跨域导入、金额 float、置信度数值、租户过滤等）。**架构腐化是复利的**——每一步看起来都无害，等发现时已经改不动了，所以这条不靠自觉靠机器。
+
 ---
 
 ## 九、当前阶段
