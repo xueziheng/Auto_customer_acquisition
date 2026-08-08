@@ -15,8 +15,9 @@ test:
 
 check:
 	ruff check .
-	mypy domains shared tool_gateway
+	mypy domains shared tool_gateway apps workflows notification_gateway infra
 	python3 scripts/check_boundaries.py
+	python3 scripts/scan_sensitive.py
 	pytest -q
 
 # 目标名含冒号，需转义；调用方式：make 'check:skeleton'

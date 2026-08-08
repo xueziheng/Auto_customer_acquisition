@@ -25,8 +25,10 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type check
-        run: mypy domains shared tool_gateway
+        run: mypy domains shared tool_gateway apps workflows notification_gateway infra
       - name: Boundary check
         run: python3 scripts/check_boundaries.py
+      - name: Sensitive scan
+        run: python3 scripts/scan_sensitive.py
       - name: Tests
         run: pytest -q
