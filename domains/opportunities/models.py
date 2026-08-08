@@ -1,0 +1,306 @@
+"""贸易机会域实体。
+
+**内部实现，其他域不得导入。** 跨域用 ``schemas.py``。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from enum import Enum
+
+from shared.schemas.evidence import ConfidenceTier
+from shared.schemas.identifiers import (
+    EmployeeId,
+    HandoffId,
+    OpportunityId,
+    ProspectAccountId,
+    TenantId,
+    ValidatedNeedId,
+)
+from shared.schemas.money import Money
+
+
+class OpportunityState(str, Enum):
+    QUALIFIED = "qualified"
+    ASSIGNED = "assigned"
+    CONTACTED = "contacted"
+    SOURCING = "sourcing"
+    QUOTED = "quoted"
+    NEGOTIATING = "negotiating"
+    WON = "won"
+    LOST = "lost"
+
+
+ALLOWED_TRANSITIONS: dict[OpportunityState, set[OpportunityState]] = {
+    OpportunityState.QUALIFIED: {OpportunityState.ASSIGNED, OpportunityState.LOST},
+    OpportunityState.ASSIGNED: {OpportunityState.CONTACTED, OpportunityState.LOST},
+    OpportunityState.CONTACTED: {
+        OpportunityState.SOURCING,
+        OpportunityState.QUOTED,
+        OpportunityState.LOST,
+    },
+    OpportunityState.SOURCING: {OpportunityState.QUOTED, OpportunityState.LOST},
+    OpportunityState.QUOTED: {OpportunityState.NEGOTIATING, OpportunityState.LOST},
+    OpportunityState.NEGOTIATING: {OpportunityState.WON, OpportunityState.LOST},
+    OpportunityState.WON: set(),
+    OpportunityState.LOST: set(),
+}
+"""允许的状态转换。
+
+写成表而不是 if 链：这张表会被反复查阅和修改，散在代码里的转换判断
+迟早会出现两处不一致。非法转换抛 ``InvalidStateTransition``，
+消息里带当前态、目标态和允许列表。
+
+``CONTACTED`` 可以直接跳到 ``QUOTED``：公司现有产品完全匹配时不需要
+寻源。这不是漏洞，是正常路径。
+"""
+
+
+class LossReason(str, Enum):
+    """机会终结原因。**反馈闭环的骨架。**
+
+    设计稿没有这个结构（我补的）。没有它，「根据结果改进下一轮策略」
+    只能靠感觉。现在加几乎零成本，事后补要重跑历史数据——而历史数据
+    已经变了。
+
+    每个值配一句「它提示你该改什么」，因为归因的目的是改进，不是记账。
+    """
+
+    UNREACHABLE = "unreachable"
+    """找不到可用联系方式。→ 改进联系人数据源或验证流程。"""
+
+    NO_REPLY = "no_reply"
+    """序列跑完无回复。→ 改开发信内容或目标筛选；量大时先怀疑筛选。"""
+
+    NEED_NOT_REAL = "need_not_real"
+    """接触后发现需求不存在。→ **最该关注的一类。** 说明假设生成
+    环节的信号质量有问题，直接反馈给探索策略。"""
+
+    NO_SUPPLY_FOUND = "no_supply_found"
+    """需求真实但找不到供应。→ 该品类不该继续探索，或要补供应商网络。"""
+
+    PRICE_TOO_HIGH = "price_too_high"
+    """价格谈不下来。→ 看 ``died_at_state``：quoted 阶段是报价能力问题，
+    contacted 阶段说明客户一开始就没预算，该改筛选门槛。"""
+
+    LOST_TO_COMPETITOR = "lost_to_competitor"
+    """输给竞争对手。→ 尽量记下输在哪（价格/交期/规格/信任）。"""
+
+    CUSTOMER_WENT_SILENT = "customer_went_silent"
+    """客户中途失联。→ 检查是否跟进太慢；常与接管 SLA 超时相关。"""
+
+    TIMING_MISMATCH = "timing_mismatch"
+    """客户要得太急或采购期已过。→ 可安排未来重启，不是真正的失败。"""
+
+    COMPLIANCE_BLOCKED = "compliance_blocked"
+    """合规或认证不可行。→ 该品类应进 Playbook 排除清单，
+    避免反复投入。"""
+
+    MARGIN_TOO_LOW = "margin_too_low"
+    """算完成本利润不可接受。→ 若同一品类反复出现，说明供应端没优势。"""
+
+    INTERNAL_NO_CAPACITY = "internal_no_capacity"
+    """内部没人能跟。→ 这是**团队瓶颈信号**，不是客户问题。
+    大量出现时应减少探索、增加人力或收窄市场。"""
+
+    DUPLICATE = "duplicate"
+    """与已有机会重复。→ 检查企业消歧和 Ownership Lock。"""
+
+
+class HandoffTrigger(str, Enum):
+    """触发人工接管的条件。
+
+    这些情况下 Agent 继续自动处理的风险大于收益——多数涉及承诺，
+    而承诺一旦发出就难以撤回。
+    """
+
+    QUANTITY_PROVIDED = "quantity_provided"
+    TARGET_PRICE_PROVIDED = "target_price_provided"
+    SAMPLE_REQUESTED = "sample_requested"
+    QUOTE_REQUESTED = "quote_requested"
+    SPECIFICATION_FILE_RECEIVED = "specification_file_received"
+    MEETING_REQUESTED = "meeting_requested"
+    CUSTOM_PRODUCT = "custom_product"
+    CERTIFICATION_QUESTION = "certification_question"
+    PAYMENT_OR_CONTRACT_TERMS = "payment_or_contract_terms"
+    COMPLAINT = "complaint"
+    EXCLUSIVE_DISTRIBUTION = "exclusive_distribution"
+    LARGE_ACCOUNT = "large_account"
+    HIGH_RISK_PRODUCT = "high_risk_product"
+    AGENT_LOW_CONFIDENCE = "agent_low_confidence"
+    """Agent 自己判断处理不了。**保留这个触发条件很重要**——
+    它给了 Agent 一条体面的退出路径，比硬撑着回复错信息好。"""
+
+    REPEATED_COMPLEX_QUESTIONS = "repeated_complex_questions"
+
+
+@dataclass
+class Opportunity:
+    """贸易机会。
+
+    字段分三组：客户与需求、商业判断、执行归属。
+
+    注意 ``estimated_cost`` 与 ``estimated_profit`` 是 ``Money`` 且
+    **可能为 None**——寻源前算不出来。不要用 0 代替 None，那会让
+    「利润为零」和「还不知道」混为一谈。
+
+    字段：
+        opportunity_id, tenant_id, account_id
+        need_id:            关联的已验证需求
+        state, created_at
+        product_category
+        quantity, spec_summary, application, destination, required_by
+        target_price:       客户目标价
+        decision_maker:     决策人描述
+        current_supply_solution:  客户现在怎么解决的
+        current_supply_problem:   现有方案有什么问题
+                            —— **最有价值的字段**，直接说明我们凭什么能赢
+        can_source:         是否找到供应（None 表示还没查）
+        estimated_cost, estimated_profit
+        owner:              负责员工
+        next_action:        下一步动作（自由文本，员工可改）
+        next_action_due:    下一步截止
+        loss_reason, died_at_state, closed_at
+    """
+
+    opportunity_id: OpportunityId
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    need_id: ValidatedNeedId
+    product_category: str
+    created_at: datetime
+    state: OpportunityState = OpportunityState.QUALIFIED
+    quantity: int | None = None
+    spec_summary: str | None = None
+    application: str | None = None
+    destination: str | None = None
+    required_by: date | None = None
+    target_price: Money | None = None
+    decision_maker: str | None = None
+    current_supply_solution: str | None = None
+    current_supply_problem: str | None = None
+    can_source: bool | None = None
+    estimated_cost: Money | None = None
+    estimated_profit: Money | None = None
+    owner: EmployeeId | None = None
+    next_action: str | None = None
+    next_action_due: datetime | None = None
+    loss_reason: LossReason | None = None
+    died_at_state: OpportunityState | None = None
+    closed_at: datetime | None = None
+
+    def can_transition_to(self, target: OpportunityState) -> bool:
+        """查 ``ALLOWED_TRANSITIONS``。"""
+        raise NotImplementedError
+
+    def mark_lost(
+        self, reason: LossReason, at: datetime
+    ) -> None:
+        """终结机会。
+
+        实现要求：``died_at_state`` 记录**转入 lost 之前**的状态，
+        不是 lost 本身。这个字段是归因分析的另一半——同一个
+        ``PRICE_TOO_HIGH`` 在不同阶段意味着完全不同的改进方向。
+        """
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ScoreSnapshot:
+    """打分输入快照。
+
+    **必须存。** 等有几十条成交数据后要回测权重、验证哪些因子真的
+    预测成交——没有快照就只能重跑历史数据，而那时数据已经变了
+    （客户状态改了、价格变了、联系人换了）。
+
+    字段：
+        opportunity_id, scored_at, scorer_version
+        passed_gates:       通过的硬门槛
+        failed_gates:       未通过的硬门槛（有值则未进入打分）
+        evidence_tier:      证据档位
+        estimated_value:    预计订单额
+        supply_available:   供应是否可得
+        factor_scores:      各因子得分
+        total_score, rank_bucket
+    """
+
+    opportunity_id: OpportunityId
+    scored_at: datetime
+    scorer_version: str
+    passed_gates: list[str]
+    failed_gates: list[str]
+    evidence_tier: ConfidenceTier | None
+    estimated_value: Money | None
+    supply_available: bool | None
+    factor_scores: dict[str, float]
+    total_score: float
+    rank_bucket: str
+
+
+class HandoffState(str, Enum):
+    REQUESTED = "requested"
+    ACCEPTED = "accepted"
+    COMPLETED = "completed"
+    REASSIGNED = "reassigned"
+    EXPIRED = "expired"
+    """超时未接受。要能查出来——这是 SLA 违约，也常是
+    ``CUSTOMER_WENT_SILENT`` 的真正原因。"""
+
+
+@dataclass
+class HandoffPacket:
+    """人工接管包。
+
+    **禁止只发「有个高意向客户，请处理」。** 员工看到通知后应当不用
+    再翻五个页面就能开始工作——否则接管会被拖延，而拖延会让客户失联，
+    前面所有自动化投入归零。
+
+    字段：
+        handoff_id, tenant_id, opportunity_id
+        trigger:              触发原因
+        assigned_to, manager
+        requested_at, accepted_at, accepted_by
+        state
+        account_name, country
+        how_we_found_them:    怎么找到这家公司的
+        why_valuable:         为什么判断有价值（要能追到证据）
+        customer_verbatim:    **客户原话摘录**，不要模型改写过的版本
+        validated_need_summary
+        missing_information:  还缺什么
+        conversation_summary
+        already_sent:         已经发过什么（避免重复或矛盾）
+        commitments_made:     已做出的承诺（员工的和 Agent 的）
+        suggested_next_step
+        evidence_links:       原始证据链接
+    """
+
+    handoff_id: HandoffId
+    tenant_id: TenantId
+    opportunity_id: OpportunityId
+    trigger: HandoffTrigger
+    requested_at: datetime
+    account_name: str
+    country: str
+    why_valuable: str
+    customer_verbatim: str
+    state: HandoffState = HandoffState.REQUESTED
+    assigned_to: EmployeeId | None = None
+    manager: EmployeeId | None = None
+    accepted_at: datetime | None = None
+    accepted_by: EmployeeId | None = None
+    how_we_found_them: str | None = None
+    validated_need_summary: str | None = None
+    missing_information: list[str] = field(default_factory=list)
+    conversation_summary: str | None = None
+    already_sent: list[str] = field(default_factory=list)
+    commitments_made: list[str] = field(default_factory=list)
+    suggested_next_step: str | None = None
+    evidence_links: list[str] = field(default_factory=list)
+
+    @property
+    def wait_seconds(self) -> int | None:
+        """等待时长。未接受时按当前时间算——**这才是要盯的数**，
+        已完成的接管等待时长只有事后统计意义。
+        """
+        raise NotImplementedError
