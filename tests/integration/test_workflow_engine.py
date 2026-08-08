@@ -926,3 +926,411 @@ async def test_cancel_targets_tenant_and_is_idempotent(db_url: str) -> None:
         assert run_row is not None and run_row["status"] == "cancelled"
     finally:
         await handle.dispose()
+
+
+# --- Round 1 fixes：commit 级失败隔离 / 事件脱敏 / 保留键 / 首步等待 / reason 脱敏 / 退避校验 ---
+
+
+def _is_hex64(value: object) -> bool:
+    """事件指纹为 64 位 hex（SHA-256）固定长度，不携带 payload 原文。"""
+    return isinstance(value, str) and len(value) == 64 and all(
+        c in "0123456789abcdef" for c in value
+    )
+
+
+async def test_poll_due_commit_failure_isolated_and_no_tight_loop(db_url: str) -> None:
+    """Critical 1：commit/flush 级失败（不可 JSON 序列化 patch）不得中断本批。
+
+    坏 run 以固定脱敏错误进入 FAILED，同批另一 run 仍完成，后续 poll 不重复领取
+    坏 step（无 tight loop）。断言只关心外部行为，不依赖 asyncpg/SQLAlchemy 包装
+    异常类型。
+    """
+    def _h_bad(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {"unserializable": {1, 2, 3}})
+
+    def _h_good(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {"ok": True})
+
+    engine, handle = _make_engine(
+        db_url, {"h_bad": _handler(_h_bad), "h_good": _handler(_h_good)}
+    )
+    try:
+        engine.register(
+            WorkflowDefinition(
+                "wf-bad", 1, (StepDefinition("first", "h_bad"),), {}
+            )
+        )
+        engine.register(
+            WorkflowDefinition(
+                "wf-good", 1, (StepDefinition("first", "h_good"),), {}
+            )
+        )
+        tenant = "tCommitFail"
+        rid_bad = await engine.start(TenantId(tenant), "wf-bad", "a", {}, "cf-a")
+        rid_good = await engine.start(TenantId(tenant), "wf-good", "b", {}, "cf-b")
+
+        processed = await engine.poll_due(TenantId(tenant), 10)
+        assert processed == 2, f"commit 失败不得中断本批其他步骤：processed={processed}"
+
+        bad = await _query_run(handle, tenant, rid_bad)
+        good = await _query_run(handle, tenant, rid_good)
+        assert bad is not None and bad["status"] == "failed"
+        assert bad["context"] == {}, "commit 失败后不得残留部分写入的 patch"
+        assert "unserializable" not in json.dumps(bad["context"])
+        assert "step commit failure" in (bad["last_error"] or ""), "坏 run 应带固定脱敏错误"
+        assert good is not None and good["status"] == "completed"
+
+        bad_step = (await _query_steps(handle, tenant, rid_bad))[0]
+        assert bad_step["status"] == "failed"
+        assert bad_step["error"] == "step commit failure", "坏 step 错误应为固定脱敏文本"
+
+        assert await engine.poll_due(TenantId(tenant), 10) == 0, "坏 step 不得 tight loop"
+    finally:
+        await handle.dispose()
+
+
+async def test_event_fingerprint_is_digest_and_raw_event_not_persisted(db_url: str) -> None:
+    """Important 2：事件指纹为固定长度密码学 digest；raw event 只在 handler 执行期可见。
+
+    投递后 run.context 不得出现 payload 原文与 ``event`` 保留键；重复投递同一事件
+    仍 durable no-op。
+    """
+    wait_calls: list[str] = []
+
+    def _h_start(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("advance", "wait", {})
+
+    def _h_wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        wait_calls.append(run.run_id)
+        payload = run.context["event"]["payload"]
+        return ("advance", "done", {"approved": payload["by"]})
+
+    def _h_done(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    clock = _Clock()
+    engine, handle = _make_engine(
+        db_url,
+        {"h_init": _handler(_h_start), "h_wait": _handler(_h_wait), "h_done": _handler(_h_done)},
+        clock=clock,
+    )
+    try:
+        engine.register(_advance_flow())
+        tenant = "tDigest"
+        rid = await engine.start(TenantId(tenant), "wf", "subj", {}, "digest-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1  # start → wait
+
+        await engine.deliver_event(
+            TenantId(tenant), rid, "approval",
+            {"by": "bob", "token": "sk_live_secret_123"},
+        )
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None
+        assert run_row["current_step"] == "done"
+        assert run_row["context"]["approved"] == "bob"
+        assert "event" not in run_row["context"], "raw event 不得持久化在 context"
+        assert "sk_live_secret_123" not in json.dumps(run_row["context"])
+        assert '"by"' not in json.dumps(run_row["context"]), "payload 原文不得残留"
+
+        delivered = run_row["context"].get("__wf_delivered_events")
+        assert isinstance(delivered, list) and len(delivered) == 1
+        assert _is_hex64(delivered[0]), "事件指纹应为 64 位 hex digest，非 payload 原文"
+
+        # 重复投递同一事件仍 durable no-op
+        await engine.deliver_event(
+            TenantId(tenant), rid, "approval", {"by": "bob", "token": "sk_live_secret_123"}
+        )
+        assert len(wait_calls) == 1, "重复投递同一事件不得重复推进"
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["current_step"] == "done"
+    finally:
+        await handle.dispose()
+
+
+async def test_start_rejects_reserved_context_keys(db_url: str) -> None:
+    """Important 3a：initial_context 含保留键（事件指纹簿记 / 事件）fail closed，写 DB 前拒绝。"""
+    def _h(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    engine, handle = _make_engine(db_url, {"h": _handler(_h)})
+    try:
+        engine.register(_simple_def())
+        tenant = "tReserved"
+        with pytest.raises(ValidationError):
+            await engine.start(
+                TenantId(tenant), "wf", "subj", {"__wf_delivered_events": ["x"]}, "rk-1"
+            )
+        with pytest.raises(ValidationError):
+            await engine.start(
+                TenantId(tenant), "wf", "subj", {"event": {"payload": {}}}, "rk-2"
+            )
+        # 拒绝后不得留下任何 run 行（写 DB 前校验）
+        async with handle.connect() as conn:
+            count = (
+                await conn.execute(
+                    text("SELECT count(*) FROM workflow_runs WHERE tenant_id = :t"),
+                    {"t": tenant},
+                )
+            ).scalar_one()
+        assert count == 0, "保留键拒绝后不得创建 run"
+    finally:
+        await handle.dispose()
+
+
+async def test_handler_patch_reserved_key_fails_closed(db_url: str) -> None:
+    """Important 3b：handler patch 含保留键必须 fail closed，不得覆盖引擎簿记。"""
+    def _h_forge(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {"event": "forged"})
+
+    engine, handle = _make_engine(db_url, {"h_forge": _handler(_h_forge)})
+    try:
+        engine.register(
+            WorkflowDefinition(
+                "wf-forge", 1, (StepDefinition("first", "h_forge"),), {}
+            )
+        )
+        tenant = "tForge"
+        rid = await engine.start(TenantId(tenant), "wf-forge", "subj", {}, "forge-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1
+
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["status"] == "failed"
+        assert run_row["current_step"] == "first", "保留键污染不得改写 current_step"
+        assert "forged" not in json.dumps(run_row["context"]), "伪造保留键不得落库"
+        assert "event" not in run_row["context"]
+    finally:
+        await handle.dispose()
+
+
+async def test_corrupt_delivered_events_context_fails_closed(db_url: str) -> None:
+    """Important 3c：DB 中遗留/损坏的保留键值（非字符串列表）fail closed，不崩溃不卡批次。"""
+    def _h_start(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("advance", "wait", {})
+
+    def _h_wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("advance", "done", {})
+
+    def _h_done(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    engine, handle = _make_engine(
+        db_url,
+        {"h_init": _handler(_h_start), "h_wait": _handler(_h_wait), "h_done": _handler(_h_done)},
+    )
+    try:
+        engine.register(_advance_flow())
+        tenant = "tCorrupt"
+        run_id = "run-corrupt-1"
+        async with handle.begin() as conn:
+            await conn.execute(
+                _INSERT_RUN,
+                _run_params(
+                    run_id,
+                    tenant,
+                    key="corrupt-key",
+                    current_step="wait",
+                    context={"__wf_delivered_events": {"nested": "thing"}},
+                ),
+            )
+            await conn.execute(
+                _INSERT_STEP,
+                _step_params(
+                    "stp-corrupt-1", run_id, tenant,
+                    step_name="wait", key="corrupt-sk", status="waiting_event",
+                ),
+            )
+
+        # 损坏的保留键值：deliver_event 必须 fail closed，不得 AttributeError 逃逸。
+        await engine.deliver_event(TenantId(tenant), run_id, "approval", {"by": "bob"})
+        run_row = await _query_run(handle, tenant, run_id)
+        assert run_row is not None and run_row["status"] == "failed"
+        assert "corrupted" in (run_row["last_error"] or ""), "损坏 context 应带固定脱敏错误"
+        assert "bob" not in json.dumps(run_row["context"]), "事件 payload 不得写入损坏 context"
+    finally:
+        await handle.dispose()
+
+
+async def test_first_step_with_wait_event_is_not_polled(db_url: str) -> None:
+    """Important 4：首步本身等待事件时直接创建为 waiting_event；poll_due 不领取，仅
+    deliver_event 匹配后才执行 handler。"""
+    first_calls: list[str] = []
+
+    def _h_first(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        first_calls.append(run.run_id)
+        return ("advance", "done", {"seen": run.context["event"]["payload"]["v"]})
+
+    def _h_done(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    definition = WorkflowDefinition(
+        workflow_type="wf",
+        version=1,
+        steps=(
+            StepDefinition(step_name="first", handler_ref="h_first", wait_event_type="approval"),
+            StepDefinition(step_name="done", handler_ref="h_done"),
+        ),
+        transitions={"first": ("done",)},
+    )
+    engine, handle = _make_engine(
+        db_url, {"h_first": _handler(_h_first), "h_done": _handler(_h_done)}
+    )
+    try:
+        engine.register(definition)
+        tenant = "tFirstWait"
+        rid = await engine.start(TenantId(tenant), "wf", "subj", {}, "firstwait-key")
+
+        steps = await _query_steps(handle, tenant, rid)
+        assert steps[0]["status"] == "waiting_event", "首步等待事件应直接以 waiting_event 创建"
+
+        assert await engine.poll_due(TenantId(tenant), 10) == 0, "waiting 首步不得被 poll 领取"
+        assert first_calls == []
+
+        await engine.deliver_event(TenantId(tenant), rid, "approval", {"v": 7})
+        assert len(first_calls) == 1, "匹配事件后首步 handler 才执行"
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["current_step"] == "done"
+        assert run_row["context"]["seen"] == 7
+
+        assert await engine.poll_due(TenantId(tenant), 10) == 1  # done → complete
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["status"] == "completed"
+    finally:
+        await handle.dispose()
+
+
+async def test_handler_declared_fail_reason_sanitized(db_url: str) -> None:
+    """Controller 5：handler 声明的 fail reason 原样写入 error 字段会泄露凭证；必须用
+    固定安全状态文本，敏感原文不得出现在 last_error / step error / context / data。"""
+    def _h_fail(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("fail", "credential-xyz-secret", {})
+
+    engine, handle = _make_engine(db_url, {"h_fail": _handler(_h_fail)})
+    try:
+        engine.register(
+            WorkflowDefinition(
+                "wf-fail", 1, (StepDefinition("first", "h_fail"),), {}
+            )
+        )
+        tenant = "tFailReason"
+        rid = await engine.start(TenantId(tenant), "wf-fail", "subj", {}, "failreason-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1
+
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["status"] == "failed"
+        assert "credential-xyz-secret" not in (run_row["last_error"] or "")
+        assert "credential-xyz-secret" not in json.dumps(run_row["context"])
+        step = (await _query_steps(handle, tenant, rid))[0]
+        assert "credential-xyz-secret" not in (step["error"] or "")
+        assert "credential-xyz-secret" not in json.dumps(step["data"])
+    finally:
+        await handle.dispose()
+
+
+async def test_cancel_reason_sanitized(db_url: str) -> None:
+    """Controller 5：cancel(reason) 不得把原始 reason 写入 last_error；敏感原文不落库。"""
+    def _h_start(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("advance", "wait", {})
+
+    def _h_wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("wait", None, {})
+
+    def _h_done(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    engine, handle = _make_engine(
+        db_url,
+        {"h_init": _handler(_h_start), "h_wait": _handler(_h_wait), "h_done": _handler(_h_done)},
+    )
+    try:
+        engine.register(_advance_flow())
+        tenant = "tCancelReason"
+        rid = await engine.start(TenantId(tenant), "wf", "subj", {}, "cancelreason-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1  # → wait
+
+        await engine.cancel(TenantId(tenant), rid, "gmail-oauth2-secret-abc")
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["status"] == "cancelled"
+        assert "gmail-oauth2-secret-abc" not in (run_row["last_error"] or "")
+    finally:
+        await handle.dispose()
+
+
+async def test_register_rejects_nonpositive_backoff_and_negative_retries(db_url: str) -> None:
+    """Controller 6：非正退避/负重试上限会在零退避下 tight loop；注册时 fail closed。"""
+    def _h(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    engine, handle = _make_engine(db_url, {"h": _handler(_h)})
+    try:
+        zero_backoff = WorkflowDefinition(
+            "wf-zero", 1,
+            (StepDefinition("first", "h", retry_backoff=timedelta(seconds=0)),),
+            {},
+        )
+        with pytest.raises(ValueError):
+            engine.register(zero_backoff)
+
+        negative_backoff = WorkflowDefinition(
+            "wf-neg", 1,
+            (StepDefinition("first", "h", retry_backoff=timedelta(seconds=-5)),),
+            {},
+        )
+        with pytest.raises(ValueError):
+            engine.register(negative_backoff)
+
+        negative_retries = WorkflowDefinition(
+            "wf-negretry", 1,
+            (StepDefinition("first", "h", max_retries=-1),),
+            {},
+        )
+        with pytest.raises(ValueError):
+            engine.register(negative_retries)
+
+        # 合法边界：max_retries=0（立即耗尽）与正退避应接受
+        engine.register(
+            WorkflowDefinition(
+                "wf-ok", 1,
+                (StepDefinition("first", "h", max_retries=0, retry_backoff=timedelta(seconds=1)),),
+                {},
+            )
+        )
+        engine.register(_simple_def("wf-ok2"))
+    finally:
+        await handle.dispose()
+
+
+async def test_wait_and_complete_with_next_step_fail_closed(db_url: str) -> None:
+    """Minor：wait/complete action 携带非 None next_step 应 fail closed（非法转换）。"""
+    def _h_wait_next(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("wait", "somewhere", {})
+
+    def _h_complete_next(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", "next", {})
+
+    engine, handle = _make_engine(
+        db_url,
+        {"h_wait_next": _handler(_h_wait_next), "h_complete_next": _handler(_h_complete_next)},
+    )
+    try:
+        engine.register(
+            WorkflowDefinition(
+                "wf-waitnext", 1, (StepDefinition("first", "h_wait_next"),), {}
+            )
+        )
+        tenant = "tWaitNext"
+        rid = await engine.start(TenantId(tenant), "wf-waitnext", "subj", {}, "waitnext-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1
+        run_row = await _query_run(handle, tenant, rid)
+        assert run_row is not None and run_row["status"] == "failed", "wait+next_step 应永久失败"
+
+        engine.register(
+            WorkflowDefinition(
+                "wf-completenext", 1, (StepDefinition("first", "h_complete_next"),), {}
+            )
+        )
+        rid2 = await engine.start(TenantId(tenant), "wf-completenext", "subj", {}, "cnext-key")
+        assert await engine.poll_due(TenantId(tenant), 10) == 1
+        run2 = await _query_run(handle, tenant, rid2)
+        assert run2 is not None and run2["status"] == "failed", "complete+next_step 应永久失败"
+    finally:
+        await handle.dispose()
