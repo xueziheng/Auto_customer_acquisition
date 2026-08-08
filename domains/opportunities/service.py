@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from domains.opportunities.models import HandoffTrigger, LossReason, OpportunityState
+from domains.opportunities.models import LossReason, OpportunityState
 from domains.opportunities.schemas import (
+    HandoffCreateRequest,
     HandoffPacketView,
     HandoffQueueStats,
     OpportunityCreateRequest,
@@ -44,9 +46,9 @@ class OpportunityService(Protocol):
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
         owner: EmployeeId,
-        assigned_by: EmployeeId | None = None,
+        assigned_by: EmployeeId,
     ) -> None:
-        """分配负责人。
+        """分配负责人（``assigned_by`` 人工审计主体**必填**；``assigned_at`` 由实现用注入时钟生成）。
 
         分配优先级由 ``domains/employees`` 的 Territory Matrix 决定，
         **本域不实现分配算法**——它需要国家、品类、语言、工作量等
@@ -71,16 +73,34 @@ class OpportunityService(Protocol):
         self,
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
-        reason: LossReason,
+        reason: LossReason | None,
+        actor: EmployeeId,
+        confirmed_at: datetime,
         detail: str | None = None,
     ) -> None:
-        """终结机会。``reason`` **必填**。
+        """终结机会（**人工确认动作**）。``reason`` 为 None 抛 ``MissingLossReasonError``。
 
         实现要求：
-        - 记录 ``died_at_state``（转入 lost 之前的状态）
+        - 记录 ``died_at_state``（转入 lost 之前的状态）、``closed_by``/``closed_at``
+        - 写 ``loss_records``（confirmed_by/confirmed_at 必填，与 ``actor``/``confirmed_at`` 一致）
         - 发布 ``OpportunityLost``
         - ``detail`` 存自由文本补充，尤其 ``LOST_TO_COMPETITOR``
           时要尽量记下输在哪（价格/交期/规格/信任）
+        """
+        ...
+
+    async def mark_won(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        actor: EmployeeId,
+        confirmed_at: datetime,
+    ) -> None:
+        """终结机会为成交（**人工确认动作**，仅从 ``negotiating`` 转入）。
+
+        实现要求：
+        - 记录 ``closed_by``/``closed_at``
+        - 发布 ``OpportunityWon``（closed_by 必填，防伪造）
         """
         ...
 
@@ -89,17 +109,16 @@ class OpportunityService(Protocol):
     async def request_handoff(
         self,
         tenant_id: TenantId,
-        opportunity_id: OpportunityId,
-        trigger: HandoffTrigger,
+        request: HandoffCreateRequest,
     ) -> HandoffId:
         """请求人工接管。
 
         实现要求：
-        - **组装完整接管包**。缺 ``customer_verbatim`` 或
-          ``why_valuable`` 时拒绝创建——不完整的接管包会被员工忽略，
+        - **组装完整接管包**。缺 ``customer_verbatim`` / ``why_valuable`` /
+          ``account_name`` 时拒绝创建——不完整的接管包会被员工忽略，
           而被忽略的接管等于客户流失。
-        - ``customer_verbatim`` 存客户原话，不存模型改写版本：
-          员工需要读原话判断语气和紧迫度。
+        - ``customer_verbatim`` 存客户原话；``customer_verbatim_provenance``
+          必须指向 conversation/upload/employee_input，并随接管包保存。
         - 发布 ``HandoffRequested``（SLA 计时从此开始）
         - 同一机会已有未完成接管时返回既有 ID（幂等）
         """

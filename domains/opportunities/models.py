@@ -9,12 +9,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
+    LossRecordId,
     OpportunityId,
     ProspectAccountId,
+    ScoreSnapshotId,
     TenantId,
     ValidatedNeedId,
 )
@@ -55,6 +58,27 @@ ALLOWED_TRANSITIONS: dict[OpportunityState, set[OpportunityState]] = {
 ``CONTACTED`` 可以直接跳到 ``QUOTED``：公司现有产品完全匹配时不需要
 寻源。这不是漏洞，是正常路径。
 """
+
+# 影响商业判断且本实体存储的关键字段：present 时必须各有 Provenance（硬边界 4）。
+# 推断（AGENT_INFERENCE）一律拒绝——机会只持久化事实（硬边界 5）。
+CRITICAL_FIELDS = frozenset(
+    {
+        "account_name",
+        "country",
+        "quantity",
+        "spec_summary",
+        "application",
+        "destination",
+        "required_by",
+        "target_price",
+        "decision_maker",
+        "current_supply_solution",
+        "current_supply_problem",
+        "can_source",
+        "estimated_cost",
+        "estimated_profit",
+    }
+)
 
 
 class LossReason(str, Enum):
@@ -108,6 +132,23 @@ class LossReason(str, Enum):
     """与已有机会重复。→ 检查企业消歧和 Ownership Lock。"""
 
 
+@dataclass(frozen=True)
+class HandoffPolicy:
+    """接管 SLA 策略（上层注入，无默认业务数字）。"""
+
+    sla_seconds: int
+    """超过此秒数无人接受算 breached。"""
+
+    backlog_threshold: int
+    """待接管队列深度超过此值判 is_backlogged。"""
+
+    def __post_init__(self) -> None:
+        if self.sla_seconds <= 0:
+            raise ValidationError("sla_seconds 必须 > 0")
+        if self.backlog_threshold <= 0:
+            raise ValidationError("backlog_threshold 必须 > 0")
+
+
 class HandoffTrigger(str, Enum):
     """触发人工接管的条件。
 
@@ -147,6 +188,7 @@ class Opportunity:
 
     字段：
         opportunity_id, tenant_id, account_id
+        account_name, country:  客户名/国家（扁平事实快照，来自上层，带 Provenance）
         need_id:            关联的已验证需求
         state, created_at
         product_category
@@ -170,6 +212,8 @@ class Opportunity:
     need_id: ValidatedNeedId
     product_category: str
     created_at: datetime
+    account_name: str
+    country: str
     state: OpportunityState = OpportunityState.QUALIFIED
     quantity: int | None = None
     spec_summary: str | None = None
@@ -188,7 +232,10 @@ class Opportunity:
     next_action_due: datetime | None = None
     loss_reason: LossReason | None = None
     died_at_state: OpportunityState | None = None
+    closed_by: EmployeeId | None = None
     closed_at: datetime | None = None
+    assigned_by: EmployeeId | None = None
+    assigned_at: datetime | None = None
 
     def can_transition_to(self, target: OpportunityState) -> bool:
         """查 ``ALLOWED_TRANSITIONS``。"""
@@ -206,6 +253,20 @@ class Opportunity:
         raise NotImplementedError
 
 
+@dataclass(frozen=True, order=True)
+class SortKey:
+    """打分排序键：09 文档「字典序、证据主导」的落地。
+
+    evidence_rank（1–7，由 ConfidenceTier 稳定映射）、value_band（由
+    ScoringPolicy.value_band_boundaries 划分）、supply_rank（0/1/2：
+    False/None/True）。直接 tuple 比较，绝不加权/对数/float。
+    """
+
+    evidence_rank: int
+    value_band: int
+    supply_rank: int
+
+
 @dataclass(frozen=True)
 class ScoreSnapshot:
     """打分输入快照。
@@ -215,16 +276,19 @@ class ScoreSnapshot:
     （客户状态改了、价格变了、联系人换了）。
 
     字段：
-        opportunity_id, scored_at, scorer_version
+        tenant_id, snapshot_id, opportunity_id, scored_at, scorer_version
         passed_gates:       通过的硬门槛
         failed_gates:       未通过的硬门槛（有值则未进入打分）
         evidence_tier:      证据档位
         estimated_value:    预计订单额
         supply_available:   供应是否可得
-        factor_scores:      各因子得分
-        total_score, rank_bucket
+        sort_key:           字典序排序键（evidence_rank / value_band / supply_rank）
+        rank_bucket:        高/中/低
+        gate_reasons:       每个未通过门槛的具体原因
     """
 
+    tenant_id: TenantId
+    snapshot_id: ScoreSnapshotId
     opportunity_id: OpportunityId
     scored_at: datetime
     scorer_version: str
@@ -233,9 +297,25 @@ class ScoreSnapshot:
     evidence_tier: ConfidenceTier | None
     estimated_value: Money | None
     supply_available: bool | None
-    factor_scores: dict[str, float]
-    total_score: float
+    sort_key: SortKey
     rank_bucket: str
+    gate_reasons: dict[str, str]
+
+
+@dataclass(frozen=True)
+class LossRecord:
+    """机会终结归因记录（只增；confirmed_by/confirmed_at/recorded_at 必填，人工确认必留痕）。"""
+
+    loss_record_id: LossRecordId
+    tenant_id: TenantId
+    opportunity_id: OpportunityId
+    loss_reason: LossReason
+    died_at_state: OpportunityState
+    confirmed_by: EmployeeId
+    confirmed_at: datetime
+    recorded_at: datetime
+    detail: str | None = None
+    evidence_tier: ConfidenceTier | None = None
 
 
 class HandoffState(str, Enum):
@@ -298,9 +378,8 @@ class HandoffPacket:
     suggested_next_step: str | None = None
     evidence_links: list[str] = field(default_factory=list)
 
-    @property
-    def wait_seconds(self) -> int | None:
-        """等待时长。未接受时按当前时间算——**这才是要盯的数**，
-        已完成的接管等待时长只有事后统计意义。
+    def wait_seconds(self, now: datetime) -> int | None:
+        """等待时长（秒）。已接受按 accepted_at，未接受按传入 now——**这才是要盯的数**，
+        已完成的接管等待时长只有事后统计意义。显式时钟参数便于测试。
         """
         raise NotImplementedError

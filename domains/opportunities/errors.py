@@ -14,6 +14,22 @@ class MissingLossReasonError(ValidationError):
     """
 
 
+class MissingFieldProvenanceError(ValidationError):
+    """机会的关键字段缺来源（硬边界 4）。
+
+    present 的 CRITICAL_FIELDS 必须各有 Provenance——老板点「为什么」
+    时要能追到原始证据。缺来源的字段等于没有这个字段。
+    """
+
+
+class AgentInferenceProvenanceError(ValidationError):
+    """机会字段的来源是 Agent 推断（硬边界 5）。
+
+    Opportunity 只持久化 Validated Need / 人工确认的**事实**；
+    推断留在 Need Hypothesis / InferredField，不得复制进机会。
+    """
+
+
 class IncompleteHandoffPacketError(ValidationError):
     """接管包缺关键字段。
 

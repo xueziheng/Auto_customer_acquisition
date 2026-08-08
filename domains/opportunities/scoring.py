@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from itertools import pairwise
 from typing import Protocol, runtime_checkable
 
-from domains.opportunities.models import ScoreSnapshot
+from domains.opportunities.models import ScoreSnapshot, SortKey
+from domains.opportunities.repository import ScoreSnapshotRepository
+from shared.errors import ValidationError
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import TenantId
 from shared.schemas.money import Money
@@ -127,23 +130,43 @@ def check_gates(input: ScoringInput) -> GateResult:
     raise NotImplementedError
 
 
-def compute_score(input: ScoringInput) -> tuple[float, dict[str, float]]:
-    """三因子打分，返回总分与各因子得分。
+@dataclass(frozen=True)
+class ScoringPolicy:
+    """打分策略（版本化，**上层注入，无默认业务数字**）。
 
-    仅用于**排序**，不用于「够不够格」——那是门槛的事。
+    - ``value_band_boundaries``：升序 Money 上界；value_band = 被越过的边界数。
+      非空 / 严格升序 / 同币种。
+    - ``bucket_map``：evidence_rank（1..7）→ ``'high'``/``'mid'``/``'low'``，
+      必须覆盖全部 7 档。
+    """
 
-    三个因子：
-    - ``evidence_strength``  证据档位映射成分数
-    - ``estimated_value``    预计订单额（对数压缩，避免一个大单
-                             把其他机会全压到底部）
-    - ``supply_availability`` 供应可得性（None 记为中间值，
-                             不是 0——未查不等于查不到）
+    version: str
+    value_band_boundaries: tuple[Money, ...]
+    bucket_map: dict[int, str]
 
-    实现要求：
-    - 纯函数，无 IO
-    - ``factor_scores`` 必须返回，存进快照供回测
-    - 加新因子时**在这里加**，调用方不改。这是接口设计的目的：
-      Phase 2 加因子不该引起连锁修改。
+    def __post_init__(self) -> None:
+        if not self.value_band_boundaries:
+            raise ValidationError("value_band_boundaries 不能为空")
+        boundaries = self.value_band_boundaries
+        for lower, upper in pairwise(boundaries):
+            if lower.amount >= upper.amount:
+                raise ValidationError("value_band_boundaries 必须严格升序")
+            if lower.currency != upper.currency:
+                raise ValidationError("value_band_boundaries 必须同币种")
+        if set(self.bucket_map) != set(range(1, 8)):
+            raise ValidationError("bucket_map 必须覆盖 evidence_rank 1..7")
+        if not set(self.bucket_map.values()).issubset({"high", "mid", "low"}):
+            raise ValidationError("bucket_map 值必须为 high/mid/low")
+
+
+def compute_score(input: ScoringInput, policy: ScoringPolicy) -> SortKey:
+    """三因子排序键（``SortKey`` 字典序，09 文档：先证据、再价值、再供应）。
+
+    实现要求（S2-8 落地）：
+    - 纯函数，无 IO；绝不加权/对数/float——证据主导的 tuple 比较
+    - ``ScoringPolicy.value_band_boundaries`` 划分 value_band；
+      estimated value 币种不匹配抛 ``CurrencyMismatchError``
+    - 排序键存进快照供回测；加新因子在此调整，调用方不改
     """
     raise NotImplementedError
 
@@ -153,18 +176,22 @@ class OpportunityScorer(Protocol):
     """打分服务。"""
 
     async def score(
-        self, tenant_id: TenantId, opportunity_id: str, input: ScoringInput
+        self,
+        snapshots: ScoreSnapshotRepository,
+        tenant_id: TenantId,
+        opportunity_id: str,
+        input: ScoringInput,
     ) -> ScoreSnapshot:
-        """打分并**持久化快照**。
+        """打分并**持久化快照**（snapshot repo 由 UoW 提供，绑定同事务 session）。
 
         实现要求：
-        - 先 ``check_gates``；未通过则 ``total_score`` 记 0、
-          ``failed_gates`` 记全，仍然存快照。
+        - 先 ``check_gates``；未通过则失败哨兵 ``sort_key = SortKey(0, 0, 0)``、
+          ``failed_gates`` 记全、``rank_bucket='low'``，仍然存快照。
           存失败的快照和存成功的一样重要——「哪些机会被门槛拦了、
           拦在哪一条」是调整门槛的唯一依据。
-        - 全部通过则 ``compute_score`` 并存快照
-        - 快照里记 ``SCORER_VERSION``
-        - 分桶（``rank_bucket``）给界面用：销售看「高/中/低」比看
-          67.3 分更有用，也更不容易被过度解读
+        - 全部通过则 ``compute_score(input, policy)`` 得 ``SortKey`` 并分桶，存快照
+        - 快照里记 ``scorer_version``（来自注入的 ``ScoringPolicy.version``）
+        - 排序键是字典序三元（证据主导），绝不加权/对数/float；
+          分桶给界面用：销售看「高/中/低」比看 67.3 更有用
         """
         ...

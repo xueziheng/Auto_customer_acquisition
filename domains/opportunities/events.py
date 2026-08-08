@@ -9,6 +9,7 @@ from shared.events.catalog import (
     NeedValidated,
     OpportunityLost,
     OpportunityQualified,
+    OpportunityWon,
     QuoteApproved,
     SourcingCaseCompleted,
 )
@@ -16,6 +17,7 @@ from shared.events.catalog import (
 PUBLISHES = (
     OpportunityQualified,
     OpportunityLost,
+    OpportunityWon,
     HandoffRequested,
     HandoffAccepted,
     HandoffQueueBacklogged,

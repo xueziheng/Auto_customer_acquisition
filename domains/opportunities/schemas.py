@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from domains.opportunities.models import SortKey
 from shared.schemas.money import Money
+from shared.schemas.provenance import Provenance
 
 
 @dataclass(frozen=True)
@@ -13,23 +15,35 @@ class OpportunityCreateRequest:
     """从已验证需求创建机会的入参。
 
     刻意用扁平字段而不是接收 ``ValidatedNeed`` 实体：本域不 import
-    需求域，由上层把需要的字段传进来（域间零依赖）。
+    需求域，由上层把需要的字段传进来（域间零依赖）。打分门槛输入
+    （``category_allowed``/``minimum_order_value``/``supply_available``）
+    也由上层按 Playbook/寻源状态填好。
 
     字段：
-        need_id, account_id, product_category
-        quantity, spec_summary, application, destination, required_by
-        target_price
+        need_id, account_id, account_name, country
+        product_category, quantity, spec_summary, application,
+        destination, required_by, target_price
         current_supply_solution, current_supply_problem
         evidence_tier:        证据档位（字符串，来自 shared 的枚举值）
         has_verified_contact
+        category_allowed / minimum_order_value / supply_available / is_repeat_buyer_likely
+        field_provenance:     关键字段（CRITICAL_FIELDS）的来源；present 必须各有、
+                              且不得为 AGENT_INFERENCE（机会只存事实）
         estimated_order_value
     """
 
     need_id: str
     account_id: str
+    account_name: str
+    country: str
     product_category: str
     evidence_tier: str
     has_verified_contact: bool
+    category_allowed: bool
+    minimum_order_value: Money
+    supply_available: bool | None = None
+    is_repeat_buyer_likely: bool = False
+    field_provenance: dict[str, Provenance] = field(default_factory=dict)
     quantity: int | None = None
     spec_summary: str | None = None
     application: str | None = None
@@ -42,6 +56,32 @@ class OpportunityCreateRequest:
 
 
 @dataclass(frozen=True)
+class HandoffCreateRequest:
+    """请求人工接管的完整素材（由上层/对话识别填充）。
+
+    ``customer_verbatim`` 必须是客户原话；``customer_verbatim_provenance``
+    必须指向原话来源（conversation/upload/employee_input）——
+    ``evidence_links`` 不能替代 Provenance。
+    """
+
+    opportunity_id: str
+    trigger: str
+    account_name: str
+    country: str
+    why_valuable: str
+    customer_verbatim: str
+    customer_verbatim_provenance: Provenance
+    how_we_found_them: str | None = None
+    validated_need_summary: str | None = None
+    missing_information: list[str] = field(default_factory=list)
+    conversation_summary: str | None = None
+    already_sent: list[str] = field(default_factory=list)
+    commitments_made: list[str] = field(default_factory=list)
+    suggested_next_step: str | None = None
+    evidence_links: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ScoreExplanation:
     """打分说明，供界面展开。
 
@@ -49,19 +89,19 @@ class ScoreExplanation:
     否则分数不会被信任。
 
     字段：
+        sort_key:       字典序排序键（evidence_rank / value_band / supply_rank）
         rank_bucket:    高/中/低
         passed_gates
         failed_gates
         gate_reasons:   每个未通过门槛的具体原因
-        factor_scores
         scored_at, scorer_version
     """
 
+    sort_key: SortKey
     rank_bucket: str
     passed_gates: list[str]
     failed_gates: list[str]
     gate_reasons: dict[str, str]
-    factor_scores: dict[str, float]
     scored_at: datetime
     scorer_version: str
 

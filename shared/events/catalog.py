@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from shared.errors import ValidationError
 from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
 from shared.schemas.identifiers import (
     CampaignId,
@@ -319,6 +320,23 @@ class OpportunityLost(DomainEvent):
     opportunity_id: OpportunityId = None  # type: ignore[assignment]
     loss_reason: str = ""
     died_at_state: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class OpportunityWon(DomainEvent):
+    """机会成交（**人工确认终态**）。
+
+    由 ``domains/opportunities`` 的 ``mark_won`` 发布，必须带 ``closed_by``
+    （确认人）。Agent 不得自动标记成交——这是人工确认动作
+    （AGENTS.md §六）。``closed_by`` 为空即抛错，防事件被伪造为空。
+    """
+
+    opportunity_id: OpportunityId
+    closed_by: EmployeeId | None = None
+
+    def __post_init__(self) -> None:
+        if self.closed_by is None:
+            raise ValidationError("OpportunityWon 必须有 closed_by（人工确认不可伪造为空）")
 
 
 @dataclass(frozen=True)

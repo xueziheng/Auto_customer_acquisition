@@ -55,6 +55,8 @@ SendingIdentityId = NewType("SendingIdentityId", str)
 # --- 机会与供应 ---------------------------------------------------------
 
 OpportunityId = NewType("OpportunityId", str)
+ScoreSnapshotId = NewType("ScoreSnapshotId", str)
+LossRecordId = NewType("LossRecordId", str)
 ProductId = NewType("ProductId", str)
 ProductVariantId = NewType("ProductVariantId", str)
 SupplierId = NewType("SupplierId", str)
