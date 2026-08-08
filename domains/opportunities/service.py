@@ -13,6 +13,7 @@ from domains.opportunities.schemas import (
     HandoffQueueStats,
     OpportunityCreateRequest,
     OpportunityView,
+    ValidatedNeedEvidence,
 )
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -34,16 +35,24 @@ class OpportunityService(Protocol):
         self,
         tenant_id: TenantId,
         request: OpportunityCreateRequest,
+        evidence: ValidatedNeedEvidence,
         *,
         actor: Actor,
     ) -> OpportunityId | None:
         """从已验证需求创建机会。
+
+        ``evidence`` 必须是客户本人明确表达的证据（等级 ≥
+        ``CUSTOMER_INTEREST_REPLY`` 且来源为 conversation/upload/employee_input，
+        ``EMPLOYEE_INPUT`` 必须带人工确认对）。不满足即抛 ``ValidationError``
+        ——「已验证需求」是门槛不是标签，公开事件/员工猜测/Agent 推断不能
+        仅凭标签进入。
 
         返回 None 表示**未通过硬门槛**，没有创建——这是正常结果，
         不是错误。调用方（通常是 ``NeedValidated`` 的处理器）应记录
         被拦原因，不要抛异常。
 
         实现要求：
+        - 先经 authorizer 判权，再校验 evidence（任何仓储读取/副作用之前）
         - 调 ``scoring.check_gates``，不通过则存快照后返回 None
         - 通过则创建机会并发布 ``OpportunityQualified``
         - 同一 ``need_id`` 已有机会时返回既有 ID（幂等）

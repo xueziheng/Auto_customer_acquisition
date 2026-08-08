@@ -66,6 +66,7 @@ from domains.opportunities.schemas import (
     OpportunityCreateRequest,
     OpportunityView,
     ScoreExplanation,
+    ValidatedNeedEvidence,
 )
 from domains.opportunities.scoring import OpportunityScorer, ScoringInput
 from shared.errors import (
@@ -82,7 +83,7 @@ from shared.events.catalog import (
     OpportunityQualified,
     OpportunityWon,
 )
-from shared.schemas.evidence import ConfidenceTier
+from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
@@ -130,6 +131,59 @@ def validate_present_critical_provenance(request: OpportunityCreateRequest) -> N
                 raise AgentInferenceProvenanceError(
                     f"关键字段 {field} 来源是 Agent 推断（硬边界 5）：机会只持久化事实"
                 )
+
+
+# S3-6 R5/F6：已验证需求证据等级门槛——「客户明确表达过」从这一档起。
+_MIN_VALIDATED_EVIDENCE_LEVEL = EvidenceLevel.CUSTOMER_INTEREST_REPLY
+_VALIDATED_LEVELS = frozenset(
+    {
+        EvidenceLevel.CUSTOMER_INTEREST_REPLY,
+        EvidenceLevel.CUSTOMER_SPECIFICATION,
+        EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING,
+        EvidenceLevel.CUSTOMER_SAMPLE_OR_QUOTE_REQUEST,
+    }
+)
+# S3-6 R5/F6：已验证需求来源白名单（硬边界 4/5：必须能追到客户消息/上传/员工确认）。
+_VALIDATED_SOURCE_TYPES = frozenset(
+    {SourceType.CONVERSATION, SourceType.UPLOAD, SourceType.EMPLOYEE_INPUT}
+)
+
+
+def validate_validated_need_evidence(evidence: ValidatedNeedEvidence) -> None:
+    """校验已验证需求证据（S3-6 R5/F6）。
+
+    「已验证需求」是**门槛不是标签**：公开企业事件、员工猜测、Agent 推断
+    都不是客户本人明确表达过。任何带标签的输入都不能仅凭标签进入机会创建。
+
+    校验（全部失败抛 ``shared.errors.ValidationError``）：
+    - ``level`` 必须 ≥ ``CUSTOMER_INTEREST_REPLY``（LOW_MID/公开企业事件不够格）；
+    - ``provenance.source_type`` 仅允许 conversation/upload/employee_input；
+    - ``EMPLOYEE_INPUT`` 必须带真实人工确认对（``confirmed_by``/``confirmed_at``）；
+      conversation/upload 可直接指向具体来源 ID，无需确认对。
+    - ``source_id`` 非空由 ``Provenance`` 自身不变量保证，此处不重复。
+    """
+    if evidence.level not in _VALIDATED_LEVELS:
+        raise ValidationError(
+            f"已验证需求证据等级必须 ≥ {_MIN_VALIDATED_EVIDENCE_LEVEL.value}；"
+            f"当前 {evidence.level.value} 是推断，不是客户明确表达"
+        )
+    source_type = evidence.provenance.source_type
+    if source_type not in _VALIDATED_SOURCE_TYPES:
+        raise ValidationError(
+            f"已验证需求来源必须是 conversation/upload/employee_input；"
+            f"当前 {source_type.value}"
+        )
+    if (
+        source_type == SourceType.EMPLOYEE_INPUT
+        and (
+            evidence.provenance.confirmed_by is None
+            or evidence.provenance.confirmed_at is None
+        )
+    ):
+        raise ValidationError(
+            "EMPLOYEE_INPUT 证据必须带真实人工确认对"
+            "（confirmed_by/confirmed_at）：员工录入本身不算客户明确表达"
+        )
 
 
 # customer_verbatim 来源白名单（硬边界 4：原话必须能追到证据）。
@@ -352,11 +406,15 @@ class OpportunityServiceImpl:
         self,
         tenant_id: TenantId,
         request: OpportunityCreateRequest,
+        evidence: ValidatedNeedEvidence,
         *,
         actor: Actor,
     ) -> OpportunityId | None:
         """从已验证需求创建机会。
 
+        - 授权与证据门禁先于一切副作用：先 ``authorizer.require``，再
+          ``validate_validated_need_evidence``——invalid evidence 在进入 UoW /
+          幂等查询 / 打分 / 事件之前抛 ``ValidationError``，即使同一 need 已存在。
         - 幂等：同一 ``need_id`` 已有机会 → 返回既有 ID。
         - 门槛失败：只保留失败快照（scorer 已落库），返回 None，不建机会、不发事件。
         - 通过：建机会、保存 present 关键字段 provenance、发布 ``OpportunityQualified``。
@@ -365,6 +423,7 @@ class OpportunityServiceImpl:
         """
         rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
         self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
+        validate_validated_need_evidence(evidence)
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(

@@ -31,7 +31,10 @@ from sqlalchemy.exc import IntegrityError
 
 from domains.opportunities import models
 from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
-from domains.opportunities.schemas import OpportunityCreateRequest
+from domains.opportunities.schemas import (
+    OpportunityCreateRequest,
+    ValidatedNeedEvidence,
+)
 from domains.opportunities.scoring import ScoringInput
 from shared.errors import InvalidStateTransition
 from shared.events.catalog import (
@@ -40,7 +43,7 @@ from shared.events.catalog import (
     OpportunityQualified,
     OpportunityWon,
 )
-from shared.schemas.evidence import ConfidenceTier
+from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -100,6 +103,14 @@ def _conv_prov() -> Provenance:
         source_id="m1",
         extracted_by="model_v3",
         extracted_at=_NOW,
+    )
+
+
+def _evidence() -> ValidatedNeedEvidence:
+    """S3-6：默认有效证据（客户明确表达 + 会话来源），供 create_from_need 显式传。"""
+    return ValidatedNeedEvidence(
+        level=EvidenceLevel.CUSTOMER_INTEREST_REPLY,
+        provenance=_conv_prov(),
     )
 
 
@@ -497,7 +508,9 @@ async def test_create_idempotent() -> None:
     existing = _opp("opp-1", "t1", "need-1")
     factory.seed(existing)
 
-    result = await service.create_from_need(TenantId("t1"), _request(), actor=_actor())
+    result = await service.create_from_need(
+        TenantId("t1"), _request(), evidence=_evidence(), actor=_actor()
+    )
 
     assert result == OpportunityId("opp-1")
     uow = factory.created[0]
@@ -517,7 +530,10 @@ async def test_create_unique_race_returns_existing() -> None:
     factory.seed_after_first = existing
 
     result = await service.create_from_need(
-    TenantId("t1"), _request(need_id="need-race", account_id="acc-race"), actor=_actor()
+    TenantId("t1"),
+    _request(need_id="need-race", account_id="acc-race"),
+    evidence=_evidence(),
+    actor=_actor(),
 )
 
     assert result == OpportunityId("opp-race")
@@ -535,7 +551,7 @@ async def test_create_unique_race_not_found_re_raises() -> None:
 
     with pytest.raises(IntegrityError):
         await service.create_from_need(
-            TenantId("t1"), _request(need_id="need-race2"), actor=_actor()
+            TenantId("t1"), _request(need_id="need-race2"), evidence=_evidence(), actor=_actor()
         )
 
 
@@ -550,7 +566,9 @@ async def test_create_failed_gates_returns_none_no_event() -> None:
     scorer = _FakeScorer(failed_snap)
     service = _make_service(factory, scorer)
 
-    result = await service.create_from_need(TenantId("t1"), _request(), actor=_actor())
+    result = await service.create_from_need(
+        TenantId("t1"), _request(), evidence=_evidence(), actor=_actor()
+    )
 
     assert result is None
     uow = factory.created[0]
@@ -576,6 +594,7 @@ async def test_create_passed_publishes_and_saves_provenance() -> None:
                 "quantity": _conv_prov(),
             },
         ),
+        evidence=_evidence(),
         actor=_actor(),
     )
 
@@ -613,6 +632,7 @@ async def test_create_rejects_agent_inference_provenance() -> None:
         await service.create_from_need(
             TenantId("t1"),
             _request(field_provenance={"account_name": bad, "country": _conv_prov()}),
+            evidence=_evidence(),
             actor=_actor(),
         )
     assert scorer.calls == []
@@ -629,7 +649,7 @@ async def test_create_requires_provenance_for_present_critical_fields() -> None:
     # quantity 为 present 关键字段但无 provenance
     with pytest.raises(MissingFieldProvenanceError):
         await service.create_from_need(
-            TenantId("t1"), _request(quantity=500), actor=_actor()
+            TenantId("t1"), _request(quantity=500), evidence=_evidence(), actor=_actor()
         )
 
 
@@ -640,7 +660,7 @@ async def test_create_saves_account_name_and_country() -> None:
     service = _make_service(factory, scorer)
 
     result = await service.create_from_need(
-        TenantId("t1"), _request(account_name="Acme", country="US"), actor=_actor()
+        TenantId("t1"), _request(account_name="Acme", country="US"), evidence=_evidence(), actor=_actor()
     )
 
     opp = factory.created[0].opportunities.added[0]
@@ -873,7 +893,7 @@ async def test_create_unique_race_runtime_error_not_swallowed() -> None:
 
     with pytest.raises(RuntimeError):
         await service.create_from_need(
-            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+            TenantId("t1"), _request(need_id="need-race"), evidence=_evidence(), actor=_actor()
         )
     assert len(factory.created) == 1  # 不进入重查，原异常立即上抛
 
@@ -888,7 +908,7 @@ async def test_create_unique_race_non_unique_integrity_error_re_raises() -> None
 
     with pytest.raises(IntegrityError):
         await service.create_from_need(
-            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+            TenantId("t1"), _request(need_id="need-race"), evidence=_evidence(), actor=_actor()
         )
     assert len(factory.created) == 1  # 非 23505 不进入重查
 
@@ -908,7 +928,7 @@ async def test_create_unique_race_impersonated_integrity_error_re_raises() -> No
 
     with pytest.raises(IntegrityError):
         await service.create_from_need(
-            TenantId("t1"), _request(need_id="need-race"), actor=_actor()
+            TenantId("t1"), _request(need_id="need-race"), evidence=_evidence(), actor=_actor()
         )
     assert len(factory.created) == 1  # 模块不符 → 不进入重查，原异常上抛
 
@@ -930,6 +950,7 @@ async def test_create_does_not_save_unknown_provenance_keys() -> None:
                 "mystery_field": _conv_prov(),  # 非 CRITICAL_FIELDS 的未知键
             },
         ),
+        evidence=_evidence(),
         actor=_actor(),
     )
 
@@ -946,7 +967,7 @@ async def test_create_passes_is_repeat_buyer_likely_to_scorer() -> None:
     service = _make_service(factory, scorer)
 
     await service.create_from_need(
-        TenantId("t1"), _request(is_repeat_buyer_likely=True), actor=_actor()
+        TenantId("t1"), _request(is_repeat_buyer_likely=True), evidence=_evidence(), actor=_actor()
     )
 
     passed_input = scorer.calls[0][3]

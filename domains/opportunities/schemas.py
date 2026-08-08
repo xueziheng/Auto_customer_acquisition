@@ -6,8 +6,34 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from domains.opportunities.models import SortKey
+from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.money import Money
 from shared.schemas.provenance import Provenance
+
+
+@dataclass(frozen=True)
+class ValidatedNeedEvidence:
+    """已验证需求的证据契约（S3-6 R5/F6）。
+
+    从 ``NeedValidated`` / 人工录入创建机会时，必须带上这份证据——它证明
+    这条需求**真的是客户本人表达过的**（硬边界 5 的「客户明确说过」），
+    而不是 Agent 推断、公开企业事件或员工猜测。
+
+    刻意复用 ``Provenance``（含 source_type/source_id/confirmed_by/confirmed_at
+    与其不变量），不在本 DTO 重复来源字段——两处字段会互相打架。
+
+    服务层强制（``service_impl.validate_validated_need_evidence``）：
+    - ``level`` 必须 ≥ ``EvidenceLevel.CUSTOMER_INTEREST_REPLY``
+    - ``provenance.source_type`` 仅允许 conversation/upload/employee_input
+    - ``EMPLOYEE_INPUT`` 必须带真实人工确认对（confirmed_by/confirmed_at）
+
+    字段：
+        level:      证据等级（typed，来自 shared 的 EvidenceLevel）
+        provenance: 指向具体客户消息/上传/员工确认的 Provenance
+    """
+
+    level: EvidenceLevel
+    provenance: Provenance
 
 
 @dataclass(frozen=True)

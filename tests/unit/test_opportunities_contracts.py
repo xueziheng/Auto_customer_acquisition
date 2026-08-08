@@ -21,11 +21,16 @@ from decimal import Decimal
 
 import pytest
 
-from domains.opportunities.schemas import OpportunityCreateRequest, ScoreExplanation
+from domains.opportunities.schemas import (
+    OpportunityCreateRequest,
+    ScoreExplanation,
+    ValidatedNeedEvidence,
+)
 from domains.opportunities.scoring import OpportunityScorer
 from domains.opportunities.service import OpportunityService
 from shared.errors import ValidationError
 from shared.events.catalog import DomainEvent
+from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -224,6 +229,31 @@ def test_create_request_new_fields() -> None:
     assert req.category_allowed is True
     assert req.account_name == "Acme"
     assert req.country == "US"
+
+
+def test_validated_need_evidence_typed() -> None:
+    """ValidatedNeedEvidence 用 EvidenceLevel + Provenance 构造（不用裸 dict/概率）。"""
+    ev = ValidatedNeedEvidence(
+        level=EvidenceLevel.CUSTOMER_INTEREST_REPLY,
+        provenance=Provenance(
+            source_type=SourceType.CONVERSATION,
+            source_id="m1",
+            extracted_by="human",
+            extracted_at=_NOW,
+        ),
+    )
+    assert ev.level == EvidenceLevel.CUSTOMER_INTEREST_REPLY
+    assert ev.provenance.source_type == SourceType.CONVERSATION
+    assert ev.provenance.source_id == "m1"
+
+
+def test_create_from_need_requires_evidence_and_actor() -> None:
+    """create_from_need 必须显式带 evidence（S3-6）与 actor（S3-5），均无默认值。"""
+    params = inspect.signature(OpportunityService.create_from_need).parameters
+    assert "evidence" in params
+    assert params["evidence"].default is inspect.Parameter.empty
+    assert "actor" in params
+    assert params["actor"].default is inspect.Parameter.empty
 
 
 # --- 6. HandoffPacket.wait_seconds(now) ---------------------------------------

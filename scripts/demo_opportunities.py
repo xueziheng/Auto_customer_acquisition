@@ -24,7 +24,10 @@ from domains.opportunities.permissions import (
     ScopeLevel,
     StandardAuditLogger,
 )
-from domains.opportunities.schemas import OpportunityCreateRequest
+from domains.opportunities.schemas import (
+    OpportunityCreateRequest,
+    ValidatedNeedEvidence,
+)
 from domains.opportunities.scorer import OpportunityScorerImpl
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service import LossReason, OpportunityState
@@ -36,6 +39,7 @@ from domains.opportunities.service_impl import (
 from infra.db.session import create_engine_from
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from shared.errors import InvalidStateTransition, PermissionDenied
+from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import EmployeeId, TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import Provenance, SourceType
@@ -171,9 +175,20 @@ async def main() -> None:
                 ),
             },
         )
+        # S3-6：已验证需求证据——客户明确表达（CUSTOMER_INTEREST_REPLY ≥ 最低门槛）
+        # + 会话来源直接指向具体消息（硬边界 4/5），绝不 AGENT_INFERENCE。
+        evidence = ValidatedNeedEvidence(
+            level=EvidenceLevel.CUSTOMER_INTEREST_REPLY,
+            provenance=Provenance(
+                source_type=SourceType.CONVERSATION,
+                source_id="demo-msg-1",
+                extracted_by="human",
+                extracted_at=datetime.now(UTC),
+            ),
+        )
 
         # a) 创建机会（真实过门槛）
-        opp_id = await service.create_from_need(tenant_id, request, actor=actor)
+        opp_id = await service.create_from_need(tenant_id, request, evidence, actor=actor)
         if opp_id is None:
             raise RuntimeError("演示失败：机会未通过硬门槛（create_from_need 返回 None）")
         print(f"== 已创建机会 {opp_id}（唯一租户 {tenant_id}） ==")

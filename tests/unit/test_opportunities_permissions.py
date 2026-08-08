@@ -33,8 +33,13 @@ from typing import Self
 import pytest
 
 from domains.opportunities import models
-from domains.opportunities.schemas import HandoffCreateRequest, OpportunityCreateRequest
+from domains.opportunities.schemas import (
+    HandoffCreateRequest,
+    OpportunityCreateRequest,
+    ValidatedNeedEvidence,
+)
 from shared.errors import PermissionDenied, ValidationError
+from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
@@ -111,6 +116,14 @@ def _create_request() -> OpportunityCreateRequest:
         category_allowed=True,
         minimum_order_value=Money(Decimal(100), _USD),
         field_provenance={"account_name": _prov(), "country": _prov()},
+    )
+
+
+def _create_evidence() -> ValidatedNeedEvidence:
+    """S3-6：默认有效证据（客户明确表达 + 会话来源）。"""
+    return ValidatedNeedEvidence(
+        level=EvidenceLevel.CUSTOMER_INTEREST_REPLY,
+        provenance=_prov(),
     )
 
 
@@ -340,7 +353,7 @@ def _make_service(*, authorizer, audit, factory=None):
 @pytest.mark.parametrize(
     "method_name, invoke",
     [
-        ("create_from_need", lambda s: s.create_from_need(TenantId("t1"), _create_request(), actor=_actor())),
+        ("create_from_need", lambda s: s.create_from_need(TenantId("t1"), _create_request(), _create_evidence(), actor=_actor())),
         ("assign", lambda s: s.assign(TenantId("t1"), OpportunityId("opp-1"), EmployeeId("emp-1"), EmployeeId("mgr-1"), actor=_actor())),
         ("transition", lambda s: s.transition(TenantId("t1"), OpportunityId("opp-1"), OpportunityState.ASSIGNED, actor=_actor())),
         ("mark_lost", lambda s: s.mark_lost(TenantId("t1"), OpportunityId("opp-1"), LossReason.PRICE_TOO_HIGH, actor=_actor(), confirmed_by=EmployeeId("e1"), confirmed_at=_NOW)),
