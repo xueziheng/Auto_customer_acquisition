@@ -1,8 +1,8 @@
-"""OpportunityService 核心实现（S2-10：UoW / create / assign / transition / mark_lost / mark_won）。
+"""OpportunityService 实现（S2-10 核心 + S2-11 handoff/查询）。
 
 依赖注入：``uow_factory``（返回绑定同租户的 ``OpportunityUnitOfWork``）、``scorer``
-（策略注入的 ``OpportunityScorer``）、``handoff_policy``（本任务保留，S2-11 使用）、
-``now``（时钟，默认 ``datetime.now``）。
+（策略注入的 ``OpportunityScorer``）、``handoff_policy``（接管 SLA 与积压阈值，
+``get_queue_stats`` 使用）、``now``（时钟，默认 ``datetime.now``）。
 
 硬边界：领域层不 import 外部 SDK。唯一并发恢复**仅限** ``sqlalchemy.exc.IntegrityError``
 且 ``orig`` SQLSTATE 为 23505（unique_violation）时重查既有记录；其余异常（领域错误、
@@ -11,31 +11,52 @@
 """
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from datetime import datetime
 
 from domains.opportunities.errors import (
     AgentInferenceProvenanceError,
+    HandoffAlreadyAcceptedError,
+    IncompleteHandoffPacketError,
     MissingFieldProvenanceError,
     MissingLossReasonError,
 )
 from domains.opportunities.models import (
     ALLOWED_TRANSITIONS,
     CRITICAL_FIELDS,
+    HandoffPacket,
     HandoffPolicy,
+    HandoffTrigger,
     LossReason,
     LossRecord,
     Opportunity,
     OpportunityState,
+    ScoreSnapshot,
 )
 from domains.opportunities.repository import OpportunityUnitOfWork
-from domains.opportunities.schemas import OpportunityCreateRequest
+from domains.opportunities.schemas import (
+    HandoffCreateRequest,
+    HandoffPacketView,
+    HandoffQueueStats,
+    OpportunityCreateRequest,
+    OpportunityView,
+    ScoreExplanation,
+)
 from domains.opportunities.scoring import OpportunityScorer, ScoringInput
 from shared.errors import InvalidStateTransition, TradeOSError, ValidationError
-from shared.events.catalog import OpportunityLost, OpportunityQualified, OpportunityWon
+from shared.events.catalog import (
+    HandoffAccepted,
+    HandoffQueueBacklogged,
+    HandoffRequested,
+    OpportunityLost,
+    OpportunityQualified,
+    OpportunityWon,
+)
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
     EmployeeId,
+    HandoffId,
     LossRecordId,
     OpportunityId,
     ProspectAccountId,
@@ -43,7 +64,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
     new_id,
 )
-from shared.schemas.provenance import SourceType
+from shared.schemas.provenance import Provenance, SourceType
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
@@ -82,8 +103,57 @@ def validate_present_critical_provenance(request: OpportunityCreateRequest) -> N
                 )
 
 
+# customer_verbatim 来源白名单（硬边界 4：原话必须能追到证据）。
+_VERBATIM_ALLOWED_SOURCES = frozenset(
+    {SourceType.CONVERSATION, SourceType.UPLOAD, SourceType.EMPLOYEE_INPUT}
+)
+
+
+def _validate_handoff_packet(request: HandoffCreateRequest) -> None:
+    """接管包关键字段（str）空串或纯空白 → IncompleteHandoffPacketError。
+
+    不完整的接管包会被员工忽略，被忽略的接管会导致客户失联。
+    """
+    for field in ("account_name", "why_valuable", "customer_verbatim"):
+        value = getattr(request, field)
+        if not value or not value.strip():
+            raise IncompleteHandoffPacketError(
+                f"接管包缺关键字段 {field}：不完整的接管包会被员工忽略"
+            )
+
+
+def _validate_verbatim_provenance(prov: Provenance) -> None:
+    """customer_verbatim 来源只允许 conversation/upload/employee_input。"""
+    if prov.source_type not in _VERBATIM_ALLOWED_SOURCES:
+        raise ValidationError(
+            f"customer_verbatim 来源必须是 conversation/upload/employee_input；"
+            f"当前 {prov.source_type.value}"
+        )
+
+
+def _parse_trigger(raw: str) -> HandoffTrigger:
+    """解析接管触发条件；非法值转成 ValidationError（不泄漏内置 ValueError）。"""
+    try:
+        return HandoffTrigger(raw)
+    except ValueError as exc:
+        raise ValidationError(f"非法接管触发条件：{raw}") from exc
+
+
+def _explanation(snapshot: ScoreSnapshot) -> ScoreExplanation:
+    """把最新打分快照完整复制成 ScoreExplanation（列表/字典复制避免别名）。"""
+    return ScoreExplanation(
+        sort_key=snapshot.sort_key,
+        rank_bucket=snapshot.rank_bucket,
+        passed_gates=list(snapshot.passed_gates),
+        failed_gates=list(snapshot.failed_gates),
+        gate_reasons=dict(snapshot.gate_reasons),
+        scored_at=snapshot.scored_at,
+        scorer_version=snapshot.scorer_version,
+    )
+
+
 class OpportunityServiceImpl:
-    """``OpportunityService`` 的核心实现（S2-10 范围；handoff/查询方法 S2-11 落地）。"""
+    """``OpportunityService`` 的完整实现（S2-10 核心 + S2-11 handoff 与查询）。"""
 
     def __init__(
         self,
@@ -94,7 +164,7 @@ class OpportunityServiceImpl:
     ) -> None:
         self._uow_factory = uow_factory
         self._scorer = scorer
-        self._handoff_policy = handoff_policy  # S2-11 使用；本任务保留不实现
+        self._handoff_policy = handoff_policy  # 接管 SLA/积压阈值（get_queue_stats 使用）
         self._now = now
 
     async def create_from_need(
@@ -321,3 +391,251 @@ class OpportunityServiceImpl:
                     closed_by=actor,
                 )
             )
+
+    # --- 人工接管 / 查询（S2-11） ------------------------------------------------
+
+    async def request_handoff(
+        self, tenant_id: TenantId, request: HandoffCreateRequest
+    ) -> HandoffId:
+        """请求人工接管。
+
+        校验（incomplete/verbatim 来源/trigger）失败不保存、不发事件；tenant+opportunity
+        已有 pending 幂等返回；新建前确认机会存在且属于租户（避免 FK 错误推迟到 commit）。
+        顺序：``provenance.save`` → ``handoffs.add`` → ``bus.publish(HandoffRequested)``。
+        """
+        async with self._uow_factory() as uow:
+            existing = await uow.handoffs.find_pending_for_opportunity(
+                tenant_id, OpportunityId(request.opportunity_id)
+            )
+            if existing is not None:
+                return existing.handoff_id  # 幂等：已有 pending 完全跳过本次校验/解析/ID/副作用
+            _validate_handoff_packet(request)
+            _validate_verbatim_provenance(request.customer_verbatim_provenance)
+            trigger = _parse_trigger(request.trigger)
+            handoff_id = HandoffId(new_id("hand"))
+            opp = await uow.opportunities.get(
+                tenant_id, OpportunityId(request.opportunity_id)
+            )
+            if opp is None:
+                raise ValidationError(
+                    f"机会 {request.opportunity_id} 不存在或不属于该租户"
+                )
+            requested_at = self._now()
+            packet = HandoffPacket(
+                handoff_id=handoff_id,
+                tenant_id=tenant_id,
+                opportunity_id=OpportunityId(request.opportunity_id),
+                trigger=trigger,
+                requested_at=requested_at,
+                account_name=request.account_name,
+                country=request.country,
+                why_valuable=request.why_valuable,
+                customer_verbatim=request.customer_verbatim,
+                how_we_found_them=request.how_we_found_them,
+                validated_need_summary=request.validated_need_summary,
+                missing_information=list(request.missing_information),
+                conversation_summary=request.conversation_summary,
+                already_sent=list(request.already_sent),
+                commitments_made=list(request.commitments_made),
+                suggested_next_step=request.suggested_next_step,
+                evidence_links=list(request.evidence_links),
+            )
+            await uow.provenance.save(
+                tenant_id,
+                "handoff",
+                str(handoff_id),
+                "customer_verbatim",
+                request.customer_verbatim_provenance,
+            )
+            await uow.handoffs.add(packet)
+            await uow.bus.publish(
+                HandoffRequested(
+                    tenant_id=tenant_id,
+                    occurred_at=requested_at,
+                    run_id=None,
+                    handoff_id=handoff_id,
+                    opportunity_id=OpportunityId(request.opportunity_id),
+                    assigned_to=None,
+                    trigger=trigger.value,
+                )
+            )
+            return handoff_id
+
+    async def accept_handoff(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        accepted_by: EmployeeId,
+    ) -> None:
+        """员工接受接管：原子 ``accept_if_requested``；并发已被接受抛 HandoffAlreadyAcceptedError。"""
+        async with self._uow_factory() as uow:
+            accepted_at = self._now()
+            ok = await uow.handoffs.accept_if_requested(
+                tenant_id, handoff_id, accepted_by, accepted_at
+            )
+            if not ok:
+                raise HandoffAlreadyAcceptedError(f"接管 {handoff_id} 已被他人接受")
+            await uow.bus.publish(
+                HandoffAccepted(
+                    tenant_id=tenant_id,
+                    occurred_at=accepted_at,
+                    run_id=None,
+                    handoff_id=handoff_id,
+                    accepted_by=accepted_by,
+                )
+            )
+
+    async def get_handoff_packet(
+        self, tenant_id: TenantId, handoff_id: HandoffId
+    ) -> HandoffPacketView:
+        """读取接管包：完整映射、list 字段复制、wait_seconds 用注入 now。"""
+        async with self._uow_factory() as uow:
+            packet = await uow.handoffs.get(tenant_id, handoff_id)
+            if packet is None:
+                raise ValidationError(f"接管包 {handoff_id} 不存在")
+            return HandoffPacketView(
+                handoff_id=packet.handoff_id,
+                opportunity_id=packet.opportunity_id,
+                trigger=packet.trigger.value,
+                account_name=packet.account_name,
+                country=packet.country,
+                why_valuable=packet.why_valuable,
+                customer_verbatim=packet.customer_verbatim,
+                requested_at=packet.requested_at,
+                state=packet.state.value,
+                how_we_found_them=packet.how_we_found_them,
+                validated_need_summary=packet.validated_need_summary,
+                missing_information=list(packet.missing_information),
+                conversation_summary=packet.conversation_summary,
+                already_sent=list(packet.already_sent),
+                commitments_made=list(packet.commitments_made),
+                suggested_next_step=packet.suggested_next_step,
+                evidence_links=list(packet.evidence_links),
+                wait_seconds=packet.wait_seconds(self._now()),
+                assigned_to_name=None,  # 无员工域数据
+            )
+
+    async def get_queue_stats(self, tenant_id: TenantId) -> HandoffQueueStats:
+        """待接管队列统计：全部基于同一 now 调 wait_seconds。
+
+        ``by_employee`` 用仓储聚合接口 ``count_pending_by_employee``（不受扫描列表截断）。
+        ``list_pending`` 的 limit 用 ``sys.maxsize`` 技术上限（Protocol 无总数 aggregate，
+        Phase 1 在现有接口下尽可能完整扫描；**非业务阈值**）。
+        policy 语义「超过」：``wait_seconds > sla_seconds`` 才 breached、``queue_depth >
+        backlog_threshold`` 才 backlogged（等于不算）。超阈值发布 ``HandoffQueueBacklogged``。
+        """
+        async with self._uow_factory() as uow:
+            pending = await uow.handoffs.list_pending(tenant_id, sys.maxsize)
+            by_employee = await uow.handoffs.count_pending_by_employee(tenant_id)
+            now = self._now()
+            waits = [p.wait_seconds(now) for p in pending]
+            waited = [w for w in waits if w is not None]
+            queue_depth = len(pending)
+            oldest = max(waited) if waited else 0
+            breached_count = sum(
+                1 for w in waited if w > self._handoff_policy.sla_seconds
+            )
+            is_backlogged = queue_depth > self._handoff_policy.backlog_threshold
+            if is_backlogged:
+                await uow.bus.publish(
+                    HandoffQueueBacklogged(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        queue_depth=queue_depth,
+                        oldest_wait_seconds=oldest,
+                    )
+                )
+            return HandoffQueueStats(
+                queue_depth=queue_depth,
+                oldest_wait_seconds=oldest,
+                by_employee=by_employee,
+                breached_count=breached_count,
+                is_backlogged=is_backlogged,
+            )
+
+    async def get(
+        self, tenant_id: TenantId, opportunity_id: OpportunityId
+    ) -> OpportunityView:
+        async with self._uow_factory() as uow:
+            opp = await uow.opportunities.get(tenant_id, opportunity_id)
+            if opp is None:
+                raise ValidationError(f"机会 {opportunity_id} 不存在")
+            return await self._build_view(uow, tenant_id, opp)
+
+    async def _build_view(
+        self,
+        uow: OpportunityUnitOfWork,
+        tenant_id: TenantId,
+        opp: Opportunity,
+    ) -> OpportunityView:
+        """同一 UoW 内按**已取到的** Opportunity 构造视图（list_for_employee 不逐 ID 重查）。"""
+        snapshot = await uow.snapshots.latest_for_opportunity(
+            tenant_id, opp.opportunity_id
+        )
+        score = _explanation(snapshot) if snapshot is not None else None
+        pending = await uow.handoffs.find_pending_for_opportunity(
+            tenant_id, opp.opportunity_id
+        )
+        return OpportunityView(
+            opportunity_id=opp.opportunity_id,
+            account_id=opp.account_id,
+            account_name=opp.account_name,
+            country=opp.country,
+            need_id=opp.need_id,
+            product_category=opp.product_category,
+            state=opp.state.value,
+            created_at=opp.created_at,
+            quantity=opp.quantity,
+            spec_summary=opp.spec_summary,
+            destination=opp.destination,
+            required_by=opp.required_by,
+            target_price=opp.target_price,
+            current_supply_problem=opp.current_supply_problem,
+            can_source=opp.can_source,
+            estimated_cost=opp.estimated_cost,
+            estimated_profit=opp.estimated_profit,
+            owner=str(opp.owner) if opp.owner is not None else None,
+            owner_name=None,  # 无员工域数据
+            next_action=opp.next_action,
+            next_action_due=opp.next_action_due,
+            score=score,
+            loss_reason=opp.loss_reason.value if opp.loss_reason is not None else None,
+            died_at_state=(
+                opp.died_at_state.value if opp.died_at_state is not None else None
+            ),
+            has_pending_handoff=pending is not None,
+        )
+
+    async def list_for_employee(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        *,
+        states: list[OpportunityState] | None = None,
+        limit: int = 50,
+    ) -> list[OpportunityView]:
+        """某员工负责的机会；单 UoW 内构造全部 View（不逐项另开 UoW）。"""
+        if limit <= 0:
+            raise ValidationError("limit 必须 > 0")
+        async with self._uow_factory() as uow:
+            opps = await uow.opportunities.list_by_owner(
+                tenant_id, employee_id, states, limit
+            )
+            return [await self._build_view(uow, tenant_id, o) for o in opps]
+
+    async def loss_reason_breakdown(
+        self, tenant_id: TenantId, *, since_days: int = 30
+    ) -> dict[str, dict[str, int]]:
+        """按 ``(loss_reason, died_at_state)`` 二维交叉统计；同键安全累加。"""
+        if since_days <= 0:
+            raise ValidationError("since_days 必须 > 0")
+        async with self._uow_factory() as uow:
+            rows = await uow.loss_records.count_by_reason_and_state(
+                tenant_id, since_days
+            )
+        breakdown: dict[str, dict[str, int]] = {}
+        for reason, state, count in rows:
+            bucket = breakdown.setdefault(reason, {})
+            bucket[state] = bucket.get(state, 0) + count
+        return breakdown
