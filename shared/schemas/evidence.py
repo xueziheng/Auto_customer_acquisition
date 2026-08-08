@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
+from shared.errors import ValidationError
+
 
 class EvidenceLevel(str, Enum):
     """证据等级。由模型判断某条证据属于哪一档——这是对事实的**分类**，
@@ -107,6 +109,36 @@ DEFAULT_FRESHNESS_WINDOW = timedelta(days=7)
 """默认新鲜度窗口。可按 Skill manifest 覆盖——供应商价格的有效期
 比企业扩建公告短得多。"""
 
+# 显式等级 → 档位映射（05-data-plane 表 + ADR 0005）。
+_LEVEL_TO_TIER: dict[EvidenceLevel, ConfidenceTier] = {
+    EvidenceLevel.AGENT_INDUSTRY_INFERENCE: ConfidenceTier.LOW,
+    EvidenceLevel.PUBLIC_COMPANY_EVENT: ConfidenceTier.LOW_MID,
+    EvidenceLevel.EMPLOYEE_GUESS: ConfidenceTier.MID,
+    EvidenceLevel.CUSTOMER_INTEREST_REPLY: ConfidenceTier.MID_HIGH,
+    EvidenceLevel.CUSTOMER_SPECIFICATION: ConfidenceTier.HIGH,
+    EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING: ConfidenceTier.VERY_HIGH,
+    EvidenceLevel.CUSTOMER_SAMPLE_OR_QUOTE_REQUEST: ConfidenceTier.EXTREME,
+}
+
+# 显式稳定档位顺序（弱 → 强），meets_threshold 据此比较。
+_TIER_ORDER: list[ConfidenceTier] = [
+    ConfidenceTier.LOW,
+    ConfidenceTier.LOW_MID,
+    ConfidenceTier.MID,
+    ConfidenceTier.MID_HIGH,
+    ConfidenceTier.HIGH,
+    ConfidenceTier.VERY_HIGH,
+    ConfidenceTier.EXTREME,
+]
+_TIER_RANK: dict[ConfidenceTier, int] = {tier: i for i, tier in enumerate(_TIER_ORDER)}
+
+# 固定规则名（计划 P8）；applied_rules 按推导应用顺序输出。
+_RULE_BASE = "base_from_highest"
+_RULE_BOOST = "independence_boost"
+_RULE_CONFLICT = "conflict_penalty"
+_RULE_STALE = "staleness_penalty"
+_RULE_CLAMP = "clamp"
+
 
 def derive_confidence(
     evidence: list[EvidenceItem],
@@ -137,7 +169,105 @@ def derive_confidence(
     - 空证据列表抛错，不返回 ``LOW``——"没有证据"和"证据很弱"是
       不同的情况，前者说明调用方有 bug。
     """
-    raise NotImplementedError
+    if not evidence:
+        raise ValidationError("证据列表不能为空：没有证据和证据很弱是两回事")
+    if freshness_window <= timedelta(0):
+        raise ValidationError("freshness_window 必须为正")
+
+    # 规则 1：基准档 = 最高证据等级对应的档位（按显式映射取最大档位）。
+    # 直接保留最高等级层的实际证据项，据此取基准等级/档位，不引入反向映射。
+    max_rank = max(_TIER_RANK[_LEVEL_TO_TIER[item.level]] for item in evidence)
+    highest_items = [
+        item for item in evidence if _TIER_RANK[_LEVEL_TO_TIER[item.level]] == max_rank
+    ]
+    base_tier = _TIER_ORDER[max_rank]
+    base_level = highest_items[0].level
+    applied_rules: list[str] = [_RULE_BASE]
+
+    # 规则 2：独立上浮——只看最高等级层是否 >=2 条不同 source_id。
+    highest_sources = {item.source_id for item in highest_items}
+    raw_rank = max_rank
+    out_of_bounds = False
+    if len(highest_sources) >= 2:
+        raw_rank += 1
+        out_of_bounds = raw_rank > _TIER_RANK[ConfidenceTier.EXTREME]
+        applied_rules.append(_RULE_BOOST)
+
+    # 规则 3：矛盾下浮——pair 两端都在证据 source_id 集合才算，多条只罚一次。
+    source_ids = {item.source_id for item in evidence}
+    has_conflict = False
+    for a, b in (conflicting_pairs or []):
+        if a in source_ids and b in source_ids:
+            has_conflict = True
+            break
+    if has_conflict:
+        raw_rank -= 1
+        out_of_bounds = out_of_bounds or raw_rank < 0
+        applied_rules.append(_RULE_CONFLICT)
+
+    # 规则 4：过期下浮——仅当全部证据严格早于 now - window。
+    is_stale = all(item.observed_at < now - freshness_window for item in evidence)
+    if is_stale:
+        raw_rank -= 1
+        out_of_bounds = out_of_bounds or raw_rank < 0
+        applied_rules.append(_RULE_STALE)
+
+    # 规则 5：最终钳制（不提前钳制中间值；若中间曾越界或最终越界则记录 clamp）。
+    final_rank = max(0, min(raw_rank, _TIER_RANK[ConfidenceTier.EXTREME]))
+    if out_of_bounds or final_rank != raw_rank:
+        applied_rules.append(_RULE_CLAMP)
+    tier = _TIER_ORDER[final_rank]
+
+    # explanation 需列出最高等级层的非重复证据摘要，让老板看到"依据是什么"。
+    highest_summaries = _unique_nonblank_in_order([item.summary for item in highest_items])
+    explanation = _build_explanation(base_level, base_tier, tier, applied_rules, highest_summaries)
+    return ConfidenceResult(
+        tier=tier,
+        has_conflict=has_conflict,
+        is_stale=is_stale,
+        explanation=explanation,
+        applied_rules=applied_rules,
+    )
+
+
+def _unique_nonblank_in_order(summaries: list[str]) -> list[str]:
+    """保持输入顺序的去重，并过滤 strip 后为空的摘要。
+
+    不能用 set 直接生成输出顺序——哈希序会破坏纯函数的确定性。
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for summary in summaries:
+        stripped = summary.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        result.append(stripped)
+    return result
+
+
+def _build_explanation(
+    base_level: EvidenceLevel,
+    base_tier: ConfidenceTier,
+    final_tier: ConfidenceTier,
+    applied_rules: list[str],
+    highest_summaries: list[str],
+) -> str:
+    """中文具体说明：含基准等级、基准档位、最高等级证据摘要、命中规则名；
+    不输出概率数字。"""
+    parts = [f"证据最高等级为 {base_level.value}，基准档位 {base_tier.value}（{_RULE_BASE}）"]
+    if highest_summaries:
+        parts.append("依据的最高等级证据：" + "；".join(highest_summaries))
+    if _RULE_BOOST in applied_rules:
+        parts.append("最高等级层有多条独立证据，上浮一档（independence_boost）")
+    if _RULE_CONFLICT in applied_rules:
+        parts.append("存在相互矛盾的证据，下浮一档（conflict_penalty）")
+    if _RULE_STALE in applied_rules:
+        parts.append("全部证据超出新鲜度窗口，下浮一档（staleness_penalty）")
+    if _RULE_CLAMP in applied_rules:
+        parts.append("档位曾越界，钳制到合法范围（clamp）")
+    parts.append(f"最终档位 {final_tier.value}")
+    return "；".join(parts) + "。"
 
 
 def meets_threshold(result: ConfidenceResult, minimum: ConfidenceTier) -> bool:
@@ -146,4 +276,4 @@ def meets_threshold(result: ConfidenceResult, minimum: ConfidenceTier) -> bool:
     用于打分硬门槛：纯 ``AGENT_INDUSTRY_INFERENCE`` 推出来的假设不够格
     进入触达队列，见 ``docs/architecture/09-scoring-and-feedback.md``。
     """
-    raise NotImplementedError
+    return _TIER_RANK[result.tier] >= _TIER_RANK[minimum]
