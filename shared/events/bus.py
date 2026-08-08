@@ -21,11 +21,11 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from shared.events.catalog import DomainEvent
 
-E = TypeVar("E", bound=DomainEvent, contravariant=True)
+E_contra = TypeVar("E_contra", bound=DomainEvent, contravariant=True)
 
 
 @runtime_checkable
-class EventHandler(Protocol[E]):
+class EventHandler(Protocol[E_contra]):
     """事件处理器。
 
     实现约定：
@@ -35,7 +35,7 @@ class EventHandler(Protocol[E]):
       workflow run 而不是阻塞事件处理。
     """
 
-    async def handle(self, event: E) -> None: ...
+    async def handle(self, event: E_contra) -> None: ...
 
 
 @runtime_checkable
@@ -65,7 +65,7 @@ class EventBus(Protocol):
         ...
 
     def subscribe(
-        self, event_type: type[E], handler: EventHandler[E]
+        self, event_type: type[E_contra], handler: EventHandler[E_contra]
     ) -> None:
         """注册订阅。
 
