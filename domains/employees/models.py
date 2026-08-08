@@ -99,3 +99,21 @@ class OwnershipLock:
     owner: EmployeeId
     locked_at: datetime
     locked_by_rule: str
+
+
+@dataclass(frozen=True)
+class OwnershipTransfer:
+    """归属转移记录（**只增历史**：复盘「这个客户为什么丢了」的依据之一）。
+
+    旧锁归档不删除；转移记录一旦写入不再修改。``from_owner`` 允许为空
+    （历史数据可能没有来源），但 S3-3 服务层强制当前必须有锁才转移。
+    """
+
+    transfer_id: str
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    from_owner: EmployeeId | None
+    to_owner: EmployeeId
+    transferred_by: EmployeeId
+    transferred_at: datetime
+    reason: str
