@@ -482,7 +482,7 @@ async def test_assign_owner_records_actor(repo_session: AsyncSession) -> None:
 
 
 def test_orm_metadata_parity_with_head() -> None:
-    """ORM metadata 与迁移 head（0004）一致：12 表列集合、13 索引名+列序、关键约束名。
+    """ORM metadata 与迁移 head（0005）一致：13 表列集合、13 索引名+列序、关键约束名。
 
     schema 仍由 Alembic 迁移管理（不用 create_all）；本断言防 ORM 与迁移漂移。
     """
@@ -530,7 +530,11 @@ def test_orm_metadata_parity_with_head() -> None:
         "outbox_events": {
             "event_id", "tenant_id", "event_type", "event_payload", "attempt",
             "published_at", "trace_id", "run_id", "occurred_at", "status",
-            "delivered_at",
+            "delivered_at", "next_attempt_at", "last_error",
+        },
+        "outbox_deliveries": {
+            "delivery_id", "tenant_id", "event_id", "handler_name", "status",
+            "attempts", "next_attempt_at", "last_error", "delivered_at",
         },
         "employees": {
             "employee_id", "tenant_id", "name", "role", "created_at", "user_id",
@@ -606,7 +610,14 @@ def test_orm_metadata_parity_with_head() -> None:
         "score_snapshots": {"ck_score_snapshots_value_pair"},
         "handoffs": {"fk_handoffs_opportunity"},
         "loss_records": {"fk_loss_records_opportunity"},
-        "outbox_events": {"ck_outbox_attempt_min", "ck_outbox_status"},
+        "outbox_events": {
+            "ck_outbox_attempt_min", "ck_outbox_status", "uq_outbox_events_tenant_event",
+        },
+        "outbox_deliveries": {
+            "ck_outbox_deliveries_status",
+            "uq_outbox_deliveries_tenant_event_handler",
+            "fk_outbox_deliveries_event",
+        },
         "provenance_records": set(),
         "employees": {"uq_employees_tenant_user", "uq_employees_tenant_employee"},
         "territory_assignments": {

@@ -1,9 +1,11 @@
-"""六表声明式 ORM 映射（列与 0002 迁移逐列一致）。
+"""声明式 ORM 映射（业务表列与 0002 迁移逐列一致；0005 为 outbox 扩展）。
 
 schema 由 Alembic 迁移管理——``Base.metadata.create_all`` 不是迁移的平行真相，
-本模块只提供查询用的映射。列、约束、索引、FK 与 0002 保持逐列一致，
+本模块只提供查询用的映射。列、约束、索引、FK 与迁移逐列一致，
 金额 ``Numeric(18,2)`` + ``CHAR(3)`` 成对（硬边界 2）。触发器由数据库持有，
-ORM 不表达触发器、也不绕过其只增语义。
+ORM 不表达触发器、也不绕过其只增语义。``outbox_events`` 的
+``next_attempt_at``/``last_error`` 与 ``outbox_deliveries`` 由 0005 落地
+（0005 自管 guard，不修改 0002）。
 """
 from __future__ import annotations
 
@@ -240,12 +242,17 @@ class ProvenanceRecordRow(Base):
 
 
 class OutboxEventRow(Base):
-    """``outbox_events`` 行（非只增；仅 status/delivered_at 可更新，由 DB guard 强制）。"""
+    """``outbox_events`` 行（非只增；仅 status/delivered_at/attempt/next_attempt_at/
+    last_error 可更新，由 0005 自管 DB guard 强制；UNIQUE(tenant_id,event_id) 供
+    outbox_deliveries 复合 FK 引用）。"""
 
     __tablename__ = "outbox_events"
     __table_args__ = (
+        UniqueConstraint("tenant_id", "event_id", name="uq_outbox_events_tenant_event"),
         CheckConstraint("attempt >= 1", name="ck_outbox_attempt_min"),
-        CheckConstraint("status IN ('pending', 'delivered')", name="ck_outbox_status"),
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'dead')", name="ck_outbox_status"
+        ),
         Index("ix_outbox_tenant_status", "tenant_id", "status"),
     )
 
@@ -259,6 +266,42 @@ class OutboxEventRow(Base):
     run_id: Mapped[str | None] = mapped_column(String(32))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class OutboxDeliveryRow(Base):
+    """``outbox_deliveries`` 行（durable per-handler 投递状态；复合 FK →
+    outbox_events，禁止跨租户引用；UNIQUE(tenant_id,event_id,handler_name)）。"""
+
+    __tablename__ = "outbox_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            "handler_name",
+            name="uq_outbox_deliveries_tenant_event_handler",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "event_id"],
+            ["outbox_events.tenant_id", "outbox_events.event_id"],
+            name="fk_outbox_deliveries_event",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'dead')",
+            name="ck_outbox_deliveries_status",
+        ),
+    )
+
+    delivery_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    event_id: Mapped[str] = mapped_column(String(32))
+    handler_name: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
