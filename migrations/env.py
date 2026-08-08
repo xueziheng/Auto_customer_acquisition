@@ -40,7 +40,9 @@ if not DATABASE_URL:
     )
 
 # 运行时注入连接 URL，不写死在 alembic.ini。
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+# ConfigParser 会做 % 插值：URL 里合法的百分号编码（如密码中的 %40）必须转义
+# 成 %% 再注入，否则读取时抛 InterpolationSyntaxError。此处只转义、绝不打印 URL。
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 
 # Phase 0：业务 schema 未引入，元数据留空；迁移按版本文件手写演进。
 target_metadata = None
