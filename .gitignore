@@ -44,6 +44,3 @@ infra/volumes/
 # === 编辑器 ===
 .idea/
 *.swp
-
-# === Claude Code 会话内部文件 ===
-.claude/
