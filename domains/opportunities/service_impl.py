@@ -8,8 +8,18 @@
 
 授权契约：每个公开读写入口在**任何仓储读取或业务副作用之前**调用 ``authorizer.require``
 （拒绝抛 ``PermissionDenied`` 且不进入 UoW）；允许与拒绝都写授权审计（拒绝
-``rule="deny"``）。查询按 ``actor.scope`` 做 ABAC 判权：``list_for_employee`` 受
-``scope.allowed_owners`` 限制（``None`` 放行、集合不含目标即拒绝）。
+``rule="deny"``）。查询按 ``actor.scope`` 做 ABAC 判权：
+
+- ``list_for_employee`` 查询参数先受 ``scope.allowed_owners`` 限制（``None``
+  放行、集合不含目标即拒绝），取回行后在 build/return 前再按 owner/country/
+  product_category 三维做**行级 ABAC**（受限维度缺资源值 fail closed）；allow
+  延迟到全部行通过后只写一条；
+- ``get`` / ``get_handoff_packet`` 在返回前按资源的 owner/country/product_category
+  三维做资源级 ABAC（受限维度缺资源值一律 fail closed；``get_handoff_packet``
+  经关联机会判权，防按 ID 绕过）；
+- ``get_queue_stats`` / ``loss_reason_breakdown`` 是租户级聚合：Phase 1 仓储不支持
+  scope 过滤聚合，窄作用域（SELF/MANAGER/无级别）一律显式拒绝，仅 TENANT 或
+  authorizer 判权的 SYSTEM 可读未过滤聚合。
 
 硬边界：领域层不 import 外部 SDK。唯一并发恢复**仅限** ``sqlalchemy.exc.IntegrityError``
 且 ``orig`` SQLSTATE 为 23505（unique_violation）时重查既有记录；其余异常（领域错误、
@@ -46,6 +56,7 @@ from domains.opportunities.permissions import (
     AuditLogger,
     OpportunityAction,
     OpportunityAuthorizer,
+    ScopeLevel,
 )
 from domains.opportunities.repository import OpportunityUnitOfWork
 from domains.opportunities.schemas import (
@@ -195,10 +206,11 @@ class OpportunityServiceImpl:
     def _authorize(
         self, actor: Actor, action: OpportunityAction, tenant_id: TenantId
     ) -> str:
-        """判权并写授权审计；返回判权所用规则标识。
+        """判权（必须在任何仓储读取/副作用之前调用）；返回判权所用规则标识。
 
-        拒绝（``PermissionDenied``）时同样写审计，``rule="deny"``，
-        不记录任何业务/异常内容。必须在任何仓储读取/副作用之前调用。
+        拒绝（``PermissionDenied``）时写 ``rule="deny"`` 审计并抛出；放行**不写
+        allow 审计**——allow 由 ``_audit_allow`` 在所有 ABAC 检查通过后只写一次，
+        避免"先 allow 再 ABAC deny"的双条审计。不记录任何业务/异常内容。
         """
         try:
             rule = self._authorizer.require(actor, action, actor.scope, tenant_id)
@@ -211,6 +223,16 @@ class OpportunityServiceImpl:
                 rule="deny",
             )
             raise
+        return rule
+
+    def _audit_allow(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        tenant_id: TenantId,
+        rule: str,
+    ) -> None:
+        """所有判权/ABAC 检查通过后，写**唯一一条** allow 审计。"""
         self._audit.log(
             actor=actor.actor_id,
             action=action.value,
@@ -218,7 +240,6 @@ class OpportunityServiceImpl:
             scope=actor.scope.label,
             rule=rule,
         )
-        return rule
 
     def _enforce_owner_abac(
         self, actor: Actor, employee_id: EmployeeId, tenant_id: TenantId
@@ -231,14 +252,101 @@ class OpportunityServiceImpl:
         """
         allowed = actor.scope.allowed_owners
         if allowed is not None and employee_id not in allowed:
-            self._audit.log(
-                actor=actor.actor_id,
-                action=OpportunityAction.OPPORTUNITY_LIST.value,
-                tenant_id=tenant_id,
-                scope=actor.scope.label,
+            self._deny_abac(
+                actor,
+                OpportunityAction.OPPORTUNITY_LIST,
+                tenant_id,
                 rule="deny:abac:owner",
+                message="无权查看该负责人的机会列表",
             )
-            raise PermissionDenied("ABAC 拒绝：无权查看该负责人的机会列表")
+
+    def _deny_abac(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        tenant_id: TenantId,
+        *,
+        rule: str,
+        message: str,
+    ) -> None:
+        """写一条无业务 payload 的 ABAC 拒绝审计并抛 PermissionDenied。"""
+        self._audit.log(
+            actor=actor.actor_id,
+            action=action.value,
+            tenant_id=tenant_id,
+            scope=actor.scope.label,
+            rule=rule,
+        )
+        raise PermissionDenied(f"ABAC 拒绝：{message}")
+
+    def _enforce_resource_abac(
+        self,
+        actor: Actor,
+        *,
+        owner: EmployeeId | None,
+        country: str | None,
+        product_category: str | None,
+        tenant_id: TenantId,
+        action: OpportunityAction,
+    ) -> None:
+        """按资源的 owner/country/product_category 三维做 ABAC 判权（fail closed）。
+
+        维度限制为 ``None`` = 该维度不限制；限制集合不含资源值、或受限维度缺
+        资源值（如 ``owner=None``）→ 拒绝。owner 是强类型 ``EmployeeId``，直接
+        成员比较，不做 str 转换。必须在返回/构造视图前调用。
+        """
+        scope = actor.scope
+        if scope.allowed_owners is not None and (
+            owner is None or owner not in scope.allowed_owners
+        ):
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:abac:owner",
+                message="无权访问该负责人的机会",
+            )
+        if scope.allowed_countries is not None and (
+            country is None or country not in scope.allowed_countries
+        ):
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:abac:country",
+                message="无权访问该国家/地区的机会",
+            )
+        if scope.allowed_categories is not None and (
+            product_category is None or product_category not in scope.allowed_categories
+        ):
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:abac:category",
+                message="无权访问该品类的机会",
+            )
+
+    def _enforce_aggregate_abac(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        tenant_id: TenantId,
+    ) -> None:
+        """租户级聚合必须显式宽作用域：SELF/MANAGER/无级别一律拒绝。
+
+        Phase 1 仓储不支持 scope 过滤聚合，宁可拒绝窄作用域，也不返回租户级
+        全量数据（避免 SELF/MANAGER 读到超权限聚合）。SYSTEM 已由
+        ``authorizer.require`` 判权放行，这里只拦窄作用域。
+        """
+        if actor.scope.level in (ScopeLevel.SELF, ScopeLevel.MANAGER, None):
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:abac:aggregate",
+                message="窄作用域无权读取租户级聚合数据",
+            )
 
     async def create_from_need(
         self,
@@ -255,7 +363,8 @@ class OpportunityServiceImpl:
         - 唯一并发：commit 阶段的 DB 异常（``IntegrityError`` 属非领域异常）→ 新 UoW
           重查既有；只有确实找到才返回既有，否则原异常重抛。
         """
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(
@@ -351,7 +460,8 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``assigned_by`` 业务审计主体（两者分离）。
         """
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id, rule)
         async with self._uow_factory() as uow:
             ok = await uow.opportunities.assign_owner(
                 tenant_id, opportunity_id, owner, assigned_by, self._now()
@@ -370,7 +480,8 @@ class OpportunityServiceImpl:
         actor: Actor,
     ) -> None:
         """状态推进：拒绝 WON/LOST 走普通转换；读当前态→状态机校验→原子 advance_state。"""
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id, rule)
         if target in (OpportunityState.WON, OpportunityState.LOST):
             raise InvalidStateTransition(
                 f"终态 {target.value} 不能走普通 transition；必须经 mark_lost / mark_won"
@@ -410,7 +521,8 @@ class OpportunityServiceImpl:
         ``reason=None`` 先抛 ``MissingLossReasonError``（反馈闭环）。``died_at_state``
         记录关闭前状态；``recorded_at`` 用注入时钟。终态只能走 close_*，禁止普通 update。
         """
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id, rule)
         if reason is None:
             raise MissingLossReasonError("终结机会必须带 LossReason（反馈闭环）")
         async with self._uow_factory() as uow:
@@ -464,7 +576,8 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``confirmed_by`` 业务确认主体（两者分离）。
         """
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id, rule)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
@@ -499,7 +612,8 @@ class OpportunityServiceImpl:
         已有 pending 幂等返回；新建前确认机会存在且属于租户（避免 FK 错误推迟到 commit）。
         顺序：``provenance.save`` → ``handoffs.add`` → ``bus.publish(HandoffRequested)``。
         """
-        self._authorize(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id)
+        self._audit_allow(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id, rule)
         async with self._uow_factory() as uow:
             existing = await uow.handoffs.find_pending_for_opportunity(
                 tenant_id, OpportunityId(request.opportunity_id)
@@ -570,7 +684,8 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``accepted_by`` 业务审计主体（事件 accepted_by，两者分离）。
         """
-        self._authorize(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id)
+        self._audit_allow(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id, rule)
         async with self._uow_factory() as uow:
             accepted_at = self._now()
             ok = await uow.handoffs.accept_if_requested(
@@ -591,12 +706,28 @@ class OpportunityServiceImpl:
     async def get_handoff_packet(
         self, tenant_id: TenantId, handoff_id: HandoffId, *, actor: Actor
     ) -> HandoffPacketView:
-        """读取接管包：完整映射、list 字段复制、wait_seconds 用注入 now。"""
-        self._authorize(actor, OpportunityAction.HANDOFF_READ, tenant_id)
+        """读取接管包：完整映射、list 字段复制、wait_seconds 用注入 now。
+
+        owner/category 不在接管包上，资源 ABAC 经**关联机会**判权——防止只按
+        handoff ID 就绕过 owner/country/category 限制读取别人负责的接管包。
+        """
+        rule = self._authorize(actor, OpportunityAction.HANDOFF_READ, tenant_id)
         async with self._uow_factory() as uow:
             packet = await uow.handoffs.get(tenant_id, handoff_id)
             if packet is None:
                 raise ValidationError(f"接管包 {handoff_id} 不存在")
+            linked = await uow.opportunities.get(tenant_id, packet.opportunity_id)
+            self._enforce_resource_abac(
+                actor,
+                owner=linked.owner if linked is not None else None,
+                country=linked.country if linked is not None else None,
+                product_category=(
+                    linked.product_category if linked is not None else None
+                ),
+                tenant_id=tenant_id,
+                action=OpportunityAction.HANDOFF_READ,
+            )
+            self._audit_allow(actor, OpportunityAction.HANDOFF_READ, tenant_id, rule)
             return HandoffPacketView(
                 handoff_id=packet.handoff_id,
                 opportunity_id=packet.opportunity_id,
@@ -630,7 +761,11 @@ class OpportunityServiceImpl:
         policy 语义「超过」：``wait_seconds > sla_seconds`` 才 breached、``queue_depth >
         backlog_threshold`` 才 backlogged（等于不算）。超阈值发布 ``HandoffQueueBacklogged``。
         """
-        self._authorize(actor, OpportunityAction.HANDOFF_QUEUE_READ, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.HANDOFF_QUEUE_READ, tenant_id)
+        self._enforce_aggregate_abac(
+            actor, OpportunityAction.HANDOFF_QUEUE_READ, tenant_id
+        )
+        self._audit_allow(actor, OpportunityAction.HANDOFF_QUEUE_READ, tenant_id, rule)
         async with self._uow_factory() as uow:
             pending = await uow.handoffs.list_pending(tenant_id, sys.maxsize)
             by_employee = await uow.handoffs.count_pending_by_employee(tenant_id)
@@ -668,11 +803,20 @@ class OpportunityServiceImpl:
         *,
         actor: Actor,
     ) -> OpportunityView:
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
                 raise ValidationError(f"机会 {opportunity_id} 不存在")
+            self._enforce_resource_abac(
+                actor,
+                owner=opp.owner,
+                country=opp.country,
+                product_category=opp.product_category,
+                tenant_id=tenant_id,
+                action=OpportunityAction.OPPORTUNITY_READ,
+            )
+            self._audit_allow(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id, rule)
             return await self._build_view(uow, tenant_id, opp)
 
     async def _build_view(
@@ -728,8 +872,15 @@ class OpportunityServiceImpl:
         states: list[OpportunityState] | None = None,
         limit: int = 50,
     ) -> list[OpportunityView]:
-        """某员工负责的机会；单 UoW 内构造全部 View（不逐项另开 UoW）。"""
-        self._authorize(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id)
+        """某员工负责的机会；单 UoW 内构造全部 View（不逐项另开 UoW）。
+
+        ABAC 判权顺序：``authorizer.require``（进入 UoW 前）→ ``allowed_owners``
+        查询参数预检（查询前）→ 取回行后按 owner/country/product_category 三维
+        逐行判权（build/return 前）。任一越界行（含受限维度缺资源值）即整单拒绝，
+        只写一条 deny 审计；全部行通过才写一条 allow 审计——避免"先 allow 再
+        行级 ABAC 拒绝"的双条审计。
+        """
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id)
         self._enforce_owner_abac(actor, employee_id, tenant_id)
         if limit <= 0:
             raise ValidationError("limit 必须 > 0")
@@ -737,13 +888,25 @@ class OpportunityServiceImpl:
             opps = await uow.opportunities.list_by_owner(
                 tenant_id, employee_id, states, limit
             )
+            for opp in opps:
+                self._enforce_resource_abac(
+                    actor,
+                    owner=opp.owner,
+                    country=opp.country,
+                    product_category=opp.product_category,
+                    tenant_id=tenant_id,
+                    action=OpportunityAction.OPPORTUNITY_LIST,
+                )
+            self._audit_allow(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id, rule)
             return [await self._build_view(uow, tenant_id, o) for o in opps]
 
     async def loss_reason_breakdown(
         self, tenant_id: TenantId, *, actor: Actor, since_days: int = 30
     ) -> dict[str, dict[str, int]]:
         """按 ``(loss_reason, died_at_state)`` 二维交叉统计；同键安全累加。"""
-        self._authorize(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
+        rule = self._authorize(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
+        self._enforce_aggregate_abac(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
+        self._audit_allow(actor, OpportunityAction.LOSS_REASON_READ, tenant_id, rule)
         if since_days <= 0:
             raise ValidationError("since_days 必须 > 0")
         async with self._uow_factory() as uow:

@@ -34,18 +34,25 @@ import pytest
 
 from domains.opportunities import models
 from domains.opportunities.schemas import HandoffCreateRequest, OpportunityCreateRequest
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
     OpportunityId,
+    ProspectAccountId,
     TenantId,
+    ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import Provenance, SourceType
 
+Opportunity = models.Opportunity
 OpportunityState = models.OpportunityState
 LossReason = models.LossReason
+HandoffPacket = models.HandoffPacket
+HandoffState = models.HandoffState
+HandoffTrigger = models.HandoffTrigger
+ScoreSnapshot = models.ScoreSnapshot
 HandoffPolicy = models.HandoffPolicy
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
@@ -179,7 +186,7 @@ def test_scope_exposes_abac_dimensions() -> None:
     assert scope.allowed_owners == frozenset({EmployeeId("e1")})
     assert scope.allowed_countries == frozenset({"US"})
     assert scope.allowed_categories == frozenset({"hinges"})
-    deny_all = OpportunityScope(level=ScopeLevel.SELF, allowed_owners=frozenset())
+    deny_all = OpportunityScope(level=ScopeLevel.MANAGER, allowed_owners=frozenset())
     assert deny_all.allowed_owners == frozenset()  # 空集 = 该维度任何值都不授权
 
 
@@ -377,28 +384,43 @@ async def test_allow_logs_rule_and_passes() -> None:
 
 
 async def test_list_for_employee_abac_owner_denied() -> None:
-    """查询 ABAC：scope.allowed_owners 不含目标 owner → 拒绝，且不查仓储。"""
+    """查询 ABAC：scope.allowed_owners 不含目标 owner → 拒绝，且不查仓储。
+
+    SELF actor 的 own-owner 限制必须含自身（构造期校验），故 actor 自身
+    owner 为 e2，却查别人的机会列表 e1 → 拒绝。
+    """
     audit = _RecordingAudit()
     service = _make_service(authorizer=_AllowAuthorizer(), audit=audit)
     actor = Actor(
-        actor_id="e1",
+        actor_id="e2",
         scope=OpportunityScope(
             level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId("e2")})
         ),
     )
     with pytest.raises(PermissionDenied):
         await service.list_for_employee(TenantId("t1"), EmployeeId("e1"), actor=actor)
-    assert audit.entries[-1]["rule"] == "deny:abac:owner"
-    assert audit.entries[-1]["action"] == "opportunity:list"
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+    assert audit.entries[0]["action"] == "opportunity:list"
 
 
 async def test_list_for_employee_abac_unrestricted_allowed() -> None:
-    """查询 ABAC：scope 未限制 owner（None）→ 放行并进入仓储（tenant 原样传）。"""
+    """查询 ABAC：owner 维度未限制（None）→ 放行并进入仓储（tenant 原样传）。
+
+    MANAGER 按构造校验必须带至少一个显式 ABAC 维度，此处用 country 维度
+    限定；owner 维度仍为 None，故查询列表放行（country/category 过滤归
+    S3-13 SQL 层）。
+    """
     factory = _FakeUoWFactory()
     authorizer = _AllowAuthorizer()
     audit = _RecordingAudit()
     service = _make_service(authorizer=authorizer, audit=audit, factory=factory)
-    actor = Actor(actor_id="m1", scope=OpportunityScope(level=ScopeLevel.MANAGER))
+    actor = Actor(
+        actor_id="m1",
+        scope=OpportunityScope(
+            level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+        ),
+    )
 
     result = await service.list_for_employee(
         TenantId("t1"), EmployeeId("e1"), actor=actor, limit=10
@@ -411,6 +433,503 @@ async def test_list_for_employee_abac_unrestricted_allowed() -> None:
     assert call[0] == TenantId("t1")
     assert call[1] == EmployeeId("e1")
     assert call[3] == 10
+
+
+# --- 修复轮2 · Important 2：list_for_employee 行级 owner/country/category ABAC ----
+
+
+async def test_list_for_employee_abac_country_denied_row() -> None:
+    """查询 ABAC：返回机会 country 越界（受限 country 维度）→ 拒绝，仅一条 deny。
+
+    MANAGER 只限 allowed_countries={"US"}（owner 不限），返回行 country=CN 必须
+    在 build/return 前被拦，不能只查 owner 维度就整单放行。
+    """
+    factory = _FakeUoWFactory()
+    factory.seed_rows(
+        [_opp(owner=EmployeeId("e1"), country="CN", category="hinges")]
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    actor = Actor(
+        actor_id="m1",
+        scope=OpportunityScope(
+            level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+        ),
+    )
+    with pytest.raises(PermissionDenied):
+        await service.list_for_employee(TenantId("t1"), EmployeeId("e1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计（无前置 allow）
+    assert audit.entries[0]["rule"] == "deny:abac:country"
+    assert audit.entries[0]["action"] == "opportunity:list"
+
+
+async def test_list_for_employee_abac_category_denied_row() -> None:
+    """查询 ABAC：SELF 受限 owner+category，返回机会 category 越界 → 拒绝。
+
+    行 owner 匹配自身限制，但 category 越界仍必须整单拒绝（不能只查 owner）。
+    """
+    factory = _FakeUoWFactory()
+    factory.seed_rows(
+        [_opp(owner=EmployeeId("e1"), country="US", category="fasteners")]
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF,
+            allowed_owners=frozenset({EmployeeId("e1")}),
+            allowed_categories=frozenset({"hinges"}),
+        ),
+    )
+    with pytest.raises(PermissionDenied):
+        await service.list_for_employee(TenantId("t1"), EmployeeId("e1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:category"
+    assert audit.entries[0]["action"] == "opportunity:list"
+
+
+async def test_list_for_employee_abac_missing_owner_fails_closed() -> None:
+    """查询 ABAC：owner 受限但返回行缺 owner（None）→ fail closed 拒绝。
+
+    受限维度遇到缺失资源值一律拒绝，不能把 None 当"不限"放行。
+    """
+    factory = _FakeUoWFactory()
+    factory.seed_rows(
+        [_opp(owner=None, country="US", category="hinges")]
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF,
+            allowed_owners=frozenset({EmployeeId("e1")}),
+            allowed_categories=frozenset({"hinges"}),
+        ),
+    )
+    with pytest.raises(PermissionDenied):
+        await service.list_for_employee(TenantId("t1"), EmployeeId("e1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+
+
+async def test_list_for_employee_abac_rows_allowed_single_allow() -> None:
+    """查询 ABAC：所有返回行通过三维判权 → 仅一条 allow，返回视图。
+
+    allow 必须延迟到全部行通过后；任一越界行都不得产生 allow 审计。
+    """
+    factory = _FakeUoWFactory()
+    factory.seed_rows(
+        [
+            _opp("opp-1", owner=EmployeeId("e1"), country="US", category="hinges"),
+            _opp("opp-2", owner=EmployeeId("e1"), country="US", category="hinges"),
+        ]
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF,
+            allowed_owners=frozenset({EmployeeId("e1")}),
+            allowed_countries=frozenset({"US"}),
+            allowed_categories=frozenset({"hinges"}),
+        ),
+    )
+    views = await service.list_for_employee(
+        TenantId("t1"), EmployeeId("e1"), actor=actor
+    )
+    assert [v.opportunity_id for v in views] == [
+        OpportunityId("opp-1"),
+        OpportunityId("opp-2"),
+    ]
+    assert len(audit.entries) == 1  # 全通过才写一条 allow
+    assert audit.entries[0]["rule"] == "test:allow"
+    assert audit.entries[0]["action"] == "opportunity:list"
+
+
+# --- 修复轮1 · Important 2：SELF/MANAGER scope 构造 fail-closed -----------------
+
+
+def _self_actor(actor_id: str = "e1") -> Actor:
+    """SELF actor：own-owner 限制=自身（构造校验后仍合法）。"""
+    return Actor(
+        actor_id=actor_id,
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId(actor_id)})
+        ),
+    )
+
+
+def _opp(
+    opp_id: str = "opp-1",
+    *,
+    owner: EmployeeId | None = None,
+    country: str = "US",
+    category: str = "hinges",
+) -> Opportunity:
+    return Opportunity(
+        opportunity_id=OpportunityId(opp_id),
+        tenant_id=TenantId("t1"),
+        account_id=ProspectAccountId("acc-1"),
+        need_id=ValidatedNeedId("need-1"),
+        product_category=category,
+        created_at=_NOW,
+        account_name="Acme",
+        country=country,
+        owner=owner,
+    )
+
+
+def _packet(
+    handoff_id: str = "ho-1", *, opportunity_id: str = "opp-1"
+) -> HandoffPacket:
+    return HandoffPacket(
+        handoff_id=HandoffId(handoff_id),
+        tenant_id=TenantId("t1"),
+        opportunity_id=OpportunityId(opportunity_id),
+        trigger=HandoffTrigger.QUOTE_REQUESTED,
+        requested_at=_NOW,
+        account_name="Acme",
+        country="US",
+        why_valuable="扩建",
+        customer_verbatim="we need hinges",
+        state=HandoffState.REQUESTED,
+    )
+
+
+def test_self_scope_requires_nonempty_own_owner() -> None:
+    """SELF 必须带非空 own-owner 限制；缺省/空集一律拒绝构造（fail closed）。"""
+    with pytest.raises(ValidationError):
+        OpportunityScope(level=ScopeLevel.SELF)
+    with pytest.raises(ValidationError):
+        OpportunityScope(level=ScopeLevel.SELF, allowed_owners=frozenset())
+
+
+def test_manager_scope_requires_explicit_abac_dimension() -> None:
+    """MANAGER 必须带至少一个显式 ABAC 维度；空集维度合法（=该维度全拒）。"""
+    with pytest.raises(ValidationError):
+        OpportunityScope(level=ScopeLevel.MANAGER)
+    deny_all = OpportunityScope(level=ScopeLevel.MANAGER, allowed_owners=frozenset())
+    assert deny_all.allowed_owners == frozenset()  # 显式空维度仍满足构造校验
+
+
+def test_tenant_and_system_scope_may_be_unrestricted() -> None:
+    """TENANT/SYSTEM 允许显式无限制；SYSTEM 判权仍由 authorizer 控制。"""
+    assert OpportunityScope(level=ScopeLevel.TENANT).allowed_owners is None
+    assert OpportunityScope(level=ScopeLevel.SYSTEM).allowed_owners is None
+
+
+def test_self_actor_own_owner_must_include_actor_id() -> None:
+    """SELF actor 的 own-owner 限制必须包含 actor_id 自身（构造期校验）。"""
+    with pytest.raises(ValidationError):
+        Actor(
+            actor_id="e1",
+            scope=OpportunityScope(
+                level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId("e2")})
+            ),
+        )
+    actor = _self_actor("e1")
+    assert actor.scope.allowed_owners == frozenset({EmployeeId("e1")})
+
+
+# --- 修复轮2 · Important 1：SELF allowed_owners 必须精确等于自身单例 -------------
+
+
+def test_self_actor_own_owner_must_be_exact_singleton() -> None:
+    """SELF actor 的 allowed_owners 必须精确等于 {actor_id} 单例：self+other 拒绝。
+
+    「只看自己的机会」语义：多带任何其他 owner（即使包含自身）也构成越权身份。
+    """
+    with pytest.raises(ValidationError):
+        Actor(
+            actor_id="e1",
+            scope=OpportunityScope(
+                level=ScopeLevel.SELF,
+                allowed_owners=frozenset({EmployeeId("e1"), EmployeeId("e2")}),
+            ),
+        )
+
+
+def test_self_actor_exact_singleton_accepted() -> None:
+    """精确单例 {actor_id} 接受：SELF 身份只能覆盖自身一个 owner。"""
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId("e1")})
+        ),
+    )
+    assert actor.scope.allowed_owners == frozenset({EmployeeId("e1")})
+    assert actor.scope.allowed_owners == frozenset({EmployeeId(actor.actor_id)})
+
+
+# --- 修复轮1 · Important 1：按资源 ID 的 ABAC 覆盖（get / get_handoff_packet） ---
+
+
+async def test_get_abac_owner_denied() -> None:
+    """get：owner 维度受限且机会 owner 越界 → 拒绝，不返回视图。
+
+    拒绝路径只允许**一条** deny 审计（无前置 allow 残留）。
+    """
+    factory = _FakeUoWFactory()
+    factory.seed_opp(_opp(owner=EmployeeId("e2")))
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_self_actor("e1"))
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+    assert audit.entries[0]["action"] == "opportunity:read"
+
+
+async def test_get_abac_missing_owner_fails_closed() -> None:
+    """get：owner 受限但资源缺 owner（None）→ fail closed 拒绝。"""
+    factory = _FakeUoWFactory()
+    factory.seed_opp(_opp(owner=None))
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_self_actor("e1"))
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+
+
+async def test_get_abac_country_denied() -> None:
+    """get：country 维度受限且机会 country 越界 → 拒绝。"""
+    factory = _FakeUoWFactory()
+    factory.seed_opp(_opp(country="CN", owner=EmployeeId("e1")))  # owner 匹配，仅 country 越界
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF,
+            allowed_owners=frozenset({EmployeeId("e1")}),
+            allowed_countries=frozenset({"US"}),
+        ),
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:country"
+
+
+async def test_get_abac_category_denied() -> None:
+    """get：category 维度受限且机会品类越界 → 拒绝。"""
+    factory = _FakeUoWFactory()
+    factory.seed_opp(_opp(category="fasteners", owner=EmployeeId("e1")))  # owner 匹配，仅品类越界
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.SELF,
+            allowed_owners=frozenset({EmployeeId("e1")}),
+            allowed_categories=frozenset({"hinges"}),
+        ),
+    )
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:category"
+
+
+async def test_get_abac_matching_scope_allowed() -> None:
+    """get：owner 匹配自身限制 → 放行并返回视图。"""
+    factory = _FakeUoWFactory()
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=_RecordingAudit(), factory=factory)
+    view = await service.get(TenantId("t1"), OpportunityId("opp-1"), actor=_self_actor("e1"))
+    assert view.opportunity_id == OpportunityId("opp-1")
+    assert view.owner == "e1"
+
+
+async def test_get_handoff_packet_abac_uses_linked_opportunity() -> None:
+    """get_handoff_packet：owner 限制经关联机会判权（不能靠 handoff ID 绕过）。"""
+    factory = _FakeUoWFactory()
+    factory.seed_packet(_packet("ho-1", opportunity_id="opp-1"))
+    factory.seed_opp(_opp("opp-1", owner=EmployeeId("e2")))
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"), actor=_self_actor("e1"))
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+    assert audit.entries[0]["action"] == "handoff:read"
+
+
+async def test_get_handoff_packet_missing_opportunity_fails_closed() -> None:
+    """get_handoff_packet：关联机会缺失 + owner 受限 → fail closed 拒绝。"""
+    factory = _FakeUoWFactory()
+    factory.seed_packet(_packet("ho-1", opportunity_id="opp-1"))
+    # 不 seed opp：关联机会缺失，受限维度无法验证 → 拒绝
+    audit = _RecordingAudit()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=audit, factory=factory)
+    with pytest.raises(PermissionDenied):
+        await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"), actor=_self_actor("e1"))
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:owner"
+
+
+async def test_get_handoff_packet_abac_allowed_for_tenant() -> None:
+    """get_handoff_packet：TENANT 无限制 → 放行，即使关联机会 owner 是别人。"""
+    factory = _FakeUoWFactory()
+    factory.seed_packet(_packet("ho-1", opportunity_id="opp-1"))
+    factory.seed_opp(_opp("opp-1", owner=EmployeeId("e2")))
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=_RecordingAudit(), factory=factory)
+    view = await service.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"), actor=_actor())
+    assert view.handoff_id == HandoffId("ho-1")
+
+
+# --- 修复轮1 · Important 1：租户级聚合拒绝窄作用域 ------------------------------
+
+
+async def test_get_queue_stats_aggregate_denied_for_self() -> None:
+    """get_queue_stats：SELF 窄作用域读租户级聚合 → 拒绝，且不进入 UoW。"""
+    audit = _RecordingAudit()
+    service = _make_service(
+        authorizer=_AllowAuthorizer(), audit=audit, factory=_NeverUoWFactory()
+    )
+    with pytest.raises(PermissionDenied):
+        await service.get_queue_stats(TenantId("t1"), actor=_self_actor("e1"))
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:aggregate"
+    assert audit.entries[0]["action"] == "handoff:queue_read"
+
+
+async def test_loss_reason_breakdown_aggregate_denied_for_manager() -> None:
+    """loss_reason_breakdown：MANAGER 窄作用域读租户级聚合 → 拒绝。"""
+    audit = _RecordingAudit()
+    actor = Actor(
+        actor_id="m1",
+        scope=OpportunityScope(
+            level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+        ),
+    )
+    service = _make_service(
+        authorizer=_AllowAuthorizer(), audit=audit, factory=_NeverUoWFactory()
+    )
+    with pytest.raises(PermissionDenied):
+        await service.loss_reason_breakdown(TenantId("t1"), actor=actor)
+    assert len(audit.entries) == 1  # 拒绝路径仅一条审计
+    assert audit.entries[0]["rule"] == "deny:abac:aggregate"
+    assert audit.entries[0]["action"] == "loss_reason:read"
+
+
+async def test_aggregates_allowed_for_tenant_scope() -> None:
+    """租户级聚合：显式 TENANT 宽作用域放行（返回空结果，不误伤）。"""
+    factory = _FakeUoWFactory()
+    service = _make_service(authorizer=_AllowAuthorizer(), audit=_RecordingAudit(), factory=factory)
+    stats = await service.get_queue_stats(TenantId("t1"), actor=_actor())
+    assert stats.queue_depth == 0
+    breakdown = await service.loss_reason_breakdown(TenantId("t1"), actor=_actor())
+    assert breakdown == {}
+
+
+# --- 修复轮1 · Important 3：demo 最小策略 + 真实审计 ----------------------------
+
+
+def test_demo_authorizer_minimal_policy() -> None:
+    """演示 authorizer：仅放行本走查实际动作 + 显式 MANAGER scope；越权默认拒绝。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    auth = demo._DemoAuthorizer()
+    manager_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+    )
+    actor = Actor(actor_id="e1", scope=manager_scope)
+    for action in (
+        OpportunityAction.OPPORTUNITY_CREATE,
+        OpportunityAction.OPPORTUNITY_READ,
+        OpportunityAction.OPPORTUNITY_TRANSITION,
+        OpportunityAction.OPPORTUNITY_MARK_LOST,
+    ):
+        assert (
+            auth.require(actor, action, manager_scope, TenantId("t1"))
+            == "demo:manager:allow"
+        )
+    # 越权 action：未实际走查的动作默认拒绝
+    with pytest.raises(PermissionDenied):
+        auth.require(
+            actor, OpportunityAction.OPPORTUNITY_ASSIGN, manager_scope, TenantId("t1")
+        )
+    # 越权 scope：非 MANAGER 一律拒绝
+    tenant_actor = Actor(actor_id="e1", scope=OpportunityScope(level=ScopeLevel.TENANT))
+    with pytest.raises(PermissionDenied):
+        auth.require(
+            tenant_actor,
+            OpportunityAction.OPPORTUNITY_READ,
+            tenant_actor.scope,
+            TenantId("t1"),
+        )
+
+
+def test_demo_uses_real_standard_audit_logger() -> None:
+    """演示脚本用真实五字段审计（StandardAuditLogger），不再丢弃授权审计。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    assert not hasattr(demo, "_NoopAudit")  # 空审计实现已移除
+    assert "StandardAuditLogger" in inspect.getsource(demo)  # 真实审计已装配
+
+
+# --- 修复轮2 · Important 3：demo authorizer 仅放行精确 MANAGER+US scope ---------
+
+
+def _demo_manager_us() -> OpportunityScope:
+    """演示预期的精确 scope：MANAGER + allowed_countries={"US"}（owner/category 不限）。"""
+    return OpportunityScope(level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"}))
+
+
+def test_demo_authorizer_rejects_wrong_country_manager() -> None:
+    """演示 authorizer：MANAGER 但 country 不是精确 US → 拒绝。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    auth = demo._DemoAuthorizer()
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.MANAGER, allowed_countries=frozenset({"CN"})
+        ),
+    )
+    with pytest.raises(PermissionDenied):
+        auth.require(actor, OpportunityAction.OPPORTUNITY_READ, actor.scope, TenantId("t1"))
+
+
+def test_demo_authorizer_rejects_owner_only_manager() -> None:
+    """演示 authorizer：MANAGER 只带 owner 维度（非精确 US scope）→ 拒绝。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    auth = demo._DemoAuthorizer()
+    actor = Actor(
+        actor_id="e1",
+        scope=OpportunityScope(
+            level=ScopeLevel.MANAGER, allowed_owners=frozenset({EmployeeId("e1")})
+        ),
+    )
+    with pytest.raises(PermissionDenied):
+        auth.require(actor, OpportunityAction.OPPORTUNITY_READ, actor.scope, TenantId("t1"))
+
+
+def test_demo_authorizer_rejects_actor_scope_mismatch() -> None:
+    """演示 authorizer：传入 scope 参数与 actor.scope 不一致 → 拒绝。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    auth = demo._DemoAuthorizer()
+    actor = Actor(actor_id="e1", scope=OpportunityScope(level=ScopeLevel.TENANT))
+    intended = _demo_manager_us()
+    with pytest.raises(PermissionDenied):
+        auth.require(actor, OpportunityAction.OPPORTUNITY_READ, intended, TenantId("t1"))
+
+
+def test_demo_authorizer_accepts_exact_intended_scope() -> None:
+    """演示 authorizer：精确 MANAGER+US scope 仍放行四动作（最小策略不旁路）。"""
+    demo = importlib.import_module("scripts.demo_opportunities")
+    auth = demo._DemoAuthorizer()
+    scope = _demo_manager_us()
+    actor = Actor(actor_id="e1", scope=scope)
+    for action in (
+        OpportunityAction.OPPORTUNITY_CREATE,
+        OpportunityAction.OPPORTUNITY_READ,
+        OpportunityAction.OPPORTUNITY_TRANSITION,
+        OpportunityAction.OPPORTUNITY_MARK_LOST,
+    ):
+        assert auth.require(actor, action, scope, TenantId("t1")) == "demo:manager:allow"
 
 
 # --- worker/system：显式最小 actor/scope，不旁路 --------------------------------
@@ -448,24 +967,59 @@ def test_no_cross_domain_import() -> None:
 class _FakeOpportunityRepo:
     def __init__(self) -> None:
         self.list_by_owner_calls: list[tuple] = []
+        self.row: Opportunity | None = None
+        self.rows: list[Opportunity] = []
 
     async def list_by_owner(self, tenant_id, owner, states, limit):
         self.list_by_owner_calls.append((tenant_id, owner, states, limit))
-        return []
+        return self.rows
+
+    async def get(self, tenant_id, opportunity_id) -> Opportunity | None:
+        return self.row
+
+
+class _FakeSnapshotRepo:
+    def __init__(self) -> None:
+        self.latest: ScoreSnapshot | None = None
+
+    async def latest_for_opportunity(self, tenant_id, opportunity_id):
+        return self.latest
+
+
+class _FakeHandoffRepo:
+    def __init__(self) -> None:
+        self.row: HandoffPacket | None = None
+        self.pending_list: list[HandoffPacket] = []
+        self.count_rows: dict[str, int] = {}
+
+    async def get(self, tenant_id, handoff_id) -> HandoffPacket | None:
+        return self.row
+
+    async def find_pending_for_opportunity(self, tenant_id, opportunity_id):
+        return None
+
+    async def list_pending(self, tenant_id, limit):
+        return self.pending_list
+
+    async def count_pending_by_employee(self, tenant_id):
+        return self.count_rows
 
 
 class _FakeLossRepo:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.rows: list[tuple[str, str, int]] = []
 
     async def count_by_reason_and_state(self, tenant_id, since_days):
         self.calls.append((tenant_id, since_days))
-        return []
+        return self.rows
 
 
 class _FakeUoW:
     def __init__(self) -> None:
         self.opportunities = _FakeOpportunityRepo()
+        self.snapshots = _FakeSnapshotRepo()
+        self.handoffs = _FakeHandoffRepo()
         self.loss_records = _FakeLossRepo()
 
     async def __aenter__(self) -> Self:
@@ -483,8 +1037,23 @@ class _FakeUoW:
 class _FakeUoWFactory:
     def __init__(self) -> None:
         self.created: list[_FakeUoW] = []
+        self.seed_opp_row: Opportunity | None = None
+        self.seed_packet_row: HandoffPacket | None = None
+        self.seed_opp_rows: list[Opportunity] = []
+
+    def seed_opp(self, opp: Opportunity) -> None:
+        self.seed_opp_row = opp
+
+    def seed_packet(self, packet: HandoffPacket) -> None:
+        self.seed_packet_row = packet
+
+    def seed_rows(self, opps: list[Opportunity]) -> None:
+        self.seed_opp_rows = opps
 
     def __call__(self) -> _FakeUoW:
         uow = _FakeUoW()
+        uow.opportunities.row = self.seed_opp_row
+        uow.opportunities.rows = self.seed_opp_rows
+        uow.handoffs.row = self.seed_packet_row
         self.created.append(uow)
         return uow

@@ -22,6 +22,7 @@ from domains.opportunities.permissions import (
     OpportunityAction,
     OpportunityScope,
     ScopeLevel,
+    StandardAuditLogger,
 )
 from domains.opportunities.schemas import OpportunityCreateRequest
 from domains.opportunities.scorer import OpportunityScorerImpl
@@ -43,10 +44,32 @@ _USD = CurrencyCode("USD")
 
 
 class _DemoAuthorizer:
-    """演示用放行 authorizer：只对已知 action 放行（**非生产策略**）。
+    """演示最小放行策略（**非生产**）：只放行本走查实际动作 + 精确 MANAGER+US scope。
 
-    所有 service 入口仍会调用 ``require``——本基座只是放行策略，不是旁路。
+    - 仅 ``opportunity:create`` / ``opportunity:read`` / ``opportunity:transition`` /
+      ``opportunity:mark_lost``（本走查实际执行的动作）；
+    - scope 必须是**精确的** ``MANAGER + allowed_countries={"US"}``（owner/category
+      维度 = ``None`` 不限制），且传入 ``scope`` 必须等于 ``actor.scope``；
+      任何其他 MANAGER scope（换国家 / 只带 owner 维度 / 带 category 维度等）
+      一律 ``PermissionDenied``（fail closed）。
+    未登记的 action / 越权 scope 全部 ``PermissionDenied``。
+
+    所有 service 入口仍会调用 ``require``——这里是最小放行策略，不是旁路。
     """
+
+    _ALLOWED_ACTIONS: frozenset[OpportunityAction] = frozenset(
+        {
+            OpportunityAction.OPPORTUNITY_CREATE,
+            OpportunityAction.OPPORTUNITY_READ,
+            OpportunityAction.OPPORTUNITY_TRANSITION,
+            OpportunityAction.OPPORTUNITY_MARK_LOST,
+        }
+    )
+    # 演示唯一合法 scope：MANAGER + 精确 allowed_countries={"US"}；owner/category
+    # 保持 None（不限制）。与 main() 中 demo actor 的 scope 构造完全一致。
+    _EXPECTED_SCOPE: OpportunityScope = OpportunityScope(
+        level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+    )
 
     def require(
         self,
@@ -57,14 +80,15 @@ class _DemoAuthorizer:
     ) -> str:
         if not isinstance(action, OpportunityAction):
             raise PermissionDenied(f"未知 action: {action}")
-        return "demo:allow"
-
-
-class _NoopAudit:
-    """演示用空审计（authorizer Protocol 注入要求；不打印，避免污染演示输出）。"""
-
-    def log(self, **kwargs: object) -> None:
-        return None
+        if scope != self._EXPECTED_SCOPE:
+            raise PermissionDenied(
+                "演示策略只放行精确 MANAGER+US scope（owner/category 不限）"
+            )
+        if scope != actor.scope:
+            raise PermissionDenied("演示策略要求传入 scope 与 actor.scope 一致")
+        if action not in self._ALLOWED_ACTIONS:
+            raise PermissionDenied(f"演示策略不放行 action：{action.value}")
+        return "demo:manager:allow"
 
 
 async def main() -> None:
@@ -104,13 +128,17 @@ async def main() -> None:
             ),
             scorer,
             handoff_policy,
-            authorizer=_DemoAuthorizer(),  # 演示放行策略（非生产）；require 仍被调用
-            audit=_NoopAudit(),
+            authorizer=_DemoAuthorizer(),  # 演示最小放行策略（非生产）；require 仍被调用
+            audit=StandardAuditLogger(),  # 真实五字段授权审计（不打印 payload/DSN）
             now=lambda: datetime.now(UTC),  # 注入 UTC aware 时钟，不用 naive 默认
         )
-        # 显式 actor：授权身份（manager 作用域）+ 业务确认人 employee_id 分离。
+        # 显式 actor：授权身份（manager 作用域，带显式 country ABAC 维度——
+        # 构造校验要求 MANAGER 必须带至少一个维度）+ 业务确认人 employee_id 分离。
         actor = Actor(
-            actor_id=str(employee_id), scope=OpportunityScope(level=ScopeLevel.MANAGER)
+            actor_id=str(employee_id),
+            scope=OpportunityScope(
+                level=ScopeLevel.MANAGER, allowed_countries=frozenset({"US"})
+            ),
         )
 
         confirmed_at = datetime.now(UTC)  # 人工确认时间（UTC aware）

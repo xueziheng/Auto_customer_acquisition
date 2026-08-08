@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId
 
 
@@ -61,12 +61,32 @@ class OpportunityScope:
     三个维度是 ABAC 限制：``None`` 表示该维度不限制；空 ``frozenset`` 表示该维度
     任何值都不授权（查询级拒绝）。供 S3-13 翻译成 tenant-filtered SQL WHERE。
     所有字段均不可变（frozen dataclass + frozenset），无可变默认值。
+
+    构造校验（fail closed，防"忘了加过滤就变成租户级"）：
+    - ``SELF`` 必须带非空 ``allowed_owners``（own-owner 限制）；
+    - ``MANAGER`` 必须带至少一个显式 ABAC 维度（owner/country/category），
+      即使选中的集合故意为空（= 该维度全拒）；
+    - ``TENANT`` 允许显式无限制；``SYSTEM`` 判权仍由 authorizer 控制。
     """
 
     level: ScopeLevel | None = None
     allowed_owners: frozenset[EmployeeId] | None = None
     allowed_countries: frozenset[str] | None = None
     allowed_categories: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.level is ScopeLevel.SELF and not self.allowed_owners:
+            raise ValidationError(
+                "SELF 作用域必须带非空 allowed_owners（own-owner 限制，fail closed）"
+            )
+        if self.level is ScopeLevel.MANAGER and (
+            self.allowed_owners is None
+            and self.allowed_countries is None
+            and self.allowed_categories is None
+        ):
+            raise ValidationError(
+                "MANAGER 作用域必须带至少一个显式 ABAC 维度（owner/country/category）"
+            )
 
     @property
     def label(self) -> str:
@@ -77,11 +97,26 @@ class OpportunityScope:
 @dataclass(frozen=True)
 class Actor:
     """操作身份。``scope`` **必须显式传**（无默认，避免默认成最高权限）；
-    ``role`` 由上层从员工记录推导，绝不信任请求头。"""
+    ``role`` 由上层从员工记录推导，绝不信任请求头。
+
+    构造校验（fail closed）：``SELF`` actor 的 ``allowed_owners`` 必须**精确等于**
+    ``frozenset({EmployeeId(actor_id)})`` 单例——SELF 语义是"只看自己的机会"，
+    多带任何其他 owner（即使同时包含自身）都构成越权身份，构造即拒绝。
+    """
 
     actor_id: str
     scope: OpportunityScope
     role: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.scope.level is ScopeLevel.SELF
+            and self.scope.allowed_owners != frozenset({EmployeeId(self.actor_id)})
+        ):
+            raise ValidationError(
+                "SELF actor 的 allowed_owners 必须精确等于 {actor_id} 单例"
+                "（fail closed，杜绝附带他人 owner）"
+            )
 
 
 @runtime_checkable
