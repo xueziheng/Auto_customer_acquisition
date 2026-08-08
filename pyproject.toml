@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradeos-agent"
+version = "0.1.0"
+description = "以自主发现需求和客户为核心的跨境贸易智能操作系统"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "sqlalchemy>=2",
+    "asyncpg",
+    "alembic",
+    "redis",
+    "boto3",
+    "python-dotenv",
+    "openai",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "testcontainers",
+    "ruff",
+    "mypy",
+    "aiosqlite",  # 内存 SQLite 测试夹具驱动；使 make check / CI 不依赖 Docker（HANDBOOK 允许「内存/容器数据库」）
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "shared*",
+    "domains*",
+    "tool_gateway*",
+    "notification_gateway*",
+    "artifact_store*",
+    "connectors*",
+    "agent_runtime*",
+    "workflows*",
+    "apps*",
+    "infra*",
+]
+exclude = ["tests*", "scripts*"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# EXE002：可执行位无 shebang，属文件权限卫生而非代码质量；骨架期基线收敛（见 phase0 计划任务 1）。
+ignore = ["EXE002"]
+
+[tool.ruff.lint.per-file-ignores]
+# 除 scripts/check_boundaries.py 外均为骨架 stub 豁免：首次实现对应文件
+# （函数体不再是 NotImplementedError / `...`）时必须在同一 commit 删除其豁免。
+# scripts/check_boundaries.py 的 FURB167 是既有真实脚本的一次性风格容忍，非 stub 豁免。
+"agent_runtime/guardrails/rails.py" = ["F401"]
+"connectors/base.py" = ["F401"]
+"domains/conversations/models.py" = ["F401"]
+"domains/outreach/models.py" = ["F401"]
+"domains/outreach/schemas.py" = ["F401"]
+"domains/sourcing/service.py" = ["F401", "I001"]
+"tool_gateway/pipeline.py" = ["F401"]
+"workflows/engine/runner.py" = ["F401"]
+"shared/events/bus.py" = ["PYI013", "PIE790"]
+# shared/schemas/provenance.py 的 UP046（PEP 695 泛型风格建议）：骨架 stub 仍用
+# Generic[...] 写法；provenance 骨架实现/迁移到 PEP 695 时必须删除本行豁免。
+"shared/schemas/provenance.py" = ["UP046"]
+"scripts/check_boundaries.py" = ["FURB167"]
+
+[tool.mypy]
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "db: 需 Docker 后端的 Postgres 容器测试",
+]
