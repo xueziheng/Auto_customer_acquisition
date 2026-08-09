@@ -97,6 +97,8 @@ def build_human_handoff_definition(
                 "wait_acceptance_boss",
                 "human_handoff.accept",
                 wait_event_type="HandoffAccepted",
+                reminder_interval=t2,
+                reminder_handler_ref="human_handoff.remind_boss",
             ),
         ),
         transitions={
@@ -247,21 +249,12 @@ class _EscalateBossStep:
         self, run: WorkflowRun
     ) -> tuple[str, str | None, dict[str, Any]]:
         ctx = _context(run)
-        owner = await _employee(
-            self._employees, run.tenant_id, ctx.assigned_to, self._employee_actor
+        boss = await _resolve_boss(
+            self._employees,
+            run.tenant_id,
+            ctx.assigned_to,
+            self._employee_actor,
         )
-        if owner.manager_id is None:
-            raise ValidationError("human_handoff manager unavailable")
-        manager = await _employee(
-            self._employees, run.tenant_id, owner.manager_id, self._employee_actor
-        )
-        _require_role(manager, "manager")
-        if manager.manager_id is None:
-            raise ValidationError("human_handoff boss unavailable")
-        boss = await _employee(
-            self._employees, run.tenant_id, manager.manager_id, self._employee_actor
-        )
-        _require_role(boss, "boss")
         await self._opportunities.record_handoff_escalation(
             run.tenant_id,
             ctx.handoff_id,
@@ -280,6 +273,41 @@ class _EscalateBossStep:
         return ("advance", "wait_acceptance_boss", {})
 
 
+class _RemindBossStep:
+    def __init__(
+        self,
+        employee_service: EmployeeService,
+        notifier: HandoffEscalationNotifier,
+        employee_actor: EmployeeActor,
+    ) -> None:
+        self._employees = employee_service
+        self._notifier = notifier
+        self._employee_actor = employee_actor
+
+    async def execute(
+        self, run: WorkflowRun
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        ctx = _context(run)
+        reminder = run.reminder
+        if reminder is None or reminder.index < 1:
+            raise ValidationError("human_handoff reminder context invalid")
+        boss = await _resolve_boss(
+            self._employees, run.tenant_id, ctx.assigned_to, self._employee_actor
+        )
+        await self._notifier.notify(
+            _notice(
+                ctx,
+                boss.employee_id,
+                "boss_reminder",
+                reminder.scheduled_at,
+                dedup_key=(
+                    f"human_handoff:{ctx.handoff_id}:boss-reminder:{reminder.index}"
+                ),
+            )
+        )
+        return ("wait", None, {})
+
+
 async def _employee(
     service: EmployeeService,
     tenant_id: TenantId,
@@ -292,6 +320,24 @@ async def _employee(
     return employee
 
 
+async def _resolve_boss(
+    service: EmployeeService,
+    tenant_id: TenantId,
+    assigned_to: EmployeeId,
+    actor: EmployeeActor,
+) -> EmployeeView:
+    owner = await _employee(service, tenant_id, assigned_to, actor)
+    if owner.manager_id is None:
+        raise ValidationError("human_handoff manager unavailable")
+    manager = await _employee(service, tenant_id, owner.manager_id, actor)
+    _require_role(manager, "manager")
+    if manager.manager_id is None:
+        raise ValidationError("human_handoff boss unavailable")
+    boss = await _employee(service, tenant_id, manager.manager_id, actor)
+    _require_role(boss, "boss")
+    return boss
+
+
 def _require_role(employee: EmployeeView, role: str) -> None:
     if not employee.is_active or employee.role != role:
         raise ValidationError("human_handoff escalation role unavailable")
@@ -302,6 +348,8 @@ def _notice(
     recipient: EmployeeId,
     level: str,
     due_at: datetime,
+    *,
+    dedup_key: str | None = None,
 ) -> HandoffEscalationNotice:
     return HandoffEscalationNotice(
         tenant_id=ctx.tenant_id,
@@ -312,7 +360,7 @@ def _notice(
         level=level,
         sla_started_at=ctx.sla_started_at,
         sla_due_at=due_at,
-        dedup_key=f"human_handoff:{ctx.handoff_id}:{level}",
+        dedup_key=dedup_key or f"human_handoff:{ctx.handoff_id}:{level}",
     )
 
 
@@ -351,6 +399,11 @@ def build_human_handoff_step_handlers(
             t2,
             now,
         ),
+        "human_handoff.remind_boss": _RemindBossStep(
+            employee_service,
+            notifier,
+            employee_system_actor,
+        ),
     }
 
 
@@ -383,33 +436,40 @@ class _RequestedHandler:
 class _AcceptedHandler:
     def __init__(self, engine: WorkflowEngine) -> None:
         self._engine = engine
-        self._completed: set[tuple[TenantId, HandoffId]] = set()
 
     async def handle(self, event: HandoffAccepted) -> None:
         if event.accepted_by is None:
             raise ValidationError("human_handoff acceptance requires employee")
-        key = (event.tenant_id, event.handoff_id)
+        payload = {
+            "handoff_id": str(event.handoff_id),
+            "accepted_by": str(event.accepted_by),
+        }
         run_id: RunId | None = await self._engine.find_active_run(
             event.tenant_id,
             HUMAN_HANDOFF_WORKFLOW_TYPE,
             str(event.handoff_id),
         )
         if run_id is None:
-            if key in self._completed:
+            if await self._engine.has_delivered_event(
+                event.tenant_id,
+                HUMAN_HANDOFF_WORKFLOW_TYPE,
+                str(event.handoff_id),
+                "HandoffAccepted",
+                payload,
+            ):
                 return
             raise TransientError(
                 "human_handoff active run temporarily unavailable"
             )
-        await self._engine.deliver_event(
+        accepted = await self._engine.deliver_event(
             event.tenant_id,
             run_id,
             "HandoffAccepted",
-            {
-                "handoff_id": str(event.handoff_id),
-                "accepted_by": str(event.accepted_by),
-            },
+            payload,
         )
-        self._completed.add(key)
+        if accepted:
+            return
+        raise TransientError("human_handoff active run temporarily unavailable")
 
 
 def register_human_handoff(

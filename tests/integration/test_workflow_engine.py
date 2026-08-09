@@ -752,14 +752,18 @@ async def test_deliver_event_advances_and_duplicate_noop(db_url: str) -> None:
         rid = await engine.start(TenantId(tenant), "wf", "subj", {}, "evt-key")
         assert await engine.poll_due(TenantId(tenant), 10) == 1  # init → wait
 
-        await engine.deliver_event(TenantId(tenant), rid, "approval", {"by": "bob"})
+        assert await engine.deliver_event(
+            TenantId(tenant), rid, "approval", {"by": "bob"}
+        )
         run_row = await _query_run(handle, tenant, rid)
         assert run_row is not None
         assert run_row["current_step"] == "done"
         assert run_row["context"]["approved"] == "bob"
         assert len(wait_calls) == 1
 
-        await engine.deliver_event(TenantId(tenant), rid, "approval", {"by": "bob"})
+        assert not await engine.deliver_event(
+            TenantId(tenant), rid, "approval", {"by": "bob"}
+        )
         assert len(wait_calls) == 1, "重复投递同一事件不得重复推进"
 
         assert await engine.poll_due(TenantId(tenant), 10) == 1  # done → complete
@@ -793,9 +797,15 @@ async def test_deliver_event_wrong_type_tenant_unknown_noop(db_url: str) -> None
         rid = await engine.start(TenantId(tenant), "wf", "subj", {}, "noop-key")
         assert await engine.poll_due(TenantId(tenant), 10) == 1  # → wait
 
-        await engine.deliver_event(TenantId("tOther"), rid, "approval", {"by": "bob"})
-        await engine.deliver_event(TenantId(tenant), "run-unknown", "approval", {"by": "bob"})
-        await engine.deliver_event(TenantId(tenant), rid, "wrong_type", {"by": "bob"})
+        assert not await engine.deliver_event(
+            TenantId("tOther"), rid, "approval", {"by": "bob"}
+        )
+        assert not await engine.deliver_event(
+            TenantId(tenant), "run-unknown", "approval", {"by": "bob"}
+        )
+        assert not await engine.deliver_event(
+            TenantId(tenant), rid, "wrong_type", {"by": "bob"}
+        )
         assert wait_calls == []
 
         run_row = await _query_run(handle, tenant, rid)
@@ -1146,6 +1156,63 @@ async def test_corrupt_delivered_events_context_fails_closed(db_url: str) -> Non
         assert run_row is not None and run_row["status"] == "failed"
         assert "corrupted" in (run_row["last_error"] or ""), "损坏 context 应带固定脱敏错误"
         assert "bob" not in json.dumps(run_row["context"]), "事件 payload 不得写入损坏 context"
+    finally:
+        await handle.dispose()
+
+
+async def test_has_delivered_event_rejects_mixed_fingerprint_list(
+    db_url: str,
+) -> None:
+    """durable evidence 中混入非字符串即整体损坏，不得凭其中一个 hash 放行。"""
+    engine, handle = _make_engine(
+        db_url,
+        {
+            "h_init": _handler(lambda run: ("advance", "wait", {})),
+            "h_wait": _handler(lambda run: ("advance", "done", {})),
+            "h_done": _handler(lambda run: ("complete", None, {})),
+        },
+    )
+    try:
+        engine.register(_advance_flow())
+        tenant = TenantId("tMixedEvidence")
+        payload = {"by": "bob"}
+        run_id = await engine.start(tenant, "wf", "subject", {}, "mixed-evidence")
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.deliver_event(tenant, run_id, "approval", payload)
+        run = await _query_run(handle, str(tenant), run_id)
+        assert run is not None
+        fingerprint = run["context"]["__wf_delivered_events"][0]
+        corrupted = {"__wf_delivered_events": [fingerprint, {"bad": True}]}
+        async with handle.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE workflow_runs SET context = CAST(:context AS jsonb) "
+                    "WHERE tenant_id = :tenant AND run_id = :run_id"
+                ),
+                {
+                    "context": json.dumps(corrupted),
+                    "tenant": str(tenant),
+                    "run_id": str(run_id),
+                },
+            )
+        assert not await engine.has_delivered_event(
+            tenant, "wf", "subject", "approval", payload
+        )
+        async with handle.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE workflow_runs SET context = CAST(:context AS jsonb) "
+                    "WHERE tenant_id = :tenant AND run_id = :run_id"
+                ),
+                {
+                    "context": json.dumps(["broken"]),
+                    "tenant": str(tenant),
+                    "run_id": str(run_id),
+                },
+            )
+        assert not await engine.has_delivered_event(
+            tenant, "wf", "subject", "approval", payload
+        )
     finally:
         await handle.dispose()
 
@@ -1606,3 +1673,61 @@ async def test_event_timeout_race_advances_exactly_once(db_url: str) -> None:
     finally:
         await handle_a.dispose()
         await handle_b.dispose()
+
+
+async def test_timeout_commit_failure_fails_observably_without_next_cycle_loop(
+    db_url: str,
+) -> None:
+    """timeout transition 真实唯一约束失败后应 FAILED，且不阻塞同批正常 run。"""
+    handlers = {
+        "h_notify": _handler(lambda run: ("advance", "wait", {})),
+        "h_wait": _handler(lambda run: ("complete", None, {})),
+        "h_escalate": _handler(lambda run: ("complete", None, {})),
+        "h": _handler(lambda run: ("complete", None, {})),
+    }
+    clock = _Clock()
+    engine, handle = _make_engine(db_url, handlers, clock=clock)
+    try:
+        engine.register(_timeout_flow())
+        engine.register(_simple_def("timeout-batch-good"))
+        tenant = TenantId("tTimeoutCommitFailure")
+        bad = await engine.start(
+            tenant,
+            "timeout-wf",
+            "bad",
+            {},
+            "timeout-commit-bad",
+            scheduled_at=_NOW,
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.advance(seconds=10)
+        good = await engine.start(
+            tenant,
+            "timeout-batch-good",
+            "good",
+            {},
+            "timeout-commit-good",
+            scheduled_at=clock.now(),
+        )
+        async with handle.begin() as conn:
+            await conn.execute(
+                _INSERT_STEP,
+                _step_params(
+                    "stp-timeout-conflict",
+                    str(bad),
+                    str(tenant),
+                    step_name="conflict",
+                    key=f"{tenant}:wfstep:{bad}:escalate",
+                    status="cancelled",
+                ),
+            )
+
+        assert await engine.poll_due(tenant, 2) == 2
+        bad_row = await _query_run(handle, str(tenant), bad)
+        good_row = await _query_run(handle, str(tenant), good)
+        assert bad_row is not None and bad_row["status"] == "failed"
+        assert bad_row["last_error"] == "step wait failed: step commit failure"
+        assert good_row is not None and good_row["status"] == "completed"
+        assert await engine.poll_due(tenant, 10) == 0
+    finally:
+        await handle.dispose()

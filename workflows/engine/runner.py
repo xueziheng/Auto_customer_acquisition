@@ -44,6 +44,8 @@ class StepDefinition:
         retry_backoff:    重试间隔基数（指数退避）
         on_timeout:       超时后转到哪一步（None = 整个流程失败）
         wait_event_type:  WAITING_EVENT 步骤等的事件类型
+        reminder_interval: WAITING_EVENT 周期提醒间隔；成功后按绝对计划重排自身
+        reminder_handler_ref: 周期提醒 handler 的注册名
     """
 
     step_name: str
@@ -53,6 +55,8 @@ class StepDefinition:
     retry_backoff: timedelta = timedelta(seconds=30)
     on_timeout: str | None = None
     wait_event_type: str | None = None
+    reminder_interval: timedelta | None = None
+    reminder_handler_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,14 @@ class WorkflowDefinition:
     version: int
     steps: tuple[StepDefinition, ...]
     transitions: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReminderInvocation:
+    """引擎触发的单次 durable reminder；index 从 1 开始且重试不变。"""
+
+    index: int
+    scheduled_at: datetime
 
 
 @dataclass
@@ -87,6 +99,7 @@ class WorkflowRun:
     retry_count: int = 0
     context: dict[str, Any] = field(default_factory=dict)
     last_error: str | None = None
+    reminder: ReminderInvocation | None = None
 
 
 @runtime_checkable
@@ -157,10 +170,25 @@ class WorkflowEngine(Protocol):
         ...
 
     async def deliver_event(
-        self, tenant_id: TenantId, run_id: RunId, event_type: str, payload: dict
-    ) -> None:
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> bool:
         """向 WAITING_EVENT 的流程投递事件（回复到了、审批有结果了）。
-        幂等：重复投递同一事件不重复推进。"""
+        返回是否已持久接受；幂等：重复投递同一事件不重复推进。"""
+        ...
+
+    async def has_delivered_event(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """查询同租户/type/subject 是否已有同一事件的 durable 指纹证据。"""
         ...
 
     async def cancel(

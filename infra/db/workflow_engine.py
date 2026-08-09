@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, or_, select, tuple_, update
@@ -43,6 +43,7 @@ from infra.db.tables import WorkflowRunRow, WorkflowStepRow
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId, new_id
 from workflows.engine.runner import (
+    ReminderInvocation,
     StepDefinition,
     StepHandler,
     StepStatus,
@@ -68,6 +69,10 @@ _COMMIT_FAILURE_ERROR = "step commit failure"
 _CORRUPTED_CONTEXT_ERROR = "corrupted workflow context"
 _HANDLER_FAILED_REASON = "handler declared failure"
 _CANCEL_REASON = "cancelled by operator"
+
+# workflow_steps.data 内部调度元数据：业务 handler 不可写，迁移无需变更。
+_PLANNED_AT_KEY = "planned_at"
+_REMINDER_INDEX_KEY = "reminder_index"
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -132,7 +137,10 @@ class PostgresWorkflowEngine:
         if len(set(names)) != len(names):
             raise ValueError("workflow 定义 step_name 不得重复")
         missing = [
-            s.handler_ref for s in definition.steps if s.handler_ref not in self._handlers
+            handler_ref
+            for step in definition.steps
+            for handler_ref in (step.handler_ref, step.reminder_handler_ref)
+            if handler_ref is not None and handler_ref not in self._handlers
         ]
         if missing:
             raise ValueError(f"未注册的 handler_ref：{sorted(set(missing))}")
@@ -149,6 +157,25 @@ class PostgresWorkflowEngine:
             if step.timeout is not None and step.timeout.total_seconds() <= 0:
                 raise ValueError(
                     f"step {step.step_name} timeout 必须 > 0（当前 {step.timeout}）"
+                )
+            if (
+                step.reminder_interval is not None
+                and step.reminder_interval.total_seconds() <= 0
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder_interval 必须 > 0"
+                )
+            if (step.reminder_interval is None) != (
+                step.reminder_handler_ref is None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder 配置必须同时提供 interval/handler"
+                )
+            if step.reminder_interval is not None and (
+                step.wait_event_type is None or step.timeout is not None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder 仅适用于无 timeout WAITING_EVENT"
                 )
         known = set(names)
         for source, dests in definition.transitions.items():
@@ -207,11 +234,7 @@ class PostgresWorkflowEngine:
         definition = self._definition_for(workflow_type)
         first_step = definition.steps[0]
         anchor = scheduled_at if scheduled_at is not None else self._now()
-        first_due_at = (
-            anchor + first_step.timeout
-            if first_step.wait_event_type and first_step.timeout is not None
-            else anchor
-        )
+        first_planned_at = anchor + self._wait_delay(first_step)
         run_id = new_id("run")
         session = self._factory()
         try:
@@ -236,7 +259,11 @@ class PostgresWorkflowEngine:
                         tenant_id=tenant_id,
                         run_id=run_id,
                         step_name=first_step.step_name,
-                        due_at=first_due_at,
+                        due_at=first_planned_at,
+                        planned_at=first_planned_at,
+                        reminder_index=(
+                            1 if first_step.reminder_interval is not None else None
+                        ),
                         # 首步本身等待事件时直接进入 waiting_event：poll_due 不领取，
                         # 只由 deliver_event 触发（与 advance 到等待步骤语义一致）。
                         status=(
@@ -287,6 +314,41 @@ class PostgresWorkflowEngine:
         finally:
             await session.close()
 
+    async def has_delivered_event(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """只比较持久化 SHA-256 指纹，不返回或持久化 raw payload。"""
+        fingerprint = _event_fingerprint(event_type, payload)
+        session = self._factory()
+        try:
+            contexts = (
+                await session.execute(
+                    select(WorkflowRunRow.context).where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.workflow_type == workflow_type,
+                        WorkflowRunRow.subject_ref == subject_ref,
+                    )
+                )
+            ).scalars().all()
+            for context in contexts:
+                if not isinstance(context, dict):
+                    continue
+                delivered = context.get(_DELIVERED_EVENTS_KEY)
+                if (
+                    isinstance(delivered, list)
+                    and all(isinstance(item, str) for item in delivered)
+                    and fingerprint in delivered
+                ):
+                    return True
+            return False
+        finally:
+            await session.close()
+
     # ---- poll_due ---------------------------------------------------------
 
     async def poll_due(self, tenant_id: TenantId, limit: int) -> int:
@@ -309,9 +371,18 @@ class PostgresWorkflowEngine:
             for step in definition.steps
             if step.wait_event_type is not None and step.timeout is not None
         ]
+        reminder_steps = [
+            (definition.workflow_type, definition.version, step.step_name)
+            for definition in self._definitions.values()
+            for step in definition.steps
+            if step.wait_event_type is not None
+            and step.reminder_interval is not None
+        ]
+        scheduled_wait_steps = timeout_steps + reminder_steps
         for _ in range(limit):
             session = self._factory()
             step_row: WorkflowStepRow | None = None
+            claimed_timeout = False
             try:
                 step_row = (
                     await session.execute(
@@ -339,7 +410,7 @@ class PostgresWorkflowEngine:
                                         WorkflowRunRow.workflow_type,
                                         WorkflowRunRow.workflow_version,
                                         WorkflowStepRow.step_name,
-                                    ).in_(timeout_steps),
+                                    ).in_(scheduled_wait_steps),
                                 ),
                             ),
                             WorkflowStepRow.due_at <= now,
@@ -380,6 +451,15 @@ class PostgresWorkflowEngine:
                     await session.commit()
                     processed += 1
                     continue
+                claimed_timeout = (
+                    step_row.status == StepStatus.WAITING_EVENT.value
+                    and (
+                        run_row.workflow_type,
+                        run_row.workflow_version,
+                        step_row.step_name,
+                    )
+                    in timeout_steps
+                )
                 await self._process_step(session, step_row, run_row, now)
                 await session.commit()
                 processed += 1
@@ -387,7 +467,11 @@ class PostgresWorkflowEngine:
                 await session.rollback()
                 if step_row is not None:
                     await self._mark_step_commit_failed(
-                        tenant_id, step_run_id, step_id, now
+                        tenant_id,
+                        step_run_id,
+                        step_id,
+                        now,
+                        allow_waiting_event=claimed_timeout,
                     )
                     processed += 1
             finally:
@@ -395,7 +479,13 @@ class PostgresWorkflowEngine:
         return processed
 
     async def _mark_step_commit_failed(
-        self, tenant_id: TenantId, run_id: str, step_id: str, now: datetime
+        self,
+        tenant_id: TenantId,
+        run_id: str,
+        step_id: str,
+        now: datetime,
+        *,
+        allow_waiting_event: bool = False,
     ) -> None:
         """commit/flush 失败后，在新事务按 (tenant, step_id, run_id) 重新定位并锁定。
 
@@ -417,7 +507,10 @@ class PostgresWorkflowEngine:
                     .with_for_update()
                 )
             ).scalars().first()
-            if step_row is None or step_row.status not in _POLLABLE_STEP_STATUSES:
+            allowed_statuses = _POLLABLE_STEP_STATUSES + (
+                (StepStatus.WAITING_EVENT.value,) if allow_waiting_event else ()
+            )
+            if step_row is None or step_row.status not in allowed_statuses:
                 await session.rollback()
                 return
             run_row = (
@@ -464,9 +557,14 @@ class PostgresWorkflowEngine:
             )
             return
         if step_row.status == StepStatus.WAITING_EVENT.value:
-            self._apply_timeout(
-                session, definition, step_def, step_row, run_row, now
-            )
+            if step_def.reminder_interval is not None:
+                await self._process_reminder(
+                    session, step_def, step_row, run_row, now
+                )
+            else:
+                self._apply_timeout(
+                    session, definition, step_def, step_row, run_row, now
+                )
             return
         handler = self._handlers.get(step_def.handler_ref)
         if handler is None:
@@ -493,6 +591,62 @@ class PostgresWorkflowEngine:
             )
         except ValueError as exc:
             self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+
+    async def _process_reminder(
+        self,
+        session: AsyncSession,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+    ) -> None:
+        """执行同一 WAITING_EVENT row 的一次 durable reminder。"""
+        interval = step_def.reminder_interval
+        handler = self._handlers.get(step_def.reminder_handler_ref or "")
+        if handler is None or interval is None:
+            self._fail_run(session, step_row, run_row, now, "reminder handler missing")
+            return
+        try:
+            planned_at = self._planned_at(step_row)
+            reminder_index = self._reminder_index(step_row)
+        except (TypeError, ValueError):
+            self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
+            return
+        run = self._row_to_run(
+            run_row,
+            reminder=ReminderInvocation(reminder_index, planned_at),
+        )
+        try:
+            action, next_step, patch = await handler.execute(run)
+        except TransientError as exc:
+            self._schedule_retry(
+                session,
+                step_def,
+                step_row,
+                run_row,
+                now,
+                exc,
+                waiting_event=True,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+            return
+        if action != "wait" or next_step is not None:
+            self._fail_run(session, step_row, run_row, now, "invalid reminder action")
+            return
+        if _reserved_key_hits(patch):
+            self._fail_run(session, step_row, run_row, now, "invalid reminder patch")
+            return
+        next_planned_at = planned_at + interval
+        step_row.status = StepStatus.WAITING_EVENT.value
+        step_row.data = self._step_data(next_planned_at, reminder_index + 1)
+        step_row.due_at = next_planned_at
+        step_row.attempt = 0
+        step_row.error = None
+        step_row.updated_at = now
+        run_row.context = self._merged_context(run_row.context, patch)
+        run_row.next_poll_at = None
 
     def _apply_transition(
         self,
@@ -531,6 +685,9 @@ class PostgresWorkflowEngine:
         if action == "advance":
             next_name = cast(str, next_step)
             next_def = self._step_definition(definition, next_name)
+            next_planned_at = self._planned_at(step_row) + self._wait_delay(
+                next_def
+            )
             step_row.status = "completed"
             run_row.current_step = next_name
             run_row.status = StepStatus.RUNNING.value
@@ -541,11 +698,10 @@ class PostgresWorkflowEngine:
                     tenant_id=run_row.tenant_id,
                     run_id=run_row.run_id,
                     step_name=next_name,
-                    due_at=(
-                        step_row.due_at + next_def.timeout
-                        if next_def.wait_event_type
-                        and next_def.timeout is not None
-                        else now
+                    due_at=next_planned_at,
+                    planned_at=next_planned_at,
+                    reminder_index=(
+                        1 if next_def.reminder_interval is not None else None
                     ),
                     # 等待事件的下一步直接进入 waiting_event：poll_due 不领取，
                     # 只由 deliver_event 触发（避免 handler 在无事件上下文中误跑）。
@@ -590,22 +746,24 @@ class PostgresWorkflowEngine:
             self._fail_run(session, step_row, run_row, now, "timeout transition missing")
             return
         target_def = self._step_definition(definition, target)
+        target_planned_at = self._planned_at(step_row) + self._wait_delay(
+            target_def
+        )
         step_row.status = StepStatus.TIMED_OUT.value
         step_row.updated_at = now
         run_row.current_step = target
         run_row.status = StepStatus.RUNNING.value
         run_row.next_poll_at = None
-        target_due_at = (
-            step_row.due_at + target_def.timeout
-            if target_def.wait_event_type and target_def.timeout is not None
-            else step_row.due_at
-        )
         session.add(
             self._new_step_row(
                 tenant_id=run_row.tenant_id,
                 run_id=run_row.run_id,
                 step_name=target,
-                due_at=target_due_at,
+                due_at=target_planned_at,
+                planned_at=target_planned_at,
+                reminder_index=(
+                    1 if target_def.reminder_interval is not None else None
+                ),
                 status=(
                     StepStatus.WAITING_EVENT.value
                     if target_def.wait_event_type
@@ -621,6 +779,8 @@ class PostgresWorkflowEngine:
         run_row: WorkflowRunRow,
         now: datetime,
         exc: TransientError,
+        *,
+        waiting_event: bool = False,
     ) -> None:
         """TransientError：指数退避重排 next_poll_at；超过 max_retries 转 FAILED。"""
         step_row.attempt += 1
@@ -639,7 +799,9 @@ class PostgresWorkflowEngine:
         else:
             backoff = step_def.retry_backoff * (2 ** (step_row.attempt - 1))
             next_at = now + backoff
-            step_row.status = "pending"
+            step_row.status = (
+                StepStatus.WAITING_EVENT.value if waiting_event else "pending"
+            )
             step_row.due_at = next_at
             run_row.next_poll_at = next_at
 
@@ -667,7 +829,7 @@ class PostgresWorkflowEngine:
         run_id: RunId,
         event_type: str,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """向 WAITING_EVENT 的流程投递事件；重复投递同一事件幂等 no-op。
 
         仅同租户、目标 run 当前步骤 WAITING_EVENT 且事件类型匹配时推进；事件
@@ -690,7 +852,7 @@ class PostgresWorkflowEngine:
                 )
             ).scalars().all()
             if not waiting_steps:
-                return
+                return False
             run_row = (
                 await session.execute(
                     select(WorkflowRunRow)
@@ -702,21 +864,21 @@ class PostgresWorkflowEngine:
                 )
             ).scalars().first()
             if run_row is None or run_row.status in _TERMINAL_STATUSES:
-                return
+                return False
             step_row = next(
                 (row for row in waiting_steps if row.step_name == run_row.current_step),
                 None,
             )
             if step_row is None:
-                return
+                return False
             definition = self._definitions.get((run_row.workflow_type, run_row.workflow_version))
             if definition is None:
                 self._fail_run(session, step_row, run_row, now, "workflow definition not registered")
                 await session.commit()
-                return
+                return False
             step_def = self._step_definition(definition, step_row.step_name)
             if step_def.wait_event_type != event_type:
-                return
+                return False
             ctx: dict[str, Any] = dict(run_row.context or {})
             # ``event`` 是瞬态键（handler 执行期可见，transition 后不持久化）；
             # 清除历史实现可能遗留的脏数据，避免其进入本投递的持久化 context。
@@ -732,10 +894,10 @@ class PostgresWorkflowEngine:
                 # AttributeError/追加到错误类型后卡住投递。
                 self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
                 await session.commit()
-                return
+                return False
             fingerprint = _event_fingerprint(event_type, payload)
             if fingerprint in delivered:
-                return
+                return True
             ctx[_EVENT_KEY] = {"event_type": event_type, "payload": payload}
             run = self._row_to_run(run_row, context=ctx)
             handler = self._handlers.get(step_def.handler_ref)
@@ -745,10 +907,9 @@ class PostgresWorkflowEngine:
                     f"handler {step_def.handler_ref} not registered",
                 )
                 await session.commit()
-                return
+                return False
             try:
                 action, next_step, patch = await handler.execute(run)
-                delivered.append(fingerprint)
                 # raw event 只在 handler 执行期可见；transition 后从持久化 context 移除。
                 ctx.pop(_EVENT_KEY, None)
                 run_row.context = ctx
@@ -756,6 +917,7 @@ class PostgresWorkflowEngine:
                     session, definition, step_def, step_row, run_row,
                     action, next_step, patch, now,
                 )
+                delivered.append(fingerprint)
             except TransientError:
                 # 可重试投递：回滚、不落指纹，调用方稍后重投同一事件。
                 await session.rollback()
@@ -763,7 +925,10 @@ class PostgresWorkflowEngine:
             # 同 poll_due：非 TransientError 异常转可观测永久失败。
             except Exception as exc:  # noqa: BLE001
                 self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+                await session.commit()
+                return False
             await session.commit()
+            return True
         finally:
             await session.close()
 
@@ -838,6 +1003,8 @@ class PostgresWorkflowEngine:
         run_id: str,
         step_name: str,
         due_at: datetime,
+        planned_at: datetime,
+        reminder_index: int | None = None,
         status: str = "pending",
     ) -> WorkflowStepRow:
         """新建 step 行：durable 幂等键 = {tenant}:wfstep:{run_id}:{step_name}。"""
@@ -847,7 +1014,7 @@ class PostgresWorkflowEngine:
             tenant_id=tenant_id,
             step_name=step_name,
             status=status,
-            data={},
+            data=self._step_data(planned_at, reminder_index),
             attempt=0,
             error=None,
             due_at=due_at,
@@ -859,6 +1026,7 @@ class PostgresWorkflowEngine:
         row: WorkflowRunRow,
         *,
         context: dict[str, Any] | None = None,
+        reminder: ReminderInvocation | None = None,
     ) -> WorkflowRun:
         return WorkflowRun(
             run_id=RunId(row.run_id),
@@ -873,4 +1041,40 @@ class PostgresWorkflowEngine:
             retry_count=row.retry_count,
             context=context if context is not None else dict(row.context or {}),
             last_error=row.last_error,
+            reminder=reminder,
         )
+
+    @staticmethod
+    def _wait_delay(step: StepDefinition) -> timedelta:
+        if step.wait_event_type is None:
+            return timedelta(0)
+        return step.timeout or step.reminder_interval or timedelta(0)
+
+    @staticmethod
+    def _step_data(
+        planned_at: datetime, reminder_index: int | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {_PLANNED_AT_KEY: planned_at.isoformat()}
+        if reminder_index is not None:
+            data[_REMINDER_INDEX_KEY] = reminder_index
+        return data
+
+    @staticmethod
+    def _planned_at(step_row: WorkflowStepRow) -> datetime:
+        data = step_row.data or {}
+        raw = data.get(_PLANNED_AT_KEY)
+        if raw is None:
+            return step_row.due_at
+        if not isinstance(raw, str):
+            raise TypeError("planned_at invalid")
+        planned_at = datetime.fromisoformat(raw)
+        if planned_at.utcoffset() is None:
+            raise ValueError("planned_at invalid")
+        return planned_at
+
+    @staticmethod
+    def _reminder_index(step_row: WorkflowStepRow) -> int:
+        value = (step_row.data or {}).get(_REMINDER_INDEX_KEY, 1)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError("reminder_index invalid")
+        return value

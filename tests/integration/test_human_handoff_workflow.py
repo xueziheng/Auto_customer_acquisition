@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import subprocess
@@ -23,7 +24,8 @@ from domains.opportunities.permissions import (
     OpportunityScope,
     ScopeLevel,
 )
-from shared.events.catalog import HandoffRequested
+from shared.errors import TransientError
+from shared.events.catalog import HandoffAccepted, HandoffRequested
 from shared.schemas.identifiers import EmployeeId, HandoffId, OpportunityId, TenantId
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -200,8 +202,10 @@ class _OpportunityService:
 
 
 class _EmployeeService:
-    def __init__(self) -> None:
-        tenant = TenantId("tFlowIntegration")
+    def __init__(
+        self, tenant: TenantId | None = None
+    ) -> None:
+        tenant = tenant or TenantId("tFlowIntegration")
         self.rows = {
             EmployeeId("sales"): EmployeeView(
                 EmployeeId("sales"), tenant, "Sales", "sales", manager_id=EmployeeId("manager")
@@ -227,12 +231,136 @@ class _Notifier:
             self.rows.append(notice)
 
 
+class _OwnerRetryNotifier(_Notifier):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def notify(self, notice) -> None:
+        if notice.level == "owner":
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TransientError("temporary owner notification failure")
+        await super().notify(notice)
+
+
+class _ManagerRetryEmployeeService(_EmployeeService):
+    def __init__(self, tenant: TenantId) -> None:
+        super().__init__(tenant)
+        self.failed = False
+
+    async def get_employee(self, tenant_id, employee_id, *, actor):
+        if employee_id == EmployeeId("manager") and not self.failed:
+            self.failed = True
+            raise TransientError("temporary manager lookup failure")
+        return await super().get_employee(tenant_id, employee_id, actor=actor)
+
+
+class _BossReminderRetryNotifier(_Notifier):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts: list[tuple[str, str]] = []
+        self.failed = False
+
+    async def notify(self, notice) -> None:
+        self.attempts.append((notice.level, notice.dedup_key))
+        if notice.level == "boss_reminder" and not self.failed:
+            self.failed = True
+            raise TransientError("crash after boss reminder delivery")
+        await super().notify(notice)
+
+
 class _Registry:
     def __init__(self) -> None:
         self.rows = []
 
     def register_handler(self, event_type, handler_name, handler) -> None:
         self.rows.append((event_type, handler_name, handler))
+
+
+def _step_handlers(
+    flow,
+    *,
+    tenant: TenantId,
+    clock: _Clock,
+    opportunities: _OpportunityService,
+    notifier: _Notifier,
+    employees=None,
+    t1: timedelta,
+    t2: timedelta,
+):
+    return flow.build_human_handoff_step_handlers(
+        opportunity_service=opportunities,
+        employee_service=employees or _EmployeeService(tenant),
+        notifier=notifier,
+        opportunity_system_actor=OpportunityActor(
+            "system:handoff", OpportunityScope(level=ScopeLevel.SYSTEM), "system"
+        ),
+        employee_system_actor=EmployeeActor(
+            "system:handoff", EmployeeScope.SYSTEM, "system"
+        ),
+        t1=t1,
+        t2=t2,
+        now=clock.now,
+    )
+
+
+def _flow_runtime(
+    db_url: str,
+    flow,
+    *,
+    tenant: TenantId,
+    clock: _Clock,
+    opportunities: _OpportunityService,
+    notifier: _Notifier,
+    employees=None,
+    t1: timedelta,
+    t2: timedelta,
+):
+    from infra.db.session import create_engine_from
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+
+    db = create_engine_from(db_url)
+    factory = async_sessionmaker(bind=db, expire_on_commit=False)
+    engine = PostgresWorkflowEngine(
+        factory,
+        _step_handlers(
+            flow,
+            tenant=tenant,
+            clock=clock,
+            opportunities=opportunities,
+            notifier=notifier,
+            employees=employees,
+            t1=t1,
+            t2=t2,
+        ),
+        now=clock.now,
+    )
+    registry = _Registry()
+    flow.register_human_handoff(engine, registry, t1=t1, t2=t2)
+    return db, engine, registry
+
+
+async def _drive_to_boss_wait(
+    *, engine, requested, tenant: TenantId, handoff: str, clock: _Clock, t1, t2
+) -> None:
+    await requested.handle(
+        HandoffRequested(
+            tenant_id=tenant,
+            occurred_at=_BASE,
+            handoff_id=HandoffId(handoff),
+            opportunity_id=OpportunityId(f"opp-{handoff}"),
+            assigned_to=EmployeeId("sales"),
+            trigger="quote_requested",
+        )
+    )
+    assert await engine.poll_due(tenant, 1) == 1
+    clock.value = _BASE + t1
+    assert await engine.poll_due(tenant, 1) == 1
+    assert await engine.poll_due(tenant, 1) == 1
+    clock.value = _BASE + t1 + t2
+    assert await engine.poll_due(tenant, 1) == 1
+    assert await engine.poll_due(tenant, 1) == 1
 
 
 async def test_delayed_t1_t2_escalation_preserves_planned_boundaries(
@@ -324,5 +452,446 @@ async def test_delayed_t1_t2_escalation_preserves_planned_boundaries(
             EmployeeId("boss"),
         ]
         assert all(row.assigned_to == EmployeeId("sales") for row in notifier.rows)
+    finally:
+        await db.dispose()
+
+
+async def test_accepted_outbox_waits_until_workflow_is_waiting_event(
+    db_url: str,
+) -> None:
+    """Requested/Accepted 连续到达时，Accepted 不得在 notify_owner 阶段被 ACK。"""
+    from infra.db.outbox import PostgresEventBus
+    from infra.db.outbox_delivery import OutboxDeliverer
+    from infra.db.session import create_engine_from
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+
+    flow = importlib.import_module("workflows.human_handoff.flow")
+    tenant = TenantId("tFlowOutboxEarly")
+    clock = _Clock(_BASE)
+    opportunities = _OpportunityService()
+    notifier = _Notifier()
+    db = create_engine_from(db_url)
+    factory = async_sessionmaker(bind=db, expire_on_commit=False)
+    handlers = _step_handlers(
+        flow,
+        tenant=tenant,
+        clock=clock,
+        opportunities=opportunities,
+        notifier=notifier,
+        t1=timedelta(minutes=10),
+        t2=timedelta(minutes=20),
+    )
+    engine = PostgresWorkflowEngine(factory, handlers, now=clock.now)
+    deliverer = OutboxDeliverer(factory, tenant, now=clock.now)
+    flow.register_human_handoff(
+        engine,
+        deliverer,
+        t1=timedelta(minutes=10),
+        t2=timedelta(minutes=20),
+    )
+    try:
+        session = factory()
+        try:
+            bus = PostgresEventBus(session, tenant, now=clock.now)
+            await bus.publish(
+                HandoffRequested(
+                    tenant_id=tenant,
+                    occurred_at=_BASE,
+                    handoff_id=HandoffId("hand-early"),
+                    opportunity_id=OpportunityId("opp-early"),
+                    assigned_to=EmployeeId("sales"),
+                    trigger="quote_requested",
+                )
+            )
+            clock.value = _BASE + timedelta(seconds=1)
+            await bus.publish(
+                HandoffAccepted(
+                    tenant_id=tenant,
+                    occurred_at=clock.now(),
+                    handoff_id=HandoffId("hand-early"),
+                    accepted_by=EmployeeId("sales"),
+                )
+            )
+            await session.commit()
+        finally:
+            await session.close()
+
+        await deliverer.drain()
+        async with db.connect() as conn:
+            deliveries = (
+                await conn.execute(
+                    text(
+                        "SELECT e.event_type, e.status AS event_status, "
+                        "d.status AS delivery_status FROM outbox_events e "
+                        "JOIN outbox_deliveries d ON d.tenant_id = e.tenant_id "
+                        "AND d.event_id = e.event_id WHERE e.tenant_id = :tenant "
+                        "ORDER BY e.published_at"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).mappings().all()
+        assert [row["event_type"] for row in deliveries] == [
+            "HandoffRequested",
+            "HandoffAccepted",
+        ]
+        assert deliveries[0]["delivery_status"] == "delivered"
+        assert deliveries[1]["event_status"] == "pending"
+        assert deliveries[1]["delivery_status"] == "pending"
+
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value = _BASE + timedelta(minutes=1)
+        await deliverer.drain()
+        async with db.connect() as conn:
+            accepted_status = (
+                await conn.execute(
+                    text(
+                        "SELECT e.status, d.status FROM outbox_events e "
+                        "JOIN outbox_deliveries d ON d.tenant_id = e.tenant_id "
+                        "AND d.event_id = e.event_id WHERE e.tenant_id = :tenant "
+                        "AND e.event_type = 'HandoffAccepted'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).one()
+            run_status = (
+                await conn.execute(
+                    text(
+                        "SELECT status FROM workflow_runs WHERE tenant_id = :tenant "
+                        "AND workflow_type = 'human_handoff' "
+                        "AND subject_ref = 'hand-early'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).scalar_one()
+        assert tuple(accepted_status) == ("delivered", "delivered")
+        assert run_status == "completed"
+        assert opportunities.records == []
+    finally:
+        await db.dispose()
+
+
+async def test_terminal_accepted_repeat_uses_durable_evidence_after_restart(
+    db_url: str,
+) -> None:
+    """流程完成后重建 engine/handler，同一 acceptance 只凭 DB 指纹 no-op。"""
+    from infra.db.session import create_engine_from
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+
+    flow = importlib.import_module("workflows.human_handoff.flow")
+    tenant = TenantId("tFlowRestart")
+    clock = _Clock(_BASE)
+    opportunities = _OpportunityService()
+    notifier = _Notifier()
+    db = create_engine_from(db_url)
+    factory = async_sessionmaker(bind=db, expire_on_commit=False)
+
+    def _new_engine_and_registry():
+        handlers = _step_handlers(
+            flow,
+            tenant=tenant,
+            clock=clock,
+            opportunities=opportunities,
+            notifier=notifier,
+            t1=timedelta(minutes=10),
+            t2=timedelta(minutes=20),
+        )
+        engine = PostgresWorkflowEngine(factory, handlers, now=clock.now)
+        registry = _Registry()
+        flow.register_human_handoff(
+            engine,
+            registry,
+            t1=timedelta(minutes=10),
+            t2=timedelta(minutes=20),
+        )
+        return engine, registry
+
+    try:
+        engine1, registry1 = _new_engine_and_registry()
+        requested = next(
+            row[2] for row in registry1.rows if row[0] is HandoffRequested
+        )
+        accepted1 = next(
+            row[2] for row in registry1.rows if row[0] is HandoffAccepted
+        )
+        request_event = HandoffRequested(
+            tenant_id=tenant,
+            occurred_at=_BASE,
+            handoff_id=HandoffId("hand-restart"),
+            opportunity_id=OpportunityId("opp-restart"),
+            assigned_to=EmployeeId("sales"),
+            trigger="quote_requested",
+        )
+        accepted_event = HandoffAccepted(
+            tenant_id=tenant,
+            occurred_at=_BASE + timedelta(minutes=1),
+            handoff_id=HandoffId("hand-restart"),
+            accepted_by=EmployeeId("sales"),
+        )
+        await requested.handle(request_event)
+        assert await engine1.poll_due(tenant, 1) == 1
+        await accepted1.handle(accepted_event)
+
+        engine2, registry2 = _new_engine_and_registry()
+        accepted_after_restart = next(
+            row[2] for row in registry2.rows if row[0] is HandoffAccepted
+        )
+        await accepted_after_restart.handle(accepted_event)
+
+        async with db.connect() as conn:
+            run = (
+                await conn.execute(
+                    text(
+                        "SELECT status, context FROM workflow_runs "
+                        "WHERE tenant_id = :tenant AND workflow_type = 'human_handoff' "
+                        "AND subject_ref = 'hand-restart'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).mappings().one()
+        assert run["status"] == "completed"
+        fingerprints = run["context"]["__wf_delivered_events"]
+        assert len(fingerprints) == 1
+        assert len(fingerprints[0]) == 64
+        assert "hand-restart" not in fingerprints[0]
+        assert await engine2.find_active_run(
+            tenant, "human_handoff", "hand-restart"
+        ) is None
+        second_run = await engine2.start(
+            tenant,
+            "human_handoff",
+            "hand-restart",
+            {
+                "handoff_id": "hand-restart",
+                "opportunity_id": "opp-restart",
+                "assigned_to": "sales",
+                "sla_started_at": _BASE.isoformat(),
+            },
+            "restart-second-run",
+            scheduled_at=_BASE,
+        )
+        with pytest.raises(TransientError):
+            await accepted_after_restart.handle(accepted_event)
+        assert await engine2.find_active_run(
+            tenant, "human_handoff", "hand-restart"
+        ) == second_run
+    finally:
+        await db.dispose()
+
+
+async def test_owner_notification_retry_preserves_absolute_t1_boundary(
+    db_url: str,
+) -> None:
+    """负责人通知瞬态重试只改变可领取时间，不得把绝对 T1 向后顺延。"""
+    flow = importlib.import_module("workflows.human_handoff.flow")
+    tenant = TenantId("tFlowOwnerRetry")
+    t1 = timedelta(minutes=10)
+    t2 = timedelta(minutes=20)
+    clock = _Clock(_BASE)
+    notifier = _OwnerRetryNotifier()
+    db, engine, registry = _flow_runtime(
+        db_url,
+        flow,
+        tenant=tenant,
+        clock=clock,
+        opportunities=_OpportunityService(),
+        notifier=notifier,
+        t1=t1,
+        t2=t2,
+    )
+    requested = next(row[2] for row in registry.rows if row[0] is HandoffRequested)
+    try:
+        await requested.handle(
+            HandoffRequested(
+                tenant_id=tenant,
+                occurred_at=_BASE,
+                handoff_id=HandoffId("hand-owner-retry"),
+                opportunity_id=OpportunityId("opp-owner-retry"),
+                assigned_to=EmployeeId("sales"),
+                trigger="quote_requested",
+            )
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value = _BASE + timedelta(seconds=30)
+        assert await engine.poll_due(tenant, 1) == 1
+
+        async with db.connect() as conn:
+            due = (
+                await conn.execute(
+                    text(
+                        "SELECT due_at FROM workflow_steps WHERE tenant_id = :tenant "
+                        "AND step_name = 'wait_acceptance_t1'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).scalar_one()
+        assert due == _BASE + t1
+        assert notifier.attempts == 2
+    finally:
+        await db.dispose()
+
+
+async def test_manager_escalation_retry_preserves_absolute_t2_boundary(
+    db_url: str,
+) -> None:
+    """经理升级瞬态重试只改变可领取时间，不得把绝对 T2 向后顺延。"""
+    flow = importlib.import_module("workflows.human_handoff.flow")
+    tenant = TenantId("tFlowManagerRetry")
+    t1 = timedelta(minutes=10)
+    t2 = timedelta(minutes=20)
+    clock = _Clock(_BASE)
+    employees = _ManagerRetryEmployeeService(tenant)
+    db, engine, registry = _flow_runtime(
+        db_url,
+        flow,
+        tenant=tenant,
+        clock=clock,
+        opportunities=_OpportunityService(),
+        notifier=_Notifier(),
+        employees=employees,
+        t1=t1,
+        t2=t2,
+    )
+    requested = next(row[2] for row in registry.rows if row[0] is HandoffRequested)
+    try:
+        await requested.handle(
+            HandoffRequested(
+                tenant_id=tenant,
+                occurred_at=_BASE,
+                handoff_id=HandoffId("hand-manager-retry"),
+                opportunity_id=OpportunityId("opp-manager-retry"),
+                assigned_to=EmployeeId("sales"),
+                trigger="quote_requested",
+            )
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value = _BASE + t1
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value += timedelta(seconds=30)
+        assert await engine.poll_due(tenant, 1) == 1
+
+        async with db.connect() as conn:
+            due = (
+                await conn.execute(
+                    text(
+                        "SELECT due_at FROM workflow_steps WHERE tenant_id = :tenant "
+                        "AND step_name = 'wait_acceptance_t2'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).scalar_one()
+        assert due == _BASE + t1 + t2
+        assert employees.failed is True
+    finally:
+        await db.dispose()
+
+
+async def test_boss_reminders_retry_key_and_acceptance_race_are_durable(
+    db_url: str,
+) -> None:
+    """两次 reminder key 不同；崩溃重试稳定，accepted 竞争后停止。"""
+    flow = importlib.import_module("workflows.human_handoff.flow")
+    tenant = TenantId("tFlowBossReminderRace")
+    t1 = timedelta(minutes=10)
+    t2 = timedelta(minutes=20)
+    clock = _Clock(_BASE)
+    opportunities = _OpportunityService()
+    notifier = _BossReminderRetryNotifier()
+    db, engine, registry = _flow_runtime(
+        db_url,
+        flow,
+        tenant=tenant,
+        clock=clock,
+        opportunities=opportunities,
+        notifier=notifier,
+        t1=t1,
+        t2=t2,
+    )
+    requested = next(row[2] for row in registry.rows if row[0] is HandoffRequested)
+    accepted = next(row[2] for row in registry.rows if row[0] is HandoffAccepted)
+    try:
+        await _drive_to_boss_wait(
+            engine=engine,
+            requested=requested,
+            tenant=tenant,
+            handoff="hand-reminder-race",
+            clock=clock,
+            t1=t1,
+            t2=t2,
+        )
+        clock.value = _BASE + t1 + t2 + t2
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value += timedelta(seconds=30)
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.value = _BASE + t1 + t2 + t2 + t2
+        assert await engine.poll_due(tenant, 1) == 1
+        reminder_attempts = [
+            key for level, key in notifier.attempts if level == "boss_reminder"
+        ]
+        assert reminder_attempts == [
+            "human_handoff:hand-reminder-race:boss-reminder:1",
+            "human_handoff:hand-reminder-race:boss-reminder:1",
+            "human_handoff:hand-reminder-race:boss-reminder:2",
+        ]
+        assert [row.level for row in notifier.rows] == [
+            "owner",
+            "manager",
+            "boss",
+            "boss_reminder",
+            "boss_reminder",
+        ]
+        assert [row.dedup_key for row in notifier.rows[-2:]] == [
+            "human_handoff:hand-reminder-race:boss-reminder:1",
+            "human_handoff:hand-reminder-race:boss-reminder:2",
+        ]
+        async with db.connect() as conn:
+            boss_wait = (
+                await conn.execute(
+                    text(
+                        "SELECT status, data FROM workflow_steps "
+                        "WHERE tenant_id = :tenant "
+                        "AND step_name = 'wait_acceptance_boss'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).mappings().one()
+        assert boss_wait["status"] == "waiting_event"
+        assert boss_wait["data"]["reminder_index"] == 3
+
+        clock.value = _BASE + t1 + t2 + t2 + t2 + t2
+        polled, _ = await asyncio.gather(
+            engine.poll_due(tenant, 1),
+            accepted.handle(
+                HandoffAccepted(
+                    tenant_id=tenant,
+                    occurred_at=clock.now(),
+                    handoff_id=HandoffId("hand-reminder-race"),
+                    accepted_by=EmployeeId("sales"),
+                )
+            ),
+        )
+        assert polled in (0, 1)
+        async with db.connect() as conn:
+            run_status = (
+                await conn.execute(
+                    text(
+                        "SELECT status FROM workflow_runs WHERE tenant_id = :tenant "
+                        "AND workflow_type = 'human_handoff' "
+                        "AND subject_ref = 'hand-reminder-race'"
+                    ),
+                    {"tenant": str(tenant)},
+                )
+            ).scalar_one()
+        assert run_status == "completed"
+        assert [row[2] for row in opportunities.records] == [1, 2]
+        assert len(
+            [
+                key
+                for level, key in notifier.attempts
+                if level == "boss_reminder" and key.endswith(":3")
+            ]
+        ) <= 1
+        clock.value += t2
+        assert await engine.poll_due(tenant, 1) == 0
     finally:
         await db.dispose()

@@ -121,6 +121,7 @@ class _FakeEngine:
         self.starts: list[dict[str, object]] = []
         self.active: RunId | None = None
         self.deliveries: list[tuple] = []
+        self.delivered = False
 
     def register(self, definition) -> None:
         self.registered.append(definition)
@@ -152,9 +153,16 @@ class _FakeEngine:
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
         return self.active
 
-    async def deliver_event(self, tenant_id, run_id, event_type, payload) -> None:
+    async def deliver_event(self, tenant_id, run_id, event_type, payload) -> bool:
         self.deliveries.append((tenant_id, run_id, event_type, payload))
         self.active = None
+        self.delivered = True
+        return True
+
+    async def has_delivered_event(
+        self, tenant_id, workflow_type, subject_ref, event_type, payload
+    ) -> bool:
+        return self.delivered
 
 
 class _FakeRegistry:
@@ -262,6 +270,11 @@ def test_definition_has_explicit_t1_t2_and_no_defaults() -> None:
     assert by_name["wait_acceptance_t2"].timeout == _T2
     assert by_name["wait_acceptance_t2"].on_timeout == "escalate_boss"
     assert by_name["wait_acceptance_boss"].timeout is None
+    assert by_name["wait_acceptance_boss"].reminder_interval == _T2
+    assert (
+        by_name["wait_acceptance_boss"].reminder_handler_ref
+        == "human_handoff.remind_boss"
+    )
     assert definition.transitions == {
         "notify_owner": ("wait_acceptance_t1",),
         "wait_acceptance_t1": ("escalate_manager",),
