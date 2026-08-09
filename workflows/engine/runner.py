@@ -121,11 +121,26 @@ class WorkflowEngine(Protocol):
         subject_ref: str,
         initial_context: dict[str, Any],
         idempotency_key: str,
+        *,
+        scheduled_at: datetime | None = None,
     ) -> RunId:
         """启动流程。
 
         ``idempotency_key`` 必填：同一业务实体的同一类流程不重复启动
         （事件重复投递会重复触发 start）。
+        """
+        ...
+
+    async def find_active_run(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+    ) -> RunId | None:
+        """按租户、流程类型与业务主体查唯一运行中实例。
+
+        终态实例不可见；若数据异常地产生多个运行中实例，必须失败关闭，
+        不得任取一条继续投递事件。
         """
         ...
 

@@ -163,6 +163,7 @@ def test_opportunity_action_typed() -> None:
     assert "handoff:accept" in values
     assert "handoff:read" in values
     assert "handoff:queue_read" in values
+    assert "handoff:escalation_record" in values
     assert "loss_reason:read" in values
     assert all(":" in v for v in values)
 
@@ -284,6 +285,7 @@ _ACTION_BY_METHOD = {
     "mark_lost": OpportunityAction.OPPORTUNITY_MARK_LOST.value,
     "mark_won": OpportunityAction.OPPORTUNITY_MARK_WON.value,
     "request_handoff": OpportunityAction.HANDOFF_REQUEST.value,
+    "record_handoff_escalation": "handoff:escalation_record",
     "accept_handoff": OpportunityAction.HANDOFF_ACCEPT.value,
     "get_handoff_packet": OpportunityAction.HANDOFF_READ.value,
     "get_queue_stats": OpportunityAction.HANDOFF_QUEUE_READ.value,
@@ -359,6 +361,7 @@ def _make_service(*, authorizer, audit, factory=None):
         ("mark_lost", lambda s: s.mark_lost(TenantId("t1"), OpportunityId("opp-1"), LossReason.PRICE_TOO_HIGH, actor=_actor(), confirmed_by=EmployeeId("e1"), confirmed_at=_NOW)),
         ("mark_won", lambda s: s.mark_won(TenantId("t1"), OpportunityId("opp-1"), actor=_actor(), confirmed_by=EmployeeId("e1"), confirmed_at=_NOW)),
         ("request_handoff", lambda s: s.request_handoff(TenantId("t1"), _handoff_request(), actor=_actor())),
+        ("record_handoff_escalation", lambda s: s.record_handoff_escalation(TenantId("t1"), HandoffId("ho-1"), 1, _NOW, actor=_actor())),
         ("accept_handoff", lambda s: s.accept_handoff(TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"), actor=_actor())),
         ("get_handoff_packet", lambda s: s.get_handoff_packet(TenantId("t1"), HandoffId("ho-1"), actor=_actor())),
         ("get_queue_stats", lambda s: s.get_queue_stats(TenantId("t1"), actor=_actor())),

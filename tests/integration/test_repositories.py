@@ -41,7 +41,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shared.errors import InvalidStateTransition
 from shared.schemas.identifiers import (
@@ -517,6 +517,10 @@ def test_orm_metadata_parity_with_head() -> None:
             "missing_information", "already_sent", "commitments_made",
             "evidence_links", "conversation_summary", "suggested_next_step",
         },
+        "handoff_escalations": {
+            "escalation_id", "tenant_id", "handoff_id", "level",
+            "escalated_at", "note",
+        },
         "loss_records": {
             "loss_record_id", "tenant_id", "opportunity_id", "loss_reason",
             "died_at_state", "detail", "evidence_tier", "confirmed_by",
@@ -608,7 +612,11 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_opportunities_closed_only_terminal",
         },
         "score_snapshots": {"ck_score_snapshots_value_pair"},
-        "handoffs": {"fk_handoffs_opportunity"},
+        "handoffs": {"fk_handoffs_opportunity", "uq_handoffs_tenant_handoff"},
+        "handoff_escalations": {
+            "fk_handoff_escalations_handoff",
+            "uq_handoff_escalations_tenant_handoff_level",
+        },
         "loss_records": {"fk_loss_records_opportunity"},
         "outbox_events": {
             "ck_outbox_attempt_min", "ck_outbox_status", "uq_outbox_events_tenant_event",
@@ -876,6 +884,121 @@ async def test_handoff_tenant_binding_mismatch(repo_session: AsyncSession) -> No
         await repo_a.add(_handoff("ho-hmb-2", "tHmbB", "opp-hmb-2"))
     with pytest.raises(ValueError):
         await repo_a.update(_handoff("ho-hmb-1", "tHmbB", "opp-hmb-1"))
+
+
+async def test_handoff_escalation_append_and_tenant_isolation(
+    repo_session: AsyncSession,
+) -> None:
+    """不同 level 均追加；方法租户错配拒绝，跨租户 handoff 由复合 FK 拒绝。"""
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    await _seed_opp(repo_session, "opp-esc-a", "tEscA", "need-esc-a")
+    await _seed_opp(repo_session, "opp-esc-b", "tEscB", "need-esc-b")
+    repo_a = HandoffRepositoryImpl(repo_session, TenantId("tEscA"))
+    repo_b = HandoffRepositoryImpl(repo_session, TenantId("tEscB"))
+    await repo_a.add(_handoff("hand-esc-a", "tEscA", "opp-esc-a"))
+    await repo_b.add(_handoff("hand-esc-b", "tEscB", "opp-esc-b"))
+    await repo_session.commit()
+
+    await repo_a.record_escalation(
+        TenantId("tEscA"), HandoffId("hand-esc-a"), 1, _NOW
+    )
+    await repo_a.record_escalation(
+        TenantId("tEscA"), HandoffId("hand-esc-a"), 2, _NOW + timedelta(minutes=5)
+    )
+    await repo_session.commit()
+    rows = (
+        await repo_session.execute(
+            text(
+                "SELECT level FROM handoff_escalations "
+                "WHERE tenant_id = :tenant AND handoff_id = :handoff ORDER BY level"
+            ),
+            {"tenant": "tEscA", "handoff": "hand-esc-a"},
+        )
+    ).scalars().all()
+    assert rows == [1, 2]
+
+    with pytest.raises(ValueError):
+        await repo_a.record_escalation(
+            TenantId("tEscB"), HandoffId("hand-esc-a"), 3, _NOW
+        )
+    await repo_session.rollback()
+    with pytest.raises(IntegrityError):
+        await repo_a.record_escalation(
+            TenantId("tEscA"), HandoffId("hand-esc-b"), 3, _NOW
+        )
+        await repo_session.commit()
+    await repo_session.rollback()
+
+
+async def test_handoff_escalation_service_duplicate_exact_constraint_noop(
+    db_url: str,
+) -> None:
+    """同 level 精确唯一约束是幂等 no-op，且不产生第二行。"""
+    from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
+    from domains.opportunities.service_impl import OpportunityServiceImpl
+    from infra.db.session import create_engine_from
+    from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
+
+    class _Scorer:
+        async def score(self, *args, **kwargs):
+            raise AssertionError("unused")
+
+    class _Auth:
+        def require(self, actor, action, scope, tenant_id):
+            return "test:allow"
+
+    class _Audit:
+        def log(self, **kwargs):
+            return None
+
+    HandoffPolicy = importlib.import_module(
+        "domains.opportunities.models"
+    ).HandoffPolicy
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    tenant = TenantId("tEscService")
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    try:
+        seed = AsyncSession(bind=engine, expire_on_commit=False)
+        try:
+            await _seed_opp(seed, "opp-esc-svc", str(tenant), "need-esc-svc")
+            repo = HandoffRepositoryImpl(seed, tenant)
+            await repo.add(_handoff("hand-esc-svc", str(tenant), "opp-esc-svc"))
+            await seed.commit()
+        finally:
+            await seed.close()
+        service = OpportunityServiceImpl(
+            lambda: SqlAlchemyOpportunityUnitOfWork(factory, tenant),
+            _Scorer(),
+            HandoffPolicy(sla_seconds=1, backlog_threshold=1),
+            authorizer=_Auth(),
+            audit=_Audit(),
+            now=lambda: _NOW,
+        )
+        actor = Actor(
+            actor_id="system:handoff",
+            scope=OpportunityScope(level=ScopeLevel.SYSTEM),
+            role="system",
+        )
+        await service.record_handoff_escalation(
+            tenant, HandoffId("hand-esc-svc"), 1, _NOW, actor=actor
+        )
+        await service.record_handoff_escalation(
+            tenant, HandoffId("hand-esc-svc"), 1, _NOW, actor=actor
+        )
+        async with engine.connect() as conn:
+            count = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM handoff_escalations "
+                        "WHERE tenant_id = :tenant AND handoff_id = :handoff AND level = 1"
+                    ),
+                    {"tenant": str(tenant), "handoff": "hand-esc-svc"},
+                )
+            ).scalar_one()
+        assert count == 1
+    finally:
+        await engine.dispose()
 
 
 # --- Batch 2：LossRecord 仓储 ---------------------------------------------------

@@ -37,7 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from shared.errors import TransientError, ValidationError
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import RunId, TenantId
 from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1334,3 +1334,275 @@ async def test_wait_and_complete_with_next_step_fail_closed(db_url: str) -> None
         assert run2 is not None and run2["status"] == "failed", "complete+next_step 应永久失败"
     finally:
         await handle.dispose()
+
+
+# --- S3-10 preflight：active-run lookup + WAITING_EVENT 绝对时限 -----------------
+
+
+async def test_find_active_run_is_tenant_type_subject_scoped(db_url: str) -> None:
+    """同租户/type/subject 命中；跨租户、终态均不可见。"""
+    def _h(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    engine, handle = _make_engine(db_url, {"h": _handler(_h)})
+    try:
+        engine.register(_simple_def("lookup-wf"))
+        tenant = TenantId("tLookup")
+        active = await engine.start(tenant, "lookup-wf", "hand-1", {}, "lookup-active")
+        completed = RunId("run-lookup-completed")
+        async with handle.begin() as conn:
+            await conn.execute(
+                _INSERT_RUN,
+                {
+                    **_run_params(
+                        str(completed),
+                        str(tenant),
+                        key="lookup-completed",
+                        status="completed",
+                    ),
+                    "workflow_type": "lookup-wf",
+                    "subject_ref": "hand-2",
+                },
+            )
+        assert await engine.find_active_run(tenant, "lookup-wf", "hand-1") == active
+        assert (
+            await engine.find_active_run(TenantId("tOther"), "lookup-wf", "hand-1")
+            is None
+        )
+        assert await engine.find_active_run(tenant, "other-wf", "hand-1") is None
+        assert await engine.find_active_run(tenant, "lookup-wf", "hand-2") is None
+        completed_row = await _query_run(handle, str(tenant), completed)
+        assert completed_row is not None and completed_row["status"] == "completed"
+    finally:
+        await handle.dispose()
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+async def test_find_active_run_excludes_every_terminal_status(
+    db_url: str, terminal: str
+) -> None:
+    """completed/failed/cancelled 都不是 active。"""
+    engine, handle = _make_engine(db_url, {"h": _handler(lambda run: ("complete", None, {}))})
+    try:
+        tenant = "tLookupTerminal"
+        async with handle.begin() as conn:
+            await conn.execute(
+                _INSERT_RUN,
+                {
+                    **_run_params(
+                        f"run-{terminal}", tenant, key=f"key-{terminal}", status=terminal
+                    ),
+                    "workflow_type": "lookup-wf",
+                    "subject_ref": f"hand-{terminal}",
+                },
+            )
+        assert (
+            await engine.find_active_run(
+                TenantId(tenant), "lookup-wf", f"hand-{terminal}"
+            )
+            is None
+        )
+    finally:
+        await handle.dispose()
+
+
+async def test_find_active_run_duplicate_active_fails_closed(db_url: str) -> None:
+    """异常重复 active 数据不得任取一条。"""
+    engine, handle = _make_engine(db_url, {"h": _handler(lambda run: ("complete", None, {}))})
+    try:
+        tenant = "tLookupDuplicate"
+        async with handle.begin() as conn:
+            for suffix in ("a", "b"):
+                await conn.execute(
+                    _INSERT_RUN,
+                    {
+                        **_run_params(
+                            f"run-dup-{suffix}", tenant, key=f"key-dup-{suffix}"
+                        ),
+                        "workflow_type": "lookup-wf",
+                        "subject_ref": "hand-dup",
+                    },
+                )
+        with pytest.raises(ValidationError):
+            await engine.find_active_run(
+                TenantId(tenant), "lookup-wf", "hand-dup"
+            )
+    finally:
+        await handle.dispose()
+
+
+def _timeout_flow() -> WorkflowDefinition:
+    return WorkflowDefinition(
+        workflow_type="timeout-wf",
+        version=1,
+        steps=(
+            StepDefinition("notify", "h_notify"),
+            StepDefinition(
+                "wait",
+                "h_wait",
+                timeout=timedelta(seconds=10),
+                on_timeout="escalate",
+                wait_event_type="accepted",
+            ),
+            StepDefinition("escalate", "h_escalate"),
+        ),
+        transitions={"notify": ("wait",), "wait": ("escalate",)},
+    )
+
+
+async def test_waiting_event_timeout_uses_scheduled_anchor_and_is_idempotent(
+    db_url: str,
+) -> None:
+    """未到期不领取；到期转 on_timeout；重复 poll 不重复超时推进。"""
+    calls: list[str] = []
+
+    def _notify(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("advance", "wait", {})
+
+    def _wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {})
+
+    def _escalate(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        calls.append(run.run_id)
+        return ("complete", None, {})
+
+    clock = _Clock(_NOW + timedelta(hours=1))  # 模拟事件延迟一小时才消费
+    engine, handle = _make_engine(
+        db_url,
+        {
+            "h_notify": _handler(_notify),
+            "h_wait": _handler(_wait),
+            "h_escalate": _handler(_escalate),
+        },
+        clock=clock,
+    )
+    try:
+        engine.register(_timeout_flow())
+        tenant = TenantId("tTimeout")
+        rid = await engine.start(
+            tenant,
+            "timeout-wf",
+            "hand-1",
+            {},
+            "timeout-key",
+            scheduled_at=_NOW,
+        )
+        assert await engine.poll_due(tenant, 1) == 1  # notify → wait
+        wait = {s["step_name"]: s for s in await _query_steps(handle, str(tenant), rid)}[
+            "wait"
+        ]
+        assert wait["due_at"] == _NOW + timedelta(seconds=10)
+
+        # 已经延迟消费，绝对 T1 早已到期：下一次 poll 立即 timeout，不额外宽限。
+        assert await engine.poll_due(tenant, 1) == 1
+        row = await _query_run(handle, str(tenant), rid)
+        assert row is not None and row["current_step"] == "escalate"
+        steps = {s["step_name"]: s for s in await _query_steps(handle, str(tenant), rid)}
+        assert steps["wait"]["status"] == "timed_out"
+        assert len([s for s in steps.values() if s["step_name"] == "escalate"]) == 1
+
+        assert await engine.poll_due(tenant, 1) == 1  # escalation handler completes
+        assert await engine.poll_due(tenant, 10) == 0
+        assert len(calls) == 1
+    finally:
+        await handle.dispose()
+
+
+async def test_waiting_event_not_due_and_other_tenant_are_not_claimed(db_url: str) -> None:
+    """未来 timeout 与其他租户 run 均不得被本租户提前领取。"""
+    clock = _Clock()
+    handlers = {
+        "h_notify": _handler(lambda run: ("advance", "wait", {})),
+        "h_wait": _handler(lambda run: ("complete", None, {})),
+        "h_escalate": _handler(lambda run: ("complete", None, {})),
+    }
+    engine, handle = _make_engine(db_url, handlers, clock=clock)
+    try:
+        engine.register(_timeout_flow())
+        tenant = TenantId("tTimeoutIsolation")
+        rid = await engine.start(
+            tenant, "timeout-wf", "hand-iso", {}, "timeout-iso", scheduled_at=_NOW
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.poll_due(tenant, 10) == 0
+        clock.advance(seconds=10)
+        assert await engine.poll_due(TenantId("tOther"), 10) == 0
+        row = await _query_run(handle, str(tenant), rid)
+        assert row is not None and row["current_step"] == "wait"
+        assert await engine.poll_due(tenant, 1) == 1
+    finally:
+        await handle.dispose()
+
+
+async def test_waiting_event_without_timeout_never_enters_poll_loop(db_url: str) -> None:
+    """普通 WAITING_EVENT 无 timeout 时，即使 due_at 很旧也不被 scheduler 领取。"""
+    calls: list[str] = []
+    definition = WorkflowDefinition(
+        "plain-wait",
+        1,
+        (StepDefinition("wait", "h_wait", wait_event_type="accepted"),),
+        {},
+    )
+
+    def _wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        calls.append(run.run_id)
+        return ("complete", None, {})
+
+    clock = _Clock()
+    engine, handle = _make_engine(db_url, {"h_wait": _handler(_wait)}, clock=clock)
+    try:
+        engine.register(definition)
+        tenant = TenantId("tPlainWait")
+        await engine.start(tenant, "plain-wait", "hand", {}, "plain-wait-key")
+        clock.advance(days=30)
+        assert await engine.poll_due(tenant, 100) == 0
+        assert await engine.poll_due(tenant, 100) == 0
+        assert calls == []
+    finally:
+        await handle.dispose()
+
+
+async def test_event_timeout_race_advances_exactly_once(db_url: str) -> None:
+    """event 与 timeout 竞争只能一方推进，不能同时 complete 又建 escalation。"""
+    wait_calls: list[str] = []
+
+    def _wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        wait_calls.append(run.run_id)
+        return ("complete", None, {})
+
+    handlers = {
+        "h_notify": _handler(lambda run: ("advance", "wait", {})),
+        "h_wait": _handler(_wait),
+        "h_escalate": _handler(lambda run: ("complete", None, {})),
+    }
+    clock = _Clock()
+    engine_a, handle_a = _make_engine(db_url, handlers, clock=clock)
+    engine_b, handle_b = _make_engine(db_url, handlers, clock=clock)
+    try:
+        definition = _timeout_flow()
+        engine_a.register(definition)
+        engine_b.register(definition)
+        tenant = TenantId("tTimeoutRace")
+        rid = await engine_a.start(
+            tenant, "timeout-wf", "hand-race", {}, "timeout-race", scheduled_at=_NOW
+        )
+        assert await engine_a.poll_due(tenant, 1) == 1
+        clock.advance(seconds=10)
+        await asyncio.gather(
+            engine_a.poll_due(tenant, 1),
+            engine_b.deliver_event(tenant, rid, "accepted", {"accepted_by": "sales"}),
+        )
+        row = await _query_run(handle_a, str(tenant), rid)
+        assert row is not None
+        steps = await _query_steps(handle_a, str(tenant), rid)
+        escalation_steps = [s for s in steps if s["step_name"] == "escalate"]
+        if row["status"] == "completed":
+            assert len(wait_calls) == 1
+            assert escalation_steps == []
+        else:
+            assert row["current_step"] == "escalate"
+            assert wait_calls == []
+            assert len(escalation_steps) == 1
+    finally:
+        await handle_a.dispose()
+        await handle_b.dispose()

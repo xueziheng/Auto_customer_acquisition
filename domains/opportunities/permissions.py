@@ -38,6 +38,7 @@ class OpportunityAction(str, Enum):
     OPPORTUNITY_READ = "opportunity:read"
     OPPORTUNITY_LIST = "opportunity:list"
     HANDOFF_REQUEST = "handoff:request"
+    HANDOFF_ESCALATION_RECORD = "handoff:escalation_record"
     HANDOFF_ACCEPT = "handoff:accept"
     HANDOFF_READ = "handoff:read"
     HANDOFF_QUEUE_READ = "handoff:queue_read"

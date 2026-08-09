@@ -115,6 +115,40 @@ def _is_unique_violation(exc: BaseException) -> bool:
     return state == "23505"
 
 
+def _is_handoff_escalation_duplicate(exc: BaseException) -> bool:
+    """仅识别升级审计精确唯一约束；不靠异常文本猜测。"""
+    if exc.__class__.__name__ != "IntegrityError":
+        return False
+    if exc.__class__.__module__ != "sqlalchemy.exc":
+        return False
+    pending: list[object] = [getattr(exc, "orig", None)]
+    seen: set[int] = set()
+    sqlstate: str | None = None
+    constraint: str | None = None
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        sqlstate = sqlstate or getattr(current, "sqlstate", None) or getattr(
+            current, "pgcode", None
+        )
+        diag = getattr(current, "diag", None)
+        constraint = constraint or getattr(current, "constraint_name", None) or getattr(
+            diag, "constraint_name", None
+        )
+        pending.extend(
+            [
+                getattr(current, "__cause__", None),
+                getattr(current, "__context__", None),
+            ]
+        )
+    return (
+        sqlstate == "23505"
+        and constraint == "uq_handoff_escalations_tenant_handoff_level"
+    )
+
+
 def validate_present_critical_provenance(request: OpportunityCreateRequest) -> None:
     """校验 request 中 **present** 的关键字段都有 Provenance（硬边界 4），且无 Agent 推断（硬边界 5）。
 
@@ -690,6 +724,8 @@ class OpportunityServiceImpl:
                 raise ValidationError(
                     f"机会 {request.opportunity_id} 不存在或不属于该租户"
                 )
+            if opp.owner is None:
+                raise ValidationError("接管请求缺少机会负责人")
             requested_at = self._now()
             packet = HandoffPacket(
                 handoff_id=handoff_id,
@@ -709,6 +745,7 @@ class OpportunityServiceImpl:
                 commitments_made=list(request.commitments_made),
                 suggested_next_step=request.suggested_next_step,
                 evidence_links=list(request.evidence_links),
+                assigned_to=opp.owner,
             )
             await uow.provenance.save(
                 tenant_id,
@@ -725,11 +762,33 @@ class OpportunityServiceImpl:
                     run_id=None,
                     handoff_id=handoff_id,
                     opportunity_id=OpportunityId(request.opportunity_id),
-                    assigned_to=None,
+                    assigned_to=opp.owner,
                     trigger=trigger.value,
                 )
             )
             return handoff_id
+
+    async def record_handoff_escalation(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        level: int,
+        escalated_at: datetime,
+        *,
+        actor: Actor,
+    ) -> None:
+        """判权后追加升级审计；仅精确重复唯一键视为幂等成功。"""
+        action = OpportunityAction.HANDOFF_ESCALATION_RECORD
+        rule = self._authorize(actor, action, tenant_id)
+        self._audit_allow(actor, action, tenant_id, rule)
+        try:
+            async with self._uow_factory() as uow:
+                await uow.handoffs.record_escalation(
+                    tenant_id, handoff_id, level, escalated_at
+                )
+        except Exception as exc:
+            if not _is_handoff_escalation_duplicate(exc):
+                raise
 
     async def accept_handoff(
         self,

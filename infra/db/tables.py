@@ -152,6 +152,9 @@ class HandoffRow(Base):
 
     __tablename__ = "handoffs"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "handoff_id", name="uq_handoffs_tenant_handoff"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "opportunity_id"],
             ["opportunities.tenant_id", "opportunities.opportunity_id"],
@@ -183,6 +186,33 @@ class HandoffRow(Base):
     evidence_links: Mapped[list | None] = mapped_column(postgresql.JSONB)
     conversation_summary: Mapped[str | None] = mapped_column(Text)
     suggested_next_step: Mapped[str | None] = mapped_column(Text)
+
+
+class HandoffEscalationRow(Base):
+    """``handoff_escalations`` 行（复合 FK → handoffs；只增）。"""
+
+    __tablename__ = "handoff_escalations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "handoff_id"],
+            ["handoffs.tenant_id", "handoffs.handoff_id"],
+            ondelete="RESTRICT",
+            name="fk_handoff_escalations_handoff",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "handoff_id",
+            "level",
+            name="uq_handoff_escalations_tenant_handoff_level",
+        ),
+    )
+
+    escalation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    handoff_id: Mapped[str] = mapped_column(String(32))
+    level: Mapped[int] = mapped_column(Integer)
+    escalated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text)
 
 
 class LossRecordRow(Base):

@@ -170,6 +170,16 @@ class HandoffRepository(Protocol):
         （并发下已被他人接受则 False → 抛 ``HandoffAlreadyAcceptedError``）。"""
         ...
 
+    async def record_escalation(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        level: int,
+        escalated_at: datetime,
+    ) -> None:
+        """只增记录接管升级；同一接管同一级由数据库唯一约束保证幂等。"""
+        ...
+
 
 @runtime_checkable
 class LossRecordRepository(Protocol):

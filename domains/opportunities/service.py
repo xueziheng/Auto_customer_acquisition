@@ -175,6 +175,18 @@ class OpportunityService(Protocol):
         """
         ...
 
+    async def record_handoff_escalation(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        level: int,
+        escalated_at: datetime,
+        *,
+        actor: Actor,
+    ) -> None:
+        """只增记录一次接管升级；所有 actor（含 SYSTEM）均先走 typed 判权。"""
+        ...
+
     async def get_handoff_packet(
         self, tenant_id: TenantId, handoff_id: HandoffId, *, actor: Actor
     ) -> HandoffPacketView:

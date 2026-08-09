@@ -533,7 +533,7 @@ async def test_request_handoff_saves_verbatim_provenance() -> None:
     """顺序 prov_save → handoff_add → publish(HandoffRequested)；save 参数精确。"""
     factory = _UoWFactory()
     service = _make_service(factory)
-    factory.seed_opp(_opp())
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
 
     result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
 
@@ -626,7 +626,7 @@ async def test_request_handoff_id_format() -> None:
     """HandoffId 用 new_id("hand")：startswith("hand_") 且 len<=32（DB String(32)）。"""
     factory = _UoWFactory()
     service = _make_service(factory)
-    factory.seed_opp(_opp())
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
 
     result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
 
@@ -642,7 +642,7 @@ async def test_request_handoff_allows_verbatim_sources(source: SourceType) -> No
     """conversation/upload/employee_input 三种来源都允许创建接管包。"""
     factory = _UoWFactory()
     service = _make_service(factory)
-    factory.seed_opp(_opp())
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
 
     result = await service.request_handoff(
         TenantId("t1"),
@@ -658,7 +658,7 @@ async def test_request_handoff_copies_all_list_fields() -> None:
     """构造 packet 时四个 list 字段全部复制，避免入参可变列表别名。"""
     factory = _UoWFactory()
     service = _make_service(factory)
-    factory.seed_opp(_opp())
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
     missing = ["spec 表"]
     already = ["初版报价"]
     commits = ["样品免费"]

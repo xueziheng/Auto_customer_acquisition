@@ -26,6 +26,7 @@ from domains.opportunities.models import (
 )
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    HandoffEscalationRow,
     HandoffRow,
     LossRecordRow,
     OpportunityRow,
@@ -611,6 +612,29 @@ class HandoffRepositoryImpl(TenantScopedRepository):
             )
         )
         return cast(CursorResult, result).rowcount > 0
+
+    async def record_escalation(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        level: int,
+        escalated_at: datetime,
+    ) -> None:
+        """追加升级审计；租户错配在写入前拒绝。"""
+        if tenant_id != self._tenant_id:
+            raise ValueError(
+                f"升级租户 {tenant_id} 与仓储绑定租户 {self._tenant_id} 不一致"
+            )
+        self._session.add(
+            HandoffEscalationRow(
+                escalation_id=new_id("esc"),
+                tenant_id=tenant_id,
+                handoff_id=handoff_id,
+                level=level,
+                escalated_at=escalated_at,
+                note=None,
+            )
+        )
 
 
 def _loss_to_row(record: LossRecord) -> LossRecordRow:

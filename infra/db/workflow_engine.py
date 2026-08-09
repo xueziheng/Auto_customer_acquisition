@@ -35,7 +35,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, and_, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -146,6 +146,10 @@ class PostgresWorkflowEngine:
                 raise ValueError(
                     f"step {step.step_name} retry_backoff 必须 > 0（当前 {step.retry_backoff}）"
                 )
+            if step.timeout is not None and step.timeout.total_seconds() <= 0:
+                raise ValueError(
+                    f"step {step.step_name} timeout 必须 > 0（当前 {step.timeout}）"
+                )
         known = set(names)
         for source, dests in definition.transitions.items():
             if source not in known:
@@ -153,6 +157,24 @@ class PostgresWorkflowEngine:
             unknown = sorted(d for d in dests if d not in known)
             if unknown:
                 raise ValueError(f"transition 目标步骤未定义：{unknown}")
+        for step in definition.steps:
+            if step.on_timeout is not None:
+                if step.on_timeout not in known:
+                    raise ValueError(
+                        f"step {step.step_name} on_timeout 目标未定义：{step.on_timeout}"
+                    )
+                if step.on_timeout not in definition.transitions.get(step.step_name, ()):
+                    raise ValueError(
+                        f"step {step.step_name} on_timeout 必须是显式 transition"
+                    )
+            if (
+                step.wait_event_type is not None
+                and step.timeout is not None
+                and step.on_timeout is None
+            ):
+                raise ValueError(
+                    f"WAITING_EVENT step {step.step_name} 配置 timeout 时必须配置 on_timeout"
+                )
         self._definitions[key] = definition
 
     def _definition_for(self, workflow_type: str) -> WorkflowDefinition:
@@ -173,6 +195,8 @@ class PostgresWorkflowEngine:
         subject_ref: str,
         initial_context: dict[str, Any],
         idempotency_key: str,
+        *,
+        scheduled_at: datetime | None = None,
     ) -> RunId:
         """启动流程：创建 run 与首步原子提交；同 (tenant, key) 幂等返回既有 run。"""
         if not idempotency_key or not idempotency_key.strip():
@@ -182,6 +206,12 @@ class PostgresWorkflowEngine:
             raise ValidationError(f"initial_context 不得含引擎保留键：{hits}")
         definition = self._definition_for(workflow_type)
         first_step = definition.steps[0]
+        anchor = scheduled_at if scheduled_at is not None else self._now()
+        first_due_at = (
+            anchor + first_step.timeout
+            if first_step.wait_event_type and first_step.timeout is not None
+            else anchor
+        )
         run_id = new_id("run")
         session = self._factory()
         try:
@@ -206,7 +236,7 @@ class PostgresWorkflowEngine:
                         tenant_id=tenant_id,
                         run_id=run_id,
                         step_name=first_step.step_name,
-                        due_at=self._now(),
+                        due_at=first_due_at,
                         # 首步本身等待事件时直接进入 waiting_event：poll_due 不领取，
                         # 只由 deliver_event 触发（与 advance 到等待步骤语义一致）。
                         status=(
@@ -230,6 +260,33 @@ class PostgresWorkflowEngine:
         finally:
             await session.close()
 
+    async def find_active_run(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+    ) -> RunId | None:
+        """返回 tenant/type/subject 唯一 running run；重复 active 时失败关闭。"""
+        session = self._factory()
+        try:
+            rows = (
+                await session.execute(
+                    select(WorkflowRunRow.run_id)
+                    .where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.workflow_type == workflow_type,
+                        WorkflowRunRow.subject_ref == subject_ref,
+                        WorkflowRunRow.status == StepStatus.RUNNING.value,
+                    )
+                    .limit(2)
+                )
+            ).scalars().all()
+            if len(rows) > 1:
+                raise ValidationError("active workflow run is not unique")
+            return RunId(rows[0]) if rows else None
+        finally:
+            await session.close()
+
     # ---- poll_due ---------------------------------------------------------
 
     async def poll_due(self, tenant_id: TenantId, limit: int) -> int:
@@ -246,6 +303,12 @@ class PostgresWorkflowEngine:
         now = self._now()
         processed = 0
         tried_step_ids: set[str] = set()
+        timeout_steps = [
+            (definition.workflow_type, definition.version, step.step_name)
+            for definition in self._definitions.values()
+            for step in definition.steps
+            if step.wait_event_type is not None and step.timeout is not None
+        ]
         for _ in range(limit):
             session = self._factory()
             step_row: WorkflowStepRow | None = None
@@ -253,9 +316,32 @@ class PostgresWorkflowEngine:
                 step_row = (
                     await session.execute(
                         select(WorkflowStepRow)
+                        .join(
+                            WorkflowRunRow,
+                            and_(
+                                WorkflowRunRow.tenant_id
+                                == WorkflowStepRow.tenant_id,
+                                WorkflowRunRow.run_id == WorkflowStepRow.run_id,
+                            ),
+                        )
                         .where(
                             WorkflowStepRow.tenant_id == tenant_id,
-                            WorkflowStepRow.status.in_(_POLLABLE_STEP_STATUSES),
+                            WorkflowRunRow.tenant_id == tenant_id,
+                            WorkflowRunRow.status == StepStatus.RUNNING.value,
+                            WorkflowRunRow.current_step
+                            == WorkflowStepRow.step_name,
+                            or_(
+                                WorkflowStepRow.status.in_(_POLLABLE_STEP_STATUSES),
+                                and_(
+                                    WorkflowStepRow.status
+                                    == StepStatus.WAITING_EVENT.value,
+                                    tuple_(
+                                        WorkflowRunRow.workflow_type,
+                                        WorkflowRunRow.workflow_version,
+                                        WorkflowStepRow.step_name,
+                                    ).in_(timeout_steps),
+                                ),
+                            ),
                             WorkflowStepRow.due_at <= now,
                             WorkflowStepRow.step_id.not_in(tried_step_ids),
                         )
@@ -264,7 +350,7 @@ class PostgresWorkflowEngine:
                             WorkflowStepRow.step_id.asc(),
                         )
                         .limit(1)
-                        .with_for_update(skip_locked=True)
+                        .with_for_update(of=WorkflowStepRow, skip_locked=True)
                     )
                 ).scalars().first()
                 if step_row is None:
@@ -377,6 +463,11 @@ class PostgresWorkflowEngine:
                 f"step {step_row.step_name} not in definition",
             )
             return
+        if step_row.status == StepStatus.WAITING_EVENT.value:
+            self._apply_timeout(
+                session, definition, step_def, step_row, run_row, now
+            )
+            return
         handler = self._handlers.get(step_def.handler_ref)
         if handler is None:
             self._fail_run(
@@ -450,7 +541,12 @@ class PostgresWorkflowEngine:
                     tenant_id=run_row.tenant_id,
                     run_id=run_row.run_id,
                     step_name=next_name,
-                    due_at=now,
+                    due_at=(
+                        step_row.due_at + next_def.timeout
+                        if next_def.wait_event_type
+                        and next_def.timeout is not None
+                        else now
+                    ),
                     # 等待事件的下一步直接进入 waiting_event：poll_due 不领取，
                     # 只由 deliver_event 触发（避免 handler 在无事件上下文中误跑）。
                     status=(
@@ -479,6 +575,44 @@ class PostgresWorkflowEngine:
             run_row.last_error = f"step {step_row.step_name} failed: {_HANDLER_FAILED_REASON}"
             run_row.context = merged
 
+    def _apply_timeout(
+        self,
+        session: AsyncSession,
+        definition: WorkflowDefinition,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+    ) -> None:
+        """将到期 WAITING_EVENT 原子推进至显式 on_timeout 目标。"""
+        target = step_def.on_timeout
+        if target is None or target not in definition.transitions.get(step_def.step_name, ()):
+            self._fail_run(session, step_row, run_row, now, "timeout transition missing")
+            return
+        target_def = self._step_definition(definition, target)
+        step_row.status = StepStatus.TIMED_OUT.value
+        step_row.updated_at = now
+        run_row.current_step = target
+        run_row.status = StepStatus.RUNNING.value
+        run_row.next_poll_at = None
+        target_due_at = (
+            step_row.due_at + target_def.timeout
+            if target_def.wait_event_type and target_def.timeout is not None
+            else step_row.due_at
+        )
+        session.add(
+            self._new_step_row(
+                tenant_id=run_row.tenant_id,
+                run_id=run_row.run_id,
+                step_name=target,
+                due_at=target_due_at,
+                status=(
+                    StepStatus.WAITING_EVENT.value
+                    if target_def.wait_event_type
+                    else StepStatus.PENDING.value
+                ),
+            )
+        )
     def _schedule_retry(
         self,
         session: AsyncSession,
@@ -544,6 +678,19 @@ class PostgresWorkflowEngine:
         now = self._now()
         session = self._factory()
         try:
+            waiting_steps = (
+                await session.execute(
+                    select(WorkflowStepRow)
+                    .where(
+                        WorkflowStepRow.tenant_id == tenant_id,
+                        WorkflowStepRow.run_id == run_id,
+                        WorkflowStepRow.status == StepStatus.WAITING_EVENT.value,
+                    )
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if not waiting_steps:
+                return
             run_row = (
                 await session.execute(
                     select(WorkflowRunRow)
@@ -556,17 +703,11 @@ class PostgresWorkflowEngine:
             ).scalars().first()
             if run_row is None or run_row.status in _TERMINAL_STATUSES:
                 return
-            step_row = (
-                await session.execute(
-                    select(WorkflowStepRow)
-                    .where(
-                        WorkflowStepRow.tenant_id == tenant_id,
-                        WorkflowStepRow.run_id == run_id,
-                        WorkflowStepRow.step_name == run_row.current_step,
-                    )
-                )
-            ).scalars().first()
-            if step_row is None or step_row.status != "waiting_event":
+            step_row = next(
+                (row for row in waiting_steps if row.step_name == run_row.current_step),
+                None,
+            )
+            if step_row is None:
                 return
             definition = self._definitions.get((run_row.workflow_type, run_row.workflow_version))
             if definition is None:
