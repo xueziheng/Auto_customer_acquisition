@@ -871,6 +871,93 @@ async def test_deliver_event_fingerprint_dedup_same_type_two_steps(db_url: str) 
         await handle.dispose()
 
 
+async def test_two_distinct_wait_events_persist_ledger_copy_on_write(
+    db_url: str,
+) -> None:
+    """连续空 patch 事件必须在新 session/engine 中留下两条 durable fingerprint。"""
+    def _wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        next_step = "wait_two" if run.current_step == "wait_one" else "end"
+        return ("advance", next_step, {})
+
+    handlers = {
+        "h_start": _handler(lambda run: ("advance", "wait_one", {})),
+        "h_wait": _handler(_wait),
+        "h_end": _handler(lambda run: ("complete", None, {})),
+    }
+    definition = WorkflowDefinition(
+        workflow_type="wf-ledger-copy",
+        version=1,
+        steps=(
+            StepDefinition("start", "h_start"),
+            StepDefinition("wait_one", "h_wait", wait_event_type="approval_one"),
+            StepDefinition("wait_two", "h_wait", wait_event_type="approval_two"),
+            StepDefinition("end", "h_end"),
+        ),
+        transitions={
+            "start": ("wait_one",),
+            "wait_one": ("wait_two",),
+            "wait_two": ("end",),
+        },
+    )
+    engine, handle = _make_engine(db_url, handlers)
+    try:
+        engine.register(definition)
+        tenant = TenantId("tLedgerCopy")
+        first_payload = {"approved_by": "employee-one"}
+        second_payload = {"approved_by": "employee-two"}
+        run_id = await engine.start(
+            tenant, "wf-ledger-copy", "subject", {}, "ledger-copy"
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.deliver_event(
+            tenant, run_id, "approval_one", first_payload
+        )
+        assert await engine.deliver_event(
+            tenant, run_id, "approval_two", second_payload
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+
+        fresh_factory = async_sessionmaker(bind=handle, expire_on_commit=False)
+        fresh_engine = _load_engine_cls()(fresh_factory, handlers)
+        fresh_engine.register(definition)
+        fresh_session = fresh_factory()
+        try:
+            persisted = (
+                await fresh_session.execute(
+                    text(
+                        "SELECT status, context FROM workflow_runs "
+                        "WHERE tenant_id = :tenant AND run_id = :run_id"
+                    ),
+                    {"tenant": str(tenant), "run_id": str(run_id)},
+                )
+            ).mappings().one()
+        finally:
+            await fresh_session.close()
+
+        assert persisted["status"] == "completed"
+        ledger = persisted["context"]["__wf_delivered_events"]
+        assert len(ledger) == 2
+        assert ledger[0] != ledger[1]
+        assert all(_is_hex64(item) for item in ledger)
+        assert "event" not in persisted["context"]
+        assert await fresh_engine.has_delivered_event(
+            tenant,
+            "wf-ledger-copy",
+            "subject",
+            "approval_one",
+            first_payload,
+        )
+        assert await fresh_engine.has_delivered_event(
+            tenant,
+            "wf-ledger-copy",
+            "subject",
+            "approval_two",
+            second_payload,
+        )
+    finally:
+        await handle.dispose()
+
+
 # --- cancel：同租户 / 幂等 / 终态不复活 ---------------------------------------------
 
 

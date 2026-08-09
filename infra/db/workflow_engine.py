@@ -916,7 +916,8 @@ class PostgresWorkflowEngine:
                 self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
                 await session.commit()
                 return False
-            delivered_ledger = cast(list[str], delivered)
+            delivered_ledger = list(validated_delivered)
+            ctx[_DELIVERED_EVENTS_KEY] = delivered_ledger
             fingerprint = _event_fingerprint(event_type, payload)
             if fingerprint in validated_delivered:
                 return True
@@ -939,7 +940,12 @@ class PostgresWorkflowEngine:
                     session, definition, step_def, step_row, run_row,
                     action, next_step, patch, now,
                 )
-                delivered_ledger.append(fingerprint)
+                persisted_context = dict(run_row.context or {})
+                persisted_context[_DELIVERED_EVENTS_KEY] = [
+                    *delivered_ledger,
+                    fingerprint,
+                ]
+                run_row.context = persisted_context
             except TransientError:
                 # 可重试投递：回滚、不落指纹，调用方稍后重投同一事件。
                 await session.rollback()
