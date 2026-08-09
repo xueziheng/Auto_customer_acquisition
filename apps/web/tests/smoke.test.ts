@@ -10,13 +10,12 @@ type OpportunityListResponse = paths["/crm/opportunities"]["get"]["responses"][2
 type HandoffQueueResponse = paths["/crm/handoffs"]["get"]["responses"][200]["content"]["application/json"];
 
 describe("web application foundation", () => {
-  it("installs the base router without pre-registering CRM page routes", () => {
+  it("registers the opportunity route while leaving the handoff route for its later slice", () => {
     const app = createApp(App);
 
     expect(() => app.use(router)).not.toThrow();
-    expect(router.getRoutes().map((route) => route.path)).not.toEqual(
-      expect.arrayContaining(["/crm/opportunities", "/crm/handoffs"]),
-    );
+    expect(router.getRoutes().map((route) => route.path)).toContain("/crm/opportunities");
+    expect(router.getRoutes().map((route) => route.path)).not.toContain("/crm/handoffs");
   });
 
   it("uses generated CRM paths through the typed fetch wrapper without network access", async () => {
