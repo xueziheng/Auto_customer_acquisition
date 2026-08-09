@@ -80,7 +80,10 @@ class StructuredLogChannel:
     @staticmethod
     def _clean_relative_link(link: str) -> str:
         """规范化相对深链为无 query/fragment 的路径，拒绝外链和浏览器歧义路径。"""
-        parsed = urlsplit(link)
+        try:
+            parsed = urlsplit(link)
+        except ValueError:
+            raise PolicyViolation("只接受规范化后的相对深链") from None
         path = parsed.path
         normalized_path = unquote(path)
         if (

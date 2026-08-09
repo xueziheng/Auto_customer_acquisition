@@ -813,3 +813,21 @@ async def test_structured_log_channel_rejects_noncanonical_relative_link(
 
     assert link not in str(excinfo.value)
     assert _channel_records(caplog) == []
+
+
+async def test_structured_log_channel_rejects_malformed_protocol_relative_link(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """畸形 protocol-relative URL 必须固定拒绝，不能让 URL parser 的 ValueError 外泄。"""
+    StructuredLogChannel = _load("StructuredLogChannel")
+    channel = StructuredLogChannel()
+    malformed_link = "/" + "/" + "["
+
+    with (
+        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
+        pytest.raises(PolicyViolation) as excinfo,
+    ):
+        await channel.deliver(_notification(link=malformed_link))
+
+    assert malformed_link not in str(excinfo.value)
+    assert _channel_records(caplog) == []

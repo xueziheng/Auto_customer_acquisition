@@ -37,8 +37,15 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from shared.errors import TransientError
-from shared.schemas.identifiers import TenantId
+from notification_gateway.channels.structured_log import StructuredLogChannel
+from notification_gateway.models import (
+    Notification,
+    NotificationChannel,
+    NotificationPriority,
+)
+from notification_gateway.router import NotificationRouter
+from shared.errors import PolicyViolation, TransientError
+from shared.schemas.identifiers import EmployeeId, TenantId
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -218,6 +225,17 @@ def _make_store(
     if clock is not None:
         return PostgresNotificationDedupStore(factory, now=clock.now)
     return PostgresNotificationDedupStore(factory)
+
+
+class _SingleChannelPolicy:
+    """集成测试路由策略：仅选择注册的 structured log 渠道。"""
+
+    def channels_for(
+        self,
+        notification: Notification,
+        available: list[NotificationChannel],
+    ) -> list[NotificationChannel]:
+        return available
 
 
 # --- NotificationDedupStore Protocol 契约（RED：dedup.py 未建）---------------------
@@ -668,3 +686,37 @@ async def test_store_tenant_isolation_fail_closed(engine_fx: AsyncEngine) -> Non
     # A 的行数不受 B 影响（B 只应有自己的行）
     assert await _count_deliveries(engine_fx, "tA", key, "structured_log") == 1
     assert await _count_deliveries(engine_fx, "tB", key, "structured_log") == 1
+
+
+async def test_router_persists_malformed_protocol_relative_link_as_rejected(
+    engine_fx: AsyncEngine,
+) -> None:
+    """畸形 protocol-relative link 必须成为 durable rejected，而非 pending retry。"""
+    factory = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    store = _make_store(factory)
+    router = NotificationRouter(store, _SingleChannelPolicy())
+    router.register_channel(StructuredLogChannel())
+    key = "key-malformed-link-terminal-rejection"
+    malformed_link = "/" + "/" + "["
+    notification = Notification(
+        tenant_id=TenantId("tA"),
+        recipient=EmployeeId("emp-1"),
+        priority=NotificationPriority.URGENT,
+        title="需处理链接",
+        context={"客户": "Acme"},
+        source_event="HandoffRequested",
+        dedup_key=key,
+        link=malformed_link,
+    )
+
+    with pytest.raises(PolicyViolation) as excinfo:
+        await router.dispatch(notification)
+
+    assert malformed_link not in str(excinfo.value)
+    row = await _delivery_row(engine_fx, "tA", key, "structured_log")
+    assert row is not None
+    assert row["status"] == "rejected"
+    assert row["attempts"] == 1
+    assert row["next_attempt_at"] is None
+    assert row["last_error"] == "PolicyViolation"
+    assert not await store.should_dispatch(TenantId("tA"), key, "structured_log")
