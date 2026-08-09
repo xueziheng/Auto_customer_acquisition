@@ -319,6 +319,10 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
 
     app = reloaded.create_app()
     assert set(app.openapi()["paths"]) == {
+        "/crm/analytics/loss-reasons",
+        "/crm/handoffs",
+        "/crm/handoffs/{handoff_id}",
+        "/crm/handoffs/{handoff_id}/accept",
         "/crm/opportunities",
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
@@ -327,7 +331,32 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
     assert app.state.dependencies.configured is False
 
 
-def test_factory_openapi_matches_s3_14_crm_runtime_contracts() -> None:
+def test_production_entry_disables_access_log_for_dynamic_resource_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认 access log 会把被拒绝的动态 handoff ID 作为原始 URL 写入日志。"""
+    import uvicorn
+
+    from apps.api.main import main
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(app: str, **kwargs: object) -> None:
+        calls.append((app, kwargs))
+
+    monkeypatch.setattr(uvicorn, "run", run)
+
+    main()
+
+    assert calls == [
+        (
+            "apps.api.main:create_app",
+            {"factory": True, "access_log": False},
+        )
+    ]
+
+
+def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     from fastapi import APIRouter
 
     from apps.api.routers.crm import router
@@ -337,12 +366,20 @@ def test_factory_openapi_matches_s3_14_crm_runtime_contracts() -> None:
 
     assert isinstance(router, APIRouter)
     assert {route.path for route in router.routes} == {
+        "/analytics/loss-reasons",
+        "/handoffs",
+        "/handoffs/{handoff_id}",
+        "/handoffs/{handoff_id}/accept",
         "/opportunities",
         "/opportunities/{opportunity_id}",
         "/opportunities/{opportunity_id}/transition",
         "/opportunities/{opportunity_id}/mark-lost",
     }
     assert set(schema["paths"]) == {
+        "/crm/analytics/loss-reasons",
+        "/crm/handoffs",
+        "/crm/handoffs/{handoff_id}",
+        "/crm/handoffs/{handoff_id}/accept",
         "/crm/opportunities",
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
@@ -359,12 +396,46 @@ def test_factory_openapi_matches_s3_14_crm_runtime_contracts() -> None:
     }
     assert "OpportunityCreateRequest" in schema["components"]["schemas"]
     assert "ValidatedNeedEvidence" in schema["components"]["schemas"]
+    assert "HandoffQueueItemView" in schema["components"]["schemas"]
+    assert "HandoffPacketView" in schema["components"]["schemas"]
     assert create_responses["400"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ApiErrorResponse"
+    }
+    queue_schema = schema["paths"]["/crm/handoffs"]["get"]["responses"]["200"]
+    assert queue_schema["content"]["application/json"]["schema"]["items"] == {
+        "$ref": "#/components/schemas/HandoffQueueItemView"
+    }
+    packet_schema = schema["paths"]["/crm/handoffs/{handoff_id}"]["get"][
+        "responses"
+    ]["200"]
+    assert packet_schema["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/HandoffPacketView"
+    }
+    accept_responses = schema["paths"]["/crm/handoffs/{handoff_id}/accept"][
+        "post"
+    ]["responses"]
+    assert "204" in accept_responses
+    assert "content" not in accept_responses["204"]
+    assert "requestBody" not in schema["paths"][
+        "/crm/handoffs/{handoff_id}/accept"
+    ]["post"]
+    assert accept_responses["409"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiErrorResponse"
+    }
+    analytics_schema = schema["paths"]["/crm/analytics/loss-reasons"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+    assert analytics_schema["type"] == "object"
+    assert analytics_schema["additionalProperties"] == {
+        "additionalProperties": {"type": "integer"},
+        "type": "object",
     }
     for path_item in schema["paths"].values():
         for operation in path_item.values():
             assert "422" not in operation["responses"]
+            assert operation["responses"]["400"]["content"]["application/json"][
+                "schema"
+            ] == {"$ref": "#/components/schemas/ApiErrorResponse"}
     assert not any(
         getattr(route, "path", "").startswith(
             (

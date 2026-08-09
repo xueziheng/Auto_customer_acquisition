@@ -6,16 +6,20 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from domains.opportunities.errors import HandoffAlreadyAcceptedError
 from domains.opportunities.permissions import OpportunityAction
 from domains.opportunities.schemas import (
+    HandoffPacketView,
+    HandoffQueueItemView,
     OpportunityCreateRequest,
     OpportunityView,
     ValidatedNeedEvidence,
 )
 from domains.opportunities.service import LossReason, OpportunityState
-from shared.schemas.identifiers import OpportunityId
+from shared.schemas.identifiers import HandoffId, OpportunityId
 
 from ..composition.opportunity_intake import (
     create_opportunity_from_validated_need,
@@ -26,8 +30,10 @@ from ..dependencies import (
     require_opportunity_action,
 )
 from ..identity import RequestIdentity
+from ..middleware import ApiErrorResponse
 
 _CRM_ROLES = frozenset({"sales", "manager", "boss"})
+_BOSS_ROLE = frozenset({"boss"})
 
 
 class OpportunityIntakeBody(BaseModel):
@@ -198,4 +204,117 @@ async def mark_opportunity_lost(
         confirmed_by=identity.employee.employee_id,
         confirmed_at=datetime.now(UTC),
         detail=body.detail,
+    )
+
+
+@router.get("/handoffs", response_model=list[HandoffQueueItemView])
+async def list_pending_handoffs(
+    identity: Annotated[
+        RequestIdentity,
+        Depends(
+            require_opportunity_action(
+                OpportunityAction.HANDOFF_QUEUE_READ,
+                allowed_roles=_CRM_ROLES,
+            )
+        ),
+    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    limit: Annotated[int, Query(gt=0)] = 50,
+) -> list[HandoffQueueItemView]:
+    """按机会域给出的最久等待优先顺序返回待接管队列。"""
+    return await dependencies.opportunities.list_pending_handoffs(
+        identity.tenant_id,
+        identity.opportunity_actor,
+        limit=limit,
+    )
+
+
+@router.get("/handoffs/{handoff_id}", response_model=HandoffPacketView)
+async def get_handoff_packet(
+    handoff_id: str,
+    identity: Annotated[
+        RequestIdentity,
+        Depends(
+            require_opportunity_action(
+                OpportunityAction.HANDOFF_READ,
+                allowed_roles=_CRM_ROLES,
+            )
+        ),
+    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> HandoffPacketView:
+    """返回机会域组装的完整接管包。"""
+    return await dependencies.opportunities.get_handoff_packet(
+        identity.tenant_id,
+        HandoffId(handoff_id),
+        actor=identity.opportunity_actor,
+    )
+
+
+@router.post(
+    "/handoffs/{handoff_id}/accept",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    responses={
+        409: {
+            "model": ApiErrorResponse,
+            "description": "接管已被接受",
+        }
+    },
+)
+async def accept_handoff(
+    handoff_id: str,
+    identity: Annotated[
+        RequestIdentity,
+        Depends(
+            require_opportunity_action(
+                OpportunityAction.HANDOFF_ACCEPT,
+                allowed_roles=_CRM_ROLES,
+            )
+        ),
+    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> Response:
+    """以已断言员工身份原子接受接管；并发失败只返回固定安全冲突。"""
+    try:
+        await dependencies.opportunities.accept_handoff(
+            identity.tenant_id,
+            HandoffId(handoff_id),
+            identity.employee.employee_id,
+            actor=identity.opportunity_actor,
+        )
+    except HandoffAlreadyAcceptedError:
+        payload = ApiErrorResponse(
+            code="handoff_already_accepted",
+            message="接管已被接受",
+        )
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=payload.model_dump(mode="json"),
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/analytics/loss-reasons",
+    response_model=dict[str, dict[str, int]],
+)
+async def loss_reason_breakdown(
+    identity: Annotated[
+        RequestIdentity,
+        Depends(
+            require_opportunity_action(
+                OpportunityAction.LOSS_REASON_READ,
+                allowed_roles=_BOSS_ROLE,
+            )
+        ),
+    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    since_days: Annotated[int, Query(gt=0)] = 30,
+) -> dict[str, dict[str, int]]:
+    """返回机会域已完成租户级 ABAC 的失败原因二维聚合。"""
+    return await dependencies.opportunities.loss_reason_breakdown(
+        identity.tenant_id,
+        actor=identity.opportunity_actor,
+        since_days=since_days,
     )

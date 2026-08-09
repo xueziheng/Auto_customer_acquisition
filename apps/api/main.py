@@ -108,7 +108,7 @@ def main() -> None:
     """以 factory 模式启动；未注入 composition 时所有业务依赖失败关闭。"""
     import uvicorn
 
-    uvicorn.run("apps.api.main:create_app", factory=True)
+    uvicorn.run("apps.api.main:create_app", factory=True, access_log=False)
 
 
 if __name__ == "__main__":
