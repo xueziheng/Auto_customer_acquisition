@@ -232,12 +232,14 @@ afterEach(() => {
 });
 
 describe("opportunity board", () => {
-  it("registers the exact opportunity route without exposing the handoff route", () => {
+  it("registers the exact opportunity and handoff routes while leaving analytics unregistered", () => {
     const opportunityRoute = router.resolve("/crm/opportunities");
     const handoffRoute = router.resolve("/crm/handoffs");
+    const analyticsRoute = router.resolve("/crm/analytics/loss-reasons");
 
     expect(opportunityRoute.matched.map((route) => route.path)).toContain("/crm/opportunities");
-    expect(handoffRoute.matched).toHaveLength(0);
+    expect(handoffRoute.matched.map((route) => route.path)).toContain("/crm/handoffs");
+    expect(analyticsRoute.matched).toHaveLength(0);
   });
 
   it("keeps backend order, selects the first response item, and displays generated values without numeric conversion", async () => {

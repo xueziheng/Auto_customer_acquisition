@@ -8,6 +8,11 @@ const router = createRouter({
       name: "crm-opportunities",
       component: () => import("./views/crm/OpportunityList.vue"),
     },
+    {
+      path: "/crm/handoffs",
+      name: "crm-handoffs",
+      component: () => import("./views/crm/HandoffQueue.vue"),
+    },
   ],
 });
 
