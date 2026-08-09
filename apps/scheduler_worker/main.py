@@ -288,6 +288,8 @@ async def run_scheduler_worker(
                         extra={"tenant_id": str(runtime.tenant_id)},
                     )
                     return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
+                if stop.is_set():
+                    break
                 await _run_cycle(runtime, cycles + 1)
                 cycles += 1
                 if stop.is_set():

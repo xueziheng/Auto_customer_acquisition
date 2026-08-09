@@ -554,6 +554,59 @@ async def test_stop_event_finishes_inflight_cycle_without_wait_or_cancellation(
     assert order == ["drain:1", "workflow:1", "drain:2"]
 
 
+async def test_stop_during_heartbeat_does_not_start_a_new_cycle(
+    scheduler_db: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _scheduler()
+    stop = asyncio.Event()
+    lock_key = 3_110_045
+    drainer = _Drainer([1])
+    poller = _Poller([1])
+    runtime = _runtime(
+        module,
+        scheduler_db,
+        TenantId("scheduler-stop-during-heartbeat"),
+        drainer,
+        poller,
+        lock_key=lock_key,
+    )
+
+    async def heartbeat_then_stop(connection: object, expected_pid: int) -> bool:
+        del connection, expected_pid
+        await asyncio.sleep(0)
+        stop.set()
+        return True
+
+    monkeypatch.setattr(module, "_same_lock_backend", heartbeat_then_stop)
+
+    result = await module.run_scheduler_worker(
+        runtime,
+        stop_event=stop,
+        install_signal_handlers=False,
+    )
+
+    assert result.status is module.WorkerStartStatus.STARTED
+    assert result.cycles_completed == 0
+    assert drainer.calls == 0
+    assert poller.calls == []
+    async with scheduler_db.connect() as connection:
+        reacquired = (
+            await connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        ).scalar_one()
+        assert reacquired is True
+        released = (
+            await connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        ).scalar_one()
+        assert released is True
+
+
 async def test_cancellation_propagates_and_releases_real_lock(
     scheduler_db: AsyncEngine,
 ) -> None:
