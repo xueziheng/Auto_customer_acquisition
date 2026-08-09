@@ -305,6 +305,35 @@ class OutboxDeliveryRow(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class NotificationDeliveryRow(Base):
+    """``notification_deliveries`` 行（durable 通知去重状态；0006）。
+
+    ``UNIQUE(tenant_id, dedup_key, channel_name)``：同一通知同一渠道只允许一行，
+    部分渠道失败可 durable resume（仅续投失败渠道，不重复投递已成功渠道）。
+    ``status``/``attempts`` 走 server_default：pending / 0。
+    """
+
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "dedup_key",
+            "channel_name",
+            name="uq_notification_deliveries_tenant_dedup_channel",
+        ),
+    )
+
+    delivery_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    dedup_key: Mapped[str] = mapped_column(String(200))
+    channel_name: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class EmployeeRow(Base):
     """``employees`` 行。"""
 

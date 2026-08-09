@@ -59,15 +59,3 @@ class NotificationChannel(Protocol):
     name: str
 
     async def deliver(self, notification: Notification) -> None: ...
-
-
-class NotificationRouter:
-    """路由：按优先级与接收人偏好选渠道。"""
-
-    def register_channel(self, channel: NotificationChannel) -> None:
-        raise NotImplementedError
-
-    async def dispatch(self, notification: Notification) -> None:
-        """派发。幂等（dedup_key）；URGENT 多渠道并发，
-        单渠道失败不影响其他渠道。"""
-        raise NotImplementedError
