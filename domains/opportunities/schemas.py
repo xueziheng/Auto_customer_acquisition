@@ -133,6 +133,21 @@ class ScoreExplanation:
 
 
 @dataclass(frozen=True)
+class ProvenanceSummary:
+    """字段来源的公共稳定摘要，不暴露内部 Enum、强类型 ID 或 ORM。"""
+
+    field_name: str
+    source_type: str
+    source_id: str
+    extracted_by: str
+    extracted_at: datetime
+    confirmed_by: str | None
+    confirmed_at: datetime | None
+    source_url: str | None
+    page_hash: str | None
+
+
+@dataclass(frozen=True)
 class OpportunityView:
     """机会视图。
 
@@ -177,6 +192,38 @@ class OpportunityView:
     loss_reason: str | None = None
     died_at_state: str | None = None
     has_pending_handoff: bool = False
+    provenance: list[ProvenanceSummary] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """复制来源列表，避免 frozen DTO 仍与调用方共享可变容器。"""
+        object.__setattr__(self, "provenance", list(self.provenance))
+
+
+@dataclass(frozen=True)
+class HandoffQueueItemView:
+    """待接管队列的最小 packet 摘要；等待时长对 pending 行始终为整数。"""
+
+    handoff_id: str
+    opportunity_id: str
+    trigger: str
+    account_name: str
+    country: str
+    why_valuable: str
+    customer_verbatim: str
+    requested_at: datetime
+    wait_seconds: int
+    state: str
+    assigned_to: str | None = None
+    suggested_next_step: str | None = None
+    missing_information: list[str] = field(default_factory=list)
+    evidence_links: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """复制两个列表字段，防止内部 packet 后续修改污染已返回 DTO。"""
+        object.__setattr__(
+            self, "missing_information", list(self.missing_information)
+        )
+        object.__setattr__(self, "evidence_links", list(self.evidence_links))
 
 
 @dataclass(frozen=True)

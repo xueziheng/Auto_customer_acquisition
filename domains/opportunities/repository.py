@@ -17,6 +17,7 @@ from domains.opportunities.models import (
     OpportunityState,
     ScoreSnapshot,
 )
+from domains.opportunities.permissions import OpportunityScope
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -56,6 +57,16 @@ class OpportunityRepository(Protocol):
     async def list_by_state(
         self, tenant_id: TenantId, state: OpportunityState, limit: int
     ) -> list[Opportunity]: ...
+
+    async def list_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None,
+        limit: int,
+    ) -> list[Opportunity]:
+        """在 SQL WHERE 中同时应用完整 ABAC scope、状态与租户过滤。"""
+        ...
 
     async def advance_state(
         self,
@@ -153,6 +164,15 @@ class HandoffRepository(Protocol):
         这是唯一合理的默认排序。按分数排会让高分机会不断插队，
         低分机会永远等不到人处理，最终全部超时流失。
         """
+        ...
+
+    async def list_pending_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        limit: int,
+    ) -> list[HandoffPacket]:
+        """按完整 ABAC scope 在 SQL 层读取 pending 接管，最久等待优先。"""
         ...
 
     async def count_pending_by_employee(

@@ -43,6 +43,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domains.opportunities.permissions import OpportunityScope, ScopeLevel
 from shared.errors import InvalidStateTransition
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -100,15 +101,19 @@ LossRecord = _load("LossRecord")
 
 def _opp(opportunity_id: str, tenant_id: str, need_id: str, **overrides):
     """构造最小合法机会（可覆盖 state/owner 等字段）。"""
+    product_category = overrides.pop("product_category", "hinges")
+    created_at = overrides.pop("created_at", _NOW)
+    account_name = overrides.pop("account_name", "Acme")
+    country = overrides.pop("country", "US")
     return Opportunity(
         opportunity_id=OpportunityId(opportunity_id),
         tenant_id=TenantId(tenant_id),
         account_id=ProspectAccountId("acc-1"),
         need_id=ValidatedNeedId(need_id),
-        product_category="hinges",
-        created_at=_NOW,
-        account_name="Acme",
-        country="US",
+        product_category=product_category,
+        created_at=created_at,
+        account_name=account_name,
+        country=country,
         **overrides,
     )
 
@@ -230,6 +235,176 @@ async def test_list_by_owner_and_state(repo_session: AsyncSession) -> None:
 
     by_state = await repo.list_by_state(TenantId("tList"), OpportunityState.CONTACTED, limit=10)
     assert [o.opportunity_id for o in by_state] == [OpportunityId("opp-list-2")]
+
+
+async def test_list_scoped_applies_all_dimensions_states_and_limit_in_sql(
+    repo_session: AsyncSession,
+) -> None:
+    """owner/country/category/states 均先 WHERE 再 LIMIT，顺序稳定且租户隔离。"""
+    OpportunityRepositoryImpl = _load("OpportunityRepositoryImpl")
+    tenant = TenantId("tScopeOpp")
+    repo = OpportunityRepositoryImpl(repo_session, tenant)
+    rows = [
+        _opp(
+            "opp-sc-owner",
+            "tScopeOpp",
+            "need-sc-owner",
+            owner=EmployeeId("sales-2"),
+            country="US",
+            product_category="hinges",
+            state=OpportunityState.ASSIGNED,
+            created_at=_NOW + timedelta(hours=5),
+        ),
+        _opp(
+            "opp-sc-country",
+            "tScopeOpp",
+            "need-sc-country",
+            owner=EmployeeId("sales-1"),
+            country="DE",
+            product_category="hinges",
+            state=OpportunityState.ASSIGNED,
+            created_at=_NOW + timedelta(hours=4),
+        ),
+        _opp(
+            "opp-sc-category",
+            "tScopeOpp",
+            "need-sc-category",
+            owner=EmployeeId("sales-1"),
+            country="US",
+            product_category="bolts",
+            state=OpportunityState.ASSIGNED,
+            created_at=_NOW + timedelta(hours=3),
+        ),
+        _opp(
+            "opp-sc-a",
+            "tScopeOpp",
+            "need-sc-a",
+            owner=EmployeeId("sales-1"),
+            country="US",
+            product_category="hinges",
+            state=OpportunityState.ASSIGNED,
+            created_at=_NOW,
+        ),
+        _opp(
+            "opp-sc-b",
+            "tScopeOpp",
+            "need-sc-b",
+            owner=EmployeeId("sales-1"),
+            country="US",
+            product_category="hinges",
+            state=OpportunityState.CONTACTED,
+            created_at=_NOW,
+        ),
+    ]
+    for row in rows:
+        await repo.add(row)
+    other_repo = OpportunityRepositoryImpl(repo_session, TenantId("tScopeOppOther"))
+    await other_repo.add(
+        _opp(
+            "opp-sc-cross",
+            "tScopeOppOther",
+            "need-sc-cross",
+            owner=EmployeeId("sales-1"),
+            country="US",
+            product_category="hinges",
+            created_at=_NOW + timedelta(hours=8),
+        )
+    )
+    await repo_session.commit()
+
+    owner_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_owners=frozenset({EmployeeId("sales-1")}),
+    )
+    owner_rows = await repo.list_scoped(tenant, owner_scope, None, 20)
+    assert {row.opportunity_id for row in owner_rows} == {
+        OpportunityId("opp-sc-country"),
+        OpportunityId("opp-sc-category"),
+        OpportunityId("opp-sc-a"),
+        OpportunityId("opp-sc-b"),
+    }
+
+    country_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_countries=frozenset({"US"}),
+    )
+    country_rows = await repo.list_scoped(tenant, country_scope, None, 20)
+    assert {row.opportunity_id for row in country_rows} == {
+        OpportunityId("opp-sc-owner"),
+        OpportunityId("opp-sc-category"),
+        OpportunityId("opp-sc-a"),
+        OpportunityId("opp-sc-b"),
+    }
+
+    category_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_categories=frozenset({"hinges"}),
+    )
+    category_rows = await repo.list_scoped(tenant, category_scope, None, 20)
+    assert {row.opportunity_id for row in category_rows} == {
+        OpportunityId("opp-sc-owner"),
+        OpportunityId("opp-sc-country"),
+        OpportunityId("opp-sc-a"),
+        OpportunityId("opp-sc-b"),
+    }
+
+    combined = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_owners=frozenset({EmployeeId("sales-1")}),
+        allowed_countries=frozenset({"US"}),
+        allowed_categories=frozenset({"hinges"}),
+    )
+    combined_rows = await repo.list_scoped(tenant, combined, None, 20)
+    assert [row.opportunity_id for row in combined_rows] == [
+        OpportunityId("opp-sc-a"),
+        OpportunityId("opp-sc-b"),
+    ]
+    # 三条越界记录 created_at 更晚；limit=1 仍返回授权行，证明 WHERE 在 LIMIT 前。
+    limited = await repo.list_scoped(tenant, combined, None, 1)
+    assert [row.opportunity_id for row in limited] == [OpportunityId("opp-sc-a")]
+    assigned_only = await repo.list_scoped(
+        tenant, combined, [OpportunityState.ASSIGNED], 20
+    )
+    assert [row.opportunity_id for row in assigned_only] == [OpportunityId("opp-sc-a")]
+    assert await repo.list_scoped(tenant, combined, [], 20) == []
+
+    for empty_scope in (
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_owners=frozenset(),
+        ),
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_countries=frozenset(),
+        ),
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_categories=frozenset(),
+        ),
+    ):
+        assert await repo.list_scoped(tenant, empty_scope, None, 20) == []
+
+    tenant_rows = await repo.list_scoped(
+        tenant, OpportunityScope(level=ScopeLevel.TENANT), None, 20
+    )
+    assert len(tenant_rows) == 5
+    assert OpportunityId("opp-sc-cross") not in {
+        row.opportunity_id for row in tenant_rows
+    }
+    assert (
+        await repo.list_scoped(
+            TenantId("tScopeOppOther"),
+            OpportunityScope(level=ScopeLevel.TENANT),
+            None,
+            20,
+        )
+        == []
+    )
+    for unsafe_scope in (
+        OpportunityScope(),
+        OpportunityScope(level=ScopeLevel.SYSTEM),
+    ):
+        assert await repo.list_scoped(tenant, unsafe_scope, None, 20) == []
 
 
 async def test_tenant_isolation(repo_session: AsyncSession) -> None:
@@ -802,6 +977,236 @@ async def test_handoff_list_pending_ordered_by_requested_at(repo_session: AsyncS
         HandoffId("ho-p3"),
         HandoffId("ho-p2"),
     ]
+
+
+async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_join(
+    repo_session: AsyncSession,
+) -> None:
+    """pending scope 先 WHERE 再 LIMIT；owner 看 snapshot，国家/品类看关联机会。"""
+    OpportunityRepositoryImpl = _load("OpportunityRepositoryImpl")
+    HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
+    tenant = TenantId("tScopeHo")
+    opportunity_repo = OpportunityRepositoryImpl(repo_session, tenant)
+    opportunity_rows = [
+        _opp(
+            "opp-hs-owner",
+            "tScopeHo",
+            "need-hs-owner",
+            owner=EmployeeId("current-owner-x"),
+            country="US",
+            product_category="hinges",
+        ),
+        _opp(
+            "opp-hs-country",
+            "tScopeHo",
+            "need-hs-country",
+            country="DE",
+            product_category="hinges",
+        ),
+        _opp(
+            "opp-hs-category",
+            "tScopeHo",
+            "need-hs-category",
+            country="US",
+            product_category="bolts",
+        ),
+        _opp(
+            "opp-hs-a",
+            "tScopeHo",
+            "need-hs-a",
+            owner=EmployeeId("different-current-owner"),
+            country="US",
+            product_category="hinges",
+        ),
+        _opp(
+            "opp-hs-b",
+            "tScopeHo",
+            "need-hs-b",
+            owner=EmployeeId("different-current-owner"),
+            country="US",
+            product_category="hinges",
+        ),
+        _opp(
+            "opp-hs-accepted",
+            "tScopeHo",
+            "need-hs-accepted",
+            country="US",
+            product_category="hinges",
+        ),
+    ]
+    for row in opportunity_rows:
+        await opportunity_repo.add(row)
+
+    other_tenant = TenantId("tScopeHoOther")
+    other_opportunity_repo = OpportunityRepositoryImpl(repo_session, other_tenant)
+    await other_opportunity_repo.add(
+        _opp(
+            "opp-hs-cross",
+            "tScopeHoOther",
+            "need-hs-cross",
+            country="US",
+            product_category="hinges",
+        )
+    )
+    await repo_session.commit()
+
+    repo = HandoffRepositoryImpl(repo_session, tenant)
+    packets = [
+        _handoff(
+            "hand-hs-owner",
+            "tScopeHo",
+            "opp-hs-owner",
+            requested_at=_NOW - timedelta(hours=5),
+            assigned_to=EmployeeId("sales-2"),
+        ),
+        # packet.country 固定为 US，但关联机会是 DE；国家 ABAC 必须排除它。
+        _handoff(
+            "hand-hs-country",
+            "tScopeHo",
+            "opp-hs-country",
+            requested_at=_NOW - timedelta(hours=4),
+            assigned_to=EmployeeId("sales-1"),
+        ),
+        _handoff(
+            "hand-hs-category",
+            "tScopeHo",
+            "opp-hs-category",
+            requested_at=_NOW - timedelta(hours=4),
+            assigned_to=EmployeeId("sales-1"),
+        ),
+        _handoff(
+            "hand-hs-a",
+            "tScopeHo",
+            "opp-hs-a",
+            requested_at=_NOW - timedelta(hours=3),
+            assigned_to=EmployeeId("sales-1"),
+        ),
+        _handoff(
+            "hand-hs-b",
+            "tScopeHo",
+            "opp-hs-b",
+            requested_at=_NOW - timedelta(hours=3),
+            assigned_to=EmployeeId("sales-1"),
+        ),
+        _handoff(
+            "hand-hs-accepted",
+            "tScopeHo",
+            "opp-hs-accepted",
+            requested_at=_NOW - timedelta(hours=6),
+            assigned_to=EmployeeId("sales-1"),
+        ),
+    ]
+    for packet in packets:
+        await repo.add(packet)
+    other_handoff_repo = HandoffRepositoryImpl(repo_session, other_tenant)
+    await other_handoff_repo.add(
+        _handoff(
+            "hand-hs-cross",
+            "tScopeHoOther",
+            "opp-hs-cross",
+            requested_at=_NOW - timedelta(hours=8),
+            assigned_to=EmployeeId("sales-1"),
+        )
+    )
+    await repo_session.commit()
+    assert await repo.accept_if_requested(
+        tenant,
+        HandoffId("hand-hs-accepted"),
+        EmployeeId("sales-1"),
+        _NOW,
+    )
+    await repo_session.commit()
+
+    owner_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_owners=frozenset({EmployeeId("sales-1")}),
+    )
+    owner_rows = await repo.list_pending_scoped(tenant, owner_scope, 20)
+    assert {row.handoff_id for row in owner_rows} == {
+        HandoffId("hand-hs-country"),
+        HandoffId("hand-hs-category"),
+        HandoffId("hand-hs-a"),
+        HandoffId("hand-hs-b"),
+    }
+
+    country_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_countries=frozenset({"US"}),
+    )
+    country_rows = await repo.list_pending_scoped(tenant, country_scope, 20)
+    assert {row.handoff_id for row in country_rows} == {
+        HandoffId("hand-hs-owner"),
+        HandoffId("hand-hs-category"),
+        HandoffId("hand-hs-a"),
+        HandoffId("hand-hs-b"),
+    }
+
+    category_scope = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_categories=frozenset({"hinges"}),
+    )
+    category_rows = await repo.list_pending_scoped(tenant, category_scope, 20)
+    assert {row.handoff_id for row in category_rows} == {
+        HandoffId("hand-hs-owner"),
+        HandoffId("hand-hs-country"),
+        HandoffId("hand-hs-a"),
+        HandoffId("hand-hs-b"),
+    }
+
+    combined = OpportunityScope(
+        level=ScopeLevel.MANAGER,
+        allowed_owners=frozenset({EmployeeId("sales-1")}),
+        allowed_countries=frozenset({"US"}),
+        allowed_categories=frozenset({"hinges"}),
+    )
+    combined_rows = await repo.list_pending_scoped(tenant, combined, 20)
+    assert [row.handoff_id for row in combined_rows] == [
+        HandoffId("hand-hs-a"),
+        HandoffId("hand-hs-b"),
+    ]
+    # 更老的越界/accepted 行都排在前面；limit=1 仍返回授权 pending 行。
+    limited = await repo.list_pending_scoped(tenant, combined, 1)
+    assert [row.handoff_id for row in limited] == [HandoffId("hand-hs-a")]
+
+    for empty_scope in (
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_owners=frozenset(),
+        ),
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_countries=frozenset(),
+        ),
+        OpportunityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_categories=frozenset(),
+        ),
+    ):
+        assert await repo.list_pending_scoped(tenant, empty_scope, 20) == []
+
+    tenant_rows = await repo.list_pending_scoped(
+        tenant, OpportunityScope(level=ScopeLevel.TENANT), 20
+    )
+    assert len(tenant_rows) == 5
+    assert HandoffId("hand-hs-accepted") not in {
+        row.handoff_id for row in tenant_rows
+    }
+    assert HandoffId("hand-hs-cross") not in {
+        row.handoff_id for row in tenant_rows
+    }
+    assert (
+        await repo.list_pending_scoped(
+            other_tenant,
+            OpportunityScope(level=ScopeLevel.TENANT),
+            20,
+        )
+        == []
+    )
+    for unsafe_scope in (
+        OpportunityScope(),
+        OpportunityScope(level=ScopeLevel.SYSTEM),
+    ):
+        assert await repo.list_pending_scoped(tenant, unsafe_scope, 20) == []
 
 
 async def test_handoff_count_pending_by_employee(repo_session: AsyncSession) -> None:

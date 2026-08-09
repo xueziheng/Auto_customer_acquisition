@@ -990,6 +990,9 @@ class _FakeOpportunityRepo:
         self.list_by_owner_calls.append((tenant_id, owner, states, limit))
         return self.rows
 
+    async def list_scoped(self, tenant_id, scope, states, limit):
+        return self.rows
+
     async def get(self, tenant_id, opportunity_id) -> Opportunity | None:
         return self.row
 
@@ -1017,6 +1020,9 @@ class _FakeHandoffRepo:
     async def list_pending(self, tenant_id, limit):
         return self.pending_list
 
+    async def list_pending_scoped(self, tenant_id, scope, limit):
+        return self.pending_list
+
     async def count_pending_by_employee(self, tenant_id):
         return self.count_rows
 
@@ -1031,12 +1037,21 @@ class _FakeLossRepo:
         return self.rows
 
 
+class _FakeProvenanceRepo:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, Provenance]] = []
+
+    async def list_for_entity(self, tenant_id, entity_type, entity_id):
+        return list(self.rows)
+
+
 class _FakeUoW:
     def __init__(self) -> None:
         self.opportunities = _FakeOpportunityRepo()
         self.snapshots = _FakeSnapshotRepo()
         self.handoffs = _FakeHandoffRepo()
         self.loss_records = _FakeLossRepo()
+        self.provenance = _FakeProvenanceRepo()
 
     async def __aenter__(self) -> Self:
         return self

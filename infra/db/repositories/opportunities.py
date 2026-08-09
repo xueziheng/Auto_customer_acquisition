@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import CursorResult, Select, func, select, update
+from sqlalchemy import CursorResult, Select, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.opportunities.models import (
@@ -24,6 +24,7 @@ from domains.opportunities.models import (
     ScoreSnapshot,
     SortKey,
 )
+from domains.opportunities.permissions import OpportunityScope, ScopeLevel
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
     HandoffEscalationRow,
@@ -64,6 +65,16 @@ def _money(amount: Decimal | None, currency: str | None) -> Money | None:
     if amount is None or currency is None:
         raise ValueError("金额与币种必须成对（数据库 CHECK 约束兜底）")
     return Money(amount, CurrencyCode(currency))
+
+
+def _unsafe_query_scope(scope: OpportunityScope) -> bool:
+    """仓储直调也 fail closed：无级别或无限制 SYSTEM 不可查询。"""
+    return scope.level is None or (
+        scope.level is ScopeLevel.SYSTEM
+        and scope.allowed_owners is None
+        and scope.allowed_countries is None
+        and scope.allowed_categories is None
+    )
 
 
 def _opp_to_row(opp: Opportunity) -> OpportunityRow:
@@ -236,6 +247,42 @@ class OpportunityRepositoryImpl(TenantScopedRepository):
         if tenant_id != self._tenant_id:
             return []
         query = self._scoped().where(OpportunityRow.state == state.value).limit(limit)
+        rows = (await self._session.execute(query)).scalars().all()
+        return [_row_to_opp(row) for row in rows]
+
+    async def list_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None,
+        limit: int,
+    ) -> list[Opportunity]:
+        """完整 scope/state 先进入 SQL WHERE，再稳定排序并 LIMIT。"""
+        if tenant_id != self._tenant_id or _unsafe_query_scope(scope):
+            return []
+        query = self._scoped()
+        if scope.allowed_owners is not None:
+            query = query.where(
+                OpportunityRow.owner.in_(sorted(map(str, scope.allowed_owners)))
+            )
+        if scope.allowed_countries is not None:
+            query = query.where(
+                OpportunityRow.country.in_(sorted(scope.allowed_countries))
+            )
+        if scope.allowed_categories is not None:
+            query = query.where(
+                OpportunityRow.product_category.in_(
+                    sorted(scope.allowed_categories)
+                )
+            )
+        if states is not None:
+            query = query.where(
+                OpportunityRow.state.in_([state.value for state in states])
+            )
+        query = query.order_by(
+            OpportunityRow.created_at.desc(),
+            OpportunityRow.opportunity_id.asc(),
+        ).limit(limit)
         rows = (await self._session.execute(query)).scalars().all()
         return [_row_to_opp(row) for row in rows]
 
@@ -569,6 +616,44 @@ class HandoffRepositoryImpl(TenantScopedRepository):
                 .limit(limit)
             )
         ).scalars().all()
+        return [_row_to_handoff(row) for row in rows]
+
+    async def list_pending_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        limit: int,
+    ) -> list[HandoffPacket]:
+        """pending + scope 在 SQL WHERE 中完成后，按最久等待稳定排序。"""
+        if tenant_id != self._tenant_id or _unsafe_query_scope(scope):
+            return []
+        query = self._scoped().join(
+            OpportunityRow,
+            and_(
+                HandoffRow.tenant_id == OpportunityRow.tenant_id,
+                HandoffRow.opportunity_id == OpportunityRow.opportunity_id,
+            ),
+        )
+        query = query.where(HandoffRow.state == HandoffState.REQUESTED.value)
+        if scope.allowed_owners is not None:
+            query = query.where(
+                HandoffRow.assigned_to.in_(sorted(map(str, scope.allowed_owners)))
+            )
+        if scope.allowed_countries is not None:
+            query = query.where(
+                OpportunityRow.country.in_(sorted(scope.allowed_countries))
+            )
+        if scope.allowed_categories is not None:
+            query = query.where(
+                OpportunityRow.product_category.in_(
+                    sorted(scope.allowed_categories)
+                )
+            )
+        query = query.order_by(
+            HandoffRow.requested_at.asc(),
+            HandoffRow.handoff_id.asc(),
+        ).limit(limit)
+        rows = (await self._session.execute(query)).scalars().all()
         return [_row_to_handoff(row) for row in rows]
 
     async def count_pending_by_employee(self, tenant_id: TenantId) -> dict[str, int]:

@@ -226,6 +226,16 @@ class _FakeOpportunityRepo:
         self.list_calls.append((tenant_id, owner, states, limit))
         return self.owner_rows
 
+    async def list_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None,
+        limit: int,
+    ) -> list[Opportunity]:
+        self.list_calls.append((tenant_id, scope, states, limit))
+        return self.owner_rows
+
     async def list_by_state(self, tenant_id: TenantId, state: OpportunityState, limit: int) -> list[Opportunity]:
         raise AssertionError("handoff/查询不应调用 list_by_state")
 
@@ -291,6 +301,12 @@ class _FakeHandoffRepo:
         self.pending_limits.append(limit)
         return self.pending_list
 
+    async def list_pending_scoped(
+        self, tenant_id: TenantId, scope: OpportunityScope, limit: int
+    ) -> list[HandoffPacket]:
+        self.pending_limits.append(limit)
+        return self.pending_list
+
     async def count_pending_by_employee(self, tenant_id: TenantId) -> dict[str, int]:
         self.count_calls.append((tenant_id,))
         return self.count_rows
@@ -327,6 +343,8 @@ class _FakeProvenanceRepo:
     def __init__(self, sequence: list[str]) -> None:
         self.sequence = sequence
         self.saved: list[tuple[object, object, object, object, object]] = []
+        self.rows: list[tuple[str, Provenance]] = []
+        self.list_calls: list[tuple[object, ...]] = []
 
     async def save(
         self,
@@ -339,8 +357,11 @@ class _FakeProvenanceRepo:
         self.sequence.append("prov_save")
         self.saved.append((tenant_id, entity_type, entity_id, field_name, provenance))
 
-    async def list_for_entity(self, tenant_id: TenantId, entity_type: str, entity_id: str) -> list[object]:
-        raise AssertionError("服务不应调用 list_for_entity")
+    async def list_for_entity(
+        self, tenant_id: TenantId, entity_type: str, entity_id: str
+    ) -> list[tuple[str, Provenance]]:
+        self.list_calls.append((tenant_id, entity_type, entity_id))
+        return list(self.rows)
 
 
 class _FakeBus:

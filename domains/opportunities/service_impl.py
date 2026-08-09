@@ -28,6 +28,7 @@
 """
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -44,6 +45,7 @@ from domains.opportunities.models import (
     CRITICAL_FIELDS,
     HandoffPacket,
     HandoffPolicy,
+    HandoffState,
     HandoffTrigger,
     LossReason,
     LossRecord,
@@ -56,15 +58,18 @@ from domains.opportunities.permissions import (
     AuditLogger,
     OpportunityAction,
     OpportunityAuthorizer,
+    OpportunityScope,
     ScopeLevel,
 )
 from domains.opportunities.repository import OpportunityUnitOfWork
 from domains.opportunities.schemas import (
     HandoffCreateRequest,
     HandoffPacketView,
+    HandoffQueueItemView,
     HandoffQueueStats,
     OpportunityCreateRequest,
     OpportunityView,
+    ProvenanceSummary,
     ScoreExplanation,
     ValidatedNeedEvidence,
 )
@@ -72,6 +77,7 @@ from domains.opportunities.scoring import OpportunityScorer, ScoringInput
 from shared.errors import (
     InvalidStateTransition,
     PermissionDenied,
+    TenantIsolationViolation,
     TradeOSError,
     ValidationError,
 )
@@ -95,6 +101,8 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.provenance import Provenance, SourceType
+
+_tenant_isolation_alert_logger = logging.getLogger("security.tenant_isolation")
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
@@ -269,6 +277,27 @@ def _explanation(snapshot: ScoreSnapshot) -> ScoreExplanation:
     )
 
 
+def _provenance_summary(
+    field_name: str, provenance: Provenance
+) -> ProvenanceSummary:
+    """内部 Provenance 转公共稳定字符串 DTO；不丢任何只增历史字段。"""
+    return ProvenanceSummary(
+        field_name=field_name,
+        source_type=provenance.source_type.value,
+        source_id=provenance.source_id,
+        extracted_by=provenance.extracted_by,
+        extracted_at=provenance.extracted_at,
+        confirmed_by=(
+            str(provenance.confirmed_by)
+            if provenance.confirmed_by is not None
+            else None
+        ),
+        confirmed_at=provenance.confirmed_at,
+        source_url=provenance.source_url,
+        page_hash=provenance.page_hash,
+    )
+
+
 class OpportunityServiceImpl:
     """``OpportunityService`` 的完整实现（S2-10 核心 + S2-11 handoff/查询 + S3-5 授权）。"""
 
@@ -300,14 +329,24 @@ class OpportunityServiceImpl:
         allow 审计**——allow 由 ``_audit_allow`` 在所有 ABAC 检查通过后只写一次，
         避免"先 allow 再 ABAC deny"的双条审计。不记录任何业务/异常内容。
         """
+        return self._authorize_scope(actor, action, actor.scope, tenant_id)
+
+    def _authorize_scope(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        scope: OpportunityScope,
+        tenant_id: TenantId,
+    ) -> str:
+        """对显式请求 scope 判权；拒绝审计不含业务 payload。"""
         try:
-            rule = self._authorizer.require(actor, action, actor.scope, tenant_id)
+            rule = self._authorizer.require(actor, action, scope, tenant_id)
         except PermissionDenied:
             self._audit.log(
                 actor=actor.actor_id,
                 action=action.value,
                 tenant_id=tenant_id,
-                scope=actor.scope.label,
+                scope=scope.label,
                 rule="deny",
             )
             raise
@@ -356,16 +395,45 @@ class OpportunityServiceImpl:
         *,
         rule: str,
         message: str,
+        audit_scope: OpportunityScope | None = None,
     ) -> None:
         """写一条无业务 payload 的 ABAC 拒绝审计并抛 PermissionDenied。"""
         self._audit.log(
             actor=actor.actor_id,
             action=action.value,
             tenant_id=tenant_id,
-            scope=actor.scope.label,
+            scope=(audit_scope or actor.scope).label,
             rule=rule,
         )
         raise PermissionDenied(f"ABAC 拒绝：{message}")
+
+    def _deny_tenant_isolation(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        tenant_id: TenantId,
+        *,
+        message: str,
+    ) -> None:
+        """跨租户数据固定审计并拒绝；不记录实体 ID 或业务内容。"""
+        self._audit.log(
+            actor=actor.actor_id,
+            action=action.value,
+            tenant_id=tenant_id,
+            scope=actor.scope.label,
+            rule="deny:tenant_isolation",
+        )
+        _tenant_isolation_alert_logger.critical(
+            "检测到跨租户数据隔离违规",
+            extra={
+                "actor": actor.actor_id,
+                "action": action.value,
+                "tenant_id": str(tenant_id),
+                "scope": actor.scope.label,
+                "rule": "deny:tenant_isolation",
+            },
+        )
+        raise TenantIsolationViolation(message)
 
     def _enforce_resource_abac(
         self,
@@ -435,6 +503,37 @@ class OpportunityServiceImpl:
                 rule="deny:abac:aggregate",
                 message="窄作用域无权读取租户级聚合数据",
             )
+
+    def _enforce_safe_query_scope(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+    ) -> None:
+        """拒绝无级别与无限制 SYSTEM，防最小系统身份意外扩成全租户。"""
+        unrestricted_system = (
+            scope.level is ScopeLevel.SYSTEM
+            and scope.allowed_owners is None
+            and scope.allowed_countries is None
+            and scope.allowed_categories is None
+        )
+        if scope.level is None or unrestricted_system:
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:unsafe_scope",
+                message="查询作用域未明确收窄",
+            )
+
+    @staticmethod
+    def _validate_states(states: list[OpportunityState] | None) -> None:
+        """运行时拒绝非 OpportunityState，避免边界输入泄漏为 AttributeError。"""
+        if states is not None and any(
+            not isinstance(state, OpportunityState) for state in states
+        ):
+            raise ValidationError("states 必须是 OpportunityState 列表")
 
     async def create_from_need(
         self,
@@ -934,8 +1033,9 @@ class OpportunityServiceImpl:
                 tenant_id=tenant_id,
                 action=OpportunityAction.OPPORTUNITY_READ,
             )
-            self._audit_allow(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id, rule)
-            return await self._build_view(uow, tenant_id, opp)
+            view = await self._build_view(uow, tenant_id, opp)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id, rule)
+        return view
 
     async def _build_view(
         self,
@@ -943,13 +1043,18 @@ class OpportunityServiceImpl:
         tenant_id: TenantId,
         opp: Opportunity,
     ) -> OpportunityView:
-        """同一 UoW 内按**已取到的** Opportunity 构造视图（list_for_employee 不逐 ID 重查）。"""
+        """同一 UoW 内构造视图，含 newest-first 的完整只增来源历史。"""
         snapshot = await uow.snapshots.latest_for_opportunity(
             tenant_id, opp.opportunity_id
         )
         score = _explanation(snapshot) if snapshot is not None else None
         pending = await uow.handoffs.find_pending_for_opportunity(
             tenant_id, opp.opportunity_id
+        )
+        provenance_rows = await uow.provenance.list_for_entity(
+            tenant_id,
+            "opportunity",
+            str(opp.opportunity_id),
         )
         return OpportunityView(
             opportunity_id=opp.opportunity_id,
@@ -979,6 +1084,10 @@ class OpportunityServiceImpl:
                 opp.died_at_state.value if opp.died_at_state is not None else None
             ),
             has_pending_handoff=pending is not None,
+            provenance=[
+                _provenance_summary(field_name, provenance)
+                for field_name, provenance in provenance_rows
+            ],
         )
 
     async def list_for_employee(
@@ -1015,8 +1124,156 @@ class OpportunityServiceImpl:
                     tenant_id=tenant_id,
                     action=OpportunityAction.OPPORTUNITY_LIST,
                 )
-            self._audit_allow(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id, rule)
-            return [await self._build_view(uow, tenant_id, o) for o in opps]
+            views = [await self._build_view(uow, tenant_id, opp) for opp in opps]
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_LIST, tenant_id, rule)
+        return views
+
+    async def list_opportunities(
+        self,
+        tenant_id: TenantId,
+        actor: Actor,
+        *,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None = None,
+        limit: int = 50,
+    ) -> list[OpportunityView]:
+        """按完整 scope 在 SQL 过滤；返回前对每行再次做资源 ABAC。"""
+        action = OpportunityAction.OPPORTUNITY_LIST
+        rule = self._authorize_scope(actor, action, scope, tenant_id)
+        if scope != actor.scope:
+            self._deny_abac(
+                actor,
+                action,
+                tenant_id,
+                rule="deny:scope_mismatch",
+                message="请求作用域与身份作用域不一致",
+                audit_scope=scope,
+            )
+        self._enforce_safe_query_scope(actor, action, tenant_id, scope)
+        if limit <= 0:
+            raise ValidationError("limit 必须 > 0")
+        self._validate_states(states)
+        if states == []:
+            self._audit_allow(actor, action, tenant_id, rule)
+            return []
+
+        async with self._uow_factory() as uow:
+            opportunities = await uow.opportunities.list_scoped(
+                tenant_id,
+                scope,
+                states,
+                limit,
+            )
+            for opportunity in opportunities:
+                if opportunity.tenant_id != tenant_id:
+                    self._deny_tenant_isolation(
+                        actor,
+                        action,
+                        tenant_id,
+                        message="机会列表数据租户不一致",
+                    )
+                self._enforce_resource_abac(
+                    actor,
+                    owner=opportunity.owner,
+                    country=opportunity.country,
+                    product_category=opportunity.product_category,
+                    tenant_id=tenant_id,
+                    action=action,
+                )
+            views = [
+                await self._build_view(uow, tenant_id, opportunity)
+                for opportunity in opportunities
+            ]
+        self._audit_allow(actor, action, tenant_id, rule)
+        return views
+
+    async def list_pending_handoffs(
+        self,
+        tenant_id: TenantId,
+        actor: Actor,
+        *,
+        limit: int = 50,
+    ) -> list[HandoffQueueItemView]:
+        """按 SQL scope 返回 REQUESTED 队列，保持仓储的最久等待优先顺序。"""
+        action = OpportunityAction.HANDOFF_QUEUE_READ
+        scope = actor.scope
+        rule = self._authorize_scope(actor, action, scope, tenant_id)
+        self._enforce_safe_query_scope(actor, action, tenant_id, scope)
+        if limit <= 0:
+            raise ValidationError("limit 必须 > 0")
+
+        async with self._uow_factory() as uow:
+            packets = await uow.handoffs.list_pending_scoped(
+                tenant_id,
+                scope,
+                limit,
+            )
+            linked: list[tuple[HandoffPacket, Opportunity]] = []
+            for packet in packets:
+                if packet.tenant_id != tenant_id:
+                    self._deny_tenant_isolation(
+                        actor,
+                        action,
+                        tenant_id,
+                        message="待接管列表数据租户不一致",
+                    )
+                if packet.state is not HandoffState.REQUESTED:
+                    raise ValidationError("待接管列表包含非 requested 数据")
+                opportunity = await uow.opportunities.get(
+                    tenant_id,
+                    packet.opportunity_id,
+                )
+                if opportunity is None:
+                    raise ValidationError("接管数据关联机会缺失")
+                if opportunity.tenant_id != tenant_id:
+                    self._deny_tenant_isolation(
+                        actor,
+                        action,
+                        tenant_id,
+                        message="接管关联机会租户不一致",
+                    )
+                if opportunity.opportunity_id != packet.opportunity_id:
+                    raise ValidationError("接管关联机会标识不一致")
+                self._enforce_resource_abac(
+                    actor,
+                    owner=packet.assigned_to,
+                    country=opportunity.country,
+                    product_category=opportunity.product_category,
+                    tenant_id=tenant_id,
+                    action=action,
+                )
+                linked.append((packet, opportunity))
+
+            now = self._now()
+            items: list[HandoffQueueItemView] = []
+            for packet, _ in linked:
+                wait_seconds = packet.wait_seconds(now)
+                if wait_seconds is None:
+                    raise ValidationError("待接管数据缺等待时长")
+                items.append(
+                    HandoffQueueItemView(
+                        handoff_id=str(packet.handoff_id),
+                        opportunity_id=str(packet.opportunity_id),
+                        trigger=packet.trigger.value,
+                        account_name=packet.account_name,
+                        country=packet.country,
+                        why_valuable=packet.why_valuable,
+                        customer_verbatim=packet.customer_verbatim,
+                        requested_at=packet.requested_at,
+                        wait_seconds=wait_seconds,
+                        state=packet.state.value,
+                        assigned_to=(
+                            str(packet.assigned_to)
+                            if packet.assigned_to is not None
+                            else None
+                        ),
+                        suggested_next_step=packet.suggested_next_step,
+                        missing_information=list(packet.missing_information),
+                        evidence_links=list(packet.evidence_links),
+                    )
+                )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return items
 
     async def loss_reason_breakdown(
         self, tenant_id: TenantId, *, actor: Actor, since_days: int = 30

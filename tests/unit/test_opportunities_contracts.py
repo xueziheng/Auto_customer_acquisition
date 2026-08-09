@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import typing
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from domains.opportunities.permissions import Actor, OpportunityScope
 from domains.opportunities.schemas import (
     OpportunityCreateRequest,
+    OpportunityView,
     ScoreExplanation,
     ValidatedNeedEvidence,
 )
@@ -56,7 +59,10 @@ _MODULE_BY_SYMBOL = {
     "Opportunity": "domains.opportunities.models",
     "ScoreSnapshot": "domains.opportunities.models",
     "HandoffPacket": "domains.opportunities.models",
+    "OpportunityState": "domains.opportunities.models",
     "HandoffCreateRequest": "domains.opportunities.schemas",
+    "HandoffQueueItemView": "domains.opportunities.schemas",
+    "ProvenanceSummary": "domains.opportunities.schemas",
     "OpportunityRepository": "domains.opportunities.repository",
     "ScoreSnapshotRepository": "domains.opportunities.repository",
     "HandoffRepository": "domains.opportunities.repository",
@@ -83,6 +89,7 @@ def _load(symbol: str):
 Opportunity = _load("Opportunity")
 ScoreSnapshot = _load("ScoreSnapshot")
 HandoffPacket = _load("HandoffPacket")
+OpportunityState = _load("OpportunityState")
 OpportunityRepository = _load("OpportunityRepository")
 ScoreSnapshotRepository = _load("ScoreSnapshotRepository")
 HandoffRepository = _load("HandoffRepository")
@@ -400,6 +407,8 @@ def test_opportunity_service_terminal_and_handoff_signatures() -> None:
         "get_queue_stats",
         "get",
         "list_for_employee",
+        "list_opportunities",
+        "list_pending_handoffs",
         "loss_reason_breakdown",
     ):
         params = inspect.signature(getattr(OpportunityService, name)).parameters
@@ -415,6 +424,118 @@ def test_opportunity_service_terminal_and_handoff_signatures() -> None:
     request_params = set(inspect.signature(OpportunityService.request_handoff).parameters)
     assert "request" in request_params
     assert not {"opportunity_id", "trigger"} & request_params
+
+
+def test_scoped_list_service_signatures_are_exact() -> None:
+    """锁定 S3-13 的参数位置、keyword-only 边界、默认值与类型。"""
+    opportunity_sig = inspect.signature(OpportunityService.list_opportunities)
+    assert list(opportunity_sig.parameters) == [
+        "self",
+        "tenant_id",
+        "actor",
+        "scope",
+        "states",
+        "limit",
+    ]
+    assert opportunity_sig.parameters["actor"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name in ("scope", "states", "limit"):
+        assert opportunity_sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    assert opportunity_sig.parameters["states"].default is None
+    assert opportunity_sig.parameters["limit"].default == 50
+    opportunity_hints = typing.get_type_hints(OpportunityService.list_opportunities)
+    assert opportunity_hints == {
+        "tenant_id": TenantId,
+        "actor": Actor,
+        "scope": OpportunityScope,
+        "states": list[OpportunityState] | None,
+        "limit": int,
+        "return": list[OpportunityView],
+    }
+
+    handoff_sig = inspect.signature(OpportunityService.list_pending_handoffs)
+    assert list(handoff_sig.parameters) == ["self", "tenant_id", "actor", "limit"]
+    assert handoff_sig.parameters["actor"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert handoff_sig.parameters["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert handoff_sig.parameters["limit"].default == 50
+    HandoffQueueItemView = _load("HandoffQueueItemView")
+    handoff_hints = typing.get_type_hints(OpportunityService.list_pending_handoffs)
+    assert handoff_hints == {
+        "tenant_id": TenantId,
+        "actor": Actor,
+        "limit": int,
+        "return": list[HandoffQueueItemView],
+    }
+
+
+def test_scoped_repository_signatures_are_exact() -> None:
+    """锁定 SQL-scoped 仓储合同，防退回单 owner + Python 过滤。"""
+    opportunity_sig = inspect.signature(OpportunityRepository.list_scoped)
+    assert list(opportunity_sig.parameters) == [
+        "self",
+        "tenant_id",
+        "scope",
+        "states",
+        "limit",
+    ]
+    opportunity_hints = typing.get_type_hints(OpportunityRepository.list_scoped)
+    assert opportunity_hints == {
+        "tenant_id": TenantId,
+        "scope": OpportunityScope,
+        "states": list[OpportunityState] | None,
+        "limit": int,
+        "return": list[Opportunity],
+    }
+
+    handoff_sig = inspect.signature(HandoffRepository.list_pending_scoped)
+    assert list(handoff_sig.parameters) == [
+        "self",
+        "tenant_id",
+        "scope",
+        "limit",
+    ]
+    handoff_hints = typing.get_type_hints(HandoffRepository.list_pending_scoped)
+    assert handoff_hints == {
+        "tenant_id": TenantId,
+        "scope": OpportunityScope,
+        "limit": int,
+        "return": list[HandoffPacket],
+    }
+
+
+def test_list_dto_field_types_are_public_stable_values() -> None:
+    """DTO 不泄露内部 Enum/NewType/ORM，pending wait_seconds 必为 int。"""
+    ProvenanceSummary = _load("ProvenanceSummary")
+    HandoffQueueItemView = _load("HandoffQueueItemView")
+    assert typing.get_type_hints(ProvenanceSummary) == {
+        "field_name": str,
+        "source_type": str,
+        "source_id": str,
+        "extracted_by": str,
+        "extracted_at": datetime,
+        "confirmed_by": str | None,
+        "confirmed_at": datetime | None,
+        "source_url": str | None,
+        "page_hash": str | None,
+    }
+    assert typing.get_type_hints(HandoffQueueItemView) == {
+        "handoff_id": str,
+        "opportunity_id": str,
+        "trigger": str,
+        "account_name": str,
+        "country": str,
+        "why_valuable": str,
+        "customer_verbatim": str,
+        "requested_at": datetime,
+        "wait_seconds": int,
+        "state": str,
+        "assigned_to": str | None,
+        "suggested_next_step": str | None,
+        "missing_information": list[str],
+        "evidence_links": list[str],
+    }
+    assert typing.get_type_hints(OpportunityView)["provenance"] == list[
+        ProvenanceSummary
+    ]
 
 
 def test_opportunity_scorer_score_takes_snapshots() -> None:

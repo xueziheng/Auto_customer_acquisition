@@ -230,6 +230,15 @@ class _FakeOpportunityRepo:
     ) -> list[Opportunity]:
         raise AssertionError("服务不应调用 list_by_owner")
 
+    async def list_scoped(
+        self,
+        tenant_id: TenantId,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None,
+        limit: int,
+    ) -> list[Opportunity]:
+        raise AssertionError("S2-10 服务不应调用 list_scoped")
+
     async def list_by_state(
         self, tenant_id: TenantId, state: OpportunityState, limit: int
     ) -> list[Opportunity]:
@@ -325,6 +334,11 @@ class _FakeHandoffRepo:
     async def list_pending(self, tenant_id: TenantId, limit: int) -> list[object]:
         raise AssertionError("S2-10 服务不应调用 handoff")
 
+    async def list_pending_scoped(
+        self, tenant_id: TenantId, scope: OpportunityScope, limit: int
+    ) -> list[object]:
+        raise AssertionError("S2-10 服务不应调用 handoff")
+
     async def count_pending_by_employee(self, tenant_id: TenantId) -> dict[str, int]:
         raise AssertionError("S2-10 服务不应调用 handoff")
 
@@ -368,7 +382,7 @@ class _FakeProvenanceRepo:
     async def list_for_entity(
         self, tenant_id: TenantId, entity_type: str, entity_id: str
     ) -> list[tuple[str, Provenance]]:
-        raise AssertionError("服务不应调用 list_for_entity")
+        return []
 
 
 class _FakeBus:

@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from domains.opportunities.models import LossReason, OpportunityState
-from domains.opportunities.permissions import Actor
+from domains.opportunities.permissions import Actor, OpportunityScope
 from domains.opportunities.schemas import (
     HandoffCreateRequest,
     HandoffPacketView,
+    HandoffQueueItemView,
     HandoffQueueStats,
     OpportunityCreateRequest,
     OpportunityView,
@@ -231,6 +232,28 @@ class OpportunityService(Protocol):
         limit: int = 50,
     ) -> list[OpportunityView]:
         """某员工负责的机会。按 ABAC 范围过滤。"""
+        ...
+
+    async def list_opportunities(
+        self,
+        tenant_id: TenantId,
+        actor: Actor,
+        *,
+        scope: OpportunityScope,
+        states: list[OpportunityState] | None = None,
+        limit: int = 50,
+    ) -> list[OpportunityView]:
+        """按调用身份的完整 ABAC scope 在 SQL 层列出机会。"""
+        ...
+
+    async def list_pending_handoffs(
+        self,
+        tenant_id: TenantId,
+        actor: Actor,
+        *,
+        limit: int = 50,
+    ) -> list[HandoffQueueItemView]:
+        """按身份 scope 列出 pending 接管；保持最久等待优先。"""
         ...
 
     async def loss_reason_breakdown(
