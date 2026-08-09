@@ -17,14 +17,57 @@
 
 from __future__ import annotations
 
+from fastapi import FastAPI
 
-def create_app():  # -> FastAPI
-    """应用工厂。测试用它构造带假实现的实例。"""
-    raise NotImplementedError
+from .dependencies import (
+    ApiDependencies,
+    UnconfiguredApiDependencies,
+)
+from .middleware import (
+    ApiSettings,
+    SafeUnhandledExceptionMiddleware,
+    TenantAssertionMiddleware,
+    install_error_handlers,
+)
+from .routers.crm import router as crm_router
+
+_UNCONFIGURED_TENANT = "__tradeos_unconfigured__"
+_DEFAULT_RETRY_AFTER_SECONDS = 30
+
+
+def create_app(
+    *,
+    settings: ApiSettings | None = None,
+    dependencies: ApiDependencies | None = None,
+) -> FastAPI:
+    """构造互相隔离的 API app。
+
+    zero-arg 只产生固定未配置、失败关闭的 app，供 uvicorn factory 与确定性
+    OpenAPI 导出使用；不读取环境、不创建数据库资源、不注册空 handler。
+    """
+    resolved_settings = settings or ApiSettings(
+        tenant_id=_UNCONFIGURED_TENANT,
+        dev_mode=False,
+        retry_after_seconds=_DEFAULT_RETRY_AFTER_SECONDS,
+    )
+    resolved_dependencies = dependencies or UnconfiguredApiDependencies()
+
+    app = FastAPI(title="TradeOS API", version="0.1.0")
+    app.state.settings = resolved_settings
+    app.state.dependencies = resolved_dependencies
+    install_error_handlers(app, resolved_settings)
+    app.add_middleware(TenantAssertionMiddleware, settings=resolved_settings)
+    # Starlette 后加的 user middleware 位于外层：安全边界必须包住其余 user middleware。
+    app.add_middleware(SafeUnhandledExceptionMiddleware)
+    app.include_router(crm_router, prefix="/crm")
+    return app
 
 
 def main() -> None:
-    raise NotImplementedError
+    """以 factory 模式启动；未注入 composition 时所有业务依赖失败关闭。"""
+    import uvicorn
+
+    uvicorn.run("apps.api.main:create_app", factory=True)
 
 
 if __name__ == "__main__":

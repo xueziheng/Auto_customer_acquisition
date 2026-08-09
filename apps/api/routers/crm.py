@@ -10,3 +10,8 @@ GET  /analytics/loss-reasons     (reason × died_at_state) 交叉统计
 """
 
 from __future__ import annotations
+
+from fastapi import APIRouter
+
+# S3-12 只提供路由挂载点；业务 endpoint 在 S3-14/S3-15 逐项加入。
+router = APIRouter()
