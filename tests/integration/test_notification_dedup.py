@@ -475,6 +475,45 @@ async def test_store_stale_claim_cannot_overwrite_new_owner_result(
     }
 
 
+async def test_store_stale_completion_cannot_override_new_owner_failure(
+    engine_fx: AsyncEngine,
+) -> None:
+    """真实 Postgres fencing：旧 owner 的晚到成功不能把新 owner 的失败伪装为 delivered。"""
+    factory = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    clock = _Clock()
+    store = _make_store(factory, clock=clock)
+    key = "key-stale-completion-fencing"
+
+    old_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert isinstance(old_claim, str) and old_claim
+    clock.advance(seconds=86400)
+    new_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert isinstance(new_claim, str) and new_claim != old_claim
+
+    stale, current = await asyncio.gather(
+        store.record_success(
+            TenantId("tA"), key, "structured_log", claim_token=old_claim
+        ),
+        store.record_failure(
+            TenantId("tA"),
+            key,
+            "structured_log",
+            claim_token=new_claim,
+            error=TransientError("new owner failure"),
+        ),
+    )
+
+    assert stale is False
+    assert current is True
+    row = await _delivery_row(engine_fx, "tA", key, "structured_log")
+    assert row is not None
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+    assert row["delivered_at"] is None
+    assert row["next_attempt_at"] is not None
+    assert row["last_error"] == "TransientError"
+
+
 async def test_store_failure_increments_attempts_backoff_and_sanitized_error(
     engine_fx: AsyncEngine,
 ) -> None:
