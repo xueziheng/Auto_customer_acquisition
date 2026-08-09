@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    (()=>{const faviconUrl=URL.createObjectURL(new Blob(['<svg viewBox="0 0 1 1"></svg>'],{type:'image/svg+xml'}));const favicon=document.createElement('link');favicon.rel='icon';favicon.href=faviconUrl;document.head.append(favicon);addEventListener('pagehide',()=>URL.revokeObjectURL(faviconUrl),{once:true})})();
+  </script>
+  <title>TradeOS · 机会证据账本</title>
+  <style>
+    :root {
+      --canvas:#f5f7f7;--surface:#fff;--subtle:#f9fbfa;--text:#172323;--muted:#526363;
+      --border:#cbd7d5;--border-strong:#9cb0ad;--fact:#0f766e;--fact-soft:#e7f5f2;
+      --infer:#8a5c00;--infer-soft:#fff5d6;--action:#155eef;--danger:#b42318;
+      --danger-soft:#fef0ec;--warning:#9a4f09;--warning-soft:#fff4e8;--focus:#7c3aed;
+      --nav:#173b39;--shadow:0 1px 2px rgba(20,35,35,.08);--float:0 12px 32px rgba(20,35,35,.16);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+      color-scheme:light;
+    }
+    *{box-sizing:border-box}html,body{height:100%;overflow:hidden}body{margin:0;min-width:1080px;background:var(--canvas);color:var(--text);font-size:14px;line-height:1.55}
+    button,select,textarea{font:inherit}button,select,summary,textarea,[tabindex]{outline:none}
+    button:focus-visible,select:focus-visible,summary:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{box-shadow:0 0 0 2px var(--surface),0 0 0 5px var(--focus)}
+    button{min-height:44px;padding:0 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-weight:680}
+    button:hover{border-color:#6f8783;background:#f7faf9}button:disabled{cursor:not-allowed;opacity:.6}
+    h1,h2,h3,p{margin-top:0}h1{margin-bottom:4px;font-size:22px;line-height:1.25}h2{margin-bottom:5px;font-size:18px;line-height:1.35}h3{margin-bottom:8px;font-size:14px;line-height:1.4}
+    .shell{display:grid;grid-template-rows:68px minmax(0,1fr);height:100vh;overflow:hidden}
+    .topbar{display:flex;align-items:center;gap:22px;padding:0 22px;color:#edf7f5;background:var(--nav);border-bottom:1px solid #0f302e}
+    .brand{display:flex;align-items:center;gap:10px;min-width:172px;font-size:17px;font-weight:780}.brand-mark{display:grid;width:34px;height:34px;place-items:center;border:1px solid #75a9a2;border-radius:9px;background:#23524f;font-size:13px}
+    .topnav{display:flex;gap:5px}.topnav button{min-height:44px;color:#d9ebe8;background:transparent;border-color:transparent}.topnav button[aria-current=page]{color:#fff;background:#2a5d59;border-color:#4d807a}.identity{margin-left:auto;color:#b8d4cf;font-size:12px}.identity strong{color:#fff}
+    .workspace{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px;min-height:0;padding:14px;overflow:hidden}
+    .list-pane,.detail-pane{min-width:0;min-height:0;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}
+    .list-pane{display:flex;flex-direction:column}.pane-header{padding:17px 18px 14px;border-bottom:1px solid var(--border)}.eyebrow{margin:0 0 4px;color:var(--fact);font-size:11px;font-weight:780;letter-spacing:.1em}.subcopy{margin:0;color:var(--muted);font-size:12px}
+    .tools{display:grid;grid-template-columns:1fr 44px;gap:8px;margin-top:14px}.filter{min-height:44px;padding:0 10px;border:1px solid var(--border-strong);border-radius:8px;background:#fff}.refresh{padding:0}.order-note{margin-top:10px;color:var(--muted);font-size:12px}
+    .opportunity-list{margin:0;padding:10px;overflow:auto;list-style:none}.opportunity-list li+li{margin-top:9px}.opportunity-card{width:100%;min-height:0;padding:13px;border-color:var(--border);border-radius:10px;text-align:left;font-weight:400;box-shadow:var(--shadow)}
+    .opportunity-card[aria-current=true]{border-color:var(--fact);background:#f0faf8;box-shadow:inset 3px 0 0 var(--fact),var(--shadow)}
+    .row,.card-top,.heading,.fact-heading,.action-row{display:flex;align-items:center;justify-content:space-between;gap:9px}
+    .demo,.status,.evidence,.fact-label,.infer-label{display:inline-flex;align-items:center;gap:5px;min-height:23px;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:750;line-height:1.2;white-space:nowrap}
+    .demo{color:#445554;background:#e9efee;border:1px solid var(--border)}.status{color:#135f59;background:var(--fact-soft);border:1px solid #88c9c0}.evidence{color:#5a4200;background:#fff8e5;border:1px solid #d9bd69}
+    .account{display:block;margin:10px 0 3px;font-size:15px;font-weight:760}.meta{display:block;color:var(--muted);font-size:12px}.next{display:block;margin-top:10px;padding-top:9px;border-top:1px solid #dfe7e5;color:#324443;font-size:12px}.next strong{color:var(--text)}
+    .detail-pane{overflow:auto}.detail-layout{display:grid;grid-template-columns:minmax(480px,1fr) 290px;gap:14px;min-height:100%;padding:14px}.record,.provenance{min-width:0;border:1px solid var(--border);border-radius:11px;background:#fff;box-shadow:var(--shadow)}.record{overflow:hidden}.provenance{position:sticky;top:0;align-self:start;overflow:hidden;box-shadow:var(--float)}.provenance[hidden]{display:none}
+    .record-header,.section,.actions{padding:17px 20px;border-bottom:1px solid #e1e8e6}.record-header h1{margin:9px 0 2px}.record-id{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+    .summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px}.summary div{padding:9px 10px;border-radius:8px;background:#f4f8f7}.summary span{display:block;color:var(--muted);font-size:11px}.summary strong{display:block;margin-top:2px;overflow-wrap:anywhere}
+    .section-kicker{margin:0;color:var(--muted);font-size:11px}.fact-grid{display:grid;gap:9px}.fact-box{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:11px;border:1px solid #78b9b1;border-left:4px solid var(--fact);border-radius:9px;background:var(--fact-soft)}.fact-box dt{color:#3e5b58;font-size:11px}.fact-box dd{margin:3px 0 0;font-weight:700}.fact-label{color:#0c5e57;padding-left:0}.source{align-self:center;min-height:44px;padding:0 9px;color:#0c5e57;border-color:#67a9a0;font-size:12px}
+    .infer-box{padding:13px;border:2px dashed #c59b36;border-radius:9px;background:var(--infer-soft)}.infer-label{color:#6f4a00;padding-left:0}.infer-box p{margin:7px 0 9px;color:#5e480f}.gate-list{display:grid;gap:5px;margin:0;padding:0;list-style:none}.gate-list li{display:flex;gap:7px}
+    .actions{border-bottom:0;background:#fbfcfc}.controls{display:flex;flex-wrap:wrap;gap:8px}.primary{color:#fff;background:var(--action);border-color:var(--action)}.danger{color:var(--danger);border-color:#d88f87}
+    details.loss{margin-top:11px;border:1px solid #ddaaa5;border-radius:9px;background:#fffafa}details.loss summary{display:flex;align-items:center;min-height:44px;padding:8px 12px;color:var(--danger);cursor:pointer;font-weight:700}.loss-form{display:grid;gap:8px;padding:0 12px 12px}.loss-form label{color:var(--muted);font-size:12px}.loss-form select,.loss-form textarea{width:100%;margin-top:4px}.loss-form textarea{min-height:58px;padding:8px;border:1px solid var(--border-strong);border-radius:7px;resize:vertical}
+    .operation-status{margin-top:10px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:12px}.error-grid{display:grid;gap:6px;margin-top:10px}.safe-error{display:grid;grid-template-columns:auto 1fr;gap:8px;padding:8px 9px;border:1px solid #d9aaa4;border-radius:8px;color:#74251d;background:var(--danger-soft);font-size:12px}.safe-error[data-kind="503"]{color:#75410e;background:var(--warning-soft);border-color:#e3b681}
+    .prov-header{padding:15px;color:#f5fffd;background:#245650}.prov-header h2{margin:0;font-size:16px}.prov-header p{margin:3px 0 0;color:#c9e2de;font-size:11px}.close{min-width:44px;min-height:44px;padding:0;color:#fff;background:transparent;border-color:#82aca7}.prov-body{padding:14px}.prov-list{margin:8px 0 0}.prov-list div{padding:7px 0;border-bottom:1px solid #e1e8e6}.prov-list dt{color:var(--muted);font-size:11px}.prov-list dd{margin:2px 0 0;font-size:12px;font-weight:680;overflow-wrap:anywhere}.raw-evidence{margin-top:12px;padding:11px;border:1px solid #9ec5c0;border-radius:8px;background:#f2faf8}.raw-evidence strong{display:block}.raw-evidence p{margin:4px 0 9px;color:var(--muted);font-size:11px}.raw-evidence button{width:100%;min-height:44px;color:#0c5e57;border-color:#67a9a0}
+    .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    @media(max-width:1240px){.topbar{padding:0 14px;gap:10px}.brand{min-width:142px;font-size:15px}.topnav button{padding:0 8px}.workspace{grid-template-columns:318px minmax(0,1fr);gap:10px;padding:10px}.detail-layout{grid-template-columns:minmax(430px,1fr) 250px;gap:10px;padding:10px}.record-header,.section,.actions{padding-left:14px;padding-right:14px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+  </style>
+</head>
+<body>
+  <main class="shell" aria-label="TradeOS 机会证据账本演示">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">TO</span><span>TradeOS</span></div>
+      <nav class="topnav" aria-label="CRM 页面"><button type="button" aria-current="page">机会看板</button><button type="button">人工接管队列</button><button type="button">失败原因分析</button></nav>
+      <div class="identity"><strong>演示工作区</strong> · 销售经理</div>
+    </header>
+    <div class="workspace">
+      <section class="list-pane" aria-labelledby="board-title">
+        <header class="pane-header">
+          <p class="eyebrow">EVIDENCE LEDGER</p><h1 id="board-title">机会看板</h1><p class="subcopy">需求证据、归属与下一步行动</p>
+          <div class="tools"><select class="filter" aria-label="按机会状态筛选"><option>全部进行中状态</option><option value="assigned">已分配</option><option value="contacted">已联系</option><option value="negotiating">洽谈中</option></select><button class="refresh" type="button" aria-label="刷新机会列表">↻</button></div>
+          <div class="order-note">≡ 按后端返回顺序显示 · 前端不按分数重排</div>
+        </header>
+        <ol class="opportunity-list" id="opportunity-list" aria-label="机会列表"></ol>
+      </section>
+      <section class="detail-pane" aria-labelledby="detail-title">
+        <div class="detail-layout">
+          <article class="record" id="record" aria-busy="false">
+            <header class="record-header">
+              <div class="heading"><span class="demo">演示数据</span><span class="status" id="detail-status"></span></div>
+              <h1 id="detail-title"></h1><div class="record-id" id="detail-id"></div>
+              <div class="summary"><div><span>负责人</span><strong id="owner"></strong></div><div><span>国家 / 地区</span><strong id="country"></strong></div><div><span>产品品类</span><strong id="category"></strong></div><div><span>下一步 / 到期</span><strong id="next-due"></strong></div></div>
+            </header>
+            <section class="section" aria-labelledby="facts-title">
+              <div class="fact-heading"><div><p class="section-kicker">VERIFIED RECORD</p><h2 id="facts-title">客户确认信息</h2></div><span class="fact-label">✓ 已验证事实</span></div>
+              <dl class="fact-grid">
+                <div class="fact-box"><div><dt id="fact-one-label"></dt><dd id="fact-one-value"></dd><span class="fact-label">✓ 已验证事实</span></div><button class="source" type="button" data-source="spec_summary" aria-haspopup="dialog" aria-expanded="false" aria-controls="provenance">查看来源</button></div>
+                <div class="fact-box"><div><dt id="fact-two-label"></dt><dd id="fact-two-value"></dd><span class="fact-label">✓ 已验证事实</span></div><button class="source" type="button" data-source="destination" aria-haspopup="dialog" aria-expanded="false" aria-controls="provenance">查看来源</button></div>
+              </dl>
+            </section>
+            <section class="section" aria-labelledby="inference-title"><div class="infer-box"><div class="heading"><h2 id="inference-title"><span class="infer-label">◇ 推断</span> 为什么值得跟进</h2><span class="evidence" id="evidence-level"></span></div><p id="inference"></p><ul class="gate-list" id="gates"></ul></div></section>
+            <section class="actions" aria-labelledby="actions-title">
+              <div class="action-row"><div><p class="section-kicker">HUMAN ACTION</p><h2 id="actions-title">人工操作</h2></div><span class="subcopy">API / 域服务判权为最终裁决</span></div>
+              <div class="controls"><select class="filter" id="transition-target" aria-label="选择合法目标状态"></select><button class="primary" id="transition" type="button">推进状态</button></div>
+              <details class="loss"><summary>标记为流失</summary><div class="loss-form"><label>流失原因<select class="filter" id="loss-reason"><option value="unreachable">无法联系</option><option value="no_reply">序列结束无回复</option><option value="need_not_real">需求不成立</option><option value="no_supply_found">未找到供应</option><option value="price_too_high">价格原因</option><option value="lost_to_competitor">输给竞争对手</option><option value="customer_went_silent">客户中途失联</option><option value="timing_mismatch">时间要求不匹配</option><option value="compliance_blocked">合规阻断</option><option value="margin_too_low">利润空间过低</option><option value="internal_no_capacity">内部无承接能力</option><option value="duplicate">重复机会</option></select></label><label>补充说明（可选）<textarea placeholder="只记录必要业务说明，不粘贴客户隐私内容"></textarea></label><button class="danger" type="button" id="mark-lost">确认标记流失</button></div></details>
+              <div class="operation-status" id="operation-status" role="status" aria-live="polite">等待人工操作；前端不会预先修改状态。</div>
+              <div class="error-grid" aria-label="固定安全错误示例"><div class="safe-error" role="alert"><strong>409</strong><span>当前状态不允许此操作</span></div><div class="safe-error" role="alert"><strong>400</strong><span>请求参数无效</span></div><div class="safe-error" role="alert"><strong>403</strong><span>没有权限</span></div><div class="safe-error" data-kind="503" role="alert"><strong>503</strong><span>服务暂时不可用</span></div></div>
+            </section>
+          </article>
+          <aside class="provenance" id="provenance" role="dialog" aria-modal="false" aria-labelledby="prov-title">
+            <header class="prov-header"><div class="heading"><div><h2 id="prov-title">字段来源</h2><p id="prov-subtitle"></p></div><button class="close" id="close-prov" type="button" aria-label="关闭来源">×</button></div></header>
+            <div class="prov-body"><span class="demo">演示数据</span><dl class="prov-list"><div><dt>来源类型</dt><dd id="prov-type"></dd></div><div><dt>来源标识</dt><dd id="prov-id"></dd></div><div><dt>提取者</dt><dd id="prov-extractor"></dd></div><div><dt>提取时间</dt><dd id="prov-extracted"></dd></div><div><dt>确认人</dt><dd id="prov-confirmer"></dd></div><div><dt>确认时间</dt><dd id="prov-confirmed"></dd></div></dl><section class="raw-evidence"><strong>原始证据</strong><p id="prov-raw"></p><button type="button" id="open-raw">打开原始证据</button></section></div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    (() => {
+      const records = [
+        {id:'opp_demo_014',account:'澄湾设备',state:'assigned',stateLabel:'已分配',owner:'林岚',country:'中国台湾',category:'工业铰链',next:'确认表面处理与包装要求',due:'今天 16:30',rankBucket:'high',facts:{spec_summary:{label:'需求规格',value:'工业铰链，户外使用场景',provenance:{type:'客户上传',id:'upload_demo_014',extractor:'员工录入',extracted:'2026-08-09 09:42 CST',confirmer:'林岚',confirmed:'2026-08-09 10:06 CST',raw:'受权限保护的客户规格文件。'}},destination:{label:'目的地',value:'高雄港',provenance:{type:'客户回复',id:'message_demo_014',extractor:'员工录入',extracted:'2026-08-09 09:48 CST',confirmer:'林岚',confirmed:'2026-08-09 10:08 CST',raw:'受权限保护的客户目的地确认消息。'}}},inference:'规格文件与明确目的地已齐备，具备进入人工规格确认的条件。该说明是业务解释，不是测量概率。',gates:['通过：客户明确提交规格信息','通过：联系人可达性已验证','待补：表面处理与包装细节'],targets:[['contacted','推进为：已联系']]},
+        {id:'opp_demo_021',account:'远岚设施',state:'contacted',stateLabel:'已联系',owner:'周屿',country:'新加坡',category:'门控五金',next:'补充季度数量与到货时间',due:'明天 10:00',rankBucket:'mid',facts:{spec_summary:{label:'应用场景',value:'商业设施门控维护',provenance:{type:'客户会话',id:'message_demo_021',extractor:'员工录入',extracted:'2026-08-08 14:20 SGT',confirmer:'周屿',confirmed:'2026-08-08 14:36 SGT',raw:'受权限保护的客户应用场景回复。'}},destination:{label:'目的地',value:'新加坡',provenance:{type:'客户会话',id:'message_demo_022',extractor:'员工录入',extracted:'2026-08-08 14:23 SGT',confirmer:'周屿',confirmed:'2026-08-08 14:37 SGT',raw:'受权限保护的客户目的地回复。'}}},inference:'客户已表达兴趣，但数量与时间尚未确认；应先补齐需求事实再进入供应动作。',gates:['通过：客户明确表达兴趣','通过：联系人可达性已验证','待补：季度数量与到货时间'],targets:[['sourcing','推进为：寻源中'],['quoted','推进为：已报价']]},
+        {id:'opp_demo_033',account:'北岸工业',state:'negotiating',stateLabel:'洽谈中',owner:'林岚',country:'德国',category:'工业连接件',next:'等待人工确认后续安排',due:'周五 14:00',rankBucket:'low',facts:{spec_summary:{label:'需求规格',value:'工业连接件，设备维护用途',provenance:{type:'客户上传',id:'upload_demo_033',extractor:'员工录入',extracted:'2026-08-07 10:18 CEST',confirmer:'林岚',confirmed:'2026-08-07 10:45 CEST',raw:'受权限保护的客户规格摘录。'}},destination:{label:'目的地',value:'汉堡',provenance:{type:'客户会话',id:'message_demo_033',extractor:'员工录入',extracted:'2026-08-07 10:24 CEST',confirmer:'林岚',confirmed:'2026-08-07 10:46 CEST',raw:'受权限保护的客户目的地确认消息。'}}},inference:'客户已进入洽谈阶段，下一步仍需真人确认；界面不推断成交概率。',gates:['通过：客户提出明确询样请求','通过：关键规格已有来源','待办：人工确认后续安排'],targets:[['won','推进为：已成交']]}
+      ];
+      const list=document.getElementById('opportunity-list'),panel=document.getElementById('provenance'),close=document.getElementById('close-prov'),recordEl=document.getElementById('record');
+      let current=0,lastTrigger=null,currentField='spec_summary',operationPending=false;
+      const q=(id)=>document.getElementById(id);
+      const bucketLabels={high:'高',mid:'中',low:'低'};
+      const renderList=()=>{list.innerHTML=records.map((r,i)=>`<li><button class="opportunity-card" type="button" data-index="${i}" aria-current="${i===current}"><span class="card-top"><span class="demo">演示数据</span><span class="status">● ${r.stateLabel}</span></span><span class="account">${r.account}</span><span class="meta">${r.country} · ${r.category} · 负责人 ${r.owner}</span><span class="row"><span class="evidence">排序桶：${bucketLabels[r.rankBucket]}</span><span class="meta">${r.due} 到期</span></span><span class="next"><strong>下一步：</strong>${r.next}</span></button></li>`).join('');list.querySelectorAll('.opportunity-card').forEach(b=>b.addEventListener('click',()=>renderRecord(Number(b.dataset.index),true)))};
+      const setProv=(field)=>{const p=records[current].facts[field].provenance;q('prov-subtitle').textContent=`${records[current].facts[field].label} · 已验证事实`;q('prov-type').textContent=p.type;q('prov-id').textContent=p.id;q('prov-extractor').textContent=p.extractor;q('prov-extracted').textContent=p.extracted;q('prov-confirmer').textContent=p.confirmer;q('prov-confirmed').textContent=p.confirmed;q('prov-raw').textContent=p.raw};
+      const openProv=(field,trigger,moveFocus=true)=>{currentField=field;lastTrigger=trigger;document.querySelectorAll('[data-source]').forEach(b=>b.setAttribute('aria-expanded','false'));trigger.setAttribute('aria-expanded','true');setProv(field);panel.hidden=false;if(moveFocus)close.focus()};
+      const closeProv=()=>{panel.hidden=true;document.querySelectorAll('[data-source]').forEach(b=>b.setAttribute('aria-expanded','false'));if(lastTrigger)lastTrigger.focus()};
+      const renderRecord=(index,focusCard=false)=>{current=index;const r=records[index];renderList();q('detail-status').textContent=`● ${r.stateLabel}`;q('detail-title').textContent=r.account;q('detail-id').textContent=r.id;q('owner').textContent=r.owner;q('country').textContent=r.country;q('category').textContent=r.category;q('next-due').textContent=`${r.next} · ${r.due}`;q('fact-one-label').textContent=r.facts.spec_summary.label;q('fact-one-value').textContent=r.facts.spec_summary.value;q('fact-two-label').textContent=r.facts.destination.label;q('fact-two-value').textContent=r.facts.destination.value;q('evidence-level').textContent=`排序桶：${bucketLabels[r.rankBucket]}`;q('inference').textContent=r.inference;q('gates').innerHTML=r.gates.map((g,i)=>`<li><span aria-hidden="true">${i<2?'✓':'!'}</span><span>${g}</span></li>`).join('');q('transition-target').innerHTML=r.targets.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');const first=document.querySelector('[data-source="spec_summary"]');openProv('spec_summary',first,false);if(focusCard)list.querySelector(`[data-index="${index}"]`).focus()};
+      document.querySelectorAll('[data-source]').forEach(b=>b.addEventListener('click',()=>openProv(b.dataset.source,b)));
+      close.addEventListener('click',closeProv);panel.addEventListener('keydown',(e)=>{if(e.key==='Escape'){closeProv();return}if(e.key!=='Tab')return;const focusable=[close,q('open-raw')];const first=focusable[0],last=focusable[focusable.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}});
+      document.addEventListener('mousedown',(e)=>{if(!panel.hidden&&!panel.contains(e.target)&&!e.target.closest('[data-source]'))closeProv()});
+      const setOperationPending=pending=>{operationPending=pending;q('transition').disabled=pending;q('mark-lost').disabled=pending;q('transition-target').disabled=pending;q('loss-reason').disabled=pending;recordEl.setAttribute('aria-busy',String(pending))};
+      q('transition').addEventListener('click',()=>{if(operationPending)return;setOperationPending(true);q('operation-status').textContent='正在推进状态…';setTimeout(()=>{q('operation-status').textContent='200 · 状态推进请求成功；正在按后端响应刷新详情与列表。';setOperationPending(false)},450)});
+      q('mark-lost').addEventListener('click',()=>{if(operationPending)return;const reason=q('loss-reason').value;setOperationPending(true);q('operation-status').textContent='正在标记流失…';setTimeout(()=>{q('operation-status').textContent=`200 · 已提交公共 LossReason：${reason}；正在刷新。`;setOperationPending(false)},450)});
+      renderRecord(0);
+    })();
+  </script>
+</body>
+</html>
