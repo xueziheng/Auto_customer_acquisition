@@ -126,7 +126,7 @@ def _log_phase_error(
 ) -> None:
     """只记录固定消息与安全维度，禁止异常原文、context 或 traceback。"""
     logger.error(
-        "scheduler phase failed",
+        "scheduler 阶段失败",
         extra={
             "scheduler_phase": phase,
             "error_category": _error_category(error),
@@ -153,7 +153,7 @@ def _install_stop_signals(stop_event: asyncio.Event) -> Callable[[], None]:
             loop.add_signal_handler(signum, stop_event.set)
         except (NotImplementedError, RuntimeError):
             logger.warning(
-                "scheduler signal handler unavailable",
+                "scheduler 信号处理器不可用",
                 extra={"signal_name": signum.name},
             )
         else:
@@ -208,7 +208,7 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
             )
 
     logger.info(
-        "scheduler cycle completed",
+        "scheduler 周期完成",
         extra={
             "tenant_id": str(runtime.tenant_id),
             "cycle": cycle,
@@ -268,7 +268,7 @@ async def run_scheduler_worker(
         await connection.commit()
         if lock_row.acquired is not True:
             logger.warning(
-                "scheduler worker lock not acquired",
+                "scheduler worker 未获得单副本锁",
                 extra={"tenant_id": str(runtime.tenant_id)},
             )
             return WorkerRunResult(WorkerStartStatus.NOT_STARTED, 0)
@@ -284,7 +284,7 @@ async def run_scheduler_worker(
                 if not await _same_lock_backend(connection, lock_backend_pid):
                     lock_owned = False
                     logger.error(
-                        "scheduler worker lock lost",
+                        "scheduler worker 单副本锁已丢失",
                         extra={"tenant_id": str(runtime.tenant_id)},
                     )
                     return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
@@ -307,13 +307,13 @@ async def run_scheduler_worker(
                     await connection.commit()
                 except Exception:  # noqa: BLE001 - close 仍须作为解锁兜底
                     logger.error(
-                        "scheduler worker lock release failed",
+                        "scheduler worker 单副本锁释放失败",
                         extra={"tenant_id": str(runtime.tenant_id)},
                     )
                 else:
                     if released is not True:
                         logger.error(
-                            "scheduler worker lock release not confirmed",
+                            "scheduler worker 单副本锁释放未确认",
                             extra={"tenant_id": str(runtime.tenant_id)},
                         )
 
@@ -332,12 +332,12 @@ async def _run_from_factory(runtime_factory: RuntimeFactory) -> int:
 def main(runtime_factory: RuntimeFactory | None = None) -> int:
     """同步进程入口；缺少真实 composition 时固定消息、非零失败关闭。"""
     if runtime_factory is None:
-        logger.error("scheduler worker runtime is not configured")
+        logger.error("scheduler worker runtime 未配置")
         return _EXIT_RUNTIME_NOT_CONFIGURED
     try:
         return asyncio.run(_run_from_factory(runtime_factory))
     except Exception:  # noqa: BLE001 - 进程边界固定消息、非零退出
-        logger.error("scheduler worker startup failed")
+        logger.error("scheduler worker 启动失败")
         return _EXIT_RUNTIME_NOT_CONFIGURED
 
 

@@ -196,7 +196,7 @@ def test_zero_arg_main_fails_closed_without_runtime_or_database(
     caplog.set_level(logging.ERROR, logger="apps.scheduler_worker.main")
 
     assert module.main() != 0
-    assert "runtime is not configured" in caplog.text
+    assert "runtime 未配置" in caplog.text
     assert secret_dsn not in caplog.text
     assert "secret" not in caplog.text
 
