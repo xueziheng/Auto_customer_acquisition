@@ -95,6 +95,22 @@ def _event_fingerprint(event_type: str, payload: dict[str, Any]) -> str:
     return hashlib.sha256(f"{event_type}:{canonical}".encode()).hexdigest()
 
 
+def _validated_event_fingerprints(value: object) -> list[str] | None:
+    """验证完整 SHA-256 ledger；任一格式损坏则整本账不可作为幂等证据。"""
+    if not isinstance(value, list):
+        return None
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or len(item) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in item)
+        ):
+            return None
+        normalized.append(item.lower())
+    return normalized
+
+
 class PostgresWorkflowEngine:
     """``WorkflowEngine`` 的 Postgres 实现（runner.py Protocol）。
 
@@ -326,24 +342,24 @@ class PostgresWorkflowEngine:
         fingerprint = _event_fingerprint(event_type, payload)
         session = self._factory()
         try:
-            contexts = (
+            rows = (
                 await session.execute(
-                    select(WorkflowRunRow.context).where(
+                    select(WorkflowRunRow.status, WorkflowRunRow.context).where(
                         WorkflowRunRow.tenant_id == tenant_id,
                         WorkflowRunRow.workflow_type == workflow_type,
                         WorkflowRunRow.subject_ref == subject_ref,
                     )
                 )
-            ).scalars().all()
-            for context in contexts:
+            ).all()
+            if any(status not in _TERMINAL_STATUSES for status, _ in rows):
+                return False
+            for _, context in rows:
                 if not isinstance(context, dict):
                     continue
-                delivered = context.get(_DELIVERED_EVENTS_KEY)
-                if (
-                    isinstance(delivered, list)
-                    and all(isinstance(item, str) for item in delivered)
-                    and fingerprint in delivered
-                ):
+                delivered = _validated_event_fingerprints(
+                    context.get(_DELIVERED_EVENTS_KEY)
+                )
+                if delivered is not None and fingerprint in delivered:
                     return True
             return False
         finally:
@@ -685,9 +701,12 @@ class PostgresWorkflowEngine:
         if action == "advance":
             next_name = cast(str, next_step)
             next_def = self._step_definition(definition, next_name)
-            next_planned_at = self._planned_at(step_row) + self._wait_delay(
-                next_def
+            next_anchor = (
+                self._planned_at(step_row)
+                if next_def.inherit_planned_anchor
+                else now
             )
+            next_planned_at = next_anchor + self._wait_delay(next_def)
             step_row.status = "completed"
             run_row.current_step = next_name
             run_row.status = StepStatus.RUNNING.value
@@ -746,9 +765,12 @@ class PostgresWorkflowEngine:
             self._fail_run(session, step_row, run_row, now, "timeout transition missing")
             return
         target_def = self._step_definition(definition, target)
-        target_planned_at = self._planned_at(step_row) + self._wait_delay(
-            target_def
+        target_anchor = (
+            self._planned_at(step_row)
+            if target_def.inherit_planned_anchor
+            else now
         )
+        target_planned_at = target_anchor + self._wait_delay(target_def)
         step_row.status = StepStatus.TIMED_OUT.value
         step_row.updated_at = now
         run_row.current_step = target
@@ -887,16 +909,16 @@ class PostgresWorkflowEngine:
             if delivered is None:
                 delivered = []
                 ctx[_DELIVERED_EVENTS_KEY] = delivered
-            if not isinstance(delivered, list) or not all(
-                isinstance(d, str) for d in delivered
-            ):
+            validated_delivered = _validated_event_fingerprints(delivered)
+            if validated_delivered is None:
                 # DB 中遗留/损坏的保留键值：fail closed（固定脱敏错误），不得
                 # AttributeError/追加到错误类型后卡住投递。
                 self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
                 await session.commit()
                 return False
+            delivered_ledger = cast(list[str], delivered)
             fingerprint = _event_fingerprint(event_type, payload)
-            if fingerprint in delivered:
+            if fingerprint in validated_delivered:
                 return True
             ctx[_EVENT_KEY] = {"event_type": event_type, "payload": payload}
             run = self._row_to_run(run_row, context=ctx)
@@ -917,7 +939,7 @@ class PostgresWorkflowEngine:
                     session, definition, step_def, step_row, run_row,
                     action, next_step, patch, now,
                 )
-                delivered.append(fingerprint)
+                delivered_ledger.append(fingerprint)
             except TransientError:
                 # 可重试投递：回滚、不落指纹，调用方稍后重投同一事件。
                 await session.rollback()

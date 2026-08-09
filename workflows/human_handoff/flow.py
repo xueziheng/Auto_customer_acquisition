@@ -81,9 +81,12 @@ def build_human_handoff_definition(
                 timeout=t1,
                 on_timeout="escalate_manager",
                 wait_event_type="HandoffAccepted",
+                inherit_planned_anchor=True,
             ),
             StepDefinition(
-                "escalate_manager", "human_handoff.escalate_manager"
+                "escalate_manager",
+                "human_handoff.escalate_manager",
+                inherit_planned_anchor=True,
             ),
             StepDefinition(
                 "wait_acceptance_t2",
@@ -91,14 +94,20 @@ def build_human_handoff_definition(
                 timeout=t2,
                 on_timeout="escalate_boss",
                 wait_event_type="HandoffAccepted",
+                inherit_planned_anchor=True,
             ),
-            StepDefinition("escalate_boss", "human_handoff.escalate_boss"),
+            StepDefinition(
+                "escalate_boss",
+                "human_handoff.escalate_boss",
+                inherit_planned_anchor=True,
+            ),
             StepDefinition(
                 "wait_acceptance_boss",
                 "human_handoff.accept",
                 wait_event_type="HandoffAccepted",
                 reminder_interval=t2,
                 reminder_handler_ref="human_handoff.remind_boss",
+                inherit_planned_anchor=True,
             ),
         ),
         transitions={

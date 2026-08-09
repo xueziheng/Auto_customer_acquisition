@@ -1163,7 +1163,7 @@ async def test_corrupt_delivered_events_context_fails_closed(db_url: str) -> Non
 async def test_has_delivered_event_rejects_mixed_fingerprint_list(
     db_url: str,
 ) -> None:
-    """durable evidence 中混入非字符串即整体损坏，不得凭其中一个 hash 放行。"""
+    """durable evidence 中混入格式错误字符串即整体损坏，不得凭 hash 放行。"""
     engine, handle = _make_engine(
         db_url,
         {
@@ -1182,7 +1182,25 @@ async def test_has_delivered_event_rejects_mixed_fingerprint_list(
         run = await _query_run(handle, str(tenant), run_id)
         assert run is not None
         fingerprint = run["context"]["__wf_delivered_events"][0]
-        corrupted = {"__wf_delivered_events": [fingerprint, {"bad": True}]}
+        assert await engine.poll_due(tenant, 1) == 1
+        async with handle.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE workflow_runs SET context = CAST(:context AS jsonb) "
+                    "WHERE tenant_id = :tenant AND run_id = :run_id"
+                ),
+                {
+                    "context": json.dumps(
+                        {"__wf_delivered_events": [fingerprint.upper()]}
+                    ),
+                    "tenant": str(tenant),
+                    "run_id": str(run_id),
+                },
+            )
+        assert await engine.has_delivered_event(
+            tenant, "wf", "subject", "approval", payload
+        )
+        corrupted = {"__wf_delivered_events": [fingerprint, "corrupt"]}
         async with handle.begin() as conn:
             await conn.execute(
                 text(
@@ -1213,6 +1231,69 @@ async def test_has_delivered_event_rejects_mixed_fingerprint_list(
         assert not await engine.has_delivered_event(
             tenant, "wf", "subject", "approval", payload
         )
+    finally:
+        await handle.dispose()
+
+
+async def test_deliver_event_rejects_malformed_string_fingerprint(
+    db_url: str,
+) -> None:
+    """active wait 的 ledger 含目标 hash + 非 SHA 字符串时必须 FAILED，不执行 handler。"""
+    wait_calls: list[str] = []
+
+    def _wait(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        wait_calls.append(str(run.run_id))
+        return ("advance", "done", {})
+
+    engine, handle = _make_engine(
+        db_url,
+        {
+            "h_init": _handler(lambda run: ("advance", "wait", {})),
+            "h_wait": _handler(_wait),
+            "h_done": _handler(lambda run: ("complete", None, {})),
+        },
+    )
+    try:
+        engine.register(_advance_flow())
+        tenant = TenantId("tMalformedDeliveryEvidence")
+        payload = {"by": "bob"}
+        completed = await engine.start(
+            tenant, "wf", "completed", {}, "malformed-source"
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.deliver_event(tenant, completed, "approval", payload)
+        completed_row = await _query_run(handle, str(tenant), completed)
+        assert completed_row is not None
+        fingerprint = completed_row["context"]["__wf_delivered_events"][0]
+        assert await engine.poll_due(tenant, 1) == 1
+
+        waiting = await engine.start(
+            tenant, "wf", "waiting", {}, "malformed-target"
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        async with handle.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE workflow_runs SET context = CAST(:context AS jsonb) "
+                    "WHERE tenant_id = :tenant AND run_id = :run_id"
+                ),
+                {
+                    "context": json.dumps(
+                        {"__wf_delivered_events": [fingerprint, "corrupt"]}
+                    ),
+                    "tenant": str(tenant),
+                    "run_id": str(waiting),
+                },
+            )
+        assert not await engine.deliver_event(
+            tenant, waiting, "approval", payload
+        )
+        waiting_row = await _query_run(handle, str(tenant), waiting)
+        assert waiting_row is not None and waiting_row["status"] == "failed"
+        assert waiting_row["last_error"] == (
+            "step wait failed: corrupted workflow context"
+        )
+        assert wait_calls == [str(completed)]
     finally:
         await handle.dispose()
 
@@ -1517,7 +1598,133 @@ def _timeout_flow() -> WorkflowDefinition:
     )
 
 
-async def test_waiting_event_timeout_uses_scheduled_anchor_and_is_idempotent(
+async def test_early_event_schedules_ordinary_successor_at_transition_now(
+    db_url: str,
+) -> None:
+    """默认策略下提前事件推进到普通 step，应按事件处理 now 立即可领取。"""
+    clock = _Clock()
+    definition = WorkflowDefinition(
+        workflow_type="early-event-ordinary",
+        version=1,
+        steps=(
+            StepDefinition("init", "h_init"),
+            StepDefinition(
+                "wait",
+                "h_wait",
+                timeout=timedelta(seconds=30),
+                on_timeout="timed_out",
+                wait_event_type="approval",
+            ),
+            StepDefinition("ordinary", "h_ordinary"),
+            StepDefinition("timed_out", "h_timed_out"),
+        ),
+        transitions={
+            "init": ("wait",),
+            "wait": ("ordinary", "timed_out"),
+        },
+    )
+    engine, handle = _make_engine(
+        db_url,
+        {
+            "h_init": _handler(lambda run: ("advance", "wait", {})),
+            "h_wait": _handler(lambda run: ("advance", "ordinary", {})),
+            "h_ordinary": _handler(lambda run: ("complete", None, {})),
+            "h_timed_out": _handler(lambda run: ("complete", None, {})),
+        },
+        clock=clock,
+    )
+    try:
+        engine.register(definition)
+        tenant = TenantId("tEarlyOrdinary")
+        run_id = await engine.start(
+            tenant, "early-event-ordinary", "subject", {}, "early-ordinary"
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.advance(seconds=5)
+        assert await engine.deliver_event(
+            tenant, run_id, "approval", {"approved": True}
+        )
+        steps = {
+            row["step_name"]: row
+            for row in await _query_steps(handle, str(tenant), run_id)
+        }
+        assert steps["ordinary"]["due_at"] == _NOW + timedelta(seconds=5)
+        assert steps["ordinary"]["data"]["planned_at"] == (
+            _NOW + timedelta(seconds=5)
+        ).isoformat()
+        assert await engine.poll_due(tenant, 1) == 1
+        run = await _query_run(handle, str(tenant), run_id)
+        assert run is not None and run["status"] == "completed"
+    finally:
+        await handle.dispose()
+
+
+async def test_early_event_starts_default_timed_successor_timeout_from_now(
+    db_url: str,
+) -> None:
+    """默认 timed successor 从实际事件 transition now 起算，不继承前一 deadline。"""
+    clock = _Clock()
+    definition = WorkflowDefinition(
+        workflow_type="early-event-timed",
+        version=1,
+        steps=(
+            StepDefinition("init", "h_init"),
+            StepDefinition(
+                "wait_one",
+                "h_wait_one",
+                timeout=timedelta(seconds=30),
+                on_timeout="timeout_one",
+                wait_event_type="approval_one",
+            ),
+            StepDefinition(
+                "wait_two",
+                "h_wait_two",
+                timeout=timedelta(seconds=40),
+                on_timeout="timeout_two",
+                wait_event_type="approval_two",
+            ),
+            StepDefinition("timeout_one", "h_timeout"),
+            StepDefinition("timeout_two", "h_timeout"),
+        ),
+        transitions={
+            "init": ("wait_one",),
+            "wait_one": ("wait_two", "timeout_one"),
+            "wait_two": ("timeout_two",),
+        },
+    )
+    engine, handle = _make_engine(
+        db_url,
+        {
+            "h_init": _handler(lambda run: ("advance", "wait_one", {})),
+            "h_wait_one": _handler(lambda run: ("advance", "wait_two", {})),
+            "h_wait_two": _handler(lambda run: ("complete", None, {})),
+            "h_timeout": _handler(lambda run: ("complete", None, {})),
+        },
+        clock=clock,
+    )
+    try:
+        engine.register(definition)
+        tenant = TenantId("tEarlyTimed")
+        run_id = await engine.start(
+            tenant, "early-event-timed", "subject", {}, "early-timed"
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        clock.advance(seconds=5)
+        assert await engine.deliver_event(
+            tenant, run_id, "approval_one", {"approved": True}
+        )
+        steps = {
+            row["step_name"]: row
+            for row in await _query_steps(handle, str(tenant), run_id)
+        }
+        expected = _NOW + timedelta(seconds=45)
+        assert steps["wait_two"]["due_at"] == expected
+        assert steps["wait_two"]["data"]["planned_at"] == expected.isoformat()
+    finally:
+        await handle.dispose()
+
+
+async def test_waiting_event_timeout_uses_transition_now_and_is_idempotent(
     db_url: str,
 ) -> None:
     """未到期不领取；到期转 on_timeout；重复 poll 不重复超时推进。"""
@@ -1558,9 +1765,10 @@ async def test_waiting_event_timeout_uses_scheduled_anchor_and_is_idempotent(
         wait = {s["step_name"]: s for s in await _query_steps(handle, str(tenant), rid)}[
             "wait"
         ]
-        assert wait["due_at"] == _NOW + timedelta(seconds=10)
+        assert wait["due_at"] == clock.now() + timedelta(seconds=10)
 
-        # 已经延迟消费，绝对 T1 早已到期：下一次 poll 立即 timeout，不额外宽限。
+        assert await engine.poll_due(tenant, 1) == 0
+        clock.advance(seconds=10)
         assert await engine.poll_due(tenant, 1) == 1
         row = await _query_run(handle, str(tenant), rid)
         assert row is not None and row["current_step"] == "escalate"

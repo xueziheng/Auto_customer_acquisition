@@ -669,6 +669,13 @@ async def test_terminal_accepted_repeat_uses_durable_evidence_after_restart(
             "restart-second-run",
             scheduled_at=_BASE,
         )
+        assert not await engine2.has_delivered_event(
+            tenant,
+            "human_handoff",
+            "hand-restart",
+            "HandoffAccepted",
+            {"handoff_id": "hand-restart", "accepted_by": "sales"},
+        )
         with pytest.raises(TransientError):
             await accepted_after_restart.handle(accepted_event)
         assert await engine2.find_active_run(

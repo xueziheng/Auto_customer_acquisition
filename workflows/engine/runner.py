@@ -46,6 +46,7 @@ class StepDefinition:
         wait_event_type:  WAITING_EVENT 步骤等的事件类型
         reminder_interval: WAITING_EVENT 周期提醒间隔；成功后按绝对计划重排自身
         reminder_handler_ref: 周期提醒 handler 的注册名
+        inherit_planned_anchor: 是否从 predecessor 继承不可变计划锚点；默认关闭
     """
 
     step_name: str
@@ -57,6 +58,7 @@ class StepDefinition:
     wait_event_type: str | None = None
     reminder_interval: timedelta | None = None
     reminder_handler_ref: str | None = None
+    inherit_planned_anchor: bool = False
 
 
 @dataclass(frozen=True)
