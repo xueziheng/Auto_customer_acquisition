@@ -329,6 +329,7 @@ class NotificationDeliveryRow(Base):
     channel_name: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    claim_token: Mapped[str | None] = mapped_column(String(32))
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

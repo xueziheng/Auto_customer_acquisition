@@ -4,7 +4,7 @@
 Schema 合同附录 0006，落地硬边界 8：
 - ``notification_deliveries``：durable per-channel 投递去重状态（delivery_id PK、
   tenant_id、dedup_key VARCHAR(200)、channel_name VARCHAR(64)、status VARCHAR(16)
-  NOT NULL DEFAULT 'pending'、attempts INT NOT NULL DEFAULT 0、
+  NOT NULL DEFAULT 'pending'、attempts INT NOT NULL DEFAULT 0、claim_token VARCHAR(32) NULL、
   next_attempt_at TIMESTAMPTZ NULL、last_error TEXT NULL、delivered_at TIMESTAMPTZ
   NULL）。全表带 ``tenant_id``（硬边界 8）。
 - ``UNIQUE(tenant_id, dedup_key, channel_name)``：同一通知同一渠道只允许一行——
@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("channel_name", sa.String(64), nullable=False),
         sa.Column("status", sa.String(16), nullable=False, server_default=sa.text("'pending'")),
         sa.Column("attempts", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("claim_token", sa.String(32), nullable=True),
         sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),

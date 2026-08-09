@@ -6,12 +6,13 @@
 - **逐渠道去重**：``UNIQUE(tenant_id, dedup_key, channel_name)``——同一通知
   不同渠道各自一行；``INSERT ... ON CONFLICT DO NOTHING`` 幂等建行，重复
   ``should_dispatch`` 不建重复行；``record_success`` 后 delivered 抑制重投。
-- **原子认领（有限租约）**：``should_dispatch`` 幂等建行后以一条**条件 UPDATE
+- **原子认领（有限租约 + fencing token）**：``should_dispatch`` 幂等建行后以一条**条件 UPDATE
   RETURNING** 抢占到期行——``WHERE tenant_id=:t AND dedup_key=:k AND channel_name=:c
   AND status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now)``；
   并发同 (tenant, dedup, channel) 仅一个返回 True（check-then-act 会被行锁+条件
   串行化）；认领**不改 status**（保持 pending），以 ``next_attempt_at = now + lease``
-  作有限租约——进程崩溃后租约到期可被重新认领重试。
+  作有限租约，并同时写入随机 ``claim_token``——进程崩溃后租约到期可被重新认领重试。
+  结果写入条件必须匹配 token，过期 owner 不得覆盖新 owner。
 - **失败重试**：``record_failure`` 递增 ``attempts``、置确定性正退避
   （``next_attempt_at`` 随 attempts 严格增长）、写脱敏 ``last_error``（只留异常
   类型名，不含异常消息/payload/凭证文本）；``record_success`` 标记 delivered、
@@ -53,18 +54,20 @@ class PostgresNotificationDedupStore:
 
     async def should_dispatch(
         self, tenant_id: TenantId, dedup_key: str, channel_name: str
-    ) -> bool:
+    ) -> str | None:
         """建 durable 行并**原子认领**该 ``(tenant, dedup, channel)``（有限租约）。
 
         - 幂等建行后以一条条件 ``UPDATE ... RETURNING`` 抢占到期行：``status='pending'``
           且 ``next_attempt_at`` 为空或已到期 → 抢占成功返回 True，并把
-          ``next_attempt_at`` 置为 ``now + lease`` 作租约（**不改 status**）。
-        - delivered → False（不重复投递）；租约/退避期内 → False（未到点不重试）。
-        - 并发同键仅一个 True（check-then-act 被行锁 + WHERE 条件串行化）。
+          ``next_attempt_at`` 置为 ``now + lease`` 作租约，并写入随机 claim token
+          （**不改 status**）。
+        - delivered/rejected → None（不重复投递）；租约/退避期内 → None（未到点不重试）。
+        - 并发同键仅一个返回 token（check-then-act 被行锁 + WHERE 条件串行化）。
         - 租户条件显式 fail-closed：UPDATE 的 WHERE 恒含 ``tenant_id``（硬边界 8）。
         """
         now = self._now()
         lease_expiry = now + self._LEASE
+        claim_token = new_id("ncl")
         async with self._factory() as session:
             await self._ensure_row(session, tenant_id, dedup_key, channel_name)
             claimed = await session.execute(
@@ -79,10 +82,10 @@ class PostgresNotificationDedupStore:
                         NotificationDeliveryRow.next_attempt_at <= now,
                     ),
                 )
-                .values(next_attempt_at=lease_expiry)
-                .returning(NotificationDeliveryRow.delivery_id)
+                .values(next_attempt_at=lease_expiry, claim_token=claim_token)
+                .returning(NotificationDeliveryRow.claim_token)
             )
-            decision = claimed.first() is not None
+            decision = claimed.scalar_one_or_none()
             await session.commit()
         return decision
 
@@ -92,8 +95,9 @@ class PostgresNotificationDedupStore:
         dedup_key: str,
         channel_name: str,
         *,
+        claim_token: str,
         error: BaseException,
-    ) -> None:
+    ) -> bool:
         """记录投递失败：递增 ``attempts``、置正退避、写脱敏 ``last_error``。
 
         退避公式随 attempts 严格增长（``base * 2^(attempts-1)``）；``last_error``
@@ -101,18 +105,28 @@ class PostgresNotificationDedupStore:
         """
         now = self._now()
         async with self._factory() as session:
-            row = await self._get_or_create_row(
-                session, tenant_id, dedup_key, channel_name
+            row = await self._claimed_row(
+                session, tenant_id, dedup_key, channel_name, claim_token
             )
+            if row is None:
+                await session.commit()
+                return False
             row.attempts += 1
             row.status = "pending"
             row.next_attempt_at = self._backoff_after(now, row.attempts)
             row.last_error = self._safe_error(error)
+            row.claim_token = None
             await session.commit()
+        return True
 
     async def record_success(
-        self, tenant_id: TenantId, dedup_key: str, channel_name: str
-    ) -> None:
+        self,
+        tenant_id: TenantId,
+        dedup_key: str,
+        channel_name: str,
+        *,
+        claim_token: str,
+    ) -> bool:
         """标记 delivered、写 ``delivered_at``，清空重试字段。
 
         之后 ``should_dispatch`` 返回 False——同一 ``(tenant, dedup, channel)``
@@ -120,14 +134,44 @@ class PostgresNotificationDedupStore:
         """
         now = self._now()
         async with self._factory() as session:
-            row = await self._get_or_create_row(
-                session, tenant_id, dedup_key, channel_name
+            row = await self._claimed_row(
+                session, tenant_id, dedup_key, channel_name, claim_token
             )
+            if row is None:
+                await session.commit()
+                return False
             row.status = "delivered"
             row.delivered_at = now
             row.next_attempt_at = None
             row.last_error = None
+            row.claim_token = None
             await session.commit()
+        return True
+
+    async def record_rejection(
+        self,
+        tenant_id: TenantId,
+        dedup_key: str,
+        channel_name: str,
+        *,
+        claim_token: str,
+        error: BaseException,
+    ) -> bool:
+        """记录永久策略拒绝为终态，不让毒性通知进入无限重试。"""
+        async with self._factory() as session:
+            row = await self._claimed_row(
+                session, tenant_id, dedup_key, channel_name, claim_token
+            )
+            if row is None:
+                await session.commit()
+                return False
+            row.status = "rejected"
+            row.attempts += 1
+            row.next_attempt_at = None
+            row.last_error = self._safe_error(error)
+            row.claim_token = None
+            await session.commit()
+        return True
 
     async def _ensure_row(
         self,
@@ -154,41 +198,31 @@ class PostgresNotificationDedupStore:
             )
         )
 
-    async def _get_or_create_row(
+    async def _claimed_row(
         self,
         session: AsyncSession,
         tenant_id: TenantId,
         dedup_key: str,
         channel_name: str,
-    ) -> NotificationDeliveryRow:
-        """取 ``(tenant, dedup, channel)`` 的 durable 行；不存在则创建（幂等）。
+        claim_token: str,
+    ) -> NotificationDeliveryRow | None:
+        """锁定当前 claim 所有的 pending 行；旧 token fail-closed 返回 ``None``。
 
-        ``INSERT ... ON CONFLICT DO NOTHING``：重复调用只建一行，
-        ``UNIQUE(tenant_id, dedup_key, channel_name)`` 兜底；随后同事务读回。
+        不能在结果写路径创建行：没有经过原子认领的调用者没有所有权。``FOR UPDATE``
+        与 token 条件共同确保新 owner 已认领时旧 owner 的完成/失败不覆盖其状态。
         """
-        await session.execute(
-            insert(NotificationDeliveryRow)
-            .values(
-                delivery_id=new_id("nd"),
-                tenant_id=str(tenant_id),
-                dedup_key=dedup_key,
-                channel_name=channel_name,
-            )
-            .on_conflict_do_nothing(
-                index_elements=["tenant_id", "dedup_key", "channel_name"]
-            )
-        )
         row = (
             await session.execute(
                 select(NotificationDeliveryRow).where(
                     NotificationDeliveryRow.tenant_id == str(tenant_id),
                     NotificationDeliveryRow.dedup_key == dedup_key,
                     NotificationDeliveryRow.channel_name == channel_name,
+                    NotificationDeliveryRow.status == "pending",
+                    NotificationDeliveryRow.claim_token == claim_token,
                 )
+                .with_for_update()
             )
         ).scalars().first()
-        if row is None:  # pragma: no cover - 同事务内插入必可读
-            raise RuntimeError("notification_deliveries 行创建失败")
         return row
 
     @staticmethod

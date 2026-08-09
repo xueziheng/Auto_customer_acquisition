@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import unquote, urlsplit
 
 from notification_gateway.models import Notification
 from shared.errors import PolicyViolation
@@ -59,32 +60,51 @@ class StructuredLogChannel:
 
     @staticmethod
     def _validate(notification: Notification) -> None:
-        """校验会落日志的自由文本（标题/context 的 key 与 value/next_step/链接）不含
-        凭证形态，且链接为相对深链；违规抛 PolicyViolation，拒绝时不落日志。"""
-        if _contains_credential_shape(notification.title):
-            raise PolicyViolation("标题含凭证形态内容，拒绝写入日志")
-        for key, value in notification.context.items():
-            if _contains_credential_shape(key):
-                raise PolicyViolation(f"context key 含凭证形态内容（{key}），拒绝写入日志")
-            if _contains_credential_shape(value):
-                raise PolicyViolation(f"context 值含凭证形态内容（{key}），拒绝写入日志")
-        if notification.next_step is not None and _contains_credential_shape(
-            notification.next_step
+        """校验所有会落日志的自由字符串；拒绝路径的错误固定且不回显输入。"""
+        values = [
+            notification.title,
+            notification.source_event,
+            notification.dedup_key,
+            *notification.context.keys(),
+            *notification.context.values(),
+        ]
+        if notification.next_step is not None:
+            values.append(notification.next_step)
+        if notification.link is not None:
+            values.append(notification.link)
+        if any(_contains_credential_shape(value) for value in values):
+            raise PolicyViolation("通知字段含凭证形态内容，拒绝写入日志")
+        if notification.link is not None:
+            StructuredLogChannel._clean_relative_link(notification.link)
+
+    @staticmethod
+    def _clean_relative_link(link: str) -> str:
+        """规范化相对深链为无 query/fragment 的路径，拒绝外链和浏览器歧义路径。"""
+        parsed = urlsplit(link)
+        path = parsed.path
+        normalized_path = unquote(path)
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or not path.startswith("/")
+            or path.startswith("//")
+            or "\\" in link
+            or "\\" in normalized_path
+            or normalized_path.startswith("//")
+            or any(ord(char) < 32 or ord(char) == 127 for char in link)
+            or any(ord(char) < 32 or ord(char) == 127 for char in normalized_path)
         ):
-            raise PolicyViolation("next_step 含凭证形态内容，拒绝写入日志")
-        link = notification.link
-        if link is not None:
-            if _contains_credential_shape(link):
-                raise PolicyViolation("链接含凭证形态内容，拒绝写入日志")
-            if link.startswith("//") or "://" in link or not link.startswith("/"):
-                raise PolicyViolation("只接受脱敏后的相对深链，拒绝绝对/外部链接")
+            raise PolicyViolation("只接受规范化后的相对深链")
+        return path
 
     @staticmethod
     def _log_fields(notification: Notification) -> dict[str, object]:
         """构造固定结构化字段；``link`` 已剥离 query 与 fragment。"""
-        link: str | None = None
-        if notification.link is not None:
-            link = notification.link.split("?", 1)[0].split("#", 1)[0]
+        link = (
+            StructuredLogChannel._clean_relative_link(notification.link)
+            if notification.link is not None
+            else None
+        )
         return {
             "tenant_id": str(notification.tenant_id),
             "recipient": str(notification.recipient),

@@ -50,6 +50,7 @@ NOTIFICATION_COLUMNS: set[str] = {
     "channel_name",
     "status",
     "attempts",
+    "claim_token",
     "next_attempt_at",
     "last_error",
     "delivered_at",
@@ -223,9 +224,14 @@ def _make_store(
 
 
 def test_dedup_store_protocol_contract() -> None:
-    """NotificationDedupStore Protocol 定义 should_dispatch/record_failure/record_success。"""
+    """NotificationDedupStore Protocol 定义 fencing 与永久拒绝所需方法。"""
     NotificationDedupStore = _load("NotificationDedupStore")
-    for name in ("should_dispatch", "record_failure", "record_success"):
+    for name in (
+        "should_dispatch",
+        "record_failure",
+        "record_success",
+        "record_rejection",
+    ):
         assert hasattr(NotificationDedupStore, name), f"NotificationDedupStore 缺 {name}"
 
 
@@ -356,7 +362,8 @@ async def test_store_should_dispatch_creates_durable_row_and_suppresses_duplicat
     store = _make_store(factory)
     key = "key-store-create-suppress"
 
-    assert await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert claim is not None
     # 原子认领：租约期内再次调用被抑制（不重复投递）；不建重复行（UNIQUE + ON CONFLICT 语义）
     assert not await store.should_dispatch(TenantId("tA"), key, "structured_log")
     assert await _count_deliveries(engine_fx, "tA", key, "structured_log") == 1
@@ -366,7 +373,9 @@ async def test_store_should_dispatch_creates_durable_row_and_suppresses_duplicat
     assert row["attempts"] == 0
     assert row["next_attempt_at"] is not None  # 有限租约已置
 
-    await store.record_success(TenantId("tA"), key, "structured_log")
+    assert await store.record_success(
+        TenantId("tA"), key, "structured_log", claim_token=claim
+    )
     assert not await store.should_dispatch(TenantId("tA"), key, "structured_log")
 
 
@@ -380,12 +389,14 @@ async def test_store_lease_expires_allowing_retry_after_crash(engine_fx: AsyncEn
     store = _make_store(factory, clock=clock)
     key = "key-lease-expiry"
 
-    assert await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    first_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert first_claim is not None
     # 租约期内：不重复认领（进程未崩溃但仍在投递，他人不可抢）
     assert not await store.should_dispatch(TenantId("tA"), key, "structured_log")
     # 进程崩溃后：租约到期可重新认领重试
     clock.advance(seconds=86400)
-    assert await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    second_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert second_claim is not None and second_claim != first_claim
 
     row = await _delivery_row(engine_fx, "tA", key, "structured_log")
     assert row is not None
@@ -416,12 +427,52 @@ async def test_store_concurrent_claim_allows_only_one_true(engine_fx: AsyncEngin
         store.should_dispatch(TenantId("tA"), key, "structured_log"),
         store.should_dispatch(TenantId("tA"), key, "structured_log"),
     )
-    assert sorted(results) == [False, True]  # 原子认领：仅一个 True
+    assert sum(claim is not None for claim in results) == 1  # 原子认领：仅一个 claim
 
     row = await _delivery_row(engine_fx, "tA", key, "structured_log")
     assert row is not None
     assert row["status"] == "pending"  # 认领不改 status
     assert row["next_attempt_at"] is not None  # 有限租约已置
+
+
+async def test_store_stale_claim_cannot_overwrite_new_owner_result(
+    engine_fx: AsyncEngine,
+) -> None:
+    """真实 Postgres fencing：租约到期后旧 owner 的失败不能覆盖新 owner 的成功。"""
+    factory = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    clock = _Clock()
+    store = _make_store(factory, clock=clock)
+    key = "key-stale-claim-fencing"
+
+    old_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert isinstance(old_claim, str) and old_claim
+    clock.advance(seconds=86400)
+    new_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert isinstance(new_claim, str) and new_claim != old_claim
+
+    stale, current = await asyncio.gather(
+        store.record_failure(
+            TenantId("tA"),
+            key,
+            "structured_log",
+            claim_token=old_claim,
+            error=TransientError("old owner late failure"),
+        ),
+        store.record_success(
+            TenantId("tA"), key, "structured_log", claim_token=new_claim
+        ),
+    )
+
+    assert stale is False
+    assert current is True
+    row = await _delivery_row(engine_fx, "tA", key, "structured_log")
+    assert row == {
+        "status": "delivered",
+        "attempts": 0,
+        "next_attempt_at": None,
+        "last_error": None,
+        "delivered_at": clock.now(),
+    }
 
 
 async def test_store_failure_increments_attempts_backoff_and_sanitized_error(
@@ -435,9 +486,10 @@ async def test_store_failure_increments_attempts_backoff_and_sanitized_error(
     key = "key-store-failure-backoff"
     secret = "backend" + "-secret-token"
 
-    await store.should_dispatch(TenantId("tA"), key, "structured_log")
-    await store.record_failure(
-        TenantId("tA"), key, "structured_log", error=RuntimeError(secret)
+    claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert claim is not None
+    assert await store.record_failure(
+        TenantId("tA"), key, "structured_log", claim_token=claim, error=RuntimeError(secret)
     )
 
     row = await _delivery_row(engine_fx, "tA", key, "structured_log")
@@ -465,17 +517,20 @@ async def test_store_backoff_grows_deterministically(engine_fx: AsyncEngine) -> 
     store = _make_store(factory, clock=clock)
     key = "key-store-backoff-grows"
 
-    await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    first_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert first_claim is not None
     t0 = clock.now()
-    await store.record_failure(
-        TenantId("tA"), key, "structured_log", error=TransientError("down")
+    assert await store.record_failure(
+        TenantId("tA"), key, "structured_log", claim_token=first_claim, error=TransientError("down")
     )
     d1 = (await _delivery_row(engine_fx, "tA", key, "structured_log"))["next_attempt_at"] - t0
     assert d1 > timedelta(0)
 
     clock.advance(seconds=86400)
-    await store.record_failure(
-        TenantId("tA"), key, "structured_log", error=TransientError("down")
+    second_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert second_claim is not None
+    assert await store.record_failure(
+        TenantId("tA"), key, "structured_log", claim_token=second_claim, error=TransientError("down")
     )
     d2 = (await _delivery_row(engine_fx, "tA", key, "structured_log"))["next_attempt_at"] - clock.now()
     assert d2 > d1 > timedelta(0)
@@ -489,12 +544,17 @@ async def test_store_success_clears_retry_fields(engine_fx: AsyncEngine) -> None
     store = _make_store(factory, clock=clock)
     key = "key-store-success-clears"
 
-    await store.should_dispatch(TenantId("tA"), key, "structured_log")
-    await store.record_failure(
-        TenantId("tA"), key, "structured_log", error=TransientError("down")
+    first_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert first_claim is not None
+    assert await store.record_failure(
+        TenantId("tA"), key, "structured_log", claim_token=first_claim, error=TransientError("down")
     )
     clock.advance(seconds=86400)
-    await store.record_success(TenantId("tA"), key, "structured_log")
+    second_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert second_claim is not None
+    assert await store.record_success(
+        TenantId("tA"), key, "structured_log", claim_token=second_claim
+    )
 
     row = await _delivery_row(engine_fx, "tA", key, "structured_log")
     assert row is not None
@@ -512,10 +572,16 @@ async def test_partial_channel_failure_retries_only_failed_channel(engine_fx: As
     store = _make_store(factory, clock=clock)
     key = "key-partial-channel-retry"
 
-    await store.should_dispatch(TenantId("tA"), key, "ch-a")
-    await store.record_failure(TenantId("tA"), key, "ch-a", error=TransientError("down"))
-    await store.should_dispatch(TenantId("tA"), key, "ch-b")
-    await store.record_success(TenantId("tA"), key, "ch-b")
+    failed_claim = await store.should_dispatch(TenantId("tA"), key, "ch-a")
+    assert failed_claim is not None
+    assert await store.record_failure(
+        TenantId("tA"), key, "ch-a", claim_token=failed_claim, error=TransientError("down")
+    )
+    succeeded_claim = await store.should_dispatch(TenantId("tA"), key, "ch-b")
+    assert succeeded_claim is not None
+    assert await store.record_success(
+        TenantId("tA"), key, "ch-b", claim_token=succeeded_claim
+    )
 
     # 失败渠道在退避期、成功渠道已投递 → 均不可重复投递
     assert not await store.should_dispatch(TenantId("tA"), key, "ch-a")
@@ -523,10 +589,13 @@ async def test_partial_channel_failure_retries_only_failed_channel(engine_fx: As
 
     # 到点后：只有失败渠道可续投；成功渠道保持 delivered 抑制
     clock.advance(seconds=86400)
-    assert await store.should_dispatch(TenantId("tA"), key, "ch-a")
+    retry_claim = await store.should_dispatch(TenantId("tA"), key, "ch-a")
+    assert retry_claim is not None
     assert not await store.should_dispatch(TenantId("tA"), key, "ch-b")
 
-    await store.record_success(TenantId("tA"), key, "ch-a")
+    assert await store.record_success(
+        TenantId("tA"), key, "ch-a", claim_token=retry_claim
+    )
     assert not await store.should_dispatch(TenantId("tA"), key, "ch-a")
 
 
@@ -541,12 +610,18 @@ async def test_store_tenant_isolation_fail_closed(engine_fx: AsyncEngine) -> Non
     store = _make_store(factory)
     key = "key-iso-tenant-isolation"
 
-    assert await store.should_dispatch(TenantId("tA"), key, "structured_log")
-    await store.record_success(TenantId("tA"), key, "structured_log")
+    tenant_a_claim = await store.should_dispatch(TenantId("tA"), key, "structured_log")
+    assert tenant_a_claim is not None
+    assert await store.record_success(
+        TenantId("tA"), key, "structured_log", claim_token=tenant_a_claim
+    )
 
     # B 不受 A 影响：同 key 同渠道在 B 仍可投递
-    assert await store.should_dispatch(TenantId("tB"), key, "structured_log")
-    await store.record_success(TenantId("tB"), key, "structured_log")
+    tenant_b_claim = await store.should_dispatch(TenantId("tB"), key, "structured_log")
+    assert tenant_b_claim is not None
+    assert await store.record_success(
+        TenantId("tB"), key, "structured_log", claim_token=tenant_b_claim
+    )
     assert not await store.should_dispatch(TenantId("tB"), key, "structured_log")
 
     # A 的 delivered 状态未被 B 操作掩盖

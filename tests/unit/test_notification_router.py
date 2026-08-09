@@ -68,6 +68,7 @@ def _notification(
     dedup_key: str = "opp-1:handoff",
     next_step: str | None = None,
     link: str | None = None,
+    source_event: str = "HandoffRequested",
 ) -> Notification:
     """最小合法通知（URGENT 默认；字段与 models.Notification 对齐）。"""
     return Notification(
@@ -76,7 +77,7 @@ def _notification(
         priority=priority,
         title=title,
         context=context if context is not None else {"客户": "Acme", "国家": "US"},
-        source_event="HandoffRequested",
+        source_event=source_event,
         dedup_key=dedup_key,
         next_step=next_step if next_step is not None else "立即接管",
         due_at=_NOW,
@@ -110,17 +111,23 @@ class _FakeDedupStore:
 
     def __init__(self) -> None:
         self._status: dict[tuple[str, str, str], str] = {}
+        self._claims: dict[tuple[str, str, str], str] = {}
         self.dispatches: list[tuple[str, str, str]] = []
         self.failures: list[tuple[str, str, str, str]] = []
         self.successes: list[tuple[str, str, str]] = []
+        self.rejections: list[tuple[str, str, str, str]] = []
 
-    async def should_dispatch(self, tenant_id: TenantId, dedup_key: str, channel_name: str) -> bool:
+    async def should_dispatch(
+        self, tenant_id: TenantId, dedup_key: str, channel_name: str
+    ) -> str | None:
         key = (str(tenant_id), dedup_key, channel_name)
         self.dispatches.append(key)
-        if self._status.get(key) == "delivered":
-            return False
+        if self._status.get(key) in {"delivered", "rejected"}:
+            return None
         self._status.setdefault(key, "pending")
-        return True
+        claim = f"claim-{len(self._claims) + 1}"
+        self._claims[key] = claim
+        return claim
 
     async def record_failure(
         self,
@@ -128,16 +135,41 @@ class _FakeDedupStore:
         dedup_key: str,
         channel_name: str,
         *,
+        claim_token: str,
         error: BaseException,
-    ) -> None:
+    ) -> bool:
         key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
         self._status[key] = "pending"
         self.failures.append((*key, type(error).__name__))
+        return True
 
-    async def record_success(self, tenant_id: TenantId, dedup_key: str, channel_name: str) -> None:
+    async def record_success(
+        self, tenant_id: TenantId, dedup_key: str, channel_name: str, *, claim_token: str
+    ) -> bool:
         key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
         self._status[key] = "delivered"
         self.successes.append(key)
+        return True
+
+    async def record_rejection(
+        self,
+        tenant_id: TenantId,
+        dedup_key: str,
+        channel_name: str,
+        *,
+        claim_token: str,
+        error: PolicyViolation,
+    ) -> bool:
+        key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
+        self._status[key] = "rejected"
+        self.rejections.append((*key, type(error).__name__))
+        return True
 
 
 class _FlakyDedupStore:
@@ -158,15 +190,21 @@ class _FlakyDedupStore:
         self._fail_failure = fail_record_failure
         self._fail_success_for = set(fail_record_success_for or ())
         self._status: dict[tuple[str, str, str], str] = {}
+        self._claims: dict[tuple[str, str, str], str] = {}
         self.failures: list[tuple[str, str, str, str]] = []
         self.successes: list[tuple[str, str, str]] = []
+        self.rejections: list[tuple[str, str, str, str]] = []
 
-    async def should_dispatch(self, tenant_id: TenantId, dedup_key: str, channel_name: str) -> bool:
+    async def should_dispatch(
+        self, tenant_id: TenantId, dedup_key: str, channel_name: str
+    ) -> str | None:
         key = (str(tenant_id), dedup_key, channel_name)
-        if self._status.get(key) == "delivered":
-            return False
+        if self._status.get(key) in {"delivered", "rejected"}:
+            return None
         self._status.setdefault(key, "pending")
-        return True
+        claim = f"claim-{len(self._claims) + 1}"
+        self._claims[key] = claim
+        return claim
 
     async def record_failure(
         self,
@@ -174,20 +212,45 @@ class _FlakyDedupStore:
         dedup_key: str,
         channel_name: str,
         *,
+        claim_token: str,
         error: BaseException,
-    ) -> None:
+    ) -> bool:
         if self._fail_failure:
             raise RuntimeError("store 写失败：" + "backend" + "-secret-token")
         key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
         self._status[key] = "pending"
         self.failures.append((*key, type(error).__name__))
+        return True
 
-    async def record_success(self, tenant_id: TenantId, dedup_key: str, channel_name: str) -> None:
+    async def record_success(
+        self, tenant_id: TenantId, dedup_key: str, channel_name: str, *, claim_token: str
+    ) -> bool:
         if channel_name in self._fail_success_for:
             raise RuntimeError("store 写失败：" + "backend" + "-secret-token")
         key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
         self._status[key] = "delivered"
         self.successes.append(key)
+        return True
+
+    async def record_rejection(
+        self,
+        tenant_id: TenantId,
+        dedup_key: str,
+        channel_name: str,
+        *,
+        claim_token: str,
+        error: PolicyViolation,
+    ) -> bool:
+        key = (str(tenant_id), dedup_key, channel_name)
+        if self._claims.get(key) != claim_token:
+            return False
+        self._status[key] = "rejected"
+        self.rejections.append((*key, type(error).__name__))
+        return True
 
 
 class _SelectedPolicy:
@@ -202,6 +265,17 @@ class _SelectedPolicy:
         available: list[NotificationChannel],
     ) -> list[NotificationChannel]:
         return [ch for ch in available if ch in self._selected]
+
+
+class _ExplodingPolicy:
+    """路由策略替身：模拟携带敏感异常消息的策略故障。"""
+
+    def channels_for(
+        self,
+        notification: Notification,
+        available: list[NotificationChannel],
+    ) -> list[NotificationChannel]:
+        raise RuntimeError("policy failed: " + "sk-" + "A1B2C3D4E5F6G7H8I9J0K1L2")
 
 
 class _BlockingChannel:
@@ -229,9 +303,14 @@ class _BlockingChannel:
 
 
 def test_notification_dedup_store_protocol_methods() -> None:
-    """NotificationDedupStore Protocol 定义 should_dispatch/record_failure/record_success。"""
+    """NotificationDedupStore Protocol 定义 fencing 与永久拒绝所需方法。"""
     NotificationDedupStore = _load("NotificationDedupStore")
-    for name in ("should_dispatch", "record_failure", "record_success"):
+    for name in (
+        "should_dispatch",
+        "record_failure",
+        "record_success",
+        "record_rejection",
+    ):
         assert hasattr(NotificationDedupStore, name), f"NotificationDedupStore 缺 {name}"
 
 
@@ -443,6 +522,42 @@ async def test_policy_selection_limits_channels() -> None:
     assert ch_b.calls == []
 
 
+async def test_policy_exception_is_sanitized_transient_error() -> None:
+    """策略异常不得将原始凭证文本传播给调用方。"""
+    NotificationRouter = _load("NotificationRouter")
+    secret = "sk-" + "A1B2C3D4E5F6G7H8I9J0K1L2"
+    router = NotificationRouter(_FakeDedupStore(), _ExplodingPolicy())
+
+    with pytest.raises(TransientError) as excinfo:
+        await router.dispatch(_notification())
+
+    assert excinfo.value.is_retryable
+    assert secret not in str(excinfo.value)
+    assert secret not in excinfo.value.context.values()
+
+
+async def test_policy_violation_is_terminal_and_does_not_schedule_retry() -> None:
+    """渠道策略拒绝是永久结果：持久化 rejected，不记可重试失败。"""
+    NotificationRouter = _load("NotificationRouter")
+    StructuredLogChannel = _load("StructuredLogChannel")
+    store = _FakeDedupStore()
+    channel = StructuredLogChannel()
+    router = NotificationRouter(store, _SelectedPolicy([channel]))
+    router.register_channel(channel)
+    external_link = "https://" + "evil.example" + ".com/phish"
+
+    with pytest.raises(PolicyViolation) as excinfo:
+        await router.dispatch(_notification(link=external_link))
+
+    assert not excinfo.value.is_retryable
+    assert external_link not in str(excinfo.value)
+    assert store.failures == []
+    assert store.rejections == [
+        ("t1", "opp-1:handoff", "structured_log", "PolicyViolation")
+    ]
+    assert not await store.should_dispatch(TenantId("t1"), "opp-1:handoff", "structured_log")
+
+
 # --- StructuredLogChannel：固定结构化键 + 深链清理 + 外链/凭证拒绝 --------------------
 
 # 运行时拼接的合成凭证/外链：测试源码不写完整凭证形态（scan_sensitive 纪律）。
@@ -634,4 +749,67 @@ async def test_structured_log_channel_rejects_credential_shaped_context_key(
     ):
         await channel.deliver(n)
 
+    assert _channel_records(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "kwargs"),
+    [
+        ("source_event", {"source_event": _synthetic_sk_token()}),
+        ("dedup_key", {"dedup_key": _synthetic_sk_token()}),
+    ],
+)
+async def test_structured_log_channel_rejects_credential_shaped_logged_identifier(
+    field: str,
+    kwargs: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """source_event/dedup_key 也会落日志，含凭证时必须在写入前拒绝。"""
+    StructuredLogChannel = _load("StructuredLogChannel")
+    channel = StructuredLogChannel()
+
+    with (
+        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
+        pytest.raises(PolicyViolation) as excinfo,
+    ):
+        await channel.deliver(_notification(**kwargs))
+
+    assert _synthetic_sk_token() not in str(excinfo.value), field
+    assert _channel_records(caplog) == []
+
+
+async def test_structured_log_channel_context_key_rejection_does_not_echo_secret(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """拒绝 context key 时，异常文本本身不能回显被拒绝的凭证。"""
+    StructuredLogChannel = _load("StructuredLogChannel")
+    channel = StructuredLogChannel()
+    secret = _synthetic_sk_token()
+
+    with (
+        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
+        pytest.raises(PolicyViolation) as excinfo,
+    ):
+        await channel.deliver(_notification(context={secret: "value"}))
+
+    assert secret not in str(excinfo.value)
+    assert _channel_records(caplog) == []
+
+
+@pytest.mark.parametrize("link", [r"/\evil.example/path", "/%5Cevil.example/path", "/ok\x1fpath"])
+async def test_structured_log_channel_rejects_noncanonical_relative_link(
+    link: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """反斜杠、编码反斜杠和控制字符不能绕过相对深链政策。"""
+    StructuredLogChannel = _load("StructuredLogChannel")
+    channel = StructuredLogChannel()
+
+    with (
+        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
+        pytest.raises(PolicyViolation) as excinfo,
+    ):
+        await channel.deliver(_notification(link=link))
+
+    assert link not in str(excinfo.value)
     assert _channel_records(caplog) == []

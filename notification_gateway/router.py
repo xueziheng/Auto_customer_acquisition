@@ -17,11 +17,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from notification_gateway.dedup import NotificationDedupStore
 from notification_gateway.models import Notification, NotificationChannel
-from shared.errors import TransientError
+from shared.errors import PolicyViolation, TransientError
 
 
 @runtime_checkable
@@ -39,6 +40,23 @@ class RoutingPolicy(Protocol):
     ) -> list[NotificationChannel]:
         """从 ``available`` 中选出该通知应投递的渠道。"""
         ...
+
+
+@dataclass(frozen=True)
+class _ClaimedDelivery:
+    """单渠道成功投递及其 fencing token；只在 router 内部传递。"""
+
+    channel: NotificationChannel
+    claim_token: str
+
+
+@dataclass(frozen=True)
+class _DeliveryFailure:
+    """单渠道失败及其 claim；无 claim 代表 store 原子认领本身失败。"""
+
+    channel: NotificationChannel
+    claim_token: str | None
+    error: BaseException
 
 
 class NotificationRouter:
@@ -66,56 +84,85 @@ class NotificationRouter:
         ``TransientError``（绝不泄漏 DB/渠道异常文本）。全部成功且持久化完成或被
         store 抑制则正常返回。
         """
-        channels = self._policy.channels_for(notification, self._channels)
+        try:
+            channels = self._policy.channels_for(notification, self._channels)
+        except Exception:  # noqa: BLE001  策略实现不可用也不得泄漏原始错误
+            raise TransientError("通知路由策略暂不可用，可重试") from None
 
-        async def _attempt(
-            channel: NotificationChannel,
-        ) -> NotificationChannel | None:
-            if not await self._store.should_dispatch(
-                notification.tenant_id, notification.dedup_key, channel.name
-            ):
-                return None  # store 抑制（已投递 / 退避期内）
-            await channel.deliver(notification)
-            return channel
+        async def _attempt(channel: NotificationChannel) -> _ClaimedDelivery | _DeliveryFailure | None:
+            claim_token: str | None = None
+            try:
+                claim_token = await self._store.should_dispatch(
+                    notification.tenant_id, notification.dedup_key, channel.name
+                )
+                if claim_token is None:
+                    return None  # store 抑制（已终态 / 租约或退避期内）
+                await channel.deliver(notification)
+                return _ClaimedDelivery(channel, claim_token)
+            except Exception as exc:  # noqa: BLE001  后续只存类型名，绝不传播原文
+                return _DeliveryFailure(channel, claim_token, exc)
 
         results = await asyncio.gather(
             *(_attempt(ch) for ch in channels),
             return_exceptions=True,
         )
 
-        failures: list[NotificationChannel] = []
-        persistence_failed: list[str] = []
-        for channel, result in zip(channels, results):
+        transient_failed = False
+        policy_rejected = False
+        persistence_failed = False
+        for result in results:
             if result is None:
                 continue
-            if isinstance(result, BaseException):
-                failures.append(channel)
+            if isinstance(result, _DeliveryFailure):
+                if result.claim_token is None:
+                    persistence_failed = True
+                    continue
+                if isinstance(result.error, PolicyViolation):
+                    policy_rejected = True
+                    try:
+                        persisted = await self._store.record_rejection(
+                            notification.tenant_id,
+                            notification.dedup_key,
+                            result.channel.name,
+                            claim_token=result.claim_token,
+                            error=result.error,
+                        )
+                    except Exception:  # noqa: BLE001  store/DB 异常不得中断其余渠道
+                        persistence_failed = True
+                    else:
+                        persistence_failed = persistence_failed or not persisted
+                    continue
+                transient_failed = True
                 try:
-                    await self._store.record_failure(
+                    persisted = await self._store.record_failure(
                         notification.tenant_id,
                         notification.dedup_key,
-                        channel.name,
-                        error=result,
+                        result.channel.name,
+                        claim_token=result.claim_token,
+                        error=result.error,
                     )
                 except Exception:  # noqa: BLE001  store/DB 级异常：不得中断其他渠道持久化
-                    persistence_failed.append(channel.name)
-            else:
+                    persistence_failed = True
+                else:
+                    persistence_failed = persistence_failed or not persisted
+            elif isinstance(result, _ClaimedDelivery):
                 try:
-                    await self._store.record_success(
+                    persisted = await self._store.record_success(
                         notification.tenant_id,
                         notification.dedup_key,
-                        channel.name,
+                        result.channel.name,
+                        claim_token=result.claim_token,
                     )
                 except Exception:  # noqa: BLE001  store/DB 级异常：不得中断其他渠道持久化
-                    persistence_failed.append(channel.name)
+                    persistence_failed = True
+                else:
+                    persistence_failed = persistence_failed or not persisted
+            else:  # pragma: no cover - _attempt 已捕获；保守按 transient store 故障处理
+                persistence_failed = True
 
-        if failures or persistence_failed:
-            context: dict[str, str] = {}
-            if failures:
-                context["failed_channels"] = ",".join(ch.name for ch in failures)
-            if persistence_failed:
-                context["persistence_failed_channels"] = ",".join(persistence_failed)
+        if transient_failed or persistence_failed:
             raise TransientError(
-                "通知投递部分失败：渠道失败或状态持久化失败，可重试",
-                context=context,
+                "通知投递或状态持久化失败，可重试",
             )
+        if policy_rejected:
+            raise PolicyViolation("通知投递被策略拒绝")
