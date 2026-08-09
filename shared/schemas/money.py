@@ -28,8 +28,11 @@ from decimal import (
     ROUND_HALF_UP,
     ROUND_UP,
     Decimal,
+    InvalidOperation,
 )
-from typing import NewType
+from typing import Annotated, NewType
+
+from pydantic import BeforeValidator, ValidationInfo, WithJsonSchema
 
 from shared.errors import CurrencyMismatchError, ValidationError
 
@@ -39,6 +42,32 @@ CurrencyCode = NewType("CurrencyCode", str)
 金额与币种必须成对出现。裸数字在跨境贸易场景里没有意义——
 "5000" 是美元还是人民币，差了七倍。
 """
+
+
+def _parse_wire_decimal(value: object, info: ValidationInfo) -> Decimal:
+    """区分 Python 与 JSON 边界，拒绝会在解析前丢失精度的数字输入。"""
+    if info.mode == "json":
+        if not isinstance(value, str):
+            raise ValueError("JSON 金额必须为十进制字符串")
+        try:
+            decimal_value = Decimal(value)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("JSON 金额必须是有效十进制字符串") from exc
+    elif isinstance(value, Decimal):
+        decimal_value = value
+    else:
+        raise ValueError("Python 金额必须是 Decimal")
+    if not decimal_value.is_finite():
+        raise ValueError("金额必须是有限 Decimal")
+    return decimal_value
+
+
+WireDecimal = Annotated[
+    Decimal,
+    BeforeValidator(_parse_wire_decimal),
+    WithJsonSchema({"type": "string"}),
+]
+"""Pydantic 边界金额：Python 只收 Decimal，JSON 只收十进制字符串。"""
 
 # 合法的 decimal 舍入策略（stdlib，无外部依赖）。
 _VALID_ROUNDING = {
@@ -83,7 +112,7 @@ class Money:
     - 舍入必须显式指定策略和精度，不依赖默认值。
     """
 
-    amount: Decimal
+    amount: WireDecimal
     currency: CurrencyCode
 
     def __post_init__(self) -> None:
@@ -140,7 +169,7 @@ class FxRate:
 
     base: CurrencyCode
     quote: CurrencyCode
-    rate: Decimal
+    rate: WireDecimal
     observed_at: datetime
     source: str
 

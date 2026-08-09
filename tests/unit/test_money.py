@@ -10,6 +10,8 @@ from decimal import Decimal
 from typing import cast
 
 import pytest
+from pydantic import TypeAdapter
+from pydantic import ValidationError as PydanticValidationError
 
 from shared.errors import CurrencyMismatchError, ValidationError
 from shared.schemas.money import CurrencyCode, FxRate, Money, PriceBasis, convert
@@ -39,6 +41,85 @@ def test_money_rejects_float_int_bool_amount(bad_amount: Decimal) -> None:
 def test_money_rejects_non_finite_decimal_amount(bad: str) -> None:
     with pytest.raises(ValidationError):
         Money(Decimal(bad), _USD)
+
+
+def test_pydantic_money_json_preserves_decimal_string_without_accepting_number() -> None:
+    """若 JSON number 先变 float，高精度金额会在进入 Money 前被截断。"""
+    adapter = TypeAdapter(Money)
+    amount = "0.123456789012345678901234"
+
+    parsed = adapter.validate_json(
+        '{"amount":"0.123456789012345678901234","currency":"USD"}'
+    )
+    assert parsed.amount == Decimal(amount)
+    with pytest.raises(PydanticValidationError):
+        adapter.validate_json('{"amount":0.123456789012345678901234,"currency":"USD"}')
+    with pytest.raises(PydanticValidationError):
+        adapter.validate_python({"amount": amount, "currency": "USD"})
+
+
+@pytest.mark.parametrize("amount", [1, 1.0, True, "1.0"])
+def test_pydantic_money_python_rejects_non_decimal_amount(amount: object) -> None:
+    """Python TypeAdapter 不能把 int/float/bool/string 隐式变成金额 Decimal。"""
+    with pytest.raises(PydanticValidationError):
+        TypeAdapter(Money).validate_python({"amount": amount, "currency": "USD"})
+
+
+@pytest.mark.parametrize("amount", ["1", "1.0", "true", "null"])
+def test_pydantic_money_json_rejects_non_string_amount_tokens(amount: str) -> None:
+    """JSON number/bool/null 不得越过 wire Decimal 字符串边界。"""
+    with pytest.raises(PydanticValidationError):
+        TypeAdapter(Money).validate_json(
+            ('{"amount":' + amount + ',"currency":"USD"}').encode()
+        )
+
+
+@pytest.mark.parametrize("amount", ["NaN", "Infinity", "-Infinity"])
+def test_pydantic_money_json_rejects_non_finite_decimal_string(amount: str) -> None:
+    """wire 字符串即使能被 Decimal 解析，非有限值仍不得进入金额契约。"""
+    with pytest.raises(PydanticValidationError):
+        TypeAdapter(Money).validate_json(
+            ('{"amount":"' + amount + '","currency":"USD"}').encode()
+        )
+
+
+def test_pydantic_money_and_fx_rate_decimal_schema_is_string_only() -> None:
+    """若 schema 宣称 number，客户端会再次发送会被拒绝或丢精度的 JSON number。"""
+    money_amount = TypeAdapter(Money).json_schema()["properties"]["amount"]
+    fx_rate = TypeAdapter(FxRate).json_schema()["properties"]["rate"]
+
+    assert money_amount["type"] == "string"
+    assert fx_rate["type"] == "string"
+    assert "number" not in str(money_amount)
+    assert "number" not in str(fx_rate)
+
+
+@pytest.mark.parametrize("amount", ["abc", "  ", "", "+", "."])
+def test_pydantic_money_malformed_json_decimal_string_is_validation_error(
+    amount: str,
+) -> None:
+    """若 Decimal 解析异常逸出，HTTP middleware 无法将坏输入安全映射为 400。"""
+    adapter = TypeAdapter(Money)
+    payload = ('{"amount":' + repr(amount).replace("'", '"') + ',"currency":"USD"}').encode()
+
+    with pytest.raises(PydanticValidationError):
+        adapter.validate_json(payload)
+
+
+@pytest.mark.parametrize("rate", ["abc", "  ", "", "+", "."])
+def test_pydantic_fx_rate_malformed_json_decimal_string_is_validation_error(
+    rate: str,
+) -> None:
+    """汇率与金额共享同一 wire Decimal 边界，坏字符串不得泄漏 Decimal 异常。"""
+    adapter = TypeAdapter(FxRate)
+    payload = (
+        '{"base":"USD","quote":"CNY","rate":'
+        + repr(rate).replace("'", '"')
+        + ',"observed_at":"2026-08-08T00:00:00Z","source":"fx"}'
+    ).encode()
+
+    with pytest.raises(PydanticValidationError):
+        adapter.validate_json(payload)
 
 
 @pytest.mark.parametrize("bad", ["US", "usd", "US1", "USDO", "ÅBC"])

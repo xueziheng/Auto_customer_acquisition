@@ -318,11 +318,16 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
     reloaded = importlib.reload(main_module)
 
     app = reloaded.create_app()
-    assert app.openapi()["paths"] == {}
+    assert set(app.openapi()["paths"]) == {
+        "/crm/opportunities",
+        "/crm/opportunities/{opportunity_id}",
+        "/crm/opportunities/{opportunity_id}/transition",
+        "/crm/opportunities/{opportunity_id}/mark-lost",
+    }
     assert app.state.dependencies.configured is False
 
 
-def test_factory_only_mounts_empty_crm_router() -> None:
+def test_factory_openapi_matches_s3_14_crm_runtime_contracts() -> None:
     from fastapi import APIRouter
 
     from apps.api.routers.crm import router
@@ -331,8 +336,35 @@ def test_factory_only_mounts_empty_crm_router() -> None:
     schema = app.openapi()
 
     assert isinstance(router, APIRouter)
-    assert router.routes == []
-    assert schema["paths"] == {}
+    assert {route.path for route in router.routes} == {
+        "/opportunities",
+        "/opportunities/{opportunity_id}",
+        "/opportunities/{opportunity_id}/transition",
+        "/opportunities/{opportunity_id}/mark-lost",
+    }
+    assert set(schema["paths"]) == {
+        "/crm/opportunities",
+        "/crm/opportunities/{opportunity_id}",
+        "/crm/opportunities/{opportunity_id}/transition",
+        "/crm/opportunities/{opportunity_id}/mark-lost",
+    }
+    create_responses = schema["paths"]["/crm/opportunities"]["post"]["responses"]
+    assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
+    assert "201" in create_responses
+    assert "204" in create_responses
+    assert schema["paths"]["/crm/opportunities"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/OpportunityIntakeBody"
+    }
+    assert "OpportunityCreateRequest" in schema["components"]["schemas"]
+    assert "ValidatedNeedEvidence" in schema["components"]["schemas"]
+    assert create_responses["400"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiErrorResponse"
+    }
+    for path_item in schema["paths"].values():
+        for operation in path_item.values():
+            assert "422" not in operation["responses"]
     assert not any(
         getattr(route, "path", "").startswith(
             (

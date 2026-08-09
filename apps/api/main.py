@@ -17,22 +17,62 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 from .dependencies import (
     ApiDependencies,
     UnconfiguredApiDependencies,
 )
 from .middleware import (
+    ApiErrorResponse,
     ApiSettings,
     SafeUnhandledExceptionMiddleware,
     TenantAssertionMiddleware,
     install_error_handlers,
 )
+from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 
 _UNCONFIGURED_TENANT = "__tradeos_unconfigured__"
 _DEFAULT_RETRY_AFTER_SECONDS = 30
+
+
+def _install_openapi_contract(app: FastAPI) -> None:
+    """把运行时统一 validation 400 显式写入并移除未实现的默认 422。"""
+    def openapi() -> dict[str, Any]:
+        if app.openapi_schema is not None:
+            return app.openapi_schema
+        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        intake_schema = OpportunityIntakeBody.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        definitions = intake_schema.pop("$defs", {})
+        components.update(definitions)
+        components["OpportunityIntakeBody"] = intake_schema
+        components["ApiErrorResponse"] = ApiErrorResponse.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        validation_response = {
+            "description": "请求参数无效",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ApiErrorResponse"}
+                }
+            },
+        }
+        for path_item in schema["paths"].values():
+            for operation in path_item.values():
+                responses = operation["responses"]
+                responses.pop("422", None)
+                responses["400"] = validation_response
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
 
 
 def create_app(
@@ -60,6 +100,7 @@ def create_app(
     # Starlette 后加的 user middleware 位于外层：安全边界必须包住其余 user middleware。
     app.add_middleware(SafeUnhandledExceptionMiddleware)
     app.include_router(crm_router, prefix="/crm")
+    _install_openapi_contract(app)
     return app
 
 
