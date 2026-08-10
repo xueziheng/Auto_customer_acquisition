@@ -588,6 +588,8 @@ class OpportunityServiceImpl:
         - 通过：建机会、保存 present 关键字段 provenance、发布 ``OpportunityQualified``。
         - 唯一并发：commit 阶段的 DB 异常（``IntegrityError`` 属非领域异常）→ 新 UoW
           重查既有；只有确实找到才返回既有，否则原异常重抛。
+        - 审计：上述任一 durable outcome 的 UoW 成功退出后写一条 allow；校验、打分、
+          commit 或唯一冲突重查失败均不写 allow。
         """
         rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
         validate_validated_need_evidence(evidence)
@@ -596,73 +598,73 @@ class OpportunityServiceImpl:
             evidence,
             now=self._now(),
         )
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
+        result: OpportunityId | None
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(
                     tenant_id, ValidatedNeedId(request.need_id)
                 )
                 if existing is not None:
-                    return existing.opportunity_id
+                    result = existing.opportunity_id
+                else:
+                    validate_present_critical_provenance(request)
 
-                validate_present_critical_provenance(request)
-
-                opportunity_id = OpportunityId(new_id("opp"))
-                scoring_input = ScoringInput(
-                    has_verified_contact=request.has_verified_contact,
-                    evidence_tier=evidence_tier,
-                    category_allowed=request.category_allowed,
-                    minimum_order_value=request.minimum_order_value,
-                    estimated_order_value=request.estimated_order_value,
-                    supply_available=request.supply_available,
-                    is_repeat_buyer_likely=request.is_repeat_buyer_likely,
-                )
-                snapshot = await self._scorer.score(
-                    uow.snapshots, tenant_id, opportunity_id, scoring_input
-                )
-                if snapshot.failed_gates:
-                    return None  # 门槛失败：失败快照已入库，不建机会/不发事件
-
-                opp = Opportunity(
-                    opportunity_id=opportunity_id,
-                    tenant_id=tenant_id,
-                    account_id=ProspectAccountId(request.account_id),
-                    need_id=ValidatedNeedId(request.need_id),
-                    product_category=request.product_category,
-                    created_at=self._now(),
-                    account_name=request.account_name,
-                    country=request.country,
-                    quantity=request.quantity,
-                    spec_summary=request.spec_summary,
-                    application=request.application,
-                    destination=request.destination,
-                    required_by=request.required_by,
-                    target_price=request.target_price,
-                    current_supply_solution=request.current_supply_solution,
-                    current_supply_problem=request.current_supply_problem,
-                )
-                await uow.opportunities.add(opp)
-                # 只保存 CRITICAL_FIELDS 中在 request 上实际 present（值非 None）的字段；
-                # account_name/country 必然 present。不保存任何未知/多余键。
-                for field in CRITICAL_FIELDS:
-                    if getattr(request, field, None) is not None:
-                        await uow.provenance.save(
-                            tenant_id,
-                            "opportunity",
-                            opp.opportunity_id,
-                            field,
-                            request.field_provenance[field],
-                        )
-                await uow.bus.publish(
-                    OpportunityQualified(
-                        tenant_id=tenant_id,
-                        occurred_at=self._now(),
-                        run_id=None,
-                        opportunity_id=opp.opportunity_id,
-                        rank_bucket=snapshot.rank_bucket,
+                    opportunity_id = OpportunityId(new_id("opp"))
+                    scoring_input = ScoringInput(
+                        has_verified_contact=request.has_verified_contact,
+                        evidence_tier=evidence_tier,
+                        category_allowed=request.category_allowed,
+                        minimum_order_value=request.minimum_order_value,
+                        estimated_order_value=request.estimated_order_value,
+                        supply_available=request.supply_available,
+                        is_repeat_buyer_likely=request.is_repeat_buyer_likely,
                     )
-                )
-                return opp.opportunity_id
+                    snapshot = await self._scorer.score(
+                        uow.snapshots, tenant_id, opportunity_id, scoring_input
+                    )
+                    if snapshot.failed_gates:
+                        result = None  # 失败快照提交；不建机会、不发事件
+                    else:
+                        opp = Opportunity(
+                            opportunity_id=opportunity_id,
+                            tenant_id=tenant_id,
+                            account_id=ProspectAccountId(request.account_id),
+                            need_id=ValidatedNeedId(request.need_id),
+                            product_category=request.product_category,
+                            created_at=self._now(),
+                            account_name=request.account_name,
+                            country=request.country,
+                            quantity=request.quantity,
+                            spec_summary=request.spec_summary,
+                            application=request.application,
+                            destination=request.destination,
+                            required_by=request.required_by,
+                            target_price=request.target_price,
+                            current_supply_solution=request.current_supply_solution,
+                            current_supply_problem=request.current_supply_problem,
+                        )
+                        await uow.opportunities.add(opp)
+                        # 只保存实际 present（值非 None）的 CRITICAL_FIELDS；
+                        # account_name/country 必然 present。不保存未知/多余键。
+                        for field in CRITICAL_FIELDS:
+                            if getattr(request, field, None) is not None:
+                                await uow.provenance.save(
+                                    tenant_id,
+                                    "opportunity",
+                                    opp.opportunity_id,
+                                    field,
+                                    request.field_provenance[field],
+                                )
+                        await uow.bus.publish(
+                            OpportunityQualified(
+                                tenant_id=tenant_id,
+                                occurred_at=self._now(),
+                                run_id=None,
+                                opportunity_id=opp.opportunity_id,
+                                rank_bucket=snapshot.rank_bucket,
+                            )
+                        )
+                        result = opp.opportunity_id
         except TradeOSError:
             # 领域错误（校验/状态/币种）不重试，直接上抛。
             raise
@@ -675,9 +677,11 @@ class OpportunityServiceImpl:
                 existing = await uow.opportunities.find_by_need(
                     tenant_id, ValidatedNeedId(request.need_id)
                 )
-            if existing is not None:
-                return existing.opportunity_id
-            raise
+            if existing is None:
+                raise
+            result = existing.opportunity_id
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
+        return result
 
     async def assign(
         self,

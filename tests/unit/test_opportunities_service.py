@@ -483,6 +483,16 @@ class _FakeScorer:
         return self.snapshot
 
 
+class _FailingScorer:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def score(self, snapshots, tenant_id, opportunity_id, input) -> ScoreSnapshot:
+        self.calls += 1
+        raise self.error
+
+
 class _AllowAuthorizer:
     """放行 authorizer：本文件测业务行为；授权契约由 test_opportunities_permissions 覆盖。"""
 
@@ -566,7 +576,8 @@ async def test_create_idempotent() -> None:
     """重复 need_id：返回既有机会，不重复创建/打分/发事件。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
     existing = _opp("opp-1", "t1", "need-1")
     factory.seed(existing)
 
@@ -580,13 +591,16 @@ async def test_create_idempotent() -> None:
     assert uow.bus.published == []
     assert uow.snapshots.added == []
     assert scorer.calls == []
+    assert uow.committed == 1
+    assert [record["rule"] for record in audit.records] == ["test:allow"]
 
 
 async def test_create_unique_race_returns_existing() -> None:
     """UoW __aexit__/commit 抛 IntegrityError → 新 UoW 重查既有；只有找到才返回。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
     factory.commit_error_on_first = _integrity_error()
     existing = _opp("opp-race", "t1", "need-race")
     factory.seed_after_first = existing
@@ -601,20 +615,24 @@ async def test_create_unique_race_returns_existing() -> None:
     assert result == OpportunityId("opp-race")
     assert len(factory.created) == 2
     assert factory.created[0].committed == 0  # 首个 commit 被 IntegrityError 中断
+    assert factory.created[1].committed == 1  # 重查事务成功后才允许审计
     assert scorer.calls[0][1] == TenantId("t1")  # 只在首个 UoW 打分一次
+    assert [record["rule"] for record in audit.records] == ["test:allow"]
 
 
 async def test_create_unique_race_not_found_re_raises() -> None:
     """重查找不到既有记录 → 原 IntegrityError 重抛。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
     factory.commit_error_on_first = _integrity_error()
 
     with pytest.raises(IntegrityError):
         await service.create_from_need(
             TenantId("t1"), _request(need_id="need-race2"), evidence=_evidence(), actor=_actor()
         )
+    assert audit.records == []
 
 
 async def test_create_failed_gates_returns_none_no_event() -> None:
@@ -626,7 +644,8 @@ async def test_create_failed_gates_returns_none_no_event() -> None:
         rank_bucket="low",
     )
     scorer = _FakeScorer(failed_snap)
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
 
     result = await service.create_from_need(
         TenantId("t1"), _request(), evidence=_evidence(), actor=_actor()
@@ -638,13 +657,15 @@ async def test_create_failed_gates_returns_none_no_event() -> None:
     assert uow.opportunities.added == []
     assert uow.bus.published == []
     assert uow.committed == 1  # 快照正常提交
+    assert [record["rule"] for record in audit.records] == ["test:allow"]
 
 
 async def test_create_passed_publishes_and_saves_provenance() -> None:
     """通过：建机会、保存 present 关键字段 provenance、发布 OpportunityQualified。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap(failed_gates=[], rank_bucket="high"))
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
 
     result = await service.create_from_need(
         TenantId("t1"),
@@ -674,6 +695,7 @@ async def test_create_passed_publishes_and_saves_provenance() -> None:
     assert evt.opportunity_id == result
     assert evt.rank_bucket == "high"
     assert uow.committed == 1
+    assert [record["rule"] for record in audit.records] == ["test:allow"]
 
 
 async def test_create_rejects_agent_inference_provenance() -> None:
@@ -682,7 +704,8 @@ async def test_create_rejects_agent_inference_provenance() -> None:
 
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
 
     bad = Provenance(
         source_type=SourceType.AGENT_INFERENCE,
@@ -699,6 +722,7 @@ async def test_create_rejects_agent_inference_provenance() -> None:
         )
     assert scorer.calls == []
     assert factory.created[0].opportunities.added == []
+    assert audit.records == []
 
 
 async def test_create_requires_provenance_for_present_critical_fields() -> None:
@@ -706,13 +730,35 @@ async def test_create_requires_provenance_for_present_critical_fields() -> None:
     from domains.opportunities.errors import MissingFieldProvenanceError
 
     factory = _UoWFactory()
-    service = _make_service(factory, _FakeScorer(_snap()))
+    audit = _RecordingAudit()
+    service = _make_service(factory, _FakeScorer(_snap()), audit=audit)
 
     # quantity 为 present 关键字段但无 provenance
     with pytest.raises(MissingFieldProvenanceError):
         await service.create_from_need(
             TenantId("t1"), _request(quantity=500), evidence=_evidence(), actor=_actor()
         )
+    assert audit.records == []
+
+
+async def test_create_scorer_failure_has_no_allow_audit() -> None:
+    """打分失败使事务回滚，不能把仅通过授权误记为成功 allow。"""
+    factory = _UoWFactory()
+    scorer = _FailingScorer(RuntimeError("scorer failed"))
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
+
+    with pytest.raises(RuntimeError, match="scorer failed"):
+        await service.create_from_need(
+            TenantId("t1"),
+            _request(),
+            evidence=_evidence(),
+            actor=_actor(),
+        )
+
+    assert scorer.calls == 1
+    assert factory.created[0].rolled_back == 1
+    assert audit.records == []
 
 
 async def test_create_saves_account_name_and_country() -> None:
@@ -952,7 +998,8 @@ async def test_create_unique_race_runtime_error_not_swallowed() -> None:
     """首个 UoW __aexit__ 抛普通 RuntimeError（非唯一冲突）→ 原样抛出，即使重查有既有。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
     factory.commit_error_on_first = RuntimeError("boom")
     factory.seed_after_first = _opp("opp-race", "t1", "need-race")
 
@@ -961,6 +1008,7 @@ async def test_create_unique_race_runtime_error_not_swallowed() -> None:
             TenantId("t1"), _request(need_id="need-race"), evidence=_evidence(), actor=_actor()
         )
     assert len(factory.created) == 1  # 不进入重查，原异常立即上抛
+    assert audit.records == []
 
 
 async def test_create_unique_race_non_unique_integrity_error_re_raises() -> None:

@@ -271,6 +271,8 @@ def _start_process(
 @pytest_asyncio.fixture(scope="session")
 async def e2e_stack() -> AsyncIterator[E2EStack]:
     if not await asyncio.to_thread(_docker_available):
+        if os.environ.get("TRADEOS_REQUIRE_E2E") == "1":
+            pytest.fail("Docker 不可用，必需的真实浏览器 E2E 无法启动")
         pytest.skip("Docker 不可用")
 
     temporary = TemporaryDirectory(prefix="tradeos-e2e-")
