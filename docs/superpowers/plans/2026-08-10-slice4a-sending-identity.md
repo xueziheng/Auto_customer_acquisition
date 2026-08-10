@@ -592,10 +592,17 @@ git push origin codex/phase1-implementation
 - Create: `domains/sending_identity/service_impl.py`
 - Create: `tests/unit/test_sending_identity_service.py`
 - Create: `tests/integration/test_sending_identity_lifecycle.py`
+- Modify: `domains/sending_identity/models.py`
+- Modify: `domains/sending_identity/repository.py`
+- Modify: `infra/db/repositories/sending_identities.py`
+- Modify: `tests/unit/test_sending_identity_models.py`
+- Modify: `tests/integration/test_sending_identity_repositories.py`
 
 **Interfaces:**
 - Consumes: Task 1 public contract/permissions、Task 2 UoW factory/repositories/outbox。
 - Produces: `SendingIdentityServiceImpl(uow_factory, authorizer, audit_logger, *, now)` 的 register/auth/warmup/resume-suspension/retire/get/list/progress 方法。本任务的 concrete class 不显式继承或声称已满足完整 `SendingIdentityService` Protocol；Task 4 增加 reservation 方法，Task 5 增加 reputation/throttle 方法后才用静态赋值测试证明完整 structural conformance。任何阶段都不加入占位实现或 `NotImplementedError`。
+
+**Preflight contract ruling（2026-08-10）：** Task 3 的 action 幂等和并发 register/auth 语义不能靠捕获宽泛 `IntegrityError` 或解析异常文本实现，因此范围精确扩为上述 8 文件。`SendingIdentity` 增加非负整数 `version`，ORM add/read 保留它、update 仍在数据库原子 `+1`；创建 action 使用 v0，后续状态 action 使用加载值的 `next_version=version+1`。repository 增加三个窄原语：`SendingDomainRepository.ensure(domain) -> SendingDomain`；`SendingIdentityRepository.register_if_address_absent(identity) -> IdentityRegistrationResult`；`AuthenticationCheckRepository.append_if_ref_absent(record) -> AuthenticationAppendResult`。后两个 frozen typed result 均返回 `created: bool` 与数据库 winner。实现只能用精确 PostgreSQL `ON CONFLICT` target：domain `(tenant_id,domain)`、address `(tenant_id,address)`、auth ref `(tenant_id,identity_id,check_ref)`；其它 PK/FK/unique 失败原样传播。service 对 existing winner 做安全字段/typed result 比较，同值幂等、异值固定拒绝。无需再增加非原子的 `get_by_ref`。
 
 - [ ] **Step 1: 写 service fake UoW 行为 RED**
 
