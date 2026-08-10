@@ -143,3 +143,26 @@ def test_invalid_database_url_failure_and_log_are_sanitized(
     assert marker not in str(exc.value)
     assert marker not in caplog.text
     assert all(marker not in str(record.__dict__) for record in caplog.records)
+
+
+async def test_local_alembic_metadata_failure_is_mapped_without_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("apps.api.runtime")
+    marker = "local-alembic-metadata-secret-marker"
+
+    class _BrokenScriptDirectory:
+        @classmethod
+        def from_config(cls, _config: object) -> object:
+            del cls
+            raise ValueError(marker)
+
+    monkeypatch.setattr(module, "ScriptDirectory", _BrokenScriptDirectory)
+
+    with pytest.raises(
+        module.RuntimeStartupError,
+        match="API runtime 启动检查失败",
+    ) as exc:
+        await module.assert_database_schema_current(object())
+    assert marker not in str(exc.value)
+    assert exc.value.__cause__ is None

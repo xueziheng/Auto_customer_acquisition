@@ -254,7 +254,7 @@ def test_employee_standard_audit_logger_emits_only_safe_authorization_fields(
             rule="phase1:system:system:employee:read",
         )
     record = caplog.records[-1]
-    assert record.getMessage() == "authorization"
+    assert record.getMessage() == "授权审计"
     assert {
         key: record.__dict__[key]
         for key in ("actor", "action", "tenant_id", "scope", "rule")

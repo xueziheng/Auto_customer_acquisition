@@ -101,7 +101,7 @@ class StandardAuditLogger:
         rule: str,
     ) -> None:
         self._logger.info(
-            "authorization",
+            "授权审计",
             extra={
                 "actor": actor,
                 "action": action,

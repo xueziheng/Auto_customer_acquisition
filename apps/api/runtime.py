@@ -54,10 +54,10 @@ class DatabaseReadinessProbe:
 
 async def assert_database_schema_current(engine: AsyncEngine) -> None:
     """要求本地与数据库都恰好处于同一个 Alembic head，不自动迁移。"""
-    config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
-    config.set_main_option("path_separator", "os")
-    local_heads = tuple(ScriptDirectory.from_config(config).get_heads())
     try:
+        config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
+        config.set_main_option("path_separator", "os")
+        local_heads = tuple(ScriptDirectory.from_config(config).get_heads())
         async with engine.connect() as connection:
             database_heads = tuple(
                 await connection.run_sync(

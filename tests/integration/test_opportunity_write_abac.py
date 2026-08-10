@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.opportunities.permissions import (
@@ -408,6 +408,59 @@ async def test_accept_requires_actor_to_equal_accepted_by_and_linked_resource_sc
                 actor=fixture.sales_a_actor,
             )
         assert (await _durable_snapshot(fixture))[1] == ("requested", None)
+    finally:
+        await fixture.engine.dispose()
+
+
+async def test_cross_owner_accepted_handoff_denies_before_revealing_state(
+    db_url: str,
+) -> None:
+    """跨 owner 即使目标已接受，也只能观察到资源 ABAC 拒绝。"""
+    fixture = await _seed_write_abac_fixture(db_url, "accept-state-order")
+    try:
+        async with fixture.factory.begin() as session:
+            await session.execute(
+                update(HandoffRow)
+                .where(
+                    HandoffRow.tenant_id == fixture.tenant,
+                    HandoffRow.handoff_id == fixture.handoff_b,
+                )
+                .values(
+                    state="accepted",
+                    accepted_by=fixture.sales_b,
+                    accepted_at=_NOW,
+                )
+            )
+        before = await _durable_snapshot(fixture)
+        audit = _Audit()
+        service = _real_service(
+            fixture,
+            audit=audit,
+            authorizer=_ExactActionAuthorizer(
+                fixture.sales_a_actor,
+                OpportunityAction.HANDOFF_ACCEPT,
+                fixture.tenant,
+            ),
+        )
+
+        with pytest.raises(PermissionDenied):
+            await service.accept_handoff(
+                fixture.tenant,
+                fixture.handoff_b,
+                fixture.sales_a,
+                actor=fixture.sales_a_actor,
+            )
+
+        assert await _durable_snapshot(fixture) == before
+        assert audit.entries == [
+            {
+                "actor": str(fixture.sales_a),
+                "action": OpportunityAction.HANDOFF_ACCEPT.value,
+                "tenant_id": str(fixture.tenant),
+                "scope": "self",
+                "rule": "deny:abac:owner",
+            }
+        ]
     finally:
         await fixture.engine.dispose()
 

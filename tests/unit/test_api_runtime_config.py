@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -184,3 +185,30 @@ def test_nested_configuration_rejects_wrong_types_numbers_and_extra_fields(
         Phase1RuntimeSettings.from_environ({**_VALID_ENV, name: value})
     assert exc.value.field_name == name
     assert "runtime-secret" not in str(exc.value)
+
+
+def test_env_example_process_settings_are_non_runnable_placeholders() -> None:
+    """样例复制后不得无意获得可直接启动的 host、port、间隔或并发默认值。"""
+    env_path = Path(__file__).resolve().parents[2] / "infra" / ".env.example"
+    values = {
+        name: raw_value.split("#", 1)[0].strip()
+        for line in env_path.read_text().splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for name, raw_value in [line.split("=", 1)]
+    }
+
+    for name in (
+        "API_HOST",
+        "API_PORT",
+        "SCHEDULER_INTERVAL_SECONDS",
+        "AGENT_WORKER_CONCURRENCY",
+    ):
+        assert values[name].startswith("<")
+        assert values[name].endswith(">")
+    for name in (
+        "API_PORT",
+        "SCHEDULER_INTERVAL_SECONDS",
+        "AGENT_WORKER_CONCURRENCY",
+    ):
+        with pytest.raises(ValueError):
+            int(values[name])

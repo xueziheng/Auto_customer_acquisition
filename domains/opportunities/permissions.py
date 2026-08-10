@@ -155,7 +155,7 @@ class StandardAuditLogger:
     """安全授权审计实现：结构化记录 actor/action/tenant_id/scope/rule。
 
     用标准 logging（logger 名 ``security.authorization``），字段经 ``extra``
-    进 LogRecord，消息体固定为 ``authorization``（不含任何业务内容）。
+    进 LogRecord，消息体固定为 ``授权审计``（不含任何业务内容）。
     与 ``infra/db/base.py`` 的审计日志同风格。
     """
 
@@ -172,7 +172,7 @@ class StandardAuditLogger:
         rule: str,
     ) -> None:
         self._logger.info(
-            "authorization",
+            "授权审计",
             extra={
                 "actor": actor,
                 "action": action,

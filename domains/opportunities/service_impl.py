@@ -943,10 +943,8 @@ class OpportunityServiceImpl:
             if packet is None:
                 raise ValidationError("接管不存在或不属于该租户")
             linked = await uow.opportunities.get(tenant_id, packet.opportunity_id)
-            if linked is None or packet.assigned_to != linked.owner:
+            if linked is None:
                 raise ValidationError("接管关联的机会或负责人无效")
-            if packet.state is not HandoffState.REQUESTED:
-                raise HandoffAlreadyAcceptedError("接管已被接受")
             self._enforce_resource_abac(
                 actor,
                 owner=linked.owner,
@@ -955,6 +953,10 @@ class OpportunityServiceImpl:
                 tenant_id=tenant_id,
                 action=action,
             )
+            if packet.assigned_to != linked.owner:
+                raise ValidationError("接管关联的机会或负责人无效")
+            if packet.state is not HandoffState.REQUESTED:
+                raise HandoffAlreadyAcceptedError("接管已被接受")
             if (
                 actor.scope.level is not ScopeLevel.SYSTEM
                 and accepted_by != EmployeeId(actor.actor_id)

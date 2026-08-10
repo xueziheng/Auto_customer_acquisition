@@ -283,7 +283,7 @@ def test_standard_audit_logger_records_fields(caplog) -> None:
     assert rec.__dict__["tenant_id"] == "t1"
     assert rec.__dict__["scope"] == "tenant"
     assert rec.__dict__["rule"] == "test:allow"
-    assert rec.getMessage() == "authorization"  # 消息体无任何业务 payload
+    assert rec.getMessage() == "授权审计"  # 固定中文消息体，无任何业务 payload
 
 
 # --- 服务集成：全方法带 actor + 判权先于仓储/副作用 ----------------------------
