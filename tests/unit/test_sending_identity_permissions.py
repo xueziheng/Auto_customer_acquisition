@@ -266,6 +266,54 @@ def test_manager_resource_scope_checks_identity_and_domain_targets() -> None:
             )
 
 
+@pytest.mark.parametrize(
+    "identity_id,domain,allowed",
+    [
+        (None, None, True),
+        (SendingIdentityId("sid-1"), "example.com", True),
+        (SendingIdentityId("sid-2"), "example.com", False),
+        (SendingIdentityId("sid-1"), "other.example", False),
+    ],
+)
+def test_manager_list_allows_only_targetless_empty_or_fully_matching_row(
+    identity_id: SendingIdentityId | None,
+    domain: str | None,
+    allowed: bool,
+) -> None:
+    """按 action 跳过 list scope 会信任错误 repo 返回的越权 row。"""
+    permissions = _permissions()
+    scope = _scope(
+        permissions.ScopeLevel.MANAGER,
+        allowed_identity_ids=frozenset({SendingIdentityId("sid-1")}),
+        allowed_domains=frozenset({"example.com"}),
+    )
+    actor = _actor("manager", scope)
+    authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
+    action = permissions.SendingIdentityAction.IDENTITY_LIST
+    assert authorizer.preauthorize(
+        actor, action, scope, TenantId("tenant-1")
+    ) == "phase1:preauthorize:manager:manager:identity:list"
+    if allowed:
+        assert authorizer.require(
+            actor,
+            action,
+            scope,
+            TenantId("tenant-1"),
+            identity_id=identity_id,
+            domain=domain,
+        ) == "phase1:manager:manager:identity:list"
+    else:
+        with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+            authorizer.require(
+                actor,
+                action,
+                scope,
+                TenantId("tenant-1"),
+                identity_id=identity_id,
+                domain=domain,
+            )
+
+
 def test_authorizer_rejects_wrong_tenant_scope_mismatch_and_unknowns() -> None:
     """租户错配、替换 scope 或未知输入必须默认拒绝。"""
     permissions = _permissions()

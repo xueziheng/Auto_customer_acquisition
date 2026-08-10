@@ -157,6 +157,22 @@ class _DenyingAuthorizer(_Authorizer):
         return super().require(actor, action, scope, tenant_id, **kwargs)
 
 
+class _TracingPhase1Authorizer:
+    def __init__(self, tenant_id: TenantId, order: list[str]) -> None:
+        self._delegate = Phase1SendingIdentityAuthorizer(tenant_id)
+        self.order = order
+
+    def preauthorize(self, actor, action, scope, tenant_id):
+        self.order.append(f"preauthorize:{action.value}")
+        return self._delegate.preauthorize(actor, action, scope, tenant_id)
+
+    def require(self, actor, action, scope, tenant_id, **kwargs):
+        self.order.append(
+            f"require:{action.value}:{kwargs.get('identity_id')}:{kwargs.get('domain')}"
+        )
+        return self._delegate.require(actor, action, scope, tenant_id, **kwargs)
+
+
 class _Audit:
     def __init__(self, order: list[str]) -> None:
         self.order = order
@@ -230,6 +246,7 @@ class _Identities:
 
     async def list_available_for_campaign(self, tenant_id, scope, limit):
         self.order.append("identity:list_available")
+        # 故意忽略 scope，证明 service/authorizer 不可信任 repository 过滤。
         return list(self.store.values())[:limit]
 
 
@@ -368,6 +385,40 @@ def _seed(
     factory.identities[str(identity_id)] = identity
     factory.domains[identity.domain] = SendingDomain(
         _TENANT, identity.domain, identity.role, identity.created_at
+    )
+    return identity
+
+
+def _seed_available(
+    factory: _UowFactory,
+    *,
+    identity_id: SendingIdentityId,
+    domain: str,
+) -> SendingIdentity:
+    identity = SendingIdentity(
+        identity_id=identity_id,
+        tenant_id=_TENANT,
+        address=f"sales@{domain}",
+        domain=domain,
+        role=DomainRole.COLD_OUTREACH,
+        created_at=_NOW - timedelta(days=30),
+        state=IdentityState.WARMING,
+        warmup_plan=importlib.import_module(
+            "domains.sending_identity.models"
+        ).WarmupPlan(_NOW.date(), 50),
+    )
+    factory.identities[str(identity_id)] = identity
+    factory.domains[domain] = SendingDomain(
+        _TENANT, domain, identity.role, identity.created_at
+    )
+    factory.auth_records.append(
+        AuthenticationCheckRecord(
+            auth_check_id=f"auth_{identity_id}",
+            tenant_id=_TENANT,
+            identity_id=identity_id,
+            result=_auth(check_ref=f"check_{identity_id}"),
+            created_at=_NOW,
+        )
     )
     return identity
 
@@ -600,6 +651,137 @@ async def test_manager_identity_queries_apply_full_domain_and_identity_abac(
             await call(_TENANT, identity.identity_id, actor=actor)
         assert len(audit.records) == 1
         assert audit.records[0]["rule"] == "deny:authorization"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope_kind,mismatch_dimension,allowed",
+    [
+        ("identity", None, True),
+        ("identity", "identity", False),
+        ("domain", None, True),
+        ("domain", "domain", False),
+        ("both", None, True),
+        ("both", "identity", False),
+        ("both", "domain", False),
+    ],
+)
+async def test_manager_list_rechecks_every_scope_dimension_against_ignored_repo_scope(
+    scope_kind: str,
+    mismatch_dimension: str | None,
+    allowed: bool,
+) -> None:
+    """IDENTITY_LIST action 不能把故意忽略 scope 的 fake repo 结果视为可信。"""
+    service, factory, audit, _ = _build(
+        authorizer=Phase1SendingIdentityAuthorizer(_TENANT)
+    )
+    row = _seed_available(
+        factory,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRS"),
+        domain="cold.list-abac.example",
+    )
+    allowed_identity = (
+        SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT")
+        if mismatch_dimension == "identity"
+        else row.identity_id
+    )
+    allowed_domain = (
+        "other.list-abac.example"
+        if mismatch_dimension == "domain"
+        else row.domain
+    )
+    actor = _manager(
+        identity_ids=(
+            frozenset({allowed_identity})
+            if scope_kind in {"identity", "both"}
+            else None
+        ),
+        domains=(
+            frozenset({allowed_domain})
+            if scope_kind in {"domain", "both"}
+            else None
+        ),
+    )
+    if allowed:
+        views = await service.list_available_for_campaign(
+            _TENANT, limit=10, actor=actor
+        )
+        assert [view.identity_id for view in views] == [row.identity_id]
+        assert audit.records == [
+            {
+                "actor": "manager_1",
+                "action": SendingIdentityAction.IDENTITY_LIST.value,
+                "tenant_id": _TENANT,
+                "scope": ScopeLevel.MANAGER.value,
+                "rule": "phase1:manager:manager:identity:list",
+            }
+        ]
+    else:
+        with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+            await service.list_available_for_campaign(_TENANT, limit=10, actor=actor)
+        assert audit.records == [
+            {
+                "actor": "manager_1",
+                "action": SendingIdentityAction.IDENTITY_LIST.value,
+                "tenant_id": _TENANT,
+                "scope": ScopeLevel.MANAGER.value,
+                "rule": "deny:authorization",
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_manager_list_denies_whole_multirow_result_on_any_unauthorized_row() -> None:
+    """第二行越权时不得返回第一行或留下 allow audit。"""
+    service, factory, audit, _ = _build(
+        authorizer=Phase1SendingIdentityAuthorizer(_TENANT)
+    )
+    allowed_row = _seed_available(
+        factory,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRS"),
+        domain="allowed.list-abac.example",
+    )
+    _seed_available(
+        factory,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+        domain="denied.list-abac.example",
+    )
+    actor = _manager(identity_ids=frozenset({allowed_row.identity_id}))
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        await service.list_available_for_campaign(_TENANT, limit=10, actor=actor)
+    assert audit.records == [
+        {
+            "actor": "manager_1",
+            "action": SendingIdentityAction.IDENTITY_LIST.value,
+            "tenant_id": _TENANT,
+            "scope": ScopeLevel.MANAGER.value,
+            "rule": "deny:authorization",
+        }
+    ]
+    assert not any(str(record["rule"]).startswith("phase1:") for record in audit.records)
+
+
+@pytest.mark.asyncio
+async def test_manager_empty_list_uses_one_targetless_full_require_then_allows() -> None:
+    """空结果必须显式 full authorize，且 allow 只能发生在 UoW 成功退出后。"""
+    tracing = _TracingPhase1Authorizer(_TENANT, [])
+    service, _, audit, order = _build(authorizer=tracing)
+    tracing.order = order
+    actor = _manager(
+        identity_ids=frozenset(
+            {SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRS")}
+        )
+    )
+    assert await service.list_available_for_campaign(
+        _TENANT, limit=10, actor=actor
+    ) == []
+    targetless = f"require:{SendingIdentityAction.IDENTITY_LIST.value}:None:None"
+    assert order.count(targetless) == 1
+    assert order[0] == f"preauthorize:{SendingIdentityAction.IDENTITY_LIST.value}"
+    assert order.index("identity:list_available") < order.index(targetless)
+    assert order.index(targetless) < order.index("uow:commit")
+    assert order[-1] == "audit:phase1:manager:manager:identity:list"
+    assert len(audit.records) == 1
 
 
 @pytest.mark.asyncio

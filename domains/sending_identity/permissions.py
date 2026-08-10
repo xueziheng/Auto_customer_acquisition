@@ -263,17 +263,23 @@ class Phase1SendingIdentityAuthorizer:
             identity_id is None or scope.allowed_identity_ids != frozenset({identity_id})
         ):
             raise PermissionDenied("Phase 1 发件身份授权拒绝")
-        if level is ScopeLevel.MANAGER and action is not SendingIdentityAction.IDENTITY_LIST:
-            if scope.allowed_identity_ids is not None and (
-                identity_id is None or identity_id not in scope.allowed_identity_ids
-            ):
-                raise PermissionDenied("Phase 1 发件身份授权拒绝")
-            if scope.allowed_domains is not None and (
-                not isinstance(domain, str)
-                or normalize_sending_domain(domain) != domain
-                or domain not in scope.allowed_domains
-            ):
-                raise PermissionDenied("Phase 1 发件身份授权拒绝")
+        if level is ScopeLevel.MANAGER:
+            targetless_empty_list = (
+                action is SendingIdentityAction.IDENTITY_LIST
+                and identity_id is None
+                and domain is None
+            )
+            if not targetless_empty_list:
+                if scope.allowed_identity_ids is not None and (
+                    identity_id is None or identity_id not in scope.allowed_identity_ids
+                ):
+                    raise PermissionDenied("Phase 1 发件身份授权拒绝")
+                if scope.allowed_domains is not None and (
+                    not isinstance(domain, str)
+                    or normalize_sending_domain(domain) != domain
+                    or domain not in scope.allowed_domains
+                ):
+                    raise PermissionDenied("Phase 1 发件身份授权拒绝")
         return f"phase1:{actor.role}:{level.value}:{action.value}"
 
 
