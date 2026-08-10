@@ -238,7 +238,13 @@ class ReputationView:
 
 @dataclass(frozen=True)
 class DomainReputationView:
-    """规范化域名的聚合信誉视图。"""
+    """规范化域名的聚合信誉视图。
+
+    样本充足性使用全部成员的保守阈值；``worst_identity_id`` 表示
+    当前持久化限制状态的唯一 controller，``suspended`` 严重于
+    ``throttled``，同级按 canonical identity ID 升序取第一个；无受限
+    identity 时为 ``None``。
+    """
 
     domain: str
     role: DomainRole

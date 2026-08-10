@@ -268,7 +268,7 @@ def _conservative_thresholds(
 ) -> ReputationThresholds:
     thresholds = [identity.thresholds for identity in identities]
     if not thresholds:
-        raise ValidationError("发件域名缺少身份")
+        return ReputationThresholds()
     return ReputationThresholds(
         throttle_hard_bounce_rate=min(
             item.throttle_hard_bounce_rate for item in thresholds
@@ -286,6 +286,20 @@ def _conservative_thresholds(
         suspend_on_blocklist=any(item.suspend_on_blocklist for item in thresholds),
         minimum_sample=min(item.minimum_sample for item in thresholds),
     )
+
+
+def _domain_reputation_controller(
+    identities: list[SendingIdentity],
+) -> SendingIdentityId | None:
+    """按持久化限制状态与 canonical ID 确定唯一 controller。"""
+    for state in (IdentityState.SUSPENDED, IdentityState.THROTTLED):
+        candidates = sorted(
+            (identity for identity in identities if identity.state is state),
+            key=lambda identity: str(identity.identity_id),
+        )
+        if candidates:
+            return candidates[0].identity_id
+    return None
 
 
 def _resume_window_is_safe(window: ReputationWindow) -> bool:
@@ -464,15 +478,17 @@ class SendingIdentityServiceImpl:
 
     def _audit_authorization_deny(
         self,
-        actor: Actor,
+        actor: object,
         action: SendingIdentityAction,
         tenant_id: TenantId,
     ) -> None:
+        actor_id = actor.actor_id if isinstance(actor, Actor) else "unknown"
+        scope = actor.scope.label if isinstance(actor, Actor) else "none"
         self._audit.log(
-            actor=actor.actor_id,
+            actor=actor_id,
             action=action.value,
             tenant_id=tenant_id,
-            scope=actor.scope.label,
+            scope=scope,
             rule="deny:authorization",
         )
 
@@ -482,6 +498,9 @@ class SendingIdentityServiceImpl:
         action: SendingIdentityAction,
         tenant_id: TenantId,
     ) -> None:
+        if not isinstance(actor, Actor):
+            self._audit_authorization_deny(actor, action, tenant_id)
+            raise PermissionDenied("Phase 1 发件身份授权拒绝")
         try:
             self._authorizer.preauthorize(actor, action, actor.scope, tenant_id)
         except PermissionDenied:
@@ -1249,7 +1268,7 @@ class SendingIdentityServiceImpl:
                 rule=rule,
                 now=now,
             )
-            view = await self._build_reputation_view(window, source)
+            view = await self._build_reputation_view(window, source.thresholds)
         self._audit_allow(actor, action, tenant_id, rule)
         return view
 
@@ -1388,7 +1407,9 @@ class SendingIdentityServiceImpl:
         self._audit_allow(actor, action, tenant_id, rule)
 
     async def _build_reputation_view(
-        self, window: ReputationWindow, identity: SendingIdentity
+        self,
+        window: ReputationWindow,
+        thresholds: ReputationThresholds,
     ) -> ReputationView:
         return ReputationView(
             window_days=window.window_days,
@@ -1400,7 +1421,7 @@ class SendingIdentityServiceImpl:
             computed_at=window.computed_at,
             spam_trap_hits=window.spam_trap_hits,
             blocklist_hits=window.blocklist_hits,
-            sample_sufficient=window.sent_attempts >= identity.thresholds.minimum_sample,
+            sample_sufficient=window.sent_attempts >= thresholds.minimum_sample,
         )
 
     async def _build_identity_view(
@@ -1425,7 +1446,7 @@ class SendingIdentityServiceImpl:
         window = await uow.reputation.compute_window(
             identity.tenant_id, identity.identity_id, 7, now
         )
-        reputation = await self._build_reputation_view(window, identity)
+        reputation = await self._build_reputation_view(window, identity.thresholds)
         count = await uow.counters.get_count(
             identity.tenant_id, identity.identity_id, now.date()
         )
@@ -1591,19 +1612,10 @@ class SendingIdentityServiceImpl:
             window = await uow.reputation.compute_domain_window(
                 tenant_id, normalized, 7, now
             )
-            representative = identities[0] if identities else SendingIdentity(
-                identity_id=SendingIdentityId(new_id("sid")),
-                tenant_id=tenant_id,
-                address=f"aggregate@{normalized}",
-                domain=normalized,
-                role=domain_row.role,
-                created_at=now,
+            reputation = await self._build_reputation_view(
+                window, _conservative_thresholds(identities)
             )
-            reputation = await self._build_reputation_view(window, representative)
-            at_risk = any(
-                identity.state in {IdentityState.THROTTLED, IdentityState.SUSPENDED}
-                for identity in identities
-            )
+            controller = _domain_reputation_controller(identities)
             view = DomainReputationView(
                 domain=normalized,
                 role=domain_row.role,
@@ -1612,8 +1624,8 @@ class SendingIdentityServiceImpl:
                     identity.state is IdentityState.ACTIVE for identity in identities
                 ),
                 reputation=reputation,
-                at_risk=at_risk,
-                worst_identity_id=None,
+                at_risk=controller is not None,
+                worst_identity_id=controller,
             )
         self._audit_allow(actor, action, tenant_id, rule)
         return view

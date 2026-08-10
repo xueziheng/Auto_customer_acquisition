@@ -849,3 +849,67 @@ async def test_same_domain_other_tenant_and_role_never_enters_aggregate(
     )
     assert states == [IdentityState.WARMING.value]
     assert (event_count, action_count, outbox) == (0, 3, [])
+
+
+async def test_domain_view_and_fuse_share_conservative_thresholds_with_tenant_filter(
+    engine_fx: AsyncEngine,
+) -> None:
+    """真实 PG 证明 view/fuse 共用保守阈值，且不混入同名跨租户事实。"""
+    tenant = TenantId("tRepViewFuseTarget")
+    other_tenant = TenantId("tRepViewFuseOther")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    service = _service(sf, tenant, _Audit())
+    other_service = _service(sf, other_tenant, _Audit())
+    domain = "cold.rep-view-fuse.example"
+    first = await _ready_identity(service, tenant, local="first", domain=domain)
+    second = await _ready_identity(service, tenant, local="second", domain=domain)
+    other = await _ready_identity(
+        other_service,
+        other_tenant,
+        local="other",
+        domain=domain,
+    )
+    lower_id, higher_id = sorted((first, second), key=str)
+    tables = importlib.import_module("infra.db.tables")
+    async with sf() as session:
+        for identity_id, minimum_sample in ((lower_id, 100), (higher_id, 10)):
+            result = await session.execute(
+                update(tables.SendingIdentityRow)
+                .where(
+                    tables.SendingIdentityRow.tenant_id == tenant,
+                    tables.SendingIdentityRow.identity_id == identity_id,
+                )
+                .values(minimum_sample=minimum_sample)
+            )
+            assert result.rowcount == 1
+        await session.commit()
+    await _seed_window_facts(
+        sf,
+        tenant,
+        {first: 25, second: 25},
+        [
+            (first, DeliveryEventType.HARD_BOUNCED, f"view-fuse-hard-{index}")
+            for index in range(3)
+        ],
+    )
+    await _seed_window_facts(sf, other_tenant, {other: 100}, [])
+
+    before = await service.get_domain_reputation(tenant, domain, actor=_boss())
+    assert before.identity_count == 2
+    assert before.reputation.sent_attempts == 50
+    assert before.reputation.hard_bounce_rate == Decimal(".06")
+    assert before.reputation.sample_sufficient
+    assert before.worst_identity_id is None
+
+    await service.evaluate_reputation(tenant, first, actor=_system(first))
+    after = await service.get_domain_reputation(tenant, domain, actor=_boss())
+
+    assert after.reputation.sample_sufficient
+    assert after.worst_identity_id == lower_id
+    target_states, _, _, _ = await _stored_summary(sf, tenant, (first, second))
+    other_states, _, _, _ = await _stored_summary(sf, other_tenant, (other,))
+    assert target_states == [
+        IdentityState.SUSPENDED.value,
+        IdentityState.SUSPENDED.value,
+    ]
+    assert other_states == [IdentityState.WARMING.value]

@@ -24,6 +24,7 @@ from tests.unit.test_sending_identity_service import (
     _NOW,
     _TENANT,
     _auth,
+    _boss,
     _build,
     _seed,
     _seed_sendable,
@@ -408,6 +409,130 @@ def _add_domain_identity(
     )
     factory.identities[str(identity_id)] = identity
     return identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lower_id_minimum", "higher_id_minimum"),
+    [(100, 10), (10, 100)],
+)
+async def test_domain_reputation_uses_conservative_sample_threshold_independent_of_id_order(
+    lower_id_minimum: int,
+    higher_id_minimum: int,
+) -> None:
+    """交换 identity ID 所对应的阈值后，domain view 仍与熔断共用最小样本数。"""
+    service, factory, _, _ = _build()
+    lower = _seed_sendable(factory)
+    lower.thresholds = ReputationThresholds(minimum_sample=lower_id_minimum)
+    higher = _add_domain_identity(
+        factory,
+        lower,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+        state=IdentityState.ACTIVE,
+        thresholds=ReputationThresholds(minimum_sample=higher_id_minimum),
+    )
+    assert str(lower.identity_id) < str(higher.identity_id)
+    factory.domain_windows[lower.domain] = _window(sent=50, hard_bounced=3)
+
+    view = await service.get_domain_reputation(
+        _TENANT, lower.domain, actor=_boss()
+    )
+
+    assert view.identity_count == 2
+    assert view.reputation.sent_attempts == 50
+    assert view.reputation.hard_bounce_rate == Decimal(".06")
+    assert view.reputation.sample_sufficient
+    assert view.worst_identity_id is None
+
+
+@pytest.mark.asyncio
+async def test_empty_domain_reputation_uses_default_thresholds() -> None:
+    """已存在但尚无 identity 的 domain 使用默认样本阈值，不伪造 controller。"""
+    service, factory, _, _ = _build()
+    identity = _seed_sendable(factory)
+    factory.identities.clear()
+    factory.domain_windows[identity.domain] = _window(sent=49, hard_bounced=49)
+
+    view = await service.get_domain_reputation(
+        _TENANT, identity.domain, actor=_boss()
+    )
+
+    assert view.identity_count == 0
+    assert view.active_count == 0
+    assert not view.reputation.sample_sufficient
+    assert view.worst_identity_id is None
+
+
+@pytest.mark.asyncio
+async def test_single_restricted_identity_is_domain_reputation_controller() -> None:
+    """单 identity domain 的 controller 就是当前持久化的受限 identity。"""
+    service, factory, _, _ = _build()
+    identity = _seed_sendable(factory)
+    identity.thresholds = ReputationThresholds(minimum_sample=75)
+    identity.transition_to(IdentityState.THROTTLED)
+    factory.domain_windows[identity.domain] = _window(sent=50, hard_bounced=1)
+
+    view = await service.get_domain_reputation(
+        _TENANT, identity.domain, actor=_boss()
+    )
+
+    assert not view.reputation.sample_sufficient
+    assert view.at_risk
+    assert view.worst_identity_id == identity.identity_id
+
+
+@pytest.mark.asyncio
+async def test_domain_reputation_controller_prefers_suspended_over_throttled() -> None:
+    """当前持久化状态决定 controller：SUSPENDED 严重于 THROTTLED。"""
+    service, factory, _, _ = _build()
+    throttled = _seed_sendable(factory)
+    throttled.transition_to(IdentityState.THROTTLED)
+    suspended = _add_domain_identity(
+        factory,
+        throttled,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+        state=IdentityState.WARMING,
+        thresholds=ReputationThresholds(),
+    )
+    suspended.transition_to(
+        IdentityState.SUSPENDED,
+        suspension_category=SuspensionCategory.HARD_BOUNCE_RATE,
+    )
+
+    view = await service.get_domain_reputation(
+        _TENANT, throttled.domain, actor=_boss()
+    )
+
+    assert view.worst_identity_id == suspended.identity_id
+
+
+@pytest.mark.asyncio
+async def test_domain_reputation_controller_tie_uses_canonical_identity_id() -> None:
+    """同为 SUSPENDED 时只返回 canonical identity_id 升序的第一个。"""
+    service, factory, _, _ = _build()
+    lower = _seed_sendable(factory)
+    lower.transition_to(
+        IdentityState.SUSPENDED,
+        suspension_category=SuspensionCategory.HARD_BOUNCE_RATE,
+    )
+    higher = _add_domain_identity(
+        factory,
+        lower,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+        state=IdentityState.WARMING,
+        thresholds=ReputationThresholds(),
+    )
+    higher.transition_to(
+        IdentityState.SUSPENDED,
+        suspension_category=SuspensionCategory.COMPLAINT_RATE,
+    )
+    assert str(lower.identity_id) < str(higher.identity_id)
+
+    view = await service.get_domain_reputation(
+        _TENANT, lower.domain, actor=_boss()
+    )
+
+    assert view.worst_identity_id == lower.identity_id
 
 
 @pytest.mark.asyncio

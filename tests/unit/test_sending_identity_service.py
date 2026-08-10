@@ -721,6 +721,92 @@ async def _invoke_successful_public_method(
     raise AssertionError(f"未覆盖 public method: {method_name}")
 
 
+async def _invoke_public_method_with_untrusted_actor(
+    method_name: str,
+    service: object,
+    actor: object,
+) -> None:
+    """为全部公共方法注入未信任 actor，业务参数故意不可用。"""
+    identity_id = SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRS")
+    if method_name == "register":
+        await service.register(
+            _TENANT,
+            IdentityRegisterRequest(
+                address="guard@cold.guard.example",
+                domain="cold.guard.example",
+                role=DomainRole.COLD_OUTREACH,
+            ),
+            actor=actor,
+        )
+        return
+    if method_name == "begin_authentication":
+        await service.begin_authentication(_TENANT, identity_id, actor=actor)
+        return
+    if method_name == "record_authentication_result":
+        await service.record_authentication_result(
+            _TENANT, identity_id, _auth(), actor=actor
+        )
+        return
+    if method_name == "start_warmup":
+        await service.start_warmup(_TENANT, identity_id, 0, actor=actor)
+        return
+    if method_name == "advance_warmup":
+        await service.advance_warmup(_TENANT, identity_id, actor=actor)
+        return
+    if method_name == "check_send_permission":
+        await service.check_send_permission(
+            _TENANT, identity_id, object(), actor=actor
+        )
+        return
+    if method_name == "reserve_send_slot":
+        await service.reserve_send_slot(
+            _TENANT, identity_id, IdempotencyKey(""), object(), actor=actor
+        )
+        return
+    if method_name == "record_delivery_event":
+        await service.record_delivery_event(
+            _TENANT,
+            identity_id,
+            DeliveryEventRecord(
+                tenant_id=_TENANT,
+                identity_id=identity_id,
+                event_type=DeliveryEventType.DELIVERED,
+                occurred_at=_NOW,
+                dedup_key=IdempotencyKey("guard-delivery-event"),
+                source_ref="guard-event-ref",
+            ),
+            actor=actor,
+        )
+        return
+    if method_name == "evaluate_reputation":
+        await service.evaluate_reputation(_TENANT, identity_id, actor=actor)
+        return
+    if method_name == "resume_from_throttle":
+        await service.resume_from_throttle(_TENANT, identity_id, actor=actor)
+        return
+    if method_name == "resume_from_suspension":
+        await service.resume_from_suspension(
+            _TENANT, identity_id, "", actor=actor
+        )
+        return
+    if method_name == "retire":
+        await service.retire(_TENANT, identity_id, "", actor=actor)
+        return
+    if method_name == "get":
+        await service.get(_TENANT, identity_id, actor=actor)
+        return
+    if method_name == "list_available_for_campaign":
+        await service.list_available_for_campaign(_TENANT, limit=0, actor=actor)
+        return
+    if method_name == "get_domain_reputation":
+        await service.get_domain_reputation(_TENANT, "", actor=actor)
+        return
+    if method_name == "get_warmup_progress":
+        await service.get_warmup_progress(_TENANT, identity_id, actor=actor)
+        return
+    raise AssertionError(f"未覆盖 public method: {method_name}")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "method_name,resource_marker",
@@ -765,6 +851,65 @@ async def test_every_public_method_uses_two_phase_authorization_and_post_commit_
             "tenant_id": _TENANT,
             "scope": audit.records[0]["scope"],
             "rule": f"allow-full:{action.value}",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_actor", [None, object()])
+@pytest.mark.parametrize(
+    ("method_name", "action"),
+    [
+        ("register", SendingIdentityAction.IDENTITY_REGISTER),
+        ("begin_authentication", SendingIdentityAction.AUTH_CHECK_BEGIN),
+        ("record_authentication_result", SendingIdentityAction.AUTH_RESULT_RECORD),
+        ("start_warmup", SendingIdentityAction.WARMUP_START),
+        ("advance_warmup", SendingIdentityAction.WARMUP_ADVANCE),
+        ("check_send_permission", SendingIdentityAction.SEND_PERMISSION_READ),
+        ("reserve_send_slot", SendingIdentityAction.SEND_SLOT_RESERVE),
+        ("record_delivery_event", SendingIdentityAction.DELIVERY_EVENT_RECORD),
+        ("evaluate_reputation", SendingIdentityAction.REPUTATION_EVALUATE),
+        ("resume_from_throttle", SendingIdentityAction.THROTTLE_RESUME),
+        ("resume_from_suspension", SendingIdentityAction.SUSPENSION_RESUME),
+        ("retire", SendingIdentityAction.IDENTITY_RETIRE),
+        ("get", SendingIdentityAction.IDENTITY_READ),
+        ("list_available_for_campaign", SendingIdentityAction.IDENTITY_LIST),
+        ("get_domain_reputation", SendingIdentityAction.REPUTATION_READ),
+        ("get_warmup_progress", SendingIdentityAction.IDENTITY_READ),
+    ],
+)
+async def test_every_public_method_rejects_untrusted_actor_at_shared_entry(
+    method_name: str,
+    action: SendingIdentityAction,
+    invalid_actor: object,
+) -> None:
+    """删除共用 actor guard 时，读写全矩阵必须在触碰时钟/UoW 前转红。"""
+    order: list[str] = []
+    factory = _UowFactory(order)
+    audit = _Audit(order)
+
+    def forbidden_clock() -> datetime:
+        pytest.fail("授权拒绝前不得读取时钟")
+
+    service = _service_class()(
+        factory,
+        Phase1SendingIdentityAuthorizer(_TENANT),
+        audit,
+        now=forbidden_clock,
+    )
+    with pytest.raises(PermissionDenied, match="^Phase 1 发件身份授权拒绝$"):
+        await _invoke_public_method_with_untrusted_actor(
+            method_name, service, invalid_actor
+        )
+
+    assert order == ["audit:deny:authorization"]
+    assert audit.records == [
+        {
+            "actor": "unknown",
+            "action": action.value,
+            "tenant_id": _TENANT,
+            "scope": "none",
+            "rule": "deny:authorization",
         }
     ]
 

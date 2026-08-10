@@ -29,6 +29,22 @@ RUN_ID=$(gh run list --branch codex/phase1-implementation --commit "$(git rev-pa
 gh run watch "$RUN_ID" --exit-status
 ```
 
+### Final review fix ruling（2026-08-11）
+
+- 16 个 public service method 继续共用同一 `_preauthorize` 入口。
+  `actor=None` 或任何非 `Actor` 对象必须在时钟、参数校验、UoW 与数据访问前
+  fail closed 为固定安全 `PermissionDenied`；恰写一条 deny audit，且五个字段
+  固定为 `actor="unknown"` / 当前 typed action / tenant / `scope="none"` /
+  `rule="deny:authorization"`。不得 `repr` 或回显 actor、资源标识与底层异常，
+  也不得产生 allow audit。
+- `get_domain_reputation` 的 `sample_sufficient` 与 `_evaluate_locked` 共用
+  `_conservative_thresholds(identities)`；空 domain identity list 使用默认
+  `ReputationThresholds`。`worst_identity_id` 只表示当前持久化限制状态的
+  controller：`SUSPENDED > THROTTLED`，同级按 canonical `identity_id` 升序
+  取一个，无受限 identity 时为 `None`。该视图不增加概率、float 或
+  新的风险分数。
+- 最终审查列出的三个 Minor 仍 deferred，本修复不扩展至它们。
+
 ---
 
 ## Public Contract Target
