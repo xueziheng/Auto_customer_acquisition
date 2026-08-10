@@ -89,7 +89,12 @@ from shared.events.catalog import (
     OpportunityQualified,
     OpportunityWon,
 )
-from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
+from shared.schemas.evidence import (
+    ConfidenceTier,
+    EvidenceItem,
+    EvidenceLevel,
+    derive_confidence,
+)
 from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
@@ -226,6 +231,36 @@ def validate_validated_need_evidence(evidence: ValidatedNeedEvidence) -> None:
             "EMPLOYEE_INPUT 证据必须带真实人工确认对"
             "（confirmed_by/confirmed_at）：员工录入本身不算客户明确表达"
         )
+
+
+def _derive_validated_need_confidence(
+    request: OpportunityCreateRequest,
+    evidence: ValidatedNeedEvidence,
+    *,
+    now: datetime,
+) -> ConfidenceTier:
+    """由已验证需求证据确定性推导打分档位。
+
+    ``request.evidence_tier`` 只是兼容一致性声明，不参与推导；它只能重申
+    原始 EvidenceLevel 或确定性推导后的 ConfidenceTier，否则在进入
+    UoW 前失败关闭（硬边界 3）。
+    """
+    provenance = evidence.provenance
+    result = derive_confidence(
+        [
+            EvidenceItem(
+                level=evidence.level,
+                source_type=provenance.source_type.value,
+                source_id=provenance.source_id,
+                observed_at=provenance.extracted_at,
+                summary="客户明确表达采购需求",
+            )
+        ],
+        now=now,
+    )
+    if request.evidence_tier not in {evidence.level.value, result.tier.value}:
+        raise ValidationError("证据档位声明与已验证需求证据不一致")
+    return result.tier
 
 
 # customer_verbatim 来源白名单（硬边界 4：原话必须能追到证据）。
@@ -557,6 +592,11 @@ class OpportunityServiceImpl:
         rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
         self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
         validate_validated_need_evidence(evidence)
+        evidence_tier = _derive_validated_need_confidence(
+            request,
+            evidence,
+            now=self._now(),
+        )
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(
@@ -570,7 +610,7 @@ class OpportunityServiceImpl:
                 opportunity_id = OpportunityId(new_id("opp"))
                 scoring_input = ScoringInput(
                     has_verified_contact=request.has_verified_contact,
-                    evidence_tier=ConfidenceTier(request.evidence_tier),
+                    evidence_tier=evidence_tier,
                     category_allowed=request.category_allowed,
                     minimum_order_value=request.minimum_order_value,
                     estimated_order_value=request.estimated_order_value,

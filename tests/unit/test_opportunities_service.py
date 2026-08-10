@@ -36,7 +36,7 @@ from domains.opportunities.schemas import (
     ValidatedNeedEvidence,
 )
 from domains.opportunities.scoring import ScoringInput
-from shared.errors import InvalidStateTransition
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DomainEvent,
     OpportunityLost,
@@ -122,6 +122,7 @@ def _request(
     country: str = "US",
     quantity: int | None = None,
     is_repeat_buyer_likely: bool = False,
+    evidence_tier: str = "mid_high",
     field_provenance: dict[str, Provenance] | None = None,
 ) -> OpportunityCreateRequest:
     return OpportunityCreateRequest(
@@ -130,7 +131,7 @@ def _request(
         account_name=account_name,
         country=country,
         product_category="hinges",
-        evidence_tier="high",
+        evidence_tier=evidence_tier,
         has_verified_contact=True,
         category_allowed=True,
         minimum_order_value=Money(Decimal(100), _USD),
@@ -512,6 +513,41 @@ def _make_service(factory: _UoWFactory, scorer: _FakeScorer):
 
 
 # --- create_from_need -------------------------------------------------------------
+
+
+async def test_create_derives_confidence_from_validated_evidence() -> None:
+    """客户证据等级声明经确定性规则推导为 MID_HIGH 后才进入打分。"""
+    factory = _UoWFactory()
+    scorer = _FakeScorer(_snap())
+    service = _make_service(factory, scorer)
+
+    result = await service.create_from_need(
+        TenantId("t1"),
+        _request(evidence_tier="customer_interest_reply"),
+        evidence=_evidence(),
+        actor=_actor(),
+    )
+
+    assert result is not None
+    assert scorer.calls[0][3].evidence_tier is ConfidenceTier.MID_HIGH
+
+
+async def test_create_rejects_mismatched_evidence_tier_before_uow() -> None:
+    """兼容声明既非原始证据等级也非推导档位时失败关闭且零业务副作用。"""
+    factory = _UoWFactory()
+    scorer = _FakeScorer(_snap())
+    service = _make_service(factory, scorer)
+
+    with pytest.raises(ValidationError):
+        await service.create_from_need(
+            TenantId("t1"),
+            _request(evidence_tier="high"),
+            evidence=_evidence(),
+            actor=_actor(),
+        )
+
+    assert factory.created == []
+    assert scorer.calls == []
 
 
 async def test_create_idempotent() -> None:
