@@ -22,6 +22,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -33,6 +34,252 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """声明式基类（schema 归迁移管理）。"""
+
+
+class SendingDomainRow(Base):
+    """``sending_domains`` 行；租户内域角色不可变。"""
+
+    __tablename__ = "sending_domains"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "domain", name="pk_sending_domains"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    domain: Mapped[str] = mapped_column(String(253))
+    role: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SendingIdentityRow(Base):
+    """``sending_identities`` 行；比率均为确定性 ``Numeric``。"""
+
+    __tablename__ = "sending_identities"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "identity_id", name="pk_sending_identities"),
+        UniqueConstraint(
+            "tenant_id", "address", name="uq_sending_identities_tenant_address"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "domain"],
+            ["sending_domains.tenant_id", "sending_domains.domain"],
+            ondelete="RESTRICT",
+            name="fk_sending_identities_domain",
+        ),
+        CheckConstraint(
+            "target_daily_volume IS NULL OR target_daily_volume BETWEEN 5 AND 100",
+            name="ck_sending_identity_target_volume",
+        ),
+        CheckConstraint("version >= 0", name="ck_sending_identity_version"),
+        CheckConstraint(
+            "minimum_sample >= 0", name="ck_sending_identity_minimum_sample"
+        ),
+        CheckConstraint(
+            "(warmup_started_on IS NULL) = (target_daily_volume IS NULL)",
+            name="ck_sending_identity_warmup_pair",
+        ),
+        CheckConstraint(
+            "split_part(address, '@', 2) = domain",
+            name="ck_sending_identity_address_domain",
+        ),
+        CheckConstraint(
+            "(state IN ('throttled', 'suspended') AND "
+            "sendable_state_before_restriction IN ('warming', 'active')) OR "
+            "(state NOT IN ('throttled', 'suspended') AND "
+            "sendable_state_before_restriction IS NULL)",
+            name="ck_sending_identity_restriction_state",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    domain: Mapped[str] = mapped_column(String(253))
+    address: Mapped[str] = mapped_column(String(320))
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(32))
+    connector_ref: Mapped[str | None] = mapped_column(String(64))
+    warmup_started_on: Mapped[date | None] = mapped_column(Date)
+    target_daily_volume: Mapped[int | None] = mapped_column(Integer)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sendable_state_before_restriction: Mapped[str | None] = mapped_column(String(32))
+    suspension_category: Mapped[str | None] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    throttle_hard_bounce_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    suspend_hard_bounce_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    throttle_complaint_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    suspend_complaint_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    suspend_on_spam_trap: Mapped[bool] = mapped_column(Boolean)
+    suspend_on_blocklist: Mapped[bool] = mapped_column(Boolean)
+    minimum_sample: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuthenticationCheckRow(Base):
+    """``sending_auth_checks`` 只增行。"""
+
+    __tablename__ = "sending_auth_checks"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "auth_check_id", name="pk_sending_auth_checks"),
+        UniqueConstraint(
+            "tenant_id",
+            "identity_id",
+            "check_ref",
+            name="uq_sending_auth_tenant_identity_ref",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_auth_identity",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    auth_check_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    spf_passed: Mapped[bool] = mapped_column(Boolean)
+    dkim_passed: Mapped[bool] = mapped_column(Boolean)
+    dmarc_passed: Mapped[bool] = mapped_column(Boolean)
+    failures: Mapped[list[dict[str, str]]] = mapped_column(postgresql.JSONB)
+    check_ref: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReputationEventRow(Base):
+    """``sending_reputation_events`` 只增行。"""
+
+    __tablename__ = "sending_reputation_events"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "reputation_event_id", name="pk_sending_reputation_events"
+        ),
+        UniqueConstraint(
+            "tenant_id", "dedup_key", name="uq_sending_reputation_tenant_dedup"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_reputation_identity",
+        ),
+        Index(
+            "ix_sending_reputation_tenant_identity_occurred",
+            "tenant_id",
+            "identity_id",
+            "occurred_at",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    reputation_event_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    event_type: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    dedup_key: Mapped[str] = mapped_column(String(200))
+    source_ref: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SendCounterRow(Base):
+    """``sending_daily_counters`` 单调计数行。"""
+
+    __tablename__ = "sending_daily_counters"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "identity_id", "on_day", name="pk_sending_daily_counters"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_counter_identity",
+        ),
+        CheckConstraint(
+            "sent_attempts >= 0", name="ck_sending_counter_nonnegative"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    on_day: Mapped[date] = mapped_column(Date)
+    sent_attempts: Mapped[int] = mapped_column(Integer)
+
+
+class SendReservationRow(Base):
+    """``sending_send_reservations`` 不可退款的只增预留。"""
+
+    __tablename__ = "sending_send_reservations"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "reservation_id", name="pk_sending_send_reservations"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "identity_id",
+            "reservation_key",
+            name="uq_sending_reservation_tenant_identity_key",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "identity_id",
+            "on_day",
+            "sequence",
+            name="uq_sending_reservation_tenant_identity_day_sequence",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_reservation_identity",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_sending_reservation_sequence"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    reservation_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    reservation_key: Mapped[str] = mapped_column(String(200))
+    on_day: Mapped[date] = mapped_column(Date)
+    sequence: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class IdentityActionRow(Base):
+    """``sending_identity_actions`` 只增审计行。"""
+
+    __tablename__ = "sending_identity_actions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "action_id", name="pk_sending_identity_actions"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "identity_id",
+            "action_key",
+            name="uq_sending_action_tenant_identity_key",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_action_identity",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    action_id: Mapped[str] = mapped_column(String(32))
+    identity_id: Mapped[str] = mapped_column(String(32))
+    action_key: Mapped[str] = mapped_column(String(200))
+    action: Mapped[str] = mapped_column(String(64))
+    before_state: Mapped[str | None] = mapped_column(String(32))
+    after_state: Mapped[str | None] = mapped_column(String(32))
+    actor_id: Mapped[str] = mapped_column(String(64))
+    scope: Mapped[str] = mapped_column(String(32))
+    rule: Mapped[str] = mapped_column(String(128))
+    note: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class OpportunityRow(Base):

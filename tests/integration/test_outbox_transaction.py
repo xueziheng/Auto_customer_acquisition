@@ -28,7 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from infra.db.tables import OpportunityRow, OutboxEventRow
 from shared.errors import ValidationError
-from shared.events.catalog import NeedValidated, OpportunityWon
+from shared.events.catalog import (
+    NeedValidated,
+    OpportunityWon,
+    ReputationThresholdBreached,
+    SendingIdentityActivated,
+    SendingIdentitySuspended,
+    SendingIdentityThrottled,
+)
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -324,3 +331,36 @@ async def test_uow_publish_tenant_mismatch_rejected(engine_fx: AsyncEngine) -> N
         await verify.close()
     assert outbox_rows == []
     assert len(opp_rows) == 1  # 业务照常提交；跨租户事件被拒、无 outbox 写入
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        SendingIdentityActivated(
+            tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=RunId("run-si"),
+            sending_identity_id="sid-event-1",
+        ),
+        SendingIdentityThrottled(
+            tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-event-2", new_state="throttled",
+            trigger_metric="hard_bounce_rate", metric_value="0.031000",
+        ),
+        SendingIdentitySuspended(
+            tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-event-3", reason="spam_trap",
+        ),
+        ReputationThresholdBreached(
+            tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-event-4", metric="complaint_rate",
+            value="0.001100", threshold="0.001000", severity="watch",
+        ),
+    ],
+)
+async def test_sending_identity_events_are_registered_roundtrip_and_safe(event: object) -> None:
+    """四个 sending identity 事件显式白名单 roundtrip，payload 不含敏感字段。"""
+    from infra.db.outbox import deserialize, resolve_event_type, serialize
+
+    event_type = resolve_event_type(type(event).__name__)
+    payload = serialize(event)  # type: ignore[arg-type]
+    assert deserialize(event_type, payload) == event
+    assert {"address", "domain", "connector_ref", "note"}.isdisjoint(payload)

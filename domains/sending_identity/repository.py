@@ -141,6 +141,7 @@ class SendReservationRepository(Protocol):
         reservation_key: IdempotencyKey,
         on_day: date,
         daily_limit: int,
+        created_at: datetime,
     ) -> ReservationResult: ...
 
 

@@ -1,6 +1,6 @@
 """outbox 事件写入（P1：发布写入与业务同一事务）。
 
-- ``EVENT_REGISTRY``：显式白名单（本切片 opportunities 域实际发布的事件类），
+- ``EVENT_REGISTRY``：显式白名单（已批准域实际发布的事件类），
   禁止反射扫描自动放行。
 - 事件序列化用 JSON：NewType→str、datetime→ISO、Enum→value、Money→{amount,currency}
   （Decimal 用 str 保精度）、嵌套 dataclass 递归。**禁止 pickle / 动态导入 /
@@ -31,6 +31,10 @@ from shared.events.catalog import (
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
+    ReputationThresholdBreached,
+    SendingIdentityActivated,
+    SendingIdentitySuspended,
+    SendingIdentityThrottled,
 )
 from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
@@ -42,8 +46,12 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "HandoffRequested": HandoffRequested,
     "HandoffAccepted": HandoffAccepted,
     "HandoffQueueBacklogged": HandoffQueueBacklogged,
+    "SendingIdentityActivated": SendingIdentityActivated,
+    "SendingIdentityThrottled": SendingIdentityThrottled,
+    "SendingIdentitySuspended": SendingIdentitySuspended,
+    "ReputationThresholdBreached": ReputationThresholdBreached,
 }
-"""显式白名单：与 ``domains/opportunities/events.py`` 的 PUBLISHES 一致。
+"""显式白名单：与 opportunities / sending_identity 的 PUBLISHES 一致。
 不允许用反射扫描 catalog 自动放行——新事件必须先经契约评审再加白名单。"""
 
 

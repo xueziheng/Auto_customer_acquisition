@@ -59,7 +59,7 @@ def _load(symbol: str):
 
 
 def test_event_registry_is_explicit_whitelist() -> None:
-    """EVENT_REGISTRY 显式白名单 = opportunities PUBLISHES 的 6 事件。"""
+    """EVENT_REGISTRY 只含已批准的 opportunities 与 sending identity 事件。"""
     EVENT_REGISTRY = _load("EVENT_REGISTRY")
     assert set(EVENT_REGISTRY) == {
         "OpportunityQualified",
@@ -68,6 +68,10 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "HandoffRequested",
         "HandoffAccepted",
         "HandoffQueueBacklogged",
+        "SendingIdentityActivated",
+        "SendingIdentityThrottled",
+        "SendingIdentitySuspended",
+        "ReputationThresholdBreached",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
 

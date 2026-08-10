@@ -767,6 +767,9 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_transfer_tenant_account": ("tenant_id", "account_id"),
         "ix_workflow_runs_tenant_status_poll": ("tenant_id", "status", "next_poll_at"),
         "ix_workflow_steps_tenant_status_due": ("tenant_id", "status", "due_at"),
+        "ix_sending_reputation_tenant_identity_occurred": (
+            "tenant_id", "identity_id", "occurred_at",
+        ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
