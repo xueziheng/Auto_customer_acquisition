@@ -348,7 +348,8 @@ export interface components {
          *         product_category, quantity, spec_summary, application,
          *         destination, required_by, target_price
          *         current_supply_solution, current_supply_problem
-         *         evidence_tier:        证据档位（字符串，来自 shared 的枚举值）
+         *         evidence_tier:        兼容一致性声明；只可重申 evidence.level 或
+         *                               确定性推导后的 ConfidenceTier，不直接决定分数
          *         has_verified_contact
          *         category_allowed / minimum_order_value / supply_available / is_repeat_buyer_likely
          *         field_provenance:     关键字段（CRITICAL_FIELDS）的来源；present 必须各有、

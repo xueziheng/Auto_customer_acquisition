@@ -152,7 +152,7 @@ async def main() -> None:
             account_name="Acme 五金采购部",
             country="US",
             product_category="hinges",
-            evidence_tier="high",  # ConfidenceTier.HIGH ≥ 最低档 LOW_MID，过证据门槛
+            evidence_tier=EvidenceLevel.CUSTOMER_INTEREST_REPLY.value,
             has_verified_contact=True,
             category_allowed=True,
             minimum_order_value=Money(Decimal(100), _USD),

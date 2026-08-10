@@ -346,6 +346,86 @@ describe("opportunity board", () => {
     app.unmount();
   });
 
+  it("exposes account and country provenance when they are the only sourced facts", async () => {
+    const accountProvenance: ProvenanceSummary = {
+      confirmed_at: null,
+      confirmed_by: null,
+      extracted_at: "2026-08-10T02:00:00Z",
+      extracted_by: "human",
+      field_name: "account_name",
+      page_hash: null,
+      source_id: "e2e-message-identity",
+      source_type: "conversation",
+      source_url: null,
+    };
+    const countryProvenance: ProvenanceSummary = {
+      ...accountProvenance,
+      field_name: "country",
+      source_id: "e2e-message-country",
+    };
+    const identityOnly: OpportunityView = {
+      ...firstOpportunity,
+      can_source: null,
+      current_supply_problem: null,
+      destination: null,
+      estimated_cost: null,
+      estimated_profit: null,
+      provenance: [accountProvenance, countryProvenance],
+      quantity: null,
+      required_by: null,
+      spec_summary: null,
+      target_price: null,
+    };
+    const { app, root } = await mountBoard(
+      makeReadFetch([identityOnly, { ...secondOpportunity, provenance: [] }]),
+    );
+    const article = root.querySelector("article")!;
+
+    const sourceButtons = [...article.querySelectorAll("button")].filter((button) =>
+      button.textContent?.includes("查看来源"),
+    ) as HTMLButtonElement[];
+    expect(sourceButtons).toHaveLength(2);
+
+    const accountTrigger = sourceButtons[0]!;
+    accountTrigger.focus();
+    accountTrigger.click();
+    const accountDialog = article.querySelector('[role="dialog"]') as HTMLElement;
+    await eventually(() => {
+      expect(accountDialog.hidden).toBe(false);
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("关闭来源");
+    });
+    for (const visibleText of [
+      "客户名称 · 已验证事实",
+      "来源类型",
+      "conversation",
+      "来源标识",
+      "e2e-message-identity",
+      "提取者",
+      "human",
+      "提取时间",
+      "2026-08-10T02:00:00Z",
+      "确认人",
+      "尚未确认",
+      "确认时间",
+    ]) {
+      expect(accountDialog.textContent).toContain(visibleText);
+    }
+    accountDialog.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    await eventually(() => {
+      expect(accountDialog.hidden).toBe(true);
+      expect(document.activeElement).toBe(accountTrigger);
+    });
+
+    sourceButtons[1]!.click();
+    const dialogs = article.querySelectorAll<HTMLElement>('[role="dialog"]');
+    await eventually(() => {
+      expect(dialogs[1]?.hidden).toBe(false);
+      expect(dialogs[1]?.textContent).toContain("国家 / 地区 · 已验证事实");
+      expect(dialogs[1]?.textContent).toContain("e2e-message-country");
+    });
+    app.unmount();
+  });
+
   it("locks both write entries, ignores duplicate writes, and refetches instead of optimistically changing state", async () => {
     let finishWrite: (() => void) | undefined;
     let transitioned = false;

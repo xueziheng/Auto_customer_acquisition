@@ -151,12 +151,24 @@ function submitMarkLost(): void {
         <span class="status-tag"><span aria-hidden="true">●</span> {{ statusLabel }}</span>
       </div>
       <h1>{{ opportunity.account_name }}</h1>
+      <ProvenancePopover
+        v-if="provenanceFor('account_name')"
+        field-label="客户名称"
+        :provenance="provenanceFor('account_name')!"
+      />
       <p class="record-id">
         {{ opportunity.opportunity_id }}
       </p>
       <div class="summary-grid">
         <div><span>负责人</span><strong>{{ opportunity.owner_name ?? opportunity.owner ?? "未分配" }}</strong></div>
-        <div><span>国家 / 地区</span><strong>{{ opportunity.country }}</strong></div>
+        <div>
+          <span>国家 / 地区</span><strong>{{ opportunity.country }}</strong>
+          <ProvenancePopover
+            v-if="provenanceFor('country')"
+            field-label="国家 / 地区"
+            :provenance="provenanceFor('country')!"
+          />
+        </div>
         <div><span>产品品类</span><strong>{{ opportunity.product_category }}</strong></div>
         <div>
           <span>下一步 / 到期</span>
