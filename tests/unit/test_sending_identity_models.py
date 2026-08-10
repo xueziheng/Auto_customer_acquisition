@@ -234,6 +234,32 @@ def test_transition_api_cannot_construct_invalid_suspension_state() -> None:
     assert identity.state is models.IdentityState.ACTIVE
 
 
+def test_identity_version_is_a_non_negative_real_integer() -> None:
+    """丢失或伪造 version 会破坏状态 action/outbox 的稳定幂等键。"""
+    assert _identity(models.IdentityState.CREATED).version == 0
+    versioned = models.SendingIdentity(
+        identity_id=SendingIdentityId("sid-versioned"),
+        tenant_id=TenantId("tenant-1"),
+        address="versioned@example.com",
+        domain="example.com",
+        role=models.DomainRole.COLD_OUTREACH,
+        created_at=datetime(2026, 8, 10, tzinfo=UTC),
+        version=7,
+    )
+    assert versioned.version == 7
+    for invalid in (-1, True, "1"):
+        with pytest.raises(ValidationError):
+            models.SendingIdentity(
+                identity_id=SendingIdentityId("sid-invalid-version"),
+                tenant_id=TenantId("tenant-1"),
+                address="invalid@example.com",
+                domain="example.com",
+                role=models.DomainRole.COLD_OUTREACH,
+                created_at=datetime(2026, 8, 10, tzinfo=UTC),
+                version=invalid,  # type: ignore[arg-type]
+            )
+
+
 @pytest.mark.parametrize(
     ("day_number", "expected"),
     [

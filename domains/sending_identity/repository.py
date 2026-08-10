@@ -45,6 +45,32 @@ class AuthenticationCheckRecord:
 
 
 @dataclass(frozen=True)
+class IdentityRegistrationResult:
+    """按地址原子登记的 typed winner。"""
+
+    created: bool
+    winner: SendingIdentity
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.created, bool) or not isinstance(self.winner, SendingIdentity):
+            raise TypeError("identity registration result 无效")
+
+
+@dataclass(frozen=True)
+class AuthenticationAppendResult:
+    """按 check_ref 原子追加的 typed winner。"""
+
+    created: bool
+    winner: AuthenticationCheckRecord
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.created, bool) or not isinstance(
+            self.winner, AuthenticationCheckRecord
+        ):
+            raise TypeError("authentication append result 无效")
+
+
+@dataclass(frozen=True)
 class IdentityActionRecord:
     action_id: str
     tenant_id: TenantId
@@ -83,10 +109,16 @@ class SendingDomainRepository(Protocol):
 
     async def get(self, tenant_id: TenantId, domain: str) -> SendingDomain | None: ...
 
+    async def ensure(self, domain: SendingDomain) -> SendingDomain: ...
+
 
 @runtime_checkable
 class SendingIdentityRepository(Protocol):
     async def add(self, identity: SendingIdentity) -> None: ...
+
+    async def register_if_address_absent(
+        self, identity: SendingIdentity
+    ) -> IdentityRegistrationResult: ...
 
     async def get(
         self, tenant_id: TenantId, identity_id: SendingIdentityId, *, for_update: bool = False
@@ -108,6 +140,10 @@ class SendingIdentityRepository(Protocol):
 @runtime_checkable
 class AuthenticationCheckRepository(Protocol):
     async def add(self, record: AuthenticationCheckRecord) -> None: ...
+
+    async def append_if_ref_absent(
+        self, record: AuthenticationCheckRecord
+    ) -> AuthenticationAppendResult: ...
 
     async def latest_for_identity(
         self, tenant_id: TenantId, identity_id: SendingIdentityId

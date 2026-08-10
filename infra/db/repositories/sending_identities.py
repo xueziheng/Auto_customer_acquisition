@@ -25,8 +25,10 @@ from domains.sending_identity.models import (
 )
 from domains.sending_identity.permissions import ScopeLevel, SendingIdentityScope
 from domains.sending_identity.repository import (
+    AuthenticationAppendResult,
     AuthenticationCheckRecord,
     IdentityActionRecord,
+    IdentityRegistrationResult,
     ReservationOutcome,
     ReservationResult,
     SendingDomain,
@@ -132,7 +134,7 @@ def _identity_to_row(identity: SendingIdentity) -> SendingIdentityRow:
             if identity.suspension_category is not None
             else None
         ),
-        version=0,
+        version=identity.version,
         throttle_hard_bounce_rate=thresholds.throttle_hard_bounce_rate,
         suspend_hard_bounce_rate=thresholds.suspend_hard_bounce_rate,
         throttle_complaint_rate=thresholds.throttle_complaint_rate,
@@ -181,6 +183,7 @@ def _row_to_identity(row: SendingIdentityRow, role: str) -> SendingIdentity:
             else None
         ),
         connector_ref=row.connector_ref,
+        version=row.version,
     )
 
 
@@ -251,6 +254,31 @@ class SendingDomainRepositoryImpl(_SendingRepository):
         ).scalar_one_or_none()
         return _row_to_domain(row) if row is not None else None
 
+    async def ensure(self, domain: SendingDomain) -> SendingDomain:
+        """精确按 tenant/domain 创建或返回并锁定数据库 winner。"""
+        self._require_tenant(domain.tenant_id, "sending_domain_ensure_tenant")
+        result = await self._session.execute(
+            insert(SendingDomainRow)
+            .values(
+                tenant_id=domain.tenant_id,
+                domain=domain.domain,
+                role=domain.role.value,
+                created_at=domain.created_at,
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "domain"])
+            .returning(SendingDomainRow.domain)
+        )
+        if result.scalar_one_or_none() is not None:
+            return domain
+        row = (
+            await self._session.execute(
+                self.scoped_query(SendingDomainRow)
+                .where(SendingDomainRow.domain == domain.domain)
+                .with_for_update()
+            )
+        ).scalar_one()
+        return _row_to_domain(row)
+
 
 class SendingIdentityRepositoryImpl(_SendingRepository):
     """身份 repository；scope/auth/state 过滤全部发生在 SQL LIMIT 之前。"""
@@ -272,6 +300,36 @@ class SendingIdentityRepositoryImpl(_SendingRepository):
         self._require_tenant(identity.tenant_id, "sending_identity_write_tenant")
         self._session.add(_identity_to_row(identity))
         await self._session.flush()
+
+    async def register_if_address_absent(
+        self, identity: SendingIdentity
+    ) -> IdentityRegistrationResult:
+        """精确按 tenant/address 插入，返回创建行或数据库 winner。"""
+        self._require_tenant(identity.tenant_id, "sending_identity_register_tenant")
+        row = _identity_to_row(identity)
+        values = {
+            column.name: getattr(row, column.name)
+            for column in SendingIdentityRow.__table__.columns
+        }
+        result = await self._session.execute(
+            insert(SendingIdentityRow)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["tenant_id", "address"])
+            .returning(SendingIdentityRow.identity_id)
+        )
+        if result.scalar_one_or_none() is not None:
+            return IdentityRegistrationResult(created=True, winner=identity)
+        winner = (
+            await self._session.execute(
+                self._joined()
+                .where(SendingIdentityRow.address == identity.address)
+                .with_for_update(of=SendingIdentityRow)
+            )
+        ).one()
+        return IdentityRegistrationResult(
+            created=False,
+            winner=_row_to_identity(winner[0], winner[1]),
+        )
 
     async def get(
         self,
@@ -443,6 +501,39 @@ class AuthenticationCheckRepositoryImpl(_SendingRepository):
         self._require_tenant(record.tenant_id, "sending_auth_write_tenant")
         self._session.add(_auth_to_row(record))
         await self._session.flush()
+
+    async def append_if_ref_absent(
+        self, record: AuthenticationCheckRecord
+    ) -> AuthenticationAppendResult:
+        """精确按 tenant/identity/check_ref 追加或返回数据库 winner。"""
+        self._require_tenant(record.tenant_id, "sending_auth_append_tenant")
+        row = _auth_to_row(record)
+        values = {
+            column.name: getattr(row, column.name)
+            for column in AuthenticationCheckRow.__table__.columns
+        }
+        result = await self._session.execute(
+            insert(AuthenticationCheckRow)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "identity_id", "check_ref"]
+            )
+            .returning(AuthenticationCheckRow.auth_check_id)
+        )
+        if result.scalar_one_or_none() is not None:
+            return AuthenticationAppendResult(created=True, winner=record)
+        winner = (
+            await self._session.execute(
+                self.scoped_query(AuthenticationCheckRow).where(
+                    AuthenticationCheckRow.identity_id == record.identity_id,
+                    AuthenticationCheckRow.check_ref == record.result.check_ref,
+                )
+            )
+        ).scalar_one()
+        return AuthenticationAppendResult(
+            created=False,
+            winner=_row_to_auth(winner),
+        )
 
     async def latest_for_identity(
         self, tenant_id: TenantId, identity_id: SendingIdentityId

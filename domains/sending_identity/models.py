@@ -367,12 +367,15 @@ class SendingIdentity:
     sendable_state_before_restriction: IdentityState | None = None
     suspension_category: SuspensionCategory | None = None
     connector_ref: str | None = None
+    version: int = 0
 
     def __post_init__(self) -> None:
         self.domain = normalize_sending_domain(self.domain)
         self.address = normalize_sending_address(self.address, self.domain)
         if not isinstance(self.role, DomainRole) or not isinstance(self.state, IdentityState):
             raise ValidationError("发件身份枚举无效")
+        if not _is_real_int(self.version) or self.version < 0:
+            raise ValidationError("发件身份版本必须为非负整数")
         if self.state in {IdentityState.THROTTLED, IdentityState.SUSPENDED}:
             if self.sendable_state_before_restriction not in {
                 IdentityState.WARMING,

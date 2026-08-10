@@ -89,6 +89,7 @@ def _identity(
     created_at: datetime = _NOW,
     previous: IdentityState | None = None,
     category: object | None = None,
+    version: int = 0,
 ) -> SendingIdentity:
     kwargs = {"suspension_category": category} if category is not None else {}
     return SendingIdentity(
@@ -110,6 +111,7 @@ def _identity(
         activated_at=_NOW if state is IdentityState.ACTIVE else None,
         connector_ref="gmail_primary",
         sendable_state_before_restriction=previous,
+        version=version,
         **kwargs,
     )
 
@@ -232,6 +234,7 @@ async def test_all_repositories_map_and_isolate_tenants(
         await identities.update(identity)
         await session.commit()
         assert (await identities.get(tenant, identity.identity_id)).display_name == "Updated"  # type: ignore[union-attr]
+        assert (await identities.get(tenant, identity.identity_id)).version == 1  # type: ignore[union-attr]
 
         other = TenantId("tRepoOther")
         assert await domains.get(other, domain.domain) is None
@@ -261,6 +264,99 @@ async def test_all_repositories_map_and_isolate_tenants(
         }
     finally:
         await session.close()
+
+
+async def test_registration_primitives_return_typed_winners_and_preserve_version(
+    engine_fx: AsyncEngine,
+) -> None:
+    """精确 conflict target 才能安全恢复并发 domain/address 幂等，而不猜异常文本。"""
+    tenant = TenantId("tRegistrationPrimitive")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    async with sf() as session:
+        domains = _load("SendingDomainRepositoryImpl")(session, tenant)
+        identities = _load("SendingIdentityRepositoryImpl")(session, tenant)
+        requested_domain = SendingDomain(
+            tenant, "cold.primitive.example", DomainRole.COLD_OUTREACH, _NOW
+        )
+        assert await domains.ensure(requested_domain) == requested_domain
+        competing_domain = SendingDomain(
+            tenant,
+            requested_domain.domain,
+            DomainRole.PRIMARY_BUSINESS,
+            _NOW + timedelta(seconds=1),
+        )
+        assert await domains.ensure(competing_domain) == requested_domain
+
+        first = _identity(
+            str(tenant),
+            "sidPrimitiveWinner",
+            requested_domain.domain,
+            address="same@cold.primitive.example",
+            version=3,
+        )
+        created = await identities.register_if_address_absent(first)
+        assert created.created is True
+        assert created.winner == first
+        assert created.winner.version == 3
+
+        contender = _identity(
+            str(tenant),
+            "sidPrimitiveContender",
+            requested_domain.domain,
+            address=first.address,
+        )
+        existing = await identities.register_if_address_absent(contender)
+        assert existing.created is False
+        assert existing.winner == first
+        await session.commit()
+
+        loaded = await identities.get(tenant, first.identity_id)
+        assert loaded is not None
+        assert loaded.version == 3
+        loaded.display_name = "updated"
+        await identities.update(loaded)
+        await session.commit()
+        assert (await identities.get(tenant, first.identity_id)).version == 4  # type: ignore[union-attr]
+
+
+async def test_auth_append_primitive_is_ref_idempotent_and_other_failures_propagate(
+    engine_fx: AsyncEngine,
+) -> None:
+    """auth ref 仅处理精确唯一键；winner 可供 service 比较 typed 内容。"""
+    tenant = TenantId("tAuthPrimitive")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    async with sf() as session:
+        domains = _load("SendingDomainRepositoryImpl")(session, tenant)
+        identities = _load("SendingIdentityRepositoryImpl")(session, tenant)
+        auth = _load("AuthenticationCheckRepositoryImpl")(session, tenant)
+        domain = SendingDomain(
+            tenant, "cold.auth-primitive.example", DomainRole.COLD_OUTREACH, _NOW
+        )
+        await domains.add(domain)
+        identity = _identity(str(tenant), "sidAuthPrimitive", domain.domain)
+        await identities.add(identity)
+
+        original = _auth(str(tenant), str(identity.identity_id), "authOriginal")
+        created = await auth.append_if_ref_absent(original)
+        assert created.created is True
+        assert created.winner == original
+
+        same_ref = AuthenticationCheckRecord(
+            auth_check_id="authContender",
+            tenant_id=tenant,
+            identity_id=identity.identity_id,
+            result=original.result,
+            created_at=_NOW + timedelta(seconds=1),
+        )
+        existing = await auth.append_if_ref_absent(same_ref)
+        assert existing.created is False
+        assert existing.winner == original
+
+        wrong_identity = _auth(
+            str(tenant), "sidMissing", "authMissingIdentity"
+        )
+        with pytest.raises(IntegrityError):
+            await auth.append_if_ref_absent(wrong_identity)
 
 
 async def test_campaign_list_filters_latest_auth_scope_before_limit(engine_fx: AsyncEngine) -> None:
