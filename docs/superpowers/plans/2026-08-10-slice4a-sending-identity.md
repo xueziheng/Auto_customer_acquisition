@@ -726,13 +726,17 @@ git push origin codex/phase1-implementation
 
 **Files:**
 - Modify: `domains/sending_identity/service_impl.py`
+- Modify: `domains/sending_identity/schemas.py`
 - Modify: `tests/unit/test_sending_identity_service.py`
+- Modify: `tests/unit/test_sending_identity_contracts.py`
 - Create: `tests/unit/test_sending_identity_reputation.py`
 - Create: `tests/integration/test_sending_identity_reputation.py`
 
 **Interfaces:**
 - Consumes: Task 2 reputation/window repositories、Task 3 lifecycle action/outbox helpers。
 - Produces: `record_delivery_event`、`evaluate_reputation`、`resume_from_throttle` 的完整实现；身份级和域名级 fuse 同事务。
+
+**Preflight ruling（2026-08-10）：** Task 5 精确扩为上述 6 文件，使 `DeliveryEventRecord` 构造边界本身拒绝不安全 dedup，而不是只依赖 service 调用路径。dedup 须为 strip 后 1..200 字符、拒绝 whitespace/control chars，并大小写不敏感拒绝 `bearer/token/secret/password`；异常固定 `InvalidDeliveryEventError` 且不回显输入。event tenant mismatch 走 `TenantIsolationViolation` + 固定 CRITICAL，identity mismatch 固定 `InvalidDeliveryEventError`，均在 append 前拒绝。域名聚合使用同域受锁 identities 中最保守的确定性阈值：四个 ratio threshold 与 `minimum_sample` 取最小，immediate-hazard 开关取逻辑 OR；不得依赖哪个 identity 先触发。平级 metric 固定优先级为 `BLOCKLISTED > SPAM_TRAP > HARD_BOUNCE_RATE > COMPLAINT_RATE`，先比 severity 再按该顺序稳定 action/outbox payload。CREATED/AUTH_PENDING 事件可记录但自身不发生非法 restriction；域名 fuse 只改变 WARMING/ACTIVE/THROTTLED，SUSPENDED/RETIRED 不降级，THROTTLED 只可升级 SUSPENDED。`evaluate_reputation` 返回 source identity window。`resume_from_throttle` 严格使用固定 `< Decimal('.024')` 与 `< Decimal('.0008')`，不得因 minimum sample 跳过，且 identity/domain 两层都须满足并无 immediate hazards。
 
 - [ ] **Step 1: 写事件验证与 dedup RED**
 
