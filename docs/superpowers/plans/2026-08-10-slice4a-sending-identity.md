@@ -597,12 +597,18 @@ git push origin codex/phase1-implementation
 - Modify: `infra/db/repositories/sending_identities.py`
 - Modify: `tests/unit/test_sending_identity_models.py`
 - Modify: `tests/integration/test_sending_identity_repositories.py`
+- Modify: `domains/sending_identity/permissions.py`
+- Modify: `tests/unit/test_sending_identity_permissions.py`
 
 **Interfaces:**
 - Consumes: Task 1 public contract/permissions、Task 2 UoW factory/repositories/outbox。
 - Produces: `SendingIdentityServiceImpl(uow_factory, authorizer, audit_logger, *, now)` 的 register/auth/warmup/resume-suspension/retire/get/list/progress 方法。本任务的 concrete class 不显式继承或声称已满足完整 `SendingIdentityService` Protocol；Task 4 增加 reservation 方法，Task 5 增加 reputation/throttle 方法后才用静态赋值测试证明完整 structural conformance。任何阶段都不加入占位实现或 `NotImplementedError`。
 
 **Preflight contract ruling（2026-08-10）：** Task 3 的 action 幂等和并发 register/auth 语义不能靠捕获宽泛 `IntegrityError` 或解析异常文本实现，因此范围精确扩为上述 8 文件。`SendingIdentity` 增加非负整数 `version`，ORM add/read 保留它、update 仍在数据库原子 `+1`；创建 action 使用 v0，后续状态 action 使用加载值的 `next_version=version+1`。repository 增加三个窄原语：`SendingDomainRepository.ensure(domain) -> SendingDomain`；`SendingIdentityRepository.register_if_address_absent(identity) -> IdentityRegistrationResult`；`AuthenticationCheckRepository.append_if_ref_absent(record) -> AuthenticationAppendResult`。后两个 frozen typed result 均返回 `created: bool` 与数据库 winner。实现只能用精确 PostgreSQL `ON CONFLICT` target：domain `(tenant_id,domain)`、address `(tenant_id,address)`、auth ref `(tenant_id,identity_id,check_ref)`；其它 PK/FK/unique 失败原样传播。service 对 existing winner 做安全字段/typed result 比较，同值幂等、异值固定拒绝。无需再增加非原子的 `get_by_ref`。
+
+**Review R1 authorization ruling（2026-08-10）：** domain-only MANAGER 在 identity query 开始时尚无可信 domain，不能把现有 full-resource `require` 放宽成“domain 缺失也允许”。Task 3 精确扩为上述 10 文件，给 `SendingIdentityAuthorizer` 增加 `preauthorize(actor, action, scope, tenant_id) -> str`：它只验证 actor/role/action/scope/tenant 与空集合/default-deny，不授予具体资源访问。每个 public method 第一动作调用该 typed preauthorization；tenant row load 后必须再调用现有 `require(..., identity_id, domain)` 完成资源 ABAC，后者返回的 rule 才用于 commit 后 allow audit。preauthorize 或 require 任一步拒绝均恰一条固定 `deny:authorization`、零 allow。DefaultDeny 两阶段都拒绝。不得用一次 provisional allow 替代资源校验。
+
+**Review R2 list-ABAC ruling（2026-08-10）：** `IDENTITY_LIST` 不得因 action 名称跳过 MANAGER resource scope。repository 每返回一行，full `require` 都必须按该行 identity/domain 校验所有非 `None` scope 维度；任一越权行使整单固定拒绝、零 allow、无部分结果。只有 repository 返回空列表时，service 才可调用 targetless full `require` 作为显式 empty-result authorization；若存在任何 row，禁止使用 targetless 语义。测试必须使用故意忽略 scope 的 fake repository 证明 identity-only/domain-only/双维 allow 与越权 deny。
 
 - [ ] **Step 1: 写 service fake UoW 行为 RED**
 
