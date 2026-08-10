@@ -299,7 +299,7 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
                 "/crm/handoffs/hand-s315-foreign",
                 headers=_headers(tenant, sales_a),
             )
-            employee_ids = (sales_a, sales_b)
+            employee_ids = (sales_a, sales_a)
             accepts = await asyncio.gather(
                 *(
                     client.post(
@@ -367,10 +367,6 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
             level=ScopeLevel.SELF,
             allowed_owners=frozenset({EmployeeId(sales_a)}),
         )
-        sales_b_scope = OpportunityScope(
-            level=ScopeLevel.SELF,
-            allowed_owners=frozenset({EmployeeId(sales_b)}),
-        )
         boss_actor = OpportunityActor(
             actor_id=boss,
             scope=boss_scope,
@@ -379,11 +375,6 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
         sales_a_actor = OpportunityActor(
             actor_id=sales_a,
             scope=sales_a_scope,
-            role="sales",
-        )
-        sales_b_actor = OpportunityActor(
-            actor_id=sales_b,
-            scope=sales_b_scope,
             role="sales",
         )
         expected_authorizer_calls = Counter(
@@ -413,9 +404,9 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
                     tenant,
                 ),
                 (
-                    sales_b_actor,
+                    sales_a_actor,
                     OpportunityAction.HANDOFF_ACCEPT,
-                    sales_b_scope,
+                    sales_a_scope,
                     tenant,
                 ),
                 (
@@ -439,6 +430,19 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
             for entry in domain_audit.entries
         )
         assert any(entry["rule"] == "deny:abac:owner" for entry in domain_audit.entries)
+        assert [
+            entry
+            for entry in domain_audit.entries
+            if entry["action"] == OpportunityAction.HANDOFF_ACCEPT.value
+        ] == [
+            {
+                "actor": sales_a,
+                "action": OpportunityAction.HANDOFF_ACCEPT.value,
+                "tenant_id": str(tenant),
+                "scope": "self",
+                "rule": "test:allow",
+            }
+        ]
     finally:
         await seed.close()
         await engine.dispose()
