@@ -465,6 +465,8 @@ git push origin codex/phase1-implementation
 - Modify: `tests/integration/test_outbox_transaction.py`
 - Modify: `tests/integration/test_repositories.py`
 - Modify: `tests/unit/test_outbox_serialization.py`
+- Modify: `domains/sending_identity/models.py`
+- Modify: `tests/unit/test_sending_identity_models.py`
 
 **Interfaces:**
 - Consumes: Task 1 entity/DTO/repository Protocol、`TenantScopedRepository`、`PostgresEventBus`、现有四个 sending identity catalog events。
@@ -474,6 +476,10 @@ git push origin codex/phase1-implementation
 **Protocol conflict ruling（2026-08-10）：** 权威设计要求 reservation 时间只来自 service 注入时钟，因此 Task 2 给 `SendReservationRepository.reserve_if_below` 补回必需的 `created_at: datetime`。其余以 Task 1 已审查契约为准：domain 写入留在独立 `SendingDomainRepository.add`，信誉身份窗口方法名保持 `compute_window`。这三项分别保证单一时间权威、repository 单一职责和已发布方法名稳定。
 
 **Caller parity ruling（2026-08-10）：** 全库既有 ORM metadata 与 outbox registry 测试使用精确全集断言。0008 新增信誉索引与四个已批准事件后，这两条 caller 测试必须同步更新；禁止通过隐藏 metadata 或 registry 项规避。因此 Task 2 精确扩展到上述 11 文件，仅适配 `tests/integration/test_repositories.py` 的索引全集和 `tests/unit/test_outbox_serialization.py` 的事件白名单全集。
+
+**Review R1 contract ruling（2026-08-10）：** 独立审查确认 `suspension_category` 已进入权威设计与 0008 数据契约，但 Task 1 实体遗漏 typed 表示，导致 repository 无法诚实 round-trip。Task 2 修复轮窄扩到上述 13 文件：在 `models.py` 增加固定 suspension category / reputation metric / severity 类型并让身份实体持有、校验该 category；`test_sending_identity_models.py` 先行覆盖。四个既有共享事件的字段签名保持不变，outbox 持久化边界用这些 typed vocabulary 和受限 Decimal 字符串 fail closed，避免未经 ADR 改写公共事件字段。
+
+**Review R2 encoding ruling（2026-08-10）：** `SendingIdentityId` 的唯一可持久化 wire 形态固定为 `sid_` + 26 位 Crockford Base32 ULID（总长 30，适配 `VARCHAR(32)`）；Task 3 `register` 必须使用 `SendingIdentityId(new_id("sid"))`。outbox 比率字段接受领域 Decimal 默认上下文产生的非指数、有限、`0..1` 字符串（coefficient 最多 28 位有效数字；`1/51` 因前导小数零可有 29 位小数），不量化或舍入到六位；继续拒绝指数、NaN/Infinity、符号、越界和自由文本。若 commit/body 已有主异常，rollback/close 的任何 `BaseException` 只写固定脱敏清理日志，不得覆盖主异常。
 
 Task 2 在 `repository.py` 已声明的内部结果类型上实现原子 reservation：
 
@@ -601,7 +607,7 @@ tenant corruption 使用共用 `_deny_tenant_isolation`：固定中文 CRITICAL 
 
 覆盖：
 
-- register 只生成 `CREATED`，标准化 address/domain/ref；同 tenant address 幂等返回既有 ID 仅当全部安全字段一致，否则固定冲突；
+- register 只用 `SendingIdentityId(new_id("sid"))` 生成 `CREATED`，标准化 address/domain/ref；同 tenant address 幂等返回既有 ID 仅当全部安全字段一致，否则固定冲突；
 - domain row 在 transaction 内锁定/创建；并发同 role 可共存，不同 role 只有一个成功；
 - begin 只允许 CREATED→AUTH_PENDING；
 - auth history 总是 append；部分通过留 AUTH_PENDING；全过也不自动 WARMING；
