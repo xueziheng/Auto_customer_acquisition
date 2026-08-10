@@ -454,6 +454,7 @@ git push origin codex/phase1-implementation
 ### Task 2: 0008 Migration、ORM、Repositories、UoW 与 Outbox Registry
 
 **Files:**
+- Modify: `domains/sending_identity/repository.py`
 - Create: `migrations/versions/0008_sending_identity.py`
 - Modify: `infra/db/tables.py`
 - Create: `infra/db/repositories/sending_identities.py`
@@ -467,6 +468,8 @@ git push origin codex/phase1-implementation
 - Consumes: Task 1 entity/DTO/repository Protocol、`TenantScopedRepository`、`PostgresEventBus`、现有四个 sending identity catalog events。
 - Produces: 0008 七表；对应七个 ORM Row；`SendingIdentityRepositoryImpl`、`AuthenticationCheckRepositoryImpl`、`ReputationRepositoryImpl`、`SendCounterRepositoryImpl`、`SendReservationRepositoryImpl`、`IdentityActionRepositoryImpl`；`SqlAlchemySendingIdentityUnitOfWork(factory, tenant_id, *, now=None)`。
 - Later services receive only a `SendingIdentityUnitOfWorkFactory` Protocol, never AsyncSession.
+
+**Protocol conflict ruling（2026-08-10）：** 权威设计要求 reservation 时间只来自 service 注入时钟，因此 Task 2 给 `SendReservationRepository.reserve_if_below` 补回必需的 `created_at: datetime`。其余以 Task 1 已审查契约为准：domain 写入留在独立 `SendingDomainRepository.add`，信誉身份窗口方法名保持 `compute_window`。这三项分别保证单一时间权威、repository 单一职责和已发布方法名稳定。
 
 Task 2 在 `repository.py` 已声明的内部结果类型上实现原子 reservation：
 
@@ -505,9 +508,10 @@ upgrade head(0008) → inspect seven tables → downgrade 0007 → seven absent 
 async def get(..., *, for_update: bool = False) -> SendingIdentity | None: ...
 async def list_domain_for_update(... ) -> list[SendingIdentity]:  # identity_id ASC
 async def find_domain_role(... ) -> DomainRole | None: ...
-async def add_domain(... ) -> None: ...
 async def list_available_for_campaign(..., scope, limit) -> list[SendingIdentity]: ...
 ```
+
+域名写入使用 UoW 的独立 `SendingDomainRepository.add(domain: SendingDomain)`；不得在 `SendingIdentityRepository` 重复增加 `add_domain`。
 
 `list_available_for_campaign` 用 correlated latest-auth row（`checked_at DESC, auth_check_id DESC`）并在 SQL WHERE 中完成 tenant、scope、role、三项 auth、state 过滤，再按 `(created_at,identity_id)` 排序和 LIMIT。测试插入超过 limit 的不合格早期行，证明不是先 limit 后 Python 过滤。
 repository 直调也 fail closed：`level=None`、无限制 SYSTEM、MANAGER 未收窄、tenant mismatch 均返回空，不退化为 tenant-wide 查询。
@@ -533,7 +537,7 @@ async def reserve_if_below(
 
 - [ ] **Step 4: 写滚动窗口 SQL RED**
 
-`ReputationRepositoryImpl.compute_identity_window(..., computed_at)` 与 `compute_domain_window`：
+`ReputationRepositoryImpl.compute_window(..., computed_at)` 与 `compute_domain_window`：
 
 - 分母从 immutable reservations 的 `created_at` 在 `[computed_at-7d, computed_at]` 精确计数，不从日 counter 推测；
 - event 边界精确 `occurred_at >= computed_at - timedelta(days=7)` 且 `<= computed_at`；
@@ -568,7 +572,7 @@ git commit -m "feat(sending-identity): add postgres persistence"
 git push origin codex/phase1-implementation
 ```
 
-精确 stage 8 文件并等待 CI success。
+精确 stage 9 文件并等待 CI success。
 
 ---
 
