@@ -83,10 +83,18 @@ class SendingIdentityRow(Base):
         ),
         CheckConstraint(
             "(state IN ('throttled', 'suspended') AND "
+            "sendable_state_before_restriction IS NOT NULL AND "
             "sendable_state_before_restriction IN ('warming', 'active')) OR "
             "(state NOT IN ('throttled', 'suspended') AND "
             "sendable_state_before_restriction IS NULL)",
             name="ck_sending_identity_restriction_state",
+        ),
+        CheckConstraint(
+            "(state = 'suspended' AND suspension_category IS NOT NULL AND "
+            "suspension_category IN ('authentication_regression', 'hard_bounce_rate', "
+            "'complaint_rate', 'spam_trap', 'blocklisted')) OR "
+            "(state <> 'suspended' AND suspension_category IS NULL)",
+            name="ck_sending_identity_suspension_category",
         ),
     )
 

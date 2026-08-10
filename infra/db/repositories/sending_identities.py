@@ -20,6 +20,7 @@ from domains.sending_identity.models import (
     ReputationThresholds,
     ReputationWindow,
     SendingIdentity,
+    SuspensionCategory,
     WarmupPlan,
 )
 from domains.sending_identity.permissions import ScopeLevel, SendingIdentityScope
@@ -46,6 +47,7 @@ from infra.db.tables import (
     SendingIdentityRow,
     SendReservationRow,
 )
+from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
     IdempotencyKey,
     SendingIdentityId,
@@ -76,7 +78,14 @@ class _SendingRepository(TenantScopedRepository):
 
     def _require_tenant(self, tenant_id: TenantId, rule: str) -> None:
         if not self._tenant_matches(tenant_id, rule):
-            raise ValueError("检测到跨租户数据隔离违规")
+            raise TenantIsolationViolation(
+                "检测到跨租户数据隔离违规",
+                context={
+                    "repository": type(self).__name__,
+                    "tenant_id": str(self._tenant_id),
+                    "rule": rule,
+                },
+            )
 
 
 def _domain_to_row(domain: SendingDomain) -> SendingDomainRow:
@@ -118,7 +127,11 @@ def _identity_to_row(identity: SendingIdentity) -> SendingIdentityRow:
             if identity.sendable_state_before_restriction is not None
             else None
         ),
-        suspension_category=None,
+        suspension_category=(
+            identity.suspension_category.value
+            if identity.suspension_category is not None
+            else None
+        ),
         version=0,
         throttle_hard_bounce_rate=thresholds.throttle_hard_bounce_rate,
         suspend_hard_bounce_rate=thresholds.suspend_hard_bounce_rate,
@@ -160,6 +173,11 @@ def _row_to_identity(row: SendingIdentityRow, role: str) -> SendingIdentity:
         sendable_state_before_restriction=(
             IdentityState(row.sendable_state_before_restriction)
             if row.sendable_state_before_restriction is not None
+            else None
+        ),
+        suspension_category=(
+            SuspensionCategory(row.suspension_category)
+            if row.suspension_category is not None
             else None
         ),
         connector_ref=row.connector_ref,
@@ -280,7 +298,6 @@ class SendingIdentityRepositoryImpl(_SendingRepository):
             not in {
                 "tenant_id",
                 "identity_id",
-                "suspension_category",
                 "version",
             }
         }
@@ -346,7 +363,15 @@ class SendingIdentityRepositoryImpl(_SendingRepository):
             return []
         if not isinstance(scope, SendingIdentityScope) or scope.level is None or limit <= 0:
             return []
-        if scope.level is ScopeLevel.SYSTEM and not scope.allowed_identity_ids:
+        if scope.level is ScopeLevel.SELF:
+            return []
+        if (
+            scope.level is ScopeLevel.SYSTEM
+            and (
+                scope.allowed_identity_ids is None
+                or len(scope.allowed_identity_ids) != 1
+            )
+        ):
             return []
         if (
             scope.level is ScopeLevel.MANAGER

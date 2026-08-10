@@ -29,6 +29,10 @@ from shared.events.catalog import (
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
+    ReputationThresholdBreached,
+    SendingIdentityActivated,
+    SendingIdentitySuspended,
+    SendingIdentityThrottled,
 )
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
@@ -74,6 +78,51 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "ReputationThresholdBreached",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        SendingIdentityActivated(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sales@example.com",
+        ),
+        SendingIdentityThrottled(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", new_state="active",
+            trigger_metric="hard_bounce_rate", metric_value="0.03",
+        ),
+        SendingIdentityThrottled(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", new_state="throttled",
+            trigger_metric="mx.example.com", metric_value="0.03",
+        ),
+        SendingIdentityThrottled(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", new_state="throttled",
+            trigger_metric="hard_bounce_rate", metric_value="NaN",
+        ),
+        SendingIdentitySuspended(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", reason="dns_txt=secret",
+        ),
+        ReputationThresholdBreached(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", metric="complaint_rate",
+            value="-0.01", threshold="0.001", severity="watch",
+        ),
+        ReputationThresholdBreached(
+            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            sending_identity_id="sid-1", metric="vault://investigation/ref",
+            value="0.01", threshold="0.001", severity="manual_investigation",
+        ),
+    ],
+)
+def test_sending_identity_event_serializer_rejects_unbounded_payloads(event: DomainEvent) -> None:
+    """outbox 边界拒绝地址、域名、引用、DNS、调查文本和非法数值。"""
+    serialize = _load("serialize")
+    with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
+        serialize(event)
 
 
 def test_registry_events_roundtrip() -> None:

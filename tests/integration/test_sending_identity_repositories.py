@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.sending_identity.permissions import (
     ScopeLevel,
@@ -23,6 +23,8 @@ from domains.sending_identity.schemas import (
     AuthenticationResult,
     DeliveryEventRecord,
 )
+from shared.errors import TenantIsolationViolation
+from shared.events.catalog import SendingIdentityActivated
 from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, TenantId
 
 _models = importlib.import_module("domains.sending_identity.models")
@@ -79,7 +81,10 @@ def _identity(
     address: str | None = None,
     state: IdentityState = IdentityState.ACTIVE,
     created_at: datetime = _NOW,
+    previous: IdentityState | None = None,
+    category: object | None = None,
 ) -> SendingIdentity:
+    kwargs = {"suspension_category": category} if category is not None else {}
     return SendingIdentity(
         identity_id=SendingIdentityId(identity),
         tenant_id=TenantId(tenant),
@@ -98,6 +103,8 @@ def _identity(
         ),
         activated_at=_NOW if state is IdentityState.ACTIVE else None,
         connector_ref="gmail_primary",
+        sendable_state_before_restriction=previous,
+        **kwargs,
     )
 
 
@@ -147,6 +154,14 @@ def _unsafe_scope(level: ScopeLevel) -> SendingIdentityScope:
     object.__setattr__(scope, "level", level)
     object.__setattr__(scope, "allowed_identity_ids", None)
     object.__setattr__(scope, "allowed_domains", None)
+    return scope
+
+
+def _unsafe_scope_with_ids(
+    level: ScopeLevel, ids: frozenset[SendingIdentityId] | None
+) -> SendingIdentityScope:
+    scope = _unsafe_scope(level)
+    object.__setattr__(scope, "allowed_identity_ids", ids)
     return scope
 
 
@@ -222,7 +237,9 @@ async def test_all_repositories_map_and_isolate_tenants(
         assert await counters.get_count(other, identity.identity_id, _NOW.date()) == 0
 
         caplog.clear()
-        with caplog.at_level(logging.CRITICAL, logger="infra.db.sending_identity.security"), pytest.raises(ValueError):
+        with caplog.at_level(logging.CRITICAL, logger="infra.db.sending_identity.security"), pytest.raises(
+            TenantIsolationViolation
+        ) as caught:
             await identities.add(_identity(str(other), "sidOther", "cold.other.example"))
         records = [record for record in caplog.records if record.getMessage() == "检测到跨租户数据隔离违规"]
         assert len(records) == 1
@@ -231,6 +248,11 @@ async def test_all_repositories_map_and_isolate_tenants(
         assert "cold.other.example" not in rendered
         assert "sidother@" not in rendered.lower()
         assert "gmail_primary" not in rendered
+        assert caught.value.context == {
+            "repository": "SendingIdentityRepositoryImpl",
+            "tenant_id": "tRepoMap",
+            "rule": "sending_identity_write_tenant",
+        }
     finally:
         await session.close()
 
@@ -272,6 +294,32 @@ async def test_campaign_list_filters_latest_auth_scope_before_limit(engine_fx: A
             allowed_identity_ids=frozenset({SendingIdentityId("sidGood2")}),
         )
         assert [str(item.identity_id) for item in await identities.list_available_for_campaign(tenant, manager, 5)] == ["sidGood2"]
+        system_one = SendingIdentityScope(
+            level=ScopeLevel.SYSTEM,
+            allowed_identity_ids=frozenset({SendingIdentityId("sidGood1")}),
+        )
+        assert [
+            str(item.identity_id)
+            for item in await identities.list_available_for_campaign(tenant, system_one, 5)
+        ] == ["sidGood1"]
+        assert await identities.list_available_for_campaign(
+            tenant,
+            SendingIdentityScope(level=ScopeLevel.SELF),
+            5,
+        ) == []
+        assert await identities.list_available_for_campaign(
+            tenant,
+            SendingIdentityScope(
+                level=ScopeLevel.SYSTEM,
+                allowed_identity_ids=frozenset(
+                    {SendingIdentityId("sidGood0"), SendingIdentityId("sidGood1")}
+                ),
+            ),
+            5,
+        ) == []
+        assert await identities.list_available_for_campaign(
+            tenant, _unsafe_scope_with_ids(ScopeLevel.SYSTEM, frozenset()), 5
+        ) == []
         assert await identities.list_available_for_campaign(TenantId("tWrong"), scope, 5) == []
         assert await identities.list_available_for_campaign(tenant, SendingIdentityScope(), 5) == []
         assert await identities.list_available_for_campaign(tenant, _unsafe_scope(ScopeLevel.SYSTEM), 5) == []
@@ -333,7 +381,7 @@ async def test_reservation_is_atomic_idempotent_and_rolls_back_other_integrity_e
 
     async with sf() as session:
         reservations = _load("SendReservationRepositoryImpl")(session, tenant)
-        with pytest.raises(ValueError):
+        with pytest.raises(TenantIsolationViolation):
             await reservations.reserve_if_below(
                 TenantId("tWrong"), SendingIdentityId("sidReserve"), IdempotencyKey("wrong"), _NOW.date(), 2, _NOW
             )
@@ -352,6 +400,44 @@ async def test_reservation_is_atomic_idempotent_and_rolls_back_other_integrity_e
             )
         ).scalars().all()
         assert count == []
+
+
+async def test_suspended_identity_category_roundtrips_on_add_and_update(
+    engine_fx: AsyncEngine,
+) -> None:
+    """typed suspension category 在 add/get/update 中不丢失且可安全清除。"""
+    category = _models.SuspensionCategory
+    tenant = TenantId("tRepoCategory")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    async with sf() as session:
+        domains = _load("SendingDomainRepositoryImpl")(session, tenant)
+        identities = _load("SendingIdentityRepositoryImpl")(session, tenant)
+        await domains.add(
+            SendingDomain(
+                tenant, "cold.category.example", DomainRole.COLD_OUTREACH, _NOW
+            )
+        )
+        identity = _identity(
+            str(tenant),
+            "sidCategory",
+            "cold.category.example",
+            state=IdentityState.SUSPENDED,
+            previous=IdentityState.ACTIVE,
+            category=category.SPAM_TRAP,
+        )
+        await identities.add(identity)
+        await session.commit()
+        loaded = await identities.get(tenant, identity.identity_id)
+        assert loaded == identity
+        assert loaded.suspension_category is category.SPAM_TRAP
+
+        loaded.transition_to(IdentityState.ACTIVE)
+        await identities.update(loaded)
+        await session.commit()
+        restored = await identities.get(tenant, identity.identity_id)
+        assert restored is not None
+        assert restored.state is IdentityState.ACTIVE
+        assert restored.suspension_category is None
 
 
 async def test_reputation_windows_use_immutable_reservation_timestamps_and_exact_bounds(
@@ -431,3 +517,80 @@ async def test_sending_identity_uow_commits_rolls_back_and_uses_fresh_sessions(
         assert (
             await verify.execute(select(DomainRow).where(DomainRow.domain == "cold.rollback.example"))
         ).scalars().all() == []
+
+
+class _FailingCommitSession(AsyncSession):
+    rollback_attempts = 0
+
+    async def commit(self) -> None:
+        await self.flush()
+        raise RuntimeError("primary commit failure")
+
+    async def rollback(self) -> None:
+        type(self).rollback_attempts += 1
+        await super().rollback()
+        raise RuntimeError("secondary rollback failure")
+
+
+async def test_sending_identity_uow_commit_failure_rolls_back_everything(
+    engine_fx: AsyncEngine,
+) -> None:
+    """commit 失败显式 rollback；rollback 自身失败不覆盖原错，四类行均不存在。"""
+    Uow = importlib.import_module(
+        "infra.db.sending_identity_uow"
+    ).SqlAlchemySendingIdentityUnitOfWork
+    tenant = TenantId("tUowCommitFail")
+    failing_sf = async_sessionmaker(
+        bind=engine_fx, expire_on_commit=False, class_=_FailingCommitSession
+    )
+    _FailingCommitSession.rollback_attempts = 0
+    with pytest.raises(RuntimeError, match="primary commit failure"):
+        async with Uow(failing_sf, tenant, now=lambda: _NOW) as uow:
+            domain = SendingDomain(
+                tenant, "cold.commit-fail.example", DomainRole.COLD_OUTREACH, _NOW
+            )
+            identity = _identity(
+                str(tenant), "sidCommitFail", domain.domain, state=IdentityState.ACTIVE
+            )
+            await uow.domains.add(domain)
+            await uow.identities.add(identity)
+            await uow.actions.add(
+                IdentityActionRecord(
+                    action_id="actCommitFail",
+                    tenant_id=tenant,
+                    identity_id=identity.identity_id,
+                    action_key="commit-failure",
+                    action=SendingIdentityAction.IDENTITY_REGISTER,
+                    before_state=None,
+                    after_state=IdentityState.ACTIVE,
+                    actor_id="boss_1",
+                    scope="tenant",
+                    rule="phase1:boss:tenant:identity:register",
+                    note=None,
+                    occurred_at=_NOW,
+                )
+            )
+            await uow.bus.publish(
+                SendingIdentityActivated(
+                    tenant_id=tenant,
+                    occurred_at=_NOW,
+                    run_id=None,
+                    sending_identity_id=identity.identity_id,
+                )
+            )
+    assert _FailingCommitSession.rollback_attempts == 1
+
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    async with sf() as verify:
+        for row_type in (
+            _row("SendingDomainRow"),
+            _row("SendingIdentityRow"),
+            _row("IdentityActionRow"),
+            _row("OutboxEventRow"),
+        ):
+            rows = (
+                await verify.execute(
+                    select(row_type).where(row_type.tenant_id == tenant)
+                )
+            ).scalars().all()
+            assert rows == []

@@ -364,3 +364,34 @@ async def test_sending_identity_events_are_registered_roundtrip_and_safe(event: 
     payload = serialize(event)  # type: ignore[arg-type]
     assert deserialize(event_type, payload) == event
     assert {"address", "domain", "connector_ref", "note"}.isdisjoint(payload)
+
+
+async def test_malicious_sending_identity_event_never_enters_outbox(
+    engine_fx: AsyncEngine,
+) -> None:
+    """即使直接构造 shared event，持久化边界也必须 fail closed 且不写行。"""
+    PostgresEventBus = _load("PostgresEventBus")
+    tenant = TenantId("tUnsafeSendingEvent")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    async with sf() as session:
+        bus = PostgresEventBus(session, tenant, now=lambda: _NOW)
+        event = ReputationThresholdBreached(
+            tenant_id=tenant,
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id="sid-safe",
+            metric="dns.example.com/investigation",
+            value="Infinity",
+            threshold="0.001",
+            severity="manual_review",
+        )
+        with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
+            await bus.publish(event)
+        await session.commit()
+    async with sf() as verify:
+        rows = (
+            await verify.execute(
+                select(OutboxEventRow).where(OutboxEventRow.tenant_id == tenant)
+            )
+        ).scalars().all()
+        assert rows == []

@@ -41,6 +41,33 @@ class IdentityState(str, Enum):
     RETIRED = "retired"
 
 
+class SuspensionCategory(str, Enum):
+    """可持久化的停用类别；禁止自由文本进入身份状态或事件。"""
+
+    AUTHENTICATION_REGRESSION = "authentication_regression"
+    HARD_BOUNCE_RATE = "hard_bounce_rate"
+    COMPLAINT_RATE = "complaint_rate"
+    SPAM_TRAP = "spam_trap"
+    BLOCKLISTED = "blocklisted"
+
+
+class ReputationMetric(str, Enum):
+    """可出现在信誉阈值事件中的固定指标。"""
+
+    HARD_BOUNCE_RATE = "hard_bounce_rate"
+    COMPLAINT_RATE = "complaint_rate"
+    SPAM_TRAP = "spam_trap"
+    BLOCKLISTED = "blocklisted"
+
+
+class ReputationSeverity(str, Enum):
+    """信誉阈值事件的固定严重度。"""
+
+    WATCH = "watch"
+    THROTTLED = "throttled"
+    SUSPENDED = "suspended"
+
+
 ALLOWED_TRANSITIONS: dict[IdentityState, frozenset[IdentityState]] = {
     IdentityState.CREATED: frozenset({IdentityState.AUTH_PENDING, IdentityState.RETIRED}),
     IdentityState.AUTH_PENDING: frozenset({IdentityState.WARMING, IdentityState.RETIRED}),
@@ -338,6 +365,7 @@ class SendingIdentity:
     suspended_at: datetime | None = None
     retired_at: datetime | None = None
     sendable_state_before_restriction: IdentityState | None = None
+    suspension_category: SuspensionCategory | None = None
     connector_ref: str | None = None
 
     def __post_init__(self) -> None:
@@ -353,6 +381,11 @@ class SendingIdentity:
                 raise ValidationError("受限身份必须保留可发送前状态")
         elif self.sendable_state_before_restriction is not None:
             raise ValidationError("非受限身份不得保留可发送前状态")
+        if self.state is IdentityState.SUSPENDED:
+            if not isinstance(self.suspension_category, SuspensionCategory):
+                raise ValidationError("停用身份必须持有固定停用类别")
+        elif self.suspension_category is not None:
+            raise ValidationError("非停用身份不得持有停用类别")
         if not _is_utc_aware(self.created_at):
             raise ValidationError("发件身份创建时间必须为 UTC")
         if self.connector_ref is not None:
@@ -364,9 +397,19 @@ class SendingIdentity:
     def may_be_used_for_cold_outreach(self) -> bool:
         return self.role is DomainRole.COLD_OUTREACH
 
-    def transition_to(self, target: IdentityState) -> None:
+    def transition_to(
+        self,
+        target: IdentityState,
+        *,
+        suspension_category: SuspensionCategory | None = None,
+    ) -> None:
         """执行唯一的状态变更，并守住受限状态的持久化恢复不变量。"""
         validate_identity_transition(self.state, target)
+        if target is IdentityState.SUSPENDED:
+            if not isinstance(suspension_category, SuspensionCategory):
+                raise InvalidStateTransition("停用状态必须提供固定停用类别")
+        elif suspension_category is not None:
+            raise InvalidStateTransition("非停用目标不得提供停用类别")
         restricted_states = {IdentityState.THROTTLED, IdentityState.SUSPENDED}
         sendable_states = {IdentityState.WARMING, IdentityState.ACTIVE}
         if target in restricted_states:
@@ -387,3 +430,4 @@ class SendingIdentity:
         elif target not in restricted_states:
             self.sendable_state_before_restriction = None
         self.state = target
+        self.suspension_category = suspension_category

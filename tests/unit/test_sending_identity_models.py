@@ -121,7 +121,9 @@ def test_restricted_identity_recovers_only_to_saved_sendable_state() -> None:
 def _identity(
     state: models.IdentityState,
     previous: models.IdentityState | None = None,
+    category: object | None = None,
 ) -> models.SendingIdentity:
+    kwargs = {"suspension_category": category} if category is not None else {}
     return models.SendingIdentity(
         identity_id=SendingIdentityId("sid-1"),
         tenant_id=TenantId("tenant-1"),
@@ -131,6 +133,7 @@ def _identity(
         created_at=datetime(2026, 8, 10, tzinfo=UTC),
         state=state,
         sendable_state_before_restriction=previous,
+        **kwargs,
     )
 
 
@@ -139,10 +142,15 @@ def test_restricting_and_escalating_identity_preserves_original_sendable_state()
     identity = _identity(models.IdentityState.WARMING)
     identity.transition_to(models.IdentityState.THROTTLED)
     assert identity.sendable_state_before_restriction is models.IdentityState.WARMING
-    identity.transition_to(models.IdentityState.SUSPENDED)
+    identity.transition_to(
+        models.IdentityState.SUSPENDED,
+        suspension_category=models.SuspensionCategory.SPAM_TRAP,
+    )
     assert identity.sendable_state_before_restriction is models.IdentityState.WARMING
+    assert identity.suspension_category is models.SuspensionCategory.SPAM_TRAP
     identity.transition_to(models.IdentityState.WARMING)
     assert identity.sendable_state_before_restriction is None
+    assert identity.suspension_category is None
 
 
 @pytest.mark.parametrize(
@@ -159,6 +167,71 @@ def test_identity_rejects_invalid_persisted_restriction_state(
     """损坏的持久化 restriction state 不能在后续恢复时扩权。"""
     with pytest.raises(ValidationError):
         _identity(state, previous)
+
+
+def test_reputation_and_suspension_enums_are_closed_vocabularies() -> None:
+    """信誉事件和停用原因必须是固定 typed vocabulary，不能携带自由文本。"""
+    assert {item.value for item in models.SuspensionCategory} == {
+        "authentication_regression",
+        "hard_bounce_rate",
+        "complaint_rate",
+        "spam_trap",
+        "blocklisted",
+    }
+    assert {item.value for item in models.ReputationMetric} == {
+        "hard_bounce_rate",
+        "complaint_rate",
+        "spam_trap",
+        "blocklisted",
+    }
+    assert {item.value for item in models.ReputationSeverity} == {
+        "watch",
+        "throttled",
+        "suspended",
+    }
+
+
+def test_suspended_identity_requires_typed_category_and_other_states_forbid_it() -> None:
+    """只有 suspended 可保存固定停用类别；缺失、字符串或其他状态携带均拒绝。"""
+    with pytest.raises(ValidationError):
+        _identity(models.IdentityState.SUSPENDED, models.IdentityState.ACTIVE)
+    with pytest.raises(ValidationError):
+        _identity(
+            models.IdentityState.SUSPENDED,
+            models.IdentityState.ACTIVE,
+            "spam_trap",
+        )
+    suspended = _identity(
+        models.IdentityState.SUSPENDED,
+        models.IdentityState.ACTIVE,
+        models.SuspensionCategory.SPAM_TRAP,
+    )
+    assert suspended.suspension_category is models.SuspensionCategory.SPAM_TRAP
+    with pytest.raises(ValidationError):
+        _identity(
+            models.IdentityState.THROTTLED,
+            models.IdentityState.ACTIVE,
+            models.SuspensionCategory.SPAM_TRAP,
+        )
+    with pytest.raises(ValidationError):
+        _identity(
+            models.IdentityState.ACTIVE,
+            category=models.SuspensionCategory.BLOCKLISTED,
+        )
+
+
+def test_transition_api_cannot_construct_invalid_suspension_state() -> None:
+    """转为 suspended 必须显式 typed category，且其他目标不得夹带 category。"""
+    identity = _identity(models.IdentityState.ACTIVE)
+    with pytest.raises(InvalidStateTransition):
+        identity.transition_to(models.IdentityState.SUSPENDED)
+    assert identity.state is models.IdentityState.ACTIVE
+    with pytest.raises(InvalidStateTransition):
+        identity.transition_to(
+            models.IdentityState.THROTTLED,
+            suspension_category=models.SuspensionCategory.COMPLAINT_RATE,
+        )
+    assert identity.state is models.IdentityState.ACTIVE
 
 
 @pytest.mark.parametrize(

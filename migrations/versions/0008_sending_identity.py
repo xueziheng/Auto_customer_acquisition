@@ -74,10 +74,18 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(state IN ('throttled', 'suspended') AND "
+            "sendable_state_before_restriction IS NOT NULL AND "
             "sendable_state_before_restriction IN ('warming', 'active')) OR "
             "(state NOT IN ('throttled', 'suspended') AND "
             "sendable_state_before_restriction IS NULL)",
             name="ck_sending_identity_restriction_state",
+        ),
+        sa.CheckConstraint(
+            "(state = 'suspended' AND suspension_category IS NOT NULL AND "
+            "suspension_category IN ('authentication_regression', 'hard_bounce_rate', "
+            "'complaint_rate', 'spam_trap', 'blocklisted')) OR "
+            "(state <> 'suspended' AND suspension_category IS NULL)",
+            name="ck_sending_identity_suspension_category",
         ),
     )
     op.create_table(
@@ -263,6 +271,9 @@ FOR EACH ROW EXECUTE FUNCTION sending_domains_immutable_guard();
         """
 CREATE FUNCTION sending_daily_counters_guard() RETURNS trigger AS $$
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'sending daily counter is not deletable';
+    END IF;
     IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
        OR NEW.identity_id IS DISTINCT FROM OLD.identity_id
        OR NEW.on_day IS DISTINCT FROM OLD.on_day
@@ -278,7 +289,7 @@ $$ LANGUAGE plpgsql;
     op.execute(
         """
 CREATE TRIGGER trg_sending_daily_counters_guard
-BEFORE UPDATE ON sending_daily_counters
+BEFORE UPDATE OR DELETE ON sending_daily_counters
 FOR EACH ROW EXECUTE FUNCTION sending_daily_counters_guard();
 """
     )

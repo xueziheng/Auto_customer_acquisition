@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,6 +21,12 @@ from typing import Union, cast, get_args, get_origin, get_type_hints
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domains.sending_identity.models import (
+    IdentityState,
+    ReputationMetric,
+    ReputationSeverity,
+    SuspensionCategory,
+)
 from infra.db.tables import OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.bus import E_contra, EventEnvelope, EventHandler
@@ -87,8 +94,58 @@ def _to_jsonable(value: object) -> object:
     raise ValidationError(f"事件字段含不可序列化类型：{type(value).__name__}")
 
 
+_SAFE_SENDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
+_SAFE_RATIO = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+
+
+def _invalid_sending_event() -> ValidationError:
+    return ValidationError("发件身份事件载荷无效")
+
+
+def _validate_ratio(value: str) -> None:
+    if not isinstance(value, str) or _SAFE_RATIO.fullmatch(value) is None:
+        raise _invalid_sending_event()
+    decimal_value = Decimal(value)
+    if not decimal_value.is_finite() or decimal_value < 0 or decimal_value > 1:
+        raise _invalid_sending_event()
+
+
+def _validate_sending_identity_event(event: DomainEvent) -> None:
+    if not isinstance(
+        event,
+        (
+            SendingIdentityActivated,
+            SendingIdentityThrottled,
+            SendingIdentitySuspended,
+            ReputationThresholdBreached,
+        ),
+    ):
+        return
+    if (
+        not isinstance(event.sending_identity_id, str)
+        or _SAFE_SENDING_ID.fullmatch(event.sending_identity_id) is None
+    ):
+        raise _invalid_sending_event()
+    try:
+        if isinstance(event, SendingIdentityThrottled):
+            if event.new_state != IdentityState.THROTTLED.value:
+                raise _invalid_sending_event()
+            ReputationMetric(event.trigger_metric)
+            _validate_ratio(event.metric_value)
+        elif isinstance(event, SendingIdentitySuspended):
+            SuspensionCategory(event.reason)
+        elif isinstance(event, ReputationThresholdBreached):
+            ReputationMetric(event.metric)
+            ReputationSeverity(event.severity)
+            _validate_ratio(event.value)
+            _validate_ratio(event.threshold)
+    except ValueError:
+        raise _invalid_sending_event() from None
+
+
 def serialize(event: DomainEvent) -> dict[str, object]:
     """事件 → JSON 可序列化 dict（Round-trip 的序列化半边）。"""
+    _validate_sending_identity_event(event)
     return {f.name: _to_jsonable(getattr(event, f.name)) for f in dataclasses.fields(event)}
 
 

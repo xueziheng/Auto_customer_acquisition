@@ -993,7 +993,7 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
     }
     expected_checks = {
         "sending_domains": set(),
-        "sending_identities": {"ck_sending_identity_target_volume", "ck_sending_identity_version", "ck_sending_identity_minimum_sample", "ck_sending_identity_warmup_pair", "ck_sending_identity_address_domain", "ck_sending_identity_restriction_state"},
+        "sending_identities": {"ck_sending_identity_target_volume", "ck_sending_identity_version", "ck_sending_identity_minimum_sample", "ck_sending_identity_warmup_pair", "ck_sending_identity_address_domain", "ck_sending_identity_restriction_state", "ck_sending_identity_suspension_category"},
         "sending_auth_checks": set(),
         "sending_reputation_events": set(),
         "sending_daily_counters": {"ck_sending_counter_nonnegative"},
@@ -1104,6 +1104,33 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
         await _assert_statement_integrity_rejected(engine, identity_sql, {"tenant": "tMigA", "identity": "sidDup", "domain": "cold.example.com", "address": "sales@cold.example.com", "created": _NOW}, "同租户重复 address 应被拒绝")
         await _assert_statement_integrity_rejected(engine, domain_sql, {"tenant": "tMigA", "domain": "cold.example.com", "role": "primary_business", "created": _NOW}, "同域角色冲突应被拒绝")
 
+        restricted_sql = text(
+            "INSERT INTO sending_identities (tenant_id,identity_id,domain,address,state,"
+            "sendable_state_before_restriction,suspension_category,version,"
+            "throttle_hard_bounce_rate,suspend_hard_bounce_rate,throttle_complaint_rate,"
+            "suspend_complaint_rate,suspend_on_spam_trap,suspend_on_blocklist,minimum_sample,created_at) "
+            "VALUES ('tMigA',:identity,'cold.example.com',:address,:state,:saved,:category,"
+            "0,.03,.05,.001,.003,true,true,50,:created)"
+        )
+        for params, reason in (
+            ({"identity": "sidThrottleNull", "address": "tn@cold.example.com", "state": "throttled", "saved": None, "category": None, "created": _NOW}, "throttled+NULL saved 应被拒绝"),
+            ({"identity": "sidActiveSaved", "address": "as@cold.example.com", "state": "active", "saved": "active", "category": None, "created": _NOW}, "非受限身份带 saved state 应被拒绝"),
+            ({"identity": "sidSuspendNoCategory", "address": "snc@cold.example.com", "state": "suspended", "saved": "active", "category": None, "created": _NOW}, "suspended 缺 category 应被拒绝"),
+            ({"identity": "sidThrottleCategory", "address": "tc@cold.example.com", "state": "throttled", "saved": "active", "category": "spam_trap", "created": _NOW}, "throttled 带 category 应被拒绝"),
+            ({"identity": "sidBadCategory", "address": "bc@cold.example.com", "state": "suspended", "saved": "active", "category": "dns_investigation", "created": _NOW}, "自由 category 应被拒绝"),
+        ):
+            await _assert_statement_integrity_rejected(engine, restricted_sql, params, reason)
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "UPDATE sending_identities SET state='suspended', "
+                "sendable_state_before_restriction=NULL, suspension_category='spam_trap' "
+                "WHERE tenant_id='tMigA' AND identity_id='sidA'"
+            ),
+            {},
+            "suspended UPDATE 的 NULL saved 应被拒绝",
+        )
+
         auth_sql = text("INSERT INTO sending_auth_checks VALUES ('tMigA',:id,'sidA',:at,true,true,true,'[]'::jsonb,:ref,:at)")
         rep_sql = text("INSERT INTO sending_reputation_events VALUES ('tMigA',:id,'sidA','delivered',:at,:key,:ref,:at)")
         reservation_sql = text("INSERT INTO sending_send_reservations VALUES ('tMigA',:id,'sidA',:key,:day,:sequence,:at)")
@@ -1134,6 +1161,12 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             "UPDATE sending_daily_counters SET on_day=on_day + 1 WHERE tenant_id='tMigA'",
         ):
             await _assert_dml_rejected(engine, "sending_daily_counters", statement, {})
+        await _assert_dml_rejected(
+            engine,
+            "sending_daily_counters",
+            "DELETE FROM sending_daily_counters WHERE tenant_id='tMigA'",
+            {},
+        )
         for statement in (
             "UPDATE sending_domains SET role='transactional' WHERE tenant_id='tMigA'",
             "UPDATE sending_domains SET domain='other.example.com' WHERE tenant_id='tMigA'",

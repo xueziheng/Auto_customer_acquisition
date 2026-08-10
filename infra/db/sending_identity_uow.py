@@ -1,6 +1,7 @@
 """发件身份事务单元：七个 repository 与 outbox 共用一个 AsyncSession。"""
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from types import TracebackType
@@ -19,6 +20,8 @@ from infra.db.repositories.sending_identities import (
     SendReservationRepositoryImpl,
 )
 from shared.schemas.identifiers import TenantId
+
+_cleanup_logger = logging.getLogger("infra.db.sending_identity.uow")
 
 
 class SqlAlchemySendingIdentityUnitOfWork:
@@ -54,10 +57,27 @@ class SqlAlchemySendingIdentityUnitOfWork:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        preserve_primary = exc_type is not None
         try:
             if exc_type is None:
-                await self._session.commit()
+                try:
+                    await self._session.commit()
+                except BaseException:
+                    preserve_primary = True
+                    try:
+                        await self._session.rollback()
+                    except Exception:  # noqa: BLE001 - 必须保留原始 commit 异常
+                        _cleanup_logger.error("发件身份事务回滚失败")
+                    raise
             else:
-                await self._session.rollback()
+                try:
+                    await self._session.rollback()
+                except Exception:  # noqa: BLE001 - 必须保留 with 块原始异常
+                    _cleanup_logger.error("发件身份事务回滚失败")
         finally:
-            await self._session.close()
+            try:
+                await self._session.close()
+            except Exception:
+                if not preserve_primary:
+                    raise
+                _cleanup_logger.error("发件身份事务关闭失败")
