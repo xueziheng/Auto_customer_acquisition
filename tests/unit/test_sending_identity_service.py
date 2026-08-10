@@ -15,6 +15,7 @@ from domains.sending_identity.errors import (
 )
 from domains.sending_identity.permissions import (
     Actor,
+    Phase1SendingIdentityAuthorizer,
     ScopeLevel,
     SendingIdentityAction,
     SendingIdentityScope,
@@ -26,6 +27,7 @@ from domains.sending_identity.schemas import (
 )
 from shared.errors import (
     InvalidStateTransition,
+    PermissionDenied,
     TenantIsolationViolation,
     ValidationError,
 )
@@ -78,6 +80,22 @@ def _system(identity_id: SendingIdentityId) -> Actor:
     )
 
 
+def _manager(
+    *,
+    identity_ids: frozenset[SendingIdentityId] | None = None,
+    domains: frozenset[str] | None = None,
+) -> Actor:
+    return Actor(
+        actor_id="manager_1",
+        role="manager",
+        scope=SendingIdentityScope(
+            level=ScopeLevel.MANAGER,
+            allowed_identity_ids=identity_ids,
+            allowed_domains=domains,
+        ),
+    )
+
+
 def _failure() -> tuple[AuthenticationFailure, ...]:
     return (
         AuthenticationFailure(
@@ -108,10 +126,35 @@ class _Authorizer:
     def __init__(self, order: list[str]) -> None:
         self.order = order
 
-    def require(self, actor, action, scope, tenant_id, **kwargs):
-        self.order.append(f"authorize:{action.value}")
+    def preauthorize(self, actor, action, scope, tenant_id):
+        self.order.append(f"preauthorize:{action.value}")
         assert scope == actor.scope
-        return f"allow:{action.value}"
+        return f"provisional:{action.value}"
+
+    def require(self, actor, action, scope, tenant_id, **kwargs):
+        self.order.append(f"require:{action.value}")
+        assert scope == actor.scope
+        if action is not SendingIdentityAction.IDENTITY_LIST:
+            assert kwargs.get("identity_id") is not None or kwargs.get("domain") is not None
+        return f"allow-full:{action.value}"
+
+
+class _DenyingAuthorizer(_Authorizer):
+    def __init__(self, order: list[str], stage: str) -> None:
+        super().__init__(order)
+        self.stage = stage
+
+    def preauthorize(self, actor, action, scope, tenant_id):
+        if self.stage == "preauthorize":
+            self.order.append(f"preauthorize:{action.value}")
+            raise PermissionDenied("private authorization detail")
+        return super().preauthorize(actor, action, scope, tenant_id)
+
+    def require(self, actor, action, scope, tenant_id, **kwargs):
+        if self.stage == "require":
+            self.order.append(f"require:{action.value}")
+            raise PermissionDenied("private authorization detail")
+        return super().require(actor, action, scope, tenant_id, **kwargs)
 
 
 class _Audit:
@@ -137,6 +180,7 @@ class _Domains:
         self.store[domain.domain] = domain
 
     async def get(self, tenant_id, domain):
+        self.order.append("domain:get")
         return self.store.get(domain)
 
 
@@ -172,6 +216,7 @@ class _Identities:
         return next((item for item in self.store.values() if item.address == address), None)
 
     async def list_domain_for_update(self, tenant_id, domain):
+        self.order.append("identity:list_domain")
         return sorted(
             (item for item in self.store.values() if item.domain == domain),
             key=lambda item: item.identity_id,
@@ -184,6 +229,7 @@ class _Identities:
         return None
 
     async def list_available_for_campaign(self, tenant_id, scope, limit):
+        self.order.append("identity:list_available")
         return list(self.store.values())[:limit]
 
 
@@ -289,13 +335,13 @@ class _UowFactory:
         return _Uow(self)
 
 
-def _build(now: datetime = _NOW):
+def _build(now: datetime = _NOW, *, authorizer: object | None = None):
     order: list[str] = []
     factory = _UowFactory(order)
     audit = _Audit(order)
     service = _service_class()(
         factory,
-        _Authorizer(order),
+        authorizer if authorizer is not None else _Authorizer(order),
         audit,
         now=lambda: now,
     )
@@ -326,6 +372,236 @@ def _seed(
     return identity
 
 
+async def _invoke_successful_public_method(
+    method_name: str,
+    service: object,
+    factory: _UowFactory,
+) -> SendingIdentityAction:
+    """为公共方法顺序矩阵提供一个手工确定的合法资源场景。"""
+    if method_name == "register":
+        await service.register(
+            _TENANT,
+            IdentityRegisterRequest(
+                address="trace@cold.trace.example",
+                domain="cold.trace.example",
+                role=DomainRole.COLD_OUTREACH,
+            ),
+            actor=_boss(),
+        )
+        return SendingIdentityAction.IDENTITY_REGISTER
+
+    state = {
+        "begin_authentication": IdentityState.CREATED,
+        "record_authentication_result": IdentityState.CREATED,
+        "start_warmup": IdentityState.AUTH_PENDING,
+        "advance_warmup": IdentityState.WARMING,
+        "resume_from_suspension": IdentityState.WARMING,
+        "retire": IdentityState.CREATED,
+        "get": IdentityState.WARMING,
+        "list_available_for_campaign": IdentityState.WARMING,
+        "get_domain_reputation": IdentityState.ACTIVE,
+        "get_warmup_progress": IdentityState.WARMING,
+    }[method_name]
+    identity = _seed(factory, state=state)
+    if method_name in {
+        "advance_warmup",
+        "resume_from_suspension",
+        "get",
+        "list_available_for_campaign",
+        "get_warmup_progress",
+    }:
+        identity.warmup_plan = importlib.import_module(
+            "domains.sending_identity.models"
+        ).WarmupPlan(_NOW.date() - timedelta(days=28), 50)
+    if method_name in {
+        "start_warmup",
+        "resume_from_suspension",
+        "get",
+        "list_available_for_campaign",
+    }:
+        factory.auth_records.append(
+            AuthenticationCheckRecord(
+                auth_check_id=f"auth_trace_{method_name}",
+                tenant_id=_TENANT,
+                identity_id=identity.identity_id,
+                result=_auth(check_ref=f"trace_{method_name}"),
+                created_at=_NOW,
+            )
+        )
+    if method_name == "resume_from_suspension":
+        identity.transition_to(
+            IdentityState.SUSPENDED,
+            suspension_category=SuspensionCategory.AUTHENTICATION_REGRESSION,
+        )
+
+    if method_name == "begin_authentication":
+        await service.begin_authentication(_TENANT, identity.identity_id, actor=_boss())
+        return SendingIdentityAction.AUTH_CHECK_BEGIN
+    if method_name == "record_authentication_result":
+        await service.record_authentication_result(
+            _TENANT, identity.identity_id, _auth(), actor=_system(identity.identity_id)
+        )
+        return SendingIdentityAction.AUTH_RESULT_RECORD
+    if method_name == "start_warmup":
+        await service.start_warmup(_TENANT, identity.identity_id, 50, actor=_boss())
+        return SendingIdentityAction.WARMUP_START
+    if method_name == "advance_warmup":
+        await service.advance_warmup(
+            _TENANT, identity.identity_id, actor=_system(identity.identity_id)
+        )
+        return SendingIdentityAction.WARMUP_ADVANCE
+    if method_name == "resume_from_suspension":
+        await service.resume_from_suspension(
+            _TENANT, identity.identity_id, "reviewed", actor=_boss()
+        )
+        return SendingIdentityAction.SUSPENSION_RESUME
+    if method_name == "retire":
+        await service.retire(_TENANT, identity.identity_id, "retired", actor=_boss())
+        return SendingIdentityAction.IDENTITY_RETIRE
+    if method_name == "get":
+        await service.get(_TENANT, identity.identity_id, actor=_boss())
+        return SendingIdentityAction.IDENTITY_READ
+    if method_name == "list_available_for_campaign":
+        await service.list_available_for_campaign(_TENANT, limit=10, actor=_boss())
+        return SendingIdentityAction.IDENTITY_LIST
+    if method_name == "get_domain_reputation":
+        await service.get_domain_reputation(_TENANT, identity.domain, actor=_boss())
+        return SendingIdentityAction.REPUTATION_READ
+    if method_name == "get_warmup_progress":
+        await service.get_warmup_progress(
+            _TENANT, identity.identity_id, actor=_boss()
+        )
+        return SendingIdentityAction.IDENTITY_READ
+    raise AssertionError(f"未覆盖 public method: {method_name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method_name,resource_marker",
+    [
+        ("register", None),
+        ("begin_authentication", "identity:get"),
+        ("record_authentication_result", "identity:get"),
+        ("start_warmup", "identity:get"),
+        ("advance_warmup", "identity:get"),
+        ("resume_from_suspension", "identity:get"),
+        ("retire", "identity:get"),
+        ("get", "identity:get"),
+        ("list_available_for_campaign", "identity:list_available"),
+        ("get_domain_reputation", "domain:get"),
+        ("get_warmup_progress", "identity:get"),
+    ],
+)
+async def test_every_public_method_uses_two_phase_authorization_and_post_commit_allow(
+    method_name: str,
+    resource_marker: str | None,
+) -> None:
+    """删掉 preauthorize、资源后 require 或 commit 后 allow 任一环都必须失败。"""
+    service, factory, audit, order = _build()
+    action = await _invoke_successful_public_method(method_name, service, factory)
+    assert order[0] == f"preauthorize:{action.value}"
+    if resource_marker is None:
+        assert order.index(f"require:{action.value}") < order.index("uow:enter")
+    else:
+        assert order.index(resource_marker) < order.index(f"require:{action.value}")
+    assert order.count(f"require:{action.value}") == 1
+    assert order.index(f"require:{action.value}") < order.index("uow:commit")
+    assert order[-1] == f"audit:allow-full:{action.value}"
+    assert audit.records == [
+        {
+            "actor": audit.records[0]["actor"],
+            "action": action.value,
+            "tenant_id": _TENANT,
+            "scope": audit.records[0]["scope"],
+            "rule": f"allow-full:{action.value}",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["preauthorize", "require"])
+async def test_either_authorization_phase_denial_emits_one_safe_fixed_audit(
+    stage: str,
+) -> None:
+    """任一授权阶段拒绝都只能产生一条脱敏 deny，不能产生 provisional allow。"""
+    order: list[str] = []
+    authorizer = _DenyingAuthorizer(order, stage)
+    service, factory, audit, service_order = _build(authorizer=authorizer)
+    authorizer.order = service_order
+    identity = _seed(factory)
+    with pytest.raises(PermissionDenied, match="private authorization detail"):
+        await service.get(_TENANT, identity.identity_id, actor=_boss())
+    assert audit.records == [
+        {
+            "actor": "boss_1",
+            "action": SendingIdentityAction.IDENTITY_READ.value,
+            "tenant_id": _TENANT,
+            "scope": ScopeLevel.TENANT.value,
+            "rule": "deny:authorization",
+        }
+    ]
+    assert all(
+        secret not in str(audit.records)
+        for secret in (
+            str(identity.identity_id),
+            identity.domain,
+            identity.address,
+            "private authorization detail",
+        )
+    )
+    assert not any(str(record["rule"]).startswith("allow") for record in audit.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["get", "get_warmup_progress"])
+@pytest.mark.parametrize(
+    "scope_kind,allowed",
+    [
+        ("domain", True),
+        ("domain", False),
+        ("identity", True),
+        ("identity", False),
+        ("both", True),
+        ("both", False),
+    ],
+)
+async def test_manager_identity_queries_apply_full_domain_and_identity_abac(
+    method_name: str,
+    scope_kind: str,
+    allowed: bool,
+) -> None:
+    """domain-only、identity-only 与双维 manager 都必须在真实 row load 后判定。"""
+    authorizer = Phase1SendingIdentityAuthorizer(_TENANT)
+    service, factory, audit, _ = _build(authorizer=authorizer)
+    identity = _seed(factory, state=IdentityState.WARMING)
+    identity.warmup_plan = importlib.import_module(
+        "domains.sending_identity.models"
+    ).WarmupPlan(_NOW.date(), 50)
+    ids = frozenset(
+        {
+            identity.identity_id
+            if allowed
+            else SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT")
+        }
+    )
+    domains = frozenset({identity.domain if allowed else "other.service.example"})
+    actor = _manager(
+        identity_ids=ids if scope_kind in {"identity", "both"} else None,
+        domains=domains if scope_kind in {"domain", "both"} else None,
+    )
+    call = getattr(service, method_name)
+    if allowed:
+        result = await call(_TENANT, identity.identity_id, actor=actor)
+        assert result is not None
+        assert len(audit.records) == 1
+        assert audit.records[0]["rule"] == "phase1:manager:manager:identity:read"
+    else:
+        with pytest.raises(PermissionDenied):
+            await call(_TENANT, identity.identity_id, actor=actor)
+        assert len(audit.records) == 1
+        assert audit.records[0]["rule"] == "deny:authorization"
+
+
 @pytest.mark.asyncio
 async def test_register_is_authorized_first_commits_action_v0_then_audits() -> None:
     """register 的安全顺序、sid_ ID 和创建 action v0 不得漂移。"""
@@ -344,8 +620,9 @@ async def test_register_is_authorized_first_commits_action_v0_then_audits() -> N
     assert factory.actions.records[0].action_key == (
         f"identity:{identity_id}:v0:{SendingIdentityAction.IDENTITY_REGISTER.value}"
     )
-    assert order[0] == "authorize:identity:register"
-    assert order.index("uow:commit") < order.index("audit:allow:identity:register")
+    assert order[0] == "preauthorize:identity:register"
+    assert order.index("require:identity:register") < order.index("uow:enter")
+    assert order.index("uow:commit") < order.index("audit:allow-full:identity:register")
     assert len(audit.records) == 1
 
 
@@ -482,10 +759,21 @@ async def test_auth_ref_is_typed_idempotent_and_only_latest_regression_suspends(
 
 @pytest.mark.asyncio
 async def test_auth_time_bounds_and_retired_state_fail_without_allow_audit() -> None:
-    """外部时间不得回拨到创建前或未来五分钟外，retired 不新增 history。"""
+    """时间边界闭区间接受，边界外一微秒拒绝，retired 不新增 history。"""
     service, factory, audit, _ = _build()
     identity = _seed(factory)
     system = _system(identity.identity_id)
+    for index, checked_at in enumerate(
+        (identity.created_at, _NOW + timedelta(minutes=5))
+    ):
+        await service.record_authentication_result(
+            _TENANT,
+            identity.identity_id,
+            _auth(checked_at=checked_at, check_ref=f"accepted_{index}"),
+            actor=system,
+        )
+    assert len(factory.auth_records) == 2
+    assert len(audit.records) == 2
     for checked_at in (
         identity.created_at - timedelta(microseconds=1),
         _NOW + timedelta(minutes=5, microseconds=1),
@@ -497,13 +785,130 @@ async def test_auth_time_bounds_and_retired_state_fail_without_allow_audit() -> 
                 _auth(checked_at=checked_at, check_ref=f"ref_{checked_at.minute}"),
                 actor=system,
             )
-    assert audit.records == []
+    assert len(audit.records) == 2
     identity.state = IdentityState.RETIRED
     with pytest.raises(InvalidStateTransition):
         await service.record_authentication_result(
             _TENANT, identity.identity_id, _auth(), actor=system
         )
-    assert factory.auth_records == []
+    assert len(factory.auth_records) == 2
+
+
+@pytest.mark.asyncio
+async def test_throttled_auth_regression_preserves_original_sendable_state() -> None:
+    """THROTTLED→SUSPENDED 若重写 saved state，后续恢复将无法回到 ACTIVE。"""
+    service, factory, _, _ = _build()
+    identity = _seed(factory, state=IdentityState.ACTIVE, version=7)
+    identity.activated_at = _NOW - timedelta(days=1)
+    identity.transition_to(IdentityState.THROTTLED)
+    assert identity.sendable_state_before_restriction is IdentityState.ACTIVE
+    await service.record_authentication_result(
+        _TENANT,
+        identity.identity_id,
+        _auth(passed=False, check_ref="throttled_regression"),
+        actor=_system(identity.identity_id),
+    )
+    assert identity.state is IdentityState.SUSPENDED
+    assert identity.sendable_state_before_restriction is IdentityState.ACTIVE
+    assert identity.suspension_category is SuspensionCategory.AUTHENTICATION_REGRESSION
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_latest_auth_failure_without_allow_audit() -> None:
+    """历史曾通过不能绕过 latest-fail 恢复受限身份。"""
+    service, factory, audit, _ = _build()
+    identity = _seed(factory, state=IdentityState.ACTIVE, version=5)
+    identity.transition_to(
+        IdentityState.SUSPENDED,
+        suspension_category=SuspensionCategory.AUTHENTICATION_REGRESSION,
+    )
+    for auth_id, result in (
+        ("auth_old_pass", _auth(checked_at=_NOW - timedelta(minutes=1), check_ref="old_pass")),
+        ("auth_latest_fail", _auth(passed=False, check_ref="latest_fail")),
+    ):
+        factory.auth_records.append(
+            AuthenticationCheckRecord(
+                auth_check_id=auth_id,
+                tenant_id=_TENANT,
+                identity_id=identity.identity_id,
+                result=result,
+                created_at=_NOW,
+            )
+        )
+    with pytest.raises(AuthenticationNotVerifiedError):
+        await service.resume_from_suspension(
+            _TENANT, identity.identity_id, "reviewed", actor=_boss()
+        )
+    assert identity.state is IdentityState.SUSPENDED
+    assert audit.records == []
+
+
+@pytest.mark.asyncio
+async def test_stateful_write_failures_never_emit_allow_audit() -> None:
+    """validation/not-found/state/concurrency/commit 任一失败都不能记录成功授权。"""
+    # validation
+    service, factory, audit, _ = _build()
+    identity = _seed(factory)
+    with pytest.raises(ValidationError):
+        await service.record_authentication_result(
+            _TENANT,
+            identity.identity_id,
+            _auth(
+                checked_at=_NOW + timedelta(minutes=5, microseconds=1),
+                check_ref="invalid_time",
+            ),
+            actor=_system(identity.identity_id),
+        )
+    assert audit.records == []
+
+    # not found
+    service, _, audit, _ = _build()
+    with pytest.raises(SendingIdentityNotFoundError):
+        await service.begin_authentication(
+            _TENANT,
+            SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+            actor=_boss(),
+        )
+    assert audit.records == []
+
+    # invalid state
+    service, factory, audit, _ = _build()
+    identity = _seed(factory, state=IdentityState.AUTH_PENDING)
+    with pytest.raises(InvalidStateTransition):
+        await service.begin_authentication(_TENANT, identity.identity_id, actor=_boss())
+    assert audit.records == []
+
+    # concurrent address winner differs in a safe field
+    service, factory, audit, _ = _build()
+    identity = _seed(factory)
+    identity.display_name = "Winner"
+    with pytest.raises(ValidationError, match="发件身份登记冲突"):
+        await service.register(
+            _TENANT,
+            IdentityRegisterRequest(
+                address=identity.address,
+                domain=identity.domain,
+                role=identity.role,
+                display_name="Loser",
+            ),
+            actor=_boss(),
+        )
+    assert audit.records == []
+
+    # commit
+    service, factory, audit, _ = _build()
+    factory.commit_error = RuntimeError("private commit failure")
+    with pytest.raises(RuntimeError, match="private commit failure"):
+        await service.register(
+            _TENANT,
+            IdentityRegisterRequest(
+                address="commit@cold.failure-matrix.example",
+                domain="cold.failure-matrix.example",
+                role=DomainRole.COLD_OUTREACH,
+            ),
+            actor=_boss(),
+        )
+    assert audit.records == []
 
 
 @pytest.mark.asyncio
@@ -551,7 +956,7 @@ async def test_public_methods_authorize_before_validation_and_commit_failure_has
         await service.list_available_for_campaign(
             _TENANT, limit=True, actor=_boss()
         )
-    assert order == ["authorize:identity:list"]
+    assert order == ["preauthorize:identity:list"]
     factory.commit_error = RuntimeError("private commit failure")
     with pytest.raises(RuntimeError):
         await service.register(

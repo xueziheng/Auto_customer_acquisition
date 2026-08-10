@@ -23,6 +23,7 @@ from domains.sending_identity.schemas import (
     AuthenticationResult,
     IdentityRegisterRequest,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import SendingIdentityId, TenantId
 
 _models = importlib.import_module("domains.sending_identity.models")
@@ -217,6 +218,46 @@ async def test_concurrent_registration_recovers_exact_domain_and_address_winners
     )
     assert len(set(ids)) == 1
 
+    distinct_same_role = await asyncio.gather(
+        *(
+            service.register(
+                tenant,
+                IdentityRegisterRequest(
+                    address=f"distinct-{index}@cold.register-race.example",
+                    domain="cold.register-race.example",
+                    role=DomainRole.COLD_OUTREACH,
+                ),
+                actor=_boss(),
+            )
+            for index in range(2)
+        )
+    )
+    assert len(set(distinct_same_role)) == 2
+
+    async def register_conflicting_safe_field(display_name: str):
+        try:
+            return await service.register(
+                tenant,
+                IdentityRegisterRequest(
+                    address="safe-conflict@cold.register-race.example",
+                    domain="cold.register-race.example",
+                    role=DomainRole.COLD_OUTREACH,
+                    display_name=display_name,
+                ),
+                actor=_boss(),
+            )
+        except ValidationError as exc:
+            return exc
+
+    safe_field_results = await asyncio.gather(
+        register_conflicting_safe_field("Winner A"),
+        register_conflicting_safe_field("Winner B"),
+    )
+    assert sum(isinstance(item, str) for item in safe_field_results) == 1
+    conflicts = [item for item in safe_field_results if isinstance(item, ValidationError)]
+    assert len(conflicts) == 1
+    assert str(conflicts[0]) == "发件身份登记冲突"
+
     async def register_role(role: DomainRole, local: str):
         try:
             return await service.register(
@@ -255,6 +296,80 @@ async def test_concurrent_registration_recovers_exact_domain_and_address_winners
                 )
             )
         ).scalar_one() == 1
+
+
+async def test_concurrent_auth_refs_preserve_both_distinct_rows_and_one_typed_winner(
+    engine_fx: AsyncEngine,
+) -> None:
+    """错误 row lock、比较符或 conflict target 会丢 distinct ref 或接受异值 same-ref。"""
+    tenant = TenantId("tAuthRefRacePg")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit, _NOW)
+    identity_id = await service.register(
+        tenant,
+        IdentityRegisterRequest(
+            address="sales@cold.auth-ref-race.example",
+            domain="cold.auth-ref-race.example",
+            role=DomainRole.COLD_OUTREACH,
+        ),
+        actor=_boss(),
+    )
+    await service.begin_authentication(tenant, identity_id, actor=_boss())
+    system = _system(identity_id)
+    await asyncio.gather(
+        service.record_authentication_result(
+            tenant,
+            identity_id,
+            _auth(_NOW, check_ref="distinct_ref_a"),
+            actor=system,
+        ),
+        service.record_authentication_result(
+            tenant,
+            identity_id,
+            _auth(_NOW + timedelta(microseconds=1), check_ref="distinct_ref_b"),
+            actor=system,
+        ),
+    )
+
+    async def record_conflicting_ref(passed: bool):
+        try:
+            await service.record_authentication_result(
+                tenant,
+                identity_id,
+                _auth(
+                    _NOW + timedelta(microseconds=2),
+                    passed=passed,
+                    check_ref="same_ref_different_value",
+                ),
+                actor=system,
+            )
+            return "winner"
+        except ValidationError as exc:
+            return exc
+
+    same_ref_results = await asyncio.gather(
+        record_conflicting_ref(True),
+        record_conflicting_ref(False),
+    )
+    assert same_ref_results.count("winner") == 1
+    conflicts = [item for item in same_ref_results if isinstance(item, ValidationError)]
+    assert len(conflicts) == 1
+    assert str(conflicts[0]) == "认证检查引用冲突"
+
+    tables = importlib.import_module("infra.db.tables")
+    async with sf() as session:
+        refs = (
+            await session.execute(
+                select(tables.AuthenticationCheckRow.check_ref)
+                .where(
+                    tables.AuthenticationCheckRow.tenant_id == tenant,
+                    tables.AuthenticationCheckRow.identity_id == identity_id,
+                )
+                .order_by(tables.AuthenticationCheckRow.check_ref)
+            )
+        ).scalars().all()
+    assert refs == ["distinct_ref_a", "distinct_ref_b", "same_ref_different_value"]
 
 
 async def test_concurrent_auth_regression_suspends_once_with_typed_category(
@@ -361,6 +476,26 @@ async def test_commit_failure_rolls_back_auth_state_action_outbox_and_has_zero_a
     )
     await seed_service.start_warmup(tenant, identity_id, 50, actor=_boss())
 
+    tables = importlib.import_module("infra.db.tables")
+    async with normal_sf() as session:
+        baseline_action_keys = (
+            await session.execute(
+                select(tables.IdentityActionRow.action_key)
+                .where(
+                    tables.IdentityActionRow.tenant_id == tenant,
+                    tables.IdentityActionRow.identity_id == identity_id,
+                )
+                .order_by(tables.IdentityActionRow.action_key)
+            )
+        ).scalars().all()
+    assert baseline_action_keys == sorted(
+        [
+            f"identity:{identity_id}:v0:identity:register",
+            f"identity:{identity_id}:v1:auth:check_begin",
+            f"identity:{identity_id}:v2:warmup:start",
+        ]
+    )
+
     failing_sf = async_sessionmaker(
         bind=engine_fx,
         expire_on_commit=False,
@@ -381,7 +516,6 @@ async def test_commit_failure_rolls_back_auth_state_action_outbox_and_has_zero_a
         )
     assert failing_audit.records == []
 
-    tables = importlib.import_module("infra.db.tables")
     async with normal_sf() as session:
         row = (
             await session.execute(
@@ -407,3 +541,14 @@ async def test_commit_failure_rolls_back_auth_state_action_outbox_and_has_zero_a
                 )
             )
         ).scalar_one() == 0
+        action_keys_after_failure = (
+            await session.execute(
+                select(tables.IdentityActionRow.action_key)
+                .where(
+                    tables.IdentityActionRow.tenant_id == tenant,
+                    tables.IdentityActionRow.identity_id == identity_id,
+                )
+                .order_by(tables.IdentityActionRow.action_key)
+            )
+        ).scalars().all()
+        assert action_keys_after_failure == baseline_action_keys

@@ -98,6 +98,16 @@ class Actor:
 
 @runtime_checkable
 class SendingIdentityAuthorizer(Protocol):
+    def preauthorize(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        scope: SendingIdentityScope,
+        tenant_id: TenantId,
+    ) -> str:
+        """只校验调用资格；不授予具体 identity/domain 资源访问。"""
+        ...
+
     def require(
         self,
         actor: Actor,
@@ -196,16 +206,13 @@ class Phase1SendingIdentityAuthorizer:
     def __init__(self, tenant_id: TenantId) -> None:
         self._tenant_id = tenant_id
 
-    def require(
+    def _eligible_level(
         self,
         actor: Actor,
         action: SendingIdentityAction,
         scope: SendingIdentityScope,
         tenant_id: TenantId,
-        *,
-        identity_id: SendingIdentityId | None = None,
-        domain: str | None = None,
-    ) -> str:
+    ) -> ScopeLevel:
         allowed: dict[tuple[str | None, ScopeLevel], frozenset[SendingIdentityAction]] = {
             ("boss", ScopeLevel.TENANT): _BOSS_ACTIONS,
             ("manager", ScopeLevel.MANAGER): _MANAGER_ACTIONS,
@@ -224,6 +231,34 @@ class Phase1SendingIdentityAuthorizer:
             or scope.allowed_domains == frozenset()
         ):
             raise PermissionDenied("Phase 1 发件身份授权拒绝")
+        if level is ScopeLevel.SYSTEM and (
+            scope.allowed_identity_ids is None or len(scope.allowed_identity_ids) != 1
+        ):
+            raise PermissionDenied("Phase 1 发件身份授权拒绝")
+        return level
+
+    def preauthorize(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        scope: SendingIdentityScope,
+        tenant_id: TenantId,
+    ) -> str:
+        """校验 actor/action/scope/tenant 调用资格，不检查具体资源。"""
+        level = self._eligible_level(actor, action, scope, tenant_id)
+        return f"phase1:preauthorize:{actor.role}:{level.value}:{action.value}"
+
+    def require(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        scope: SendingIdentityScope,
+        tenant_id: TenantId,
+        *,
+        identity_id: SendingIdentityId | None = None,
+        domain: str | None = None,
+    ) -> str:
+        level = self._eligible_level(actor, action, scope, tenant_id)
         if level is ScopeLevel.SYSTEM and (
             identity_id is None or scope.allowed_identity_ids != frozenset({identity_id})
         ):
@@ -244,6 +279,15 @@ class Phase1SendingIdentityAuthorizer:
 
 class DefaultDenyAuthorizer:
     """未被具体策略接管时的安全默认值。"""
+
+    def preauthorize(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        scope: SendingIdentityScope,
+        tenant_id: TenantId,
+    ) -> str:
+        raise PermissionDenied("Phase 1 发件身份授权拒绝")
 
     def require(
         self,

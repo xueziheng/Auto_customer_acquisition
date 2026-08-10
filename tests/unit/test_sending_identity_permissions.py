@@ -98,12 +98,71 @@ def test_phase1_matrix_allows_only_the_explicit_actions(
     authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
     for action in permissions.SendingIdentityAction:
         if action.name in _EXPECTED_ALLOW_NAMES[(role, scope_name)]:
+            assert authorizer.preauthorize(actor, action, scope, TenantId("tenant-1")) == (
+                f"phase1:preauthorize:{role}:{level.value}:{action.value}"
+            )
             assert authorizer.require(actor, action, scope, TenantId("tenant-1"), identity_id=identity_id) == (
                 f"phase1:{role}:{level.value}:{action.value}"
             )
         else:
             with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+                authorizer.preauthorize(actor, action, scope, TenantId("tenant-1"))
+            with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
                 authorizer.require(actor, action, scope, TenantId("tenant-1"), identity_id=identity_id)
+
+
+def test_preauthorize_checks_eligibility_without_granting_manager_resource_access() -> None:
+    """把 domain 缺失当 full allow 会使 domain-only manager 绕过资源 ABAC。"""
+    permissions = _permissions()
+    scope = _scope(
+        permissions.ScopeLevel.MANAGER,
+        allowed_domains=frozenset({"example.com"}),
+    )
+    actor = _actor("manager", scope)
+    authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
+    action = permissions.SendingIdentityAction.IDENTITY_READ
+    assert authorizer.preauthorize(
+        actor, action, scope, TenantId("tenant-1")
+    ) == "phase1:preauthorize:manager:manager:identity:read"
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        authorizer.require(
+            actor,
+            action,
+            scope,
+            TenantId("tenant-1"),
+            identity_id=SendingIdentityId("sid-1"),
+        )
+    assert authorizer.require(
+        actor,
+        action,
+        scope,
+        TenantId("tenant-1"),
+        identity_id=SendingIdentityId("sid-1"),
+        domain="example.com",
+    ) == "phase1:manager:manager:identity:read"
+
+
+def test_default_deny_authorizer_rejects_both_authorization_phases() -> None:
+    """默认拒绝实现缺少任一阶段都会在 future caller 中形成隐式放行。"""
+    permissions = _permissions()
+    scope = _scope(permissions.ScopeLevel.TENANT)
+    actor = _actor("boss", scope)
+    authorizer = permissions.DefaultDenyAuthorizer()
+    for method_name, kwargs in (
+        ("preauthorize", {}),
+        (
+            "require",
+            {"identity_id": SendingIdentityId("sid-1"), "domain": "example.com"},
+        ),
+    ):
+        with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+            getattr(authorizer, method_name)(
+                actor,
+                permissions.SendingIdentityAction.IDENTITY_READ,
+                scope,
+                TenantId("tenant-1"),
+                **kwargs,
+            )
 
 
 def test_scope_and_actor_fail_closed_without_silent_normalization() -> None:

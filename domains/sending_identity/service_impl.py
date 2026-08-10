@@ -94,7 +94,33 @@ class SendingIdentityServiceImpl:
             raise ValidationError("服务时钟必须为 UTC")
         return value
 
-    def _authorize(
+    def _audit_authorization_deny(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        tenant_id: TenantId,
+    ) -> None:
+        self._audit.log(
+            actor=actor.actor_id,
+            action=action.value,
+            tenant_id=tenant_id,
+            scope=actor.scope.label,
+            rule="deny:authorization",
+        )
+
+    def _preauthorize(
+        self,
+        actor: Actor,
+        action: SendingIdentityAction,
+        tenant_id: TenantId,
+    ) -> None:
+        try:
+            self._authorizer.preauthorize(actor, action, actor.scope, tenant_id)
+        except PermissionDenied:
+            self._audit_authorization_deny(actor, action, tenant_id)
+            raise
+
+    def _authorize_resource(
         self,
         actor: Actor,
         action: SendingIdentityAction,
@@ -113,13 +139,7 @@ class SendingIdentityServiceImpl:
                 domain=domain,
             )
         except PermissionDenied:
-            self._audit.log(
-                actor=actor.actor_id,
-                action=action.value,
-                tenant_id=tenant_id,
-                scope=actor.scope.label,
-                rule="deny",
-            )
+            self._audit_authorization_deny(actor, action, tenant_id)
             raise
 
     def _audit_allow(
@@ -136,22 +156,6 @@ class SendingIdentityServiceImpl:
             scope=actor.scope.label,
             rule=rule,
         )
-
-    def _deny_abac(
-        self,
-        actor: Actor,
-        action: SendingIdentityAction,
-        tenant_id: TenantId,
-        rule: str,
-    ) -> None:
-        self._audit.log(
-            actor=actor.actor_id,
-            action=action.value,
-            tenant_id=tenant_id,
-            scope=actor.scope.label,
-            rule=rule,
-        )
-        raise PermissionDenied("Phase 1 发件身份资源授权拒绝")
 
     def _deny_tenant_isolation(
         self,
@@ -178,20 +182,22 @@ class SendingIdentityServiceImpl:
         )
         raise TenantIsolationViolation("检测到跨租户数据隔离违规")
 
-    def _verify_identity_row(
+    def _authorize_identity_row(
         self,
         identity: SendingIdentity,
         actor: Actor,
         action: SendingIdentityAction,
         tenant_id: TenantId,
-    ) -> None:
+    ) -> str:
         if identity.tenant_id != tenant_id:
             self._deny_tenant_isolation(actor, action, tenant_id)
-        scope = actor.scope
-        if scope.allowed_identity_ids is not None and identity.identity_id not in scope.allowed_identity_ids:
-            self._deny_abac(actor, action, tenant_id, "deny:abac:identity")
-        if scope.allowed_domains is not None and identity.domain not in scope.allowed_domains:
-            self._deny_abac(actor, action, tenant_id, "deny:abac:domain")
+        return self._authorize_resource(
+            actor,
+            action,
+            tenant_id,
+            identity_id=identity.identity_id,
+            domain=identity.domain,
+        )
 
     async def _locked_identity(
         self,
@@ -200,12 +206,12 @@ class SendingIdentityServiceImpl:
         identity_id: SendingIdentityId,
         actor: Actor,
         action: SendingIdentityAction,
-    ) -> SendingIdentity:
+    ) -> tuple[SendingIdentity, str]:
         identity = await uow.identities.get(tenant_id, identity_id, for_update=True)
         if identity is None:
             raise SendingIdentityNotFoundError("发件身份不存在或不属于当前租户")
-        self._verify_identity_row(identity, actor, action, tenant_id)
-        return identity
+        rule = self._authorize_identity_row(identity, actor, action, tenant_id)
+        return identity, rule
 
     async def _record_action(
         self,
@@ -251,7 +257,7 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> SendingIdentityId:
         action = SendingIdentityAction.IDENTITY_REGISTER
-        rule = self._authorize(actor, action, tenant_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         display_name = None
         if request.display_name is not None:
@@ -266,6 +272,13 @@ class SendingIdentityServiceImpl:
             display_name=display_name,
             connector_ref=request.connector_ref,
         )
+        rule = self._authorize_resource(
+            actor,
+            action,
+            tenant_id,
+            identity_id=candidate.identity_id,
+            domain=candidate.domain,
+        )
         async with self._uow_factory(tenant_id) as uow:
             domain = await uow.domains.ensure(
                 SendingDomain(tenant_id, candidate.domain, candidate.role, now)
@@ -276,7 +289,8 @@ class SendingIdentityServiceImpl:
                 raise DomainRoleConflictError("发件域名角色冲突")
             result = await uow.identities.register_if_address_absent(candidate)
             winner = result.winner
-            self._verify_identity_row(winner, actor, action, tenant_id)
+            if winner.tenant_id != tenant_id:
+                self._deny_tenant_isolation(actor, action, tenant_id)
             registration_fields = (
                 "address",
                 "domain",
@@ -313,10 +327,10 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.AUTH_CHECK_BEGIN
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             before = identity.state
@@ -345,10 +359,10 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.AUTH_RESULT_RECORD
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             if identity.state is IdentityState.RETIRED:
@@ -413,10 +427,10 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.WARMUP_START
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             if identity.state is not IdentityState.AUTH_PENDING:
@@ -451,10 +465,10 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.WARMUP_ADVANCE
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             if identity.state is IdentityState.ACTIVE:
@@ -497,11 +511,11 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.SUSPENSION_RESUME
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         note = _safe_text(investigation_note, field="调查记录", maximum=1000)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             if identity.state is not IdentityState.SUSPENDED:
@@ -540,11 +554,11 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> None:
         action = SendingIdentityAction.IDENTITY_RETIRE
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         note = _safe_text(reason, field="退役原因", maximum=1000)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
-            identity = await self._locked_identity(
+            identity, rule = await self._locked_identity(
                 uow, tenant_id, identity_id, actor, action
             )
             if identity.state is not IdentityState.RETIRED:
@@ -654,13 +668,13 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> IdentityView:
         action = SendingIdentityAction.IDENTITY_READ
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
             identity = await uow.identities.get(tenant_id, identity_id)
             if identity is None:
                 raise SendingIdentityNotFoundError("发件身份不存在或不属于当前租户")
-            self._verify_identity_row(identity, actor, action, tenant_id)
+            rule = self._authorize_identity_row(identity, actor, action, tenant_id)
             view = await self._build_identity_view(uow, identity, now)
         self._audit_allow(actor, action, tenant_id, rule)
         return view
@@ -673,7 +687,7 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> list[IdentityView]:
         action = SendingIdentityAction.IDENTITY_LIST
-        rule = self._authorize(actor, action, tenant_id)
+        self._preauthorize(actor, action, tenant_id)
         if not _is_real_int(limit) or not 1 <= limit <= 200:
             raise ValidationError("limit 必须为 1 到 200 的整数")
         now = self._now()
@@ -682,8 +696,13 @@ class SendingIdentityServiceImpl:
                 tenant_id, actor.scope, limit
             )
             views: list[IdentityView] = []
+            rule: str | None = None
             for identity in identities:
-                self._verify_identity_row(identity, actor, action, tenant_id)
+                row_rule = self._authorize_identity_row(
+                    identity, actor, action, tenant_id
+                )
+                if rule is None:
+                    rule = row_rule
                 if identity.role is not DomainRole.COLD_OUTREACH or identity.state not in _SENDABLE:
                     raise ValidationError("发件身份查询结果不符合可用条件")
                 latest = await uow.auth_checks.latest_for_identity(
@@ -692,6 +711,8 @@ class SendingIdentityServiceImpl:
                 if latest is None or not latest.result.all_passed:
                     raise ValidationError("发件身份查询结果不符合认证条件")
                 views.append(await self._build_identity_view(uow, identity, now))
+            if rule is None:
+                rule = self._authorize_resource(actor, action, tenant_id)
         self._audit_allow(actor, action, tenant_id, rule)
         return views
 
@@ -703,13 +724,13 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> WarmupProgressView:
         action = SendingIdentityAction.IDENTITY_READ
-        rule = self._authorize(actor, action, tenant_id, identity_id=identity_id)
+        self._preauthorize(actor, action, tenant_id)
         today = self._now().date()
         async with self._uow_factory(tenant_id) as uow:
             identity = await uow.identities.get(tenant_id, identity_id)
             if identity is None:
                 raise SendingIdentityNotFoundError("发件身份不存在或不属于当前租户")
-            self._verify_identity_row(identity, actor, action, tenant_id)
+            rule = self._authorize_identity_row(identity, actor, action, tenant_id)
             plan = identity.warmup_plan
             if plan is None:
                 raise InvalidStateTransition("发件身份尚未开始预热")
@@ -736,7 +757,7 @@ class SendingIdentityServiceImpl:
         actor: Actor,
     ) -> DomainReputationView:
         action = SendingIdentityAction.REPUTATION_READ
-        rule = self._authorize(actor, action, tenant_id, domain=domain)
+        self._preauthorize(actor, action, tenant_id)
         normalized = normalize_sending_domain(domain)
         now = self._now()
         async with self._uow_factory(tenant_id) as uow:
@@ -748,8 +769,20 @@ class SendingIdentityServiceImpl:
             identities = await uow.identities.list_domain_for_update(
                 tenant_id, normalized
             )
+            rule: str | None = None
             for identity in identities:
-                self._verify_identity_row(identity, actor, action, tenant_id)
+                row_rule = self._authorize_identity_row(
+                    identity, actor, action, tenant_id
+                )
+                if rule is None:
+                    rule = row_rule
+            if rule is None:
+                rule = self._authorize_resource(
+                    actor,
+                    action,
+                    tenant_id,
+                    domain=normalized,
+                )
             window = await uow.reputation.compute_domain_window(
                 tenant_id, normalized, 7, now
             )
