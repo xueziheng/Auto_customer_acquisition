@@ -112,7 +112,7 @@ def normalize_sending_domain(raw: str) -> str:
     """将合法 FQDN 统一为 lowercase、无根点的 IDNA ASCII 形式。"""
     if not isinstance(raw, str):
         raise InvalidSendingDomainError("发件域名格式无效")
-    candidate = raw.strip().rstrip(".")
+    candidate = raw.strip().removesuffix(".")
     if not candidate or any(char.isspace() for char in candidate):
         raise InvalidSendingDomainError("发件域名格式无效")
     if any(token in candidate for token in (":", "/", "@")) or "." not in candidate:
@@ -196,12 +196,14 @@ class WarmupPlan:
     started_on: date
     target_daily_volume: int
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.started_on, date) or isinstance(self.started_on, datetime):
+            raise ValidationError("预热开始日期无效")
+        if not _is_real_int(self.target_daily_volume) or not 5 <= self.target_daily_volume <= 100:
+            raise ValidationError("预热目标日发送量必须为 5 到 100 的整数")
+
     @classmethod
     def create(cls, started_on: date, target_daily_volume: int) -> WarmupPlan:
-        if not isinstance(started_on, date) or isinstance(started_on, datetime):
-            raise ValidationError("预热开始日期无效")
-        if not _is_real_int(target_daily_volume) or not 5 <= target_daily_volume <= 100:
-            raise ValidationError("预热目标日发送量必须为 5 到 100 的整数")
         return cls(started_on=started_on, target_daily_volume=target_daily_volume)
 
     def daily_limit_on(self, on_day: date) -> int:
@@ -343,6 +345,14 @@ class SendingIdentity:
         self.address = normalize_sending_address(self.address, self.domain)
         if not isinstance(self.role, DomainRole) or not isinstance(self.state, IdentityState):
             raise ValidationError("发件身份枚举无效")
+        if self.state in {IdentityState.THROTTLED, IdentityState.SUSPENDED}:
+            if self.sendable_state_before_restriction not in {
+                IdentityState.WARMING,
+                IdentityState.ACTIVE,
+            }:
+                raise ValidationError("受限身份必须保留可发送前状态")
+        elif self.sendable_state_before_restriction is not None:
+            raise ValidationError("非受限身份不得保留可发送前状态")
         if not _is_utc_aware(self.created_at):
             raise ValidationError("发件身份创建时间必须为 UTC")
         if self.connector_ref is not None:
@@ -353,3 +363,27 @@ class SendingIdentity:
 
     def may_be_used_for_cold_outreach(self) -> bool:
         return self.role is DomainRole.COLD_OUTREACH
+
+    def transition_to(self, target: IdentityState) -> None:
+        """执行唯一的状态变更，并守住受限状态的持久化恢复不变量。"""
+        validate_identity_transition(self.state, target)
+        restricted_states = {IdentityState.THROTTLED, IdentityState.SUSPENDED}
+        sendable_states = {IdentityState.WARMING, IdentityState.ACTIVE}
+        if target in restricted_states:
+            if self.state in sendable_states:
+                self.sendable_state_before_restriction = self.state
+            elif (
+                self.state in restricted_states
+                and self.sendable_state_before_restriction not in sendable_states
+            ):
+                raise InvalidStateTransition("受限身份缺少可恢复状态")
+        elif self.state in restricted_states and target in sendable_states:
+            saved_state = self.sendable_state_before_restriction
+            if not isinstance(saved_state, IdentityState) or saved_state not in sendable_states:
+                raise InvalidStateTransition("受限身份缺少可恢复状态")
+            if recovery_state(self.state, saved_state) is not target:
+                raise InvalidStateTransition("受限身份只能恢复到持久化状态")
+            self.sendable_state_before_restriction = None
+        elif target not in restricted_states:
+            self.sendable_state_before_restriction = None
+        self.state = target

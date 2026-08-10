@@ -52,10 +52,21 @@ class SendingIdentityScope:
     def __post_init__(self) -> None:
         if self.level is not None and not isinstance(self.level, ScopeLevel):
             raise ValidationError("发件身份作用域级别无效")
+        if self.allowed_identity_ids is not None:
+            if not isinstance(self.allowed_identity_ids, (frozenset, set)):
+                raise ValidationError("allowed_identity_ids 必须为集合")
+            identities = frozenset(self.allowed_identity_ids)
+            if any(not isinstance(identity, str) or not identity.strip() for identity in identities):
+                raise ValidationError("allowed_identity_ids 包含无效身份")
+            object.__setattr__(self, "allowed_identity_ids", identities)
         if self.allowed_domains is not None:
-            for domain in self.allowed_domains:
+            if not isinstance(self.allowed_domains, (frozenset, set)):
+                raise ValidationError("allowed_domains 必须为集合")
+            domains = frozenset(self.allowed_domains)
+            for domain in domains:
                 if not isinstance(domain, str) or normalize_sending_domain(domain) != domain:
                     raise ValidationError("allowed_domains 必须为已规范化域名")
+            object.__setattr__(self, "allowed_domains", domains)
         if self.level is ScopeLevel.MANAGER and self.allowed_identity_ids is None and self.allowed_domains is None:
             raise ValidationError("MANAGER 作用域必须显式收窄 identity 或 domain")
         if self.level is ScopeLevel.SYSTEM and not self.allowed_identity_ids:
@@ -95,6 +106,7 @@ class SendingIdentityAuthorizer(Protocol):
         tenant_id: TenantId,
         *,
         identity_id: SendingIdentityId | None = None,
+        domain: str | None = None,
     ) -> str:
         """放行返回稳定 rule；未列角色/动作/范围一律抛 ``PermissionDenied``。"""
         ...
@@ -192,6 +204,7 @@ class Phase1SendingIdentityAuthorizer:
         tenant_id: TenantId,
         *,
         identity_id: SendingIdentityId | None = None,
+        domain: str | None = None,
     ) -> str:
         allowed: dict[tuple[str | None, ScopeLevel], frozenset[SendingIdentityAction]] = {
             ("boss", ScopeLevel.TENANT): _BOSS_ACTIONS,
@@ -207,19 +220,25 @@ class Phase1SendingIdentityAuthorizer:
             or scope != actor.scope
             or level is None
             or action not in allowed.get((actor.role, level), frozenset())
+            or scope.allowed_identity_ids == frozenset()
+            or scope.allowed_domains == frozenset()
         ):
             raise PermissionDenied("Phase 1 发件身份授权拒绝")
         if level is ScopeLevel.SYSTEM and (
             identity_id is None or scope.allowed_identity_ids != frozenset({identity_id})
         ):
             raise PermissionDenied("Phase 1 发件身份授权拒绝")
-        if (
-            level is ScopeLevel.MANAGER
-            and identity_id is not None
-            and scope.allowed_identity_ids is not None
-            and identity_id not in scope.allowed_identity_ids
-        ):
-            raise PermissionDenied("Phase 1 发件身份授权拒绝")
+        if level is ScopeLevel.MANAGER and action is not SendingIdentityAction.IDENTITY_LIST:
+            if scope.allowed_identity_ids is not None and (
+                identity_id is None or identity_id not in scope.allowed_identity_ids
+            ):
+                raise PermissionDenied("Phase 1 发件身份授权拒绝")
+            if scope.allowed_domains is not None and (
+                not isinstance(domain, str)
+                or normalize_sending_domain(domain) != domain
+                or domain not in scope.allowed_domains
+            ):
+                raise PermissionDenied("Phase 1 发件身份授权拒绝")
         return f"phase1:{actor.role}:{level.value}:{action.value}"
 
 
@@ -234,5 +253,6 @@ class DefaultDenyAuthorizer:
         tenant_id: TenantId,
         *,
         identity_id: SendingIdentityId | None = None,
+        domain: str | None = None,
     ) -> str:
         raise PermissionDenied("Phase 1 发件身份授权拒绝")

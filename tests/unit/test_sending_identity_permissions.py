@@ -29,52 +29,63 @@ def _scope(level: object, **kwargs: object) -> object:
     return permissions.SendingIdentityScope(level=level, **kwargs)
 
 
-@pytest.mark.parametrize(
-    ("role", "scope_name", "allowed_actions"),
-    [
-        (
-            "boss",
-            "TENANT",
-            {
-                "IDENTITY_REGISTER",
-                "AUTH_CHECK_BEGIN",
-                "WARMUP_START",
-                "IDENTITY_READ",
-                "IDENTITY_LIST",
-                "REPUTATION_READ",
-                "SEND_PERMISSION_READ",
-                "SUSPENSION_RESUME",
-                "IDENTITY_RETIRE",
-            },
-        ),
-        (
-            "manager",
-            "MANAGER",
-            {"IDENTITY_READ", "IDENTITY_LIST", "REPUTATION_READ", "SEND_PERMISSION_READ"},
-        ),
-        (
-            "system",
-            "SYSTEM",
-            {
-                "AUTH_RESULT_RECORD",
-                "WARMUP_ADVANCE",
-                "IDENTITY_READ",
-                "REPUTATION_READ",
-                "SEND_PERMISSION_READ",
-                "SEND_SLOT_RESERVE",
-                "DELIVERY_EVENT_RECORD",
-                "REPUTATION_EVALUATE",
-                "THROTTLE_RESUME",
-            },
-        ),
-        ("sales", "SELF", set()),
-    ],
-)
+_ALL_ACTION_NAMES = {
+    "IDENTITY_REGISTER",
+    "AUTH_CHECK_BEGIN",
+    "AUTH_RESULT_RECORD",
+    "WARMUP_START",
+    "WARMUP_ADVANCE",
+    "IDENTITY_READ",
+    "IDENTITY_LIST",
+    "REPUTATION_READ",
+    "SEND_PERMISSION_READ",
+    "SEND_SLOT_RESERVE",
+    "DELIVERY_EVENT_RECORD",
+    "REPUTATION_EVALUATE",
+    "THROTTLE_RESUME",
+    "SUSPENSION_RESUME",
+    "IDENTITY_RETIRE",
+}
+_EXPECTED_ALLOW_NAMES = {
+    ("boss", "TENANT"): {
+        "IDENTITY_REGISTER",
+        "AUTH_CHECK_BEGIN",
+        "WARMUP_START",
+        "IDENTITY_READ",
+        "IDENTITY_LIST",
+        "REPUTATION_READ",
+        "SEND_PERMISSION_READ",
+        "SUSPENSION_RESUME",
+        "IDENTITY_RETIRE",
+    },
+    ("manager", "MANAGER"): {
+        "IDENTITY_READ",
+        "IDENTITY_LIST",
+        "REPUTATION_READ",
+        "SEND_PERMISSION_READ",
+    },
+    ("system", "SYSTEM"): {
+        "AUTH_RESULT_RECORD",
+        "WARMUP_ADVANCE",
+        "IDENTITY_READ",
+        "REPUTATION_READ",
+        "SEND_PERMISSION_READ",
+        "SEND_SLOT_RESERVE",
+        "DELIVERY_EVENT_RECORD",
+        "REPUTATION_EVALUATE",
+        "THROTTLE_RESUME",
+    },
+    ("sales", "SELF"): set(),
+}
+
+
+@pytest.mark.parametrize("role,scope_name", _EXPECTED_ALLOW_NAMES)
 def test_phase1_matrix_allows_only_the_explicit_actions(
-    role: str, scope_name: str, allowed_actions: set[str]
+    role: str, scope_name: str
 ) -> None:
     """遗漏或多放行一个 action 都会造成身份管理越权。"""
     permissions = _permissions()
+    assert {action.name for action in permissions.SendingIdentityAction} == _ALL_ACTION_NAMES
     level = permissions.ScopeLevel[scope_name]
     identity_id = SendingIdentityId("sid-1")
     kwargs: dict[str, object] = {}
@@ -86,7 +97,7 @@ def test_phase1_matrix_allows_only_the_explicit_actions(
     actor = _actor(role, scope)
     authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
     for action in permissions.SendingIdentityAction:
-        if action.name in allowed_actions:
+        if action.name in _EXPECTED_ALLOW_NAMES[(role, scope_name)]:
             assert authorizer.require(actor, action, scope, TenantId("tenant-1"), identity_id=identity_id) == (
                 f"phase1:{role}:{level.value}:{action.value}"
             )
@@ -107,6 +118,10 @@ def test_scope_and_actor_fail_closed_without_silent_normalization() -> None:
     tenant_scope = _scope(permissions.ScopeLevel.TENANT)
     with pytest.raises(ValidationError):
         permissions.Actor(actor_id="boss\n1", role="boss", scope=tenant_scope)
+    with pytest.raises(ValidationError):
+        permissions.Actor(actor_id="", role="boss", scope=tenant_scope)
+    with pytest.raises(ValidationError):
+        _scope(permissions.ScopeLevel.MANAGER, allowed_identity_ids=[SendingIdentityId("sid-1")])
 
 
 def test_system_write_requires_exact_singleton_target_scope() -> None:
@@ -128,6 +143,70 @@ def test_system_write_requires_exact_singleton_target_scope() -> None:
         )
 
 
+def test_scope_defensively_copies_mutable_identity_set_before_actor_creation() -> None:
+    """构造后修改原 set 不能把 SYSTEM 写权限从一个身份换到另一个。"""
+    permissions = _permissions()
+    source_ids = {SendingIdentityId("sid-1")}
+    scope = _scope(permissions.ScopeLevel.SYSTEM, allowed_identity_ids=source_ids)
+    actor = _actor("system", scope)
+    source_ids.clear()
+    source_ids.add(SendingIdentityId("sid-2"))
+    authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        authorizer.require(
+            actor,
+            permissions.SendingIdentityAction.SEND_SLOT_RESERVE,
+            scope,
+            TenantId("tenant-1"),
+            identity_id=SendingIdentityId("sid-2"),
+        )
+
+
+@pytest.mark.parametrize("field", ["allowed_identity_ids", "allowed_domains"])
+def test_empty_manager_scope_dimension_denies_even_identity_list(field: str) -> None:
+    """空集合表示全拒，不能因 list 没有 resource target 而退化为全读。"""
+    permissions = _permissions()
+    scope = _scope(permissions.ScopeLevel.MANAGER, **{field: frozenset()})
+    actor = _actor("manager", scope)
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1")).require(
+            actor,
+            permissions.SendingIdentityAction.IDENTITY_LIST,
+            scope,
+            TenantId("tenant-1"),
+        )
+
+
+def test_manager_resource_scope_checks_identity_and_domain_targets() -> None:
+    """manager 的 identity/domain ABAC 必须在资源操作时共同匹配。"""
+    permissions = _permissions()
+    scope = _scope(
+        permissions.ScopeLevel.MANAGER,
+        allowed_identity_ids=frozenset({SendingIdentityId("sid-1")}),
+        allowed_domains=frozenset({"example.com"}),
+    )
+    actor = _actor("manager", scope)
+    authorizer = permissions.Phase1SendingIdentityAuthorizer(TenantId("tenant-1"))
+    assert authorizer.require(
+        actor,
+        permissions.SendingIdentityAction.IDENTITY_READ,
+        scope,
+        TenantId("tenant-1"),
+        identity_id=SendingIdentityId("sid-1"),
+        domain="example.com",
+    ) == "phase1:manager:manager:identity:read"
+    for identity_id, domain in ((SendingIdentityId("sid-2"), "example.com"), (SendingIdentityId("sid-1"), "other.example")):
+        with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+            authorizer.require(
+                actor,
+                permissions.SendingIdentityAction.IDENTITY_READ,
+                scope,
+                TenantId("tenant-1"),
+                identity_id=identity_id,
+                domain=domain,
+            )
+
+
 def test_authorizer_rejects_wrong_tenant_scope_mismatch_and_unknowns() -> None:
     """租户错配、替换 scope 或未知输入必须默认拒绝。"""
     permissions = _permissions()
@@ -140,6 +219,26 @@ def test_authorizer_rejects_wrong_tenant_scope_mismatch_and_unknowns() -> None:
             permissions.SendingIdentityAction.IDENTITY_READ,
             scope,
             TenantId("tenant-2"),
+            identity_id=SendingIdentityId("sid-1"),
+        )
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        authorizer.require(
+            _actor("unknown", scope),
+            permissions.SendingIdentityAction.IDENTITY_READ,
+            scope,
+            TenantId("tenant-1"),
+            identity_id=SendingIdentityId("sid-1"),
+        )
+    different_scope = _scope(
+        permissions.ScopeLevel.TENANT,
+        allowed_identity_ids=frozenset({SendingIdentityId("sid-2")}),
+    )
+    with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
+        authorizer.require(
+            actor,
+            permissions.SendingIdentityAction.IDENTITY_READ,
+            different_scope,
+            TenantId("tenant-1"),
             identity_id=SendingIdentityId("sid-1"),
         )
     with pytest.raises(PermissionDenied, match="Phase 1 发件身份授权拒绝"):
