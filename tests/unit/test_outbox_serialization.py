@@ -40,11 +40,14 @@ from shared.schemas.identifiers import (
     HandoffId,
     OpportunityId,
     RunId,
+    SendingIdentityId,
     TenantId,
+    new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
+_VALID_SENDING_ID = SendingIdentityId(new_id("sid"))
 
 _MODULE_BY_SYMBOL = {
     "EVENT_REGISTRY": "infra.db.outbox",
@@ -89,31 +92,31 @@ def test_event_registry_is_explicit_whitelist() -> None:
         ),
         SendingIdentityThrottled(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", new_state="active",
+            sending_identity_id=_VALID_SENDING_ID, new_state="active",
             trigger_metric="hard_bounce_rate", metric_value="0.03",
         ),
         SendingIdentityThrottled(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", new_state="throttled",
+            sending_identity_id=_VALID_SENDING_ID, new_state="throttled",
             trigger_metric="mx.example.com", metric_value="0.03",
         ),
         SendingIdentityThrottled(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", new_state="throttled",
+            sending_identity_id=_VALID_SENDING_ID, new_state="throttled",
             trigger_metric="hard_bounce_rate", metric_value="NaN",
         ),
         SendingIdentitySuspended(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", reason="dns_txt=secret",
+            sending_identity_id=_VALID_SENDING_ID, reason="dns_txt=secret",
         ),
         ReputationThresholdBreached(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", metric="complaint_rate",
+            sending_identity_id=_VALID_SENDING_ID, metric="complaint_rate",
             value="-0.01", threshold="0.001", severity="watch",
         ),
         ReputationThresholdBreached(
             tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-1", metric="vault://investigation/ref",
+            sending_identity_id=_VALID_SENDING_ID, metric="vault://investigation/ref",
             value="0.01", threshold="0.001", severity="manual_investigation",
         ),
     ],
@@ -123,6 +126,92 @@ def test_sending_identity_event_serializer_rejects_unbounded_payloads(event: Dom
     serialize = _load("serialize")
     with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
         serialize(event)
+
+
+@pytest.mark.parametrize(
+    "identity_id",
+    [
+        "gmail_primary",
+        "Bearer_abc",
+        "token_secret",
+        "other_" + "0" * 26,
+        "sid_" + "I" * 26,
+        "sid_" + "0" * 25,
+        "sid_" + "0" * 27,
+    ],
+)
+def test_sending_identity_event_rejects_non_wire_identity_ids(identity_id: str) -> None:
+    """凭证形态、错误 prefix、非法 Crockford 字符和错误长度不能充当 identity ID。"""
+    serialize = _load("serialize")
+    event = SendingIdentityActivated(
+        tenant_id=TenantId("t1"),
+        occurred_at=_NOW,
+        run_id=None,
+        sending_identity_id=SendingIdentityId(identity_id),
+    )
+    with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
+        serialize(event)
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        "0." + "1" * 29,
+        "+0.1",
+        "-0.1",
+        "1e-1",
+        "NaN",
+        "Infinity",
+        "1.0000000000000000000000000001",
+        "dns_investigation",
+    ],
+)
+def test_sending_identity_event_rejects_unsafe_decimal_wire_values(ratio: str) -> None:
+    """超过默认 Decimal 精度、符号、指数、非有限、越界与自由文本均 fail closed。"""
+    serialize = _load("serialize")
+    event = SendingIdentityThrottled(
+        tenant_id=TenantId("t1"),
+        occurred_at=_NOW,
+        run_id=None,
+        sending_identity_id=_VALID_SENDING_ID,
+        new_state="throttled",
+        trigger_metric="hard_bounce_rate",
+        metric_value=ratio,
+    )
+    with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
+        serialize(event)
+
+
+def test_new_sending_identity_id_and_default_decimal_ratio_roundtrip() -> None:
+    """new_id('sid') 与未量化的真实 1/51 Decimal 比率可无损进入 outbox wire。"""
+    serialize = _load("serialize")
+    deserialize = _load("deserialize")
+    sending_models = importlib.import_module("domains.sending_identity.models")
+    ReputationWindow = sending_models.ReputationWindow
+    window = ReputationWindow(
+        window_days=7,
+        computed_at=_NOW,
+        sent_attempts=51,
+        delivered=50,
+        hard_bounced=1,
+        soft_bounced=0,
+        complaints=0,
+        unsubscribed=0,
+    )
+    value = str(window.hard_bounce_rate)
+    assert value == "0.01960784313725490196078431373"
+    event = SendingIdentityThrottled(
+        tenant_id=TenantId("t1"),
+        occurred_at=_NOW,
+        run_id=None,
+        sending_identity_id=SendingIdentityId(new_id("sid")),
+        new_state="throttled",
+        trigger_metric="hard_bounce_rate",
+        metric_value=value,
+    )
+    payload = serialize(event)
+    assert payload["metric_value"] == value
+    assert deserialize(SendingIdentityThrottled, payload) == event
 
 
 def test_registry_events_roundtrip() -> None:

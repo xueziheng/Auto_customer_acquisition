@@ -1,6 +1,7 @@
 """发件身份 PostgreSQL repository/UoW 行为契约。"""
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 from collections.abc import AsyncIterator
@@ -25,7 +26,12 @@ from domains.sending_identity.schemas import (
 )
 from shared.errors import TenantIsolationViolation
 from shared.events.catalog import SendingIdentityActivated
-from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, TenantId
+from shared.schemas.identifiers import (
+    IdempotencyKey,
+    SendingIdentityId,
+    TenantId,
+    new_id,
+)
 
 _models = importlib.import_module("domains.sending_identity.models")
 AuthCheck = _models.AuthCheck
@@ -550,7 +556,10 @@ async def test_sending_identity_uow_commit_failure_rolls_back_everything(
                 tenant, "cold.commit-fail.example", DomainRole.COLD_OUTREACH, _NOW
             )
             identity = _identity(
-                str(tenant), "sidCommitFail", domain.domain, state=IdentityState.ACTIVE
+                str(tenant),
+                new_id("sid"),
+                domain.domain,
+                state=IdentityState.ACTIVE,
             )
             await uow.domains.add(domain)
             await uow.identities.add(identity)
@@ -594,3 +603,126 @@ async def test_sending_identity_uow_commit_failure_rolls_back_everything(
                 )
             ).scalars().all()
             assert rows == []
+
+
+_COMMIT_PRIMARY = RuntimeError("commit primary must remain private")
+_ROLLBACK_CANCEL = asyncio.CancelledError("rollback cancellation must remain private")
+_CLOSE_CANCEL = asyncio.CancelledError("close cancellation must remain private")
+_BODY_CANCEL = asyncio.CancelledError("body cancellation must remain private")
+
+
+class _CommitRollbackCancelledSession(AsyncSession):
+    async def commit(self) -> None:
+        raise _COMMIT_PRIMARY
+
+    async def rollback(self) -> None:
+        raise _ROLLBACK_CANCEL
+
+
+class _CommitCloseCancelledSession(AsyncSession):
+    async def commit(self) -> None:
+        raise _COMMIT_PRIMARY
+
+    async def rollback(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        raise _CLOSE_CANCEL
+
+
+class _CloseCancelledSession(AsyncSession):
+    async def commit(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        raise _CLOSE_CANCEL
+
+
+class _BodyCleanupCancelledSession(AsyncSession):
+    async def rollback(self) -> None:
+        raise _ROLLBACK_CANCEL
+
+    async def close(self) -> None:
+        raise _CLOSE_CANCEL
+
+
+def _uow_factory(session_type: type[AsyncSession]):
+    return async_sessionmaker(expire_on_commit=False, class_=session_type)
+
+
+async def test_uow_rollback_cancelled_error_does_not_replace_commit_primary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit 已失败时 rollback cancellation 仅脱敏记录，原对象必须继续传播。"""
+    Uow = importlib.import_module(
+        "infra.db.sending_identity_uow"
+    ).SqlAlchemySendingIdentityUnitOfWork
+    with (
+        caplog.at_level(logging.ERROR, logger="infra.db.sending_identity.uow"),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        async with Uow(
+            _uow_factory(_CommitRollbackCancelledSession), TenantId("tUowCancel")
+        ):
+            pass
+    assert caught.value is _COMMIT_PRIMARY
+    assert [record.getMessage() for record in caplog.records] == ["发件身份事务回滚失败"]
+    assert "private" not in caplog.text
+
+
+async def test_uow_close_cancelled_error_does_not_replace_commit_primary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit 已失败时 close cancellation 仅脱敏记录，原对象必须继续传播。"""
+    Uow = importlib.import_module(
+        "infra.db.sending_identity_uow"
+    ).SqlAlchemySendingIdentityUnitOfWork
+    caplog.clear()
+    with (
+        caplog.at_level(logging.ERROR, logger="infra.db.sending_identity.uow"),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        async with Uow(
+            _uow_factory(_CommitCloseCancelledSession), TenantId("tUowCancel")
+        ):
+            pass
+    assert caught.value is _COMMIT_PRIMARY
+    assert [record.getMessage() for record in caplog.records] == ["发件身份事务关闭失败"]
+    assert "private" not in caplog.text
+
+
+async def test_uow_close_cancelled_error_propagates_without_primary() -> None:
+    """正常 commit 后 close cancellation 没有主异常可保护，必须原对象传播。"""
+    Uow = importlib.import_module(
+        "infra.db.sending_identity_uow"
+    ).SqlAlchemySendingIdentityUnitOfWork
+    with pytest.raises(asyncio.CancelledError) as caught:
+        async with Uow(
+            _uow_factory(_CloseCancelledSession), TenantId("tUowCancel")
+        ):
+            pass
+    assert caught.value is _CLOSE_CANCEL
+
+
+async def test_uow_body_cancelled_error_survives_cancelled_cleanup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """with-body cancellation 本身是 primary，rollback/close cancellation 都不得替换。"""
+    Uow = importlib.import_module(
+        "infra.db.sending_identity_uow"
+    ).SqlAlchemySendingIdentityUnitOfWork
+    caplog.clear()
+    with (
+        caplog.at_level(logging.ERROR, logger="infra.db.sending_identity.uow"),
+        pytest.raises(asyncio.CancelledError) as caught,
+    ):
+        async with Uow(
+            _uow_factory(_BodyCleanupCancelledSession), TenantId("tUowCancel")
+        ):
+            raise _BODY_CANCEL
+    assert caught.value is _BODY_CANCEL
+    assert [record.getMessage() for record in caplog.records] == [
+        "发件身份事务回滚失败",
+        "发件身份事务关闭失败",
+    ]
+    assert "private" not in caplog.text

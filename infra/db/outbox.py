@@ -94,8 +94,8 @@ def _to_jsonable(value: object) -> object:
     raise ValidationError(f"事件字段含不可序列化类型：{type(value).__name__}")
 
 
-_SAFE_SENDING_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
-_SAFE_RATIO = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+_SAFE_SENDING_ID = re.compile(r"sid_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
+_SAFE_RATIO = re.compile(r"(?:0|1)(?:\.[0-9]+)?\Z")
 
 
 def _invalid_sending_event() -> ValidationError:
@@ -106,7 +106,12 @@ def _validate_ratio(value: str) -> None:
     if not isinstance(value, str) or _SAFE_RATIO.fullmatch(value) is None:
         raise _invalid_sending_event()
     decimal_value = Decimal(value)
-    if not decimal_value.is_finite() or decimal_value < 0 or decimal_value > 1:
+    if (
+        not decimal_value.is_finite()
+        or decimal_value < 0
+        or decimal_value > 1
+        or len(decimal_value.as_tuple().digits) > 28
+    ):
         raise _invalid_sending_event()
 
 

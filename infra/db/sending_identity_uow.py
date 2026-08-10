@@ -66,18 +66,18 @@ class SqlAlchemySendingIdentityUnitOfWork:
                     preserve_primary = True
                     try:
                         await self._session.rollback()
-                    except Exception:  # noqa: BLE001 - 必须保留原始 commit 异常
+                    except BaseException:  # noqa: BLE001 - cleanup 不得覆盖 primary
                         _cleanup_logger.error("发件身份事务回滚失败")
                     raise
             else:
                 try:
                     await self._session.rollback()
-                except Exception:  # noqa: BLE001 - 必须保留 with 块原始异常
+                except BaseException:  # noqa: BLE001 - cleanup 不得覆盖 primary
                     _cleanup_logger.error("发件身份事务回滚失败")
         finally:
             try:
                 await self._session.close()
-            except Exception:
+            except BaseException:
                 if not preserve_primary:
                     raise
                 _cleanup_logger.error("发件身份事务关闭失败")

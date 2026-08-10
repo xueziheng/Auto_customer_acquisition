@@ -41,11 +41,14 @@ from shared.schemas.identifiers import (
     OpportunityId,
     ProspectAccountId,
     RunId,
+    SendingIdentityId,
     TenantId,
     ValidatedNeedId,
+    new_id,
 )
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
+_VALID_SENDING_ID = SendingIdentityId(new_id("sid"))
 
 _MODULE_BY_SYMBOL = {
     "PostgresEventBus": "infra.db.outbox",
@@ -338,20 +341,20 @@ async def test_uow_publish_tenant_mismatch_rejected(engine_fx: AsyncEngine) -> N
     [
         SendingIdentityActivated(
             tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=RunId("run-si"),
-            sending_identity_id="sid-event-1",
+            sending_identity_id=_VALID_SENDING_ID,
         ),
         SendingIdentityThrottled(
             tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-event-2", new_state="throttled",
+            sending_identity_id=_VALID_SENDING_ID, new_state="throttled",
             trigger_metric="hard_bounce_rate", metric_value="0.031000",
         ),
         SendingIdentitySuspended(
             tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-event-3", reason="spam_trap",
+            sending_identity_id=_VALID_SENDING_ID, reason="spam_trap",
         ),
         ReputationThresholdBreached(
             tenant_id=TenantId("tSendingEvent"), occurred_at=_NOW, run_id=None,
-            sending_identity_id="sid-event-4", metric="complaint_rate",
+            sending_identity_id=_VALID_SENDING_ID, metric="complaint_rate",
             value="0.001100", threshold="0.001000", severity="watch",
         ),
     ],
@@ -379,7 +382,7 @@ async def test_malicious_sending_identity_event_never_enters_outbox(
             tenant_id=tenant,
             occurred_at=_NOW,
             run_id=None,
-            sending_identity_id="sid-safe",
+            sending_identity_id=_VALID_SENDING_ID,
             metric="dns.example.com/investigation",
             value="Infinity",
             threshold="0.001",
