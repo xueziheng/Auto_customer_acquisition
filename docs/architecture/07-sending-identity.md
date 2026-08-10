@@ -1,165 +1,168 @@
 # 发件身份与域名信誉
 
-**这不是合规脚注，是生存问题。**
+发件身份不是 Connector 配置项，而是保护公司邮件基础设施的业务域。主业务域一旦被
+冷开发的退信或投诉拖累，报价、合同和客户往来也会失去可达性。因此架构硬规则是：
 
-按每天 50–100 封冷邮件的量级，主域名一旦因退信率和投诉率被标记，倒下的不只是开发信——你和现有客户的正常往来、报价单、合同附件会一起进垃圾箱。那是「公司邮箱废了」级别的事故，且恢复周期以月计。
+> **冷开发域与主业务域物理隔离，主业务域永不用于冷开发。**
 
-所以发件身份是一个独立业务域（`domains/sending-identity/`），不是 Connector 的配置项。
+当前实现位于 `domains/sending_identity/`。Slice 4A 只交付无网络的领域纵切面：
+生命周期、认证事实、预热额度、原子发送名额、滚动信誉、域聚合熔断、权限审计和
+PostgreSQL 持久化。它不持有邮箱或 DNS 凭证，也不发送邮件。
 
----
+## 一、域名与身份
 
-## 一、域名物理隔离
+域角色使用固定 wire value：
 
-```text
-company.com              主业务域名。人工往来、合同、报价。
-                         永不用于冷开发。
-
-outreach-brand.com       冷开发专用域名，独立注册、独立认证。
-                         烧了就换，不影响主业务。
-```
-
-冷开发域名建议与主域名有可识别的品牌关联（利于客户信任），但**必须是独立域名**，不是主域名的子域——子域信誉问题会连带影响父域。
-
----
-
-## 二、发件身份模型
-
-一个 Sending Identity = 域名 + 邮箱 + 独立的预热状态与信誉指标。
-
-```yaml
-sending_identity:
-  id: si_001
-  domain: outreach-brand.com
-  mailbox: sales-us@outreach-brand.com
-  purpose: cold_outreach          # cold_outreach | transactional | human_reply
-  auth_status:
-    spf: verified
-    dkim: verified
-    dmarc: verified               # 三项全绿才能上线
-  warmup:
-    state: in_progress
-    day: 6
-    current_daily_cap: 15
-  reputation:
-    bounce_rate_7d: 0.012
-    complaint_rate_7d: 0.0003
-    state: healthy                # healthy | watch | throttled | suspended
-```
-
-同一 Campaign 可以轮换多个身份，但**每个身份的限额独立计算**——轮换不是用来突破总量限制的，是用来分散风险的。
-
----
-
-## 三、预热
-
-新身份不能直接按满额发送。预热是逐步建立信誉的过程。
-
-参考计划（具体数字应可配置，因为不同邮箱服务商容忍度不同）：
-
-| 阶段 | 每日上限 | 说明 |
+| role | 用途 | 冷开发 |
 |---|---|---|
-| 第 1–3 天 | 5 | 优先发给回复率高的目标 |
-| 第 4–7 天 | 15 | 观察退信与进箱情况 |
-| 第 2 周 | 30 | 指标健康才继续爬 |
-| 第 3 周 | 50 | |
-| 第 4 周起 | 按上限 | 达到稳态 |
+| `cold_outreach` | 独立冷开发域 | 允许 |
+| `primary_business` | 人工往来、报价、合同 | 永不允许 |
+| `transactional` | 系统事务通知 | 不允许 |
 
-预热状态机：
+`sending_domains` 以 `(tenant_id, normalized_domain)` 唯一标识域；域名小写、去末尾点
+并做 IDNA 规范化。同一租户同一域的角色不可变，避免两个身份对域用途作出冲突解释。
 
-```text
-created → auth_pending → warming → active
-                              ├→ throttled（指标恶化，降额）
-                              └→ suspended（超阈值，停发）
-```
+一个 sending identity 记录地址、域、角色、状态、预热计划、固定信誉阈值与安全的
+connector reference。reference 只是未来装配层的定位符，不是凭证；地址、域名、
+reference 和原始 DNS/provider payload 不得进入授权日志或错误边界。
 
-**规则**：`warming` 状态下的身份，实际日限额取「预热计划值」与「Campaign 配额」的较小值。任何绕过预热的实现都是缺陷。
-
----
-
-## 四、上线硬门槛
-
-Campaign 启动前，其所有发件身份必须满足：
+## 二、状态机与认证门禁
 
 ```text
-SPF 记录已配置且校验通过
-DKIM 签名已配置且校验通过
-DMARC 策略已配置且校验通过
-退订入口已就绪
-发件人真实信息完整（CAN-SPAM 要求）
-预热计划已开始（新身份）
-信誉状态为 healthy 或 warming
+created ─→ auth_pending ─→ warming ─→ active
+   │              │           │          │
+   └──────────────┴───────────┴──────────┴─→ retired
+                              │          │
+                              ├──────────┴─→ throttled ─→ suspended
+                              └────────────→ suspended
+
+throttled ─→ saved warming/active
+suspended ─→ saved warming/active（仅 boss 带调查记录）
+retired   ─→ 无后继
 ```
 
-**任何一项不满足，Campaign 不允许启动。** 这道门禁在 `domains/outreach` 启动 Campaign 时校验，同时 Tool Gateway 在每次发送前独立复查（双重保险，因为配置可能在 Campaign 运行期间变化）。
+SPF、DKIM、DMARC 检查结果使用 typed DTO，只保存固定检查状态、失败类别、修复代码和
+安全 reference；不接收原始 DNS 记录或异常文本。三项全部通过后仍须由 boss 显式开始
+预热。可发送状态的最新认证若退化，身份立即 `suspended`，类别固定为
+`authentication_regression`。
 
----
+限制前状态持久化在 `sendable_state_before_restriction`。恢复只能回到原来的
+`warming` 或 `active`，预热身份不能借恢复跳到 active。`retired` 不可逆。
 
-## 五、自动熔断
+## 三、固定 28 天预热
 
-指标超阈值时**自动降额或停发，不等人工**——等人看到通知再处理，损害已经发生。
+调用方只提供 5–100 的整数 target，不得注入自定义日期或 schedule；日期来自服务的
+UTC 注入时钟。
 
-| 指标 | 观察窗 | watch | throttled | suspended |
-|---|---|---|---|---|
-| 硬退信率 | 7 天 | > 2% | > 4% | > 7% |
-| 投诉率 | 7 天 | > 0.05% | > 0.1% | > 0.3% |
-| 单日硬退信数 | 1 天 | — | > 10 | > 25 |
+| 自然日 | 当日上限 |
+|---|---:|
+| 开始日前 | 0 |
+| 1–3 | `min(5, target)` |
+| 4–7 | `min(15, target)` |
+| 8–14 | `min(30, target)` |
+| 15–21 | `min(50, target)` |
+| 22–28 | 从 `min(50,target)` 用整数上取整确定性爬升到 target |
+| 29 起 | target；第 29 个自然日才完成预热 |
 
-动作：
+例如 target=100 时，第 1 天只能占用 5 个发送名额；第 28 天额度已到 100，但身份仍是
+`warming`，第 29 天显式 `advance_warmup` 后才进入 `active`。
 
-- `watch` —— 发通知，日限额降至 50%，暂停接入新联系人
-- `throttled` —— 日限额降至 20%，只发给已回复过的联系人
-- `suspended` —— 完全停发，人工介入。同 Campaign 的其他身份同时转 `watch`
+## 四、发送前的唯一权威门禁
 
-阈值应可配置，但**默认值必须保守**。宁可发得慢，不要烧域名。
+`check_send_permission` 是 UI/诊断快照，不能缓存为发送授权。真实发送前必须调用
+`reserve_send_slot`，它在一个事务中：
 
----
+1. 以 tenant 绑定读取并锁定 domain、identity；
+2. 重查域角色、身份状态、最新认证、当前 7 天信誉窗口和当日额度；
+3. 按 `(tenant_id, identity_id, reservation_key)` 查幂等命中；
+4. 原子递增 daily counter，并写 immutable reservation。
 
-## 六、退信与投诉处理
+同 key 重试返回原 reservation 和 sequence，不重复计数。不同 key 到 cap 后固定拒绝。
+发送预留不退款：外部超时时不能证明 provider 未接受请求，退款会让重试突破上限。
 
-必须闭环，不能只记日志：
+Phase 1 的 `throttled` 会阻断所有新冷开发，而不是“只发给已回复联系人”。后者依赖
+联系人、Campaign 和 suppression 数据，均不在 4A。
+
+## 五、Decimal 滚动信誉与域聚合
+
+身份级和域名级窗口均为 `[computed_at-7d, computed_at]`。发送分母从窗口内 immutable
+reservations 的 `created_at` 计数，不能从生命周期总量或 daily counter 推测。所有比率
+用 `Decimal` 计算和比较，数据库阈值为 `NUMERIC(9,6)`；未来 wire 只能用十进制字符串，
+不能用 JSON number/float。
+
+普通比率至少需要 50 个发送样本，比较使用 `>=`：
+
+| 指标 | `throttled` | `suspended` |
+|---|---:|---:|
+| hard bounce rate | `.03` | `.05` |
+| complaint rate | `.001` | `.003` |
+
+spam trap 或 blocklist 任一命中是 immediate hazard，不等 50 个样本，直接停用。
+不存在持久化的 `healthy` 或 `watch` identity 状态，也没有“单日退信数”阈值。
+
+域名窗口汇总同域 identities 的 reservations 与 delivery facts，并采用成员中最保守的
+确定性阈值。域窗口命中时，所有同域 `warming`/`active` 身份同时受限；已有
+`throttled` 身份只可升级为 `suspended`。域聚合的 Phase 1 价值是合并各身份不足 50 的
+样本，而不是声称同一阈值下的加权比率能高于每个成员比率。
+
+每条 delivery event 以 tenant 级 dedup key 只增写入，并在同一 UoW 立即评估。每个实际
+状态变化写一条 action 和一条对应 outbox，触发源再写一条
+`ReputationThresholdBreached`；事务失败时三者一起回滚，重复事件或重复评估不重复发布。
+
+## 六、恢复规则
+
+- `resume_from_throttle` 只允许目标 identity 的 SYSTEM 单例 scope 显式调用。身份与域窗口
+  的 hard bounce 都须严格 `< .024`，complaint 都须严格 `< .0008`，且没有 spam trap 或
+  blocklist；等于 80% 线仍拒绝。最新认证也必须全部通过。
+- `resume_from_suspension` 只允许 boss/TENANT，要求最新认证全过和 strip 后 1–1000 字符
+  调查记录。调查记录只进 action history，不进 audit/event/error。
+- 两者都恢复到限制前保存的 `warming` 或 `active`。读取方法从不隐式恢复。
+
+## 七、权限、事务与持久化
+
+Phase 1 权限默认拒绝：boss/TENANT 管登记、认证启动、预热启动、读取、suspension 人工
+恢复和退役；manager 只有收窄 scope 的读取；SYSTEM 必须绑定目标 identity 单例，负责
+认证结果、预热推进、reservation、delivery fact、信誉评估和 throttle 恢复；sales/SELF
+无发件身份管理权限。
+
+每个 repository 都绑定 tenant，跨租户复合外键防止错误关联。七张业务表是：
 
 ```text
-硬退信（地址不存在）→ 立即加入抑制名单，永不再发
-软退信（暂时不可达）→ 计数，连续 3 次转硬退信处理
-投诉（标记垃圾邮件）→ 立即加入抑制名单 + 记入身份信誉指标
-退订请求          → 立即加入抑制名单，同时抑制该企业的其他联系人
+sending_domains                 域角色
+sending_identities              身份与当前状态
+sending_auth_checks             认证历史（只增）
+sending_reputation_events       投递事实（只增、dedup）
+sending_daily_counters          单调日计数
+sending_send_reservations       不可退款预留（只增）
+sending_identity_actions        状态动作与人工记录（只增）
 ```
 
-抑制名单是**全局的**，跨 Campaign、跨身份、跨员工生效。命中即阻断所有未来自动发送。
+状态、history 和 durable `outbox_events` 共用一个 AsyncSession/UoW。只有提交成功后才写一条
+allow audit，固定安全字段为 `actor/action/tenant_id/scope/rule`。
 
----
+发布事件：`SendingIdentityActivated`、`SendingIdentityThrottled`、
+`SendingIdentitySuspended`、`ReputationThresholdBreached`。
 
-## 七、与可达性验证的关系
+## 八、无网络 PostgreSQL 演示
 
-硬边界 6（未验证可达性的联系人不得进入序列）主要就是为保护发件信誉而存在。
+`scripts/demo_sending_identity.py` 只读取 `DATABASE_URL`，不访问 Gmail、DNS 或网络服务。
+测试先把真实 testcontainers PostgreSQL 迁移到 Alembic head，再以仅含该变量的环境运行
+子进程。演示使用真实 service、authorizer、UoW 和注入时钟，不直接写七张业务表：
 
-无效地址产生硬退信，硬退信直接推高退信率，退信率触发熔断。所以验证门禁不是数据质量洁癖，是信誉防线的第一道。
+1. 随机 tenant 下登记同一 cold-outreach domain 的两个 identities，完成 typed auth 和预热；
+2. 第 1 天对第一身份以 20 个不同 key 并发预留，恰 5 个成功；同 key 重试不增量；
+3. 第 29 天两身份各预留 25 个：全生命周期共 55 行，7 天窗口只有这 50 行；
+4. 三个唯一 hard bounce 令每身份 `25 < minimum_sample`，但域聚合为
+   `Decimal('3') / Decimal('50') == Decimal('.06')`，两身份一起 suspended；重复 delivery
+   dedup 不增量。
 
-顺序固定：
+成功 stdout 只有一行安全 JSON，只含随机 tenant/identity IDs、最终状态和计数，不含
+address/domain/reference；失败只输出固定中文边界，不回显 DSN、driver 或 traceback。
+集成测试使用独立 engine/session 按 tenant 回读七张业务表与 outbox，并在同一数据库连跑
+两次验证隔离。
 
-```text
-发现联系人 → 可达性验证 → 通过 → 检查抑制名单 → 进入序列
-                        └→ 不通过 → 丢弃，记录成本
-```
+## 九、Slice 边界
 
----
-
-## 八、必须监控的指标
-
-```text
-每个身份的退信率与投诉率        进箱率（如可测）
-预热进度与是否按计划推进        当日已发量 / 限额
-被抑制名单阻断的次数            认证配置变更事件
-```
-
-发信失败与身份降级要走 `notification-gateway/` 通知负责人，通知内容需包含身份、指标、当前状态、建议动作。
-
----
-
-## 九、给实现者的提醒
-
-1. **不要为了赶进度跳过预热。** 这是最常见也最贵的错误。
-2. **不要用主域名做任何冷发送测试**，包括「就试一封」。
-3. 熔断阈值判断要在**发送前**执行，不是发送后统计。
-4. 抑制名单查询必须在发送路径的关键路径上，不能异步。
-5. 员工手动回复用独立的 `human_reply` 用途身份，与冷开发身份分开——人工往来不应受冷发送信誉波及。
+Slice 4A 明确不含 suppression、联系人可达性、Campaign 配额/内容/审批、Gmail/DNS
+Connector、Tool Gateway、真实发送、退信 webhook 解析、API/UI 和通知渠道。后续能力须经
+各自 brainstorming/spec 门禁；4A 的完成不能提前代表 HANDBOOK Slice 4 整体完成。

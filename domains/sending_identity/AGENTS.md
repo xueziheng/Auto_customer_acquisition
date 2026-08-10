@@ -1,96 +1,106 @@
 # domains/sending_identity/ —— 发件身份域
 
-## 这个域为什么存在
+## 职责与边界
 
-设计稿把「发件域名信誉」放在国家政策包那一节的列表里，和退订入口、退信处理并列。按你的量级（每天 50–100 封冷邮件）这个位置放错了。
-
-**要防的事故是这个：** 主域名因退信率或投诉率被邮件服务商标记后，倒下的不只是开发信。你和现有客户的往来邮件、报价单、合同附件、样品通知，全部开始进垃圾箱或被拒收。客户不会告诉你「你的邮件我没收到」，他们只会觉得你不回消息。
-
-这是公司级停摆，不是合规脚注。恢复域名信誉要数周到数月，期间没有替代方案。
-
-所以它是独立域，且有一条不可协商的规则：
+本域回答三个问题：发件身份当前是否可发送、今天还能原子占用多少额度、
+信誉恶化时身份或同域身份是否必须立即受限。冷开发域必须与主业务域物理隔离：
 
 > **冷开发邮件永远不与主业务邮件共用域名。**
 
-详细论证见 `docs/architecture/07-sending-identity.md`。
+本域只管理策略、状态与持久化事实，不接触凭证，不查询 DNS，不调用 Gmail，
+也不发送邮件。外部发送方不能自行解释状态；真实发送前唯一权威入口是
+`reserve_send_slot`，`check_send_permission` 只供诊断。
 
-## 三类域名角色
-
-```text
-COLD_OUTREACH        冷开发专用域，可以牺牲
-PRIMARY_BUSINESS     主业务域，绝不用于冷发
-TRANSACTIONAL        系统通知（报价送达、样品通知等）
-```
-
-冷开发域名是**消耗品**：出问题就退役换新的，成本可控。主业务域名不可替代。
-
-## 状态机
+依赖白名单：
 
 ```text
-created ──→ auth_pending ──→ warming ──→ active ──┬──→ throttled ──→ active
-                                                   ├──→ suspended ──→ retired
-                                                   └──→ retired
-```
-
-`throttled` 可以恢复，`suspended` 需要人工排查后才能恢复，`retired` 不可逆。
-
-## 三个硬机制
-
-### 1. 认证门禁（硬门槛，不是警告）
-
-SPF、DKIM、DMARC 全部校验通过，才允许该身份进入任何 Campaign。
-
-不是「建议配置」——认证不全的域名发冷邮件，投诉率会立刻偏高，等于主动损害自己。校验不通过时抛 `AuthenticationNotVerifiedError`，不提供绕过参数。
-
-### 2. 预热计划（发送量是预热天数的函数）
-
-新身份第一周约 5 封/天，逐步爬升。**发送上限不是常量**，由预热进度算出来。
-
-跳过预热直接大量发送是新域名最常见的死法：邮件服务商看到一个从未发过邮件的域名突然日发 100 封，判定为垃圾源。
-
-### 3. 熔断（自动执行，不等人工审批）
-
-退信率、投诉率超阈值自动 `throttled` 或 `suspended`。
-
-**为什么必须自动：** 等人看到告警再处理，期间可能又发出去几千封。每一封都在加深损害。这是整个系统里少数「宁可误伤也要自动执行」的地方——误停一天的成本远小于域名被标记。
-
-同时监控垃圾陷阱命中和黑名单出现，这两个是更早的预警信号。
-
-## 指标按滚动窗口算，不按生命周期
-
-退信率和投诉率用滚动窗口（如 7 天）。生命周期平均值会**掩盖最近一周的恶化**：发了 10000 封、历史退信 1%、最近 200 封退信 15%，生命周期数字看起来仍然健康，而实际上已经在着火。
-
-## 身份级 + 域名级双层阈值
-
-一个坏身份会拖累整个域名的信誉，所以域名级也要有聚合阈值。单个身份没超标但同域三个身份都在边缘时，域名整体已经有风险。
-
-## 依赖白名单
-
-```text
-允许   shared.events, shared.schemas, shared.errors
+允许   shared.events、shared.schemas、shared.errors
 禁止   任何其他 domains/*
-禁止   任何外部 SDK（实际发送在 connectors/，本域只管策略与状态）
+禁止   任何外部 SDK
 ```
 
-本域**不发送邮件**，只决定「能不能发、能发多少、现在该不该停」。
+## 固定领域语义
 
-## 发布的事件
+域角色的 wire value 只有：
 
-`SendingIdentityActivated`、`SendingIdentityThrottled`、`SendingIdentitySuspended`、`ReputationThresholdBreached`
+```text
+cold_outreach       冷开发专用域
+primary_business    主业务域，禁止冷开发
+transactional       系统事务通知域
+```
 
-## 订阅的事件
+同一租户内，规范化域名的角色不可变；需要换角色时必须退役旧身份后另行登记，
+不得原地修改。地址、域名和 connector reference 都是敏感业务数据，不得进入
+授权日志、异常或熔断事件。
 
-`MessageDelivered`、`MessageBounced`、`ComplaintReceived`、`UnsubscribeReceived`
+状态转换为：
 
-## 禁止事项
+```text
+created → auth_pending → warming → active
+   │           │            ├→ throttled → warming/active
+   │           │            ├→ suspended → warming/active
+   │           │            └→ retired
+   │           └──────────────────────────→ retired
+   └──────────────────────────────────────→ retired
 
-- 不允许未通过认证校验的身份进入 Campaign
-- 不允许绕过预热直接放开发送量
-- 不允许熔断需要人工确认才生效
-- 不允许把冷开发和主业务域名混用（哪怕「只发一次」）
+active → throttled/suspended/retired
+throttled → suspended/retired
+retired → 无后继
+```
 
-## Phase 1 范围
+从 `throttled` 或 `suspended` 恢复时，只能回到持久化的
+`sendable_state_before_restriction`（`warming` 或 `active`），禁止借恢复跳过预热。
+`throttled` 在 Phase 1 阻断所有新冷开发发送。`suspended` 只能由 boss/TENANT
+带 1–1000 字符调查记录恢复；恢复前最新 SPF、DKIM、DMARC 仍须全部通过。
 
-身份模型、域名角色隔离、认证校验门禁、预热计划、滚动窗口指标、自动熔断全部要有。
+## 认证、预热与发送名额
 
-不做：多域名自动轮换、信誉预测模型、自动申购新域名。
+- SPF、DKIM、DMARC 必须全部通过；认证事实是 typed、只增记录，不保存原始 DNS。
+- 认证通过不会自动预热，必须显式 `start_warmup`；目标日量只能是 5–100 的整数。
+- 固定 28 天曲线：第 1–3 天 5，第 4–7 天 15，第 8–14 天 30，
+  第 15–21 天 50（均不超过 target）；第 22–28 天从 50 确定性爬升到 target，
+  第 29 个自然日才完成并可显式推进为 `active`。调用方不能传自定义 schedule 或日期。
+- `reserve_send_slot` 在同一事务中重查角色、状态、最新认证、7 天信誉窗口和
+  当日额度，再写 counter 与 immutable reservation。reservation key 重试返回原记录，
+  不重复占额；成功占用不退款。
+
+## 信誉与自动熔断
+
+身份级和规范化域名级都按 `[computed_at-7d, computed_at]` 计算。分母来自该窗口
+内 immutable reservations，不得使用生命周期总行数或 daily counter 代替；比率和
+阈值只用 `Decimal`，数据库只用定点 `NUMERIC`。
+
+普通比率在样本数至少 50 时按 `>=` 触发：
+
+| 指标 | throttled | suspended |
+|---|---:|---:|
+| hard bounce rate | `.03` | `.05` |
+| complaint rate | `.001` | `.003` |
+
+任一 spam trap 或 blocklist 命中不等样本数，立即 `suspended`。域名窗口达到阈值时，
+同域所有 `warming`/`active` 身份一起进入相同 restriction；`throttled` 只能进一步
+升级为 `suspended`。每个状态变化必须与 action history、状态 outbox 同事务提交，
+触发源另发一条 `ReputationThresholdBreached`。
+
+`resume_from_throttle` 是 SYSTEM singleton-scope 的显式动作：身份和域名窗口的
+hard bounce 都必须严格 `< .024`，complaint 都必须严格 `< .0008`，且无 spam trap
+或 blocklist。读取操作不得隐式恢复状态。
+
+## 权限、租户与审计
+
+- 每个公共方法都要求 typed `Actor`；未列出的 role/scope/action 一律拒绝。
+- boss/TENANT 管登记、认证启动、预热启动、读取、人工恢复 suspension 和退役。
+- SYSTEM 必须是目标 identity 的单例 scope，负责认证结果、预热推进、reservation、
+  投递事实、信誉评估和 throttle 恢复。
+- 所有 repository 查询和写入必须显式绑定 `tenant_id`；域锁之后按 identity ID 升序锁。
+- allow audit 只能在事务提交成功后写一条，字段固定为
+  `actor/action/tenant_id/scope/rule`；deny 同样不得回显敏感输入。
+
+发布事件：`SendingIdentityActivated`、`SendingIdentityThrottled`、
+`SendingIdentitySuspended`、`ReputationThresholdBreached`。
+
+## Slice 4A 明确不做
+
+本 Slice 不含 suppression、联系人可达性、Campaign 配额或内容、Gmail/DNS Connector、
+Tool Gateway、真实发送、退信 webhook 解析、API/UI 和通知渠道。不要在本域直接补这些
+能力；它们必须先经过后续 Slice 的独立设计门禁。
