@@ -1,81 +1,63 @@
-"""发件身份域实体。
+"""发件身份纯领域模型（内部实现）。
 
-**内部实现，其他域不得导入。**
+本模块只依赖 ``shared``：不持有凭证、不访问 DNS/Gmail，也不把比率交给
+浮点运算。外部域只能经 ``schemas.py`` 与 ``service.py`` 消费本域能力。
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 
+from domains.sending_identity.errors import (
+    InvalidConnectorReferenceError,
+    InvalidSendingAddressError,
+    InvalidSendingDomainError,
+)
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import SendingIdentityId, TenantId
 
 
 class DomainRole(str, Enum):
-    """域名角色。**本域最重要的枚举。**"""
+    """域名角色；只有 ``COLD_OUTREACH`` 可承载冷开发。"""
 
     COLD_OUTREACH = "cold_outreach"
-    """冷开发专用域。视为消耗品——出问题就退役换新的。"""
-
     PRIMARY_BUSINESS = "primary_business"
-    """主业务域。用于报价、合同、现有客户往来。
-
-    **绝不允许用于冷发。** 这个域名被标记等于公司对外沟通能力停摆，
-    且无法用「换一个」解决——客户认识的是这个域名。
-    """
-
     TRANSACTIONAL = "transactional"
-    """系统通知域。与冷开发分离，避免通知被冷发的信誉问题拖累。"""
 
 
 class IdentityState(str, Enum):
+    """发件身份显式状态机。``RETIRED`` 没有后继。"""
+
     CREATED = "created"
     AUTH_PENDING = "auth_pending"
-    """等待 SPF/DKIM/DMARC 校验通过。此状态不允许发送。"""
-
     WARMING = "warming"
-    """预热中。发送量按预热天数受限。"""
-
     ACTIVE = "active"
     THROTTLED = "throttled"
-    """指标超阈值自动限流。可自动恢复。"""
-
     SUSPENDED = "suspended"
-    """严重超标自动停用。**需人工排查后才能恢复**——能自动恢复的停用
-    起不到作用，问题会立刻复发。"""
-
     RETIRED = "retired"
-    """已退役，不可逆。"""
 
 
-ALLOWED_TRANSITIONS: dict[IdentityState, set[IdentityState]] = {
-    IdentityState.CREATED: {IdentityState.AUTH_PENDING, IdentityState.RETIRED},
-    IdentityState.AUTH_PENDING: {IdentityState.WARMING, IdentityState.RETIRED},
-    IdentityState.WARMING: {
-        IdentityState.ACTIVE,
-        IdentityState.THROTTLED,
-        IdentityState.SUSPENDED,
-        IdentityState.RETIRED,
-    },
-    IdentityState.ACTIVE: {
-        IdentityState.THROTTLED,
-        IdentityState.SUSPENDED,
-        IdentityState.RETIRED,
-    },
-    IdentityState.THROTTLED: {
-        IdentityState.ACTIVE,
-        IdentityState.SUSPENDED,
-        IdentityState.RETIRED,
-    },
-    IdentityState.SUSPENDED: {IdentityState.ACTIVE, IdentityState.RETIRED},
-    IdentityState.RETIRED: set(),
+ALLOWED_TRANSITIONS: dict[IdentityState, frozenset[IdentityState]] = {
+    IdentityState.CREATED: frozenset({IdentityState.AUTH_PENDING, IdentityState.RETIRED}),
+    IdentityState.AUTH_PENDING: frozenset({IdentityState.WARMING, IdentityState.RETIRED}),
+    IdentityState.WARMING: frozenset(
+        {IdentityState.ACTIVE, IdentityState.THROTTLED, IdentityState.SUSPENDED, IdentityState.RETIRED}
+    ),
+    IdentityState.ACTIVE: frozenset(
+        {IdentityState.THROTTLED, IdentityState.SUSPENDED, IdentityState.RETIRED}
+    ),
+    IdentityState.THROTTLED: frozenset(
+        {IdentityState.WARMING, IdentityState.ACTIVE, IdentityState.SUSPENDED, IdentityState.RETIRED}
+    ),
+    IdentityState.SUSPENDED: frozenset(
+        {IdentityState.WARMING, IdentityState.ACTIVE, IdentityState.RETIRED}
+    ),
+    IdentityState.RETIRED: frozenset(),
 }
-"""注意 ``AUTH_PENDING`` 不能直接到 ``ACTIVE``：必须走完预热。
-
-跳过预热是新域名最常见的死法——邮件服务商看到从未发信的域名突然
-日发上百封，直接判为垃圾源。
-"""
 
 
 class AuthCheck(str, Enum):
@@ -84,168 +66,261 @@ class AuthCheck(str, Enum):
     DMARC = "dmarc"
 
 
-@dataclass(frozen=True)
-class AuthStatus:
-    """认证校验结果。
+class AuthenticationFailureCategory(str, Enum):
+    RECORD_MISSING = "record_missing"
+    RECORD_INVALID = "record_invalid"
+    ALIGNMENT_FAILED = "alignment_failed"
+    POLICY_INSUFFICIENT = "policy_insufficient"
+    LOOKUP_UNAVAILABLE = "lookup_unavailable"
 
-    字段：
-        checked_at
-        results:  每项检查的通过情况
-        details:  未通过项的具体原因（DNS 记录内容、报错）
 
-    ``details`` 要具体到能照着修：写「SPF 记录缺少 include:...」，
-    不要写「SPF 配置错误」。
-    """
+class AuthenticationFixInstruction(str, Enum):
+    """固定修复代码，而非会泄漏 DNS 原文的自由文本。"""
 
-    checked_at: datetime
-    results: dict[AuthCheck, bool]
-    details: dict[str, str] = field(default_factory=dict)
+    CONFIGURE_SPF = "configure_spf"
+    CONFIGURE_DKIM = "configure_dkim"
+    CONFIGURE_DMARC = "configure_dmarc"
+    FIX_ALIGNMENT = "fix_alignment"
+    STRENGTHEN_POLICY = "strengthen_policy"
+    RETRY_LOOKUP = "retry_lookup"
 
-    @property
-    def all_passed(self) -> bool:
-        """三项全过才算通过。**不接受部分通过。**"""
-        raise NotImplementedError
+
+class DeliveryEventType(str, Enum):
+    DELIVERED = "delivered"
+    HARD_BOUNCED = "hard_bounced"
+    SOFT_BOUNCED = "soft_bounced"
+    COMPLAINT = "complaint"
+    UNSUBSCRIBED = "unsubscribed"
+    SPAM_TRAP = "spam_trap"
+    BLOCKLISTED = "blocklisted"
+
+
+_REFERENCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,63}$")
+_LOCAL_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+$")
+
+
+def _is_utc_aware(value: datetime) -> bool:
+    offset = value.utcoffset()
+    return value.tzinfo is not None and offset is not None and offset.total_seconds() == 0
+
+
+def _is_real_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def normalize_sending_domain(raw: str) -> str:
+    """将合法 FQDN 统一为 lowercase、无根点的 IDNA ASCII 形式。"""
+    if not isinstance(raw, str):
+        raise InvalidSendingDomainError("发件域名格式无效")
+    candidate = raw.strip().rstrip(".")
+    if not candidate or any(char.isspace() for char in candidate):
+        raise InvalidSendingDomainError("发件域名格式无效")
+    if any(token in candidate for token in (":", "/", "@")) or "." not in candidate:
+        raise InvalidSendingDomainError("发件域名格式无效")
+    try:
+        normalized = candidate.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise InvalidSendingDomainError("发件域名格式无效") from exc
+    if len(normalized) > 253:
+        raise InvalidSendingDomainError("发件域名格式无效")
+    labels = normalized.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or not re.fullmatch(r"[a-z0-9-]+", label)
+        for label in labels
+    ):
+        raise InvalidSendingDomainError("发件域名格式无效")
+    return normalized
+
+
+def validate_connector_ref(raw: str) -> str:
+    """校验短引用名，不把 token、URL 或自由文本带入领域层。"""
+    if not isinstance(raw, str) or not _REFERENCE_RE.fullmatch(raw):
+        raise InvalidConnectorReferenceError("连接器引用格式无效")
+    lowered = raw.lower()
+    if any(word in lowered for word in ("bearer", "token", "secret", "password")):
+        raise InvalidConnectorReferenceError("连接器引用格式无效")
+    return raw
+
+
+def normalize_sending_address(raw: str, normalized_domain: str) -> str:
+    """规范化 Phase 1 ASCII 发件地址，并强制与登记域名一致。"""
+    if not isinstance(raw, str):
+        raise InvalidSendingAddressError("发件地址格式无效")
+    domain = normalize_sending_domain(normalized_domain)
+    candidate = raw.strip()
+    if candidate.count("@") != 1:
+        raise InvalidSendingAddressError("发件地址格式无效")
+    local, raw_domain = candidate.split("@")
+    if (
+        not local
+        or not local.isascii()
+        or not _LOCAL_RE.fullmatch(local)
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+    ):
+        raise InvalidSendingAddressError("发件地址格式无效")
+    if normalize_sending_domain(raw_domain) != domain:
+        raise InvalidSendingAddressError("发件地址格式无效")
+    return f"{local.lower()}@{domain}"
+
+
+def validate_identity_transition(current: IdentityState, target: IdentityState) -> None:
+    """验证状态机的一条边；错误仅含安全的状态代码。"""
+    if not isinstance(current, IdentityState) or not isinstance(target, IdentityState):
+        raise InvalidStateTransition("发件身份状态转换无效")
+    if target not in ALLOWED_TRANSITIONS[current]:
+        allowed = ",".join(sorted(state.value for state in ALLOWED_TRANSITIONS[current]))
+        raise InvalidStateTransition(f"发件身份状态不能从 {current.value} 转为 {target.value}；允许：{allowed}")
+
+
+def recovery_state(restricted: IdentityState, saved: IdentityState) -> IdentityState:
+    """从限制态恢复时只允许持久化的 ``WARMING`` 或 ``ACTIVE``。"""
+    if restricted not in {IdentityState.THROTTLED, IdentityState.SUSPENDED} or saved not in {
+        IdentityState.WARMING,
+        IdentityState.ACTIVE,
+    }:
+        raise InvalidStateTransition("发件身份恢复状态无效")
+    validate_identity_transition(restricted, saved)
+    return saved
 
 
 @dataclass(frozen=True)
 class WarmupPlan:
-    """预热计划。
-
-    字段：
-        started_on
-        target_daily_volume:  预热完成后的目标日发送量
-        schedule:             第 N 天 → 当日上限
-        completed_on
-
-    ``schedule`` 建议形状（按天累进）：
-        第 1–3 天    5/天
-        第 4–7 天    10/天
-        第 2 周      20/天
-        第 3 周      40/天
-        第 4 周      逐步到 target
-
-    具体曲线可调，但两条不能破：起点必须低（≤10），爬升必须连续
-    （不能今天 10 明天 100）。
-    """
+    """固定 28 天预热曲线；调用方不能提供任意 schedule。"""
 
     started_on: date
     target_daily_volume: int
-    schedule: dict[int, int]
-    completed_on: date | None = None
 
-    def daily_limit_on(self, day: date) -> int:
-        """当日发送上限。
+    @classmethod
+    def create(cls, started_on: date, target_daily_volume: int) -> WarmupPlan:
+        if not isinstance(started_on, date) or isinstance(started_on, datetime):
+            raise ValidationError("预热开始日期无效")
+        if not _is_real_int(target_daily_volume) or not 5 <= target_daily_volume <= 100:
+            raise ValidationError("预热目标日发送量必须为 5 到 100 的整数")
+        return cls(started_on=started_on, target_daily_volume=target_daily_volume)
 
-        实现要求：
-        - 预热未完成时按 ``schedule`` 取对应天数的上限
-        - 超出 schedule 覆盖范围则返回 ``target_daily_volume``
-        - **这个方法是发送量的唯一权威来源**，不要在别处硬编码上限
-        """
-        raise NotImplementedError
+    def daily_limit_on(self, on_day: date) -> int:
+        """返回指定日期的确定性额度；开始日前为零，第 29 天起为目标。"""
+        if not isinstance(on_day, date) or isinstance(on_day, datetime):
+            raise ValidationError("预热日期无效")
+        day_number = (on_day - self.started_on).days + 1
+        if day_number < 1:
+            return 0
+        target = self.target_daily_volume
+        if day_number <= 3:
+            return min(5, target)
+        if day_number <= 7:
+            return min(15, target)
+        if day_number <= 14:
+            return min(30, target)
+        if day_number <= 21:
+            return min(50, target)
+        if day_number <= 28:
+            base = min(50, target)
+            numerator = (target - base) * (day_number - 21)
+            return base + (numerator + 6) // 7
+        return target
 
-    def is_complete_on(self, day: date) -> bool:
-        raise NotImplementedError
+    def is_complete_on(self, on_day: date) -> bool:
+        """第 29 个自然日才算完成，低 target 也不得缩短预热。"""
+        return (on_day - self.started_on).days >= 28
 
 
 @dataclass(frozen=True)
 class ReputationWindow:
-    """滚动窗口信誉指标。
-
-    **按窗口算，不按生命周期。** 生命周期平均值会掩盖最近的恶化：
-    历史发 10000 封退信 1%，最近 200 封退信 15%，生命周期数字看着
-    健康，实际已经在着火。
-
-    字段：
-        window_days
-        computed_at
-        sent, delivered
-        hard_bounced, soft_bounced
-        complaints, unsubscribes
-        spam_trap_hits:     垃圾陷阱命中 —— **比退信更早的预警**
-        blocklist_hits:     黑名单出现
-
-    比率用属性算，不存——存下来会和计数不一致。
-    """
+    """按滚动窗口计数派生信誉比率，所有比率均为 ``Decimal``。"""
 
     window_days: int
     computed_at: datetime
-    sent: int
+    sent_attempts: int
     delivered: int
     hard_bounced: int
     soft_bounced: int
     complaints: int
-    unsubscribes: int
+    unsubscribed: int
     spam_trap_hits: int = 0
     blocklist_hits: int = 0
 
-    @property
-    def hard_bounce_rate(self) -> float:
-        """硬退信率。``sent`` 为 0 时返回 0。
+    def __post_init__(self) -> None:
+        if not _is_real_int(self.window_days) or self.window_days < 1 or not _is_utc_aware(self.computed_at):
+            raise ValidationError("信誉窗口无效")
+        if any(not _is_real_int(value) or value < 0 for value in self._counts()):
+            raise ValidationError("信誉窗口计数无效")
 
-        硬退信是最重要的指标：它直接说明联系人数据质量差，
-        而邮件服务商对此惩罚最重。
-        """
-        raise NotImplementedError
+    def _counts(self) -> tuple[int, ...]:
+        return (
+            self.sent_attempts,
+            self.delivered,
+            self.hard_bounced,
+            self.soft_bounced,
+            self.complaints,
+            self.unsubscribed,
+            self.spam_trap_hits,
+            self.blocklist_hits,
+        )
 
     @property
-    def complaint_rate(self) -> float:
-        """投诉率。阈值比退信率低一个量级——投诉的杀伤力更大。"""
-        raise NotImplementedError
+    def hard_bounce_rate(self) -> Decimal:
+        return self._rate(self.hard_bounced)
 
     @property
-    def delivery_rate(self) -> float:
-        raise NotImplementedError
+    def complaint_rate(self) -> Decimal:
+        return self._rate(self.complaints)
+
+    @property
+    def delivery_rate(self) -> Decimal:
+        return self._rate(self.delivered)
+
+    def _rate(self, numerator: int) -> Decimal:
+        if self.sent_attempts == 0:
+            return Decimal(0)
+        return Decimal(numerator) / Decimal(self.sent_attempts)
+
+
+def _valid_rate(value: object) -> bool:
+    return isinstance(value, Decimal) and value.is_finite() and value >= Decimal(0)
 
 
 @dataclass(frozen=True)
 class ReputationThresholds:
-    """熔断阈值。
+    """熔断阈值，拒绝 float，防止临界比较引入二进制误差。"""
 
-    默认值参考行业通行标准，但**必须可按租户调整**——不同市场和
-    数据源质量差异很大。
-
-    字段：
-        throttle_hard_bounce_rate:  默认 0.03
-        suspend_hard_bounce_rate:   默认 0.05
-        throttle_complaint_rate:    默认 0.001
-        suspend_complaint_rate:     默认 0.003
-        suspend_on_spam_trap:       默认 True，命中即停
-        suspend_on_blocklist:       默认 True
-        minimum_sample:             默认 50，样本不足不判定
-
-    ``minimum_sample`` 很重要：发了 10 封退 1 封就是 10% 退信率，
-    但那不说明任何问题。没有这个下限，新身份会在预热第一天被自己
-    的熔断机制停掉。
-    """
-
-    throttle_hard_bounce_rate: float = 0.03
-    suspend_hard_bounce_rate: float = 0.05
-    throttle_complaint_rate: float = 0.001
-    suspend_complaint_rate: float = 0.003
+    throttle_hard_bounce_rate: Decimal = Decimal(".03")
+    suspend_hard_bounce_rate: Decimal = Decimal(".05")
+    throttle_complaint_rate: Decimal = Decimal(".001")
+    suspend_complaint_rate: Decimal = Decimal(".003")
     suspend_on_spam_trap: bool = True
     suspend_on_blocklist: bool = True
     minimum_sample: int = 50
 
+    def __post_init__(self) -> None:
+        rates = (
+            self.throttle_hard_bounce_rate,
+            self.suspend_hard_bounce_rate,
+            self.throttle_complaint_rate,
+            self.suspend_complaint_rate,
+        )
+        if not all(_valid_rate(rate) for rate in rates):
+            raise ValidationError("信誉阈值必须为非负 Decimal")
+        if (
+            self.throttle_hard_bounce_rate >= self.suspend_hard_bounce_rate
+            or self.throttle_complaint_rate >= self.suspend_complaint_rate
+        ):
+            raise ValidationError("限流阈值必须严格低于停用阈值")
+        if not isinstance(self.suspend_on_spam_trap, bool) or not isinstance(self.suspend_on_blocklist, bool):
+            raise ValidationError("立即停用开关必须为 bool")
+        if not _is_real_int(self.minimum_sample) or self.minimum_sample < 1:
+            raise ValidationError("最小样本必须为正整数")
+
 
 @dataclass
 class SendingIdentity:
-    """发件身份。
-
-    字段：
-        identity_id, tenant_id
-        address:        发件地址
-        domain:         所属域名
-        role:           域名角色
-        display_name
-        state
-        auth_status
-        warmup_plan
-        thresholds
-        created_at, activated_at, suspended_at
-        suspension_reason
-        connector_ref:  connectors/ 里对应的凭据引用（**不是凭据本身**，
-                        密钥永远不进领域层，见硬边界 2）
-    """
+    """发件身份实体；只持有安全 connector 引用，不持有任何凭证。"""
 
     identity_id: SendingIdentityId
     tenant_id: TenantId
@@ -255,52 +330,26 @@ class SendingIdentity:
     created_at: datetime
     state: IdentityState = IdentityState.CREATED
     display_name: str | None = None
-    auth_status: AuthStatus | None = None
     warmup_plan: WarmupPlan | None = None
     thresholds: ReputationThresholds = field(default_factory=ReputationThresholds)
     activated_at: datetime | None = None
     suspended_at: datetime | None = None
-    suspension_reason: str | None = None
+    retired_at: datetime | None = None
+    sendable_state_before_restriction: IdentityState | None = None
     connector_ref: str | None = None
 
-    def can_send(self) -> bool:
-        """现在能不能发。
+    def __post_init__(self) -> None:
+        self.domain = normalize_sending_domain(self.domain)
+        self.address = normalize_sending_address(self.address, self.domain)
+        if not isinstance(self.role, DomainRole) or not isinstance(self.state, IdentityState):
+            raise ValidationError("发件身份枚举无效")
+        if not _is_utc_aware(self.created_at):
+            raise ValidationError("发件身份创建时间必须为 UTC")
+        if self.connector_ref is not None:
+            self.connector_ref = validate_connector_ref(self.connector_ref)
 
-        实现要求：仅 ``ACTIVE`` 与 ``WARMING`` 返回 True。
-        ``THROTTLED`` 返回 False——限流的含义是「暂时完全停止新发送」，
-        不是「少发一点」。少发一点的语义靠 ``daily_limit_on`` 表达，
-        混在一起会让判断逻辑到处分叉。
-        """
-        raise NotImplementedError
+    def can_send(self) -> bool:
+        return self.state in {IdentityState.WARMING, IdentityState.ACTIVE}
 
     def may_be_used_for_cold_outreach(self) -> bool:
-        """能否用于冷开发。
-
-        实现要求：``role`` 必须是 ``COLD_OUTREACH``。
-        其他角色返回 False，**没有例外参数**。
-        """
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class DomainReputation:
-    """域名级聚合信誉。
-
-    存在的理由：一个坏身份会拖累整个域名。三个身份各自都在阈值边缘
-    时，单看每一个都不超标，但域名整体已经有风险。
-
-    字段：
-        domain, role
-        identity_count, active_count
-        window:                 聚合后的滚动窗口指标
-        at_risk:                是否处于风险状态
-        worst_identity:         指标最差的身份
-    """
-
-    domain: str
-    role: DomainRole
-    identity_count: int
-    active_count: int
-    window: ReputationWindow
-    at_risk: bool
-    worst_identity: SendingIdentityId | None = None
+        return self.role is DomainRole.COLD_OUTREACH

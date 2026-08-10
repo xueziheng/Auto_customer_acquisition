@@ -1,12 +1,12 @@
-"""发件身份域存储接口。
-
-**内部实现，其他域不得导入。**
-"""
+"""发件身份存储 Protocol（内部契约，不暴露 ORM）。"""
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from datetime import date, datetime
+from enum import Enum
+from types import TracebackType
+from typing import Protocol, Self, runtime_checkable
 
 from domains.sending_identity.models import (
     DomainRole,
@@ -14,7 +14,74 @@ from domains.sending_identity.models import (
     ReputationWindow,
     SendingIdentity,
 )
-from shared.schemas.identifiers import SendingIdentityId, TenantId
+from domains.sending_identity.permissions import (
+    SendingIdentityAction,
+    SendingIdentityScope,
+)
+from domains.sending_identity.schemas import (
+    AuthenticationResult,
+    DeliveryEventRecord,
+    SendReservation,
+)
+from shared.events.bus import EventBus
+from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, TenantId
+
+
+@dataclass(frozen=True)
+class SendingDomain:
+    tenant_id: TenantId
+    domain: str
+    role: DomainRole
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class AuthenticationCheckRecord:
+    auth_check_id: str
+    tenant_id: TenantId
+    identity_id: SendingIdentityId
+    result: AuthenticationResult
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class IdentityActionRecord:
+    action_id: str
+    tenant_id: TenantId
+    identity_id: SendingIdentityId
+    action_key: str
+    action: SendingIdentityAction
+    before_state: IdentityState | None
+    after_state: IdentityState | None
+    actor_id: str
+    scope: str
+    rule: str
+    note: str | None
+    occurred_at: datetime
+
+
+class ReservationOutcome(str, Enum):
+    CREATED = "created"
+    EXISTING = "existing"
+    CAP_REACHED = "cap_reached"
+
+
+@dataclass(frozen=True)
+class ReservationResult:
+    outcome: ReservationOutcome
+    reservation: SendReservation | None
+    sent_attempts: int
+
+    def __post_init__(self) -> None:
+        if (self.outcome is ReservationOutcome.CAP_REACHED) != (self.reservation is None):
+            raise ValueError("reservation outcome 与 reservation 不一致")
+
+
+@runtime_checkable
+class SendingDomainRepository(Protocol):
+    async def add(self, domain: SendingDomain) -> None: ...
+
+    async def get(self, tenant_id: TenantId, domain: str) -> SendingDomain | None: ...
 
 
 @runtime_checkable
@@ -22,112 +89,91 @@ class SendingIdentityRepository(Protocol):
     async def add(self, identity: SendingIdentity) -> None: ...
 
     async def get(
-        self, tenant_id: TenantId, identity_id: SendingIdentityId
+        self, tenant_id: TenantId, identity_id: SendingIdentityId, *, for_update: bool = False
     ) -> SendingIdentity | None: ...
 
     async def update(self, identity: SendingIdentity) -> None: ...
 
-    async def find_by_address(
-        self, tenant_id: TenantId, address: str
-    ) -> SendingIdentity | None: ...
+    async def find_by_address(self, tenant_id: TenantId, address: str) -> SendingIdentity | None: ...
 
-    async def list_by_domain(
-        self, tenant_id: TenantId, domain: str
-    ) -> list[SendingIdentity]:
-        """同域名下的全部身份。
+    async def list_domain_for_update(self, tenant_id: TenantId, domain: str) -> list[SendingIdentity]: ...
 
-        两个用途：登记时检查角色冲突，以及计算域名级聚合信誉。
-        """
-        ...
+    async def find_domain_role(self, tenant_id: TenantId, domain: str) -> DomainRole | None: ...
 
-    async def find_domain_role(
-        self, tenant_id: TenantId, domain: str
-    ) -> DomainRole | None:
-        """查域名已登记的角色。
-
-        登记新身份时先查这个：同一域名下角色必须一致。返回 None
-        表示该域名首次登记。
-        """
-        ...
-
-    async def list_by_state(
-        self, tenant_id: TenantId, states: list[IdentityState]
+    async def list_available_for_campaign(
+        self, tenant_id: TenantId, scope: SendingIdentityScope, limit: int
     ) -> list[SendingIdentity]: ...
-
-    async def list_usable_for_cold_outreach(
-        self, tenant_id: TenantId
-    ) -> list[SendingIdentity]:
-        """可用于冷开发的身份。
-
-        实现要求：角色为 ``COLD_OUTREACH``、认证通过、状态为
-        ``ACTIVE`` 或 ``WARMING``。三个条件都要在 SQL 里过滤，
-        不要查出来再在 Python 里筛——这个列表直接喂给 Campaign
-        创建界面，漏一个条件就等于给用户提供了错误选项。
-        """
-        ...
 
 
 @runtime_checkable
-class SendCounterRepository(Protocol):
-    """当日发送计数。
+class AuthenticationCheckRepository(Protocol):
+    async def add(self, record: AuthenticationCheckRecord) -> None: ...
 
-    单独一个 repository 是因为写入频率远高于身份实体，且需要原子递增。
-    """
-
-    async def increment(
-        self,
-        tenant_id: TenantId,
-        identity_id: SendingIdentityId,
-        on_day: date,
-        count: int = 1,
-    ) -> int:
-        """原子递增并返回递增后的值。
-
-        **必须原子。** 并发发送时读-改-写会丢计数，然后当日实际发送量
-        突破预热上限——那正是预热要防的事。
-        """
-        ...
-
-    async def get_count(
-        self,
-        tenant_id: TenantId,
-        identity_id: SendingIdentityId,
-        on_day: date,
-    ) -> int: ...
+    async def latest_for_identity(
+        self, tenant_id: TenantId, identity_id: SendingIdentityId
+    ) -> AuthenticationCheckRecord | None: ...
 
 
 @runtime_checkable
 class ReputationRepository(Protocol):
-    async def record_event(
-        self,
-        tenant_id: TenantId,
-        identity_id: SendingIdentityId,
-        event_type: str,
-        occurred_at: str,
-        dedup_key: str,
-    ) -> bool:
-        """记录投递事件，返回是否为新事件。
-
-        ``dedup_key`` 必填：邮件服务商 webhook 经常重发，重复计数
-        会导致误熔断。返回 False 表示重复，调用方应跳过后续处理。
-        """
-        ...
+    async def record_event(self, event: DeliveryEventRecord) -> bool: ...
 
     async def compute_window(
+        self, tenant_id: TenantId, identity_id: SendingIdentityId, window_days: int, computed_at: datetime
+    ) -> ReputationWindow: ...
+
+    async def compute_domain_window(
+        self, tenant_id: TenantId, domain: str, window_days: int, computed_at: datetime
+    ) -> ReputationWindow: ...
+
+
+@runtime_checkable
+class SendCounterRepository(Protocol):
+    async def get_count(self, tenant_id: TenantId, identity_id: SendingIdentityId, on_day: date) -> int: ...
+
+
+@runtime_checkable
+class SendReservationRepository(Protocol):
+    async def reserve_if_below(
         self,
         tenant_id: TenantId,
         identity_id: SendingIdentityId,
-        window_days: int,
-    ) -> ReputationWindow:
-        """按滚动窗口聚合。
+        reservation_key: IdempotencyKey,
+        on_day: date,
+        daily_limit: int,
+    ) -> ReservationResult: ...
 
-        **不要缓存成生命周期累计值。** 生命周期数字会掩盖最近的
-        恶化，而最近的恶化才是要熔断的对象。
-        """
-        ...
 
-    async def compute_domain_window(
-        self, tenant_id: TenantId, domain: str, window_days: int
-    ) -> ReputationWindow:
-        """域名级聚合。"""
-        ...
+@runtime_checkable
+class IdentityActionRepository(Protocol):
+    async def add(self, record: IdentityActionRecord) -> None: ...
+
+    async def exists_by_key(
+        self, tenant_id: TenantId, identity_id: SendingIdentityId, action_key: str
+    ) -> bool: ...
+
+
+@runtime_checkable
+class SendingIdentityUnitOfWork(Protocol):
+    domains: SendingDomainRepository
+    identities: SendingIdentityRepository
+    auth_checks: AuthenticationCheckRepository
+    reputation: ReputationRepository
+    counters: SendCounterRepository
+    reservations: SendReservationRepository
+    actions: IdentityActionRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...
+
+
+@runtime_checkable
+class SendingIdentityUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> SendingIdentityUnitOfWork: ...
