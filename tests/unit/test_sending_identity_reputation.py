@@ -411,6 +411,97 @@ def _add_domain_identity(
 
 
 @pytest.mark.asyncio
+async def test_future_event_augments_now_anchored_identity_and_domain_windows_once() -> None:
+    """future fact 只折入 now 快照一次，不得平移七天下界。"""
+    service, factory, _, _ = _build()
+    source = _seed_sendable(factory)
+    sibling = _add_domain_identity(
+        factory,
+        source,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRV"),
+        state=IdentityState.ACTIVE,
+        thresholds=ReputationThresholds(),
+    )
+    future = _NOW + timedelta(minutes=5)
+    source_key = str(source.identity_id)
+    factory.identity_windows_at[(source_key, _NOW)] = _window(
+        sent=100, hard_bounced=2
+    )
+    factory.domain_windows_at[(source.domain, _NOW)] = _window(
+        sent=100, hard_bounced=2
+    )
+    factory.identity_windows_at[(source_key, future)] = _window(
+        sent=100, hard_bounced=1
+    )
+    factory.domain_windows_at[(source.domain, future)] = _window(
+        sent=100, hard_bounced=1
+    )
+
+    assert await service.record_delivery_event(
+        _TENANT,
+        source.identity_id,
+        _event(
+            source.identity_id,
+            key="provider:future-lower-bound",
+            occurred_at=future,
+            event_type=DeliveryEventType.HARD_BOUNCED,
+        ),
+        actor=_system(source.identity_id),
+    )
+
+    assert [source.state, sibling.state] == [
+        IdentityState.THROTTLED,
+        IdentityState.THROTTLED,
+    ]
+    assert {
+        (record.identity_id, record.before_state, record.after_state)
+        for record in factory.actions.records
+    } == {
+        (
+            source.identity_id,
+            IdentityState.WARMING,
+            IdentityState.THROTTLED,
+        ),
+        (
+            sibling.identity_id,
+            IdentityState.ACTIVE,
+            IdentityState.THROTTLED,
+        ),
+    }
+    state_events = [
+        event
+        for event in factory.bus.events
+        if isinstance(event, SendingIdentityThrottled)
+    ]
+    assert {
+        (
+            event.sending_identity_id,
+            event.trigger_metric,
+            Decimal(event.metric_value),
+        )
+        for event in state_events
+    } == {
+        (source.identity_id, ReputationMetric.HARD_BOUNCE_RATE.value, Decimal(".03")),
+        (sibling.identity_id, ReputationMetric.HARD_BOUNCE_RATE.value, Decimal(".03")),
+    }
+    breaches = [
+        event
+        for event in factory.bus.events
+        if isinstance(event, ReputationThresholdBreached)
+    ]
+    assert len(breaches) == 1
+    assert (
+        breaches[0].metric,
+        Decimal(breaches[0].value),
+        Decimal(breaches[0].threshold),
+    ) == (
+        ReputationMetric.HARD_BOUNCE_RATE.value,
+        Decimal(".03"),
+        Decimal(".03"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_domain_fuse_uses_conservative_thresholds_and_fixed_lock_order() -> None:
     """阈值取同域最保守组合，锁 domain 后按 identity 排序，一次停用全部可发送态。"""
     service, factory, _, order = _build()

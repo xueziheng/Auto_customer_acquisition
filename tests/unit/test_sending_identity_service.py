@@ -331,12 +331,18 @@ class _Reputation:
         return True
 
     async def compute_window(self, tenant_id, identity_id, window_days, computed_at):
+        at_key = (str(identity_id), computed_at)
+        if at_key in self._factory.identity_windows_at:
+            return self._factory.identity_windows_at[at_key]
         return self._factory.identity_windows.get(
             str(identity_id),
             ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0),
         )
 
     async def compute_domain_window(self, tenant_id, domain, window_days, computed_at):
+        at_key = (domain, computed_at)
+        if at_key in self._factory.domain_windows_at:
+            return self._factory.domain_windows_at[at_key]
         return self._factory.domain_windows.get(
             domain,
             ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0),
@@ -430,6 +436,8 @@ class _UowFactory:
         self.reservation_values: dict[tuple[str, str], SendReservation] = {}
         self.identity_windows: dict[str, ReputationWindow] = {}
         self.domain_windows: dict[str, ReputationWindow] = {}
+        self.identity_windows_at: dict[tuple[str, datetime], ReputationWindow] = {}
+        self.domain_windows_at: dict[tuple[str, datetime], ReputationWindow] = {}
         self.delivery_events: list[DeliveryEventRecord] = []
         self.delivery_event_keys: set[tuple[str, str]] = set()
         self.commit_error: BaseException | None = None

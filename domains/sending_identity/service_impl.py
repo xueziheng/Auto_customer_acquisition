@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +19,7 @@ from domains.sending_identity.errors import (
     WarmupLimitExceededError,
 )
 from domains.sending_identity.models import (
+    DeliveryEventType,
     DomainRole,
     IdentityState,
     ReputationMetric,
@@ -173,6 +174,28 @@ def _strongest_decision(
 ) -> _ReputationDecision | None:
     available = [decision for decision in decisions if decision is not None]
     return max(available, key=_decision_priority, default=None)
+
+
+def _with_delivery_event(
+    window: ReputationWindow,
+    event_type: DeliveryEventType,
+) -> ReputationWindow:
+    """将已接受但尚不在 now 窗口上界内的单条事实折入快照。"""
+    if event_type is DeliveryEventType.DELIVERED:
+        return replace(window, delivered=window.delivered + 1)
+    if event_type is DeliveryEventType.HARD_BOUNCED:
+        return replace(window, hard_bounced=window.hard_bounced + 1)
+    if event_type is DeliveryEventType.SOFT_BOUNCED:
+        return replace(window, soft_bounced=window.soft_bounced + 1)
+    if event_type is DeliveryEventType.COMPLAINT:
+        return replace(window, complaints=window.complaints + 1)
+    if event_type is DeliveryEventType.UNSUBSCRIBED:
+        return replace(window, unsubscribed=window.unsubscribed + 1)
+    if event_type is DeliveryEventType.SPAM_TRAP:
+        return replace(window, spam_trap_hits=window.spam_trap_hits + 1)
+    if event_type is DeliveryEventType.BLOCKLISTED:
+        return replace(window, blocklist_hits=window.blocklist_hits + 1)
+    raise InvalidDeliveryEventError("投递事件无效")
 
 
 def _evaluate_window(
@@ -651,16 +674,18 @@ class SendingIdentityServiceImpl:
         action: SendingIdentityAction,
         rule: str,
         now: datetime,
-        computed_at: datetime | None = None,
+        event: DeliveryEventRecord | None = None,
     ) -> ReputationWindow:
         """在持有 domain/identity 锁的当前 UoW 内评估并写完整熔断副作用。"""
-        window_at = now if computed_at is None else computed_at
         identity_window = await uow.reputation.compute_window(
-            tenant_id, source.identity_id, 7, window_at
+            tenant_id, source.identity_id, 7, now
         )
         domain_window = await uow.reputation.compute_domain_window(
-            tenant_id, source.domain, 7, window_at
+            tenant_id, source.domain, 7, now
         )
+        if event is not None and event.occurred_at > now:
+            identity_window = _with_delivery_event(identity_window, event.event_type)
+            domain_window = _with_delivery_event(domain_window, event.event_type)
         identity_decision = _evaluate_window(identity_window, source.thresholds)
         domain_decision = _evaluate_window(
             domain_window, _conservative_thresholds(identities)
@@ -1194,7 +1219,7 @@ class SendingIdentityServiceImpl:
                     action=action,
                     rule=rule,
                     now=now,
-                    computed_at=max(now, event.occurred_at),
+                    event=event,
                 )
         self._audit_allow(actor, action, tenant_id, rule)
         return created

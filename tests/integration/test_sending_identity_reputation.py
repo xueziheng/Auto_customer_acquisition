@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.sending_identity.schemas import (
@@ -269,6 +269,17 @@ async def test_event_state_action_and_safe_outbox_commit_atomically(
             "0.03",
             "SendingIdentityThrottled",
         ),
+        (
+            timedelta(minutes=5),
+            DeliveryEventType.COMPLAINT,
+            1000,
+            (),
+            IdentityState.THROTTLED,
+            ReputationMetric.COMPLAINT_RATE,
+            "0.001",
+            "0.001",
+            "SendingIdentityThrottled",
+        ),
     ],
 )
 async def test_accepted_future_event_is_visible_to_same_transaction_evaluation(
@@ -366,6 +377,158 @@ async def test_accepted_future_event_is_visible_to_same_transaction_evaluation(
     assert [
         (row.identity_id, row.before_state, row.after_state) for row in actions
     ] == [(identity_id, IdentityState.WARMING.value, expected_state.value)]
+
+
+async def test_future_ratio_event_preserves_now_anchored_lower_window_boundary(
+    engine_fx: AsyncEngine,
+) -> None:
+    """future 硬退信须纳入 now 窗口，不得提前淘汰下界内事实。"""
+    tenant = TenantId("tRepFutureLowerBoundary")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local="future-lower-boundary",
+        domain="cold.rep-future-lower-boundary.example",
+    )
+    await _seed_window_facts(sf, tenant, {identity_id: 100}, [])
+    tables = importlib.import_module("infra.db.tables")
+    async with sf() as session:
+        result = await session.execute(
+            update(tables.SendingIdentityRow)
+            .where(
+                tables.SendingIdentityRow.tenant_id == tenant,
+                tables.SendingIdentityRow.identity_id == identity_id,
+            )
+            .values(created_at=_NOW - timedelta(days=8))
+        )
+        assert result.rowcount == 1
+        for index, occurred_at in enumerate(
+            (_NOW - timedelta(days=7) + timedelta(microseconds=1), _NOW)
+        ):
+            session.add(
+                tables.ReputationEventRow(
+                    tenant_id=tenant,
+                    reputation_event_id=new_id("rep"),
+                    identity_id=identity_id,
+                    event_type=DeliveryEventType.HARD_BOUNCED.value,
+                    occurred_at=occurred_at,
+                    dedup_key=f"lower-bound-hard-{index}",
+                    source_ref=f"seed-lower-bound-hard-{index}",
+                    created_at=occurred_at,
+                )
+            )
+        await session.commit()
+    audit.records.clear()
+
+    assert await service.record_delivery_event(
+        tenant,
+        identity_id,
+        _event(
+            tenant,
+            identity_id,
+            key="future-lower-bound-hard-three",
+            event_type=DeliveryEventType.HARD_BOUNCED,
+            occurred_at=_NOW + timedelta(minutes=5),
+        ),
+        actor=_system(identity_id),
+    )
+
+    states, event_count, action_count, outbox = await _stored_summary(
+        sf, tenant, (identity_id,)
+    )
+    assert states == [IdentityState.THROTTLED.value]
+    assert (event_count, action_count, len(outbox), len(audit.records)) == (3, 4, 2, 1)
+    assert {row.event_type for row in outbox} == {
+        "SendingIdentityThrottled",
+        "ReputationThresholdBreached",
+    }
+    breach = next(
+        row for row in outbox if row.event_type == "ReputationThresholdBreached"
+    )
+    assert (
+        breach.event_payload["sending_identity_id"],
+        breach.event_payload["metric"],
+        Decimal(str(breach.event_payload["value"])),
+        Decimal(str(breach.event_payload["threshold"])),
+        breach.event_payload["severity"],
+    ) == (
+        identity_id,
+        ReputationMetric.HARD_BOUNCE_RATE.value,
+        Decimal(".03"),
+        Decimal(".03"),
+        ReputationSeverity.THROTTLED.value,
+    )
+    async with sf() as session:
+        action = (
+            await session.execute(
+                select(tables.IdentityActionRow).where(
+                    tables.IdentityActionRow.tenant_id == tenant,
+                    tables.IdentityActionRow.action == "delivery_event:record",
+                )
+            )
+        ).scalar_one()
+    assert (
+        action.identity_id,
+        action.before_state,
+        action.after_state,
+    ) == (
+        identity_id,
+        IdentityState.WARMING.value,
+        IdentityState.THROTTLED.value,
+    )
+
+
+async def test_manual_evaluation_remains_anchored_at_service_now(
+    engine_fx: AsyncEngine,
+) -> None:
+    """manual evaluate 不得将尚未到时的事件纳入 now 窗口。"""
+    tenant = TenantId("tRepManualNowBoundary")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    service = _service(sf, tenant, _Audit())
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local="manual-now-boundary",
+        domain="cold.rep-manual-now-boundary.example",
+    )
+    await _seed_window_facts(
+        sf,
+        tenant,
+        {identity_id: 100},
+        [
+            (identity_id, DeliveryEventType.HARD_BOUNCED, "manual-now-hard-0"),
+            (identity_id, DeliveryEventType.HARD_BOUNCED, "manual-now-hard-1"),
+        ],
+    )
+    tables = importlib.import_module("infra.db.tables")
+    async with sf() as session:
+        session.add(
+            tables.ReputationEventRow(
+                tenant_id=tenant,
+                reputation_event_id=new_id("rep"),
+                identity_id=identity_id,
+                event_type=DeliveryEventType.HARD_BOUNCED.value,
+                occurred_at=_NOW + timedelta(minutes=5),
+                dedup_key="manual-future-hard",
+                source_ref="seed-manual-future-hard",
+                created_at=_NOW + timedelta(minutes=5),
+            )
+        )
+        await session.commit()
+
+    view = await service.evaluate_reputation(
+        tenant, identity_id, actor=_system(identity_id)
+    )
+
+    states, event_count, action_count, outbox = await _stored_summary(
+        sf, tenant, (identity_id,)
+    )
+    assert states == [IdentityState.WARMING.value]
+    assert view.hard_bounce_rate == Decimal(".02")
+    assert (event_count, action_count, outbox) == (3, 3, [])
 
 
 class _FailingCommitSession(AsyncSession):
