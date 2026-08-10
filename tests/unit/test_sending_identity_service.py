@@ -1950,7 +1950,7 @@ async def test_delivery_event_tenant_mismatch_is_critical_and_never_appended(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """event 自报其他 tenant 属安全违规，必须在 append 前固定告警并零 allow。"""
-    service, factory, audit, _ = _build()
+    service, factory, audit, order = _build()
     identity = _seed_sendable(factory)
     event = DeliveryEventRecord(
         tenant_id=TenantId("tOther"),
@@ -1985,12 +1985,16 @@ async def test_delivery_event_tenant_mismatch_is_critical_and_never_appended(
             "rule": "deny:tenant_isolation",
         }
     ]
+    assert order == [
+        "preauthorize:delivery_event:record",
+        "audit:deny:tenant_isolation",
+    ]
 
 
 @pytest.mark.asyncio
 async def test_delivery_event_identity_mismatch_is_fixed_and_never_appended() -> None:
     """参数 identity 与 event identity 不一致不得借错误文本泄漏任一标识。"""
-    service, factory, audit, _ = _build()
+    service, factory, audit, order = _build()
     identity = _seed_sendable(factory)
     event = DeliveryEventRecord(
         tenant_id=_TENANT,
@@ -2012,6 +2016,7 @@ async def test_delivery_event_identity_mismatch_is_fixed_and_never_appended() ->
     assert factory.actions.records == []
     assert factory.bus.events == []
     assert audit.records == []
+    assert order == ["preauthorize:delivery_event:record"]
 
 
 def test_decimal_reputation_fixture_stays_exact() -> None:

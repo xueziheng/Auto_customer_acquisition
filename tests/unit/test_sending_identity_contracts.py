@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -91,6 +91,65 @@ def test_delivery_event_requires_typed_event_and_safe_utc_metadata() -> None:
             dedup_key=IdempotencyKey("provider:message-1"),
             source_ref="gmail-event-1",
         )
+
+
+@pytest.mark.parametrize(
+    "unsafe_time",
+    [
+        "2026-08-10T00:00:00Z",
+        None,
+        object(),
+        datetime(2026, 8, 10),  # noqa: DTZ001 - 验证拒绝 naive datetime
+        datetime(2026, 8, 10, tzinfo=timezone(timedelta(hours=8))),
+    ],
+)
+def test_delivery_event_rejects_non_datetime_naive_and_non_utc_time(
+    unsafe_time: object,
+) -> None:
+    """坏时间类型和非 UTC 时间必须 fail closed 为固定领域错误。"""
+    with pytest.raises(errors.InvalidDeliveryEventError) as caught:
+        schemas.DeliveryEventRecord(
+            tenant_id=TenantId("tenant-1"),
+            identity_id=SendingIdentityId("sid-1"),
+            event_type=models.DeliveryEventType.DELIVERED,
+            occurred_at=unsafe_time,  # type: ignore[arg-type]
+            dedup_key=IdempotencyKey("provider:message-1"),
+            source_ref="gmail-event-1",
+        )
+    assert str(caught.value) == "投递事件无效"
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_id"),
+    [
+        ("tenant_id", ""),
+        ("tenant_id", 123),
+        ("tenant_id", object()),
+        ("identity_id", ""),
+        ("identity_id", 123),
+        ("identity_id", object()),
+    ],
+)
+def test_delivery_event_requires_nonempty_runtime_string_resource_ids(
+    field: str,
+    unsafe_id: object,
+) -> None:
+    """NewType 的运行时底层仍须拒绝空串和非字符串资源标识。"""
+    values: dict[str, object] = {
+        "tenant_id": TenantId("tenant-1"),
+        "identity_id": SendingIdentityId("sid-1"),
+    }
+    values[field] = unsafe_id
+    with pytest.raises(errors.InvalidDeliveryEventError) as caught:
+        schemas.DeliveryEventRecord(
+            tenant_id=values["tenant_id"],  # type: ignore[arg-type]
+            identity_id=values["identity_id"],  # type: ignore[arg-type]
+            event_type=models.DeliveryEventType.DELIVERED,
+            occurred_at=datetime(2026, 8, 10, tzinfo=UTC),
+            dedup_key=IdempotencyKey("provider:message-1"),
+            source_ref="gmail-event-1",
+        )
+    assert str(caught.value) == "投递事件无效"
 
 
 def test_delivery_event_normalizes_only_outer_dedup_whitespace() -> None:

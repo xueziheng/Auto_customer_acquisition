@@ -122,7 +122,15 @@ class DeliveryEventRecord:
     source_ref: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.event_type, DeliveryEventType) or not _is_utc_aware(self.occurred_at):
+        if (
+            not isinstance(self.tenant_id, str)
+            or not self.tenant_id
+            or not isinstance(self.identity_id, str)
+            or not self.identity_id
+            or not isinstance(self.event_type, DeliveryEventType)
+            or not isinstance(self.occurred_at, datetime)
+            or not _is_utc_aware(self.occurred_at)
+        ):
             raise InvalidDeliveryEventError("投递事件无效")
         if not isinstance(self.dedup_key, str):
             raise InvalidDeliveryEventError("投递事件无效")

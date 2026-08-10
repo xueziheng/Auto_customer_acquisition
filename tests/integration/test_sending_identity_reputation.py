@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import AsyncIterator
+from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -35,6 +37,8 @@ _models = importlib.import_module("domains.sending_identity.models")
 DeliveryEventType = _models.DeliveryEventType
 DomainRole = _models.DomainRole
 IdentityState = _models.IdentityState
+ReputationMetric = _models.ReputationMetric
+ReputationSeverity = _models.ReputationSeverity
 
 
 @pytest_asyncio.fixture
@@ -54,12 +58,13 @@ def _event(
     *,
     key: str,
     event_type: DeliveryEventType,
+    occurred_at=_NOW,
 ) -> DeliveryEventRecord:
     return DeliveryEventRecord(
         tenant_id=tenant,
         identity_id=identity_id,
         event_type=event_type,
-        occurred_at=_NOW,
+        occurred_at=occurred_at,
         dedup_key=IdempotencyKey(key),
         source_ref=f"provider-{key}",
     )
@@ -218,6 +223,151 @@ async def test_event_state_action_and_safe_outbox_commit_atomically(
     assert len(audit.records) == 1
 
 
+@pytest.mark.parametrize(
+    (
+        "offset",
+        "event_type",
+        "reservations",
+        "existing_events",
+        "expected_state",
+        "expected_metric",
+        "expected_value",
+        "expected_threshold",
+        "expected_state_event",
+    ),
+    [
+        (
+            timedelta(microseconds=1),
+            DeliveryEventType.SPAM_TRAP,
+            0,
+            (),
+            IdentityState.SUSPENDED,
+            ReputationMetric.SPAM_TRAP,
+            "1",
+            "0",
+            "SendingIdentitySuspended",
+        ),
+        (
+            timedelta(minutes=5),
+            DeliveryEventType.BLOCKLISTED,
+            0,
+            (),
+            IdentityState.SUSPENDED,
+            ReputationMetric.BLOCKLISTED,
+            "1",
+            "0",
+            "SendingIdentitySuspended",
+        ),
+        (
+            timedelta(minutes=5),
+            DeliveryEventType.HARD_BOUNCED,
+            100,
+            (DeliveryEventType.HARD_BOUNCED, DeliveryEventType.HARD_BOUNCED),
+            IdentityState.THROTTLED,
+            ReputationMetric.HARD_BOUNCE_RATE,
+            "0.03",
+            "0.03",
+            "SendingIdentityThrottled",
+        ),
+    ],
+)
+async def test_accepted_future_event_is_visible_to_same_transaction_evaluation(
+    engine_fx: AsyncEngine,
+    offset: timedelta,
+    event_type: DeliveryEventType,
+    reservations: int,
+    existing_events: tuple[DeliveryEventType, ...],
+    expected_state: IdentityState,
+    expected_metric: ReputationMetric,
+    expected_value: str,
+    expected_threshold: str,
+    expected_state_event: str,
+) -> None:
+    """容差内 future fact 必须在本次事务触发 immediate/ratio fuse。"""
+    suffix = (
+        f"{event_type.value}-{offset.total_seconds():g}"
+        .replace(".", "-")
+        .replace("_", "-")
+    )
+    tenant = TenantId(
+        f"tRepF{event_type.value.replace('_', '').title()}{reservations}"
+    )
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local=f"future{reservations}",
+        domain=f"cold.rep-future-{suffix}.example",
+    )
+    await _seed_window_facts(
+        sf,
+        tenant,
+        {identity_id: reservations} if reservations else {},
+        [
+            (identity_id, seeded_type, f"seed-future-{index}")
+            for index, seeded_type in enumerate(existing_events)
+        ],
+    )
+    audit.records.clear()
+    assert await service.record_delivery_event(
+        tenant,
+        identity_id,
+        _event(
+            tenant,
+            identity_id,
+            key=f"future-{suffix}",
+            event_type=event_type,
+            occurred_at=_NOW + offset,
+        ),
+        actor=_system(identity_id),
+    )
+
+    tables = importlib.import_module("infra.db.tables")
+    states, event_count, action_count, outbox = await _stored_summary(
+        sf, tenant, (identity_id,)
+    )
+    assert states == [expected_state.value]
+    assert event_count == len(existing_events) + 1
+    assert action_count == 4
+    assert len(audit.records) == 1
+    assert {row.event_type for row in outbox} == {
+        expected_state_event,
+        "ReputationThresholdBreached",
+    }
+    breach = next(
+        row for row in outbox if row.event_type == "ReputationThresholdBreached"
+    )
+    assert (
+        breach.event_payload["sending_identity_id"],
+        breach.event_payload["metric"],
+        Decimal(str(breach.event_payload["value"])),
+        Decimal(str(breach.event_payload["threshold"])),
+        breach.event_payload["severity"],
+    ) == (
+        identity_id,
+        expected_metric.value,
+        Decimal(expected_value),
+        Decimal(expected_threshold),
+        expected_state.value,
+    )
+    async with sf() as session:
+        actions = list(
+            (
+                await session.execute(
+                    select(tables.IdentityActionRow).where(
+                        tables.IdentityActionRow.tenant_id == tenant,
+                        tables.IdentityActionRow.action == "delivery_event:record",
+                    )
+                )
+            ).scalars()
+        )
+    assert [
+        (row.identity_id, row.before_state, row.after_state) for row in actions
+    ] == [(identity_id, IdentityState.WARMING.value, expected_state.value)]
+
+
 class _FailingCommitSession(AsyncSession):
     async def commit(self) -> None:
         await self.flush()
@@ -254,6 +404,7 @@ async def test_commit_failure_rolls_back_event_state_action_outbox_and_allow(
                 identity_id,
                 key="commit-spam-trap",
                 event_type=DeliveryEventType.SPAM_TRAP,
+                occurred_at=_NOW + timedelta(minutes=5),
             ),
             actor=_system(identity_id),
         )
@@ -362,6 +513,104 @@ async def test_concurrent_domain_suspension_has_no_deadlock_or_duplicate_outbox(
     assert [row.event_type for row in outbox].count("ReputationThresholdBreached") == 1
     assert len(outbox) == 3
     assert len(audit.records) == 2
+
+
+async def test_domain_fanout_persists_exact_action_and_outbox_ownership(
+    engine_fx: AsyncEngine,
+) -> None:
+    """确定 source 的域熔断逐 identity 写 action/state event，breach 只归 source。"""
+    tenant = TenantId("tRepDomainOwnership")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    domain = "cold.rep-domain-ownership.example"
+    source = await _ready_identity(service, tenant, local="source", domain=domain)
+    sibling = await _ready_identity(service, tenant, local="sibling", domain=domain)
+    await _seed_window_facts(
+        sf,
+        tenant,
+        {source: 25, sibling: 25},
+        [
+            (source, DeliveryEventType.HARD_BOUNCED, f"ownership-hard-{index}")
+            for index in range(3)
+        ],
+    )
+    audit.records.clear()
+    await service.evaluate_reputation(tenant, source, actor=_system(source))
+
+    tables = importlib.import_module("infra.db.tables")
+    states, event_count, action_count, outbox = await _stored_summary(
+        sf, tenant, (source, sibling)
+    )
+    assert states == [IdentityState.SUSPENDED.value, IdentityState.SUSPENDED.value]
+    assert (event_count, action_count, len(outbox)) == (3, 8, 3)
+    async with sf() as session:
+        actions = list(
+            (
+                await session.execute(
+                    select(tables.IdentityActionRow)
+                    .where(
+                        tables.IdentityActionRow.tenant_id == tenant,
+                        tables.IdentityActionRow.action == "reputation:evaluate",
+                    )
+                    .order_by(tables.IdentityActionRow.identity_id)
+                )
+            ).scalars()
+        )
+    assert {
+        (row.identity_id, row.before_state, row.after_state, row.action)
+        for row in actions
+    } == {
+        (
+            source,
+            IdentityState.WARMING.value,
+            IdentityState.SUSPENDED.value,
+            "reputation:evaluate",
+        ),
+        (
+            sibling,
+            IdentityState.WARMING.value,
+            IdentityState.SUSPENDED.value,
+            "reputation:evaluate",
+        ),
+    }
+    state_rows = [
+        row for row in outbox if row.event_type == "SendingIdentitySuspended"
+    ]
+    assert {
+        (
+            row.event_payload["sending_identity_id"],
+            row.event_payload["reason"],
+        )
+        for row in state_rows
+    } == {
+        (source, ReputationMetric.HARD_BOUNCE_RATE.value),
+        (sibling, ReputationMetric.HARD_BOUNCE_RATE.value),
+    }
+    breaches = [
+        row for row in outbox if row.event_type == "ReputationThresholdBreached"
+    ]
+    assert len(breaches) == 1
+    assert (
+        breaches[0].event_payload["sending_identity_id"],
+        breaches[0].event_payload["metric"],
+        Decimal(str(breaches[0].event_payload["value"])),
+        Decimal(str(breaches[0].event_payload["threshold"])),
+        breaches[0].event_payload["severity"],
+    ) == (
+        source,
+        ReputationMetric.HARD_BOUNCE_RATE.value,
+        Decimal("0.06"),
+        Decimal("0.05"),
+        ReputationSeverity.SUSPENDED.value,
+    )
+
+    business_counts = (event_count, action_count, len(outbox))
+    await service.evaluate_reputation(tenant, source, actor=_system(source))
+    _, repeated_events, repeated_actions, repeated_outbox = await _stored_summary(
+        sf, tenant, (source, sibling)
+    )
+    assert (repeated_events, repeated_actions, len(repeated_outbox)) == business_counts
 
 
 async def _ready_identity_with_role(

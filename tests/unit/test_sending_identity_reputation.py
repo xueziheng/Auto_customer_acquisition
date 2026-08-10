@@ -31,15 +31,18 @@ from tests.unit.test_sending_identity_service import (
 )
 
 _models = importlib.import_module("domains.sending_identity.models")
+_permissions = importlib.import_module("domains.sending_identity.permissions")
 DeliveryEventType = _models.DeliveryEventType
 DomainRole = _models.DomainRole
 IdentityState = _models.IdentityState
 ReputationMetric = _models.ReputationMetric
+ReputationSeverity = _models.ReputationSeverity
 ReputationThresholds = _models.ReputationThresholds
 ReputationWindow = _models.ReputationWindow
 SendingIdentity = _models.SendingIdentity
 SuspensionCategory = _models.SuspensionCategory
 WarmupPlan = _models.WarmupPlan
+SendingIdentityAction = _permissions.SendingIdentityAction
 
 
 def _window(
@@ -241,6 +244,87 @@ async def test_equal_severity_metric_priority_is_stable() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("window", "expected_metric", "expected_value", "expected_threshold"),
+    [
+        (
+            _window(sent=1000, hard_bounced=30, complaints=3),
+            ReputationMetric.COMPLAINT_RATE,
+            Decimal(".003"),
+            Decimal(".003"),
+        ),
+        (
+            _window(sent=100, hard_bounced=5, spam_trap_hits=1),
+            ReputationMetric.SPAM_TRAP,
+            Decimal(1),
+            Decimal(0),
+        ),
+        (
+            _window(sent=1000, hard_bounced=50, complaints=3),
+            ReputationMetric.HARD_BOUNCE_RATE,
+            Decimal(".05"),
+            Decimal(".05"),
+        ),
+        (
+            _window(spam_trap_hits=1, blocklist_hits=1),
+            ReputationMetric.BLOCKLISTED,
+            Decimal(1),
+            Decimal(0),
+        ),
+    ],
+)
+async def test_combined_metrics_choose_severity_before_full_stable_priority(
+    window: ReputationWindow,
+    expected_metric: ReputationMetric,
+    expected_value: Decimal,
+    expected_threshold: Decimal,
+) -> None:
+    """组合输入独立锁定 severity-first 与完整四级 metric 优先级。"""
+    service, factory, _, _ = _build()
+    identity = _seed_sendable(factory)
+    factory.identity_windows[str(identity.identity_id)] = window
+    await service.evaluate_reputation(
+        _TENANT, identity.identity_id, actor=_system(identity.identity_id)
+    )
+    assert identity.state is IdentityState.SUSPENDED
+    assert identity.suspension_category is SuspensionCategory(expected_metric.value)
+    assert [
+        (
+            record.identity_id,
+            record.before_state,
+            record.after_state,
+            record.action,
+        )
+        for record in factory.actions.records
+    ] == [
+        (
+            identity.identity_id,
+            IdentityState.WARMING,
+            IdentityState.SUSPENDED,
+            SendingIdentityAction.REPUTATION_EVALUATE,
+        )
+    ]
+    state_event, breach = factory.bus.events
+    assert isinstance(state_event, SendingIdentitySuspended)
+    assert state_event.sending_identity_id == identity.identity_id
+    assert state_event.reason == expected_metric.value
+    assert isinstance(breach, ReputationThresholdBreached)
+    assert (
+        breach.sending_identity_id,
+        breach.metric,
+        Decimal(breach.value),
+        Decimal(breach.threshold),
+        breach.severity,
+    ) == (
+        identity.identity_id,
+        expected_metric.value,
+        expected_value,
+        expected_threshold,
+        ReputationSeverity.SUSPENDED.value,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("state", [IdentityState.CREATED, IdentityState.AUTH_PENDING])
 async def test_pre_sendable_states_record_facts_but_never_self_restrict(
     state: IdentityState,
@@ -367,8 +451,70 @@ async def test_domain_fuse_uses_conservative_thresholds_and_fixed_lock_order() -
         item.suspension_category is SuspensionCategory.HARD_BOUNCE_RATE
         for item in (source, active, throttled)
     )
-    assert len(factory.actions.records) == 3
-    assert len(factory.bus.events) == 4
+    assert {
+        (
+            record.identity_id,
+            record.before_state,
+            record.after_state,
+            record.action,
+        )
+        for record in factory.actions.records
+    } == {
+        (
+            source.identity_id,
+            IdentityState.WARMING,
+            IdentityState.SUSPENDED,
+            SendingIdentityAction.REPUTATION_EVALUATE,
+        ),
+        (
+            active.identity_id,
+            IdentityState.ACTIVE,
+            IdentityState.SUSPENDED,
+            SendingIdentityAction.REPUTATION_EVALUATE,
+        ),
+        (
+            throttled.identity_id,
+            IdentityState.THROTTLED,
+            IdentityState.SUSPENDED,
+            SendingIdentityAction.REPUTATION_EVALUATE,
+        ),
+    }
+    assert (
+        source.sendable_state_before_restriction,
+        active.sendable_state_before_restriction,
+        throttled.sendable_state_before_restriction,
+    ) == (IdentityState.WARMING, IdentityState.ACTIVE, IdentityState.WARMING)
+    state_events = [
+        event
+        for event in factory.bus.events
+        if isinstance(event, SendingIdentitySuspended)
+    ]
+    assert {
+        (event.sending_identity_id, event.reason) for event in state_events
+    } == {
+        (source.identity_id, ReputationMetric.HARD_BOUNCE_RATE.value),
+        (active.identity_id, ReputationMetric.HARD_BOUNCE_RATE.value),
+        (throttled.identity_id, ReputationMetric.HARD_BOUNCE_RATE.value),
+    }
+    breaches = [
+        event
+        for event in factory.bus.events
+        if isinstance(event, ReputationThresholdBreached)
+    ]
+    assert len(breaches) == 1
+    assert (
+        breaches[0].sending_identity_id,
+        breaches[0].metric,
+        Decimal(breaches[0].value),
+        Decimal(breaches[0].threshold),
+        breaches[0].severity,
+    ) == (
+        source.identity_id,
+        ReputationMetric.HARD_BOUNCE_RATE.value,
+        Decimal(".05"),
+        Decimal(".05"),
+        ReputationSeverity.SUSPENDED.value,
+    )
     assert order.index("domain:ensure") < order.index("identity:list_domain")
 
     counts = (len(factory.actions.records), len(factory.bus.events))

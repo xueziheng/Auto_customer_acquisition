@@ -418,7 +418,7 @@ def _decide_send_permission(
 
 
 class SendingIdentityServiceImpl:
-    """Task 4 lifecycle 与原子 reservation 子集；reputation 写操作后续补齐。"""
+    """Slice 4A 发件身份生命周期、发送门禁与信誉熔断完整实现。"""
 
     def __init__(
         self,
@@ -651,13 +651,15 @@ class SendingIdentityServiceImpl:
         action: SendingIdentityAction,
         rule: str,
         now: datetime,
+        computed_at: datetime | None = None,
     ) -> ReputationWindow:
         """在持有 domain/identity 锁的当前 UoW 内评估并写完整熔断副作用。"""
+        window_at = now if computed_at is None else computed_at
         identity_window = await uow.reputation.compute_window(
-            tenant_id, source.identity_id, 7, now
+            tenant_id, source.identity_id, 7, window_at
         )
         domain_window = await uow.reputation.compute_domain_window(
-            tenant_id, source.domain, 7, now
+            tenant_id, source.domain, 7, window_at
         )
         identity_decision = _evaluate_window(identity_window, source.thresholds)
         domain_decision = _evaluate_window(
@@ -1192,6 +1194,7 @@ class SendingIdentityServiceImpl:
                     action=action,
                     rule=rule,
                     now=now,
+                    computed_at=max(now, event.occurred_at),
                 )
         self._audit_allow(actor, action, tenant_id, rule)
         return created
