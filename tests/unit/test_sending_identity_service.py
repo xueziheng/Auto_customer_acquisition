@@ -10,8 +10,12 @@ import pytest
 
 from domains.sending_identity.errors import (
     AuthenticationNotVerifiedError,
+    ColdOutreachDomainViolation,
     DomainRoleConflictError,
+    IdentityRetiredError,
+    IdentitySuspendedError,
     SendingIdentityNotFoundError,
+    WarmupLimitExceededError,
 )
 from domains.sending_identity.permissions import (
     Actor,
@@ -24,6 +28,7 @@ from domains.sending_identity.schemas import (
     AuthenticationFailure,
     AuthenticationResult,
     IdentityRegisterRequest,
+    SendReservation,
 )
 from shared.errors import (
     InvalidStateTransition,
@@ -31,7 +36,12 @@ from shared.errors import (
     TenantIsolationViolation,
     ValidationError,
 )
-from shared.schemas.identifiers import SendingIdentityId, TenantId
+from shared.schemas.identifiers import (
+    IdempotencyKey,
+    SendingIdentityId,
+    TenantId,
+    new_id,
+)
 
 _models = importlib.import_module("domains.sending_identity.models")
 AuthCheck = _models.AuthCheck
@@ -46,6 +56,8 @@ SuspensionCategory = _models.SuspensionCategory
 _repository = importlib.import_module("domains.sending_identity.repository")
 AuthenticationCheckRecord = _repository.AuthenticationCheckRecord
 IdentityActionRecord = _repository.IdentityActionRecord
+ReservationOutcome = _repository.ReservationOutcome
+ReservationResult = _repository.ReservationResult
 SendingDomain = _repository.SendingDomain
 
 _NOW = datetime(2026, 8, 10, 12, tzinfo=UTC)
@@ -221,6 +233,8 @@ class _Identities:
 
     async def get(self, tenant_id, identity_id, *, for_update=False):
         self.order.append("identity:get")
+        if for_update:
+            self.order.append("identity:lock")
         return self.store.get(str(identity_id))
 
     async def update(self, identity: SendingIdentity) -> None:
@@ -293,16 +307,68 @@ class _Actions:
 
 
 class _Counters:
+    def __init__(self, factory: _UowFactory) -> None:
+        self._factory = factory
+
     async def get_count(self, tenant_id, identity_id, on_day):
-        return 0
+        return self._factory.counter_values.get((str(identity_id), on_day), 0)
 
 
 class _Reputation:
+    def __init__(self, factory: _UowFactory) -> None:
+        self._factory = factory
+
     async def compute_window(self, tenant_id, identity_id, window_days, computed_at):
-        return ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0)
+        return self._factory.identity_windows.get(
+            str(identity_id),
+            ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0),
+        )
 
     async def compute_domain_window(self, tenant_id, domain, window_days, computed_at):
-        return ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0)
+        return self._factory.domain_windows.get(
+            domain,
+            ReputationWindow(window_days, computed_at, 0, 0, 0, 0, 0, 0),
+        )
+
+
+class _Reservations:
+    def __init__(self, factory: _UowFactory) -> None:
+        self._factory = factory
+
+    async def reserve_if_below(
+        self,
+        tenant_id,
+        identity_id,
+        reservation_key,
+        on_day,
+        daily_limit,
+        created_at,
+    ):
+        self._factory.order.append("reservation:reserve")
+        key = (str(identity_id), str(reservation_key))
+        existing = self._factory.reservation_values.get(key)
+        if existing is not None:
+            count = self._factory.counter_values.get(
+                (str(identity_id), existing.on_day), 0
+            )
+            return ReservationResult(ReservationOutcome.EXISTING, existing, count)
+        counter_key = (str(identity_id), on_day)
+        count = self._factory.counter_values.get(counter_key, 0)
+        if count >= daily_limit:
+            return ReservationResult(ReservationOutcome.CAP_REACHED, None, count)
+        sequence = count + 1
+        reservation = SendReservation(
+            reservation_id=new_id("res"),
+            identity_id=identity_id,
+            reservation_key=reservation_key,
+            on_day=on_day,
+            sequence=sequence,
+            daily_limit=daily_limit,
+            remaining_today=daily_limit - sequence,
+        )
+        self._factory.counter_values[counter_key] = sequence
+        self._factory.reservation_values[key] = reservation
+        return ReservationResult(ReservationOutcome.CREATED, reservation, sequence)
 
 
 class _Bus:
@@ -323,9 +389,9 @@ class _Uow:
         self.identities = _Identities(factory.identities, factory.order)
         self.auth_checks = _AuthChecks(factory.auth_records)
         self.actions = factory.actions
-        self.counters = _Counters()
-        self.reputation = _Reputation()
-        self.reservations = SimpleNamespace()
+        self.counters = _Counters(factory)
+        self.reputation = _Reputation(factory)
+        self.reservations = _Reservations(factory)
         self.bus = factory.bus
 
     async def __aenter__(self):
@@ -346,6 +412,10 @@ class _UowFactory:
         self.auth_records: list[AuthenticationCheckRecord] = []
         self.actions = _Actions()
         self.bus = _Bus()
+        self.counter_values: dict[tuple[str, object], int] = {}
+        self.reservation_values: dict[tuple[str, str], SendReservation] = {}
+        self.identity_windows: dict[str, ReputationWindow] = {}
+        self.domain_windows: dict[str, ReputationWindow] = {}
         self.commit_error: BaseException | None = None
 
     def __call__(self, tenant_id):
@@ -423,6 +493,52 @@ def _seed_available(
     return identity
 
 
+def _seed_sendable(
+    factory: _UowFactory,
+    *,
+    state: IdentityState = IdentityState.WARMING,
+    role: DomainRole = DomainRole.COLD_OUTREACH,
+    started_on=None,
+    target: int = 5,
+    auth_passed: bool = True,
+) -> SendingIdentity:
+    """构造手算发送门禁场景；expected limit 不复用 service 决策。"""
+    identity = _seed(factory, state=IdentityState.WARMING)
+    identity.role = role
+    identity.warmup_plan = _models.WarmupPlan(
+        started_on if started_on is not None else _NOW.date(), target
+    )
+    if state is IdentityState.ACTIVE:
+        identity.state = IdentityState.ACTIVE
+        identity.activated_at = _NOW - timedelta(days=1)
+    elif state is IdentityState.THROTTLED:
+        identity.transition_to(IdentityState.THROTTLED)
+    elif state is IdentityState.SUSPENDED:
+        identity.transition_to(
+            IdentityState.SUSPENDED,
+            suspension_category=SuspensionCategory.AUTHENTICATION_REGRESSION,
+        )
+    elif state is not IdentityState.WARMING:
+        identity.state = state
+        identity.warmup_plan = None
+    factory.domains[identity.domain] = SendingDomain(
+        _TENANT, identity.domain, role, identity.created_at
+    )
+    factory.auth_records.append(
+        AuthenticationCheckRecord(
+            auth_check_id=f"auth_send_{state.value}",
+            tenant_id=_TENANT,
+            identity_id=identity.identity_id,
+            result=_auth(
+                passed=auth_passed,
+                check_ref=f"send_{state.value}_{'pass' if auth_passed else 'fail'}",
+            ),
+            created_at=_NOW,
+        )
+    )
+    return identity
+
+
 async def _invoke_successful_public_method(
     method_name: str,
     service: object,
@@ -452,6 +568,8 @@ async def _invoke_successful_public_method(
         "list_available_for_campaign": IdentityState.WARMING,
         "get_domain_reputation": IdentityState.ACTIVE,
         "get_warmup_progress": IdentityState.WARMING,
+        "check_send_permission": IdentityState.WARMING,
+        "reserve_send_slot": IdentityState.WARMING,
     }[method_name]
     identity = _seed(factory, state=state)
     if method_name in {
@@ -460,6 +578,8 @@ async def _invoke_successful_public_method(
         "get",
         "list_available_for_campaign",
         "get_warmup_progress",
+        "check_send_permission",
+        "reserve_send_slot",
     }:
         identity.warmup_plan = importlib.import_module(
             "domains.sending_identity.models"
@@ -469,6 +589,8 @@ async def _invoke_successful_public_method(
         "resume_from_suspension",
         "get",
         "list_available_for_campaign",
+        "check_send_permission",
+        "reserve_send_slot",
     }:
         factory.auth_records.append(
             AuthenticationCheckRecord(
@@ -523,6 +645,20 @@ async def _invoke_successful_public_method(
             _TENANT, identity.identity_id, actor=_boss()
         )
         return SendingIdentityAction.IDENTITY_READ
+    if method_name == "check_send_permission":
+        await service.check_send_permission(
+            _TENANT, identity.identity_id, True, actor=_boss()
+        )
+        return SendingIdentityAction.SEND_PERMISSION_READ
+    if method_name == "reserve_send_slot":
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("trace-reservation"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+        return SendingIdentityAction.SEND_SLOT_RESERVE
     raise AssertionError(f"未覆盖 public method: {method_name}")
 
 
@@ -541,6 +677,8 @@ async def _invoke_successful_public_method(
         ("list_available_for_campaign", "identity:list_available"),
         ("get_domain_reputation", "domain:get"),
         ("get_warmup_progress", "identity:get"),
+        ("check_send_permission", "identity:get"),
+        ("reserve_send_slot", "identity:get"),
     ],
 )
 async def test_every_public_method_uses_two_phase_authorization_and_post_commit_allow(
@@ -1223,6 +1361,353 @@ async def test_missing_and_unverified_warmup_paths_are_closed() -> None:
             _TENANT, identity.identity_id, 50, actor=_boss()
         )
     assert len(audit.records) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "allowed", "reason", "daily_limit"),
+    [
+        ("created", False, "发件身份尚未进入可发送预热", 0),
+        ("auth_pending", False, "发件身份尚未进入可发送预热", 0),
+        ("throttled", False, "发件身份当前已限流", 5),
+        ("suspended", False, "发件身份当前已停用", 5),
+        ("retired", False, "发件身份已退役", 0),
+        ("latest_auth_failed", False, "发件身份认证未全部通过", 5),
+        ("before_start", False, "发件身份预热尚未开始", 0),
+        ("warming_day_1", True, None, 5),
+        ("warming_day_28", True, None, 100),
+        ("active", True, None, 100),
+        ("cap", False, "当日发送额度已用尽", 5),
+        ("identity_rate", False, "身份信誉窗口已触发发送限制", 5),
+        ("domain_rate", False, "域名信誉窗口已触发发送限制", 5),
+        ("domain_spam_trap", False, "域名信誉窗口已触发发送限制", 5),
+    ],
+)
+async def test_check_send_permission_gate_matrix_has_fixed_safe_reasons(
+    scenario: str,
+    allowed: bool,
+    reason: str | None,
+    daily_limit: int,
+) -> None:
+    """删掉任一 state/auth/date/cap/window gate 都会改变独立写死矩阵。"""
+    service, factory, audit, _ = _build()
+    if scenario in {"created", "auth_pending", "retired"}:
+        state = {
+            "created": IdentityState.CREATED,
+            "auth_pending": IdentityState.AUTH_PENDING,
+            "retired": IdentityState.RETIRED,
+        }[scenario]
+        identity = _seed(factory, state=state)
+    else:
+        identity = _seed_sendable(
+            factory,
+            state={
+                "throttled": IdentityState.THROTTLED,
+                "suspended": IdentityState.SUSPENDED,
+                "active": IdentityState.ACTIVE,
+            }.get(scenario, IdentityState.WARMING),
+            started_on=(
+                _NOW.date() + timedelta(days=1)
+                if scenario == "before_start"
+                else _NOW.date() - timedelta(days=27)
+                if scenario == "warming_day_28"
+                else _NOW.date() - timedelta(days=28)
+                if scenario == "active"
+                else _NOW.date()
+            ),
+            target=100 if scenario in {"warming_day_28", "active"} else 5,
+            auth_passed=scenario != "latest_auth_failed",
+        )
+    if scenario == "cap":
+        factory.counter_values[(str(identity.identity_id), _NOW.date())] = 5
+    if scenario == "identity_rate":
+        factory.identity_windows[str(identity.identity_id)] = ReputationWindow(
+            7, _NOW, 50, 48, 2, 0, 0, 0
+        )
+    if scenario == "domain_rate":
+        factory.domain_windows[identity.domain] = ReputationWindow(
+            7, _NOW, 50, 49, 0, 0, 1, 0
+        )
+    if scenario == "domain_spam_trap":
+        factory.domain_windows[identity.domain] = ReputationWindow(
+            7, _NOW, 0, 0, 0, 0, 0, 0, spam_trap_hits=1
+        )
+
+    permission = await service.check_send_permission(
+        _TENANT, identity.identity_id, True, actor=_boss()
+    )
+
+    assert (permission.allowed, permission.reason, permission.daily_limit) == (
+        allowed,
+        reason,
+        daily_limit,
+    )
+    assert permission.remaining_today == (daily_limit if allowed else 0)
+    warmup_boundaries = {
+        "before_start": (0, True),
+        "warming_day_1": (1, True),
+        "warming_day_28": (28, True),
+        "active": (29, False),
+    }
+    if scenario in warmup_boundaries:
+        assert (permission.warmup_day, permission.is_warming) == warmup_boundaries[
+            scenario
+        ]
+    if reason is not None:
+        assert identity.address not in reason
+        assert identity.domain not in reason
+    assert len(audit.records) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role",
+    [DomainRole.PRIMARY_BUSINESS, DomainRole.TRANSACTIONAL],
+)
+async def test_cold_outreach_role_is_never_bypassed(role: DomainRole) -> None:
+    """非冷开发域即使状态、认证、额度全合格也必须抛 typed role error。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory, role=role)
+    with pytest.raises(ColdOutreachDomainViolation) as caught:
+        await service.check_send_permission(
+            _TENANT, identity.identity_id, True, actor=_boss()
+        )
+    assert identity.address not in str(caught.value)
+    assert identity.domain not in str(caught.value)
+    assert audit.records == []
+
+
+@pytest.mark.asyncio
+async def test_send_permission_enforces_resource_scope_before_returning_diagnostics() -> None:
+    """SYSTEM scope 不含目标 identity 时不得泄漏 gate 结果。"""
+    service, factory, audit, _ = _build(
+        authorizer=Phase1SendingIdentityAuthorizer(_TENANT)
+    )
+    identity = _seed_sendable(factory)
+    other = SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT")
+    with pytest.raises(PermissionDenied):
+        await service.check_send_permission(
+            _TENANT, identity.identity_id, True, actor=_system(other)
+        )
+    assert audit.records == [
+        {
+            "actor": "system_1",
+            "action": SendingIdentityAction.SEND_PERMISSION_READ.value,
+            "tenant_id": _TENANT,
+            "scope": ScopeLevel.SYSTEM.value,
+            "rule": "deny:authorization",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reservation_is_authoritative_idempotent_and_preserves_original_snapshot() -> None:
+    """同 key 在后来计数变化后仍返回原快照；不同 key 精确填满 cap。"""
+    service, factory, audit, order = _build()
+    identity = _seed_sendable(factory, target=100)
+    system = _system(identity.identity_id)
+
+    diagnostic = await service.check_send_permission(
+        _TENANT, identity.identity_id, True, actor=_boss()
+    )
+    assert diagnostic.allowed is True
+    first = await service.reserve_send_slot(
+        _TENANT,
+        identity.identity_id,
+        IdempotencyKey("  reservation-one  "),
+        True,
+        actor=system,
+    )
+    assert (
+        first.reservation_key,
+        first.on_day,
+        first.sequence,
+        first.daily_limit,
+        first.remaining_today,
+    ) == ("reservation-one", _NOW.date(), 1, 5, 4)
+    for index in range(2, 6):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey(f"reservation-{index}"),
+            True,
+            actor=system,
+        )
+    retried = await service.reserve_send_slot(
+        _TENANT,
+        identity.identity_id,
+        IdempotencyKey("reservation-one"),
+        True,
+        actor=system,
+    )
+    assert retried == first
+    future_service = _service_class()(
+        factory,
+        _Authorizer(order),
+        audit,
+        now=lambda: _NOW + timedelta(days=3),
+    )
+    assert (
+        await future_service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("reservation-one"),
+            True,
+            actor=system,
+        )
+    ) == first
+    with pytest.raises(WarmupLimitExceededError):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("reservation-over-cap"),
+            True,
+            actor=system,
+        )
+    assert factory.counter_values[(str(identity.identity_id), _NOW.date())] == 5
+    assert len(factory.reservation_values) == 5
+    assert len(audit.records) == 8  # diagnostic + 5 creates + two idempotent retries
+    assert factory.actions.records == []
+    assert factory.bus.events == []
+    assert order.index("domain:ensure") < order.index("identity:lock")
+    assert order.index("identity:lock") < order.index("reservation:reserve")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_key",
+    [
+        "",
+        "   ",
+        "x" * 201,
+        "line\nbreak",
+        "control\x00value",
+        "BearerValue",
+        "api_TOKEN_value",
+        "client-secret-value",
+        "pass" + "word=value",
+    ],
+)
+async def test_reservation_key_validation_is_fixed_and_does_not_echo_input(
+    raw_key: str,
+) -> None:
+    """删除 strip/长度/control/secret-like 任一规则都必须使本矩阵变红。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory)
+    with pytest.raises(ValidationError) as caught:
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey(raw_key),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert str(caught.value) == "发送预留幂等键无效"
+    if raw_key:
+        assert raw_key not in str(caught.value)
+    assert audit.records == []
+
+
+@pytest.mark.asyncio
+async def test_reservation_rechecks_capacity_after_a_stale_diagnostic() -> None:
+    """check 的允许结果不能被 reserve 当作授权缓存。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory)
+    assert (
+        await service.check_send_permission(
+            _TENANT, identity.identity_id, True, actor=_boss()
+        )
+    ).allowed
+    factory.counter_values[(str(identity.identity_id), _NOW.date())] = 5
+    with pytest.raises(WarmupLimitExceededError):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("stale-check"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert len(audit.records) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "error_type"),
+    [
+        (IdentityState.CREATED, AuthenticationNotVerifiedError),
+        (IdentityState.AUTH_PENDING, AuthenticationNotVerifiedError),
+        (IdentityState.THROTTLED, WarmupLimitExceededError),
+        (IdentityState.SUSPENDED, IdentitySuspendedError),
+        (IdentityState.RETIRED, IdentityRetiredError),
+    ],
+)
+async def test_reserve_maps_denied_states_to_frozen_typed_errors(
+    state: IdentityState,
+    error_type: type[Exception],
+) -> None:
+    """reserve 的状态拒绝不能退化成 generic ValidationError 或 cap 误分类。"""
+    service, factory, audit, _ = _build()
+    identity = (
+        _seed(factory, state=state)
+        if state in {IdentityState.CREATED, IdentityState.AUTH_PENDING, IdentityState.RETIRED}
+        else _seed_sendable(factory, state=state)
+    )
+    with pytest.raises(error_type):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("typed-state-error"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert audit.records == []
+
+
+@pytest.mark.asyncio
+async def test_reservation_commit_and_corruption_failures_have_zero_allow() -> None:
+    """commit 与 tenant/domain corruption 均不能留下 allow 或调用 reservation。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory)
+    factory.commit_error = RuntimeError("private commit failure")
+    with pytest.raises(RuntimeError, match="private commit failure"):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("commit-failure"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert audit.records == []
+
+    service, factory, audit, order = _build()
+    identity = _seed_sendable(factory)
+    factory.domains[identity.domain] = SendingDomain(
+        TenantId("tCorrupted"), identity.domain, identity.role, identity.created_at
+    )
+    with pytest.raises(TenantIsolationViolation):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("domain-corruption"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert not any(str(record["rule"]).startswith("allow") for record in audit.records)
+    assert "reservation:reserve" not in order
+
+    service, factory, audit, order = _build()
+    identity = _seed_sendable(factory)
+    identity.tenant_id = TenantId("tCorrupted")
+    with pytest.raises(TenantIsolationViolation):
+        await service.reserve_send_slot(
+            _TENANT,
+            identity.identity_id,
+            IdempotencyKey("identity-corruption"),
+            True,
+            actor=_system(identity.identity_id),
+        )
+    assert not any(str(record["rule"]).startswith("allow") for record in audit.records)
+    assert "reservation:reserve" not in order
 
 
 def test_decimal_reputation_fixture_stays_exact() -> None:
