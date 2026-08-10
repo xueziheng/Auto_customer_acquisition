@@ -463,6 +463,8 @@ git push origin codex/phase1-implementation
 - Modify: `tests/integration/test_migrations.py`
 - Create: `tests/integration/test_sending_identity_repositories.py`
 - Modify: `tests/integration/test_outbox_transaction.py`
+- Modify: `tests/integration/test_repositories.py`
+- Modify: `tests/unit/test_outbox_serialization.py`
 
 **Interfaces:**
 - Consumes: Task 1 entity/DTO/repository Protocol、`TenantScopedRepository`、`PostgresEventBus`、现有四个 sending identity catalog events。
@@ -470,6 +472,8 @@ git push origin codex/phase1-implementation
 - Later services receive only a `SendingIdentityUnitOfWorkFactory` Protocol, never AsyncSession.
 
 **Protocol conflict ruling（2026-08-10）：** 权威设计要求 reservation 时间只来自 service 注入时钟，因此 Task 2 给 `SendReservationRepository.reserve_if_below` 补回必需的 `created_at: datetime`。其余以 Task 1 已审查契约为准：domain 写入留在独立 `SendingDomainRepository.add`，信誉身份窗口方法名保持 `compute_window`。这三项分别保证单一时间权威、repository 单一职责和已发布方法名稳定。
+
+**Caller parity ruling（2026-08-10）：** 全库既有 ORM metadata 与 outbox registry 测试使用精确全集断言。0008 新增信誉索引与四个已批准事件后，这两条 caller 测试必须同步更新；禁止通过隐藏 metadata 或 registry 项规避。因此 Task 2 精确扩展到上述 11 文件，仅适配 `tests/integration/test_repositories.py` 的索引全集和 `tests/unit/test_outbox_serialization.py` 的事件白名单全集。
 
 Task 2 在 `repository.py` 已声明的内部结果类型上实现原子 reservation：
 
