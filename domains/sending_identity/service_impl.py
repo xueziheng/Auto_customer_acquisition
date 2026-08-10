@@ -71,6 +71,7 @@ _REASON_SUSPENDED = "发件身份当前已停用"
 _REASON_RETIRED = "发件身份已退役"
 _REASON_AUTH = "发件身份认证未全部通过"
 _REASON_BEFORE_START = "发件身份预热尚未开始"
+_REASON_WARMUP_INCOMPLETE = "发件身份预热尚未完成"
 _REASON_CAP = "当日发送额度已用尽"
 _REASON_IDENTITY_REPUTATION = "身份信誉窗口已触发发送限制"
 _REASON_DOMAIN_REPUTATION = "域名信誉窗口已触发发送限制"
@@ -219,6 +220,15 @@ def _decide_send_permission(
             daily_limit=0,
             remaining_today=0,
             reason=_REASON_BEFORE_START,
+            on_day=on_day,
+        )
+    if identity.state is IdentityState.ACTIVE and not plan.is_complete_on(on_day):
+        return _permission_result(
+            identity,
+            allowed=False,
+            daily_limit=daily_limit,
+            remaining_today=0,
+            reason=_REASON_WARMUP_INCOMPLETE,
             on_day=on_day,
         )
     if _reputation_blocks(identity_window, identity):

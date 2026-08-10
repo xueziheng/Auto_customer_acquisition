@@ -4,11 +4,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -29,6 +29,7 @@ from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, Tenant
 
 _models = importlib.import_module("domains.sending_identity.models")
 DomainRole = _models.DomainRole
+IdentityState = _models.IdentityState
 SendingDomain = importlib.import_module(
     "domains.sending_identity.repository"
 ).SendingDomain
@@ -176,6 +177,141 @@ async def _stored_counts(
             )
         ).scalars().all()
     return int(counter or 0), len(sequences), list(sequences)
+
+
+async def _force_database_allowed_active_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    identity_id: SendingIdentityId,
+    *,
+    elapsed_days: int,
+) -> None:
+    """用真实 PostgreSQL 证明 0008 允许 ACTIVE + 未完成 warmup 的防御性场景。"""
+    tables = importlib.import_module("infra.db.tables")
+    async with session_factory() as session:
+        result = await session.execute(
+            update(tables.SendingIdentityRow)
+            .where(
+                tables.SendingIdentityRow.tenant_id == tenant,
+                tables.SendingIdentityRow.identity_id == identity_id,
+            )
+            .values(
+                state=IdentityState.ACTIVE.value,
+                warmup_started_on=_NOW.date() - timedelta(days=elapsed_days),
+                activated_at=_NOW,
+            )
+        )
+        assert result.rowcount == 1
+        await session.commit()
+
+
+@pytest.mark.parametrize("elapsed_days", [0, 27])
+async def test_database_allowed_early_active_has_fixed_diagnostic_denial(
+    engine_fx: AsyncEngine,
+    elapsed_days: int,
+) -> None:
+    """ACTIVE day 1/day 28 不得借持久化不一致绕过完整预热。"""
+    tenant = TenantId(f"tReservationEarlyActiveCheck{elapsed_days}")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local=f"activecheck{elapsed_days}",
+        domain=f"cold.active-check-{elapsed_days}.example",
+    )
+    await _force_database_allowed_active_state(
+        sf, tenant, identity_id, elapsed_days=elapsed_days
+    )
+    audit.records.clear()
+
+    permission = await service.check_send_permission(
+        tenant, identity_id, True, actor=_boss()
+    )
+
+    assert (
+        permission.allowed,
+        permission.reason,
+        permission.warmup_day,
+        permission.is_warming,
+    ) == (False, "发件身份预热尚未完成", elapsed_days + 1, False)
+    assert await _stored_counts(sf, tenant, identity_id) == (0, 0, [])
+    assert len(audit.records) == 1  # 诊断成功返回 deny permission，仍是授权读取
+
+
+@pytest.mark.parametrize("elapsed_days", [0, 27])
+async def test_database_allowed_early_active_cannot_reserve_or_audit_allow(
+    engine_fx: AsyncEngine,
+    elapsed_days: int,
+) -> None:
+    """authoritative reserve 对 ACTIVE day 1/day 28 固定 typed 拒绝且零写。"""
+    tenant = TenantId(f"tReservationEarlyActiveReserve{elapsed_days}")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local=f"activereserve{elapsed_days}",
+        domain=f"cold.active-reserve-{elapsed_days}.example",
+    )
+    await _force_database_allowed_active_state(
+        sf, tenant, identity_id, elapsed_days=elapsed_days
+    )
+    audit.records.clear()
+
+    with pytest.raises(WarmupLimitExceededError):
+        await service.reserve_send_slot(
+            tenant,
+            identity_id,
+            IdempotencyKey(f"early-active-{elapsed_days}"),
+            True,
+            actor=_system(identity_id),
+        )
+
+    assert await _stored_counts(sf, tenant, identity_id) == (0, 0, [])
+    assert audit.records == []
+
+
+async def test_database_active_on_day_twenty_nine_remains_sendable(
+    engine_fx: AsyncEngine,
+) -> None:
+    """ACTIVE day 29 是完整预热后的合法边界。"""
+    tenant = TenantId("tReservationActiveDay29")
+    sf = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    audit = _Audit()
+    service = _service(sf, tenant, audit)
+    identity_id = await _ready_identity(
+        service,
+        tenant,
+        local="activeday29",
+        domain="cold.active-day-29.example",
+    )
+    await _force_database_allowed_active_state(
+        sf, tenant, identity_id, elapsed_days=28
+    )
+    audit.records.clear()
+
+    permission = await service.check_send_permission(
+        tenant, identity_id, True, actor=_boss()
+    )
+    reservation = await service.reserve_send_slot(
+        tenant,
+        identity_id,
+        IdempotencyKey("active-day-29"),
+        True,
+        actor=_system(identity_id),
+    )
+
+    assert (permission.allowed, permission.reason, permission.warmup_day) == (
+        True,
+        None,
+        29,
+    )
+    assert (reservation.sequence, reservation.daily_limit) == (1, 5)
+    assert await _stored_counts(sf, tenant, identity_id) == (1, 1, [1])
+    assert len(audit.records) == 2
 
 
 async def test_twenty_different_keys_stop_exactly_at_remaining_capacity(
