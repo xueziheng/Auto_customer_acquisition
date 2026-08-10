@@ -72,6 +72,7 @@ _MODULE_BY_SYMBOL = {
     "ScopeLevel": "domains.opportunities.permissions",
     "StandardAuditLogger": "domains.opportunities.permissions",
     "DefaultDenyAuthorizer": "domains.opportunities.permissions",
+    "Phase1OpportunityAuthorizer": "domains.opportunities.permissions",
     "OpportunityServiceImpl": "domains.opportunities.service_impl",
 }
 
@@ -92,6 +93,7 @@ OpportunityScope = _load("OpportunityScope")
 ScopeLevel = _load("ScopeLevel")
 StandardAuditLogger = _load("StandardAuditLogger")
 DefaultDenyAuthorizer = _load("DefaultDenyAuthorizer")
+Phase1OpportunityAuthorizer = _load("Phase1OpportunityAuthorizer")
 OpportunityServiceImpl = _load("OpportunityServiceImpl")
 
 
@@ -223,6 +225,14 @@ def test_authorizer_protocol_signature() -> None:
     """OpportunityAuthorizer.require(actor, action, scope, tenant_id) 契约形状。"""
     params = list(inspect.signature(OpportunityAuthorizer.require).parameters)
     assert params[1:] == ["actor", "action", "scope", "tenant_id"]  # self 之后四个
+
+
+def test_phase1_authorizer_implements_public_authorizer_protocol() -> None:
+    """正式 runtime authorizer 必须保持机会域公开 Protocol 形状。"""
+    assert isinstance(
+        Phase1OpportunityAuthorizer(TenantId("t1")),
+        OpportunityAuthorizer,
+    )
 
 
 def test_default_deny_unknown_action() -> None:

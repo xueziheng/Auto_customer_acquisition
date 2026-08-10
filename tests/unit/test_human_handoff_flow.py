@@ -56,6 +56,9 @@ HUMAN_HANDOFF_WORKFLOW_TYPE = (
 HandoffEscalationNotice = (
     getattr(_flow, "HandoffEscalationNotice", object) if _flow is not None else object
 )
+HumanHandoffEmployeeReader = (
+    getattr(_flow, "HumanHandoffEmployeeReader", None) if _flow is not None else None
+)
 build_human_handoff_definition = (
     getattr(_flow, "build_human_handoff_definition", _missing)
     if _flow is not None
@@ -193,6 +196,13 @@ class _FakeEmployeeService:
         if employee_id not in self._employees:
             raise ValidationError("employee unavailable")
         return self._employees[employee_id]
+
+
+def test_handoff_employee_dependency_is_the_narrow_read_protocol() -> None:
+    """流程只要求 get_employee；新增员工写能力不应扩大该依赖面。"""
+    assert HumanHandoffEmployeeReader is not None
+    reader = _FakeEmployeeService(_employees())
+    assert isinstance(reader, HumanHandoffEmployeeReader)
 
 
 class _FakeNotifier:

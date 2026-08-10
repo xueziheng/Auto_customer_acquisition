@@ -652,16 +652,26 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``assigned_by`` 业务审计主体（两者分离）。
         """
-        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_ASSIGN, tenant_id, rule)
+        action = OpportunityAction.OPPORTUNITY_ASSIGN
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
+            opp = await uow.opportunities.get(tenant_id, opportunity_id)
+            if opp is None:
+                raise ValidationError("机会不存在或不属于该租户")
+            self._enforce_resource_abac(
+                actor,
+                owner=owner,
+                country=opp.country,
+                product_category=opp.product_category,
+                tenant_id=tenant_id,
+                action=action,
+            )
             ok = await uow.opportunities.assign_owner(
                 tenant_id, opportunity_id, owner, assigned_by, self._now()
             )
             if not ok:
-                raise InvalidStateTransition(
-                    f"机会 {opportunity_id} 不存在或已变更，无法分配"
-                )
+                raise InvalidStateTransition("机会已变更，无法分配")
+        self._audit_allow(actor, action, tenant_id, rule)
 
     async def transition(
         self,
@@ -672,16 +682,22 @@ class OpportunityServiceImpl:
         actor: Actor,
     ) -> None:
         """状态推进：拒绝 WON/LOST 走普通转换；读当前态→状态机校验→原子 advance_state。"""
-        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_TRANSITION, tenant_id, rule)
-        if target in (OpportunityState.WON, OpportunityState.LOST):
-            raise InvalidStateTransition(
-                f"终态 {target.value} 不能走普通 transition；必须经 mark_lost / mark_won"
-            )
+        action = OpportunityAction.OPPORTUNITY_TRANSITION
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
-                raise ValidationError(f"机会 {opportunity_id} 不存在")
+                raise ValidationError("机会不存在或不属于该租户")
+            self._enforce_resource_abac(
+                actor,
+                owner=opp.owner,
+                country=opp.country,
+                product_category=opp.product_category,
+                tenant_id=tenant_id,
+                action=action,
+            )
+            if target in (OpportunityState.WON, OpportunityState.LOST):
+                raise InvalidStateTransition("终态不能走普通 transition")
             if not opp.can_transition_to(target):
                 allowed = sorted(ALLOWED_TRANSITIONS[opp.state], key=lambda s: s.value)
                 raise InvalidStateTransition(
@@ -692,9 +708,8 @@ class OpportunityServiceImpl:
                 tenant_id, opportunity_id, opp.state, target
             )
             if not ok:
-                raise InvalidStateTransition(
-                    f"并发已变更：{opp.state.value} → {target.value} 未生效"
-                )
+                raise InvalidStateTransition("机会状态已被并发修改")
+        self._audit_allow(actor, action, tenant_id, rule)
 
     async def mark_lost(
         self,
@@ -713,25 +728,29 @@ class OpportunityServiceImpl:
         ``reason=None`` 先抛 ``MissingLossReasonError``（反馈闭环）。``died_at_state``
         记录关闭前状态；``recorded_at`` 用注入时钟。终态只能走 close_*，禁止普通 update。
         """
-        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_MARK_LOST, tenant_id, rule)
-        if reason is None:
-            raise MissingLossReasonError("终结机会必须带 LossReason（反馈闭环）")
+        action = OpportunityAction.OPPORTUNITY_MARK_LOST
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
-                raise ValidationError(f"机会 {opportunity_id} 不存在")
+                raise ValidationError("机会不存在或不属于该租户")
+            self._enforce_resource_abac(
+                actor,
+                owner=opp.owner,
+                country=opp.country,
+                product_category=opp.product_category,
+                tenant_id=tenant_id,
+                action=action,
+            )
+            if reason is None:
+                raise MissingLossReasonError("终结机会必须带 LossReason（反馈闭环）")
             if opp.state in (OpportunityState.WON, OpportunityState.LOST):
-                raise InvalidStateTransition(
-                    f"机会已处于终态 {opp.state.value}，不能重复终结"
-                )
+                raise InvalidStateTransition("机会已处于终态，不能重复终结")
             ok = await uow.opportunities.close_lost_if_state(
                 tenant_id, opportunity_id, opp.state, reason, detail, confirmed_by, confirmed_at
             )
             if not ok:
-                raise InvalidStateTransition(
-                    f"并发已变更：机会 {opportunity_id} 与预期状态不符，未终结"
-                )
+                raise InvalidStateTransition("机会状态已被并发修改")
             record = LossRecord(
                 loss_record_id=LossRecordId(new_id("loss")),
                 tenant_id=tenant_id,
@@ -754,6 +773,7 @@ class OpportunityServiceImpl:
                     died_at_state=opp.state.value,
                 )
             )
+        self._audit_allow(actor, action, tenant_id, rule)
 
     async def mark_won(
         self,
@@ -768,21 +788,27 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``confirmed_by`` 业务确认主体（两者分离）。
         """
-        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_MARK_WON, tenant_id, rule)
+        action = OpportunityAction.OPPORTUNITY_MARK_WON
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.get(tenant_id, opportunity_id)
             if opp is None:
-                raise ValidationError(f"机会 {opportunity_id} 不存在")
+                raise ValidationError("机会不存在或不属于该租户")
+            self._enforce_resource_abac(
+                actor,
+                owner=opp.owner,
+                country=opp.country,
+                product_category=opp.product_category,
+                tenant_id=tenant_id,
+                action=action,
+            )
             if opp.state != OpportunityState.NEGOTIATING:
-                raise InvalidStateTransition(
-                    f"mark_won 仅能从 negotiating 转入；当前状态 {opp.state.value}"
-                )
+                raise InvalidStateTransition("mark_won 仅能从 negotiating 转入")
             ok = await uow.opportunities.close_won_if_state(
                 tenant_id, opportunity_id, confirmed_by, confirmed_at
             )
             if not ok:
-                raise InvalidStateTransition(f"并发已变更：机会 {opportunity_id} 未成交")
+                raise InvalidStateTransition("机会状态已被并发修改")
             await uow.bus.publish(
                 OpportunityWon(
                     tenant_id=tenant_id,
@@ -792,6 +818,7 @@ class OpportunityServiceImpl:
                     closed_by=confirmed_by,
                 )
             )
+        self._audit_allow(actor, action, tenant_id, rule)
 
     # --- 人工接管 / 查询（S2-11） ------------------------------------------------
 
@@ -804,68 +831,76 @@ class OpportunityServiceImpl:
         已有 pending 幂等返回；新建前确认机会存在且属于租户（避免 FK 错误推迟到 commit）。
         顺序：``provenance.save`` → ``handoffs.add`` → ``bus.publish(HandoffRequested)``。
         """
-        rule = self._authorize(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id)
-        self._audit_allow(actor, OpportunityAction.HANDOFF_REQUEST, tenant_id, rule)
+        action = OpportunityAction.HANDOFF_REQUEST
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
-            existing = await uow.handoffs.find_pending_for_opportunity(
-                tenant_id, OpportunityId(request.opportunity_id)
-            )
-            if existing is not None:
-                return existing.handoff_id  # 幂等：已有 pending 完全跳过本次校验/解析/ID/副作用
-            _validate_handoff_packet(request)
-            _validate_verbatim_provenance(request.customer_verbatim_provenance)
-            trigger = _parse_trigger(request.trigger)
-            handoff_id = HandoffId(new_id("hand"))
             opp = await uow.opportunities.get(
                 tenant_id, OpportunityId(request.opportunity_id)
             )
             if opp is None:
-                raise ValidationError(
-                    f"机会 {request.opportunity_id} 不存在或不属于该租户"
-                )
-            if opp.owner is None:
-                raise ValidationError("接管请求缺少机会负责人")
-            requested_at = self._now()
-            packet = HandoffPacket(
-                handoff_id=handoff_id,
+                raise ValidationError("机会不存在或不属于该租户")
+            self._enforce_resource_abac(
+                actor,
+                owner=opp.owner,
+                country=opp.country,
+                product_category=opp.product_category,
                 tenant_id=tenant_id,
-                opportunity_id=OpportunityId(request.opportunity_id),
-                trigger=trigger,
-                requested_at=requested_at,
-                account_name=request.account_name,
-                country=request.country,
-                why_valuable=request.why_valuable,
-                customer_verbatim=request.customer_verbatim,
-                how_we_found_them=request.how_we_found_them,
-                validated_need_summary=request.validated_need_summary,
-                missing_information=list(request.missing_information),
-                conversation_summary=request.conversation_summary,
-                already_sent=list(request.already_sent),
-                commitments_made=list(request.commitments_made),
-                suggested_next_step=request.suggested_next_step,
-                evidence_links=list(request.evidence_links),
-                assigned_to=opp.owner,
+                action=action,
             )
-            await uow.provenance.save(
-                tenant_id,
-                "handoff",
-                str(handoff_id),
-                "customer_verbatim",
-                request.customer_verbatim_provenance,
+            existing = await uow.handoffs.find_pending_for_opportunity(
+                tenant_id, OpportunityId(request.opportunity_id)
             )
-            await uow.handoffs.add(packet)
-            await uow.bus.publish(
-                HandoffRequested(
-                    tenant_id=tenant_id,
-                    occurred_at=requested_at,
-                    run_id=None,
+            if existing is not None:
+                handoff_id = existing.handoff_id
+            else:
+                _validate_handoff_packet(request)
+                _validate_verbatim_provenance(request.customer_verbatim_provenance)
+                trigger = _parse_trigger(request.trigger)
+                handoff_id = HandoffId(new_id("hand"))
+                if opp.owner is None:
+                    raise ValidationError("接管请求缺少机会负责人")
+                requested_at = self._now()
+                packet = HandoffPacket(
                     handoff_id=handoff_id,
+                    tenant_id=tenant_id,
                     opportunity_id=OpportunityId(request.opportunity_id),
+                    trigger=trigger,
+                    requested_at=requested_at,
+                    account_name=request.account_name,
+                    country=request.country,
+                    why_valuable=request.why_valuable,
+                    customer_verbatim=request.customer_verbatim,
+                    how_we_found_them=request.how_we_found_them,
+                    validated_need_summary=request.validated_need_summary,
+                    missing_information=list(request.missing_information),
+                    conversation_summary=request.conversation_summary,
+                    already_sent=list(request.already_sent),
+                    commitments_made=list(request.commitments_made),
+                    suggested_next_step=request.suggested_next_step,
+                    evidence_links=list(request.evidence_links),
                     assigned_to=opp.owner,
-                    trigger=trigger.value,
                 )
-            )
-            return handoff_id
+                await uow.provenance.save(
+                    tenant_id,
+                    "handoff",
+                    str(handoff_id),
+                    "customer_verbatim",
+                    request.customer_verbatim_provenance,
+                )
+                await uow.handoffs.add(packet)
+                await uow.bus.publish(
+                    HandoffRequested(
+                        tenant_id=tenant_id,
+                        occurred_at=requested_at,
+                        run_id=None,
+                        handoff_id=handoff_id,
+                        opportunity_id=OpportunityId(request.opportunity_id),
+                        assigned_to=opp.owner,
+                        trigger=trigger.value,
+                    )
+                )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return handoff_id
 
     async def record_handoff_escalation(
         self,
@@ -901,15 +936,42 @@ class OpportunityServiceImpl:
 
         ``actor`` 授权身份，``accepted_by`` 业务审计主体（事件 accepted_by，两者分离）。
         """
-        rule = self._authorize(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id)
-        self._audit_allow(actor, OpportunityAction.HANDOFF_ACCEPT, tenant_id, rule)
+        action = OpportunityAction.HANDOFF_ACCEPT
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
+            packet = await uow.handoffs.get(tenant_id, handoff_id)
+            if packet is None:
+                raise ValidationError("接管不存在或不属于该租户")
+            linked = await uow.opportunities.get(tenant_id, packet.opportunity_id)
+            if linked is None or packet.assigned_to != linked.owner:
+                raise ValidationError("接管关联的机会或负责人无效")
+            if packet.state is not HandoffState.REQUESTED:
+                raise HandoffAlreadyAcceptedError("接管已被接受")
+            self._enforce_resource_abac(
+                actor,
+                owner=linked.owner,
+                country=linked.country,
+                product_category=linked.product_category,
+                tenant_id=tenant_id,
+                action=action,
+            )
+            if (
+                actor.scope.level is not ScopeLevel.SYSTEM
+                and accepted_by != EmployeeId(actor.actor_id)
+            ):
+                self._deny_abac(
+                    actor,
+                    action,
+                    tenant_id,
+                    rule="deny:abac:accepted_by",
+                    message="接管接受人必须等于当前身份",
+                )
             accepted_at = self._now()
             ok = await uow.handoffs.accept_if_requested(
                 tenant_id, handoff_id, accepted_by, accepted_at
             )
             if not ok:
-                raise HandoffAlreadyAcceptedError(f"接管 {handoff_id} 已被他人接受")
+                raise HandoffAlreadyAcceptedError("接管已被接受")
             await uow.bus.publish(
                 HandoffAccepted(
                     tenant_id=tenant_id,
@@ -919,6 +981,7 @@ class OpportunityServiceImpl:
                     accepted_by=accepted_by,
                 )
             )
+        self._audit_allow(actor, action, tenant_id, rule)
 
     async def get_handoff_packet(
         self, tenant_id: TenantId, handoff_id: HandoffId, *, actor: Actor

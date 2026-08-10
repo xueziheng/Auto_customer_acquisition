@@ -20,7 +20,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from starlette.types import Lifespan
 
 from .dependencies import (
     ApiDependencies,
@@ -35,6 +37,7 @@ from .middleware import (
 )
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
+from .routers.health import ReadinessProbe, build_health_router
 
 _UNCONFIGURED_TENANT = "__tradeos_unconfigured__"
 _DEFAULT_RETRY_AFTER_SECONDS = 30
@@ -79,6 +82,9 @@ def create_app(
     *,
     settings: ApiSettings | None = None,
     dependencies: ApiDependencies | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
+    cors_allowed_origins: tuple[str, ...] = (),
+    readiness_probe: ReadinessProbe | None = None,
 ) -> FastAPI:
     """构造互相隔离的 API app。
 
@@ -92,14 +98,24 @@ def create_app(
     )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
 
-    app = FastAPI(title="TradeOS API", version="0.1.0")
+    app = FastAPI(title="TradeOS API", version="0.1.0", lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.dependencies = resolved_dependencies
     install_error_handlers(app, resolved_settings)
     app.add_middleware(TenantAssertionMiddleware, settings=resolved_settings)
+    if cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_allowed_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["Content-Type", "X-Employee-Id", "X-Tenant-Id"],
+        )
     # Starlette 后加的 user middleware 位于外层：安全边界必须包住其余 user middleware。
     app.add_middleware(SafeUnhandledExceptionMiddleware)
     app.include_router(crm_router, prefix="/crm")
+    if readiness_probe is not None:
+        app.include_router(build_health_router(readiness_probe))
     _install_openapi_contract(app)
     return app
 
@@ -108,7 +124,11 @@ def main() -> None:
     """以 factory 模式启动；未注入 composition 时所有业务依赖失败关闭。"""
     import uvicorn
 
-    uvicorn.run("apps.api.main:create_app", factory=True, access_log=False)
+    uvicorn.run(
+        "apps.api.runtime:create_runtime_app",
+        factory=True,
+        access_log=False,
+    )
 
 
 if __name__ == "__main__":

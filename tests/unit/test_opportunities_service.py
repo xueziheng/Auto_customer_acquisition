@@ -692,6 +692,7 @@ async def test_transition_rejects_won_and_lost() -> None:
     """普通 transition 拒绝 WON/LOST（终态只能走 mark_lost/mark_won）。"""
     factory = _UoWFactory()
     service = _make_service(factory, _FakeScorer(_snap()))
+    factory.seed(_opp("opp-1", "t1", "need-1"))
 
     with pytest.raises(InvalidStateTransition):
         await service.transition(
@@ -701,7 +702,8 @@ async def test_transition_rejects_won_and_lost() -> None:
         await service.transition(
             TenantId("t1"), OpportunityId("opp-1"), OpportunityState.LOST, actor=_actor()
         )
-    assert factory.created == []  # 守卫在进入 UoW 前
+    assert len(factory.created) == 2
+    assert all(uow.rolled_back == 1 for uow in factory.created)
 
 
 async def test_transition_atomic() -> None:
@@ -782,11 +784,12 @@ async def test_assign_records_actor() -> None:
 
 
 async def test_mark_lost_none_reason_raises_missing() -> None:
-    """reason=None → MissingLossReasonError（反馈闭环，不进入 UoW）。"""
+    """reason=None 在资源 ABAC 后拒绝且事务回滚。"""
     from domains.opportunities.errors import MissingLossReasonError
 
     factory = _UoWFactory()
     service = _make_service(factory, _FakeScorer(_snap()))
+    factory.seed(_opp("opp-1", "t1", "need-1"))
 
     with pytest.raises(MissingLossReasonError):
         await service.mark_lost(
@@ -797,7 +800,7 @@ async def test_mark_lost_none_reason_raises_missing() -> None:
             confirmed_by=EmployeeId("e1"),
             confirmed_at=_NOW,
         )
-    assert factory.created == []
+    assert factory.created[0].rolled_back == 1
 
 
 async def test_mark_lost_order_and_persistence() -> None:

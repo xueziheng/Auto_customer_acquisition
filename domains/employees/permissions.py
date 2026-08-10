@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -82,6 +83,81 @@ class AuditLogger(Protocol):
     ) -> None:
         """授权审计：仅 actor/action/tenant/scope/rule，无敏感值。"""
         ...
+
+
+class StandardAuditLogger:
+    """仅记录授权白名单字段的结构化审计实现。"""
+
+    def __init__(self, logger_name: str = "security.authorization") -> None:
+        self._logger = logging.getLogger(logger_name)
+
+    def log(
+        self,
+        *,
+        actor: str,
+        action: str,
+        tenant_id: TenantId,
+        scope: str,
+        rule: str,
+    ) -> None:
+        self._logger.info(
+            "authorization",
+            extra={
+                "actor": actor,
+                "action": action,
+                "tenant_id": str(tenant_id),
+                "scope": scope,
+                "rule": rule,
+            },
+        )
+
+
+_EMPLOYEE_SYSTEM_ACTIONS = frozenset(
+    {EmployeeAction.EMPLOYEE_READ, EmployeeAction.EMPLOYEE_LIST}
+)
+_EMPLOYEE_BOSS_ACTIONS = frozenset(
+    {
+        EmployeeAction.OWNERSHIP_READ,
+        EmployeeAction.OWNERSHIP_LOCK,
+        EmployeeAction.OWNERSHIP_TRANSFER,
+        EmployeeAction.TERRITORY_APPLY,
+        EmployeeAction.EMPLOYEE_READ,
+        EmployeeAction.EMPLOYEE_LIST,
+        EmployeeAction.ASSIGNMENT_LIST,
+    }
+)
+
+
+class Phase1EmployeeAuthorizer:
+    """Phase 1 的 tenant-bound 固定员工授权矩阵。"""
+
+    def __init__(self, tenant_id: TenantId) -> None:
+        self._tenant_id = tenant_id
+
+    def require(
+        self,
+        actor: Actor,
+        action: EmployeeAction,
+        scope: EmployeeScope,
+        tenant_id: TenantId,
+    ) -> str:
+        allowed: dict[
+            tuple[str | None, EmployeeScope], frozenset[EmployeeAction]
+        ] = {
+            ("system", EmployeeScope.SYSTEM): _EMPLOYEE_SYSTEM_ACTIONS,
+            ("boss", EmployeeScope.TENANT): _EMPLOYEE_BOSS_ACTIONS,
+        }
+        if (
+            not isinstance(action, EmployeeAction)
+            or not isinstance(scope, EmployeeScope)
+            or tenant_id != self._tenant_id
+            or scope is not actor.scope
+            or not isinstance(actor.actor_id, str)
+            or not actor.actor_id.strip()
+            or action not in allowed.get((actor.role, scope), frozenset())
+        ):
+            raise PermissionDenied("Phase 1 员工授权拒绝")
+        return f"phase1:{actor.role}:{scope.value}:{action.value}"
 
 
 class DefaultDenyAuthorizer:

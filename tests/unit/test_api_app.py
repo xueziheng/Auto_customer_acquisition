@@ -350,7 +350,7 @@ def test_production_entry_disables_access_log_for_dynamic_resource_paths(
 
     assert calls == [
         (
-            "apps.api.main:create_app",
+            "apps.api.runtime:create_runtime_app",
             {"factory": True, "access_log": False},
         )
     ]

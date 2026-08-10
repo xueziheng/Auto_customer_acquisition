@@ -4,11 +4,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from domains.employees.schemas import EmployeeView
 from domains.employees.service import Actor as EmployeeActor
-from domains.employees.service import EmployeeService
 from domains.opportunities.service import Actor as OpportunityActor
 from domains.opportunities.service import OpportunityService
 from shared.errors import TransientError, ValidationError
@@ -49,6 +48,19 @@ class HandoffEscalationNotice:
 
 class HandoffEscalationNotifier(Protocol):
     async def notify(self, notice: HandoffEscalationNotice) -> None: ...
+
+
+@runtime_checkable
+class HumanHandoffEmployeeReader(Protocol):
+    """人工接管流程所需的最窄员工读取能力。"""
+
+    async def get_employee(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        *,
+        actor: EmployeeActor,
+    ) -> EmployeeView: ...
 
 
 class OutboxHandlerRegistry(Protocol):
@@ -187,7 +199,7 @@ class _EscalateManagerStep:
     def __init__(
         self,
         opportunity_service: OpportunityService,
-        employee_service: EmployeeService,
+        employee_service: HumanHandoffEmployeeReader,
         notifier: HandoffEscalationNotifier,
         opportunity_actor: OpportunityActor,
         employee_actor: EmployeeActor,
@@ -237,7 +249,7 @@ class _EscalateBossStep:
     def __init__(
         self,
         opportunity_service: OpportunityService,
-        employee_service: EmployeeService,
+        employee_service: HumanHandoffEmployeeReader,
         notifier: HandoffEscalationNotifier,
         opportunity_actor: OpportunityActor,
         employee_actor: EmployeeActor,
@@ -285,7 +297,7 @@ class _EscalateBossStep:
 class _RemindBossStep:
     def __init__(
         self,
-        employee_service: EmployeeService,
+        employee_service: HumanHandoffEmployeeReader,
         notifier: HandoffEscalationNotifier,
         employee_actor: EmployeeActor,
     ) -> None:
@@ -318,7 +330,7 @@ class _RemindBossStep:
 
 
 async def _employee(
-    service: EmployeeService,
+    service: HumanHandoffEmployeeReader,
     tenant_id: TenantId,
     employee_id: EmployeeId,
     actor: EmployeeActor,
@@ -330,7 +342,7 @@ async def _employee(
 
 
 async def _resolve_boss(
-    service: EmployeeService,
+    service: HumanHandoffEmployeeReader,
     tenant_id: TenantId,
     assigned_to: EmployeeId,
     actor: EmployeeActor,
@@ -376,7 +388,7 @@ def _notice(
 def build_human_handoff_step_handlers(
     *,
     opportunity_service: OpportunityService,
-    employee_service: EmployeeService,
+    employee_service: HumanHandoffEmployeeReader,
     notifier: HandoffEscalationNotifier,
     opportunity_system_actor: OpportunityActor,
     employee_system_actor: EmployeeActor,

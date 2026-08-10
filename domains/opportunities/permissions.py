@@ -183,6 +183,71 @@ class StandardAuditLogger:
         )
 
 
+_OPPORTUNITY_STAFF_ACTIONS = frozenset(
+    {
+        OpportunityAction.OPPORTUNITY_READ,
+        OpportunityAction.OPPORTUNITY_LIST,
+        OpportunityAction.OPPORTUNITY_TRANSITION,
+        OpportunityAction.OPPORTUNITY_MARK_LOST,
+        OpportunityAction.HANDOFF_READ,
+        OpportunityAction.HANDOFF_QUEUE_READ,
+        OpportunityAction.HANDOFF_ACCEPT,
+    }
+)
+_OPPORTUNITY_BOSS_ACTIONS = _OPPORTUNITY_STAFF_ACTIONS | frozenset(
+    {
+        OpportunityAction.OPPORTUNITY_CREATE,
+        OpportunityAction.OPPORTUNITY_ASSIGN,
+        OpportunityAction.HANDOFF_REQUEST,
+        OpportunityAction.LOSS_REASON_READ,
+    }
+)
+
+
+class Phase1OpportunityAuthorizer:
+    """Phase 1 的 tenant-bound 固定授权矩阵；未列组合一律拒绝。"""
+
+    def __init__(self, tenant_id: TenantId) -> None:
+        self._tenant_id = tenant_id
+
+    def require(
+        self,
+        actor: Actor,
+        action: OpportunityAction,
+        scope: OpportunityScope,
+        tenant_id: TenantId,
+    ) -> str:
+        allowed: dict[
+            tuple[str | None, ScopeLevel | None], frozenset[OpportunityAction]
+        ] = {
+            ("sales", ScopeLevel.SELF): _OPPORTUNITY_STAFF_ACTIONS,
+            ("manager", ScopeLevel.MANAGER): _OPPORTUNITY_STAFF_ACTIONS,
+            ("boss", ScopeLevel.TENANT): _OPPORTUNITY_BOSS_ACTIONS,
+            ("system", ScopeLevel.SYSTEM): frozenset(
+                {
+                    OpportunityAction.HANDOFF_REQUEST,
+                    OpportunityAction.HANDOFF_ESCALATION_RECORD,
+                }
+            ),
+        }
+        if not isinstance(action, OpportunityAction) or not isinstance(
+            scope, OpportunityScope
+        ):
+            raise PermissionDenied("Phase 1 机会授权拒绝")
+        level = scope.level
+        key = (actor.role, level)
+        if (
+            tenant_id != self._tenant_id
+            or scope != actor.scope
+            or not isinstance(actor.actor_id, str)
+            or not actor.actor_id.strip()
+            or level is None
+            or action not in allowed.get(key, frozenset())
+        ):
+            raise PermissionDenied("Phase 1 机会授权拒绝")
+        return f"phase1:{actor.role}:{level.value}:{action.value}"
+
+
 class DefaultDenyAuthorizer:
     """默认拒绝基座：未知 action/scope 一律 ``PermissionDenied``。
 

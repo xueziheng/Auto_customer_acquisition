@@ -64,7 +64,7 @@ class _Audit:
 
 def test_create_accepts_domain_dto_envelope_through_fastapi_validation() -> None:
     """若 API 用裸 dict 或复制字段，日期/Decimal/Provenance 的域 DTO 契约会漂移。"""
-    app, opportunities, _, _ = _app()
+    app, opportunities, _, _ = _app(role="boss")
     body = _create_body()
     request = body["request"]
     assert isinstance(request, dict)
@@ -86,7 +86,7 @@ def test_create_accepts_domain_dto_envelope_through_fastapi_validation() -> None
 
 def test_create_malformed_money_string_returns_safe_validation_error() -> None:
     """若共享 TypeAdapter 逸出 Decimal 异常，坏金额会变成未脱敏 500。"""
-    app, opportunities, _, _ = _app()
+    app, opportunities, _, _ = _app(role="boss")
     body = _create_body()
     request = body["request"]
     assert isinstance(request, dict)
@@ -218,6 +218,15 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
                     created_at=now,
                 )
             )
+            await EmployeeRepositoryImpl(seed, tenant).add(
+                employee_models.Employee(
+                    employee_id=EmployeeId("emp-boss"),
+                    tenant_id=tenant,
+                    name="Boss",
+                    role=employee_models.Role.BOSS,
+                    created_at=now,
+                )
+            )
             await seed.commit()
         finally:
             await seed.close()
@@ -267,7 +276,7 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
                 "supply_available": True,
             }
         )
-        headers = {"X-Tenant-Id": str(tenant), "X-Employee-Id": "emp-sales"}
+        headers = {"X-Tenant-Id": str(tenant), "X-Employee-Id": "emp-boss"}
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             allowed = await client.post("/crm/opportunities", headers=headers, json=body)
@@ -305,12 +314,9 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
                 actor_id="system:api-identity", scope=EmployeeScope.SYSTEM, role="system"
             ),
         )
-        expected_scope = OpportunityScope(
-            level=ScopeLevel.SELF,
-            allowed_owners=frozenset({EmployeeId("emp-sales")}),
-        )
+        expected_scope = OpportunityScope(level=ScopeLevel.TENANT)
         expected_actor = OpportunityActor(
-            actor_id="emp-sales", scope=expected_scope, role="sales"
+            actor_id="emp-boss", scope=expected_scope, role="boss"
         )
         before_first_gate_calls = len(api_authorizer.calls)
         baseline = AsyncSession(bind=engine, expire_on_commit=False)
@@ -363,10 +369,10 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
         ) == (0, 0, 0)
         assert denied_audit.entries == [
             {
-                "actor": "emp-sales",
+                "actor": "emp-boss",
                 "action": "opportunity:create",
                 "tenant_id": str(tenant),
-                "scope": "self",
+                "scope": "tenant",
                 "rule": "deny",
             }
         ]

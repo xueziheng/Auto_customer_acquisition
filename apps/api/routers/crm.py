@@ -94,7 +94,7 @@ async def create_opportunity(
         RequestIdentity,
         Depends(
             require_opportunity_action(
-                OpportunityAction.OPPORTUNITY_CREATE, allowed_roles=_CRM_ROLES
+                OpportunityAction.OPPORTUNITY_CREATE, allowed_roles=_BOSS_ROLE
             )
         ),
     ],

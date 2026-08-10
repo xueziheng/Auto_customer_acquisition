@@ -300,7 +300,7 @@ def _call_names(opportunities: _Opportunities) -> list[str]:
 
 def test_create_runs_intake_in_order_and_returns_provenance_view() -> None:
     """若漏掉 resolve/assign/get 或乱序，创建结果会丢失归属或来源摘要。"""
-    app, opportunities, employees, authorizer = _app()
+    app, opportunities, employees, authorizer = _app(role="boss")
     response = _Client(app).request(
         "POST", "/crm/opportunities", headers=_HEADERS, json=_create_body()
     )
@@ -355,7 +355,7 @@ def test_create_runs_intake_in_order_and_returns_provenance_view() -> None:
 
 def test_create_gate_none_stops_before_owner_resolution_and_assignment() -> None:
     """若硬门槛未过后仍分配负责人，会制造不存在机会的归属锁。"""
-    app, opportunities, employees, _ = _app(create_result=None)
+    app, opportunities, employees, _ = _app(role="boss", create_result=None)
     response = _Client(app).request(
         "POST", "/crm/opportunities", headers=_HEADERS, json=_create_body()
     )
@@ -384,7 +384,7 @@ def test_create_failure_short_circuits_every_later_cross_domain_step(
     failure: str, expected_trace: list[str]
 ) -> None:
     """若任一步失败后仍继续，可能对未创建或未归属机会写入后续状态。"""
-    app, opportunities, employees, _ = _app()
+    app, opportunities, employees, _ = _app(role="boss")
     if failure == "resolve":
         employees.raise_on = PermissionDenied("resolve denied")
     else:
@@ -396,6 +396,20 @@ def test_create_failure_short_circuits_every_later_cross_domain_step(
 
     assert response.status_code == 403
     assert opportunities.trace[3:] == expected_trace
+
+
+@pytest.mark.parametrize("role", ["sales", "manager"])
+def test_create_rejects_non_boss_before_any_opportunity_service_call(
+    role: str,
+) -> None:
+    app, opportunities, _, _ = _app(role=role)
+
+    response = _Client(app).request(
+        "POST", "/crm/opportunities", headers=_HEADERS, json=_create_body()
+    )
+
+    assert response.status_code == 403
+    assert opportunities.calls == []
 
 
 def test_invalid_service_view_is_response_validated_and_safely_hidden() -> None:

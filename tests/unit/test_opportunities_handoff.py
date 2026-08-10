@@ -508,6 +508,7 @@ async def test_request_handoff_incomplete_rejected() -> None:
     """
     factory = _UoWFactory()
     service = _make_service(factory)
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
 
     with pytest.raises(IncompleteHandoffPacketError):
         await service.request_handoff(
@@ -580,6 +581,7 @@ async def test_request_handoff_idempotent() -> None:
     factory = _UoWFactory()
     service = _make_service(factory)
     existing = _packet("ho-1", opportunity_id="opp-1")
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
     factory.seed_pending(existing)
 
     result = await service.request_handoff(TenantId("t1"), _request(), actor=_actor())
@@ -627,6 +629,7 @@ async def test_request_handoff_idempotent_before_validation() -> None:
     factory = _UoWFactory()
     service = _make_service(factory)
     existing = _packet("ho-1", opportunity_id="opp-1")
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
     factory.seed_pending(existing)
     bad_request = _request(
         account_name="   ",  # 空白关键字段
@@ -711,6 +714,8 @@ async def test_accept_handoff_concurrent() -> None:
     """accept_if_requested True → 发布 HandoffAccepted（同一次注入 now、带 accepted_by）；False → 抛错。"""
     factory = _UoWFactory()
     service = _make_service(factory)
+    factory.seed_opp(_opp(owner=EmployeeId("e1")))
+    factory.seed_row(_packet("ho-1", assigned_to=EmployeeId("e1")))
 
     await service.accept_handoff(
         TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"), actor=_actor()
@@ -730,6 +735,8 @@ async def test_accept_handoff_concurrent() -> None:
     factory2 = _UoWFactory()
     factory2.default_accept_result = False
     service2 = _make_service(factory2)
+    factory2.seed_opp(_opp(owner=EmployeeId("e1")))
+    factory2.seed_row(_packet("ho-1", assigned_to=EmployeeId("e1")))
     with pytest.raises(HandoffAlreadyAcceptedError):
         await service2.accept_handoff(
             TenantId("t1"), HandoffId("ho-1"), EmployeeId("e1"), actor=_actor()
