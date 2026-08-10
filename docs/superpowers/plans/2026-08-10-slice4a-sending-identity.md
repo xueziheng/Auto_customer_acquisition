@@ -813,6 +813,8 @@ git push origin codex/phase1-implementation
 - Consumes: `SqlAlchemySendingIdentityUnitOfWork`、`SendingIdentityServiceImpl`、Phase1 authorizer、现有 engine/session factory。
 - Produces: `async def main() -> None` demo 与同步 CLI exit boundary；不产出 production composition，不读 Gmail/DNS 环境变量。
 
+**Preflight ruling（2026-08-10）：** Task 6 维持上述 4 文件范围。计划中的“domain 合计恰达 50 个 reservation”指 day29 评估时的 7 日滚动窗口：day1 cap 场景另有 5 条已退出窗口的历史 reservation，因此全生命周期 reservation rows 精确为 55、day29 窗口精确为 50。两个 identity 在 day29 各 25，均低于独立 `minimum_sample=50`；3 个 hard bounce 使 domain 聚合率精确为 `Decimal('0.06')` 并停用两者。测试必须同时锁定 total=55 与 rolling-window=50，不能用总行数代替窗口事实。
+
 - [ ] **Step 1: 写 demo subprocess genuine RED**
 
 测试用真实 testcontainers PostgreSQL + Alembic head，以最小 env `{"DATABASE_URL": db_url}` 启动 `sys.executable scripts/demo_sending_identity.py`。脚本缺失时 RED 必须精确是 file missing；Docker/migration/import/PATH 正常。
