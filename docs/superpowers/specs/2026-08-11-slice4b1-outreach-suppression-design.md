@@ -1,6 +1,6 @@
 # Slice 4B-1 触达编排与全局抑制设计
 
-> 状态：设计已批准，待书面规格复核
+> 状态：已确认
 > 日期：2026-08-11
 > 对应路线：`HANDBOOK.md` 切片 4 的第二个独立子项目
 
@@ -174,7 +174,7 @@ Enrollment 状态：
 
 每条抑制事实包含 tenant、target、reason、UTC occurred time、严格安全的 `source_ref` 和显式 `IdempotencyKey`。唯一键为 `(tenant_id, idempotency_key)`：
 
-- 同一 key 且 canonical target/reason/source ref 完全一致时返回原结果，不新增事实、不重复停止 Enrollment、不重复发 outbox。
+- 同一 key 且 canonical target/reason/source ref/occurred time 完全一致时返回原结果，不新增事实、不重复停止 Enrollment、不重复发 outbox。
 - 同一 key 携带不同业务内容时固定幂等冲突，不能用旧结果掩盖调用方错误。
 - 不同 key 即使 target/reason 相同也保留为独立事实。
 - 任何一条有效事实都表示当前被抑制。
@@ -223,7 +223,7 @@ Message Attempt 状态：
 稳定幂等 key 为：
 
 ```text
-{tenant_id}:{campaign_id}:{enrollment_id}:v{version}:step{step_index}
+{tenant_id}:{campaign_id}:{enrollment_id}:v{version}:step{step_number}
 ```
 
 表中只保存 typed IDs、step/version、状态、安全 provider message reference 和固定失败类别；不保存正文、收件地址、HTTP 响应或异常文本。
@@ -291,10 +291,10 @@ Message Attempt 状态：
 - `submit_campaign(tenant_id, campaign_id, *, actor) -> CampaignView`
 - `revise_campaign(tenant_id, campaign_id, request, *, actor) -> CampaignView`
 - `activate_campaign(tenant_id, campaign_id, *, actor) -> CampaignView`
-- `pause_campaign(tenant_id, campaign_id, *, actor) -> CampaignView`
+- `pause_campaign(tenant_id, campaign_id, reason, *, actor) -> CampaignView`
 - `cancel_campaign(tenant_id, campaign_id, *, actor) -> CampaignView`
 - `get_campaign(tenant_id, campaign_id, *, actor) -> CampaignView`
-- `list_campaigns(tenant_id, scope, *, actor) -> list[CampaignView]`
+- `list_campaigns(tenant_id, scope, *, limit, actor) -> list[CampaignView]`
 
 ### 7.2 Enrollment 与发送准备
 
@@ -302,15 +302,15 @@ Message Attempt 状态：
 - `prepare_message_attempt(tenant_id, enrollment_id, *, actor) -> MessageAttemptView`
 - `record_sent(tenant_id, attempt_id, provider_ref, *, actor) -> MessageAttemptView`
 - `record_send_failure(tenant_id, attempt_id, category, *, actor) -> MessageAttemptView`
-- `stop_enrollment(tenant_id, enrollment_id, reason, *, actor) -> EnrollmentView`
+- `stop_enrollment(tenant_id, enrollment_id, reason: EnrollmentStopReason, *, actor) -> EnrollmentView`
 - `get_enrollment(tenant_id, enrollment_id, *, actor) -> EnrollmentView`
-- `list_enrollments(tenant_id, scope, *, actor) -> list[EnrollmentView]`
+- `list_enrollments(tenant_id, scope, *, limit, actor) -> list[EnrollmentView]`
 
 ### 7.3 抑制
 
 - `add_suppression(tenant_id, request, *, actor) -> SuppressionResult`
 - `is_suppressed(tenant_id, target, *, actor) -> SuppressionView | None`
-- `list_suppressions(tenant_id, scope, *, actor) -> list[SuppressionView]`
+- `list_suppressions(tenant_id, scope, *, limit, actor) -> list[SuppressionView]`
 
 没有 remove/clear/unsuppress 方法。
 
@@ -355,7 +355,7 @@ Message Attempt 状态：
 
 | actor | scope | 允许操作 |
 |---|---|---|
-| boss | TENANT | 全部 Campaign 生命周期、激活、Enrollment 管理、六类抑制、全租户读取 |
+| boss | TENANT | 全部 Campaign 生命周期、激活、Enrollment create/stop/read/list、六类抑制、全租户读取；不能伪造 prepare/record sent/failure |
 | manager | MANAGER | 对显式范围内既有 Campaign 执行 submit/revise/pause/cancel；创建 Enrollment、人工停止；范围内读取；不能 create/activate/add suppression |
 | system | SYSTEM | 对精确单一 Enrollment prepare/record sent/failure/stop；对精确单一 target 增加 `UNSUBSCRIBE/COMPLAINT/HARD_BOUNCE` 自动抑制；读取精确资源 |
 | sales | SELF | 只读由 app 根据 ownership 计算后显式列入 scope 的 Campaign/Enrollment；领域层仍逐资源核 scope；不能写 Campaign、Enrollment 或 Suppression |
@@ -395,7 +395,7 @@ Campaign 创建和激活仅 boss/TENANT；manager 不能通过“自己创建再
 ### 9.2 关键约束
 
 - Campaign `(tenant_id, campaign_id)` 唯一；version `(tenant_id, campaign_id, version)` 唯一。
-- Sequence Step `(tenant_id, campaign_id, version, step_index)` 唯一且 step index 连续性由 service 验证。
+- Sequence Step `(tenant_id, campaign_id, version, step_number)` 唯一且 step number 连续性由 service 验证。
 - Campaign Version 与 Sequence Step 通过 trigger 禁止 UPDATE/DELETE；修订只能追加新版本。
 - 活跃 Enrollment 对 `(tenant_id, account_id)` 使用 partial unique index。
 - Enrollment `(tenant_id, idempotency_key)` 唯一；相同 key 的 payload 一致性由 repository outcome 与 service 共同验证。
@@ -450,7 +450,7 @@ repositories、outbox 和 action history 共用一个 AsyncSession。UoW body/co
 3. 读取当前 reply；已回复则转 `REPLIED` 并不创建 attempt。
 4. 读取 contact/account suppression；命中则转 `STOPPED_SUPPRESSED` 并不创建 attempt。
 5. 重新检查联系人资格和发件身份安全快照。
-6. 原子创建稳定 key Message Attempt，并按 Campaign 当前已激活版本的 `daily_total_messages` 占用 quota；Enrollment 的旧版本只决定步骤内容，不能保留更高的旧额度。
+6. 原子创建稳定 key Message Attempt，并按 Campaign 当前已激活版本的 `daily_total_message_limit` 占用 quota；Enrollment 的旧版本只决定步骤内容，不能保留更高的旧额度。
 7. commit 后 allow audit。
 
 该方法的返回值只允许交给 4B-2 Tool Gateway；不能直接调用 Gmail Connector。
