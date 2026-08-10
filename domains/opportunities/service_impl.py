@@ -590,13 +590,13 @@ class OpportunityServiceImpl:
           重查既有；只有确实找到才返回既有，否则原异常重抛。
         """
         rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
         validate_validated_need_evidence(evidence)
         evidence_tier = _derive_validated_need_confidence(
             request,
             evidence,
             now=self._now(),
         )
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_CREATE, tenant_id, rule)
         try:
             async with self._uow_factory() as uow:
                 existing = await uow.opportunities.find_by_need(

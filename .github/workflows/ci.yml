@@ -57,6 +57,6 @@ jobs:
       - name: Sensitive scan
         run: python3 scripts/scan_sensitive.py
       - name: Tests
-        run: pytest -q
+        run: pytest -q -m "not e2e"
       - name: Browser E2E
         run: pytest tests/e2e -q -W error

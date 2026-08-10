@@ -490,9 +490,12 @@ class _AllowAuthorizer:
         return "test:allow"
 
 
-class _NoopAudit:
+class _RecordingAudit:
+    def __init__(self) -> None:
+        self.records: list[dict[str, object]] = []
+
     def log(self, **kwargs) -> None:
-        pass
+        self.records.append(kwargs)
 
 
 def _actor(actor_id: str = "e1") -> Actor:
@@ -500,14 +503,19 @@ def _actor(actor_id: str = "e1") -> Actor:
     return Actor(actor_id=actor_id, scope=OpportunityScope(level=ScopeLevel.TENANT))
 
 
-def _make_service(factory: _UoWFactory, scorer: _FakeScorer):
+def _make_service(
+    factory: _UoWFactory,
+    scorer: _FakeScorer,
+    *,
+    audit: _RecordingAudit | None = None,
+):
     OpportunityServiceImpl = _load("OpportunityServiceImpl")
     return OpportunityServiceImpl(
         factory,
         scorer,
         HandoffPolicy(sla_seconds=3600, backlog_threshold=40),
         authorizer=_AllowAuthorizer(),
-        audit=_NoopAudit(),
+        audit=audit if audit is not None else _RecordingAudit(),
         now=lambda: _NOW,
     )
 
@@ -519,7 +527,8 @@ async def test_create_derives_confidence_from_validated_evidence() -> None:
     """客户证据等级声明经确定性规则推导为 MID_HIGH 后才进入打分。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
 
     result = await service.create_from_need(
         TenantId("t1"),
@@ -530,13 +539,15 @@ async def test_create_derives_confidence_from_validated_evidence() -> None:
 
     assert result is not None
     assert scorer.calls[0][3].evidence_tier is ConfidenceTier.MID_HIGH
+    assert [record["rule"] for record in audit.records] == ["test:allow"]
 
 
 async def test_create_rejects_mismatched_evidence_tier_before_uow() -> None:
     """兼容声明既非原始证据等级也非推导档位时失败关闭且零业务副作用。"""
     factory = _UoWFactory()
     scorer = _FakeScorer(_snap())
-    service = _make_service(factory, scorer)
+    audit = _RecordingAudit()
+    service = _make_service(factory, scorer, audit=audit)
 
     with pytest.raises(ValidationError):
         await service.create_from_need(
@@ -548,6 +559,7 @@ async def test_create_rejects_mismatched_evidence_tier_before_uow() -> None:
 
     assert factory.created == []
     assert scorer.calls == []
+    assert audit.records == []
 
 
 async def test_create_idempotent() -> None:

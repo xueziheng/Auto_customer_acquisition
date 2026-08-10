@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import pytest
-from playwright.async_api import async_playwright, expect
+from playwright.async_api import Locator, async_playwright, expect
 from pydantic import TypeAdapter
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,15 +61,26 @@ class E2EScenario:
     opportunity_ids: tuple[OpportunityId, ...]
     oldest_handoff: HandoffId
     second_handoff: HandoffId
+    provenance_extracted_at: str
 
 
-def _opportunity_body(index: int, country: str, category: str) -> dict[str, object]:
+def _serialize_utc(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _opportunity_body(
+    index: int,
+    country: str,
+    category: str,
+    *,
+    extracted_at: datetime,
+) -> dict[str, object]:
     source_id = f"e2e-message-{index}"
     provenance = {
         "source_type": "conversation",
         "source_id": source_id,
         "extracted_by": "human",
-        "extracted_at": "2026-08-10T02:00:00Z",
+        "extracted_at": _serialize_utc(extracted_at),
     }
     return {
         "request": {
@@ -109,10 +120,19 @@ async def _post_opportunity(
     index: int,
     country: str,
     category: str,
+    *,
+    extracted_at: datetime,
 ) -> OpportunityView:
     request = Request(
         f"{stack.api_origin}/crm/opportunities",
-        data=json.dumps(_opportunity_body(index, country, category)).encode(),
+        data=json.dumps(
+            _opportunity_body(
+                index,
+                country,
+                category,
+                extracted_at=extracted_at,
+            )
+        ).encode(),
         headers={
             "Content-Type": "application/json",
             "X-Tenant-Id": str(stack.tenant_id),
@@ -172,6 +192,23 @@ async def _conversation_provenance_count(
     )
 
 
+async def _conversation_provenance_times(
+    session: AsyncSession,
+    tenant_id: TenantId,
+) -> list[datetime]:
+    return list(
+        (
+            await session.scalars(
+                select(ProvenanceRecordRow.extracted_at).where(
+                    ProvenanceRecordRow.tenant_id == str(tenant_id),
+                    ProvenanceRecordRow.entity_type == "opportunity",
+                    ProvenanceRecordRow.source_type == "conversation",
+                )
+            )
+        ).all()
+    )
+
+
 async def _score_evidence_tiers(
     session: AsyncSession,
     tenant_id: TenantId,
@@ -190,6 +227,7 @@ async def _score_evidence_tiers(
 async def _assert_created_rows(
     stack: E2EStack,
     created: list[OpportunityView],
+    scenario_started_at: datetime,
 ) -> None:
     assert len(created) == 5
     assert [item.owner for item in created] == [
@@ -220,6 +258,12 @@ async def _assert_created_rows(
             str(stack.employees.sales_b),
         }
         assert await _conversation_provenance_count(session, stack.tenant_id) == 10
+        provenance_times = await _conversation_provenance_times(
+            session,
+            stack.tenant_id,
+        )
+        assert len(provenance_times) == 10
+        assert set(provenance_times) == {scenario_started_at}
 
 
 def _handoff_request(
@@ -318,6 +362,7 @@ async def _assert_handoff_order(
 
 
 async def _prepare_real_scenario(stack: E2EStack) -> E2EScenario:
+    scenario_started_at = datetime.now(UTC)
     combinations = [
         ("US", "hinges"),
         ("CA", "fasteners"),
@@ -326,12 +371,18 @@ async def _prepare_real_scenario(stack: E2EStack) -> E2EScenario:
         ("US", "hinges"),
     ]
     created = [
-        await _post_opportunity(stack, index, country, category)
+        await _post_opportunity(
+            stack,
+            index,
+            country,
+            category,
+            extracted_at=scenario_started_at,
+        )
         for index, (country, category) in enumerate(combinations, start=1)
     ]
-    await _assert_created_rows(stack, created)
+    await _assert_created_rows(stack, created, scenario_started_at)
 
-    clock = _Clock(datetime.now(UTC) - timedelta(minutes=5))
+    clock = _Clock(scenario_started_at - timedelta(minutes=5))
     dependencies = build_phase1_dependencies(
         stack.runtime_settings,
         stack.factory,
@@ -361,6 +412,7 @@ async def _prepare_real_scenario(stack: E2EStack) -> E2EScenario:
         ),
         oldest_handoff=oldest,
         second_handoff=second,
+        provenance_extracted_at=_serialize_utc(scenario_started_at),
     )
 
 
@@ -441,6 +493,18 @@ def _logs_are_safe(stack: E2EStack) -> bool:
     return all(value not in contents for value in forbidden)
 
 
+async def _expect_provenance_field(
+    dialog: Locator,
+    *,
+    label: str,
+    value: str,
+) -> None:
+    term = dialog.locator("dt", has_text=re.compile(rf"^{re.escape(label)}$"))
+    await expect(term).to_have_count(1)
+    await expect(term).to_have_text(label)
+    await expect(term.locator("xpath=following-sibling::dd")).to_have_text(value)
+
+
 @pytest.mark.e2e
 @pytest.mark.asyncio(loop_scope="session")
 async def test_real_opportunity_board_and_handoff_queue(
@@ -473,10 +537,28 @@ async def test_real_opportunity_board_and_handoff_queue(
                 page.locator('ol[aria-label="机会列表"] > li > button')
             ).to_have_count(5)
             await page.get_by_role("button", name=re.compile("E2E 企业 1")).click()
-            await page.get_by_role("button", name="查看来源").first.click()
-            await expect(page.get_by_role("dialog")).to_contain_text("来源类型")
-            await expect(page.get_by_role("dialog")).to_contain_text("e2e-message-1")
-            await page.get_by_role("button", name="关闭来源").click()
+            provenance_trigger = page.get_by_role(
+                "button",
+                name="查看来源",
+            ).first
+            await provenance_trigger.click()
+            provenance_dialog = page.get_by_role("dialog")
+            for label, value in (
+                ("来源类型", "conversation"),
+                ("来源标识", "e2e-message-1"),
+                ("提取者", "human"),
+                ("提取时间", scenario.provenance_extracted_at),
+                ("确认人", "尚未确认"),
+                ("确认时间", "尚未确认"),
+            ):
+                await _expect_provenance_field(
+                    provenance_dialog,
+                    label=label,
+                    value=value,
+                )
+            await page.keyboard.press("Escape")
+            await expect(provenance_dialog).to_be_hidden()
+            await expect(provenance_trigger).to_be_focused()
 
             await page.get_by_label("选择合法目标状态").select_option("assigned")
             await page.get_by_role("button", name="推进状态").click()
