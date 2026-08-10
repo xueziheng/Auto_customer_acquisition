@@ -33,6 +33,10 @@ from scripts import demo_sending_identity
 from shared.schemas.identifiers import TenantId
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_DOMAIN_AGENT_RULES = _REPO_ROOT / "domains/sending_identity/AGENTS.md"
+_SENDING_IDENTITY_ARCHITECTURE = (
+    _REPO_ROOT / "docs/architecture/07-sending-identity.md"
+)
 _SUMMARY_KEYS = {
     "tenant_id",
     "identity_ids",
@@ -81,6 +85,11 @@ def _run_demo(database_url: str) -> subprocess.CompletedProcess[str]:
         env={"DATABASE_URL": database_url},
         check=False,
     )
+
+
+def _normalized_document(document: Path) -> str:
+    """忽略换行宽度，只比较固定领域语义 token。"""
+    return " ".join(document.read_text(encoding="utf-8").split())
 
 
 def _safe_failure(result: subprocess.CompletedProcess[str]) -> str:
@@ -138,7 +147,9 @@ async def _assert_independent_database_readback(
 ) -> None:
     """按 summary tenant 独立回读，锁定 cap、窗口、幂等与熔断持久化事实。"""
     tenant_id = TenantId(summary["tenant_id"])
-    expected_identity_ids = set(summary["identity_ids"])
+    ordered_identity_ids = summary["identity_ids"]
+    assert isinstance(ordered_identity_ids, list)
+    expected_identity_ids = set(ordered_identity_ids)
     engine = create_engine_from(database_url)
     factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     try:
@@ -281,10 +292,9 @@ async def _assert_independent_database_readback(
     assert len(reputation_events) == 3
     assert {row.event_type for row in reputation_events} == {"hard_bounced"}
     assert len({row.dedup_key for row in reputation_events}) == 3
-    assert sorted(Counter(row.identity_id for row in reputation_events).values()) == [
-        1,
-        2,
-    ]
+    assert Counter(row.identity_id for row in reputation_events) == Counter(
+        {ordered_identity_ids[0]: 2, ordered_identity_ids[1]: 1}
+    )
     assert Decimal(len(reputation_events)) / Decimal(len(rolling_reservations)) == Decimal(
         ".06"
     )
@@ -321,12 +331,18 @@ async def _assert_independent_database_readback(
         row for row in outbox if row.event_type == "ReputationThresholdBreached"
     )
     assert (
-        breach.event_payload["sending_identity_id"] in expected_identity_ids,
+        breach.event_payload["sending_identity_id"],
         breach.event_payload["metric"],
         Decimal(str(breach.event_payload["value"])),
         Decimal(str(breach.event_payload["threshold"])),
         breach.event_payload["severity"],
-    ) == (True, "hard_bounce_rate", Decimal(".06"), Decimal(".05"), "suspended")
+    ) == (
+        ordered_identity_ids[0],
+        "hard_bounce_rate",
+        Decimal(".06"),
+        Decimal(".05"),
+        "suspended",
+    )
 
     assert Counter(record["action"] for record in audit_records)[
         "send_slot:reserve"
@@ -392,6 +408,22 @@ async def test_demo_sending_identity_disposes_engine_when_composition_fails(
         await demo_sending_identity.main()
 
     assert engine.disposed
+
+
+def test_sending_identity_docs_keep_complete_restriction_and_warmup_contract() -> None:
+    """限制态退役边与低 target 预热基准不得在绑定文档中丢失。"""
+    documents = (
+        _normalized_document(_DOMAIN_AGENT_RULES),
+        _normalized_document(_SENDING_IDENTITY_ARCHITECTURE),
+    )
+    required_transitions = (
+        "throttled → warming/active/suspended/retired",
+        "suspended → warming/active/retired",
+    )
+    for document in documents:
+        assert all(transition in document for transition in required_transitions)
+
+    assert "第 22–28 天从 `min(50,target)`" in documents[0]
 
 
 def test_demo_sending_identity_failure_redacts_invalid_database_url() -> None:

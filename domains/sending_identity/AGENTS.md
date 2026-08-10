@@ -36,15 +36,12 @@ transactional       系统事务通知域
 状态转换为：
 
 ```text
-created → auth_pending → warming → active
-   │           │            ├→ throttled → warming/active
-   │           │            ├→ suspended → warming/active
-   │           │            └→ retired
-   │           └──────────────────────────→ retired
-   └──────────────────────────────────────→ retired
-
+created → auth_pending/retired
+auth_pending → warming/retired
+warming → active/throttled/suspended/retired
 active → throttled/suspended/retired
-throttled → suspended/retired
+throttled → warming/active/suspended/retired
+suspended → warming/active/retired
 retired → 无后继
 ```
 
@@ -58,7 +55,7 @@ retired → 无后继
 - SPF、DKIM、DMARC 必须全部通过；认证事实是 typed、只增记录，不保存原始 DNS。
 - 认证通过不会自动预热，必须显式 `start_warmup`；目标日量只能是 5–100 的整数。
 - 固定 28 天曲线：第 1–3 天 5，第 4–7 天 15，第 8–14 天 30，
-  第 15–21 天 50（均不超过 target）；第 22–28 天从 50 确定性爬升到 target，
+  第 15–21 天 50（均不超过 target）；第 22–28 天从 `min(50,target)` 确定性爬升到 target，
   第 29 个自然日才完成并可显式推进为 `active`。调用方不能传自定义 schedule 或日期。
 - `reserve_send_slot` 在同一事务中重查角色、状态、最新认证、7 天信誉窗口和
   当日额度，再写 counter 与 immutable reservation。reservation key 重试返回原记录，

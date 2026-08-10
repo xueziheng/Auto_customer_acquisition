@@ -29,16 +29,13 @@ reference 和原始 DNS/provider payload 不得进入授权日志或错误边界
 ## 二、状态机与认证门禁
 
 ```text
-created ─→ auth_pending ─→ warming ─→ active
-   │              │           │          │
-   └──────────────┴───────────┴──────────┴─→ retired
-                              │          │
-                              ├──────────┴─→ throttled ─→ suspended
-                              └────────────→ suspended
-
-throttled ─→ saved warming/active
-suspended ─→ saved warming/active（仅 boss 带调查记录）
-retired   ─→ 无后继
+created → auth_pending/retired
+auth_pending → warming/retired
+warming → active/throttled/suspended/retired
+active → throttled/suspended/retired
+throttled → warming/active/suspended/retired
+suspended → warming/active/retired（其中恢复到 warming/active 仅 boss 带调查记录）
+retired → 无后继
 ```
 
 SPF、DKIM、DMARC 检查结果使用 typed DTO，只保存固定检查状态、失败类别、修复代码和
