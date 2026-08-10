@@ -677,6 +677,8 @@ git push origin codex/phase1-implementation
 - Consumes: `check_send_permission` 与 `reserve_if_below`。
 - Produces: 只读诊断 `check_send_permission` 和外部发送唯一权威门禁 `reserve_send_slot`；后续 4B 只能调用 reservation，不能把 check 结果当授权缓存。
 
+**Preflight ruling（2026-08-10）：** Task 4 维持上述 3 文件范围。Step 4 验收的是 counter/reservation 的最终事务原子性，不强制把现有 repository 的 SQL/ORM 语句改成“先更新 counter、再 INSERT”；真实测试须证明 reservation unique/commit failure 后两者均无新增或增量，且底层数据库异常不得被转换成 cap。`check_send_permission` 对状态、日期、cap、信誉窗口返回固定中文 reason；冷开发角色冲突仍抛 `ColdOutreachDomainViolation`。`reserve_send_slot` 固定异常映射为：角色冲突 `ColdOutreachDomainViolation`，认证未全过或尚未进入可发送预热 `AuthenticationNotVerifiedError`，`SUSPENDED`/`RETIRED` 各自 typed error，`THROTTLED`、预热日期未开始、cap 或信誉窗口阻断使用 `WarmupLimitExceededError`。reservation key 格式错误使用固定 `ValidationError`：strip 后 1..200 字符、拒绝 CR/LF/control chars，并大小写不敏感拒绝 `bearer/token/secret/password`；不得复用 64 字符 connector-ref 限制。
+
 - [ ] **Step 1: 写 gate matrix RED**
 
 对 CREATED/AUTH_PENDING/THROTTLED/SUSPENDED/RETIRED、latest auth 未全过、before-start、WARMING day1/day28、ACTIVE、错误 domain role、identity/domain 任一当前窗口已超阈值、scope 不含 identity 全部覆盖。
