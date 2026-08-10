@@ -93,6 +93,56 @@ def test_delivery_event_requires_typed_event_and_safe_utc_metadata() -> None:
         )
 
 
+def test_delivery_event_normalizes_only_outer_dedup_whitespace() -> None:
+    """去重键只允许剥离首尾空白，不能接受会产生等价歧义的内部空白。"""
+    event = schemas.DeliveryEventRecord(
+        tenant_id=TenantId("tenant-1"),
+        identity_id=SendingIdentityId("sid-1"),
+        event_type=models.DeliveryEventType.DELIVERED,
+        occurred_at=datetime(2026, 8, 10, tzinfo=UTC),
+        dedup_key=IdempotencyKey("  provider:message-1  "),
+        source_ref="gmail-event-1",
+    )
+    assert event.dedup_key == IdempotencyKey("provider:message-1")
+
+
+@pytest.mark.parametrize(
+    "unsafe_key",
+    [
+        "",
+        "   ",
+        "x" * 201,
+        "provider:message 1",
+        "provider:\tmessage-1",
+        "provider:\nmessage-1",
+        "provider:\x00message-1",
+        "provider:\x1fmessage-1",
+        "provider:\x7fmessage-1",
+        "provider:\x85message-1",
+        "provider:Bearer-secret",
+        "provider:TOKEN-secret",
+        "provider:Secret-secret",
+        "provider:passWORD-secret",
+    ],
+)
+def test_delivery_event_rejects_unsafe_dedup_without_echoing_it(
+    unsafe_key: str,
+) -> None:
+    """控制字符、内部空白和疑似凭证都必须固定报错且不得回显输入。"""
+    with pytest.raises(errors.InvalidDeliveryEventError) as caught:
+        schemas.DeliveryEventRecord(
+            tenant_id=TenantId("tenant-1"),
+            identity_id=SendingIdentityId("sid-1"),
+            event_type=models.DeliveryEventType.DELIVERED,
+            occurred_at=datetime(2026, 8, 10, tzinfo=UTC),
+            dedup_key=IdempotencyKey(unsafe_key),
+            source_ref="gmail-event-1",
+        )
+    assert str(caught.value) == "投递事件无效"
+    if unsafe_key:
+        assert unsafe_key not in str(caught.value)
+
+
 def test_requests_and_records_are_frozen_typed_contracts() -> None:
     """可变 DTO 或自由 role 会让已判权的内容在执行前被替换。"""
     request = schemas.IdentityRegisterRequest(

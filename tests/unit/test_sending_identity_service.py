@@ -14,6 +14,7 @@ from domains.sending_identity.errors import (
     DomainRoleConflictError,
     IdentityRetiredError,
     IdentitySuspendedError,
+    InvalidDeliveryEventError,
     SendingIdentityNotFoundError,
     WarmupLimitExceededError,
 )
@@ -27,6 +28,7 @@ from domains.sending_identity.permissions import (
 from domains.sending_identity.schemas import (
     AuthenticationFailure,
     AuthenticationResult,
+    DeliveryEventRecord,
     IdentityRegisterRequest,
     SendReservation,
 )
@@ -48,6 +50,7 @@ AuthCheck = _models.AuthCheck
 AuthenticationFailureCategory = _models.AuthenticationFailureCategory
 AuthenticationFixInstruction = _models.AuthenticationFixInstruction
 DomainRole = _models.DomainRole
+DeliveryEventType = _models.DeliveryEventType
 IdentityState = _models.IdentityState
 ReputationWindow = _models.ReputationWindow
 SendingIdentity = _models.SendingIdentity
@@ -318,6 +321,15 @@ class _Reputation:
     def __init__(self, factory: _UowFactory) -> None:
         self._factory = factory
 
+    async def record_event(self, event: DeliveryEventRecord) -> bool:
+        self._factory.order.append("reputation:record_event")
+        key = (str(event.tenant_id), str(event.dedup_key))
+        if key in self._factory.delivery_event_keys:
+            return False
+        self._factory.delivery_event_keys.add(key)
+        self._factory.delivery_events.append(event)
+        return True
+
     async def compute_window(self, tenant_id, identity_id, window_days, computed_at):
         return self._factory.identity_windows.get(
             str(identity_id),
@@ -418,6 +430,8 @@ class _UowFactory:
         self.reservation_values: dict[tuple[str, str], SendReservation] = {}
         self.identity_windows: dict[str, ReputationWindow] = {}
         self.domain_windows: dict[str, ReputationWindow] = {}
+        self.delivery_events: list[DeliveryEventRecord] = []
+        self.delivery_event_keys: set[tuple[str, str]] = set()
         self.commit_error: BaseException | None = None
         self.reservation_error: BaseException | None = None
 
@@ -573,6 +587,9 @@ async def _invoke_successful_public_method(
         "get_warmup_progress": IdentityState.WARMING,
         "check_send_permission": IdentityState.WARMING,
         "reserve_send_slot": IdentityState.WARMING,
+        "record_delivery_event": IdentityState.WARMING,
+        "evaluate_reputation": IdentityState.WARMING,
+        "resume_from_throttle": IdentityState.WARMING,
     }[method_name]
     identity = _seed(factory, state=state)
     if method_name in {
@@ -583,6 +600,9 @@ async def _invoke_successful_public_method(
         "get_warmup_progress",
         "check_send_permission",
         "reserve_send_slot",
+        "record_delivery_event",
+        "evaluate_reputation",
+        "resume_from_throttle",
     }:
         identity.warmup_plan = importlib.import_module(
             "domains.sending_identity.models"
@@ -594,6 +614,7 @@ async def _invoke_successful_public_method(
         "list_available_for_campaign",
         "check_send_permission",
         "reserve_send_slot",
+        "resume_from_throttle",
     }:
         factory.auth_records.append(
             AuthenticationCheckRecord(
@@ -609,6 +630,8 @@ async def _invoke_successful_public_method(
             IdentityState.SUSPENDED,
             suspension_category=SuspensionCategory.AUTHENTICATION_REGRESSION,
         )
+    if method_name == "resume_from_throttle":
+        identity.transition_to(IdentityState.THROTTLED)
 
     if method_name == "begin_authentication":
         await service.begin_authentication(_TENANT, identity.identity_id, actor=_boss())
@@ -662,6 +685,31 @@ async def _invoke_successful_public_method(
             actor=_system(identity.identity_id),
         )
         return SendingIdentityAction.SEND_SLOT_RESERVE
+    if method_name == "record_delivery_event":
+        await service.record_delivery_event(
+            _TENANT,
+            identity.identity_id,
+            DeliveryEventRecord(
+                tenant_id=_TENANT,
+                identity_id=identity.identity_id,
+                event_type=DeliveryEventType.DELIVERED,
+                occurred_at=_NOW,
+                dedup_key=IdempotencyKey("trace-delivery-event"),
+                source_ref="trace-event-ref",
+            ),
+            actor=_system(identity.identity_id),
+        )
+        return SendingIdentityAction.DELIVERY_EVENT_RECORD
+    if method_name == "evaluate_reputation":
+        await service.evaluate_reputation(
+            _TENANT, identity.identity_id, actor=_system(identity.identity_id)
+        )
+        return SendingIdentityAction.REPUTATION_EVALUATE
+    if method_name == "resume_from_throttle":
+        await service.resume_from_throttle(
+            _TENANT, identity.identity_id, actor=_system(identity.identity_id)
+        )
+        return SendingIdentityAction.THROTTLE_RESUME
     raise AssertionError(f"未覆盖 public method: {method_name}")
 
 
@@ -682,6 +730,9 @@ async def _invoke_successful_public_method(
         ("get_warmup_progress", "identity:get"),
         ("check_send_permission", "identity:get"),
         ("reserve_send_slot", "identity:get"),
+        ("record_delivery_event", "identity:list_domain"),
+        ("evaluate_reputation", "identity:list_domain"),
+        ("resume_from_throttle", "identity:list_domain"),
     ],
 )
 async def test_every_public_method_uses_two_phase_authorization_and_post_commit_allow(
@@ -1892,6 +1943,75 @@ async def test_reservation_commit_and_corruption_failures_have_zero_allow() -> N
         )
     assert not any(str(record["rule"]).startswith("allow") for record in audit.records)
     assert "reservation:reserve" not in order
+
+
+@pytest.mark.asyncio
+async def test_delivery_event_tenant_mismatch_is_critical_and_never_appended(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """event 自报其他 tenant 属安全违规，必须在 append 前固定告警并零 allow。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory)
+    event = DeliveryEventRecord(
+        tenant_id=TenantId("tOther"),
+        identity_id=identity.identity_id,
+        event_type=DeliveryEventType.DELIVERED,
+        occurred_at=_NOW,
+        dedup_key=IdempotencyKey("provider:tenant-mismatch"),
+        source_ref="provider-event-tenant",
+    )
+    with (
+        caplog.at_level("CRITICAL", logger="security.tenant_isolation"),
+        pytest.raises(TenantIsolationViolation),
+    ):
+        await service.record_delivery_event(
+            _TENANT,
+            identity.identity_id,
+            event,
+            actor=_system(identity.identity_id),
+        )
+    assert [record.getMessage() for record in caplog.records] == [
+        "检测到跨租户数据隔离违规"
+    ]
+    assert factory.delivery_events == []
+    assert factory.actions.records == []
+    assert factory.bus.events == []
+    assert audit.records == [
+        {
+            "actor": "system_1",
+            "action": SendingIdentityAction.DELIVERY_EVENT_RECORD.value,
+            "tenant_id": _TENANT,
+            "scope": ScopeLevel.SYSTEM.value,
+            "rule": "deny:tenant_isolation",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delivery_event_identity_mismatch_is_fixed_and_never_appended() -> None:
+    """参数 identity 与 event identity 不一致不得借错误文本泄漏任一标识。"""
+    service, factory, audit, _ = _build()
+    identity = _seed_sendable(factory)
+    event = DeliveryEventRecord(
+        tenant_id=_TENANT,
+        identity_id=SendingIdentityId("sid_01K27XZA00ABCDEFGHJKMNPQRT"),
+        event_type=DeliveryEventType.DELIVERED,
+        occurred_at=_NOW,
+        dedup_key=IdempotencyKey("provider:identity-mismatch"),
+        source_ref="provider-event-identity",
+    )
+    with pytest.raises(InvalidDeliveryEventError) as caught:
+        await service.record_delivery_event(
+            _TENANT,
+            identity.identity_id,
+            event,
+            actor=_system(identity.identity_id),
+        )
+    assert str(caught.value) == "投递事件无效"
+    assert factory.delivery_events == []
+    assert factory.actions.records == []
+    assert factory.bus.events == []
+    assert audit.records == []
 
 
 def test_decimal_reputation_fixture_stays_exact() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -123,8 +124,24 @@ class DeliveryEventRecord:
     def __post_init__(self) -> None:
         if not isinstance(self.event_type, DeliveryEventType) or not _is_utc_aware(self.occurred_at):
             raise InvalidDeliveryEventError("投递事件无效")
-        if not isinstance(self.dedup_key, str) or not self.dedup_key or len(self.dedup_key) > 200 or any(char.isspace() for char in self.dedup_key):
+        if not isinstance(self.dedup_key, str):
             raise InvalidDeliveryEventError("投递事件无效")
+        cleaned_key = self.dedup_key.strip()
+        lowered_key = cleaned_key.lower()
+        if (
+            not 1 <= len(cleaned_key) <= 200
+            or any(character.isspace() for character in cleaned_key)
+            or any(
+                unicodedata.category(character).startswith("C")
+                for character in cleaned_key
+            )
+            or any(
+                marker in lowered_key
+                for marker in ("bearer", "token", "secret", "password")
+            )
+        ):
+            raise InvalidDeliveryEventError("投递事件无效")
+        object.__setattr__(self, "dedup_key", IdempotencyKey(cleaned_key))
         try:
             validate_connector_ref(self.source_ref)
         except ValidationError as exc:

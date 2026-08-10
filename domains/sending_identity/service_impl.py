@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from domains.sending_identity.errors import (
     AuthenticationNotVerifiedError,
@@ -12,12 +14,16 @@ from domains.sending_identity.errors import (
     DomainRoleConflictError,
     IdentityRetiredError,
     IdentitySuspendedError,
+    InvalidDeliveryEventError,
     SendingIdentityNotFoundError,
     WarmupLimitExceededError,
 )
 from domains.sending_identity.models import (
     DomainRole,
     IdentityState,
+    ReputationMetric,
+    ReputationSeverity,
+    ReputationThresholds,
     ReputationWindow,
     SendingIdentity,
     SuspensionCategory,
@@ -41,6 +47,7 @@ from domains.sending_identity.repository import (
 from domains.sending_identity.schemas import (
     AuthenticationResult,
     AuthStatusView,
+    DeliveryEventRecord,
     DomainReputationView,
     IdentityRegisterRequest,
     IdentityView,
@@ -49,13 +56,19 @@ from domains.sending_identity.schemas import (
     SendReservation,
     WarmupProgressView,
 )
+from domains.sending_identity.service import SendingIdentityService
 from shared.errors import (
     InvalidStateTransition,
     PermissionDenied,
     TenantIsolationViolation,
     ValidationError,
 )
-from shared.events.catalog import SendingIdentityActivated, SendingIdentitySuspended
+from shared.events.catalog import (
+    ReputationThresholdBreached,
+    SendingIdentityActivated,
+    SendingIdentitySuspended,
+    SendingIdentityThrottled,
+)
 from shared.schemas.identifiers import (
     IdempotencyKey,
     SendingIdentityId,
@@ -76,6 +89,29 @@ _REASON_CAP = "当日发送额度已用尽"
 _REASON_IDENTITY_REPUTATION = "身份信誉窗口已触发发送限制"
 _REASON_DOMAIN_REPUTATION = "域名信誉窗口已触发发送限制"
 _SECRET_KEY_MARKERS = ("bearer", "token", "secret", "password")
+_RESUME_HARD_BOUNCE_RATE = Decimal(".024")
+_RESUME_COMPLAINT_RATE = Decimal(".0008")
+
+
+@dataclass(frozen=True)
+class _ReputationDecision:
+    target: IdentityState
+    metric: ReputationMetric
+    value: Decimal
+    threshold: Decimal
+    severity: ReputationSeverity
+
+
+_SEVERITY_PRIORITY = {
+    ReputationSeverity.THROTTLED: 1,
+    ReputationSeverity.SUSPENDED: 2,
+}
+_METRIC_PRIORITY = {
+    ReputationMetric.COMPLAINT_RATE: 1,
+    ReputationMetric.HARD_BOUNCE_RATE: 2,
+    ReputationMetric.SPAM_TRAP: 3,
+    ReputationMetric.BLOCKLISTED: 4,
+}
 
 
 def _is_real_int(value: object) -> bool:
@@ -122,6 +158,119 @@ def _reputation_blocks(window: ReputationWindow, identity: SendingIdentity) -> b
     return (
         window.hard_bounce_rate >= thresholds.throttle_hard_bounce_rate
         or window.complaint_rate >= thresholds.throttle_complaint_rate
+    )
+
+
+def _decision_priority(decision: _ReputationDecision) -> tuple[int, int]:
+    return (
+        _SEVERITY_PRIORITY[decision.severity],
+        _METRIC_PRIORITY[decision.metric],
+    )
+
+
+def _strongest_decision(
+    *decisions: _ReputationDecision | None,
+) -> _ReputationDecision | None:
+    available = [decision for decision in decisions if decision is not None]
+    return max(available, key=_decision_priority, default=None)
+
+
+def _evaluate_window(
+    window: ReputationWindow,
+    thresholds: ReputationThresholds,
+) -> _ReputationDecision | None:
+    """按 severity 后 metric 固定优先级纯函数求出窗口限制。"""
+    decisions: list[_ReputationDecision] = []
+    if thresholds.suspend_on_blocklist and window.blocklist_hits > 0:
+        decisions.append(
+            _ReputationDecision(
+                IdentityState.SUSPENDED,
+                ReputationMetric.BLOCKLISTED,
+                Decimal(1),
+                Decimal(0),
+                ReputationSeverity.SUSPENDED,
+            )
+        )
+    if thresholds.suspend_on_spam_trap and window.spam_trap_hits > 0:
+        decisions.append(
+            _ReputationDecision(
+                IdentityState.SUSPENDED,
+                ReputationMetric.SPAM_TRAP,
+                Decimal(1),
+                Decimal(0),
+                ReputationSeverity.SUSPENDED,
+            )
+        )
+    if window.sent_attempts >= thresholds.minimum_sample:
+        rate_rules = (
+            (
+                ReputationMetric.HARD_BOUNCE_RATE,
+                window.hard_bounce_rate,
+                thresholds.throttle_hard_bounce_rate,
+                thresholds.suspend_hard_bounce_rate,
+            ),
+            (
+                ReputationMetric.COMPLAINT_RATE,
+                window.complaint_rate,
+                thresholds.throttle_complaint_rate,
+                thresholds.suspend_complaint_rate,
+            ),
+        )
+        for metric, value, throttle_threshold, suspend_threshold in rate_rules:
+            if value >= suspend_threshold:
+                decisions.append(
+                    _ReputationDecision(
+                        IdentityState.SUSPENDED,
+                        metric,
+                        value,
+                        suspend_threshold,
+                        ReputationSeverity.SUSPENDED,
+                    )
+                )
+            elif value >= throttle_threshold:
+                decisions.append(
+                    _ReputationDecision(
+                        IdentityState.THROTTLED,
+                        metric,
+                        value,
+                        throttle_threshold,
+                        ReputationSeverity.THROTTLED,
+                    )
+                )
+    return _strongest_decision(*decisions)
+
+
+def _conservative_thresholds(
+    identities: list[SendingIdentity],
+) -> ReputationThresholds:
+    thresholds = [identity.thresholds for identity in identities]
+    if not thresholds:
+        raise ValidationError("发件域名缺少身份")
+    return ReputationThresholds(
+        throttle_hard_bounce_rate=min(
+            item.throttle_hard_bounce_rate for item in thresholds
+        ),
+        suspend_hard_bounce_rate=min(
+            item.suspend_hard_bounce_rate for item in thresholds
+        ),
+        throttle_complaint_rate=min(
+            item.throttle_complaint_rate for item in thresholds
+        ),
+        suspend_complaint_rate=min(
+            item.suspend_complaint_rate for item in thresholds
+        ),
+        suspend_on_spam_trap=any(item.suspend_on_spam_trap for item in thresholds),
+        suspend_on_blocklist=any(item.suspend_on_blocklist for item in thresholds),
+        minimum_sample=min(item.minimum_sample for item in thresholds),
+    )
+
+
+def _resume_window_is_safe(window: ReputationWindow) -> bool:
+    return (
+        window.hard_bounce_rate < _RESUME_HARD_BOUNCE_RATE
+        and window.complaint_rate < _RESUME_COMPLAINT_RATE
+        and window.spam_trap_hits == 0
+        and window.blocklist_hits == 0
     )
 
 
@@ -444,6 +593,152 @@ class SendingIdentityServiceImpl:
                 occurred_at=occurred_at,
             )
         )
+
+    async def _lock_reputation_domain(
+        self,
+        uow: SendingIdentityUnitOfWork,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        actor: Actor,
+        action: SendingIdentityAction,
+    ) -> tuple[SendingIdentity, list[SendingIdentity], str]:
+        """固定按 domain row → identity_id ASC 锁定并复核 source。"""
+        hint = await uow.identities.get(tenant_id, identity_id)
+        if hint is None:
+            raise SendingIdentityNotFoundError("发件身份不存在或不属于当前租户")
+        if hint.tenant_id != tenant_id:
+            self._deny_tenant_isolation(actor, action, tenant_id)
+        domain = await uow.domains.ensure(
+            SendingDomain(
+                tenant_id=tenant_id,
+                domain=hint.domain,
+                role=hint.role,
+                created_at=hint.created_at,
+            )
+        )
+        if domain.tenant_id != tenant_id:
+            self._deny_tenant_isolation(actor, action, tenant_id)
+        if domain.domain != hint.domain or domain.role is not hint.role:
+            raise DomainRoleConflictError("发件域名角色冲突")
+        identities = await uow.identities.list_domain_for_update(
+            tenant_id, domain.domain
+        )
+        if [str(item.identity_id) for item in identities] != sorted(
+            str(item.identity_id) for item in identities
+        ):
+            raise ValidationError("发件身份锁顺序无效")
+        source: SendingIdentity | None = None
+        for identity in identities:
+            if identity.tenant_id != tenant_id:
+                self._deny_tenant_isolation(actor, action, tenant_id)
+            if identity.domain != domain.domain or identity.role is not domain.role:
+                raise DomainRoleConflictError("发件域名角色冲突")
+            if identity.identity_id == identity_id:
+                source = identity
+        if source is None:
+            raise SendingIdentityNotFoundError("发件身份不存在或不属于当前租户")
+        rule = self._authorize_identity_row(source, actor, action, tenant_id)
+        return source, identities, rule
+
+    async def _evaluate_locked(
+        self,
+        uow: SendingIdentityUnitOfWork,
+        tenant_id: TenantId,
+        source: SendingIdentity,
+        identities: list[SendingIdentity],
+        *,
+        actor: Actor,
+        action: SendingIdentityAction,
+        rule: str,
+        now: datetime,
+    ) -> ReputationWindow:
+        """在持有 domain/identity 锁的当前 UoW 内评估并写完整熔断副作用。"""
+        identity_window = await uow.reputation.compute_window(
+            tenant_id, source.identity_id, 7, now
+        )
+        domain_window = await uow.reputation.compute_domain_window(
+            tenant_id, source.domain, 7, now
+        )
+        identity_decision = _evaluate_window(identity_window, source.thresholds)
+        domain_decision = _evaluate_window(
+            domain_window, _conservative_thresholds(identities)
+        )
+        state_events: list[SendingIdentityThrottled | SendingIdentitySuspended] = []
+        applied: list[_ReputationDecision] = []
+        for identity in identities:
+            decision = domain_decision
+            if identity.identity_id == source.identity_id:
+                decision = _strongest_decision(identity_decision, domain_decision)
+            if decision is None:
+                continue
+            if identity.state in _SENDABLE:
+                target = decision.target
+            elif (
+                identity.state is IdentityState.THROTTLED
+                and decision.target is IdentityState.SUSPENDED
+            ):
+                target = IdentityState.SUSPENDED
+            else:
+                continue
+            before = identity.state
+            category = (
+                SuspensionCategory(decision.metric.value)
+                if target is IdentityState.SUSPENDED
+                else None
+            )
+            identity.transition_to(target, suspension_category=category)
+            identity.suspended_at = now if target is IdentityState.SUSPENDED else None
+            next_version = identity.version + 1
+            await uow.identities.update(identity)
+            await self._record_action(
+                uow,
+                identity,
+                action=action,
+                before=before,
+                after=target,
+                actor=actor,
+                rule=rule,
+                version=next_version,
+                occurred_at=now,
+            )
+            if target is IdentityState.THROTTLED:
+                state_events.append(
+                    SendingIdentityThrottled(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        sending_identity_id=identity.identity_id,
+                        new_state=target.value,
+                        trigger_metric=decision.metric.value,
+                        metric_value=str(decision.value),
+                    )
+                )
+            else:
+                state_events.append(
+                    SendingIdentitySuspended(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        sending_identity_id=identity.identity_id,
+                        reason=category.value if category is not None else "",
+                    )
+                )
+            applied.append(decision)
+        trigger = _strongest_decision(*applied)
+        if trigger is not None:
+            await uow.bus.publish_many(
+                [
+                    *state_events,
+                    ReputationThresholdBreached(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        sending_identity_id=source.identity_id,
+                        metric=trigger.metric.value,
+                        value=str(trigger.value),
+                        threshold=str(trigger.threshold),
+                        severity=trigger.severity.value,
+                    ),
+                ]
+            )
+        return identity_window
 
     async def register(
         self,
@@ -861,6 +1156,129 @@ class SendingIdentityServiceImpl:
         self._audit_allow(actor, action, tenant_id, rule)
         return reservation
 
+    async def record_delivery_event(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        event: DeliveryEventRecord,
+        *,
+        actor: Actor,
+    ) -> bool:
+        """幂等追加投递事实，并在同一事务立即执行身份/域名熔断。"""
+        action = SendingIdentityAction.DELIVERY_EVENT_RECORD
+        self._preauthorize(actor, action, tenant_id)
+        if event.tenant_id != tenant_id:
+            self._deny_tenant_isolation(actor, action, tenant_id)
+        if event.identity_id != identity_id:
+            raise InvalidDeliveryEventError("投递事件无效")
+        now = self._now()
+        async with self._uow_factory(tenant_id) as uow:
+            source, identities, rule = await self._lock_reputation_domain(
+                uow, tenant_id, identity_id, actor, action
+            )
+            if (
+                event.occurred_at < source.created_at
+                or event.occurred_at > now + timedelta(minutes=5)
+            ):
+                raise InvalidDeliveryEventError("投递事件无效")
+            created = await uow.reputation.record_event(event)
+            if created:
+                await self._evaluate_locked(
+                    uow,
+                    tenant_id,
+                    source,
+                    identities,
+                    actor=actor,
+                    action=action,
+                    rule=rule,
+                    now=now,
+                )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return created
+
+    async def evaluate_reputation(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        *,
+        actor: Actor,
+    ) -> ReputationView:
+        """显式评估信誉但不隐式恢复，并返回 source identity 窗口。"""
+        action = SendingIdentityAction.REPUTATION_EVALUATE
+        self._preauthorize(actor, action, tenant_id)
+        now = self._now()
+        async with self._uow_factory(tenant_id) as uow:
+            source, identities, rule = await self._lock_reputation_domain(
+                uow, tenant_id, identity_id, actor, action
+            )
+            window = await self._evaluate_locked(
+                uow,
+                tenant_id,
+                source,
+                identities,
+                actor=actor,
+                action=action,
+                rule=rule,
+                now=now,
+            )
+            view = await self._build_reputation_view(window, source)
+        self._audit_allow(actor, action, tenant_id, rule)
+        return view
+
+    async def resume_from_throttle(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        *,
+        actor: Actor,
+    ) -> None:
+        """仅在身份和域窗口均严格低于固定 80% 线时恢复 saved state。"""
+        action = SendingIdentityAction.THROTTLE_RESUME
+        self._preauthorize(actor, action, tenant_id)
+        now = self._now()
+        async with self._uow_factory(tenant_id) as uow:
+            identity, _, rule = await self._lock_reputation_domain(
+                uow, tenant_id, identity_id, actor, action
+            )
+            if identity.state is not IdentityState.THROTTLED:
+                raise InvalidStateTransition("只有限流身份可以自动恢复")
+            latest = await uow.auth_checks.latest_for_identity(
+                tenant_id, identity_id
+            )
+            if latest is None or not latest.result.all_passed:
+                raise AuthenticationNotVerifiedError("认证未全部通过")
+            identity_window = await uow.reputation.compute_window(
+                tenant_id, identity_id, 7, now
+            )
+            domain_window = await uow.reputation.compute_domain_window(
+                tenant_id, identity.domain, 7, now
+            )
+            if not (
+                _resume_window_is_safe(identity_window)
+                and _resume_window_is_safe(domain_window)
+            ):
+                raise InvalidStateTransition("信誉窗口尚未达到自动恢复条件")
+            target = identity.sendable_state_before_restriction
+            if target not in _SENDABLE:
+                raise InvalidStateTransition("限流身份缺少可恢复状态")
+            before = identity.state
+            identity.transition_to(target)
+            identity.suspended_at = None
+            next_version = identity.version + 1
+            await uow.identities.update(identity)
+            await self._record_action(
+                uow,
+                identity,
+                action=action,
+                before=before,
+                after=target,
+                actor=actor,
+                rule=rule,
+                version=next_version,
+                occurred_at=now,
+            )
+        self._audit_allow(actor, action, tenant_id, rule)
+
     async def resume_from_suspension(
         self,
         tenant_id: TenantId,
@@ -1171,3 +1589,9 @@ class SendingIdentityServiceImpl:
             )
         self._audit_allow(actor, action, tenant_id, rule)
         return view
+
+
+def assert_service_contract(service: SendingIdentityServiceImpl) -> None:
+    """让 mypy 在实现模块内证明完整 public Protocol 结构一致。"""
+    public_service: SendingIdentityService = service
+    assert public_service is service
