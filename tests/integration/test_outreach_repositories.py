@@ -145,7 +145,11 @@ def _enrollment(
     )
 
 
-def _suppression(*, key: str = "suppression-key-1") -> object:
+def _suppression(
+    *,
+    key: str = "suppression-key-1",
+    source_ref: str = "manual_record_1",
+) -> object:
     models = importlib.import_module("domains.outreach.models")
     schemas = importlib.import_module("domains.outreach.schemas")
     return models.SuppressionEntry(
@@ -154,7 +158,7 @@ def _suppression(*, key: str = "suppression-key-1") -> object:
         target=schemas.SuppressionTarget(account_id=ACCOUNT),
         reason=models.SuppressionReason.MANUAL_BLOCK,
         occurred_at=NOW,
-        source_ref="manual_record_1",
+        source_ref=source_ref,
         idempotency_key=IdempotencyKey(key),
         created_at=NOW,
     )
@@ -300,7 +304,9 @@ async def test_suppression_attempt_and_quota_atomic_outcomes(
         assert (
             await suppression_repo.append_if_absent(suppression)
         ).status is contract.AppendStatus.EXISTING
-        conflicting = _suppression(key="suppression-key-1")
+        conflicting = _suppression(
+            key="suppression-key-1", source_ref="manual_record_2"
+        )
         assert (
             await suppression_repo.append_if_absent(conflicting)
         ).status is contract.AppendStatus.CONFLICT

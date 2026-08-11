@@ -631,7 +631,15 @@ class SuppressionRepositoryImpl(_OutreachRepository):
             )
         ).scalar_one()
         winner = _row_to_suppression(row)
-        status = AppendStatus.EXISTING if winner == entry else AppendStatus.CONFLICT
+        same_payload = (
+            winner.tenant_id == entry.tenant_id
+            and winner.target == entry.target
+            and winner.reason is entry.reason
+            and winner.occurred_at == entry.occurred_at
+            and winner.source_ref == entry.source_ref
+            and winner.idempotency_key == entry.idempotency_key
+        )
+        status = AppendStatus.EXISTING if same_payload else AppendStatus.CONFLICT
         return SuppressionAppendResult(
             status, winner if status is AppendStatus.EXISTING else None
         )

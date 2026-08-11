@@ -21,6 +21,8 @@ from domains.outreach.schemas import (
     ContactLegalBasis,
     ContactVerificationStatus,
     EnrollmentCreateRequest,
+    SuppressionRequest,
+    SuppressionTarget,
 )
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -38,6 +40,9 @@ from tests.integration.test_outreach_enrollment_lifecycle import (
     _seed_active_campaign,
     _service,
 )
+
+_models = importlib.import_module("domains.outreach.models")
+SuppressionReason = _models.SuppressionReason
 
 
 @pytest_asyncio.fixture
@@ -366,3 +371,95 @@ async def test_two_campaigns_competing_for_one_account_commit_one_winner(
                 rows.OutreachDailyQuotaRow.tenant_id == tenant
             )
         ) == 1
+
+
+async def test_prepare_racing_suppression_never_creates_send_event(
+    concurrency_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(concurrency_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign = CampaignId(new_id("cmp"))
+    approval = ApprovalId(new_id("apr"))
+    sender = SendingIdentityId(new_id("sid"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    snapshots = {(contact, account): _snapshot(tenant, contact, account)}
+    await _seed_active_campaign(
+        factory, tenant, campaign, (sender,), approval, message_limit=5
+    )
+    service = _service(
+        factory,
+        tenant,
+        campaign,
+        approval,
+        (sender,),
+        snapshots,
+        MutableClock(NOW),
+    )
+    boss = Actor("boss:race", OutreachScope(level=ScopeLevel.TENANT), "boss")
+    enrollment = await service.enroll(
+        tenant,
+        campaign,
+        EnrollmentCreateRequest(account, contact, IdempotencyKey("race-enroll")),
+        actor=boss,
+    )
+    prepare_actor = Actor(
+        "system:prepare-race",
+        OutreachScope(
+            level=ScopeLevel.SYSTEM,
+            allowed_enrollment_ids=frozenset({enrollment.enrollment_id}),
+        ),
+        "system",
+    )
+    target = SuppressionTarget(contact_point_id=contact)
+    suppress_actor = Actor(
+        "system:suppress-race",
+        OutreachScope(
+            level=ScopeLevel.SYSTEM,
+            allowed_suppression_targets=frozenset({target.canonical_id}),
+        ),
+        "system",
+    )
+    suppression = SuppressionRequest(
+        target,
+        SuppressionReason.UNSUBSCRIBE,
+        NOW,
+        "reply_race_ref",
+        IdempotencyKey("race-suppression"),
+    )
+    async def prepare():
+        return await service.prepare_message_attempt(
+            tenant, enrollment.enrollment_id, actor=prepare_actor
+        )
+
+    async def suppress():
+        return await service.add_suppression(
+            tenant, suppression, actor=suppress_actor
+        )
+
+    await asyncio.gather(prepare(), suppress(), return_exceptions=True)
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        stored = await session.get(
+            rows.OutreachEnrollmentRow,
+            (str(tenant), str(enrollment.enrollment_id)),
+        )
+        assert stored is not None and stored.state == "stopped_suppressed"
+        attempts = (
+            await session.execute(
+                select(rows.OutreachMessageAttemptRow).where(
+                    rows.OutreachMessageAttemptRow.tenant_id == tenant
+                )
+            )
+        ).scalars().all()
+        assert len(attempts) in {0, 1}
+        assert {attempt.state for attempt in attempts} <= {"reserved"}
+        assert await session.scalar(
+            select(func.count())
+            .select_from(rows.OutboxEventRow)
+            .where(
+                rows.OutboxEventRow.tenant_id == tenant,
+                rows.OutboxEventRow.event_type == "MessageSent",
+            )
+        ) == 0

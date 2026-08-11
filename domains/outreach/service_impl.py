@@ -33,6 +33,8 @@ from domains.outreach.models import (
     MessageAttemptState,
     SendFailureCategory,
     SequenceStepSpec,
+    SuppressionEntry,
+    SuppressionReason,
 )
 from domains.outreach.permissions import (
     Actor,
@@ -65,7 +67,10 @@ from domains.outreach.schemas import (
     ReplyStatusSnapshot,
     SendingIdentityEligibilitySnapshot,
     SequenceStepRequest,
+    SuppressionRequest,
+    SuppressionResult,
     SuppressionTarget,
+    SuppressionView,
 )
 from domains.outreach.service import (
     CampaignApprovalProvider,
@@ -80,7 +85,7 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
-from shared.events.catalog import MessageSent
+from shared.events.catalog import MessageSent, SuppressionAdded
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -91,6 +96,7 @@ from shared.schemas.identifiers import (
     MessageId,
     ProspectAccountId,
     SendingIdentityId,
+    SuppressionId,
     TenantId,
     new_id,
 )
@@ -155,6 +161,8 @@ class OutreachServiceImpl:
         campaign_id: CampaignId | None = None,
         account_id: ProspectAccountId | None = None,
         enrollment_id: EnrollmentId | None = None,
+        suppression_target: str | None = None,
+        suppression_reason: SuppressionReason | None = None,
     ) -> str:
         try:
             return self._authorizer.require(
@@ -165,6 +173,8 @@ class OutreachServiceImpl:
                 campaign_id=campaign_id,
                 account_id=account_id,
                 enrollment_id=enrollment_id,
+                suppression_target=suppression_target,
+                suppression_reason=suppression_reason,
             )
         except PermissionDenied:
             self._deny(actor, action, tenant_id)
@@ -1469,5 +1479,215 @@ class OutreachServiceImpl:
                     )
                 )
                 views.append(self._enrollment_view(enrollment))
+        self._allow(actor, action, tenant_id, rules[0] if rules else pre_rule)
+        return views
+
+    @staticmethod
+    def _suppression_view(entry: SuppressionEntry) -> SuppressionView:
+        return SuppressionView(
+            tenant_id=entry.tenant_id,
+            suppression_id=entry.suppression_id,
+            target=entry.target,
+            reason=entry.reason,
+            occurred_at=entry.occurred_at,
+            source_ref=entry.source_ref,
+            idempotency_key=entry.idempotency_key,
+            created_at=entry.created_at,
+        )
+
+    @staticmethod
+    def _same_suppression_payload(
+        entry: SuppressionEntry, request: SuppressionRequest, tenant_id: TenantId
+    ) -> bool:
+        return (
+            entry.tenant_id == tenant_id
+            and entry.target == request.target
+            and entry.reason is request.reason
+            and entry.occurred_at == request.occurred_at
+            and entry.source_ref == request.source_ref
+            and entry.idempotency_key == request.idempotency_key
+        )
+
+    async def add_suppression(
+        self,
+        tenant_id: TenantId,
+        request: SuppressionRequest,
+        *,
+        actor: Actor,
+    ) -> SuppressionResult:
+        action = OutreachAction.SUPPRESSION_ADD
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(request, SuppressionRequest):
+            raise ValidationError("Suppression request 无效")
+        rule = self._require(
+            actor,
+            action,
+            tenant_id,
+            suppression_target=request.target.canonical_id,
+            suppression_reason=request.reason,
+        )
+        now = self._validate_now(self._now())
+        if request.occurred_at > now + timedelta(minutes=5):
+            raise ValidationError("suppression occurred_at 超出允许时间")
+        entry = SuppressionEntry(
+            tenant_id=tenant_id,
+            suppression_id=SuppressionId(new_id("sup")),
+            target=request.target,
+            reason=request.reason,
+            occurred_at=request.occurred_at,
+            source_ref=request.source_ref,
+            idempotency_key=request.idempotency_key,
+            created_at=now,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            appended = await uow.suppressions.append_if_absent(entry)
+            if appended.status is AppendStatus.CONFLICT or appended.winner is None:
+                raise IdempotencyConflictError(
+                    "Suppression 幂等键已绑定不同内容"
+                )
+            winner = appended.winner
+            if winner.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if not self._same_suppression_payload(
+                winner, request, tenant_id
+            ):
+                raise IdempotencyConflictError(
+                    "Suppression 幂等键已绑定不同内容"
+                )
+            if appended.status is AppendStatus.EXISTING:
+                result = SuppressionResult(
+                    False, self._suppression_view(winner), 0
+                )
+            else:
+                enrollments = await uow.enrollments.lock_matching_active(
+                    tenant_id, request.target
+                )
+                ordered = sorted(
+                    enrollments, key=lambda value: value.enrollment_id
+                )
+                for enrollment in ordered:
+                    if enrollment.tenant_id != tenant_id:
+                        self._tenant_violation(actor, action, tenant_id)
+                    enrollment.next_send_at = None
+                    enrollment.transition_to(
+                        EnrollmentState.STOPPED_SUPPRESSED,
+                        at=now,
+                        reason=EnrollmentStopReason.SUPPRESSION,
+                    )
+                    await uow.enrollments.update(enrollment)
+                    await uow.actions.append(
+                        self._action(
+                            tenant_id,
+                            actor,
+                            str(enrollment.enrollment_id),
+                            f"enrollment:{enrollment.enrollment_id}:"
+                            f"suppression:{winner.suppression_id}",
+                            action,
+                            now,
+                        )
+                    )
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(winner.suppression_id),
+                        f"suppression:{winner.suppression_id}:add",
+                        action,
+                        now,
+                    )
+                )
+                await uow.bus.publish(
+                    SuppressionAdded(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        scope=winner.target.scope.value,
+                        target_id=winner.target.canonical_id,
+                        reason=winner.reason.value,
+                    )
+                )
+                result = SuppressionResult(
+                    True,
+                    self._suppression_view(winner),
+                    len(ordered),
+                )
+        self._allow(actor, action, tenant_id, rule)
+        return result
+
+    async def is_suppressed(
+        self,
+        tenant_id: TenantId,
+        target: SuppressionTarget,
+        *,
+        actor: Actor,
+    ) -> SuppressionView | None:
+        action = OutreachAction.SUPPRESSION_READ
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(target, SuppressionTarget):
+            raise ValidationError("suppression target 无效")
+        rule = self._require(
+            actor,
+            action,
+            tenant_id,
+            suppression_target=target.canonical_id,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            entry = await uow.suppressions.find_current(tenant_id, target)
+            if entry is None:
+                view = None
+            else:
+                if entry.tenant_id != tenant_id:
+                    self._tenant_violation(actor, action, tenant_id)
+                if entry.target != target:
+                    raise ValidationError("suppression 查询结果资源不匹配")
+                self._require(
+                    actor,
+                    action,
+                    tenant_id,
+                    suppression_target=entry.target.canonical_id,
+                    suppression_reason=entry.reason,
+                )
+                view = self._suppression_view(entry)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def list_suppressions(
+        self,
+        tenant_id: TenantId,
+        scope: OutreachScope,
+        *,
+        limit: int,
+        actor: Actor,
+    ) -> list[SuppressionView]:
+        action = OutreachAction.SUPPRESSION_LIST
+        actor, pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(scope, OutreachScope) or scope is not actor.scope:
+            self._deny(actor, action, tenant_id)
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 200
+        ):
+            raise ValidationError("limit 无效")
+        async with self._uow_factory(tenant_id) as uow:
+            entries = await uow.suppressions.list_scoped(
+                tenant_id, scope, limit
+            )
+            views: list[SuppressionView] = []
+            rules: list[str] = []
+            for entry in entries:
+                if entry.tenant_id != tenant_id:
+                    self._tenant_violation(actor, action, tenant_id)
+                rules.append(
+                    self._require(
+                        actor,
+                        action,
+                        tenant_id,
+                        suppression_target=entry.target.canonical_id,
+                        suppression_reason=entry.reason,
+                    )
+                )
+                views.append(self._suppression_view(entry))
         self._allow(actor, action, tenant_id, rules[0] if rules else pre_rule)
         return views

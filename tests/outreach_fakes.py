@@ -40,6 +40,7 @@ EnrollmentInsertStatus = _repository.EnrollmentInsertStatus
 MessageAttemptCreateResult = _repository.MessageAttemptCreateResult
 QuotaReservationResult = _repository.QuotaReservationResult
 QuotaReservationStatus = _repository.QuotaReservationStatus
+SuppressionAppendResult = _repository.SuppressionAppendResult
 
 
 @dataclass
@@ -181,6 +182,25 @@ class FakeEnrollmentRepository:
                 return copy.deepcopy(value)
         return None
 
+    async def lock_matching_active(self, tenant_id, target):
+        values = [
+            copy.deepcopy(value)
+            for value in self.store.enrollments.values()
+            if tenant_id == self.tenant_id
+            and value.tenant_id == tenant_id
+            and value.state.value in {"enrolled", "in_sequence"}
+            and (
+                value.contact_point_id == target.contact_point_id
+                if target.contact_point_id is not None
+                else value.account_id == target.account_id
+            )
+        ]
+        values.sort(key=lambda value: value.enrollment_id)
+        self.trace.calls.append(
+            ("enrollment_lock_matching", tuple(value.enrollment_id for value in values))
+        )
+        return values
+
     async def update(self, enrollment):
         self.store.enrollments[enrollment.enrollment_id] = copy.deepcopy(enrollment)
 
@@ -194,14 +214,51 @@ class FakeEnrollmentRepository:
 
 
 class FakeSuppressionRepository:
-    def __init__(self, store: FakeStore) -> None:
-        self.store = store
+    def __init__(self, store: FakeStore, tenant_id: TenantId, trace: Trace) -> None:
+        self.store, self.tenant_id, self.trace = store, tenant_id, trace
+
+    async def append_if_absent(self, entry: SuppressionEntry):
+        self.trace.calls.append(("suppression_append", entry.target.canonical_id))
+        for current in self.store.suppressions:
+            if current.idempotency_key == entry.idempotency_key:
+                same_payload = (
+                    current.tenant_id == entry.tenant_id
+                    and current.target == entry.target
+                    and current.reason is entry.reason
+                    and current.occurred_at == entry.occurred_at
+                    and current.source_ref == entry.source_ref
+                )
+                if same_payload:
+                    return SuppressionAppendResult(
+                        AppendStatus.EXISTING, copy.deepcopy(current)
+                    )
+                return SuppressionAppendResult(AppendStatus.CONFLICT, None)
+        self.store.suppressions.append(copy.deepcopy(entry))
+        return SuppressionAppendResult(AppendStatus.CREATED, copy.deepcopy(entry))
 
     async def find_current(self, tenant_id, target: SuppressionTarget):
+        self.trace.calls.append(("suppression_find", target.canonical_id))
         for value in reversed(self.store.suppressions):
             if value.tenant_id == tenant_id and value.target == target:
                 return copy.deepcopy(value)
         return None
+
+    async def list_scoped(self, tenant_id, scope, limit):
+        self.trace.calls.append(("suppression_list", limit))
+        values = [
+            copy.deepcopy(value)
+            for value in self.store.suppressions
+            if value.tenant_id == tenant_id
+            and (
+                scope.allowed_suppression_targets is None
+                or value.target.canonical_id in scope.allowed_suppression_targets
+            )
+        ]
+        return sorted(
+            values,
+            key=lambda value: (value.occurred_at, value.suppression_id),
+            reverse=True,
+        )[:limit]
 
 
 class FakeAttemptRepository:
@@ -257,7 +314,7 @@ class FakeUow:
         self.store, self.tenant_id, self.trace = store, tenant_id, trace
         self.campaigns = FakeCampaignRepository(store, tenant_id, trace)
         self.enrollments = FakeEnrollmentRepository(store, tenant_id, trace)
-        self.suppressions = FakeSuppressionRepository(store)
+        self.suppressions = FakeSuppressionRepository(store, tenant_id, trace)
         self.quotas = FakeQuotaRepository(store)
         self.attempts = FakeAttemptRepository(store, tenant_id, trace)
         self.actions = FakeActionRepository(store)
