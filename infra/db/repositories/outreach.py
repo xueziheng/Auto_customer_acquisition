@@ -266,6 +266,7 @@ def _attempt_row(attempt: MessageAttempt) -> OutreachMessageAttemptRow:
         ),
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
+        send_claimed_at=attempt.send_claimed_at,
     )
 
 
@@ -287,6 +288,7 @@ def _row_to_attempt(row: OutreachMessageAttemptRow) -> MessageAttempt:
         ),
         created_at=row.created_at,
         updated_at=row.updated_at,
+        send_claimed_at=row.send_claimed_at,
     )
 
 
@@ -532,6 +534,27 @@ class EnrollmentRepositoryImpl(_OutreachRepository):
             )
         else:
             query = query.where(OutreachEnrollmentRow.account_id == target.account_id)
+        campaign_ids = (
+            (
+                await self._session.execute(
+                    query.with_only_columns(
+                        OutreachEnrollmentRow.campaign_id
+                    ).distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if campaign_ids:
+            await self._session.execute(
+                select(OutreachCampaignRow)
+                .where(
+                    OutreachCampaignRow.tenant_id == self._tenant_id,
+                    OutreachCampaignRow.campaign_id.in_(campaign_ids),
+                )
+                .order_by(OutreachCampaignRow.campaign_id.asc())
+                .with_for_update()
+            )
         rows = (
             (
                 await self._session.execute(
@@ -866,6 +889,7 @@ class MessageAttemptRepositoryImpl(_OutreachRepository):
                     attempt.failure_category.value if attempt.failure_category else None
                 ),
                 updated_at=attempt.updated_at,
+                send_claimed_at=attempt.send_claimed_at,
             )
         )
 

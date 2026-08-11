@@ -62,6 +62,7 @@ from domains.outreach.schemas import (
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
+    MessageSendPreflight,
     OutreachSenderRole,
     ReplyState,
     ReplyStatusSnapshot,
@@ -632,6 +633,7 @@ class OutreachServiceImpl:
             failure_category=attempt.failure_category,
             created_at=attempt.created_at,
             updated_at=attempt.updated_at,
+            send_claimed_at=attempt.send_claimed_at,
         )
 
     async def _contact_snapshot(
@@ -1147,6 +1149,172 @@ class OutreachServiceImpl:
         self._allow(actor, action, tenant_id, rule)
         return view
 
+    async def _validate_message_send_current_facts(
+        self,
+        uow: OutreachUnitOfWork,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        located: MessageAttempt,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> tuple[MessageAttempt, MessageSendPreflight, str]:
+        campaign = await self._locked_campaign(
+            uow, tenant_id, located.campaign_id, actor, action
+        )
+        enrollment = await uow.enrollments.get_for_update(
+            tenant_id, located.enrollment_id
+        )
+        attempt = await uow.attempts.get_for_update(tenant_id, attempt_id)
+        if enrollment is None or attempt is None:
+            raise ValidationError("Message Attempt 资源不存在")
+        if (
+            attempt.tenant_id != tenant_id
+            or enrollment.tenant_id != tenant_id
+            or attempt.campaign_id != campaign.campaign_id
+            or attempt.enrollment_id != enrollment.enrollment_id
+        ):
+            self._tenant_violation(actor, action, tenant_id)
+        rule = self._require(
+            actor,
+            action,
+            tenant_id,
+            campaign_id=campaign.campaign_id,
+            account_id=enrollment.account_id,
+            enrollment_id=enrollment.enrollment_id,
+        )
+        if campaign.state is not CampaignState.ACTIVE:
+            raise CampaignNotActiveError("Campaign 当前状态不允许发送")
+        version = await uow.campaigns.get_version(
+            tenant_id, campaign.campaign_id, attempt.campaign_version
+        )
+        if version is None or enrollment.campaign_version != attempt.campaign_version:
+            raise MessageAttemptConflictError("Message Attempt Campaign 版本不匹配")
+        approval = await self._require_approved_version(
+            tenant_id,
+            campaign.campaign_id,
+            attempt.campaign_version,
+            actor,
+            action,
+        )
+        if attempt.campaign_version == campaign.current_version and (
+            campaign.approval_id != approval.approval_id
+            or campaign.approved_by != approval.approved_by
+            or campaign.approved_at != approval.approved_at
+        ):
+            raise CampaignApprovalRequiredError("Message Attempt 审批绑定不匹配")
+        if enrollment.state not in {
+            EnrollmentState.ENROLLED,
+            EnrollmentState.IN_SEQUENCE,
+        }:
+            raise InvalidStateTransition("Enrollment 当前不可发送")
+        if attempt.step_number != enrollment.current_step + 1:
+            raise MessageAttemptConflictError("Message Attempt step 与 Enrollment 不匹配")
+        if attempt.state not in {
+            MessageAttemptState.RESERVED,
+            MessageAttemptState.FAILED_TRANSIENT,
+            MessageAttemptState.SENDING,
+        }:
+            raise MessageAttemptConflictError("Message Attempt 当前状态不可发送")
+        reply = await self._reply_snapshot(tenant_id, enrollment, actor, action)
+        if reply.state is ReplyState.REPLIED:
+            raise ReplyAlreadyReceivedError("联系人已经回复，不能继续发送")
+        if await self._has_suppression(
+            uow,
+            tenant_id,
+            enrollment.contact_point_id,
+            enrollment.account_id,
+        ):
+            raise SuppressedError("联系人或企业已进入全局抑制")
+        contact = await self._contact_snapshot(
+            tenant_id,
+            enrollment.contact_point_id,
+            enrollment.account_id,
+        )
+        self._validate_contact_snapshot(
+            contact,
+            tenant_id=tenant_id,
+            contact_point_id=enrollment.contact_point_id,
+            account_id=enrollment.account_id,
+            boundary=version.boundary,
+            actor=actor,
+            action=action,
+        )
+        if (
+            attempt.sending_identity_id != enrollment.sending_identity_id
+            or attempt.sending_identity_id not in version.boundary.sender_identity_ids
+        ):
+            raise SendingIdentityUnavailableError("发件身份不在 Campaign 允许集合")
+        sender = await self._sender_snapshot(
+            tenant_id, attempt.sending_identity_id, actor, action
+        )
+        if not self._sender_is_eligible(sender):
+            raise SendingIdentityUnavailableError("发件身份当前不可用")
+        return (
+            attempt,
+            MessageSendPreflight(
+                tenant_id=tenant_id,
+                attempt_id=attempt.attempt_id,
+                campaign_id=attempt.campaign_id,
+                enrollment_id=attempt.enrollment_id,
+                account_id=enrollment.account_id,
+                contact_point_id=enrollment.contact_point_id,
+                sending_identity_id=attempt.sending_identity_id,
+                campaign_version=attempt.campaign_version,
+                step_number=attempt.step_number,
+                idempotency_key=attempt.idempotency_key,
+            ),
+            rule,
+        )
+
+    async def preflight_message_send(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        *,
+        actor: Actor,
+    ) -> MessageSendPreflight:
+        action = OutreachAction.ENROLLMENT_PREPARE_SEND
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        located = await self._locate_attempt(tenant_id, attempt_id)
+        async with self._uow_factory(tenant_id) as uow:
+            _attempt, preflight, rule = await self._validate_message_send_current_facts(
+                uow, tenant_id, attempt_id, located, actor, action
+            )
+        self._allow(actor, action, tenant_id, rule)
+        return preflight
+
+    async def claim_message_send(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView:
+        action = OutreachAction.ENROLLMENT_PREPARE_SEND
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        located = await self._locate_attempt(tenant_id, attempt_id)
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            attempt, _preflight, rule = await self._validate_message_send_current_facts(
+                uow, tenant_id, attempt_id, located, actor, action
+            )
+            if attempt.state is not MessageAttemptState.SENDING:
+                attempt.transition_to(MessageAttemptState.SENDING, at=now)
+                await uow.attempts.update(attempt)
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(attempt.enrollment_id),
+                        f"attempt:{attempt.attempt_id}:sending",
+                        action,
+                        now,
+                    )
+                )
+            view = self._attempt_view(attempt)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
     @staticmethod
     def _safe_provider_ref(provider_ref: object) -> str:
         if not isinstance(provider_ref, str):
@@ -1216,9 +1384,9 @@ class OutreachServiceImpl:
                     )
                 view = self._attempt_view(attempt)
             else:
-                if attempt.state is MessageAttemptState.FAILED_PERMANENT:
+                if attempt.state is not MessageAttemptState.SENDING:
                     raise MessageAttemptConflictError(
-                        "Message Attempt 已永久失败"
+                        "Message Attempt 尚未取得发送 claim"
                     )
                 version = await uow.campaigns.get_version(
                     tenant_id, campaign.campaign_id, attempt.campaign_version
@@ -1315,20 +1483,27 @@ class OutreachServiceImpl:
             )
             if attempt.state is MessageAttemptState.SENT:
                 raise MessageAttemptConflictError("已发送 Attempt 不能记录失败")
-            if attempt.state is MessageAttemptState.FAILED_PERMANENT:
+            if attempt.state in {
+                MessageAttemptState.FAILED_TRANSIENT,
+                MessageAttemptState.FAILED_PERMANENT,
+            }:
                 if attempt.failure_category is not category:
                     raise MessageAttemptConflictError(
                         "Message Attempt failure category 冲突"
                     )
-            elif (
-                attempt.state is MessageAttemptState.FAILED_TRANSIENT
-                and category is SendFailureCategory.PROVIDER_TRANSIENT
-            ):
-                pass
             else:
+                if attempt.state is not MessageAttemptState.SENDING:
+                    raise MessageAttemptConflictError(
+                        "Message Attempt 尚未取得发送 claim"
+                    )
                 target = (
                     MessageAttemptState.FAILED_TRANSIENT
-                    if category is SendFailureCategory.PROVIDER_TRANSIENT
+                    if category
+                    in {
+                        SendFailureCategory.RATE_LIMITED,
+                        SendFailureCategory.PROVIDER_TRANSIENT,
+                        SendFailureCategory.PROVIDER_AUTH_REQUIRED,
+                    }
                     else MessageAttemptState.FAILED_PERMANENT
                 )
                 attempt.transition_to(

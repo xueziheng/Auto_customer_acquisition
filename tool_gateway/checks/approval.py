@@ -12,11 +12,36 @@ remediation 给出提交审批的路径——这是少数可补救的拒绝。
 
 from __future__ import annotations
 
-from tool_gateway.pipeline import CheckRejection, ToolCallContext
+from domains.quotations.service import contains_forbidden_commitment
+from tool_gateway.pipeline import CheckRejection, ToolCallContext, ToolInvocationState
 
 
 class ApprovalCheck:
     name = "approval"
 
-    async def check(self, ctx: ToolCallContext) -> CheckRejection | None:
-        raise NotImplementedError
+    async def check(
+        self, ctx: ToolCallContext, state: ToolInvocationState
+    ) -> CheckRejection | None:
+        if getattr(state.manifest, "requires_approval", True):
+            return CheckRejection(
+                self.name,
+                "approval:required",
+                "此工具调用需要逐次人工审批",
+                "提交审批后重试",
+            )
+        subject = ctx.params.get("subject")
+        body = ctx.params.get("body")
+        if not isinstance(subject, str) or not isinstance(body, str):
+            return CheckRejection(
+                self.name,
+                "approval:material_invalid",
+                "客户可见内容无效",
+            )
+        if contains_forbidden_commitment(subject) or contains_forbidden_commitment(body):
+            return CheckRejection(
+                self.name,
+                "approval:commercial_commitment",
+                "客户内容包含必须逐次审批的承诺",
+                "移除承诺或提交审批后重试",
+            )
+        return None

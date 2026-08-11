@@ -796,6 +796,9 @@ async def test_prepare_uses_enrollment_version_steps_and_current_version_quota()
     first = await harness.service.prepare_message_attempt(
         harness.tenant, enrollment.enrollment_id, actor=actor
     )
+    await harness.service.claim_message_send(
+        harness.tenant, first.attempt_id, actor=actor
+    )
     await harness.service.record_sent(
         harness.tenant, first.attempt_id, "provider_ref_1", actor=actor
     )
@@ -841,6 +844,9 @@ async def test_record_sent_authoritative_transaction_locks_campaign_then_enrollm
     attempt = await harness.service.prepare_message_attempt(
         harness.tenant, enrollment.enrollment_id, actor=actor
     )
+    await harness.service.claim_message_send(
+        harness.tenant, attempt.attempt_id, actor=actor
+    )
     harness.trace.calls.clear()
     await harness.service.record_sent(
         harness.tenant, attempt.attempt_id, "provider_ref_1", actor=actor
@@ -857,6 +863,9 @@ async def test_record_sent_advances_then_completes_and_emits_once() -> None:
     actor = _system(harness, enrollment.enrollment_id)
     first = await harness.service.prepare_message_attempt(
         harness.tenant, enrollment.enrollment_id, actor=actor
+    )
+    await harness.service.claim_message_send(
+        harness.tenant, first.attempt_id, actor=actor
     )
     sent = await harness.service.record_sent(
         harness.tenant, first.attempt_id, "provider_ref_1", actor=actor
@@ -882,6 +891,9 @@ async def test_record_sent_advances_then_completes_and_emits_once() -> None:
     second = await harness.service.prepare_message_attempt(
         harness.tenant, enrollment.enrollment_id, actor=actor
     )
+    await harness.service.claim_message_send(
+        harness.tenant, second.attempt_id, actor=actor
+    )
     await harness.service.record_sent(
         harness.tenant, second.attempt_id, "provider_ref_2", actor=actor
     )
@@ -900,6 +912,9 @@ async def test_record_failure_keeps_transient_retryable_and_stops_unavailable_id
     actor = _system(transient, enrollment.enrollment_id)
     attempt = await transient.service.prepare_message_attempt(
         transient.tenant, enrollment.enrollment_id, actor=actor
+    )
+    await transient.service.claim_message_send(
+        transient.tenant, attempt.attempt_id, actor=actor
     )
     failed = await transient.service.record_send_failure(
         transient.tenant,
@@ -923,6 +938,9 @@ async def test_record_failure_keeps_transient_retryable_and_stops_unavailable_id
     actor = _system(permanent, enrollment.enrollment_id)
     attempt = await permanent.service.prepare_message_attempt(
         permanent.tenant, enrollment.enrollment_id, actor=actor
+    )
+    await permanent.service.claim_message_send(
+        permanent.tenant, attempt.attempt_id, actor=actor
     )
     failed = await permanent.service.record_send_failure(
         permanent.tenant,

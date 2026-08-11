@@ -14,6 +14,7 @@ from domains.outreach.schemas import (
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
+    MessageSendPreflight,
     ReplyStatusSnapshot,
     SendingIdentityEligibilitySnapshot,
     SuppressionRequest,
@@ -163,6 +164,22 @@ class OutreachService(Protocol):
         self,
         tenant_id: TenantId,
         enrollment_id: EnrollmentId,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView: ...
+
+    async def preflight_message_send(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        *,
+        actor: Actor,
+    ) -> MessageSendPreflight: ...
+
+    async def claim_message_send(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
         *,
         actor: Actor,
     ) -> MessageAttemptView: ...

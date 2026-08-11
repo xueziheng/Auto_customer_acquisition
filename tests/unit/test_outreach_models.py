@@ -103,8 +103,9 @@ def test_enrollment_transition_table_is_closed() -> None:
 
 
 _ATTEMPT_TRANSITIONS = {
-    "reserved": {"sent", "failed_transient", "failed_permanent"},
-    "failed_transient": {"sent", "failed_transient", "failed_permanent"},
+    "reserved": {"sending"},
+    "sending": {"sent", "failed_transient", "failed_permanent"},
+    "failed_transient": {"sending", "failed_transient", "failed_permanent"},
     "sent": set(),
     "failed_permanent": set(),
 }
@@ -261,6 +262,7 @@ def _attempt(**changes: object) -> object:
         "state": models.MessageAttemptState.RESERVED,
         "provider_ref": None,
         "failure_category": None,
+        "send_claimed_at": None,
         "created_at": NOW,
         "updated_at": NOW,
     }
@@ -274,7 +276,9 @@ def test_attempt_state_requires_matching_provider_and_failure_fields() -> None:
     _attempt(
         state=models.MessageAttemptState.SENT,
         provider_ref="provider_ref_1",
+        send_claimed_at=NOW,
     )
+    _attempt(state=models.MessageAttemptState.SENDING, send_claimed_at=NOW)
     _attempt(
         state=models.MessageAttemptState.FAILED_TRANSIENT,
         failure_category=models.SendFailureCategory.PROVIDER_TRANSIENT,
@@ -286,6 +290,35 @@ def test_attempt_state_requires_matching_provider_and_failure_fields() -> None:
             state=models.MessageAttemptState.RESERVED,
             failure_category=models.SendFailureCategory.PROVIDER_TRANSIENT,
         )
+    with pytest.raises(ValidationError):
+        _attempt(state=models.MessageAttemptState.SENDING, send_claimed_at=None)
+    with pytest.raises(ValidationError):
+        _attempt(state=models.MessageAttemptState.RESERVED, send_claimed_at=NOW)
+
+
+@pytest.mark.parametrize(
+    ("category", "expected_state"),
+    [
+        ("rate_limited", "failed_transient"),
+        ("provider_transient", "failed_transient"),
+        ("provider_auth_required", "failed_transient"),
+        ("provider_permanent", "failed_permanent"),
+        ("identity_unavailable", "failed_permanent"),
+    ],
+)
+def test_attempt_failure_vocabulary_maps_to_closed_state_categories(
+    category: str, expected_state: str
+) -> None:
+    """Gateway typed failure 不得被压缩成 provider transient/identity unavailable 两类。"""
+    models = _models()
+    typed = models.SendFailureCategory(category)
+    attempt = _attempt(state=models.MessageAttemptState.SENDING, send_claimed_at=NOW)
+    attempt.transition_to(
+        models.MessageAttemptState(expected_state),
+        at=NOW,
+        failure_category=typed,
+    )
+    assert attempt.failure_category is typed
 
 
 def test_daily_quota_usage_rejects_bool_negative_and_naive_date_shapes() -> None:

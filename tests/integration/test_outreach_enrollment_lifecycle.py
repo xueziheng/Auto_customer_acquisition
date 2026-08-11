@@ -239,6 +239,7 @@ async def test_enrollment_attempt_and_two_step_completion_are_durable(
         "system",
     )
     first = await service.prepare_message_attempt(tenant, enrollment.enrollment_id, actor=system)
+    await service.claim_message_send(tenant, first.attempt_id, actor=system)
     await service.record_sent(tenant, first.attempt_id, "provider_ref_1", actor=system)
 
     rows = importlib.import_module("infra.db.tables")
@@ -267,6 +268,7 @@ async def test_enrollment_attempt_and_two_step_completion_are_durable(
     clock.value = NOW + timedelta(days=2)
     second = await service.prepare_message_attempt(tenant, enrollment.enrollment_id, actor=system)
     assert second.step_number == 2
+    await service.claim_message_send(tenant, second.attempt_id, actor=system)
     await service.record_sent(tenant, second.attempt_id, "provider_ref_2", actor=system)
     retry = await service.enroll(
         tenant,

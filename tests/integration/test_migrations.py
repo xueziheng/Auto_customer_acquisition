@@ -2025,3 +2025,94 @@ async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
         )
     finally:
         await engine.dispose()
+
+
+async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -> None:
+    """0011 的 claim 证据可往返，非法状态组合由真实 PostgreSQL 拒绝。"""
+    import importlib
+
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            before_columns = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_columns(
+                        "outreach_message_attempts"
+                    )
+                }
+            )
+            before_checks = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"]): str(item["sqltext"])
+                    for item in inspect(sync).get_check_constraints(
+                        "outreach_message_attempts"
+                    )
+                }
+            )
+        assert "send_claimed_at" in before_columns
+        state_check = before_checks["ck_outreach_attempt_state_fields"]
+        for value in (
+            "sending",
+            "rate_limited",
+            "provider_auth_required",
+            "provider_permanent",
+        ):
+            assert value in state_check
+
+        _run_alembic(db_url, "downgrade", "0010")
+        async with engine.connect() as conn:
+            downgraded = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_columns(
+                        "outreach_message_attempts"
+                    )
+                }
+            )
+        assert "send_claimed_at" not in downgraded
+        _run_alembic(db_url, "upgrade", "0011")
+
+        helper = importlib.import_module("tests.integration.test_outreach_send_claim")
+        seeded_engine, _service, _actor, attempt, _audit = await helper._ready(
+            db_url, suffix="migration-guard"
+        )
+        await seeded_engine.dispose()
+        params = {
+            "tenant": str(attempt.tenant_id),
+            "attempt": str(attempt.attempt_id),
+            "now": datetime(2026, 8, 11, 5, tzinfo=UTC),
+        }
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "UPDATE outreach_message_attempts SET state='sending' "
+                "WHERE tenant_id=:tenant AND attempt_id=:attempt"
+            ),
+            params,
+            "SENDING 缺 send_claimed_at 必须被拒绝",
+        )
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE outreach_message_attempts SET state='sending', "
+                    "send_claimed_at=:now WHERE tenant_id=:tenant "
+                    "AND attempt_id=:attempt"
+                ),
+                params,
+            )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "UPDATE outreach_message_attempts SET state='failed_transient', "
+                "failure_category='provider_permanent' "
+                "WHERE tenant_id=:tenant AND attempt_id=:attempt"
+            ),
+            params,
+            "临时失败不得携带永久类别",
+        )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()

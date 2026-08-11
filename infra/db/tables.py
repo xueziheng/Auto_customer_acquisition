@@ -837,12 +837,16 @@ class OutreachMessageAttemptRow(Base):
         ),
         CheckConstraint("step_number BETWEEN 1 AND 5", name="ck_outreach_attempt_step"),
         CheckConstraint(
-            "(state='reserved' AND provider_ref IS NULL AND failure_category IS NULL) OR "
+            "(state='reserved' AND provider_ref IS NULL AND failure_category IS NULL "
+            "AND send_claimed_at IS NULL) OR "
+            "(state='sending' AND provider_ref IS NULL AND failure_category IS NULL "
+            "AND send_claimed_at IS NOT NULL) OR "
             "(state='sent' AND provider_ref IS NOT NULL AND failure_category IS NULL) OR "
             "(state='failed_transient' AND provider_ref IS NULL AND "
-            "failure_category='provider_transient') OR "
+            "failure_category IN ('rate_limited','provider_transient',"
+            "'provider_auth_required')) OR "
             "(state='failed_permanent' AND provider_ref IS NULL AND "
-            "failure_category='identity_unavailable')",
+            "failure_category IN ('provider_permanent','identity_unavailable'))",
             name="ck_outreach_attempt_state_fields",
         ),
         Index(
@@ -868,6 +872,7 @@ class OutreachMessageAttemptRow(Base):
     failure_category: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    send_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OutreachActionRow(Base):

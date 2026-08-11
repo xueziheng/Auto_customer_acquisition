@@ -173,6 +173,9 @@ def test_tool_call_context_defensively_copies_ephemeral_params() -> None:
     )
     params["subject"] = "changed"
     assert context.params["subject"] == "original"
+    rendered = repr(context)
+    assert "original" not in rendered
+    assert "body" not in rendered
 
 
 @pytest.mark.parametrize(

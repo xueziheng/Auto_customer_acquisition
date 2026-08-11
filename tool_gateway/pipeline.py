@@ -7,15 +7,28 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
-from shared.errors import ValidationError
+from shared.errors import (
+    PermissionDenied,
+    PolicyViolation,
+    TradeOSError,
+    TransientError,
+    ValidationError,
+)
 from shared.schemas.identifiers import IdempotencyKey, RunId, TenantId, UserId
 
-from .errors import ToolCallStatus, ToolErrorCategory
+from .errors import ToolCallStatus, ToolErrorCategory, ToolGatewayError
+from .repository import (
+    ToolCallEventRecord,
+    ToolCallId,
+    ToolCallRecord,
+    ToolGatewayUnitOfWorkFactory,
+)
 
 type SafeScalar = str | int | bool | None
 _LABEL_RE = re.compile(r"[a-z][a-z0-9_.:-]{0,99}")
@@ -58,7 +71,6 @@ _TRANSIENT_RESULT_CATEGORIES = frozenset(
     {
         ToolErrorCategory.IN_PROGRESS,
         ToolErrorCategory.RATE_LIMITED,
-        ToolErrorCategory.PROVIDER_AUTH_REQUIRED,
         ToolErrorCategory.PROVIDER_TRANSIENT,
         ToolErrorCategory.RECONCILIATION_REQUIRED,
     }
@@ -85,7 +97,7 @@ class ToolCallContext:
     tenant_id: TenantId
     user_id: UserId
     tool_id: str
-    params: Mapping[str, Any]
+    params: Mapping[str, Any] = field(repr=False)
     run_id: RunId | None = None
     idempotency_key: IdempotencyKey | None = None
     approval_ref: str | None = None
@@ -246,7 +258,43 @@ class CheckStage(Protocol):
 
     name: str
 
-    async def check(self, ctx: ToolCallContext) -> CheckRejection | None: ...
+    async def check(
+        self, ctx: ToolCallContext, state: ToolInvocationState
+    ) -> CheckRejection | None: ...
+
+
+class _ManifestValue(Protocol):
+    value: str
+
+
+class _GatewayManifest(Protocol):
+    tool_id: str
+    version: str
+    risk_level: _ManifestValue
+    cost_class: _ManifestValue
+    checks: tuple[str, ...]
+
+
+class _GatewayHandler(Protocol):
+    async def prepare(self, ctx: ToolCallContext) -> PreparedToolCall: ...
+
+    async def execute(
+        self, tenant_id: TenantId, prepared: PreparedToolCall
+    ) -> Mapping[str, SafeScalar]: ...
+
+
+class _GatewayRegistry(Protocol):
+    def get(self, tool_id: str) -> tuple[_GatewayManifest, _GatewayHandler]: ...
+
+
+@dataclass
+class ToolInvocationState:
+    """单次进程内调用状态；payload/preflight 永不持久化。"""
+
+    manifest: _GatewayManifest
+    tool_call_id: str
+    prepared: PreparedToolCall | None = None
+    preflight: object | None = None
 
 
 STAGE_ORDER: tuple[str, ...] = (
@@ -272,6 +320,37 @@ STAGE_ORDER: tuple[str, ...] = (
 class ToolGateway:
     """网关入口。"""
 
+    def __init__(
+        self,
+        registry: _GatewayRegistry,
+        checks: Mapping[str, CheckStage],
+        ledger_uow_factory: ToolGatewayUnitOfWorkFactory,
+        *,
+        lease_duration: timedelta,
+        lease_owner: str,
+        now: Callable[[], datetime] | None = None,
+        id_factory: Callable[[str], str],
+    ) -> None:
+        if not isinstance(checks, Mapping):
+            raise ValidationError("Gateway checks 无效")
+        ordered = tuple(checks)
+        if tuple(stage for stage in STAGE_ORDER if stage in checks) != ordered:
+            raise ValidationError("Gateway checks 顺序无效")
+        if (
+            not isinstance(lease_duration, timedelta)
+            or lease_duration <= timedelta(0)
+            or lease_duration > timedelta(days=1)
+        ):
+            raise ValidationError("Gateway lease duration 无效")
+        _require_label(lease_owner, "lease owner")
+        self._registry = registry
+        self._checks = MappingProxyType(dict(checks))
+        self._uow_factory = ledger_uow_factory
+        self._lease_duration = lease_duration
+        self._lease_owner = lease_owner
+        self._now = now or (lambda: datetime.now(UTC))
+        self._id_factory = id_factory
+
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult:
         """执行一次工具调用。
 
@@ -285,7 +364,433 @@ class ToolGateway:
            让整个调用失败——审计不完整时继续发客户邮件是合规裸奔
         6. 记录成本（Phase 1 只记录，Phase 3 接结算）
         """
-        raise NotImplementedError
+        from tool_gateway.repository import ClaimStatus
+
+        manifest, handler = self._registry.get(ctx.tool_id)
+        now = self._require_now(self._now())
+        call_id = ToolCallId(self._id_factory("tcl"))
+        attempt_id = ctx.params.get("attempt_id")
+        safe_attempt_id = attempt_id if isinstance(attempt_id, str) else None
+        state = ToolInvocationState(manifest=manifest, tool_call_id=call_id)
+        canonical_claimed = False
+        received = ToolCallRecord(
+            tenant_id=ctx.tenant_id,
+            tool_call_id=call_id,
+            tool_id=manifest.tool_id,
+            tool_version=manifest.version,
+            risk_level=manifest.risk_level.value,
+            cost_class=manifest.cost_class.value,
+            idempotency_key=None,
+            request_fingerprint=None,
+            fingerprint_version=None,
+            status=ToolCallStatus.RECEIVED,
+            duplicate_of=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            attempt_count=0,
+            run_id=ctx.run_id,
+            user_id=ctx.user_id,
+            campaign_id=ctx.campaign_ref,
+            message_attempt_id=safe_attempt_id,
+            provider_ref=None,
+            error_category=None,
+            retry_after_at=None,
+            created_at=now,
+            updated_at=now,
+            completed_at=None,
+        )
+        async with self._uow_factory(ctx.tenant_id) as uow:
+            await uow.calls.create_received(received)
+            await uow.calls.append_event(
+                self._event(ctx, call_id, "ledger", "received", None, None)
+            )
+
+        for stage_name in manifest.checks:
+            if stage_name == "idempotency" and state.prepared is None:
+                try:
+                    state.prepared = await handler.prepare(ctx)
+                except TradeOSError as error:
+                    return await self._fail_typed(
+                        ctx,
+                        call_id,
+                        self._translate_error(error),
+                        canonical=False,
+                        stage="handler.prepare",
+                    )
+            stage = self._checks.get(stage_name)
+            if stage is None:
+                return await self._reject(
+                    ctx,
+                    call_id,
+                    CheckRejection(
+                        stage_name,
+                        "stage:unconfigured",
+                        "工具检查阶段未配置",
+                    ),
+                )
+            try:
+                rejection = await stage.check(ctx, state)
+            except ToolGatewayError as error:
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    error,
+                    canonical=canonical_claimed,
+                    stage=stage.name,
+                )
+            if rejection is not None:
+                return await self._reject(ctx, call_id, rejection)
+            if stage_name != "idempotency":
+                await self._append_event(
+                    ctx, call_id, stage.name, "allowed", None, None
+                )
+            if stage_name == "idempotency":
+                if ctx.idempotency_key is None or state.prepared is None:
+                    return await self._reject(
+                        ctx,
+                        call_id,
+                        CheckRejection(
+                            "idempotency",
+                            "idempotency:required",
+                            "工具调用缺少幂等键",
+                        ),
+                    )
+                async with self._uow_factory(ctx.tenant_id) as uow:
+                    claimed = await uow.calls.claim(
+                        ctx.tenant_id,
+                        call_id,
+                        tool_id=manifest.tool_id,
+                        idempotency_key=ctx.idempotency_key,
+                        request_fingerprint=state.prepared.request_fingerprint,
+                        fingerprint_version=state.prepared.fingerprint_version,
+                        lease_owner=self._lease_owner,
+                        lease_expires_at=now + self._lease_duration,
+                    )
+                if claimed.status is ClaimStatus.DUPLICATE:
+                    await self._append_event(
+                        ctx,
+                        call_id,
+                        "idempotency",
+                        "duplicate",
+                        "idempotency:canonical",
+                        None,
+                    )
+                    if claimed.canonical.status is ToolCallStatus.FAILED_PERMANENT:
+                        return ToolCallResult(
+                            tool_id=ctx.tool_id,
+                            status=ToolCallStatus.FAILED_PERMANENT,
+                            tool_call_id=str(claimed.canonical.tool_call_id),
+                            error_category=claimed.canonical.error_category,
+                        )
+                    output = {
+                        "provider_ref": claimed.canonical.provider_ref,
+                        "duplicate": True,
+                    }
+                    return ToolCallResult(
+                        tool_id=ctx.tool_id,
+                        status=ToolCallStatus.DUPLICATE,
+                        output=output,
+                        duplicate_of=str(claimed.canonical.tool_call_id),
+                        tool_call_id=str(claimed.canonical.tool_call_id),
+                    )
+                if claimed.status is ClaimStatus.CONFLICT:
+                    await self._append_event(
+                        ctx,
+                        call_id,
+                        "idempotency",
+                        "rejected",
+                        "idempotency:conflict",
+                        ToolErrorCategory.IDEMPOTENCY_CONFLICT,
+                    )
+                    return ToolCallResult(
+                        tool_id=ctx.tool_id,
+                        status=ToolCallStatus.REJECTED,
+                        rejected=CheckRejection(
+                            "idempotency",
+                            "idempotency:conflict",
+                            "幂等键已绑定不同请求",
+                        ),
+                        tool_call_id=str(call_id),
+                        error_category=ToolErrorCategory.IDEMPOTENCY_CONFLICT,
+                    )
+                if claimed.status is ClaimStatus.IN_PROGRESS:
+                    category = (
+                        ToolErrorCategory.RECONCILIATION_REQUIRED
+                        if claimed.canonical.status is ToolCallStatus.EXECUTING
+                        else ToolErrorCategory.IN_PROGRESS
+                    )
+                    await self._append_event(
+                        ctx,
+                        call_id,
+                        "idempotency",
+                        "in_progress",
+                        "idempotency:leased",
+                        category,
+                    )
+                    return ToolCallResult(
+                        tool_id=ctx.tool_id,
+                        status=ToolCallStatus.FAILED_TRANSIENT,
+                        tool_call_id=str(claimed.canonical.tool_call_id),
+                        error_category=category,
+                    )
+                call_id = claimed.canonical.tool_call_id
+                state.tool_call_id = str(call_id)
+                canonical_claimed = True
+                await self._append_event(
+                    ctx,
+                    call_id,
+                    "idempotency",
+                    "claimed",
+                    "idempotency:canonical",
+                    None,
+                )
+
+        if state.prepared is None:
+            try:
+                state.prepared = await handler.prepare(ctx)
+            except TradeOSError as error:
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    self._translate_error(error),
+                    canonical=canonical_claimed,
+                    stage="handler.prepare",
+                )
+        async with self._uow_factory(ctx.tenant_id) as uow:
+            await uow.calls.mark_executing(ctx.tenant_id, call_id)
+            await uow.calls.append_event(
+                self._event(ctx, call_id, "ledger", "executing", None, None)
+            )
+        try:
+            handler_output = await handler.execute(ctx.tenant_id, state.prepared)
+        except ToolGatewayError as error:
+            return await self._fail_typed(
+                ctx, call_id, error, canonical=True, stage="connector"
+            )
+        except TradeOSError as error:
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                self._translate_error(error),
+                canonical=True,
+                stage="connector",
+            )
+        safe_result = ToolCallResult(
+            tool_id=ctx.tool_id,
+            status=ToolCallStatus.SUCCEEDED,
+            output=handler_output,
+            tool_call_id=str(call_id),
+            cost_note=manifest.cost_class.value,
+        )
+        provider_ref = None if safe_result.output is None else safe_result.output.get(
+            "provider_ref"
+        )
+        if not isinstance(provider_ref, str):
+            raise ValidationError("成功工具结果缺少 provider_ref")
+        rate_stage = self._checks.get("rate_limit")
+        record_sent = getattr(rate_stage, "record_sent", None)
+        if record_sent is not None:
+            try:
+                await record_sent(ctx, state, provider_ref)
+            except Exception:  # noqa: BLE001 -- provider 已成功，任何本地失败都须转人工对账
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED),
+                    canonical=True,
+                    stage="outreach.complete",
+                )
+        try:
+            async with self._uow_factory(ctx.tenant_id) as uow:
+                await uow.calls.complete(
+                    ctx.tenant_id,
+                    call_id,
+                    status=ToolCallStatus.SUCCEEDED,
+                    provider_ref=provider_ref,
+                    error_category=None,
+                    retry_after_at=None,
+                )
+                await uow.calls.append_event(
+                    self._event(ctx, call_id, "ledger", "succeeded", None, None)
+                )
+        except Exception:  # noqa: BLE001 -- connector 已成功，账本完结失败必须进入对账
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED),
+                canonical=True,
+                stage="ledger.complete",
+            )
+        return safe_result
+
+    async def _fail_typed(
+        self,
+        ctx: ToolCallContext,
+        call_id: ToolCallId,
+        error: ToolGatewayError,
+        *,
+        canonical: bool,
+        stage: str = "runtime",
+    ) -> ToolCallResult:
+        if not canonical:
+            return await self._reject(
+                ctx,
+                call_id,
+                CheckRejection(
+                    "runtime",
+                    f"runtime:{error.category.value}",
+                    "工具调用当前不可继续",
+                ),
+                category_override=error.category,
+            )
+        status = (
+            ToolCallStatus.FAILED_TRANSIENT
+            if error.is_retryable
+            else ToolCallStatus.FAILED_PERMANENT
+        )
+        retry_at = (
+            self._require_now(self._now())
+            + timedelta(seconds=error.retry_after_seconds)
+            if error.retry_after_seconds is not None
+            else None
+        )
+        async with self._uow_factory(ctx.tenant_id) as uow:
+            await uow.calls.complete(
+                ctx.tenant_id,
+                call_id,
+                status=status,
+                provider_ref=None,
+                error_category=error.category,
+                retry_after_at=retry_at,
+            )
+            await uow.calls.append_event(
+                self._event(
+                    ctx,
+                    call_id,
+                    stage,
+                    "failed",
+                    None,
+                    error.category,
+                )
+            )
+        return ToolCallResult(
+            tool_id=ctx.tool_id,
+            status=status,
+            tool_call_id=str(call_id),
+            error_category=error.category,
+            retry_after_seconds=error.retry_after_seconds,
+        )
+
+    async def _reject(
+        self,
+        ctx: ToolCallContext,
+        call_id: ToolCallId,
+        rejection: CheckRejection,
+        *,
+        category_override: ToolErrorCategory | None = None,
+    ) -> ToolCallResult:
+        category = category_override or {
+            "tenant": ToolErrorCategory.PERMISSION_DENIED,
+            "permission": ToolErrorCategory.PERMISSION_DENIED,
+            "suppression": ToolErrorCategory.SUPPRESSED,
+            "suppression.preflight": ToolErrorCategory.SUPPRESSED,
+            "approval": ToolErrorCategory.APPROVAL_REQUIRED,
+            "idempotency": ToolErrorCategory.IDEMPOTENCY_CONFLICT,
+            "rate_limit": ToolErrorCategory.RATE_LIMITED,
+        }.get(rejection.stage, ToolErrorCategory.VALIDATION)
+        async with self._uow_factory(ctx.tenant_id) as uow:
+            await uow.calls.complete(
+                ctx.tenant_id,
+                call_id,
+                status=ToolCallStatus.REJECTED,
+                provider_ref=None,
+                error_category=category,
+                retry_after_at=None,
+            )
+            await uow.calls.append_event(
+                self._event(
+                    ctx,
+                    call_id,
+                    rejection.stage,
+                    "rejected",
+                    rejection.rule,
+                    category,
+                )
+            )
+        return ToolCallResult(
+            tool_id=ctx.tool_id,
+            status=ToolCallStatus.REJECTED,
+            rejected=rejection,
+            tool_call_id=str(call_id),
+            error_category=category,
+        )
+
+    @staticmethod
+    def _translate_error(error: TradeOSError) -> ToolGatewayError:
+        if isinstance(error, ToolGatewayError):
+            return error
+        if isinstance(error, PermissionDenied):
+            category = ToolErrorCategory.PERMISSION_DENIED
+        elif isinstance(error, ValidationError):
+            category = ToolErrorCategory.VALIDATION
+        elif isinstance(error, TransientError):
+            category = ToolErrorCategory.PROVIDER_TRANSIENT
+        elif isinstance(error, PolicyViolation):
+            category = ToolErrorCategory.PROVIDER_PERMANENT
+        else:
+            category = ToolErrorCategory.UNEXPECTED
+        return ToolGatewayError(category)
+
+    async def _append_event(
+        self,
+        ctx: ToolCallContext,
+        call_id: ToolCallId,
+        stage: str,
+        outcome: str,
+        rule: str | None,
+        category: ToolErrorCategory | None,
+    ) -> None:
+        async with self._uow_factory(ctx.tenant_id) as uow:
+            await uow.calls.append_event(
+                self._event(ctx, call_id, stage, outcome, rule, category)
+            )
+
+    def _event(
+        self,
+        ctx: ToolCallContext,
+        call_id: ToolCallId,
+        stage: str,
+        outcome: str,
+        rule: str | None,
+        category: ToolErrorCategory | None,
+    ) -> ToolCallEventRecord:
+        attempt_id = ctx.params.get("attempt_id")
+        return ToolCallEventRecord(
+            tenant_id=ctx.tenant_id,
+            event_id=self._id_factory("tce"),
+            tool_call_id=ToolCallId(call_id),
+            stage=stage,
+            outcome=outcome,
+            rule=rule,
+            category=category,
+            actor_id=str(ctx.user_id),
+            run_id=str(ctx.run_id) if ctx.run_id else None,
+            campaign_id=ctx.campaign_ref,
+            message_attempt_id=attempt_id if isinstance(attempt_id, str) else None,
+            occurred_at=self._require_now(self._now()),
+            duration_ms=0,
+            cost_note=None,
+        )
+
+    @staticmethod
+    def _require_now(value: object) -> datetime:
+        if (
+            not isinstance(value, datetime)
+            or value.tzinfo is None
+            or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValidationError("Gateway clock 必须返回 UTC aware datetime")
+        return value
 
 
 def _require_safe_text(value: object, field_name: str, *, max_length: int) -> str:

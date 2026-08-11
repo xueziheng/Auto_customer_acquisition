@@ -143,13 +143,17 @@ class SuppressionReason(str, Enum):
 
 class MessageAttemptState(str, Enum):
     RESERVED = "reserved"
+    SENDING = "sending"
     SENT = "sent"
     FAILED_TRANSIENT = "failed_transient"
     FAILED_PERMANENT = "failed_permanent"
 
 
 class SendFailureCategory(str, Enum):
+    RATE_LIMITED = "rate_limited"
     PROVIDER_TRANSIENT = "provider_transient"
+    PROVIDER_AUTH_REQUIRED = "provider_auth_required"
+    PROVIDER_PERMANENT = "provider_permanent"
     IDENTITY_UNAVAILABLE = "identity_unavailable"
 
 
@@ -203,7 +207,8 @@ _ENROLLMENT_TRANSITIONS: dict[EnrollmentState, frozenset[EnrollmentState]] = {
 
 
 _ATTEMPT_TRANSITIONS: dict[MessageAttemptState, frozenset[MessageAttemptState]] = {
-    MessageAttemptState.RESERVED: frozenset(
+    MessageAttemptState.RESERVED: frozenset({MessageAttemptState.SENDING}),
+    MessageAttemptState.SENDING: frozenset(
         {
             MessageAttemptState.SENT,
             MessageAttemptState.FAILED_TRANSIENT,
@@ -212,7 +217,7 @@ _ATTEMPT_TRANSITIONS: dict[MessageAttemptState, frozenset[MessageAttemptState]] 
     ),
     MessageAttemptState.FAILED_TRANSIENT: frozenset(
         {
-            MessageAttemptState.SENT,
+            MessageAttemptState.SENDING,
             MessageAttemptState.FAILED_TRANSIENT,
             MessageAttemptState.FAILED_PERMANENT,
         }
@@ -532,6 +537,7 @@ class MessageAttempt:
     failure_category: SendFailureCategory | None
     created_at: datetime
     updated_at: datetime
+    send_claimed_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for value, prefix, field in (
@@ -548,8 +554,20 @@ class MessageAttempt:
             raise ValidationError("step_number 无效")
         _require_utc(self.created_at, "created_at")
         _require_utc(self.updated_at, "updated_at")
+        if self.send_claimed_at is not None:
+            _require_utc(self.send_claimed_at, "send_claimed_at")
         if self.state is MessageAttemptState.RESERVED:
-            valid = self.provider_ref is None and self.failure_category is None
+            valid = (
+                self.provider_ref is None
+                and self.failure_category is None
+                and self.send_claimed_at is None
+            )
+        elif self.state is MessageAttemptState.SENDING:
+            valid = (
+                self.provider_ref is None
+                and self.failure_category is None
+                and self.send_claimed_at is not None
+            )
         elif self.state is MessageAttemptState.SENT:
             valid = (
                 isinstance(self.provider_ref, str)
@@ -559,12 +577,21 @@ class MessageAttempt:
         elif self.state is MessageAttemptState.FAILED_TRANSIENT:
             valid = (
                 self.provider_ref is None
-                and self.failure_category is SendFailureCategory.PROVIDER_TRANSIENT
+                and self.failure_category
+                in {
+                    SendFailureCategory.RATE_LIMITED,
+                    SendFailureCategory.PROVIDER_TRANSIENT,
+                    SendFailureCategory.PROVIDER_AUTH_REQUIRED,
+                }
             )
         else:
             valid = (
                 self.provider_ref is None
-                and self.failure_category is SendFailureCategory.IDENTITY_UNAVAILABLE
+                and self.failure_category
+                in {
+                    SendFailureCategory.PROVIDER_PERMANENT,
+                    SendFailureCategory.IDENTITY_UNAVAILABLE,
+                }
             )
         if not valid:
             raise ValidationError("Message Attempt 状态字段不匹配")
@@ -580,6 +607,8 @@ class MessageAttempt:
         validate_message_attempt_transition(self.state, target)
         _require_utc(at, "transition time")
         self.state = target
+        if target is MessageAttemptState.SENDING:
+            self.send_claimed_at = at
         self.provider_ref = provider_ref
         self.failure_category = failure_category
         self.updated_at = at

@@ -9,11 +9,34 @@ ABAC：参数引用的业务对象是否在用户范围内（国家、归属客�
 
 from __future__ import annotations
 
-from tool_gateway.pipeline import CheckRejection, ToolCallContext
+from collections.abc import Awaitable, Callable
+
+from shared.errors import PermissionDenied
+from tool_gateway.pipeline import CheckRejection, ToolCallContext, ToolInvocationState
 
 
 class PermissionCheck:
     name = "permission"
 
-    async def check(self, ctx: ToolCallContext) -> CheckRejection | None:
-        raise NotImplementedError
+    def __init__(
+        self,
+        authorize: Callable[
+            [ToolCallContext, ToolInvocationState], Awaitable[bool]
+        ],
+    ) -> None:
+        self._authorize = authorize
+
+    async def check(
+        self, ctx: ToolCallContext, state: ToolInvocationState
+    ) -> CheckRejection | None:
+        try:
+            allowed = await self._authorize(ctx, state)
+        except PermissionDenied:
+            allowed = False
+        if allowed is not True:
+            return CheckRejection(
+                self.name,
+                "permission:denied",
+                "当前操作者无权执行此工具",
+            )
+        return None

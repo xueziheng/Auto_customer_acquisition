@@ -11,11 +11,19 @@
 
 from __future__ import annotations
 
-from tool_gateway.pipeline import CheckRejection, ToolCallContext
+from tool_gateway.pipeline import CheckRejection, ToolCallContext, ToolInvocationState
 
 
 class IdempotencyCheck:
     name = "idempotency"
 
-    async def check(self, ctx: ToolCallContext) -> CheckRejection | None:
-        raise NotImplementedError
+    async def check(
+        self, ctx: ToolCallContext, state: ToolInvocationState
+    ) -> CheckRejection | None:
+        if ctx.idempotency_key is None or state.prepared is None:
+            return CheckRejection(
+                self.name,
+                "idempotency:required",
+                "工具调用缺少稳定幂等证据",
+            )
+        return None

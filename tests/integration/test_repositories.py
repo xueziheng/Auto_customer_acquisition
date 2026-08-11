@@ -772,6 +772,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "attempt_id", "message_id", "campaign_id", "enrollment_id",
             "campaign_version", "step_number", "sending_identity_id", "idempotency_key",
             "state", "provider_ref", "failure_category", "created_at", "updated_at",
+            "send_claimed_at",
         },
         "outreach_actions": {
             "tenant_id", "action_id", "action_key", "action", "entity_id", "actor_id",

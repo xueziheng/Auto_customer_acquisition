@@ -507,6 +507,46 @@ class MessageAttemptView:
     failure_category: SendFailureCategory | None
     created_at: datetime
     updated_at: datetime
+    send_claimed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class MessageSendPreflight:
+    """Gateway 发送检查所需的最小安全资源绑定。"""
+
+    tenant_id: TenantId
+    attempt_id: MessageAttemptId
+    campaign_id: CampaignId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    sending_identity_id: SendingIdentityId
+    campaign_version: int
+    step_number: int
+    idempotency_key: IdempotencyKey
+
+    def __post_init__(self) -> None:
+        for value, field, prefix in (
+            (self.tenant_id, "tenant_id", "tn"),
+            (self.attempt_id, "attempt_id", "mat"),
+            (self.campaign_id, "campaign_id", "cmp"),
+            (self.enrollment_id, "enrollment_id", "enr"),
+            (self.account_id, "account_id", "acc"),
+            (self.contact_point_id, "contact_point_id", "cp"),
+            (self.sending_identity_id, "sending_identity_id", "sid"),
+        ):
+            _require_safe_id(value, field, prefix=prefix)
+        for numeric_value, field in (
+            (self.campaign_version, "campaign_version"),
+            (self.step_number, "step_number"),
+        ):
+            if (
+                not isinstance(numeric_value, int)
+                or isinstance(numeric_value, bool)
+                or numeric_value < 1
+            ):
+                raise ValidationError(f"{field} 无效")
+        _require_safe_text(self.idempotency_key, "idempotency_key", max_length=200)
 
 
 @dataclass(frozen=True)
