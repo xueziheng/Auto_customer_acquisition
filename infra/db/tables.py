@@ -1,11 +1,10 @@
-"""声明式 ORM 映射（业务表列与 0002 迁移逐列一致；0005 为 outbox 扩展）。
+"""声明式 ORM 映射（业务表列、约束与当前 Alembic head 逐项一致）。
 
 schema 由 Alembic 迁移管理——``Base.metadata.create_all`` 不是迁移的平行真相，
 本模块只提供查询用的映射。列、约束、索引、FK 与迁移逐列一致，
 金额 ``Numeric(18,2)`` + ``CHAR(3)`` 成对（硬边界 2）。触发器由数据库持有，
 ORM 不表达触发器、也不绕过其只增语义。``outbox_events`` 的
-``next_attempt_at``/``last_error`` 与 ``outbox_deliveries`` 由 0005 落地
-（0005 自管 guard，不修改 0002）。
+触发器只由数据库迁移持有；ORM 只表达可静态核对的列、索引、外键与 CHECK。
 """
 
 from __future__ import annotations
@@ -35,6 +34,235 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """声明式基类（schema 归迁移管理）。"""
+
+
+class ToolCallRow(Base):
+    """``tool_calls`` durable invocation 与 canonical claim 行。"""
+
+    __tablename__ = "tool_calls"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "tool_call_id", name="pk_tool_calls"),
+        UniqueConstraint(
+            "tenant_id", "tool_call_id", name="uq_tool_calls_tenant_call"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "duplicate_of"],
+            ["tool_calls.tenant_id", "tool_calls.tool_call_id"],
+            deferrable=True,
+            initially="DEFERRED",
+            name="fk_tool_calls_duplicate",
+        ),
+        CheckConstraint(
+            "status IN ('received','claimed','executing','succeeded','rejected',"
+            "'duplicate','failed_transient','failed_permanent')",
+            name="ck_tool_calls_status",
+        ),
+        CheckConstraint(
+            "risk_level IN ('low','medium','high')", name="ck_tool_calls_risk"
+        ),
+        CheckConstraint(
+            "cost_class IN ('free','low','medium','high')", name="ck_tool_calls_cost"
+        ),
+        CheckConstraint(
+            "tool_id ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$' AND "
+            "tool_version ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$' AND "
+            "user_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$' AND "
+            "(idempotency_key IS NULL OR idempotency_key ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$') AND "
+            "(lease_owner IS NULL OR lease_owner ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$') AND "
+            "(run_id IS NULL OR run_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') "
+            "AND (campaign_id IS NULL OR campaign_id ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') AND "
+            "(message_attempt_id IS NULL OR message_attempt_id ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') AND "
+            "lower(tool_version) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)' "
+            "AND (idempotency_key IS NULL OR lower(idempotency_key) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)') "
+            "AND (lease_owner IS NULL OR lower(lease_owner) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)')",
+            name="ck_tool_calls_safe_labels",
+        ),
+        CheckConstraint(
+            "error_category IS NULL OR error_category IN "
+            "('validation','permission_denied','suppressed','approval_required',"
+            "'idempotency_conflict','in_progress','rate_limited',"
+            "'provider_auth_required','provider_permanent','provider_transient',"
+            "'reconciliation_required','unexpected')",
+            name="ck_tool_calls_error_category",
+        ),
+        CheckConstraint(
+            "(request_fingerprint IS NULL AND fingerprint_version IS NULL) OR "
+            "(request_fingerprint ~ '^[0-9a-f]{64}$' AND "
+            "fingerprint_version IS NOT NULL)",
+            name="ck_tool_calls_fingerprint_pair",
+        ),
+        CheckConstraint(
+            "(status IN ('claimed','executing','succeeded','failed_transient',"
+            "'failed_permanent') AND idempotency_key IS NOT NULL AND "
+            "request_fingerprint IS NOT NULL AND fingerprint_version IS NOT NULL) OR "
+            "(status IN ('received','rejected','duplicate') AND "
+            "idempotency_key IS NULL)",
+            name="ck_tool_calls_canonical_fields",
+        ),
+        CheckConstraint(
+            "(status='duplicate' AND duplicate_of IS NOT NULL) OR "
+            "(status<>'duplicate' AND duplicate_of IS NULL)",
+            name="ck_tool_calls_duplicate_fields",
+        ),
+        CheckConstraint(
+            "(status IN ('claimed','executing','failed_transient') AND "
+            "lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) OR "
+            "(status NOT IN ('claimed','executing','failed_transient') AND "
+            "lease_owner IS NULL AND lease_expires_at IS NULL)",
+            name="ck_tool_calls_lease_fields",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND "
+            "((idempotency_key IS NOT NULL AND attempt_count >= 1) OR "
+            "(idempotency_key IS NULL AND attempt_count = 0))",
+            name="ck_tool_calls_attempt_count",
+        ),
+        CheckConstraint(
+            "(status IN ('received','claimed','executing') AND provider_ref IS NULL "
+            "AND error_category IS NULL AND retry_after_at IS NULL AND "
+            "completed_at IS NULL) OR "
+            "(status='succeeded' AND provider_ref IS NOT NULL AND "
+            "error_category IS NULL AND retry_after_at IS NULL AND "
+            "completed_at IS NOT NULL) OR "
+            "(status='rejected' AND provider_ref IS NULL AND "
+            "error_category IS NOT NULL AND retry_after_at IS NULL AND "
+            "completed_at IS NOT NULL) OR "
+            "(status='duplicate' AND provider_ref IS NULL AND "
+            "error_category IS NULL AND retry_after_at IS NULL AND "
+            "completed_at IS NOT NULL) OR "
+            "(status='failed_transient' AND provider_ref IS NULL AND "
+            "error_category IS NOT NULL AND completed_at IS NULL) OR "
+            "(status='failed_permanent' AND provider_ref IS NULL AND "
+            "error_category IS NOT NULL AND retry_after_at IS NULL AND "
+            "completed_at IS NOT NULL)",
+            name="ck_tool_calls_result_fields",
+        ),
+        CheckConstraint(
+            "provider_ref IS NULL OR (char_length(provider_ref) BETWEEN 1 AND 200 "
+            "AND provider_ref=btrim(provider_ref) "
+            "AND provider_ref !~ '[[:space:]]' AND position('@' in provider_ref)=0 "
+            "AND position('://' in provider_ref)=0 "
+            "AND lower(provider_ref) !~ '(bearer|token|secret|password|authorization)')",
+            name="ck_tool_calls_provider_ref",
+        ),
+        Index(
+            "uq_tool_calls_tenant_tool_key",
+            "tenant_id",
+            "tool_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_tool_calls_tenant_status_retry",
+            "tenant_id",
+            "status",
+            "retry_after_at",
+            "updated_at",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    tool_call_id: Mapped[str] = mapped_column(String(32))
+    tool_id: Mapped[str] = mapped_column(String(100))
+    tool_version: Mapped[str] = mapped_column(String(100))
+    risk_level: Mapped[str] = mapped_column(String(16))
+    cost_class: Mapped[str] = mapped_column(String(16))
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    fingerprint_version: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(32))
+    duplicate_of: Mapped[str | None] = mapped_column(String(32))
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer)
+    run_id: Mapped[str | None] = mapped_column(String(32))
+    user_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str | None] = mapped_column(String(32))
+    message_attempt_id: Mapped[str | None] = mapped_column(String(32))
+    provider_ref: Mapped[str | None] = mapped_column(String(200))
+    error_category: Mapped[str | None] = mapped_column(String(32))
+    retry_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ToolCallEventRow(Base):
+    """``tool_call_events`` 只增阶段审计行。"""
+
+    __tablename__ = "tool_call_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "event_id", name="pk_tool_call_events"),
+        ForeignKeyConstraint(
+            ["tenant_id", "tool_call_id"],
+            ["tool_calls.tenant_id", "tool_calls.tool_call_id"],
+            deferrable=True,
+            initially="DEFERRED",
+            name="fk_tool_call_events_call",
+        ),
+        CheckConstraint("duration_ms >= 0", name="ck_tool_call_events_duration"),
+        CheckConstraint(
+            "category IS NULL OR category IN "
+            "('validation','permission_denied','suppressed','approval_required',"
+            "'idempotency_conflict','in_progress','rate_limited',"
+            "'provider_auth_required','provider_permanent','provider_transient',"
+            "'reconciliation_required','unexpected')",
+            name="ck_tool_call_events_category",
+        ),
+        CheckConstraint(
+            "stage ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$' AND "
+            "outcome ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$' AND "
+            "actor_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$' AND "
+            "(rule IS NULL OR rule ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$') "
+            "AND (run_id IS NULL OR run_id ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') AND "
+            "(campaign_id IS NULL OR campaign_id ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') AND "
+            "(message_attempt_id IS NULL OR message_attempt_id ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,31}$') AND "
+            "(cost_note IS NULL OR cost_note ~ "
+            "'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$') AND "
+            "lower(stage) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)' "
+            "AND lower(outcome) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)' "
+            "AND (rule IS NULL OR lower(rule) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)') "
+            "AND (cost_note IS NULL OR lower(cost_note) !~ "
+            "'(^|[_.:-])(bearer|token|secret|password|authorization)([_.:-]|$)')",
+            name="ck_tool_call_events_safe_labels",
+        ),
+        Index(
+            "ix_tool_call_events_tenant_call_occurred",
+            "tenant_id",
+            "tool_call_id",
+            "occurred_at",
+            "event_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    event_id: Mapped[str] = mapped_column(String(32))
+    tool_call_id: Mapped[str] = mapped_column(String(32))
+    stage: Mapped[str] = mapped_column(String(100))
+    outcome: Mapped[str] = mapped_column(String(100))
+    rule: Mapped[str | None] = mapped_column(String(100))
+    category: Mapped[str | None] = mapped_column(String(32))
+    actor_id: Mapped[str] = mapped_column(String(64))
+    run_id: Mapped[str | None] = mapped_column(String(32))
+    campaign_id: Mapped[str | None] = mapped_column(String(32))
+    message_attempt_id: Mapped[str | None] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    cost_note: Mapped[str | None] = mapped_column(String(100))
 
 
 class SendingDomainRow(Base):

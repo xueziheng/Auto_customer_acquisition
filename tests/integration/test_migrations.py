@@ -1757,3 +1757,250 @@ async def test_0009_outreach_database_guards(db_url: str) -> None:
                         await conn.execute(text(statement))
     finally:
         await engine.dispose()
+
+
+async def test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips(
+    db_url: str,
+) -> None:
+    """0010 只新增安全账本两表，降级/升级后精确恢复。"""
+    from infra.db.session import create_engine_from
+
+    forbidden = {
+        "params", "recipient", "sender", "subject", "body", "headers", "token",
+        "authorization", "dsn", "unsubscribe_url", "exception",
+    }
+    expected_columns = {
+        "tool_calls": {
+            "tenant_id", "tool_call_id", "tool_id", "tool_version", "risk_level",
+            "cost_class", "idempotency_key", "request_fingerprint",
+            "fingerprint_version", "status", "duplicate_of", "lease_owner",
+            "lease_expires_at", "attempt_count", "run_id", "user_id", "campaign_id",
+            "message_attempt_id", "provider_ref", "error_category", "retry_after_at",
+            "created_at", "updated_at", "completed_at",
+        },
+        "tool_call_events": {
+            "tenant_id", "event_id", "tool_call_id", "stage", "outcome", "rule",
+            "category", "actor_id", "run_id", "campaign_id", "message_attempt_id",
+            "occurred_at", "duration_ms", "cost_note",
+        },
+    }
+
+    def inspect_contract(conn):
+        inspector = inspect(conn)
+        result = {}
+        for table in expected_columns:
+            actual = {str(item["name"]) for item in inspector.get_columns(table)}
+            result[table] = {
+                "columns": actual,
+                "pk": tuple(inspector.get_pk_constraint(table)["constrained_columns"]),
+                "fks": {
+                    str(item["name"]): (
+                        tuple(item["constrained_columns"]),
+                        str(item["referred_table"]),
+                        tuple(item["referred_columns"]),
+                    )
+                    for item in inspector.get_foreign_keys(table)
+                },
+                "checks": {
+                    str(item["name"]) for item in inspector.get_check_constraints(table)
+                },
+                "indexes": {
+                    str(item["name"]): (
+                        tuple(item["column_names"]),
+                        bool(item["unique"]),
+                    )
+                    for item in inspector.get_indexes(table)
+                    if not item.get("duplicates_constraint")
+                },
+            }
+        return result
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            before = await conn.run_sync(inspect_contract)
+        for table, columns in expected_columns.items():
+            assert before[table]["columns"] == columns
+            assert not (before[table]["columns"] & forbidden)
+        assert before["tool_calls"]["pk"] == ("tenant_id", "tool_call_id")
+        assert before["tool_call_events"]["pk"] == ("tenant_id", "event_id")
+        assert before["tool_calls"]["fks"]["fk_tool_calls_duplicate"] == (
+            ("tenant_id", "duplicate_of"),
+            "tool_calls",
+            ("tenant_id", "tool_call_id"),
+        )
+        assert before["tool_call_events"]["fks"]["fk_tool_call_events_call"] == (
+            ("tenant_id", "tool_call_id"),
+            "tool_calls",
+            ("tenant_id", "tool_call_id"),
+        )
+        assert before["tool_calls"]["indexes"]["uq_tool_calls_tenant_tool_key"] == (
+            ("tenant_id", "tool_id", "idempotency_key"),
+            True,
+        )
+        assert before["tool_calls"]["indexes"]["ix_tool_calls_tenant_status_retry"] == (
+            ("tenant_id", "status", "retry_after_at", "updated_at"),
+            False,
+        )
+        assert before["tool_call_events"]["indexes"][
+            "ix_tool_call_events_tenant_call_occurred"
+        ] == (("tenant_id", "tool_call_id", "occurred_at", "event_id"), False)
+        assert {
+            "ck_tool_calls_status", "ck_tool_calls_canonical_fields",
+            "ck_tool_calls_result_fields", "ck_tool_calls_provider_ref",
+            "ck_tool_calls_safe_labels",
+        } <= before["tool_calls"]["checks"]
+        assert "ck_tool_call_events_safe_labels" in before["tool_call_events"][
+            "checks"
+        ]
+
+        _run_alembic(db_url, "downgrade", "0009")
+        async with engine.connect() as conn:
+            names = set(await conn.run_sync(lambda sync: inspect(sync).get_table_names()))
+        assert "tool_calls" not in names
+        assert "tool_call_events" not in names
+        _run_alembic(db_url, "upgrade", "0010")
+        async with engine.connect() as conn:
+            after = await conn.run_sync(inspect_contract)
+        assert after == before
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0010_tool_call_events_are_append_only(db_url: str) -> None:
+    """事件行一经写入，数据库拒绝 UPDATE 与 DELETE。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    now = datetime(2026, 8, 11, 3, tzinfo=UTC)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO tool_calls "
+                    "(tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,"
+                    "status,attempt_count,user_id,created_at,updated_at) VALUES "
+                    "(:tenant,:call,'email.send','v1','high','low','received',0,"
+                    ":actor,:now,:now)"
+                ),
+                {"tenant": "tn_tool_guard", "call": "tcl_00000000000000000000000000", "actor": "usr_guard", "now": now},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO tool_call_events "
+                    "(tenant_id,event_id,tool_call_id,stage,outcome,actor_id,occurred_at,"
+                    "duration_ms) VALUES (:tenant,:event,:call,'tenant','allowed',:actor,"
+                    ":now,1)"
+                ),
+                {"tenant": "tn_tool_guard", "event": "tce_00000000000000000000000000", "call": "tcl_00000000000000000000000000", "actor": "usr_guard", "now": now},
+            )
+        for statement in (
+            "UPDATE tool_call_events SET duration_ms=2 WHERE tenant_id=:tenant",
+            "DELETE FROM tool_call_events WHERE tenant_id=:tenant",
+        ):
+            with pytest.raises(DBAPIError):
+                async with engine.begin() as conn:
+                    await conn.execute(text(statement), {"tenant": "tn_tool_guard"})
+    finally:
+        await engine.dispose()
+
+
+async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
+    """状态字段、provider ref 与复合租户 FK 均由真实 PG 拒绝旁路。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    now = datetime(2026, 8, 11, 3, tzinfo=UTC)
+    base = {
+        "tenant": "tn_tool_db_guard",
+        "call": "tcl_00000000000000000000000010",
+        "actor": "usr_guard",
+        "now": now,
+    }
+    received = text(
+        "INSERT INTO tool_calls "
+        "(tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,status,"
+        "attempt_count,user_id,created_at,updated_at) VALUES "
+        "(:tenant,:call,'email.send','v1','high','low','received',0,:actor,:now,:now)"
+    )
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(received, base)
+
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO tool_calls "
+                "(tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,"
+                "idempotency_key,request_fingerprint,fingerprint_version,status,"
+                "attempt_count,user_id,created_at,updated_at) VALUES "
+                "(:tenant,'tcl_00000000000000000000000011','email.send','v1','high',"
+                "'low','guard-key',repeat('a',64),'fp-v1','claimed',1,:actor,:now,:now)"
+            ),
+            base,
+            "CLAIMED 缺 lease 应被 CHECK 拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO tool_calls "
+                "(tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,"
+                "idempotency_key,request_fingerprint,fingerprint_version,status,"
+                "attempt_count,user_id,provider_ref,created_at,updated_at,completed_at) "
+                "VALUES (:tenant,'tcl_00000000000000000000000012','email.send','v1',"
+                "'high','low','guard-key-2',repeat('b',64),'fp-v1','succeeded',1,"
+                ":actor,'buyer@example.com',:now,:now,:now)"
+            ),
+            base,
+            "原始地址 provider_ref 应被 CHECK 拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO tool_calls "
+                "(tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,"
+                "request_fingerprint,fingerprint_version,status,duplicate_of,attempt_count,"
+                "user_id,created_at,updated_at,completed_at) VALUES "
+                "('tn_tool_db_other','tcl_00000000000000000000000013','email.send','v1',"
+                "'high','low',repeat('a',64),'fp-v1','duplicate',:call,0,:actor,:now,"
+                ":now,:now)"
+            ),
+            base,
+            "跨租户 duplicate self-FK 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO tool_call_events "
+                "(tenant_id,event_id,tool_call_id,stage,outcome,actor_id,occurred_at,"
+                "duration_ms) VALUES ('tn_tool_db_other',"
+                "'tce_00000000000000000000000010',:call,'tenant','allowed',:actor,"
+                ":now,0)"
+            ),
+            base,
+            "跨租户 event FK 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO tool_call_events "
+                "(tenant_id,event_id,tool_call_id,stage,outcome,actor_id,occurred_at,"
+                "duration_ms,cost_note) VALUES (:tenant,"
+                "'tce_00000000000000000000000011',:call,'tenant','allowed',:actor,"
+                ":now,0,'secret_customer_text')"
+            ),
+            base,
+            "自由客户文本不得进入 tool call event",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "UPDATE tool_calls SET status='corrupt' "
+                "WHERE tenant_id=:tenant AND tool_call_id=:call"
+            ),
+            base,
+            "未知 persisted status 应被拒绝",
+        )
+    finally:
+        await engine.dispose()

@@ -777,6 +777,19 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "action_id", "action_key", "action", "entity_id", "actor_id",
             "occurred_at",
         },
+        "tool_calls": {
+            "tenant_id", "tool_call_id", "tool_id", "tool_version", "risk_level",
+            "cost_class", "idempotency_key", "request_fingerprint",
+            "fingerprint_version", "status", "duplicate_of", "lease_owner",
+            "lease_expires_at", "attempt_count", "run_id", "user_id", "campaign_id",
+            "message_attempt_id", "provider_ref", "error_category", "retry_after_at",
+            "created_at", "updated_at", "completed_at",
+        },
+        "tool_call_events": {
+            "tenant_id", "event_id", "tool_call_id", "stage", "outcome", "rule",
+            "category", "actor_id", "run_id", "campaign_id", "message_attempt_id",
+            "occurred_at", "duration_ms", "cost_note",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -824,6 +837,15 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_outreach_attempts_tenant_enrollment_created": (
             "tenant_id", "enrollment_id", "created_at", "attempt_id",
+        ),
+        "uq_tool_calls_tenant_tool_key": (
+            "tenant_id", "tool_id", "idempotency_key",
+        ),
+        "ix_tool_calls_tenant_status_retry": (
+            "tenant_id", "status", "retry_after_at", "updated_at",
+        ),
+        "ix_tool_call_events_tenant_call_occurred": (
+            "tenant_id", "tool_call_id", "occurred_at", "event_id",
         ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
@@ -905,6 +927,20 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "outreach_actions": {
             "pk_outreach_actions", "uq_outreach_actions_tenant_key",
+        },
+        "tool_calls": {
+            "pk_tool_calls", "uq_tool_calls_tenant_call", "fk_tool_calls_duplicate",
+            "ck_tool_calls_status", "ck_tool_calls_risk", "ck_tool_calls_cost",
+            "ck_tool_calls_safe_labels",
+            "ck_tool_calls_fingerprint_pair", "ck_tool_calls_canonical_fields",
+            "ck_tool_calls_duplicate_fields", "ck_tool_calls_lease_fields",
+            "ck_tool_calls_attempt_count", "ck_tool_calls_result_fields",
+            "ck_tool_calls_provider_ref",
+        },
+        "tool_call_events": {
+            "pk_tool_call_events", "fk_tool_call_events_call",
+            "ck_tool_call_events_duration", "ck_tool_call_events_category",
+            "ck_tool_call_events_safe_labels",
         },
     }
     for table, names in expected_constraints.items():
