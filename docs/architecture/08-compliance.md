@@ -70,6 +70,14 @@ contact_legal_basis:
 
 抑制名单查询在发送路径的关键路径上，不能异步。
 
+Phase 1 只保存最小 append-only 抑制事实：`tenant_id`、typed target、typed reason、UTC `occurred_at`、安全 `source_ref`、幂等键和服务端创建时间。typed target 必须且只能是联系人 `ContactPointId` 或企业 `ProspectAccountId` 之一，调用方不能提交自由 scope 再拼任意 ID。
+
+六个原因固定为 `unsubscribe`、`complaint`、`hard_bounce`、`manual_block`、`competitor`、`existing_customer_conflict`。SYSTEM 只允许前三个自动原因，并且 scope 必须绑定精确单一 target；人工原因由有权限的人工主体写入。
+
+公共服务没有 delete、update 或 unsuppress API，数据库 trigger 同样拒绝 UPDATE/DELETE。隐私删除原联系人或企业记录后仍保留这份最小事实，避免再次联系。查询失败必须向上抛出，不得把后端错误解释为“未抑制”；实际发送前由 Tool Gateway 再做一次 fail-closed 查询。
+
+新增事实、按 Enrollment ID 顺序锁定并停止全部匹配活跃 Enrollment、Action 与 `SuppressionAdded` outbox 在同一事务中提交。任一写入失败则整体回滚。
+
 ---
 
 ## 四、WhatsApp

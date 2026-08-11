@@ -62,17 +62,23 @@ contact_points           联系方式（邮箱/电话/社交），含可达性�
 contact_legal_basis      处理依据留痕：依据类型、主体类型、来源、评估引用
 lead_scores              打分快照（不可变，含 gates_passed、factors、outcome 回填）
 lead_ownership           客户归属锁（粒度是企业）
-campaigns                Campaign 边界与配额
-sequences                序列定义
-sequence_steps           序列步骤
-sequence_enrollments     联系人在序列中的位置与状态
-message_attempts         每次发送尝试（幂等键、发件身份、内容引用）
+outreach_campaigns       Campaign current 状态、当前版本、审批绑定与轮询游标
+outreach_campaign_versions 不可变 Campaign 边界版本
+outreach_sequence_steps  版本化、规范化的 1–5 个序列步骤
+outreach_enrollments     账户/联系人入组、绑定版本与当前状态
+outreach_suppressions    联系人/企业级 append-only 全局抑制事实
+outreach_daily_quotas    Campaign 每 UTC 日两类单调预留计数
+outreach_message_attempts durable 发送准备记录（不是授权）
+outreach_actions         append-only 触达业务动作
 delivery_events          投递事件：送达、打开、退信、投诉
-suppression_entries      抑制名单（联系人级与企业级，永不删除）
 consent_records          同意记录（WhatsApp opt-in、表单同意）
 ```
 
 `contact_points` 的可达性验证状态是发送前置条件（硬边界 6）。未验证的联系方式不得出现在 `sequence_enrollments` 中。
+
+迁移 0009 的八张 `outreach_*` 表都用 tenant composite PK/FK/unique key。`outreach_enrollments` 有 `(tenant_id, account_id)` 的 active partial unique，只允许同租户同账户一条 `enrolled`/`in_sequence` 记录；所有查询仍显式带 tenant 过滤。
+
+Campaign version、sequence step、suppression 与 action 由 trigger 禁止 UPDATE/DELETE；daily quota 只允许单调增加且禁止 DELETE。Enrollment、Attempt 的状态字段由 CHECK 保证终态/失败字段一致。Suppression 同一 tenant 的幂等键唯一，并有 tenant+contact、tenant+account 两条覆盖查询索引；发送路径的抑制查询失败必须 fail closed。
 
 ---
 

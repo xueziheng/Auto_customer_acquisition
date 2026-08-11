@@ -40,13 +40,27 @@ Agent 在边界内自主工作；越界的动作被 `tool_gateway` 拒绝。**�
 
 原因：这套系统的中心是需求，不是产品。以卖货开场会把对话锁死在「要/不要」，以需求开场能让客户说出「我真正缺什么」——那才是后续一切的原料。`agent_runtime/outreach_agent` 生成内容时读这个字段。
 
-## 序列状态机（每个联系人一条 enrollment）
+## Campaign 与 Enrollment 状态机
+
+Campaign current row 只允许以下精确边：
 
 ```text
-enrolled ──→ step_1_sent ──→ step_2_sent ──→ step_3_sent ──→ completed
-    │             │                │               │
-    │             └────────────────┴───────────────┴──→ replied（停止）
-    └──→ stopped_suppressed / stopped_bounced / stopped_manual
+draft → pending_approval / cancelled
+pending_approval → active / cancelled
+active → paused / completed / cancelled / pending_approval
+paused → active / completed / cancelled / pending_approval
+completed / cancelled → 无后继
+```
+
+Campaign 边界保存在不可变 version row。修改边界必须追加新版本并清空旧审批绑定；新版本重新获得**精确版本**批准后才能激活，不能复用旧版本 approval。
+
+每个联系人一条 Enrollment，`enrolled`、`in_sequence` 是仅有的活跃状态；其余都是无后继终态：
+
+```text
+enrolled → in_sequence → in_sequence → completed
+    │            │
+    └────────────┴→ replied / stopped_suppressed / stopped_bounced /
+                    stopped_manual / stopped_identity_unavailable
 ```
 
 **`stop_on_reply` 要在发送时二次检查，不能只依赖回复事件**：回复可能在第 2 步发送前几秒到达，事件还没处理完。发送前查一次「该会话是否已有回复」，竞态就关掉了。
@@ -59,7 +73,9 @@ enrolled ──→ step_1_sent ──→ step_2_sent ──→ step_3_sent ─�
        competitor / existing_customer_conflict
 ```
 
-**跨 Campaign、跨发件身份、跨员工生效，永不删除记录。**
+**跨 Campaign、跨发件身份、跨员工生效，永不删除记录。** 公共服务没有 update、delete 或 unsuppress 路径；同一幂等键只在 typed target、reason、source_ref、occurred_at 全部一致时返回原事实。
+
+六个固定原因是：`unsubscribe`、`complaint`、`hard_bounce`、`manual_block`、`competitor`、`existing_customer_conflict`。SYSTEM 只能对精确单一 target 写前三个自动原因；后三个只能由人工权限写入。
 
 客户说「不要再联系我们公司」时必须抑制整个企业——只抑制回信那个人，换个联系人继续发，既失礼又有法律风险（退订请求覆盖的是「你们公司别再发了」，不是「别发给我这个邮箱」）。
 
@@ -76,6 +92,10 @@ enrollment 创建时校验联系方式的 `ContactPointVerified` 状态。未验
 
 发送许可（今日额度、身份状态）由上层调 `sending_identity` 的服务后传入，本域不直接查。
 
+联系人资格、发件身份资格、Campaign 审批与当前回复状态都来自 `service.py` 暴露的只读 Provider Protocol；provider 不可用、tenant/resource 不匹配一律 fail closed。持久化只经 tenant-scoped Repository/UoW；本域不调用 connector、SDK 或其他域内部实现。
+
+`MessageAttempt` 只是 durable、幂等的发送准备记录，**不是发送授权**。4B-2 Tool Gateway 在实际外发前必须重新检查当前 Campaign、Enrollment、回复、抑制、联系人资格、发件身份和额度；不能因 Attempt 为 `reserved` 就直接发送。
+
 ## 发布的事件
 
 `MessageSent`、`SuppressionAdded`
@@ -89,7 +109,7 @@ enrollment 创建时校验联系方式的 `ContactPointVerified` 状态。未验
 - 不允许绕过抑制名单（没有任何白名单机制）
 - 不允许未验证联系方式入组
 - 不允许序列超过 Campaign 的 `max_messages`
-- 不允许自动移除抑制记录（移除必须人工且走审批）
+- 不允许移除抑制记录（Phase 1 没有公共 removal API）
 
 ## Phase 1 范围
 
