@@ -1,146 +1,242 @@
-"""触达域存储接口。
+"""触达域 tenant-aware 存储 Protocol 与 typed 原子结果。
 
-**内部实现，其他域不得导入。**
+**内部实现，其他域不得导入。** 所有写入结果显式区分创建、幂等命中、
+业务冲突和额度耗尽，service 不解析数据库异常字符串。
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
+from typing import Protocol, Self, runtime_checkable
 
 from domains.outreach.models import (
+    ActionRecord,
     Campaign,
+    CampaignVersion,
+    DailyQuotaUsage,
     Enrollment,
-    EnrollmentState,
+    MessageAttempt,
     SuppressionEntry,
 )
+from domains.outreach.permissions import OutreachScope
+from domains.outreach.schemas import SuppressionTarget
+from shared.errors import ValidationError
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     CampaignId,
-    ContactPointId,
     EnrollmentId,
+    IdempotencyKey,
+    MessageAttemptId,
     ProspectAccountId,
     TenantId,
 )
 
 
+class EnrollmentInsertStatus(str, Enum):
+    CREATED = "created"
+    EXISTING = "existing"
+    IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    ACCOUNT_CONFLICT = "account_conflict"
+
+
+class AppendStatus(str, Enum):
+    CREATED = "created"
+    EXISTING = "existing"
+    CONFLICT = "conflict"
+
+
+class QuotaReservationStatus(str, Enum):
+    RESERVED = "reserved"
+    CAP_REACHED = "cap_reached"
+
+
+def _validate_winner(
+    status: Enum,
+    winner: object | None,
+    winner_type: type[object],
+) -> None:
+    has_winner = status.value in {"created", "existing", "reserved"}
+    if has_winner != (winner is not None):
+        raise ValidationError("原子写入结果与 winner 不匹配")
+    if winner is not None and not isinstance(winner, winner_type):
+        raise ValidationError("原子写入 winner 类型无效")
+
+
+@dataclass(frozen=True)
+class EnrollmentInsertResult:
+    status: EnrollmentInsertStatus
+    winner: Enrollment | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, EnrollmentInsertStatus):
+            raise ValidationError("Enrollment insert status 无效")
+        _validate_winner(self.status, self.winner, Enrollment)
+
+
+@dataclass(frozen=True)
+class SuppressionAppendResult:
+    status: AppendStatus
+    winner: SuppressionEntry | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, AppendStatus):
+            raise ValidationError("Suppression append status 无效")
+        _validate_winner(self.status, self.winner, SuppressionEntry)
+
+
+@dataclass(frozen=True)
+class QuotaReservationResult:
+    status: QuotaReservationStatus
+    winner: DailyQuotaUsage | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, QuotaReservationStatus):
+            raise ValidationError("Quota reservation status 无效")
+        _validate_winner(self.status, self.winner, DailyQuotaUsage)
+
+
+@dataclass(frozen=True)
+class MessageAttemptCreateResult:
+    status: AppendStatus
+    winner: MessageAttempt | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, AppendStatus):
+            raise ValidationError("Message Attempt create status 无效")
+        _validate_winner(self.status, self.winner, MessageAttempt)
+
+
 @runtime_checkable
 class CampaignRepository(Protocol):
-    async def add(self, campaign: Campaign) -> None: ...
+    async def add(self, campaign: Campaign, version: CampaignVersion) -> None: ...
 
     async def get(
         self, tenant_id: TenantId, campaign_id: CampaignId
     ) -> Campaign | None: ...
 
+    async def get_for_update(
+        self, tenant_id: TenantId, campaign_id: CampaignId
+    ) -> Campaign | None: ...
+
+    async def get_version(
+        self, tenant_id: TenantId, campaign_id: CampaignId, version: int
+    ) -> CampaignVersion | None: ...
+
+    async def append_version(self, version: CampaignVersion) -> None: ...
+
     async def update(self, campaign: Campaign) -> None: ...
 
-    async def add_version(self, campaign: Campaign) -> None:
-        """存边界新版本。**旧版本保留**——审计要能回答
-        「上个月实际执行的是哪一版边界」。"""
-        ...
-
-    async def list_active(self, tenant_id: TenantId) -> list[Campaign]: ...
+    async def list_scoped(
+        self, tenant_id: TenantId, scope: OutreachScope, limit: int
+    ) -> list[Campaign]: ...
 
 
 @runtime_checkable
 class EnrollmentRepository(Protocol):
-    async def add(self, enrollment: Enrollment) -> None: ...
+    async def insert_if_absent(
+        self, enrollment: Enrollment
+    ) -> EnrollmentInsertResult: ...
 
     async def get(
         self, tenant_id: TenantId, enrollment_id: EnrollmentId
     ) -> Enrollment | None: ...
 
-    async def update(self, enrollment: Enrollment) -> None: ...
+    async def get_for_update(
+        self, tenant_id: TenantId, enrollment_id: EnrollmentId
+    ) -> Enrollment | None: ...
 
     async def find_active_for_account(
         self, tenant_id: TenantId, account_id: ProspectAccountId
-    ) -> Enrollment | None:
-        """查该企业的活跃 enrollment（跨所有 Campaign）。
+    ) -> Enrollment | None: ...
 
-        入组前必查：两个序列同时给一家公司发信，客户会收到两套说辞。
-        """
-        ...
+    async def lock_matching_active(
+        self, tenant_id: TenantId, target: SuppressionTarget
+    ) -> list[Enrollment]: ...
 
-    async def list_due(
-        self, tenant_id: TenantId, now: datetime, limit: int
-    ) -> list[Enrollment]:
-        """到达发送时间的 enrollment。``scheduler_worker`` 的扫描入口。
+    async def update(self, enrollment: Enrollment) -> None: ...
 
-        实现要求：``next_send_at <= now`` 且状态可发送。要用
-        ``FOR UPDATE SKIP LOCKED`` 或等价手段——多个扫描周期重叠时
-        不能取到同一批（那会导致重复发送尝试，靠幂等键兜底但没必要
-        制造冲突）。
-        """
-        ...
-
-    async def stop_all_for_target(
-        self,
-        tenant_id: TenantId,
-        contact_point_id: ContactPointId | None,
-        account_id: ProspectAccountId | None,
-        new_state: EnrollmentState,
-        reason: str,
-    ) -> int:
-        """批量停止某联系人/企业的所有活跃 enrollment，返回停了几条。
-
-        抑制生效时调用。跨 Campaign。
-        """
-        ...
-
-    async def stop_all_for_identity(
-        self, tenant_id: TenantId, sending_identity_id: str, reason: str
-    ) -> int:
-        """发件身份被熔断时挂起其名下所有序列。"""
-        ...
+    async def list_scoped(
+        self, tenant_id: TenantId, scope: OutreachScope, limit: int
+    ) -> list[Enrollment]: ...
 
 
 @runtime_checkable
 class SuppressionRepository(Protocol):
-    async def add(self, entry: SuppressionEntry) -> None:
-        """加入抑制名单。幂等：重复加入不报错。**永不提供删除方法。**
+    async def append_if_absent(
+        self, entry: SuppressionEntry
+    ) -> SuppressionAppendResult: ...
 
-        移除抑制（几乎不应发生）走单独的人工审批流程，直接操作数据库，
-        并留审计——不给代码路径就不会被误用。
-        """
-        ...
+    async def find_current(
+        self, tenant_id: TenantId, target: SuppressionTarget
+    ) -> SuppressionEntry | None: ...
 
-    async def is_suppressed(
-        self,
-        tenant_id: TenantId,
-        contact_point_id: ContactPointId | None,
-        account_id: ProspectAccountId | None,
-    ) -> bool:
-        """查抑制状态。
-
-        **发送关键路径上的查询**：必须有覆盖索引；服务不可用时调用方
-        应拒绝发送而不是放行。
-        """
-        ...
-
-    async def list_recent(
-        self, tenant_id: TenantId, limit: int
+    async def list_scoped(
+        self, tenant_id: TenantId, scope: OutreachScope, limit: int
     ) -> list[SuppressionEntry]: ...
 
 
 @runtime_checkable
 class QuotaRepository(Protocol):
-    """Campaign 每日额度计数。"""
+    async def reserve_new_contact(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        on_day: date,
+        limit: int,
+    ) -> QuotaReservationResult: ...
 
-    async def increment_new_contacts(
-        self, tenant_id: TenantId, campaign_id: CampaignId, on_day: date
-    ) -> int:
-        """原子递增，返回递增后的值。调用方比较上限决定放行与否。
-
-        先递增再比较、超了就回滚（或用条件更新），不要先读再写——
-        并发下会突破老板批准的上限。
-        """
-        ...
-
-    async def increment_total_messages(
-        self, tenant_id: TenantId, campaign_id: CampaignId, on_day: date
-    ) -> int: ...
+    async def reserve_message(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        on_day: date,
+        limit: int,
+    ) -> QuotaReservationResult: ...
 
     async def get_usage(
         self, tenant_id: TenantId, campaign_id: CampaignId, on_day: date
-    ) -> tuple[int, int]:
-        """返回 ``(new_contacts_used, total_messages_used)``。"""
-        ...
+    ) -> DailyQuotaUsage: ...
+
+
+@runtime_checkable
+class MessageAttemptRepository(Protocol):
+    async def create_if_absent(
+        self, attempt: MessageAttempt
+    ) -> MessageAttemptCreateResult: ...
+
+    async def get_for_update(
+        self, tenant_id: TenantId, attempt_id: MessageAttemptId
+    ) -> MessageAttempt | None: ...
+
+    async def get_by_key(
+        self, tenant_id: TenantId, key: IdempotencyKey
+    ) -> MessageAttempt | None: ...
+
+    async def update(self, attempt: MessageAttempt) -> None: ...
+
+
+@runtime_checkable
+class ActionRepository(Protocol):
+    async def append(self, action: ActionRecord) -> bool: ...
+
+
+@runtime_checkable
+class OutreachUnitOfWork(Protocol):
+    campaigns: CampaignRepository
+    enrollments: EnrollmentRepository
+    suppressions: SuppressionRepository
+    quotas: QuotaRepository
+    attempts: MessageAttemptRepository
+    actions: ActionRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(self, exc_type, exc, tb) -> None: ...
+
+
+@runtime_checkable
+class OutreachUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> OutreachUnitOfWork: ...

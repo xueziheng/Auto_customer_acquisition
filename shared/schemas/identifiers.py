@@ -50,6 +50,7 @@ CampaignId = NewType("CampaignId", str)
 SequenceId = NewType("SequenceId", str)
 EnrollmentId = NewType("EnrollmentId", str)
 MessageAttemptId = NewType("MessageAttemptId", str)
+SuppressionId = NewType("SuppressionId", str)
 SendingIdentityId = NewType("SendingIdentityId", str)
 
 # --- 机会与供应 ---------------------------------------------------------

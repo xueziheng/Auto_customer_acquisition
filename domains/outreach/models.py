@@ -1,24 +1,96 @@
-"""触达域实体。
+"""触达域实体与显式状态机。
 
-**内部实现，其他域不得导入。**
+**内部实现，其他域不得导入。** Campaign 边界、版本、Enrollment、
+Message Attempt 与抑制事实都只保存安全 typed metadata，不保存地址或正文。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+import re
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
     ContactPointId,
     EmployeeId,
     EnrollmentId,
+    IdempotencyKey,
+    MessageAttemptId,
+    MessageId,
     ProspectAccountId,
     SendingIdentityId,
-    SequenceId,
+    SuppressionId,
     TenantId,
 )
+
+if TYPE_CHECKING:
+    from domains.outreach.schemas import SuppressionTarget
+
+
+_ULID_ID = re.compile(r"[a-z]+_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_HANDOFF_TRIGGERS = frozenset(
+    {
+        "quantity_provided",
+        "target_price_provided",
+        "sample_requested",
+        "quote_requested",
+        "specification_file_received",
+        "meeting_requested",
+        "custom_product",
+        "certification_question",
+        "payment_or_contract_terms",
+        "complaint",
+        "exclusive_distribution",
+        "large_account",
+    }
+)
+
+
+def _require_utc(value: object, field: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != UTC.utcoffset(value)
+    ):
+        raise ValidationError(f"{field} 必须是 UTC aware datetime")
+    return value
+
+
+def _require_id(value: object, prefix: str, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or _ULID_ID.fullmatch(value) is None
+        or not value.startswith(f"{prefix}_")
+    ):
+        raise ValidationError(f"{field} 无效")
+    return value
+
+
+def _freeze_texts(
+    value: object,
+    *,
+    field: str,
+    required: bool,
+    lower: bool = False,
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValidationError(f"{field} 必须为集合")
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or item != item.strip():
+            raise ValidationError(f"{field} 包含无效值")
+        canonical = item.lower() if lower else item
+        if any(ord(character) < 32 or ord(character) == 127 for character in canonical):
+            raise ValidationError(f"{field} 包含无效值")
+        cleaned.append(canonical)
+    result = tuple(sorted(set(cleaned)))
+    if required and not result:
+        raise ValidationError(f"{field}_required")
+    return result
 
 
 class CampaignState(str, Enum):
@@ -31,174 +103,33 @@ class CampaignState(str, Enum):
 
 
 class StepIntent(str, Enum):
-    """序列步骤意图。决定 ``outreach_agent`` 生成什么样的内容。"""
-
     DISCOVERY = "discovery"
-    """需求发现：让客户说出他缺什么。**第一步必须是这个。**
-
-    以卖货开场会把对话锁死在「要/不要」；以需求开场能获得
-    「我真正缺什么」——那是整条链路的原料。"""
-
     PRESENTATION = "presentation"
-    """产品呈现：客户表达需求后，展示对应的供应方案。"""
-
     FOLLOW_UP = "follow_up"
-    """跟进提醒。"""
-
-
-@dataclass(frozen=True)
-class SequenceStepSpec:
-    """序列步骤定义。
-
-    字段：
-        step_number:   第几步（从 1 起）
-        intent
-        wait_days:     距上一步的等待天数
-    """
-
-    step_number: int
-    intent: StepIntent
-    wait_days: int
-
-
-@dataclass(frozen=True)
-class CampaignBoundary:
-    """Campaign 边界 —— 老板批准的自主活动范围。
-
-    这不是配置项集合，是**授权书**：Agent 在这个范围内不需要逐次
-    请示，越界动作被 ``tool_gateway`` 拒绝。所以每个字段都是一条
-    边界，不设默认放宽。
-
-    字段：
-        markets:              允许的目标国家
-        target_entity_types:  允许的企业类型（importer / manufacturer / …）
-        allowed_categories:   允许探索的品类
-        sender_identity_ids:  可用发件身份（登记时校验角色为 COLD_OUTREACH）
-        steps:                序列步骤（长度即 max_messages）
-        stop_on_reply:        有回复即停，默认 True 且不建议改
-        daily_new_contacts:   每日新联系人上限
-        daily_total_messages: 每日总发送上限
-        handoff_triggers:     触发转人工的条件（字符串，值来自
-                              opportunities.HandoffTrigger，不跨域 import）
-    """
-
-    markets: list[str]
-    target_entity_types: list[str]
-    allowed_categories: list[str]
-    sender_identity_ids: list[SendingIdentityId]
-    steps: list[SequenceStepSpec]
-    daily_new_contacts: int
-    daily_total_messages: int
-    handoff_triggers: list[str]
-    stop_on_reply: bool = True
-
-    def validate(self) -> list[str]:
-        """校验边界自洽，返回问题列表。
-
-        必查项：
-        - ``steps`` 非空且第一步 intent 为 ``DISCOVERY``
-        - ``steps`` 长度 ≤ 5（超过 5 步的无回复序列只会增加投诉）
-        - 每日上限为正且 new_contacts ≤ total_messages
-        - markets 非空
-        """
-        raise NotImplementedError
-
-
-@dataclass
-class Campaign:
-    """Campaign。
-
-    **边界修改即新版本。** ``boundary`` 一经批准不可变；要改就创建
-    新版本并重新走审批——否则「老板批准的」和「实际执行的」会悄悄
-    分叉，审批就失去了意义。
-
-    字段：
-        campaign_id, tenant_id
-        name
-        boundary
-        version:        边界版本号
-        state
-        created_by, approved_by, approved_at
-        paused_reason
-        created_at
-    """
-
-    campaign_id: CampaignId
-    tenant_id: TenantId
-    name: str
-    boundary: CampaignBoundary
-    created_at: datetime
-    created_by: EmployeeId
-    version: int = 1
-    state: CampaignState = CampaignState.DRAFT
-    approved_by: EmployeeId | None = None
-    approved_at: datetime | None = None
-    paused_reason: str | None = None
 
 
 class EnrollmentState(str, Enum):
     ENROLLED = "enrolled"
     IN_SEQUENCE = "in_sequence"
     REPLIED = "replied"
-    """客户回复，序列停止。**这是成功出口**，不是异常。"""
-
     COMPLETED = "completed"
-    """序列走完无回复。"""
-
     STOPPED_SUPPRESSED = "stopped_suppressed"
     STOPPED_BOUNCED = "stopped_bounced"
     STOPPED_MANUAL = "stopped_manual"
     STOPPED_IDENTITY_UNAVAILABLE = "stopped_identity_unavailable"
-    """发件身份被熔断，序列挂起。身份恢复后可人工决定是否续跑。"""
 
 
-@dataclass
-class Enrollment:
-    """一个联系人在一个 Campaign 序列中的位置。
-
-    字段：
-        enrollment_id, tenant_id, campaign_id
-        account_id, contact_point_id
-        sending_identity_id:  分配的发件身份（一条序列固定一个身份，
-                              中途换发件人会让客户觉得混乱）
-        state
-        current_step:         已发到第几步
-        next_send_at:         下一步计划时间
-        enrolled_at
-        stopped_at, stopped_reason
-        conversation_ref:     产生的会话引用
-    """
-
-    enrollment_id: EnrollmentId
-    tenant_id: TenantId
-    campaign_id: CampaignId
-    account_id: ProspectAccountId
-    contact_point_id: ContactPointId
-    sending_identity_id: SendingIdentityId
-    enrolled_at: datetime
-    state: EnrollmentState = EnrollmentState.ENROLLED
-    current_step: int = 0
-    next_send_at: datetime | None = None
-    stopped_at: datetime | None = None
-    stopped_reason: str | None = None
-    conversation_ref: str | None = None
-
-    def can_send_next_step(self, max_steps: int) -> bool:
-        """能否发下一步。
-
-        实现要求：状态为 ENROLLED / IN_SEQUENCE、未到步数上限、
-        到达计划时间。**这只是本地判断**，发送前还要过 service 层的
-        综合检查（回复竞态、抑制名单、身份许可），见
-        ``OutreachService.prepare_send``。
-        """
-        raise NotImplementedError
+class EnrollmentStopReason(str, Enum):
+    REPLY = "reply"
+    SUPPRESSION = "suppression"
+    HARD_BOUNCE = "hard_bounce"
+    MANUAL = "manual"
+    IDENTITY_UNAVAILABLE = "identity_unavailable"
 
 
 class SuppressionScope(str, Enum):
     CONTACT = "contact"
     ACCOUNT = "account"
-    """企业级。客户说「不要再联系我们公司」时用这个——只抑制回信
-    那个人然后换个联系人继续发，既失礼又有法律风险。"""
 
 
 class SuppressionReason(str, Enum):
@@ -208,46 +139,513 @@ class SuppressionReason(str, Enum):
     MANUAL_BLOCK = "manual_block"
     COMPETITOR = "competitor"
     EXISTING_CUSTOMER_CONFLICT = "existing_customer_conflict"
-    """已是公司客户，不应再被冷开发触达。被现有客户收到冷开发邮件
-    是很尴尬的事故。"""
+
+
+class MessageAttemptState(str, Enum):
+    RESERVED = "reserved"
+    SENT = "sent"
+    FAILED_TRANSIENT = "failed_transient"
+    FAILED_PERMANENT = "failed_permanent"
+
+
+class SendFailureCategory(str, Enum):
+    PROVIDER_TRANSIENT = "provider_transient"
+    IDENTITY_UNAVAILABLE = "identity_unavailable"
+
+
+_CAMPAIGN_TRANSITIONS: dict[CampaignState, frozenset[CampaignState]] = {
+    CampaignState.DRAFT: frozenset(
+        {CampaignState.PENDING_APPROVAL, CampaignState.CANCELLED}
+    ),
+    CampaignState.PENDING_APPROVAL: frozenset(
+        {CampaignState.ACTIVE, CampaignState.CANCELLED}
+    ),
+    CampaignState.ACTIVE: frozenset(
+        {
+            CampaignState.PAUSED,
+            CampaignState.COMPLETED,
+            CampaignState.CANCELLED,
+            CampaignState.PENDING_APPROVAL,
+        }
+    ),
+    CampaignState.PAUSED: frozenset(
+        {
+            CampaignState.ACTIVE,
+            CampaignState.COMPLETED,
+            CampaignState.CANCELLED,
+            CampaignState.PENDING_APPROVAL,
+        }
+    ),
+    CampaignState.COMPLETED: frozenset(),
+    CampaignState.CANCELLED: frozenset(),
+}
+
+
+_ENROLLMENT_TERMINAL = frozenset(
+    {
+        EnrollmentState.REPLIED,
+        EnrollmentState.COMPLETED,
+        EnrollmentState.STOPPED_SUPPRESSED,
+        EnrollmentState.STOPPED_BOUNCED,
+        EnrollmentState.STOPPED_MANUAL,
+        EnrollmentState.STOPPED_IDENTITY_UNAVAILABLE,
+    }
+)
+_ENROLLMENT_TRANSITIONS: dict[EnrollmentState, frozenset[EnrollmentState]] = {
+    EnrollmentState.ENROLLED: frozenset(
+        {EnrollmentState.IN_SEQUENCE, *_ENROLLMENT_TERMINAL}
+    ),
+    EnrollmentState.IN_SEQUENCE: frozenset(
+        {EnrollmentState.IN_SEQUENCE, *_ENROLLMENT_TERMINAL}
+    ),
+    **{state: frozenset() for state in _ENROLLMENT_TERMINAL},
+}
+
+
+_ATTEMPT_TRANSITIONS: dict[MessageAttemptState, frozenset[MessageAttemptState]] = {
+    MessageAttemptState.RESERVED: frozenset(
+        {
+            MessageAttemptState.SENT,
+            MessageAttemptState.FAILED_TRANSIENT,
+            MessageAttemptState.FAILED_PERMANENT,
+        }
+    ),
+    MessageAttemptState.FAILED_TRANSIENT: frozenset(
+        {
+            MessageAttemptState.SENT,
+            MessageAttemptState.FAILED_TRANSIENT,
+            MessageAttemptState.FAILED_PERMANENT,
+        }
+    ),
+    MessageAttemptState.SENT: frozenset(),
+    MessageAttemptState.FAILED_PERMANENT: frozenset(),
+}
+
+
+def _invalid_transition(source: Enum, target: Enum, allowed: frozenset[Enum]) -> None:
+    choices = ",".join(sorted(item.value for item in allowed)) or "none"
+    raise InvalidStateTransition(
+        f"非法状态转换: {source.value} -> {target.value}; allowed={choices}"
+    )
+
+
+def validate_campaign_transition(source: CampaignState, target: CampaignState) -> None:
+    if not isinstance(source, CampaignState) or not isinstance(target, CampaignState):
+        raise InvalidStateTransition("Campaign 状态类型无效")
+    allowed = _CAMPAIGN_TRANSITIONS[source]
+    if target not in allowed:
+        _invalid_transition(source, target, allowed)
+
+
+def validate_enrollment_transition(
+    source: EnrollmentState, target: EnrollmentState
+) -> None:
+    if not isinstance(source, EnrollmentState) or not isinstance(target, EnrollmentState):
+        raise InvalidStateTransition("Enrollment 状态类型无效")
+    allowed = _ENROLLMENT_TRANSITIONS[source]
+    if target not in allowed:
+        _invalid_transition(source, target, allowed)
+
+
+def validate_message_attempt_transition(
+    source: MessageAttemptState, target: MessageAttemptState
+) -> None:
+    if not isinstance(source, MessageAttemptState) or not isinstance(
+        target, MessageAttemptState
+    ):
+        raise InvalidStateTransition("Message Attempt 状态类型无效")
+    allowed = _ATTEMPT_TRANSITIONS[source]
+    if target not in allowed:
+        _invalid_transition(source, target, allowed)
+
+
+@dataclass(frozen=True)
+class SequenceStepSpec:
+    step_number: int
+    intent: StepIntent
+    wait_days: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.step_number, int)
+            or isinstance(self.step_number, bool)
+            or self.step_number < 1
+        ):
+            raise ValidationError("step_number 无效")
+        if not isinstance(self.intent, StepIntent):
+            raise ValidationError("step_intent 无效")
+        if (
+            not isinstance(self.wait_days, int)
+            or isinstance(self.wait_days, bool)
+            or self.wait_days < 0
+        ):
+            raise ValidationError("wait_days 无效")
+
+
+@dataclass(frozen=True)
+class CampaignBoundary:
+    markets: tuple[str, ...]
+    target_entity_types: tuple[str, ...]
+    allowed_categories: tuple[str, ...]
+    sender_identity_ids: tuple[SendingIdentityId, ...]
+    steps: tuple[SequenceStepSpec, ...]
+    daily_new_contact_limit: int
+    daily_total_message_limit: int
+    handoff_triggers: tuple[str, ...]
+    stop_on_reply: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "markets",
+            _freeze_texts(self.markets, field="markets", required=True),
+        )
+        object.__setattr__(
+            self,
+            "target_entity_types",
+            _freeze_texts(
+                self.target_entity_types,
+                field="target_entity_types",
+                required=True,
+                lower=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allowed_categories",
+            _freeze_texts(
+                self.allowed_categories,
+                field="allowed_categories",
+                required=True,
+                lower=True,
+            ),
+        )
+        if not isinstance(
+            self.sender_identity_ids, (list, tuple, set, frozenset)
+        ):
+            raise ValidationError("sender_identity_ids 必须为集合")
+        senders = tuple(sorted(set(self.sender_identity_ids)))
+        if not senders:
+            raise ValidationError("sender_identity_ids_required")
+        for sender in senders:
+            _require_id(sender, "sid", "sender_identity_id")
+        object.__setattr__(self, "sender_identity_ids", senders)
+        if not isinstance(self.steps, (list, tuple)):
+            raise ValidationError("steps 必须为列表")
+        steps = tuple(self.steps)
+        if not steps:
+            raise ValidationError("steps_required")
+        if len(steps) > 5:
+            raise ValidationError("steps_limit_exceeded")
+        if any(not isinstance(step, SequenceStepSpec) for step in steps):
+            raise ValidationError("step_shape_invalid")
+        if tuple(step.step_number for step in steps) != tuple(range(1, len(steps) + 1)):
+            raise ValidationError("step_numbers_contiguous")
+        if steps[0].intent is not StepIntent.DISCOVERY:
+            raise ValidationError("first_step_discovery")
+        if steps[0].wait_days != 0:
+            raise ValidationError("first_wait_zero")
+        if any(step.wait_days <= 0 for step in steps[1:]):
+            raise ValidationError("later_wait_positive")
+        object.__setattr__(self, "steps", steps)
+        for field, value in (
+            ("daily_new_contact_limit", self.daily_new_contact_limit),
+            ("daily_total_message_limit", self.daily_total_message_limit),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValidationError(f"{field}_positive")
+        if self.daily_new_contact_limit > self.daily_total_message_limit:
+            raise ValidationError("new_contact_limit_exceeds_total")
+        if self.stop_on_reply is not True:
+            raise ValidationError("stop_on_reply_required")
+        triggers = _freeze_texts(
+            self.handoff_triggers,
+            field="handoff_triggers",
+            required=False,
+            lower=True,
+        )
+        if any(trigger not in _HANDOFF_TRIGGERS for trigger in triggers):
+            raise ValidationError("handoff_trigger_invalid")
+        object.__setattr__(self, "handoff_triggers", triggers)
+
+    def validate(self) -> list[str]:
+        """构造时已完成全量验证；保留显式只读兼容入口。"""
+        return []
+
+
+@dataclass(frozen=True)
+class CampaignVersion:
+    tenant_id: TenantId
+    campaign_id: CampaignId
+    version: int
+    name: str
+    boundary: CampaignBoundary
+    created_by: EmployeeId
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_id(self.campaign_id, "cmp", "campaign_id")
+        if not isinstance(self.tenant_id, str) or not self.tenant_id:
+            raise ValidationError("tenant_id 无效")
+        if not isinstance(self.version, int) or isinstance(self.version, bool) or self.version < 1:
+            raise ValidationError("Campaign version 无效")
+        if not isinstance(self.name, str) or not self.name.strip() or self.name != self.name.strip():
+            raise ValidationError("Campaign 名称无效")
+        if not isinstance(self.boundary, CampaignBoundary):
+            raise ValidationError("Campaign boundary 无效")
+        if not isinstance(self.created_by, str) or not self.created_by:
+            raise ValidationError("created_by 无效")
+        _require_utc(self.created_at, "created_at")
+
+    def revise(
+        self,
+        *,
+        name: str,
+        boundary: CampaignBoundary,
+        created_at: datetime,
+    ) -> CampaignVersion:
+        return CampaignVersion(
+            tenant_id=self.tenant_id,
+            campaign_id=self.campaign_id,
+            version=self.version + 1,
+            name=name,
+            boundary=boundary,
+            created_by=self.created_by,
+            created_at=created_at,
+        )
+
+
+@dataclass
+class Campaign:
+    tenant_id: TenantId
+    campaign_id: CampaignId
+    state: CampaignState
+    current_version: int
+    created_by: EmployeeId
+    created_at: datetime
+    round_robin_cursor: int = -1
+    approval_id: str | None = None
+    approved_by: EmployeeId | None = None
+    approved_at: datetime | None = None
+    paused_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_id(self.campaign_id, "cmp", "campaign_id")
+        if not isinstance(self.state, CampaignState):
+            raise ValidationError("Campaign state 无效")
+        if not isinstance(self.current_version, int) or isinstance(self.current_version, bool) or self.current_version < 1:
+            raise ValidationError("Campaign current_version 无效")
+        if not isinstance(self.round_robin_cursor, int) or isinstance(self.round_robin_cursor, bool) or self.round_robin_cursor < -1:
+            raise ValidationError("Campaign cursor 无效")
+        _require_utc(self.created_at, "created_at")
+
+    def transition_to(self, target: CampaignState) -> None:
+        validate_campaign_transition(self.state, target)
+        self.state = target
+
+
+_STOP_REASON_BY_STATE: dict[EnrollmentState, EnrollmentStopReason | None] = {
+    EnrollmentState.REPLIED: EnrollmentStopReason.REPLY,
+    EnrollmentState.COMPLETED: None,
+    EnrollmentState.STOPPED_SUPPRESSED: EnrollmentStopReason.SUPPRESSION,
+    EnrollmentState.STOPPED_BOUNCED: EnrollmentStopReason.HARD_BOUNCE,
+    EnrollmentState.STOPPED_MANUAL: EnrollmentStopReason.MANUAL,
+    EnrollmentState.STOPPED_IDENTITY_UNAVAILABLE: EnrollmentStopReason.IDENTITY_UNAVAILABLE,
+}
+
+
+@dataclass
+class Enrollment:
+    tenant_id: TenantId
+    enrollment_id: EnrollmentId
+    campaign_id: CampaignId
+    campaign_version: int
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    sending_identity_id: SendingIdentityId
+    state: EnrollmentState
+    current_step: int
+    next_send_at: datetime | None
+    enrolled_at: datetime
+    stopped_at: datetime | None
+    stop_reason: EnrollmentStopReason | None
+    idempotency_key: IdempotencyKey
+
+    def __post_init__(self) -> None:
+        _require_id(self.enrollment_id, "enr", "enrollment_id")
+        _require_id(self.campaign_id, "cmp", "campaign_id")
+        _require_id(self.account_id, "acc", "account_id")
+        _require_id(self.contact_point_id, "cp", "contact_point_id")
+        _require_id(self.sending_identity_id, "sid", "sending_identity_id")
+        if not isinstance(self.campaign_version, int) or isinstance(self.campaign_version, bool) or self.campaign_version < 1:
+            raise ValidationError("campaign_version 无效")
+        if not isinstance(self.current_step, int) or isinstance(self.current_step, bool) or self.current_step < 0:
+            raise ValidationError("current_step 无效")
+        if not isinstance(self.state, EnrollmentState):
+            raise ValidationError("Enrollment state 无效")
+        _require_utc(self.enrolled_at, "enrolled_at")
+        if self.next_send_at is not None:
+            _require_utc(self.next_send_at, "next_send_at")
+        expected_reason = _STOP_REASON_BY_STATE.get(self.state)
+        if self.state in _ENROLLMENT_TERMINAL:
+            if self.stopped_at is None:
+                raise ValidationError("terminal enrollment 缺少 stopped_at")
+            _require_utc(self.stopped_at, "stopped_at")
+            if self.stop_reason is not expected_reason:
+                raise ValidationError("terminal enrollment stop_reason 不匹配")
+        elif self.stopped_at is not None or self.stop_reason is not None:
+            raise ValidationError("active enrollment 不能带停止字段")
+        if not isinstance(self.idempotency_key, str) or not self.idempotency_key:
+            raise ValidationError("idempotency_key 无效")
+
+    def transition_to(
+        self,
+        target: EnrollmentState,
+        *,
+        at: datetime,
+        reason: EnrollmentStopReason | None = None,
+    ) -> None:
+        validate_enrollment_transition(self.state, target)
+        _require_utc(at, "transition time")
+        expected = _STOP_REASON_BY_STATE.get(target)
+        if target in _ENROLLMENT_TERMINAL and reason is not expected:
+            raise ValidationError("Enrollment stop reason 不匹配")
+        self.state = target
+        if target in _ENROLLMENT_TERMINAL:
+            self.stopped_at = at
+            self.stop_reason = expected
+
+
+@dataclass
+class MessageAttempt:
+    tenant_id: TenantId
+    attempt_id: MessageAttemptId
+    message_id: MessageId
+    campaign_id: CampaignId
+    enrollment_id: EnrollmentId
+    campaign_version: int
+    step_number: int
+    sending_identity_id: SendingIdentityId
+    idempotency_key: IdempotencyKey
+    state: MessageAttemptState
+    provider_ref: str | None
+    failure_category: SendFailureCategory | None
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        for value, prefix, field in (
+            (self.attempt_id, "mat", "attempt_id"),
+            (self.message_id, "msg", "message_id"),
+            (self.campaign_id, "cmp", "campaign_id"),
+            (self.enrollment_id, "enr", "enrollment_id"),
+            (self.sending_identity_id, "sid", "sending_identity_id"),
+        ):
+            _require_id(value, prefix, field)
+        if not isinstance(self.state, MessageAttemptState):
+            raise ValidationError("Message Attempt state 无效")
+        if not isinstance(self.step_number, int) or isinstance(self.step_number, bool) or self.step_number < 1:
+            raise ValidationError("step_number 无效")
+        _require_utc(self.created_at, "created_at")
+        _require_utc(self.updated_at, "updated_at")
+        if self.state is MessageAttemptState.RESERVED:
+            valid = self.provider_ref is None and self.failure_category is None
+        elif self.state is MessageAttemptState.SENT:
+            valid = (
+                isinstance(self.provider_ref, str)
+                and bool(self.provider_ref)
+                and self.failure_category is None
+            )
+        elif self.state is MessageAttemptState.FAILED_TRANSIENT:
+            valid = (
+                self.provider_ref is None
+                and self.failure_category is SendFailureCategory.PROVIDER_TRANSIENT
+            )
+        else:
+            valid = (
+                self.provider_ref is None
+                and self.failure_category is SendFailureCategory.IDENTITY_UNAVAILABLE
+            )
+        if not valid:
+            raise ValidationError("Message Attempt 状态字段不匹配")
+
+    def transition_to(
+        self,
+        target: MessageAttemptState,
+        *,
+        at: datetime,
+        provider_ref: str | None = None,
+        failure_category: SendFailureCategory | None = None,
+    ) -> None:
+        validate_message_attempt_transition(self.state, target)
+        _require_utc(at, "transition time")
+        self.state = target
+        self.provider_ref = provider_ref
+        self.failure_category = failure_category
+        self.updated_at = at
+        self.__post_init__()
 
 
 @dataclass(frozen=True)
 class SuppressionEntry:
-    """抑制记录。
-
-    **只增不删。** 跨 Campaign、跨身份、跨员工全局生效。
-    移除必须人工发起并走审批（几乎不应该发生）。
-
-    字段：
-        tenant_id
-        scope, target_id
-        reason
-        source_ref:   触发来源（消息 ID / webhook 事件 ID / 操作人）
-        created_at
-    """
-
     tenant_id: TenantId
-    scope: SuppressionScope
-    target_id: str
+    suppression_id: SuppressionId
+    target: SuppressionTarget
     reason: SuppressionReason
+    occurred_at: datetime
     source_ref: str
+    idempotency_key: IdempotencyKey
     created_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_id(self.suppression_id, "sup", "suppression_id")
+        if not isinstance(self.reason, SuppressionReason):
+            raise ValidationError("suppression reason 无效")
+        if not hasattr(self.target, "canonical_id") or not hasattr(self.target, "scope"):
+            raise ValidationError("suppression target 无效")
+        _require_utc(self.occurred_at, "occurred_at")
+        _require_utc(self.created_at, "created_at")
+        if not isinstance(self.source_ref, str) or not self.source_ref:
+            raise ValidationError("source_ref 无效")
+        if not isinstance(self.idempotency_key, str) or not self.idempotency_key:
+            raise ValidationError("idempotency_key 无效")
 
 
 @dataclass(frozen=True)
 class DailyQuotaUsage:
-    """Campaign 每日额度使用。
-
-    字段：
-        campaign_id, on_day
-        new_contacts_used, total_messages_used
-
-    计数必须原子递增（同 ``sending_identity`` 的发送计数），
-    并发发送下读-改-写会突破老板批准的上限。
-    """
-
+    tenant_id: TenantId
     campaign_id: CampaignId
-    on_day: str
-    new_contacts_used: int
-    total_messages_used: int
+    on_day: date
+    new_contacts_reserved: int
+    messages_reserved: int
+
+    def __post_init__(self) -> None:
+        _require_id(self.campaign_id, "cmp", "campaign_id")
+        if not isinstance(self.on_day, date) or isinstance(self.on_day, datetime):
+            raise ValidationError("on_day 必须是 date")
+        for value in (self.new_contacts_reserved, self.messages_reserved):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValidationError("quota counter 无效")
+
+
+@dataclass(frozen=True)
+class ActionRecord:
+    tenant_id: TenantId
+    action_id: str
+    action_key: str
+    action: str
+    entity_id: str
+    actor_id: str
+    occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        for field, value in (
+            ("action_id", self.action_id),
+            ("action_key", self.action_key),
+            ("action", self.action),
+            ("entity_id", self.entity_id),
+            ("actor_id", self.actor_id),
+        ):
+            if not isinstance(value, str) or not value or any(character.isspace() for character in value):
+                raise ValidationError(f"{field} 无效")
+        _require_utc(self.occurred_at, "occurred_at")
