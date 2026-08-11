@@ -23,6 +23,7 @@ dispose），不触发 session 级 async fixture 的 teardown 事件循环问题
 时间用 SQL ``now()``；JSONB 参数走 ``CAST(:p AS jsonb)``，禁止值拼接。
 禁止打印/记录任何连接串（``db_url`` 经 conftest 的 RedactedUrl 脱敏 repr）。
 """
+
 from __future__ import annotations
 
 import json
@@ -66,6 +67,17 @@ SENDING_IDENTITY_TABLES: tuple[str, ...] = (
     "sending_daily_counters",
     "sending_send_reservations",
     "sending_identity_actions",
+)
+
+OUTREACH_TABLES: tuple[str, ...] = (
+    "outreach_campaigns",
+    "outreach_campaign_versions",
+    "outreach_sequence_steps",
+    "outreach_enrollments",
+    "outreach_suppressions",
+    "outreach_daily_quotas",
+    "outreach_message_attempts",
+    "outreach_actions",
 )
 
 # 固定注入时钟（closed_at 绑定值；非业务逻辑数字）。
@@ -119,7 +131,9 @@ _INSERT_OPPORTUNITY = text(
 )
 
 
-def _opportunity_params(opportunity_id: str, tenant_id: str, need_id: str) -> dict[str, str]:
+def _opportunity_params(
+    opportunity_id: str, tenant_id: str, need_id: str
+) -> dict[str, str]:
     """机会行必填列参数（Schema 附录；state/created_at 走默认值）。"""
     return {
         "opportunity_id": opportunity_id,
@@ -482,10 +496,21 @@ async def test_append_only_tables_reject_update_and_delete(db_url: str) -> None:
         tenant_id = "tAudit1"
         opp_id = "opp-audit-1"
         async with engine.begin() as conn:
-            await conn.execute(_INSERT_OPPORTUNITY, _opportunity_params(opp_id, tenant_id, "need-audit-1"))
-            await conn.execute(_INSERT_SCORE_SNAPSHOT, _snapshot_params("snap-audit-1", tenant_id, opp_id))
-            await conn.execute(_INSERT_LOSS_RECORD, _loss_params("loss-audit-1", tenant_id, opp_id))
-            await conn.execute(_INSERT_PROVENANCE, _prov_params("prov-audit-1", tenant_id, "opportunity", opp_id))
+            await conn.execute(
+                _INSERT_OPPORTUNITY,
+                _opportunity_params(opp_id, tenant_id, "need-audit-1"),
+            )
+            await conn.execute(
+                _INSERT_SCORE_SNAPSHOT,
+                _snapshot_params("snap-audit-1", tenant_id, opp_id),
+            )
+            await conn.execute(
+                _INSERT_LOSS_RECORD, _loss_params("loss-audit-1", tenant_id, opp_id)
+            )
+            await conn.execute(
+                _INSERT_PROVENANCE,
+                _prov_params("prov-audit-1", tenant_id, "opportunity", opp_id),
+            )
 
         cases: list[tuple[str, str, dict[str, object]]] = [
             (
@@ -547,7 +572,9 @@ async def test_outbox_status_and_delivered_at_updatable(db_url: str) -> None:
             assert row["delivered_at"] is not None
         async with engine.begin() as conn:
             result = await conn.execute(
-                text("SELECT status, delivered_at FROM outbox_events WHERE event_id = :id"),
+                text(
+                    "SELECT status, delivered_at FROM outbox_events WHERE event_id = :id"
+                ),
                 {"id": event_id},
             )
             row = result.mappings().one()
@@ -732,24 +759,33 @@ async def test_loss_record_requires_confirmed_actor_and_time(db_url: str) -> Non
         tenant_id = "tLoss"
         opp_id = "opp-loss-1"
         async with engine.begin() as conn:
-            await conn.execute(_INSERT_OPPORTUNITY, _opportunity_params(opp_id, tenant_id, "need-loss-1"))
+            await conn.execute(
+                _INSERT_OPPORTUNITY,
+                _opportunity_params(opp_id, tenant_id, "need-loss-1"),
+            )
         await _assert_statement_integrity_rejected(
             engine,
             _INSERT_LOSS_RECORD_FULL,
-            _loss_full_params("loss-bad-confirmed-by", tenant_id, opp_id, confirmed_by=None),
+            _loss_full_params(
+                "loss-bad-confirmed-by", tenant_id, opp_id, confirmed_by=None
+            ),
             "缺 confirmed_by 应被 NOT NULL 拒绝",
         )
         await _assert_statement_integrity_rejected(
             engine,
             _INSERT_LOSS_RECORD_FULL,
-            _loss_full_params("loss-bad-confirmed-at", tenant_id, opp_id, confirmed_at=None),
+            _loss_full_params(
+                "loss-bad-confirmed-at", tenant_id, opp_id, confirmed_at=None
+            ),
             "缺 confirmed_at 应被 NOT NULL 拒绝",
         )
     finally:
         await engine.dispose()
 
 
-async def test_handoff_loss_composite_fk_tenant_isolation_and_restrict(db_url: str) -> None:
+async def test_handoff_loss_composite_fk_tenant_isolation_and_restrict(
+    db_url: str,
+) -> None:
     """复合 FK (tenant_id, opportunity_id)：跨租户引用被拒、同租户合法、DELETE parent 被 RESTRICT。"""
     from infra.db.session import create_engine_from
 
@@ -758,7 +794,9 @@ async def test_handoff_loss_composite_fk_tenant_isolation_and_restrict(db_url: s
         tenant_a = "tFK_a"
         opp_a = "opp-fk-a"
         async with engine.begin() as conn:
-            await conn.execute(_INSERT_OPPORTUNITY, _opportunity_params(opp_a, tenant_a, "need-fk-a"))
+            await conn.execute(
+                _INSERT_OPPORTUNITY, _opportunity_params(opp_a, tenant_a, "need-fk-a")
+            )
         await _assert_statement_integrity_rejected(
             engine,
             _INSERT_HANDOFF,
@@ -772,11 +810,17 @@ async def test_handoff_loss_composite_fk_tenant_isolation_and_restrict(db_url: s
             "跨租户 loss_record 引用应被复合 FK 拒绝",
         )
         async with engine.begin() as conn:
-            await conn.execute(_INSERT_HANDOFF, _handoff_params("ho-fk-a-1", tenant_a, opp_a))
-            await conn.execute(_INSERT_LOSS_RECORD, _loss_params("loss-fk-a-1", tenant_a, opp_a))
+            await conn.execute(
+                _INSERT_HANDOFF, _handoff_params("ho-fk-a-1", tenant_a, opp_a)
+            )
+            await conn.execute(
+                _INSERT_LOSS_RECORD, _loss_params("loss-fk-a-1", tenant_a, opp_a)
+            )
         await _assert_statement_integrity_rejected(
             engine,
-            text("DELETE FROM opportunities WHERE opportunity_id = :id AND tenant_id = :tenant"),
+            text(
+                "DELETE FROM opportunities WHERE opportunity_id = :id AND tenant_id = :tenant"
+            ),
             {"id": opp_a, "tenant": tenant_a},
             "删除仍被引用的机会应被 ON DELETE RESTRICT 拒绝",
         )
@@ -828,7 +872,9 @@ def _sync_sending_contract(conn: Connection) -> dict[str, dict[str, object]]:
                 )
                 for item in inspector.get_foreign_keys(table)
             },
-            "checks": {str(item["name"]) for item in inspector.get_check_constraints(table)},
+            "checks": {
+                str(item["name"]) for item in inspector.get_check_constraints(table)
+            },
             "indexes": {
                 str(item["name"]): tuple(item["column_names"])
                 for item in inspector.get_indexes(table)
@@ -859,7 +905,71 @@ def _sync_sending_guards(conn: Connection) -> tuple[dict[str, set[str]], set[str
     return triggers, functions
 
 
-def _orm_column_contract(table: object) -> dict[str, tuple[str, int | None, int | None, int | None, bool]]:
+def _sync_outreach_contract(conn: Connection) -> dict[str, dict[str, object]]:
+    inspector = inspect(conn)
+    contract: dict[str, dict[str, object]] = {}
+    for table in OUTREACH_TABLES:
+        columns = inspector.get_columns(table)
+        contract[table] = {
+            "columns": {
+                str(column["name"]): (
+                    type(column["type"]).__name__.upper(),
+                    getattr(column["type"], "length", None),
+                    getattr(column["type"], "precision", None),
+                    getattr(column["type"], "scale", None),
+                    bool(column["nullable"]),
+                )
+                for column in columns
+            },
+            "pk": tuple(inspector.get_pk_constraint(table)["constrained_columns"]),
+            "uniques": {
+                str(item["name"]): tuple(item["column_names"])
+                for item in inspector.get_unique_constraints(table)
+            },
+            "fks": {
+                str(item["name"]): (
+                    tuple(item["constrained_columns"]),
+                    str(item["referred_table"]),
+                    tuple(item["referred_columns"]),
+                )
+                for item in inspector.get_foreign_keys(table)
+            },
+            "checks": {
+                str(item["name"]) for item in inspector.get_check_constraints(table)
+            },
+            "indexes": {
+                str(item["name"]): tuple(item["column_names"])
+                for item in inspector.get_indexes(table)
+                if not item.get("duplicates_constraint")
+            },
+        }
+    return contract
+
+
+def _sync_outreach_guards(conn: Connection) -> tuple[dict[str, set[str]], set[str]]:
+    trigger_rows = conn.execute(
+        text(
+            "SELECT c.relname, t.tgname FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid=t.tgrelid "
+            "WHERE NOT t.tgisinternal AND c.relname = ANY(:tables)"
+        ),
+        {"tables": list(OUTREACH_TABLES)},
+    ).all()
+    triggers = {table: set() for table in OUTREACH_TABLES}
+    for table, trigger in trigger_rows:
+        triggers[str(table)].add(str(trigger))
+    functions = {
+        str(row[0])
+        for row in conn.execute(
+            text("SELECT proname FROM pg_proc WHERE proname LIKE 'outreach_%guard'")
+        ).all()
+    }
+    return triggers, functions
+
+
+def _orm_column_contract(
+    table: object,
+) -> dict[str, tuple[str, int | None, int | None, int | None, bool]]:
     columns = table.columns  # type: ignore[attr-defined]
     result: dict[str, tuple[str, int | None, int | None, int | None, bool]] = {}
     for column in columns:
@@ -880,7 +990,9 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
     from infra.db.session import create_engine_from
     from infra.db.tables import Base
 
-    expected_columns: dict[str, dict[str, tuple[str, int | None, int | None, int | None, bool]]] = {
+    expected_columns: dict[
+        str, dict[str, tuple[str, int | None, int | None, int | None, bool]]
+    ] = {
         "sending_domains": {
             "tenant_id": ("VARCHAR", 32, None, None, False),
             "domain": ("VARCHAR", 253, None, None, False),
@@ -974,26 +1086,95 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
         "sending_identity_actions": ("tenant_id", "action_id"),
     }
     expected_uniques = {
-        "sending_identities": {"uq_sending_identities_tenant_address": ("tenant_id", "address")},
-        "sending_auth_checks": {"uq_sending_auth_tenant_identity_ref": ("tenant_id", "identity_id", "check_ref")},
-        "sending_reputation_events": {"uq_sending_reputation_tenant_dedup": ("tenant_id", "dedup_key")},
-        "sending_send_reservations": {
-            "uq_sending_reservation_tenant_identity_key": ("tenant_id", "identity_id", "reservation_key"),
-            "uq_sending_reservation_tenant_identity_day_sequence": ("tenant_id", "identity_id", "on_day", "sequence"),
+        "sending_identities": {
+            "uq_sending_identities_tenant_address": ("tenant_id", "address")
         },
-        "sending_identity_actions": {"uq_sending_action_tenant_identity_key": ("tenant_id", "identity_id", "action_key")},
+        "sending_auth_checks": {
+            "uq_sending_auth_tenant_identity_ref": (
+                "tenant_id",
+                "identity_id",
+                "check_ref",
+            )
+        },
+        "sending_reputation_events": {
+            "uq_sending_reputation_tenant_dedup": ("tenant_id", "dedup_key")
+        },
+        "sending_send_reservations": {
+            "uq_sending_reservation_tenant_identity_key": (
+                "tenant_id",
+                "identity_id",
+                "reservation_key",
+            ),
+            "uq_sending_reservation_tenant_identity_day_sequence": (
+                "tenant_id",
+                "identity_id",
+                "on_day",
+                "sequence",
+            ),
+        },
+        "sending_identity_actions": {
+            "uq_sending_action_tenant_identity_key": (
+                "tenant_id",
+                "identity_id",
+                "action_key",
+            )
+        },
     }
     expected_fks = {
-        "sending_identities": {"fk_sending_identities_domain": (("tenant_id", "domain"), "sending_domains", ("tenant_id", "domain"))},
-        "sending_auth_checks": {"fk_sending_auth_identity": (("tenant_id", "identity_id"), "sending_identities", ("tenant_id", "identity_id"))},
-        "sending_reputation_events": {"fk_sending_reputation_identity": (("tenant_id", "identity_id"), "sending_identities", ("tenant_id", "identity_id"))},
-        "sending_daily_counters": {"fk_sending_counter_identity": (("tenant_id", "identity_id"), "sending_identities", ("tenant_id", "identity_id"))},
-        "sending_send_reservations": {"fk_sending_reservation_identity": (("tenant_id", "identity_id"), "sending_identities", ("tenant_id", "identity_id"))},
-        "sending_identity_actions": {"fk_sending_action_identity": (("tenant_id", "identity_id"), "sending_identities", ("tenant_id", "identity_id"))},
+        "sending_identities": {
+            "fk_sending_identities_domain": (
+                ("tenant_id", "domain"),
+                "sending_domains",
+                ("tenant_id", "domain"),
+            )
+        },
+        "sending_auth_checks": {
+            "fk_sending_auth_identity": (
+                ("tenant_id", "identity_id"),
+                "sending_identities",
+                ("tenant_id", "identity_id"),
+            )
+        },
+        "sending_reputation_events": {
+            "fk_sending_reputation_identity": (
+                ("tenant_id", "identity_id"),
+                "sending_identities",
+                ("tenant_id", "identity_id"),
+            )
+        },
+        "sending_daily_counters": {
+            "fk_sending_counter_identity": (
+                ("tenant_id", "identity_id"),
+                "sending_identities",
+                ("tenant_id", "identity_id"),
+            )
+        },
+        "sending_send_reservations": {
+            "fk_sending_reservation_identity": (
+                ("tenant_id", "identity_id"),
+                "sending_identities",
+                ("tenant_id", "identity_id"),
+            )
+        },
+        "sending_identity_actions": {
+            "fk_sending_action_identity": (
+                ("tenant_id", "identity_id"),
+                "sending_identities",
+                ("tenant_id", "identity_id"),
+            )
+        },
     }
     expected_checks = {
         "sending_domains": set(),
-        "sending_identities": {"ck_sending_identity_target_volume", "ck_sending_identity_version", "ck_sending_identity_minimum_sample", "ck_sending_identity_warmup_pair", "ck_sending_identity_address_domain", "ck_sending_identity_restriction_state", "ck_sending_identity_suspension_category"},
+        "sending_identities": {
+            "ck_sending_identity_target_volume",
+            "ck_sending_identity_version",
+            "ck_sending_identity_minimum_sample",
+            "ck_sending_identity_warmup_pair",
+            "ck_sending_identity_address_domain",
+            "ck_sending_identity_restriction_state",
+            "ck_sending_identity_suspension_category",
+        },
         "sending_auth_checks": set(),
         "sending_reputation_events": set(),
         "sending_daily_counters": {"ck_sending_counter_nonnegative"},
@@ -1001,7 +1182,13 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
         "sending_identity_actions": set(),
     }
     expected_indexes = {
-        "sending_reputation_events": {"ix_sending_reputation_tenant_identity_occurred": ("tenant_id", "identity_id", "occurred_at")}
+        "sending_reputation_events": {
+            "ix_sending_reputation_tenant_identity_occurred": (
+                "tenant_id",
+                "identity_id",
+                "occurred_at",
+            )
+        }
     }
 
     engine = create_engine_from(db_url)
@@ -1020,9 +1207,14 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
 
             orm_table = Base.metadata.tables[table]
             assert _orm_column_contract(orm_table) == expected_columns[table]
-            assert tuple(column.name for column in orm_table.primary_key.columns) == expected_pks[table]
+            assert (
+                tuple(column.name for column in orm_table.primary_key.columns)
+                == expected_pks[table]
+            )
             orm_uniques = {
-                str(constraint.name): tuple(column.name for column in constraint.columns)
+                str(constraint.name): tuple(
+                    column.name for column in constraint.columns
+                )
                 for constraint in orm_table.constraints
                 if isinstance(constraint, UniqueConstraint)
             }
@@ -1087,7 +1279,9 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
     """真实 PG 拒绝跨租户 FK、重复键、非法计数及审计表改写。"""
     from infra.db.session import create_engine_from
 
-    domain_sql = text("INSERT INTO sending_domains VALUES (:tenant,:domain,:role,:created)")
+    domain_sql = text(
+        "INSERT INTO sending_domains VALUES (:tenant,:domain,:role,:created)"
+    )
     identity_sql = text(
         "INSERT INTO sending_identities (tenant_id,identity_id,domain,address,state,version,"
         "throttle_hard_bounce_rate,suspend_hard_bounce_rate,throttle_complaint_rate,"
@@ -1097,12 +1291,61 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
     engine = create_engine_from(db_url)
     try:
         async with engine.begin() as conn:
-            await conn.execute(domain_sql, {"tenant": "tMigA", "domain": "cold.example.com", "role": "cold_outreach", "created": _NOW})
-            await conn.execute(identity_sql, {"tenant": "tMigA", "identity": "sidA", "domain": "cold.example.com", "address": "sales@cold.example.com", "created": _NOW})
+            await conn.execute(
+                domain_sql,
+                {
+                    "tenant": "tMigA",
+                    "domain": "cold.example.com",
+                    "role": "cold_outreach",
+                    "created": _NOW,
+                },
+            )
+            await conn.execute(
+                identity_sql,
+                {
+                    "tenant": "tMigA",
+                    "identity": "sidA",
+                    "domain": "cold.example.com",
+                    "address": "sales@cold.example.com",
+                    "created": _NOW,
+                },
+            )
 
-        await _assert_statement_integrity_rejected(engine, identity_sql, {"tenant": "tMigB", "identity": "sidCross", "domain": "cold.example.com", "address": "cross@cold.example.com", "created": _NOW}, "跨租户 identity→domain FK 应被拒绝")
-        await _assert_statement_integrity_rejected(engine, identity_sql, {"tenant": "tMigA", "identity": "sidDup", "domain": "cold.example.com", "address": "sales@cold.example.com", "created": _NOW}, "同租户重复 address 应被拒绝")
-        await _assert_statement_integrity_rejected(engine, domain_sql, {"tenant": "tMigA", "domain": "cold.example.com", "role": "primary_business", "created": _NOW}, "同域角色冲突应被拒绝")
+        await _assert_statement_integrity_rejected(
+            engine,
+            identity_sql,
+            {
+                "tenant": "tMigB",
+                "identity": "sidCross",
+                "domain": "cold.example.com",
+                "address": "cross@cold.example.com",
+                "created": _NOW,
+            },
+            "跨租户 identity→domain FK 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            identity_sql,
+            {
+                "tenant": "tMigA",
+                "identity": "sidDup",
+                "domain": "cold.example.com",
+                "address": "sales@cold.example.com",
+                "created": _NOW,
+            },
+            "同租户重复 address 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            domain_sql,
+            {
+                "tenant": "tMigA",
+                "domain": "cold.example.com",
+                "role": "primary_business",
+                "created": _NOW,
+            },
+            "同域角色冲突应被拒绝",
+        )
 
         restricted_sql = text(
             "INSERT INTO sending_identities (tenant_id,identity_id,domain,address,state,"
@@ -1113,13 +1356,65 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             "0,.03,.05,.001,.003,true,true,50,:created)"
         )
         for params, reason in (
-            ({"identity": "sidThrottleNull", "address": "tn@cold.example.com", "state": "throttled", "saved": None, "category": None, "created": _NOW}, "throttled+NULL saved 应被拒绝"),
-            ({"identity": "sidActiveSaved", "address": "as@cold.example.com", "state": "active", "saved": "active", "category": None, "created": _NOW}, "非受限身份带 saved state 应被拒绝"),
-            ({"identity": "sidSuspendNoCategory", "address": "snc@cold.example.com", "state": "suspended", "saved": "active", "category": None, "created": _NOW}, "suspended 缺 category 应被拒绝"),
-            ({"identity": "sidThrottleCategory", "address": "tc@cold.example.com", "state": "throttled", "saved": "active", "category": "spam_trap", "created": _NOW}, "throttled 带 category 应被拒绝"),
-            ({"identity": "sidBadCategory", "address": "bc@cold.example.com", "state": "suspended", "saved": "active", "category": "dns_investigation", "created": _NOW}, "自由 category 应被拒绝"),
+            (
+                {
+                    "identity": "sidThrottleNull",
+                    "address": "tn@cold.example.com",
+                    "state": "throttled",
+                    "saved": None,
+                    "category": None,
+                    "created": _NOW,
+                },
+                "throttled+NULL saved 应被拒绝",
+            ),
+            (
+                {
+                    "identity": "sidActiveSaved",
+                    "address": "as@cold.example.com",
+                    "state": "active",
+                    "saved": "active",
+                    "category": None,
+                    "created": _NOW,
+                },
+                "非受限身份带 saved state 应被拒绝",
+            ),
+            (
+                {
+                    "identity": "sidSuspendNoCategory",
+                    "address": "snc@cold.example.com",
+                    "state": "suspended",
+                    "saved": "active",
+                    "category": None,
+                    "created": _NOW,
+                },
+                "suspended 缺 category 应被拒绝",
+            ),
+            (
+                {
+                    "identity": "sidThrottleCategory",
+                    "address": "tc@cold.example.com",
+                    "state": "throttled",
+                    "saved": "active",
+                    "category": "spam_trap",
+                    "created": _NOW,
+                },
+                "throttled 带 category 应被拒绝",
+            ),
+            (
+                {
+                    "identity": "sidBadCategory",
+                    "address": "bc@cold.example.com",
+                    "state": "suspended",
+                    "saved": "active",
+                    "category": "dns_investigation",
+                    "created": _NOW,
+                },
+                "自由 category 应被拒绝",
+            ),
         ):
-            await _assert_statement_integrity_rejected(engine, restricted_sql, params, reason)
+            await _assert_statement_integrity_rejected(
+                engine, restricted_sql, params, reason
+            )
         await _assert_statement_integrity_rejected(
             engine,
             text(
@@ -1131,20 +1426,76 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             "suspended UPDATE 的 NULL saved 应被拒绝",
         )
 
-        auth_sql = text("INSERT INTO sending_auth_checks VALUES ('tMigA',:id,'sidA',:at,true,true,true,'[]'::jsonb,:ref,:at)")
-        rep_sql = text("INSERT INTO sending_reputation_events VALUES ('tMigA',:id,'sidA','delivered',:at,:key,:ref,:at)")
-        reservation_sql = text("INSERT INTO sending_send_reservations VALUES ('tMigA',:id,'sidA',:key,:day,:sequence,:at)")
-        action_sql = text("INSERT INTO sending_identity_actions VALUES ('tMigA',:id,'sidA',:key,'identity:register',NULL,'created','actor','tenant','rule',NULL,:at)")
+        auth_sql = text(
+            "INSERT INTO sending_auth_checks VALUES ('tMigA',:id,'sidA',:at,true,true,true,'[]'::jsonb,:ref,:at)"
+        )
+        rep_sql = text(
+            "INSERT INTO sending_reputation_events VALUES ('tMigA',:id,'sidA','delivered',:at,:key,:ref,:at)"
+        )
+        reservation_sql = text(
+            "INSERT INTO sending_send_reservations VALUES ('tMigA',:id,'sidA',:key,:day,:sequence,:at)"
+        )
+        action_sql = text(
+            "INSERT INTO sending_identity_actions VALUES ('tMigA',:id,'sidA',:key,'identity:register',NULL,'created','actor','tenant','rule',NULL,:at)"
+        )
         async with engine.begin() as conn:
-            await conn.execute(auth_sql, {"id": "authMig", "at": _NOW, "ref": "auth_ref"})
-            await conn.execute(rep_sql, {"id": "repMig", "at": _NOW, "key": "rep-key", "ref": "rep_ref"})
-            await conn.execute(reservation_sql, {"id": "resMig", "key": "res-key", "day": _NOW.date(), "sequence": 1, "at": _NOW})
-            await conn.execute(action_sql, {"id": "actMig", "key": "act-key", "at": _NOW})
-            await conn.execute(text("INSERT INTO sending_daily_counters VALUES ('tMigA','sidA',:day,1)"), {"day": _NOW.date()})
+            await conn.execute(
+                auth_sql, {"id": "authMig", "at": _NOW, "ref": "auth_ref"}
+            )
+            await conn.execute(
+                rep_sql,
+                {"id": "repMig", "at": _NOW, "key": "rep-key", "ref": "rep_ref"},
+            )
+            await conn.execute(
+                reservation_sql,
+                {
+                    "id": "resMig",
+                    "key": "res-key",
+                    "day": _NOW.date(),
+                    "sequence": 1,
+                    "at": _NOW,
+                },
+            )
+            await conn.execute(
+                action_sql, {"id": "actMig", "key": "act-key", "at": _NOW}
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO sending_daily_counters VALUES ('tMigA','sidA',:day,1)"
+                ),
+                {"day": _NOW.date()},
+            )
 
-        await _assert_statement_integrity_rejected(engine, reservation_sql, {"id": "resDupSeq", "key": "other-key", "day": _NOW.date(), "sequence": 1, "at": _NOW}, "重复 sequence 应被拒绝")
-        await _assert_statement_integrity_rejected(engine, reservation_sql, {"id": "resNeg", "key": "negative-key", "day": _NOW.date(), "sequence": -1, "at": _NOW}, "负 sequence 应被拒绝")
-        await _assert_statement_integrity_rejected(engine, text("INSERT INTO sending_daily_counters VALUES ('tMigA','sidA',:day,-1)"), {"day": date(2026, 8, 11)}, "负 counter 应被拒绝")
+        await _assert_statement_integrity_rejected(
+            engine,
+            reservation_sql,
+            {
+                "id": "resDupSeq",
+                "key": "other-key",
+                "day": _NOW.date(),
+                "sequence": 1,
+                "at": _NOW,
+            },
+            "重复 sequence 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            reservation_sql,
+            {
+                "id": "resNeg",
+                "key": "negative-key",
+                "day": _NOW.date(),
+                "sequence": -1,
+                "at": _NOW,
+            },
+            "负 sequence 应被拒绝",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text("INSERT INTO sending_daily_counters VALUES ('tMigA','sidA',:day,-1)"),
+            {"day": date(2026, 8, 11)},
+            "负 counter 应被拒绝",
+        )
 
         for table, column, value in (
             ("sending_auth_checks", "check_ref", "changed"),
@@ -1152,8 +1503,15 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             ("sending_send_reservations", "reservation_key", "changed"),
             ("sending_identity_actions", "rule", "changed"),
         ):
-            await _assert_dml_rejected(engine, table, f"UPDATE {table} SET {column}=:value WHERE tenant_id='tMigA'", {"value": value})
-            await _assert_dml_rejected(engine, table, f"DELETE FROM {table} WHERE tenant_id='tMigA'", {})
+            await _assert_dml_rejected(
+                engine,
+                table,
+                f"UPDATE {table} SET {column}=:value WHERE tenant_id='tMigA'",
+                {"value": value},
+            )
+            await _assert_dml_rejected(
+                engine, table, f"DELETE FROM {table} WHERE tenant_id='tMigA'", {}
+            )
         for statement in (
             "UPDATE sending_daily_counters SET sent_attempts=0 WHERE tenant_id='tMigA'",
             "UPDATE sending_daily_counters SET tenant_id='tOther' WHERE tenant_id='tMigA'",
@@ -1173,5 +1531,229 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             "UPDATE sending_domains SET tenant_id='tOther' WHERE tenant_id='tMigA'",
         ):
             await _assert_dml_rejected(engine, "sending_domains", statement, {})
+    finally:
+        await engine.dispose()
+
+
+async def test_0009_outreach_schema_and_roundtrip(db_url: str) -> None:
+    """0009 八表必须可 0009→0008→0009 精确往返。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        assert set(OUTREACH_TABLES) <= await _table_names(engine)
+        _run_alembic(db_url, "downgrade", "0008")
+        assert set(OUTREACH_TABLES).isdisjoint(await _table_names(engine))
+        _run_alembic(db_url, "upgrade", "0009")
+        assert set(OUTREACH_TABLES) <= await _table_names(engine)
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0009_outreach_schema_matches_orm_exactly(db_url: str) -> None:
+    """0009 八表的列型、键、约束、索引及数据库护栏与 ORM 逐项一致。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import Base
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            db_contract = await conn.run_sync(_sync_outreach_contract)
+            triggers, functions = await conn.run_sync(_sync_outreach_guards)
+        assert set(db_contract) == set(OUTREACH_TABLES)
+        for table in OUTREACH_TABLES:
+            orm_table = Base.metadata.tables[table]
+            orm_uniques = {
+                str(constraint.name): tuple(
+                    column.name for column in constraint.columns
+                )
+                for constraint in orm_table.constraints
+                if isinstance(constraint, UniqueConstraint)
+            }
+            orm_fks = {
+                str(constraint.name): (
+                    tuple(column.name for column in constraint.columns),
+                    next(iter(constraint.elements)).column.table.name,
+                    tuple(element.column.name for element in constraint.elements),
+                )
+                for constraint in orm_table.constraints
+                if isinstance(constraint, ForeignKeyConstraint)
+            }
+            orm_checks = {
+                str(constraint.name)
+                for constraint in orm_table.constraints
+                if isinstance(constraint, CheckConstraint)
+            }
+            orm_indexes = {
+                str(index.name): tuple(column.name for column in index.columns)
+                for index in orm_table.indexes
+            }
+            assert db_contract[table] == {
+                "columns": _orm_column_contract(orm_table),
+                "pk": tuple(column.name for column in orm_table.primary_key.columns),
+                "uniques": orm_uniques,
+                "fks": orm_fks,
+                "checks": orm_checks,
+                "indexes": orm_indexes,
+            }
+        assert triggers == {
+            "outreach_campaigns": set(),
+            "outreach_campaign_versions": {
+                "trg_outreach_campaign_versions_append_only"
+            },
+            "outreach_sequence_steps": {"trg_outreach_sequence_steps_append_only"},
+            "outreach_enrollments": set(),
+            "outreach_suppressions": {"trg_outreach_suppressions_append_only"},
+            "outreach_daily_quotas": {"trg_outreach_daily_quotas_guard"},
+            "outreach_message_attempts": set(),
+            "outreach_actions": {"trg_outreach_actions_append_only"},
+        }
+        assert functions == {"outreach_append_only_guard", "outreach_daily_quota_guard"}
+    finally:
+        await engine.dispose()
+
+
+async def test_0009_outreach_database_guards(db_url: str) -> None:
+    """真实 PG 强制租户复合 FK、活动企业唯一、只增事实与单调额度。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    campaign_sql = text(
+        "INSERT INTO outreach_campaigns "
+        "(tenant_id,campaign_id,state,current_version,created_by,created_at,"
+        "round_robin_cursor) VALUES "
+        "(:tenant,:campaign,'draft',1,:actor,:created,-1)"
+    )
+    version_sql = text(
+        "INSERT INTO outreach_campaign_versions "
+        "(tenant_id,campaign_id,version,name,markets,target_entity_types,"
+        "allowed_categories,sender_identity_ids,daily_new_contact_limit,"
+        "daily_total_message_limit,handoff_triggers,stop_on_reply,created_by,created_at) "
+        "VALUES (:tenant,:campaign,1,'Discovery','[\"US\"]'::jsonb,"
+        "'[\"importer\"]'::jsonb,'[\"hardware\"]'::jsonb,"
+        "'[\"sid_00000000000000000000000000\"]'::jsonb,5,10,"
+        "'[\"quote_requested\"]'::jsonb,true,:actor,:created)"
+    )
+    step_sql = text(
+        "INSERT INTO outreach_sequence_steps "
+        "(tenant_id,campaign_id,version,step_number,intent,wait_days) "
+        "VALUES (:tenant,:campaign,1,1,'discovery',0)"
+    )
+    try:
+        async with engine.begin() as conn:
+            params = {
+                "tenant": "tn_migration_a",
+                "campaign": "cmp_00000000000000000000000000",
+                "actor": "emp_00000000000000000000000000",
+                "created": _NOW,
+            }
+            await conn.execute(campaign_sql, params)
+            await conn.execute(version_sql, params)
+            await conn.execute(step_sql, params)
+
+        await _assert_statement_integrity_rejected(
+            engine,
+            version_sql,
+            {
+                "tenant": "tn_migration_b",
+                "campaign": "cmp_00000000000000000000000000",
+                "actor": "emp_00000000000000000000000000",
+                "created": _NOW,
+            },
+            "跨租户 Campaign version FK 应被拒绝",
+        )
+
+        enrollment_sql = text(
+            "INSERT INTO outreach_enrollments "
+            "(tenant_id,enrollment_id,campaign_id,campaign_version,account_id,"
+            "contact_point_id,sending_identity_id,state,current_step,next_send_at,"
+            "enrolled_at,idempotency_key) VALUES "
+            "('tn_migration_a',:enrollment,'cmp_00000000000000000000000000',1,"
+            "'acc_00000000000000000000000000',:contact,"
+            "'sid_00000000000000000000000000','enrolled',0,:created,:created,:key)"
+        )
+        async with engine.begin() as conn:
+            await conn.execute(
+                enrollment_sql,
+                {
+                    "enrollment": "enr_00000000000000000000000000",
+                    "contact": "cp_00000000000000000000000000",
+                    "created": _NOW,
+                    "key": "migration-enrollment-1",
+                },
+            )
+        await _assert_statement_integrity_rejected(
+            engine,
+            enrollment_sql,
+            {
+                "enrollment": "enr_00000000000000000000000001",
+                "contact": "cp_00000000000000000000000001",
+                "created": _NOW,
+                "key": "migration-enrollment-2",
+            },
+            "同企业第二条活动 Enrollment 应被拒绝",
+        )
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO outreach_suppressions "
+                    "(tenant_id,suppression_id,account_id,reason,occurred_at,source_ref,"
+                    "idempotency_key,created_at) VALUES "
+                    "('tn_migration_a','sup_00000000000000000000000000',"
+                    "'acc_00000000000000000000000000','manual_block',:created,"
+                    "'manual_record','migration-suppression-1',:created)"
+                ),
+                {"created": _NOW},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO outreach_actions "
+                    "(tenant_id,action_id,action_key,action,entity_id,actor_id,occurred_at) "
+                    "VALUES ('tn_migration_a','act_00000000000000000000000000',"
+                    "'migration-action-1','campaign:create',"
+                    "'cmp_00000000000000000000000000',"
+                    "'emp_00000000000000000000000000',:created)"
+                ),
+                {"created": _NOW},
+            )
+
+        immutable_targets = (
+            ("outreach_campaign_versions", "name='Changed'", "version=1"),
+            ("outreach_sequence_steps", "wait_days=2", "step_number=1"),
+            ("outreach_suppressions", "source_ref='changed'", "true"),
+            ("outreach_actions", "action='changed'", "true"),
+        )
+        for table, assignment, where in immutable_targets:
+            async with engine.connect() as conn:
+                with pytest.raises(DBAPIError):
+                    async with conn.begin():
+                        await conn.execute(
+                            text(
+                                f"UPDATE {table} SET {assignment} WHERE tenant_id="
+                                "'tn_migration_a' AND " + where
+                            )
+                        )
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO outreach_daily_quotas VALUES "
+                    "('tn_migration_a','cmp_00000000000000000000000000',"
+                    "DATE '2026-08-11',2,3)"
+                )
+            )
+        for statement in (
+            (
+                "UPDATE outreach_daily_quotas SET messages_reserved=1 "
+                "WHERE tenant_id='tn_migration_a'"
+            ),
+            "DELETE FROM outreach_daily_quotas WHERE tenant_id='tn_migration_a'",
+        ):
+            async with engine.connect() as conn:
+                with pytest.raises(DBAPIError):
+                    async with conn.begin():
+                        await conn.execute(text(statement))
     finally:
         await engine.dispose()

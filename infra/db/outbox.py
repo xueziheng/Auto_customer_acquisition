@@ -8,6 +8,7 @@
 - ``PostgresEventBus``：白名单/租户校验后 INSERT outbox_events；``subscribe`` 仅内存
   注册；只写不投递（投递轮询延后）。
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -35,6 +36,7 @@ from shared.events.catalog import (
     HandoffAccepted,
     HandoffQueueBacklogged,
     HandoffRequested,
+    MessageSent,
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
@@ -42,6 +44,7 @@ from shared.events.catalog import (
     SendingIdentityActivated,
     SendingIdentitySuspended,
     SendingIdentityThrottled,
+    SuppressionAdded,
 )
 from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
@@ -57,6 +60,8 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "SendingIdentityThrottled": SendingIdentityThrottled,
     "SendingIdentitySuspended": SendingIdentitySuspended,
     "ReputationThresholdBreached": ReputationThresholdBreached,
+    "MessageSent": MessageSent,
+    "SuppressionAdded": SuppressionAdded,
 }
 """显式白名单：与 opportunities / sending_identity 的 PUBLISHES 一致。
 不允许用反射扫描 catalog 自动放行——新事件必须先经契约评审再加白名单。"""
@@ -148,10 +153,70 @@ def _validate_sending_identity_event(event: DomainEvent) -> None:
         raise _invalid_sending_event() from None
 
 
+_SAFE_OUTREACH_IDS = {
+    "tenant": re.compile(r"tn_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+    "message": re.compile(r"msg_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+    "campaign": re.compile(r"cmp_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+    "identity": _SAFE_SENDING_ID,
+    "contact": re.compile(r"cp_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+    "account": re.compile(r"acc_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+}
+_OUTREACH_SUPPRESSION_REASONS = frozenset(
+    {
+        "unsubscribe",
+        "complaint",
+        "hard_bounce",
+        "manual_block",
+        "competitor",
+        "existing_customer_conflict",
+    }
+)
+
+
+def _invalid_outreach_event() -> ValidationError:
+    return ValidationError("触达事件载荷无效")
+
+
+def _matches_wire(value: object, kind: str) -> bool:
+    return (
+        isinstance(value, str) and _SAFE_OUTREACH_IDS[kind].fullmatch(value) is not None
+    )
+
+
+def _validate_outreach_event(event: DomainEvent) -> None:
+    if not isinstance(event, (MessageSent, SuppressionAdded)):
+        return
+    if (
+        not _matches_wire(event.tenant_id, "tenant")
+        or not isinstance(event.occurred_at, datetime)
+        or event.occurred_at.tzinfo is None
+        or event.occurred_at.utcoffset() != UTC.utcoffset(event.occurred_at)
+    ):
+        raise _invalid_outreach_event()
+    if isinstance(event, MessageSent):
+        if (
+            not _matches_wire(event.message_id, "message")
+            or not _matches_wire(event.campaign_id, "campaign")
+            or not _matches_wire(event.sending_identity_id, "identity")
+        ):
+            raise _invalid_outreach_event()
+        return
+    target_kind = {"contact": "contact", "account": "account"}.get(event.scope)
+    if (
+        target_kind is None
+        or not _matches_wire(event.target_id, target_kind)
+        or event.reason not in _OUTREACH_SUPPRESSION_REASONS
+    ):
+        raise _invalid_outreach_event()
+
+
 def serialize(event: DomainEvent) -> dict[str, object]:
     """事件 → JSON 可序列化 dict（Round-trip 的序列化半边）。"""
     _validate_sending_identity_event(event)
-    return {f.name: _to_jsonable(getattr(event, f.name)) for f in dataclasses.fields(event)}
+    _validate_outreach_event(event)
+    return {
+        f.name: _to_jsonable(getattr(event, f.name)) for f in dataclasses.fields(event)
+    }
 
 
 def _from_jsonable(value: object, expected: object) -> object:
@@ -206,7 +271,9 @@ def _from_jsonable(value: object, expected: object) -> object:
     return value
 
 
-def deserialize(event_cls: type[DomainEvent], payload: dict[str, object]) -> DomainEvent:
+def deserialize(
+    event_cls: type[DomainEvent], payload: dict[str, object]
+) -> DomainEvent:
     """Round-trip 的反序列化半边：按目标事件类还原字段。"""
     hints = get_type_hints(event_cls)
     kwargs = {

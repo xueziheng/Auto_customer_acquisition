@@ -7,6 +7,7 @@ ORM 不表达触发器、也不绕过其只增语义。``outbox_events`` 的
 ``next_attempt_at``/``last_error`` 与 ``outbox_deliveries`` 由 0005 落地
 （0005 自管 guard，不修改 0002）。
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -128,7 +129,9 @@ class AuthenticationCheckRow(Base):
 
     __tablename__ = "sending_auth_checks"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "auth_check_id", name="pk_sending_auth_checks"),
+        PrimaryKeyConstraint(
+            "tenant_id", "auth_check_id", name="pk_sending_auth_checks"
+        ),
         UniqueConstraint(
             "tenant_id",
             "identity_id",
@@ -204,9 +207,7 @@ class SendCounterRow(Base):
             ondelete="RESTRICT",
             name="fk_sending_counter_identity",
         ),
-        CheckConstraint(
-            "sent_attempts >= 0", name="ck_sending_counter_nonnegative"
-        ),
+        CheckConstraint("sent_attempts >= 0", name="ck_sending_counter_nonnegative"),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -290,13 +291,386 @@ class IdentityActionRow(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class OutreachCampaignRow(Base):
+    """``outreach_campaigns`` 当前状态与不可变版本指针。"""
+
+    __tablename__ = "outreach_campaigns"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "campaign_id", name="pk_outreach_campaigns"),
+        CheckConstraint(
+            "state IN ('draft','pending_approval','active','paused','completed','cancelled')",
+            name="ck_outreach_campaign_state",
+        ),
+        CheckConstraint("current_version >= 1", name="ck_outreach_campaign_version"),
+        CheckConstraint("round_robin_cursor >= -1", name="ck_outreach_campaign_cursor"),
+        CheckConstraint(
+            "(approval_id IS NULL AND approved_by IS NULL AND approved_at IS NULL) OR "
+            "(approval_id IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL)",
+            name="ck_outreach_campaign_approval_tuple",
+        ),
+        Index(
+            "ix_outreach_campaigns_tenant_state_created",
+            "tenant_id",
+            "state",
+            "created_at",
+            "campaign_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(32))
+    current_version: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    round_robin_cursor: Mapped[int] = mapped_column(Integer)
+    approval_id: Mapped[str | None] = mapped_column(String(32))
+    approved_by: Mapped[str | None] = mapped_column(String(32))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(String(200))
+
+
+class OutreachCampaignVersionRow(Base):
+    """``outreach_campaign_versions`` 只增版本边界。"""
+
+    __tablename__ = "outreach_campaign_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "campaign_id",
+            "version",
+            name="pk_outreach_campaign_versions",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id"],
+            ["outreach_campaigns.tenant_id", "outreach_campaigns.campaign_id"],
+            ondelete="RESTRICT",
+            name="fk_outreach_campaign_versions_campaign",
+        ),
+        CheckConstraint("version >= 1", name="ck_outreach_version_number"),
+        CheckConstraint(
+            "daily_new_contact_limit > 0 AND daily_total_message_limit > 0 "
+            "AND daily_new_contact_limit <= daily_total_message_limit",
+            name="ck_outreach_version_quotas",
+        ),
+        CheckConstraint(
+            "stop_on_reply IS TRUE", name="ck_outreach_version_stop_on_reply"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(200))
+    markets: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    target_entity_types: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    allowed_categories: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    sender_identity_ids: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    daily_new_contact_limit: Mapped[int] = mapped_column(Integer)
+    daily_total_message_limit: Mapped[int] = mapped_column(Integer)
+    handoff_triggers: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    stop_on_reply: Mapped[bool] = mapped_column(Boolean)
+    created_by: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class OutreachSequenceStepRow(Base):
+    """``outreach_sequence_steps`` 只增规范化步骤。"""
+
+    __tablename__ = "outreach_sequence_steps"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "campaign_id",
+            "version",
+            "step_number",
+            name="pk_outreach_sequence_steps",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id", "version"],
+            [
+                "outreach_campaign_versions.tenant_id",
+                "outreach_campaign_versions.campaign_id",
+                "outreach_campaign_versions.version",
+            ],
+            ondelete="RESTRICT",
+            name="fk_outreach_steps_version",
+        ),
+        CheckConstraint("step_number BETWEEN 1 AND 5", name="ck_outreach_step_number"),
+        CheckConstraint(
+            "intent IN ('discovery','presentation','follow_up')",
+            name="ck_outreach_step_intent",
+        ),
+        CheckConstraint("wait_days >= 0", name="ck_outreach_step_wait"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    step_number: Mapped[int] = mapped_column(Integer)
+    intent: Mapped[str] = mapped_column(String(32))
+    wait_days: Mapped[int] = mapped_column(Integer)
+
+
+class OutreachEnrollmentRow(Base):
+    """``outreach_enrollments`` 当前序列状态。"""
+
+    __tablename__ = "outreach_enrollments"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "enrollment_id", name="pk_outreach_enrollments"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_outreach_enrollments_tenant_key",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id", "campaign_version"],
+            [
+                "outreach_campaign_versions.tenant_id",
+                "outreach_campaign_versions.campaign_id",
+                "outreach_campaign_versions.version",
+            ],
+            ondelete="RESTRICT",
+            name="fk_outreach_enrollments_version",
+        ),
+        CheckConstraint(
+            "state IN ('enrolled','in_sequence','replied','completed',"
+            "'stopped_suppressed','stopped_bounced','stopped_manual',"
+            "'stopped_identity_unavailable')",
+            name="ck_outreach_enrollment_state",
+        ),
+        CheckConstraint(
+            "current_step BETWEEN 0 AND 5", name="ck_outreach_enrollment_step"
+        ),
+        CheckConstraint(
+            "(state IN ('enrolled','in_sequence') AND stopped_at IS NULL AND "
+            "stop_reason IS NULL) OR "
+            "(state='replied' AND stopped_at IS NOT NULL AND stop_reason='reply') OR "
+            "(state='completed' AND stopped_at IS NOT NULL AND stop_reason IS NULL) OR "
+            "(state='stopped_suppressed' AND stopped_at IS NOT NULL AND "
+            "stop_reason='suppression') OR "
+            "(state='stopped_bounced' AND stopped_at IS NOT NULL AND "
+            "stop_reason='hard_bounce') OR "
+            "(state='stopped_manual' AND stopped_at IS NOT NULL AND "
+            "stop_reason='manual') OR "
+            "(state='stopped_identity_unavailable' AND stopped_at IS NOT NULL AND "
+            "stop_reason='identity_unavailable')",
+            name="ck_outreach_enrollment_stop_fields",
+        ),
+        Index(
+            "uq_outreach_enrollments_active_account",
+            "tenant_id",
+            "account_id",
+            unique=True,
+            postgresql_where=text("state IN ('enrolled','in_sequence')"),
+        ),
+        Index(
+            "ix_outreach_enrollments_tenant_campaign_state",
+            "tenant_id",
+            "campaign_id",
+            "state",
+            "enrolled_at",
+            "enrollment_id",
+        ),
+        Index(
+            "ix_outreach_enrollments_tenant_contact_state",
+            "tenant_id",
+            "contact_point_id",
+            "state",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    enrollment_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    campaign_version: Mapped[int] = mapped_column(Integer)
+    account_id: Mapped[str] = mapped_column(String(32))
+    contact_point_id: Mapped[str] = mapped_column(String(32))
+    sending_identity_id: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(40))
+    current_step: Mapped[int] = mapped_column(Integer)
+    next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stop_reason: Mapped[str | None] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+
+
+class OutreachSuppressionRow(Base):
+    """``outreach_suppressions`` append-only 全局抑制事实。"""
+
+    __tablename__ = "outreach_suppressions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "suppression_id", name="pk_outreach_suppressions"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_outreach_suppressions_tenant_key",
+        ),
+        CheckConstraint(
+            "(contact_point_id IS NOT NULL AND account_id IS NULL) OR "
+            "(contact_point_id IS NULL AND account_id IS NOT NULL)",
+            name="ck_outreach_suppression_exact_target",
+        ),
+        CheckConstraint(
+            "reason IN ('unsubscribe','complaint','hard_bounce','manual_block',"
+            "'competitor','existing_customer_conflict')",
+            name="ck_outreach_suppression_reason",
+        ),
+        Index(
+            "ix_outreach_suppressions_tenant_contact",
+            "tenant_id",
+            "contact_point_id",
+            "occurred_at",
+            postgresql_where=text("contact_point_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_outreach_suppressions_tenant_account",
+            "tenant_id",
+            "account_id",
+            "occurred_at",
+            postgresql_where=text("account_id IS NOT NULL"),
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    suppression_id: Mapped[str] = mapped_column(String(32))
+    contact_point_id: Mapped[str | None] = mapped_column(String(32))
+    account_id: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(40))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_ref: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class OutreachDailyQuotaRow(Base):
+    """``outreach_daily_quotas`` Campaign 单调额度计数。"""
+
+    __tablename__ = "outreach_daily_quotas"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "campaign_id",
+            "on_day",
+            name="pk_outreach_daily_quotas",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id"],
+            ["outreach_campaigns.tenant_id", "outreach_campaigns.campaign_id"],
+            ondelete="RESTRICT",
+            name="fk_outreach_quotas_campaign",
+        ),
+        CheckConstraint(
+            "new_contacts_reserved >= 0 AND messages_reserved >= 0",
+            name="ck_outreach_quota_nonnegative",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    on_day: Mapped[date] = mapped_column(Date)
+    new_contacts_reserved: Mapped[int] = mapped_column(Integer)
+    messages_reserved: Mapped[int] = mapped_column(Integer)
+
+
+class OutreachMessageAttemptRow(Base):
+    """``outreach_message_attempts`` durable 发送尝试。"""
+
+    __tablename__ = "outreach_message_attempts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "attempt_id", name="pk_outreach_message_attempts"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_outreach_attempts_tenant_key",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "enrollment_id"],
+            ["outreach_enrollments.tenant_id", "outreach_enrollments.enrollment_id"],
+            ondelete="RESTRICT",
+            name="fk_outreach_attempts_enrollment",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "campaign_id", "campaign_version"],
+            [
+                "outreach_campaign_versions.tenant_id",
+                "outreach_campaign_versions.campaign_id",
+                "outreach_campaign_versions.version",
+            ],
+            ondelete="RESTRICT",
+            name="fk_outreach_attempts_version",
+        ),
+        CheckConstraint("step_number BETWEEN 1 AND 5", name="ck_outreach_attempt_step"),
+        CheckConstraint(
+            "(state='reserved' AND provider_ref IS NULL AND failure_category IS NULL) OR "
+            "(state='sent' AND provider_ref IS NOT NULL AND failure_category IS NULL) OR "
+            "(state='failed_transient' AND provider_ref IS NULL AND "
+            "failure_category='provider_transient') OR "
+            "(state='failed_permanent' AND provider_ref IS NULL AND "
+            "failure_category='identity_unavailable')",
+            name="ck_outreach_attempt_state_fields",
+        ),
+        Index(
+            "ix_outreach_attempts_tenant_enrollment_created",
+            "tenant_id",
+            "enrollment_id",
+            "created_at",
+            "attempt_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    attempt_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(32))
+    campaign_id: Mapped[str] = mapped_column(String(32))
+    enrollment_id: Mapped[str] = mapped_column(String(32))
+    campaign_version: Mapped[int] = mapped_column(Integer)
+    step_number: Mapped[int] = mapped_column(Integer)
+    sending_identity_id: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(32))
+    provider_ref: Mapped[str | None] = mapped_column(String(200))
+    failure_category: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class OutreachActionRow(Base):
+    """``outreach_actions`` append-only 业务动作审计。"""
+
+    __tablename__ = "outreach_actions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "action_id", name="pk_outreach_actions"),
+        UniqueConstraint(
+            "tenant_id", "action_key", name="uq_outreach_actions_tenant_key"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    action_id: Mapped[str] = mapped_column(String(32))
+    action_key: Mapped[str] = mapped_column(String(200))
+    action: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[str] = mapped_column(String(32))
+    actor_id: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class OpportunityRow(Base):
     """``opportunities`` 行。"""
 
     __tablename__ = "opportunities"
     __table_args__ = (
         UniqueConstraint("tenant_id", "need_id", name="uq_opportunities_tenant_need"),
-        UniqueConstraint("tenant_id", "opportunity_id", name="uq_opportunities_tenant_opp"),
+        UniqueConstraint(
+            "tenant_id", "opportunity_id", name="uq_opportunities_tenant_opp"
+        ),
         CheckConstraint(
             "(target_price_amount IS NULL AND target_price_currency IS NULL) OR "
             "(target_price_amount IS NOT NULL AND target_price_currency IS NOT NULL)",
@@ -407,16 +781,16 @@ class HandoffRow(Base):
 
     __tablename__ = "handoffs"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "handoff_id", name="uq_handoffs_tenant_handoff"
-        ),
+        UniqueConstraint("tenant_id", "handoff_id", name="uq_handoffs_tenant_handoff"),
         ForeignKeyConstraint(
             ["tenant_id", "opportunity_id"],
             ["opportunities.tenant_id", "opportunities.opportunity_id"],
             ondelete="RESTRICT",
             name="fk_handoffs_opportunity",
         ),
-        Index("ix_handoffs_tenant_state_requested", "tenant_id", "state", "requested_at"),
+        Index(
+            "ix_handoffs_tenant_state_requested", "tenant_id", "state", "requested_at"
+        ),
     )
 
     handoff_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -481,7 +855,12 @@ class LossRecordRow(Base):
             ondelete="RESTRICT",
             name="fk_loss_records_opportunity",
         ),
-        Index("ix_loss_records_tenant_reason_state", "tenant_id", "loss_reason", "died_at_state"),
+        Index(
+            "ix_loss_records_tenant_reason_state",
+            "tenant_id",
+            "loss_reason",
+            "died_at_state",
+        ),
     )
 
     loss_record_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -626,7 +1005,9 @@ class EmployeeRow(Base):
     __tablename__ = "employees"
     __table_args__ = (
         UniqueConstraint("tenant_id", "user_id", name="uq_employees_tenant_user"),
-        UniqueConstraint("tenant_id", "employee_id", name="uq_employees_tenant_employee"),
+        UniqueConstraint(
+            "tenant_id", "employee_id", name="uq_employees_tenant_employee"
+        ),
         Index("ix_employees_tenant_role", "tenant_id", "role"),
         Index("ix_employees_tenant_active", "tenant_id", "is_active"),
     )
@@ -635,11 +1016,15 @@ class EmployeeRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(32))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
     user_id: Mapped[str | None] = mapped_column(String(32))
     team_id: Mapped[str | None] = mapped_column(String(32))
     manager_id: Mapped[str | None] = mapped_column(String(32))
-    languages: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    languages: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
     timezone: Mapped[str | None] = mapped_column(String(64))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     max_active_accounts: Mapped[int | None] = mapped_column(Integer)
@@ -673,11 +1058,21 @@ class TerritoryAssignmentRow(Base):
     employee_id: Mapped[str] = mapped_column(String(32))
     priority: Mapped[int] = mapped_column(Integer)
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    countries: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
-    product_categories: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
-    need_categories: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
-    buyer_types: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
-    languages: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String), server_default=text("'{}'"))
+    countries: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
+    product_categories: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
+    need_categories: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
+    buyer_types: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
+    languages: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String), server_default=text("'{}'")
+    )
     manager_id: Mapped[str | None] = mapped_column(String(32))
     backup_employee_id: Mapped[str | None] = mapped_column(String(32))
     effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -688,7 +1083,9 @@ class OwnershipLockRow(Base):
 
     __tablename__ = "ownership_locks"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "account_id", name="uq_ownership_locks_tenant_account"),
+        UniqueConstraint(
+            "tenant_id", "account_id", name="uq_ownership_locks_tenant_account"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "owner"],
             ["employees.tenant_id", "employees.employee_id"],
@@ -748,9 +1145,13 @@ class WorkflowRunRow(Base):
 
     __tablename__ = "workflow_runs"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "idempotency_key", name="uq_workflow_runs_tenant_key"),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_workflow_runs_tenant_key"
+        ),
         UniqueConstraint("tenant_id", "run_id", name="uq_workflow_runs_tenant_run"),
-        Index("ix_workflow_runs_tenant_status_poll", "tenant_id", "status", "next_poll_at"),
+        Index(
+            "ix_workflow_runs_tenant_status_poll", "tenant_id", "status", "next_poll_at"
+        ),
     )
 
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -779,7 +1180,9 @@ class WorkflowStepRow(Base):
 
     __tablename__ = "workflow_steps"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "idempotency_key", name="uq_workflow_steps_tenant_key"),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_workflow_steps_tenant_key"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "run_id"],
             ["workflow_runs.tenant_id", "workflow_runs.run_id"],

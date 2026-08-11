@@ -741,6 +741,42 @@ def test_orm_metadata_parity_with_head() -> None:
             "step_id", "run_id", "tenant_id", "step_name", "status", "data", "attempt",
             "error", "due_at", "idempotency_key", "created_at", "updated_at",
         },
+        "outreach_campaigns": {
+            "tenant_id", "campaign_id", "state", "current_version", "created_by",
+            "created_at", "round_robin_cursor", "approval_id", "approved_by",
+            "approved_at", "paused_reason",
+        },
+        "outreach_campaign_versions": {
+            "tenant_id", "campaign_id", "version", "name", "markets",
+            "target_entity_types", "allowed_categories", "sender_identity_ids",
+            "daily_new_contact_limit", "daily_total_message_limit", "handoff_triggers",
+            "stop_on_reply", "created_by", "created_at",
+        },
+        "outreach_sequence_steps": {
+            "tenant_id", "campaign_id", "version", "step_number", "intent", "wait_days",
+        },
+        "outreach_enrollments": {
+            "tenant_id", "enrollment_id", "campaign_id", "campaign_version", "account_id",
+            "contact_point_id", "sending_identity_id", "state", "current_step",
+            "next_send_at", "enrolled_at", "stopped_at", "stop_reason", "idempotency_key",
+        },
+        "outreach_suppressions": {
+            "tenant_id", "suppression_id", "contact_point_id", "account_id", "reason",
+            "occurred_at", "source_ref", "idempotency_key", "created_at",
+        },
+        "outreach_daily_quotas": {
+            "tenant_id", "campaign_id", "on_day", "new_contacts_reserved",
+            "messages_reserved",
+        },
+        "outreach_message_attempts": {
+            "tenant_id", "attempt_id", "message_id", "campaign_id", "enrollment_id",
+            "campaign_version", "step_number", "sending_identity_id", "idempotency_key",
+            "state", "provider_ref", "failure_category", "created_at", "updated_at",
+        },
+        "outreach_actions": {
+            "tenant_id", "action_id", "action_key", "action", "entity_id", "actor_id",
+            "occurred_at",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -769,6 +805,25 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_workflow_steps_tenant_status_due": ("tenant_id", "status", "due_at"),
         "ix_sending_reputation_tenant_identity_occurred": (
             "tenant_id", "identity_id", "occurred_at",
+        ),
+        "ix_outreach_campaigns_tenant_state_created": (
+            "tenant_id", "state", "created_at", "campaign_id",
+        ),
+        "uq_outreach_enrollments_active_account": ("tenant_id", "account_id"),
+        "ix_outreach_enrollments_tenant_campaign_state": (
+            "tenant_id", "campaign_id", "state", "enrolled_at", "enrollment_id",
+        ),
+        "ix_outreach_enrollments_tenant_contact_state": (
+            "tenant_id", "contact_point_id", "state",
+        ),
+        "ix_outreach_suppressions_tenant_contact": (
+            "tenant_id", "contact_point_id", "occurred_at",
+        ),
+        "ix_outreach_suppressions_tenant_account": (
+            "tenant_id", "account_id", "occurred_at",
+        ),
+        "ix_outreach_attempts_tenant_enrollment_created": (
+            "tenant_id", "enrollment_id", "created_at", "attempt_id",
         ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
@@ -816,6 +871,41 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "workflow_runs": {"uq_workflow_runs_tenant_key", "uq_workflow_runs_tenant_run"},
         "workflow_steps": {"uq_workflow_steps_tenant_key", "fk_workflow_steps_run"},
+        "outreach_campaigns": {
+            "pk_outreach_campaigns", "ck_outreach_campaign_state",
+            "ck_outreach_campaign_version", "ck_outreach_campaign_cursor",
+            "ck_outreach_campaign_approval_tuple",
+        },
+        "outreach_campaign_versions": {
+            "pk_outreach_campaign_versions", "fk_outreach_campaign_versions_campaign",
+            "ck_outreach_version_number", "ck_outreach_version_quotas",
+            "ck_outreach_version_stop_on_reply",
+        },
+        "outreach_sequence_steps": {
+            "pk_outreach_sequence_steps", "fk_outreach_steps_version",
+            "ck_outreach_step_number", "ck_outreach_step_intent", "ck_outreach_step_wait",
+        },
+        "outreach_enrollments": {
+            "pk_outreach_enrollments", "uq_outreach_enrollments_tenant_key",
+            "fk_outreach_enrollments_version", "ck_outreach_enrollment_state",
+            "ck_outreach_enrollment_step", "ck_outreach_enrollment_stop_fields",
+        },
+        "outreach_suppressions": {
+            "pk_outreach_suppressions", "uq_outreach_suppressions_tenant_key",
+            "ck_outreach_suppression_exact_target", "ck_outreach_suppression_reason",
+        },
+        "outreach_daily_quotas": {
+            "pk_outreach_daily_quotas", "fk_outreach_quotas_campaign",
+            "ck_outreach_quota_nonnegative",
+        },
+        "outreach_message_attempts": {
+            "pk_outreach_message_attempts", "uq_outreach_attempts_tenant_key",
+            "fk_outreach_attempts_enrollment", "fk_outreach_attempts_version",
+            "ck_outreach_attempt_step", "ck_outreach_attempt_state_fields",
+        },
+        "outreach_actions": {
+            "pk_outreach_actions", "uq_outreach_actions_tenant_key",
+        },
     }
     for table, names in expected_constraints.items():
         actual = {

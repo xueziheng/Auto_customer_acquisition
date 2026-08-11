@@ -10,6 +10,7 @@
 RED 前置：``infra.db.outbox`` 尚未创建；经 importlib 延迟导入转行为失败。
 不输出任何连接串/凭证。
 """
+
 from __future__ import annotations
 
 import importlib
@@ -26,6 +27,7 @@ from shared.events.catalog import (
     HandoffAccepted,
     HandoffQueueBacklogged,
     HandoffRequested,
+    MessageSent,
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
@@ -33,11 +35,14 @@ from shared.events.catalog import (
     SendingIdentityActivated,
     SendingIdentitySuspended,
     SendingIdentityThrottled,
+    SuppressionAdded,
 )
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
+    CampaignId,
     EmployeeId,
     HandoffId,
+    MessageId,
     OpportunityId,
     RunId,
     SendingIdentityId,
@@ -79,49 +84,194 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "SendingIdentityThrottled",
         "SendingIdentitySuspended",
         "ReputationThresholdBreached",
+        "MessageSent",
+        "SuppressionAdded",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
+    assert EVENT_REGISTRY["MessageSent"] is MessageSent
+    assert EVENT_REGISTRY["SuppressionAdded"] is SuppressionAdded
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        MessageSent(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            message_id=MessageId(new_id("msg")),
+            campaign_id=CampaignId(new_id("cmp")),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="contact",
+            target_id=new_id("cp"),
+            reason="unsubscribe",
+        ),
+    ],
+)
+def test_outreach_events_roundtrip(event: DomainEvent) -> None:
+    """触达事实的 typed wire 可逆且只含安全元数据。"""
+    serialize = _load("serialize")
+    deserialize = _load("deserialize")
+    payload = serialize(event)
+    assert deserialize(type(event), payload) == event
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        MessageSent(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            message_id=MessageId("email@example.com"),
+            campaign_id=CampaignId(new_id("cmp")),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+        ),
+        MessageSent(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            message_id=MessageId(new_id("msg")),
+            campaign_id=CampaignId("acc_" + "0" * 26),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="all",
+            target_id=new_id("cp"),
+            reason="unsubscribe",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="contact",
+            target_id="Bearer_abc",
+            reason="unsubscribe",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="contact",
+            target_id="postgresql://user:password@db/private",
+            reason="unsubscribe",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="account",
+            target_id="https://crm.example.test/customer/secret",
+            reason="complaint",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="contact",
+            target_id="Hello, this is the customer email body",
+            reason="unsubscribe",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            scope="contact",
+            target_id=new_id("cp"),
+            reason="free_text",
+        ),
+        SuppressionAdded(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=datetime(2026, 8, 11, 4, 0),  # noqa: DTZ001
+            run_id=None,
+            scope="account",
+            target_id=new_id("acc"),
+            reason="complaint",
+        ),
+    ],
+)
+def test_outreach_event_serializer_rejects_unsafe_payloads(event: DomainEvent) -> None:
+    """错 prefix、自由词、地址/凭证与 naive 时间均固定拒绝。"""
+    with pytest.raises(ValidationError, match="触达事件载荷无效"):
+        _load("serialize")(event)
 
 
 @pytest.mark.parametrize(
     "event",
     [
         SendingIdentityActivated(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
             sending_identity_id="sales@example.com",
         ),
         SendingIdentityThrottled(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, new_state="active",
-            trigger_metric="hard_bounce_rate", metric_value="0.03",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            new_state="active",
+            trigger_metric="hard_bounce_rate",
+            metric_value="0.03",
         ),
         SendingIdentityThrottled(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, new_state="throttled",
-            trigger_metric="mx.example.com", metric_value="0.03",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            new_state="throttled",
+            trigger_metric="mx.example.com",
+            metric_value="0.03",
         ),
         SendingIdentityThrottled(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, new_state="throttled",
-            trigger_metric="hard_bounce_rate", metric_value="NaN",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            new_state="throttled",
+            trigger_metric="hard_bounce_rate",
+            metric_value="NaN",
         ),
         SendingIdentitySuspended(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, reason="dns_txt=secret",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            reason="dns_txt=secret",
         ),
         ReputationThresholdBreached(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, metric="complaint_rate",
-            value="-0.01", threshold="0.001", severity="watch",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            metric="complaint_rate",
+            value="-0.01",
+            threshold="0.001",
+            severity="watch",
         ),
         ReputationThresholdBreached(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            sending_identity_id=_VALID_SENDING_ID, metric="vault://investigation/ref",
-            value="0.01", threshold="0.001", severity="manual_investigation",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            sending_identity_id=_VALID_SENDING_ID,
+            metric="vault://investigation/ref",
+            value="0.01",
+            threshold="0.001",
+            severity="manual_investigation",
         ),
     ],
 )
-def test_sending_identity_event_serializer_rejects_unbounded_payloads(event: DomainEvent) -> None:
+def test_sending_identity_event_serializer_rejects_unbounded_payloads(
+    event: DomainEvent,
+) -> None:
     """outbox 边界拒绝地址、域名、引用、DNS、调查文本和非法数值。"""
     serialize = _load("serialize")
     with pytest.raises(ValidationError, match="发件身份事件载荷无效"):
@@ -220,30 +370,49 @@ def test_registry_events_roundtrip() -> None:
     deserialize = _load("deserialize")
     events = [
         OpportunityQualified(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=RunId("r1"),
-            opportunity_id=OpportunityId("opp1"), rank_bucket="high",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=RunId("r1"),
+            opportunity_id=OpportunityId("opp1"),
+            rank_bucket="high",
         ),
         OpportunityLost(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=RunId("r1"),
-            opportunity_id=OpportunityId("opp1"), loss_reason="price_too_high",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=RunId("r1"),
+            opportunity_id=OpportunityId("opp1"),
+            loss_reason="price_too_high",
             died_at_state="quoted",
         ),
         OpportunityWon(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=RunId("r1"),
-            opportunity_id=OpportunityId("opp1"), closed_by=EmployeeId("e1"),
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=RunId("r1"),
+            opportunity_id=OpportunityId("opp1"),
+            closed_by=EmployeeId("e1"),
         ),
         HandoffRequested(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=RunId("r1"),
-            handoff_id=HandoffId("h1"), opportunity_id=OpportunityId("opp1"),
-            assigned_to=EmployeeId("e1"), trigger="quote_requested",
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=RunId("r1"),
+            handoff_id=HandoffId("h1"),
+            opportunity_id=OpportunityId("opp1"),
+            assigned_to=EmployeeId("e1"),
+            trigger="quote_requested",
         ),
         HandoffAccepted(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=None,
-            handoff_id=HandoffId("h1"), accepted_by=EmployeeId("e1"),
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=None,
+            handoff_id=HandoffId("h1"),
+            accepted_by=EmployeeId("e1"),
         ),
         HandoffQueueBacklogged(
-            tenant_id=TenantId("t1"), occurred_at=_NOW, run_id=RunId("r1"),
-            queue_depth=5, oldest_wait_seconds=120,
+            tenant_id=TenantId("t1"),
+            occurred_at=_NOW,
+            run_id=RunId("r1"),
+            queue_depth=5,
+            oldest_wait_seconds=120,
         ),
     ]
     for evt in events:
