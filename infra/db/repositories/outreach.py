@@ -469,6 +469,21 @@ class EnrollmentRepositoryImpl(_OutreachRepository):
         )
         return _row_to_enrollment(row) if row else None
 
+    async def get_by_key(
+        self, tenant_id: TenantId, key: IdempotencyKey
+    ) -> Enrollment | None:
+        if not self._tenant_matches(tenant_id, "outreach_enrollment_key"):
+            return None
+        row = (
+            await self._session.execute(
+                select(OutreachEnrollmentRow).where(
+                    OutreachEnrollmentRow.tenant_id == self._tenant_id,
+                    OutreachEnrollmentRow.idempotency_key == key,
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_enrollment(row) if row else None
+
     async def get_for_update(
         self, tenant_id: TenantId, enrollment_id: EnrollmentId
     ) -> Enrollment | None:

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from domains.outreach.errors import (
+    AccountAlreadyEnrolledError,
     CampaignApprovalRequiredError,
+    CampaignNotActiveError,
+    CampaignQuotaExceededError,
+    ContactNotEligibleError,
     IdempotencyConflictError,
+    MessageAttemptConflictError,
     OutreachProviderUnavailableError,
+    ReplyAlreadyReceivedError,
     SendingIdentityUnavailableError,
+    SequenceStepLimitError,
+    SuppressedError,
 )
 from domains.outreach.models import (
     ActionRecord,
@@ -18,6 +26,12 @@ from domains.outreach.models import (
     CampaignBoundary,
     CampaignState,
     CampaignVersion,
+    Enrollment,
+    EnrollmentState,
+    EnrollmentStopReason,
+    MessageAttempt,
+    MessageAttemptState,
+    SendFailureCategory,
     SequenceStepSpec,
 )
 from domains.outreach.permissions import (
@@ -27,16 +41,31 @@ from domains.outreach.permissions import (
     OutreachAuthorizer,
     OutreachScope,
 )
-from domains.outreach.repository import OutreachUnitOfWork, OutreachUnitOfWorkFactory
+from domains.outreach.repository import (
+    AppendStatus,
+    EnrollmentInsertStatus,
+    OutreachUnitOfWork,
+    OutreachUnitOfWorkFactory,
+    QuotaReservationStatus,
+)
 from domains.outreach.schemas import (
     CampaignApprovalSnapshot,
     CampaignApprovalState,
     CampaignBoundaryView,
     CampaignCreateRequest,
     CampaignView,
+    ContactEligibilitySnapshot,
+    ContactLegalBasis,
+    ContactVerificationStatus,
+    EnrollmentCreateRequest,
+    EnrollmentView,
+    MessageAttemptView,
     OutreachSenderRole,
+    ReplyState,
+    ReplyStatusSnapshot,
     SendingIdentityEligibilitySnapshot,
     SequenceStepRequest,
+    SuppressionTarget,
 )
 from domains.outreach.service import (
     CampaignApprovalProvider,
@@ -51,10 +80,17 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
+from shared.events.catalog import MessageSent
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
     EmployeeId,
+    EnrollmentId,
+    IdempotencyKey,
+    MessageAttemptId,
+    MessageId,
+    ProspectAccountId,
+    SendingIdentityId,
     TenantId,
     new_id,
 )
@@ -117,6 +153,8 @@ class OutreachServiceImpl:
         action: OutreachAction,
         tenant_id: TenantId,
         campaign_id: CampaignId | None = None,
+        account_id: ProspectAccountId | None = None,
+        enrollment_id: EnrollmentId | None = None,
     ) -> str:
         try:
             return self._authorizer.require(
@@ -125,6 +163,8 @@ class OutreachServiceImpl:
                 actor.scope,
                 tenant_id,
                 campaign_id=campaign_id,
+                account_id=account_id,
+                enrollment_id=enrollment_id,
             )
         except PermissionDenied:
             self._deny(actor, action, tenant_id)
@@ -267,7 +307,7 @@ class OutreachServiceImpl:
     def _action(
         tenant_id: TenantId,
         actor: Actor,
-        campaign_id: CampaignId,
+        entity_id: str,
         key: str,
         action: OutreachAction,
         occurred_at: datetime,
@@ -277,7 +317,7 @@ class OutreachServiceImpl:
             action_id=new_id("act"),
             action_key=key,
             action=action.value,
-            entity_id=str(campaign_id),
+            entity_id=str(entity_id),
             actor_id=actor.actor_id,
             occurred_at=occurred_at,
         )
@@ -545,4 +585,889 @@ class OutreachServiceImpl:
                 views.append(await self._view(uow, tenant_id, campaign, now.date()))
         rule = rules[0] if rules else pre_rule
         self._allow(actor, action, tenant_id, rule)
+        return views
+
+    @staticmethod
+    def _enrollment_view(enrollment: Enrollment) -> EnrollmentView:
+        return EnrollmentView(
+            tenant_id=enrollment.tenant_id,
+            enrollment_id=enrollment.enrollment_id,
+            campaign_id=enrollment.campaign_id,
+            campaign_version=enrollment.campaign_version,
+            account_id=enrollment.account_id,
+            contact_point_id=enrollment.contact_point_id,
+            sending_identity_id=enrollment.sending_identity_id,
+            state=enrollment.state,
+            current_step=enrollment.current_step,
+            next_send_at=enrollment.next_send_at,
+            enrolled_at=enrollment.enrolled_at,
+            stopped_at=enrollment.stopped_at,
+            stop_reason=enrollment.stop_reason,
+        )
+
+    @staticmethod
+    def _attempt_view(attempt: MessageAttempt) -> MessageAttemptView:
+        return MessageAttemptView(
+            tenant_id=attempt.tenant_id,
+            attempt_id=attempt.attempt_id,
+            message_id=attempt.message_id,
+            campaign_id=attempt.campaign_id,
+            enrollment_id=attempt.enrollment_id,
+            campaign_version=attempt.campaign_version,
+            step_number=attempt.step_number,
+            sending_identity_id=attempt.sending_identity_id,
+            idempotency_key=attempt.idempotency_key,
+            state=attempt.state,
+            provider_ref=attempt.provider_ref,
+            failure_category=attempt.failure_category,
+            created_at=attempt.created_at,
+            updated_at=attempt.updated_at,
+        )
+
+    async def _contact_snapshot(
+        self,
+        tenant_id: TenantId,
+        contact_point_id,
+        account_id,
+    ) -> ContactEligibilitySnapshot:
+        try:
+            snapshot = await self._contacts.get_contact_eligibility(
+                tenant_id, contact_point_id, account_id
+            )
+        except (TransientError, OSError, RuntimeError):
+            raise OutreachProviderUnavailableError(
+                "联系人资格暂不可用"
+            ) from None
+        if not isinstance(snapshot, ContactEligibilitySnapshot):
+            raise ContactNotEligibleError("联系人当前资格不满足 Campaign 边界")
+        return snapshot
+
+    def _validate_contact_snapshot(
+        self,
+        snapshot: ContactEligibilitySnapshot,
+        *,
+        tenant_id: TenantId,
+        contact_point_id,
+        account_id,
+        boundary: CampaignBoundary,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> None:
+        if snapshot.tenant_id != tenant_id:
+            self._tenant_violation(actor, action, tenant_id)
+        if (
+            snapshot.contact_point_id != contact_point_id
+            or snapshot.account_id != account_id
+            or snapshot.verification is not ContactVerificationStatus.VERIFIED
+            or snapshot.verified_at is None
+            or not isinstance(snapshot.legal_basis, ContactLegalBasis)
+            or snapshot.contact_belongs_to_account is not True
+            or snapshot.country not in boundary.markets
+            or snapshot.entity_type not in boundary.target_entity_types
+            or not set(snapshot.qualified_categories).intersection(
+                boundary.allowed_categories
+            )
+        ):
+            raise ContactNotEligibleError(
+                "联系人当前资格不满足 Campaign 边界"
+            )
+
+    async def _sender_snapshot(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> SendingIdentityEligibilitySnapshot:
+        try:
+            snapshot = await self._senders.get_sending_identity_eligibility(
+                tenant_id, identity_id
+            )
+        except (TransientError, OSError, RuntimeError):
+            raise OutreachProviderUnavailableError(
+                "发件身份资格暂不可用"
+            ) from None
+        if not isinstance(snapshot, SendingIdentityEligibilitySnapshot):
+            raise SendingIdentityUnavailableError("发件身份当前不可用")
+        if snapshot.tenant_id != tenant_id:
+            self._tenant_violation(actor, action, tenant_id)
+        if snapshot.identity_id != identity_id:
+            raise SendingIdentityUnavailableError("发件身份当前不可用")
+        return snapshot
+
+    @staticmethod
+    def _sender_is_eligible(snapshot: SendingIdentityEligibilitySnapshot) -> bool:
+        return (
+            snapshot.role is OutreachSenderRole.COLD_OUTREACH
+            and snapshot.authentication_passed is True
+            and snapshot.sendable is True
+            and snapshot.remaining_slots > 0
+        )
+
+    async def _has_suppression(
+        self,
+        uow: OutreachUnitOfWork,
+        tenant_id: TenantId,
+        contact_point_id,
+        account_id,
+    ) -> bool:
+        contact = await uow.suppressions.find_current(
+            tenant_id, SuppressionTarget(contact_point_id=contact_point_id)
+        )
+        account = await uow.suppressions.find_current(
+            tenant_id, SuppressionTarget(account_id=account_id)
+        )
+        return contact is not None or account is not None
+
+    async def enroll(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        request: EnrollmentCreateRequest,
+        *,
+        actor: Actor,
+    ) -> EnrollmentView:
+        action = OutreachAction.ENROLLMENT_CREATE
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(request, EnrollmentCreateRequest):
+            raise ValidationError("Enrollment request 无效")
+        snapshot = await self._contact_snapshot(
+            tenant_id, request.contact_point_id, request.account_id
+        )
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            campaign = await self._locked_campaign(
+                uow, tenant_id, campaign_id, actor, action
+            )
+            version = await uow.campaigns.get_version(
+                tenant_id, campaign_id, campaign.current_version
+            )
+            if version is None:
+                raise ValidationError("Campaign 当前版本不存在")
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=campaign_id,
+                account_id=request.account_id,
+            )
+            if campaign.state is not CampaignState.ACTIVE:
+                raise CampaignNotActiveError("Campaign 当前状态不允许入组")
+            self._validate_contact_snapshot(
+                snapshot,
+                tenant_id=tenant_id,
+                contact_point_id=request.contact_point_id,
+                account_id=request.account_id,
+                boundary=version.boundary,
+                actor=actor,
+                action=action,
+            )
+            existing = await uow.enrollments.get_by_key(
+                tenant_id, request.idempotency_key
+            )
+            if existing is not None:
+                if existing.tenant_id != tenant_id:
+                    self._tenant_violation(actor, action, tenant_id)
+                if (
+                    existing.campaign_id == campaign_id
+                    and existing.account_id == request.account_id
+                    and existing.contact_point_id == request.contact_point_id
+                ):
+                    view = self._enrollment_view(existing)
+                else:
+                    raise IdempotencyConflictError(
+                        "Enrollment 幂等键已绑定不同内容"
+                    )
+            else:
+                active = await uow.enrollments.find_active_for_account(
+                    tenant_id, request.account_id
+                )
+                if active is not None:
+                    raise AccountAlreadyEnrolledError(
+                        "该企业已有活跃 Enrollment"
+                    )
+                if await self._has_suppression(
+                    uow,
+                    tenant_id,
+                    request.contact_point_id,
+                    request.account_id,
+                ):
+                    raise SuppressedError("联系人或企业已进入全局抑制")
+                quota = await uow.quotas.reserve_new_contact(
+                    tenant_id,
+                    campaign_id,
+                    now.date(),
+                    version.boundary.daily_new_contact_limit,
+                )
+                if quota.status is QuotaReservationStatus.CAP_REACHED:
+                    raise CampaignQuotaExceededError("Campaign 当日新联系人额度已满")
+                senders = tuple(sorted(version.boundary.sender_identity_ids))
+                winner: SendingIdentityId | None = None
+                winner_index = -1
+                for offset in range(1, len(senders) + 1):
+                    index = (campaign.round_robin_cursor + offset) % len(senders)
+                    candidate = senders[index]
+                    candidate_snapshot = await self._sender_snapshot(
+                        tenant_id, candidate, actor, action
+                    )
+                    if self._sender_is_eligible(candidate_snapshot):
+                        winner = candidate
+                        winner_index = index
+                        break
+                if winner is None:
+                    raise SendingIdentityUnavailableError(
+                        "没有满足 Campaign 边界的可用发件身份"
+                    )
+                enrollment = Enrollment(
+                    tenant_id=tenant_id,
+                    enrollment_id=EnrollmentId(new_id("enr")),
+                    campaign_id=campaign_id,
+                    campaign_version=version.version,
+                    account_id=request.account_id,
+                    contact_point_id=request.contact_point_id,
+                    sending_identity_id=winner,
+                    state=EnrollmentState.ENROLLED,
+                    current_step=0,
+                    next_send_at=now,
+                    enrolled_at=now,
+                    stopped_at=None,
+                    stop_reason=None,
+                    idempotency_key=request.idempotency_key,
+                )
+                campaign.round_robin_cursor = winner_index
+                await uow.campaigns.update(campaign)
+                inserted = await uow.enrollments.insert_if_absent(enrollment)
+                if inserted.status is EnrollmentInsertStatus.IDEMPOTENCY_CONFLICT:
+                    raise IdempotencyConflictError(
+                        "Enrollment 幂等键已绑定不同内容"
+                    )
+                if inserted.status is EnrollmentInsertStatus.ACCOUNT_CONFLICT:
+                    raise AccountAlreadyEnrolledError(
+                        "该企业已有活跃 Enrollment"
+                    )
+                if inserted.winner is None:
+                    raise ValidationError("Enrollment 原子写入结果损坏")
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(inserted.winner.enrollment_id),
+                        f"enrollment:{inserted.winner.enrollment_id}:create",
+                        action,
+                        now,
+                    )
+                )
+                view = self._enrollment_view(inserted.winner)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def _locate_enrollment(
+        self, tenant_id: TenantId, enrollment_id: EnrollmentId
+    ) -> Enrollment:
+        async with self._uow_factory(tenant_id) as uow:
+            enrollment = await uow.enrollments.get(tenant_id, enrollment_id)
+        if enrollment is None:
+            raise ValidationError("Enrollment 不存在")
+        return enrollment
+
+    async def _locate_attempt(
+        self, tenant_id: TenantId, attempt_id: MessageAttemptId
+    ) -> MessageAttempt:
+        async with self._uow_factory(tenant_id) as uow:
+            attempt = await uow.attempts.get_for_update(tenant_id, attempt_id)
+        if attempt is None:
+            raise ValidationError("Message Attempt 不存在")
+        return attempt
+
+    async def _require_approved_version(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        version: int,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> CampaignApprovalSnapshot:
+        try:
+            approval = await self._approvals.get_campaign_approval(
+                tenant_id, campaign_id, version
+            )
+        except (TransientError, OSError, RuntimeError):
+            raise OutreachProviderUnavailableError("Campaign 审批事实暂不可用") from None
+        if approval is not None and not isinstance(
+            approval, CampaignApprovalSnapshot
+        ):
+            raise CampaignApprovalRequiredError("Enrollment 版本缺少有效审批")
+        if approval is not None and approval.tenant_id != tenant_id:
+            self._tenant_violation(actor, action, tenant_id)
+        if (
+            approval is None
+            or approval.campaign_id != campaign_id
+            or approval.version != version
+            or approval.state is not CampaignApprovalState.APPROVED
+        ):
+            raise CampaignApprovalRequiredError("Enrollment 版本缺少有效审批")
+        return approval
+
+    async def _reply_snapshot(
+        self,
+        tenant_id: TenantId,
+        enrollment: Enrollment,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> ReplyStatusSnapshot:
+        try:
+            snapshot = await self._replies.get_reply_status(
+                tenant_id, enrollment.contact_point_id, enrollment.account_id
+            )
+        except (TransientError, OSError, RuntimeError):
+            raise OutreachProviderUnavailableError("回复状态暂不可用") from None
+        if not isinstance(snapshot, ReplyStatusSnapshot):
+            raise OutreachProviderUnavailableError("回复状态暂不可用")
+        if snapshot.tenant_id != tenant_id:
+            self._tenant_violation(actor, action, tenant_id)
+        if (
+            snapshot.contact_point_id != enrollment.contact_point_id
+            or snapshot.account_id != enrollment.account_id
+        ):
+            raise ValidationError("回复状态资源不匹配")
+        return snapshot
+
+    async def prepare_message_attempt(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView:
+        action = OutreachAction.ENROLLMENT_PREPARE_SEND
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        located = await self._locate_enrollment(tenant_id, enrollment_id)
+        now = self._validate_now(self._now())
+        blocked: Exception | None = None
+        async with self._uow_factory(tenant_id) as uow:
+            campaign = await self._locked_campaign(
+                uow, tenant_id, located.campaign_id, actor, action
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, enrollment_id
+            )
+            if enrollment is None:
+                raise ValidationError("Enrollment 不存在")
+            if (
+                enrollment.tenant_id != tenant_id
+                or enrollment.campaign_id != campaign.campaign_id
+            ):
+                self._tenant_violation(actor, action, tenant_id)
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=campaign.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            if campaign.state is not CampaignState.ACTIVE:
+                raise CampaignNotActiveError("Campaign 当前状态不允许准备消息")
+            bound_version = await uow.campaigns.get_version(
+                tenant_id, campaign.campaign_id, enrollment.campaign_version
+            )
+            current_version = await uow.campaigns.get_version(
+                tenant_id, campaign.campaign_id, campaign.current_version
+            )
+            if bound_version is None or current_version is None:
+                raise ValidationError("Enrollment Campaign 版本不存在")
+            approval = await self._require_approved_version(
+                tenant_id,
+                campaign.campaign_id,
+                enrollment.campaign_version,
+                actor,
+                action,
+            )
+            if enrollment.campaign_version == campaign.current_version and (
+                campaign.approval_id != approval.approval_id
+                or campaign.approved_by != approval.approved_by
+                or campaign.approved_at != approval.approved_at
+            ):
+                raise CampaignApprovalRequiredError(
+                    "Enrollment 版本审批绑定不匹配"
+                )
+            if (
+                enrollment.state not in {EnrollmentState.ENROLLED, EnrollmentState.IN_SEQUENCE}
+                or enrollment.next_send_at is None
+                or enrollment.next_send_at > now
+            ):
+                raise InvalidStateTransition("Enrollment 当前不可准备消息")
+            reply = await self._reply_snapshot(
+                tenant_id, enrollment, actor, action
+            )
+            if reply.state is ReplyState.REPLIED:
+                enrollment.transition_to(
+                    EnrollmentState.REPLIED,
+                    at=now,
+                    reason=EnrollmentStopReason.REPLY,
+                )
+                enrollment.next_send_at = None
+                await uow.enrollments.update(enrollment)
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(enrollment.enrollment_id),
+                        f"enrollment:{enrollment.enrollment_id}:replied",
+                        action,
+                        now,
+                    )
+                )
+                blocked = ReplyAlreadyReceivedError(
+                    "联系人已经回复，不能继续准备消息"
+                )
+            elif await self._has_suppression(
+                uow,
+                tenant_id,
+                enrollment.contact_point_id,
+                enrollment.account_id,
+            ):
+                enrollment.transition_to(
+                    EnrollmentState.STOPPED_SUPPRESSED,
+                    at=now,
+                    reason=EnrollmentStopReason.SUPPRESSION,
+                )
+                enrollment.next_send_at = None
+                await uow.enrollments.update(enrollment)
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(enrollment.enrollment_id),
+                        f"enrollment:{enrollment.enrollment_id}:suppressed",
+                        action,
+                        now,
+                    )
+                )
+                blocked = SuppressedError("联系人或企业已进入全局抑制")
+            else:
+                contact = await self._contact_snapshot(
+                    tenant_id,
+                    enrollment.contact_point_id,
+                    enrollment.account_id,
+                )
+                self._validate_contact_snapshot(
+                    contact,
+                    tenant_id=tenant_id,
+                    contact_point_id=enrollment.contact_point_id,
+                    account_id=enrollment.account_id,
+                    boundary=bound_version.boundary,
+                    actor=actor,
+                    action=action,
+                )
+                sender = await self._sender_snapshot(
+                    tenant_id,
+                    enrollment.sending_identity_id,
+                    actor,
+                    action,
+                )
+                if not self._sender_is_eligible(sender):
+                    raise SendingIdentityUnavailableError("发件身份当前不可用")
+                step_number = enrollment.current_step + 1
+                if step_number > len(bound_version.boundary.steps):
+                    raise SequenceStepLimitError("序列步数超过已批准边界")
+                key = IdempotencyKey(
+                    f"{tenant_id}:{campaign.campaign_id}:{enrollment.enrollment_id}:"
+                    f"v{enrollment.campaign_version}:step{step_number}"
+                )
+                existing = await uow.attempts.get_by_key(tenant_id, key)
+                if existing is not None:
+                    if (
+                        existing.campaign_id != campaign.campaign_id
+                        or existing.enrollment_id != enrollment.enrollment_id
+                        or existing.campaign_version != enrollment.campaign_version
+                        or existing.step_number != step_number
+                        or existing.sending_identity_id
+                        != enrollment.sending_identity_id
+                    ):
+                        raise MessageAttemptConflictError(
+                            "Message Attempt 幂等记录损坏"
+                        )
+                    view = self._attempt_view(existing)
+                else:
+                    quota = await uow.quotas.reserve_message(
+                        tenant_id,
+                        campaign.campaign_id,
+                        now.date(),
+                        current_version.boundary.daily_total_message_limit,
+                    )
+                    if quota.status is QuotaReservationStatus.CAP_REACHED:
+                        raise CampaignQuotaExceededError(
+                            "Campaign 当日消息额度已满"
+                        )
+                    attempt = MessageAttempt(
+                        tenant_id=tenant_id,
+                        attempt_id=MessageAttemptId(new_id("mat")),
+                        message_id=MessageId(new_id("msg")),
+                        campaign_id=campaign.campaign_id,
+                        enrollment_id=enrollment.enrollment_id,
+                        campaign_version=enrollment.campaign_version,
+                        step_number=step_number,
+                        sending_identity_id=enrollment.sending_identity_id,
+                        idempotency_key=key,
+                        state=MessageAttemptState.RESERVED,
+                        provider_ref=None,
+                        failure_category=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    created = await uow.attempts.create_if_absent(attempt)
+                    if created.status is AppendStatus.CONFLICT or created.winner is None:
+                        raise MessageAttemptConflictError(
+                            "Message Attempt 幂等记录冲突"
+                        )
+                    await uow.actions.append(
+                        self._action(
+                            tenant_id,
+                            actor,
+                            str(enrollment.enrollment_id),
+                            f"attempt:{created.winner.attempt_id}:prepare",
+                            action,
+                            now,
+                        )
+                    )
+                    view = self._attempt_view(created.winner)
+        if blocked is not None:
+            raise blocked
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    @staticmethod
+    def _safe_provider_ref(provider_ref: object) -> str:
+        if not isinstance(provider_ref, str):
+            raise ValidationError("provider_ref 无效")
+        lowered = provider_ref.lower()
+        if (
+            not 1 <= len(provider_ref) <= 200
+            or provider_ref != provider_ref.strip()
+            or any(
+                character.isspace()
+                or ord(character) < 32
+                or ord(character) == 127
+                for character in provider_ref
+            )
+            or "://" in provider_ref
+            or "@" in provider_ref
+            or any(
+                marker in lowered
+                for marker in ("bearer", "token", "secret", "password")
+            )
+        ):
+            raise ValidationError("provider_ref 无效")
+        return provider_ref
+
+    async def record_sent(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        provider_ref: str,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView:
+        action = OutreachAction.ENROLLMENT_RECORD_SENT
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        safe_ref = self._safe_provider_ref(provider_ref)
+        located = await self._locate_attempt(tenant_id, attempt_id)
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            campaign = await self._locked_campaign(
+                uow, tenant_id, located.campaign_id, actor, action
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, located.enrollment_id
+            )
+            attempt = await uow.attempts.get_for_update(tenant_id, attempt_id)
+            if enrollment is None or attempt is None:
+                raise ValidationError("Message Attempt 资源不存在")
+            if (
+                attempt.tenant_id != tenant_id
+                or enrollment.tenant_id != tenant_id
+                or attempt.campaign_id != campaign.campaign_id
+                or attempt.enrollment_id != enrollment.enrollment_id
+            ):
+                self._tenant_violation(actor, action, tenant_id)
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=campaign.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            if attempt.state is MessageAttemptState.SENT:
+                if attempt.provider_ref != safe_ref:
+                    raise MessageAttemptConflictError(
+                        "Message Attempt provider ref 冲突"
+                    )
+                view = self._attempt_view(attempt)
+            else:
+                if attempt.state is MessageAttemptState.FAILED_PERMANENT:
+                    raise MessageAttemptConflictError(
+                        "Message Attempt 已永久失败"
+                    )
+                version = await uow.campaigns.get_version(
+                    tenant_id, campaign.campaign_id, attempt.campaign_version
+                )
+                if version is None:
+                    raise ValidationError("Message Attempt Campaign 版本不存在")
+                if attempt.step_number != enrollment.current_step + 1:
+                    raise MessageAttemptConflictError(
+                        "Message Attempt step 与 Enrollment 不匹配"
+                    )
+                attempt.transition_to(
+                    MessageAttemptState.SENT,
+                    at=now,
+                    provider_ref=safe_ref,
+                )
+                enrollment.current_step = attempt.step_number
+                if attempt.step_number == len(version.boundary.steps):
+                    enrollment.next_send_at = None
+                    enrollment.transition_to(
+                        EnrollmentState.COMPLETED, at=now, reason=None
+                    )
+                else:
+                    enrollment.transition_to(
+                        EnrollmentState.IN_SEQUENCE, at=now, reason=None
+                    )
+                    next_step = version.boundary.steps[attempt.step_number]
+                    enrollment.next_send_at = now + timedelta(
+                        days=next_step.wait_days
+                    )
+                await uow.attempts.update(attempt)
+                await uow.enrollments.update(enrollment)
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(enrollment.enrollment_id),
+                        f"attempt:{attempt.attempt_id}:sent",
+                        action,
+                        now,
+                    )
+                )
+                await uow.bus.publish(
+                    MessageSent(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        message_id=attempt.message_id,
+                        campaign_id=attempt.campaign_id,
+                        sending_identity_id=attempt.sending_identity_id,
+                    )
+                )
+                view = self._attempt_view(attempt)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def record_send_failure(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        category: SendFailureCategory,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView:
+        action = OutreachAction.ENROLLMENT_RECORD_FAILURE
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(category, SendFailureCategory):
+            raise ValidationError("发送失败类别无效")
+        located = await self._locate_attempt(tenant_id, attempt_id)
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            campaign = await self._locked_campaign(
+                uow, tenant_id, located.campaign_id, actor, action
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, located.enrollment_id
+            )
+            attempt = await uow.attempts.get_for_update(tenant_id, attempt_id)
+            if enrollment is None or attempt is None:
+                raise ValidationError("Message Attempt 资源不存在")
+            if (
+                attempt.tenant_id != tenant_id
+                or enrollment.tenant_id != tenant_id
+                or attempt.campaign_id != campaign.campaign_id
+                or attempt.enrollment_id != enrollment.enrollment_id
+            ):
+                self._tenant_violation(actor, action, tenant_id)
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=campaign.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            if attempt.state is MessageAttemptState.SENT:
+                raise MessageAttemptConflictError("已发送 Attempt 不能记录失败")
+            if attempt.state is MessageAttemptState.FAILED_PERMANENT:
+                if attempt.failure_category is not category:
+                    raise MessageAttemptConflictError(
+                        "Message Attempt failure category 冲突"
+                    )
+            elif (
+                attempt.state is MessageAttemptState.FAILED_TRANSIENT
+                and category is SendFailureCategory.PROVIDER_TRANSIENT
+            ):
+                pass
+            else:
+                target = (
+                    MessageAttemptState.FAILED_TRANSIENT
+                    if category is SendFailureCategory.PROVIDER_TRANSIENT
+                    else MessageAttemptState.FAILED_PERMANENT
+                )
+                attempt.transition_to(
+                    target,
+                    at=now,
+                    failure_category=category,
+                )
+                await uow.attempts.update(attempt)
+                if category is SendFailureCategory.IDENTITY_UNAVAILABLE:
+                    enrollment.next_send_at = None
+                    enrollment.transition_to(
+                        EnrollmentState.STOPPED_IDENTITY_UNAVAILABLE,
+                        at=now,
+                        reason=EnrollmentStopReason.IDENTITY_UNAVAILABLE,
+                    )
+                    await uow.enrollments.update(enrollment)
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(enrollment.enrollment_id),
+                        f"attempt:{attempt.attempt_id}:failure:{category.value}",
+                        action,
+                        now,
+                    )
+                )
+            view = self._attempt_view(attempt)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def stop_enrollment(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        reason: EnrollmentStopReason,
+        *,
+        actor: Actor,
+    ) -> EnrollmentView:
+        action = OutreachAction.ENROLLMENT_STOP
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if reason is not EnrollmentStopReason.MANUAL:
+            raise ValidationError("人工停止只接受 manual reason")
+        located = await self._locate_enrollment(tenant_id, enrollment_id)
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            campaign = await self._locked_campaign(
+                uow, tenant_id, located.campaign_id, actor, action
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, enrollment_id
+            )
+            if enrollment is None:
+                raise ValidationError("Enrollment 不存在")
+            if (
+                enrollment.tenant_id != tenant_id
+                or enrollment.campaign_id != campaign.campaign_id
+            ):
+                self._tenant_violation(actor, action, tenant_id)
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=campaign.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            if enrollment.state is not EnrollmentState.STOPPED_MANUAL:
+                enrollment.next_send_at = None
+                enrollment.transition_to(
+                    EnrollmentState.STOPPED_MANUAL,
+                    at=now,
+                    reason=EnrollmentStopReason.MANUAL,
+                )
+                await uow.enrollments.update(enrollment)
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    str(enrollment.enrollment_id),
+                    f"enrollment:{enrollment.enrollment_id}:manual-stop",
+                    action,
+                    now,
+                )
+            )
+            view = self._enrollment_view(enrollment)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def get_enrollment(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        *,
+        actor: Actor,
+    ) -> EnrollmentView:
+        action = OutreachAction.ENROLLMENT_READ
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        async with self._uow_factory(tenant_id) as uow:
+            enrollment = await uow.enrollments.get(tenant_id, enrollment_id)
+            if enrollment is None:
+                raise ValidationError("Enrollment 不存在")
+            if enrollment.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=enrollment.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            view = self._enrollment_view(enrollment)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def list_enrollments(
+        self,
+        tenant_id: TenantId,
+        scope: OutreachScope,
+        *,
+        limit: int,
+        actor: Actor,
+    ) -> list[EnrollmentView]:
+        action = OutreachAction.ENROLLMENT_LIST
+        actor, pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(scope, OutreachScope) or scope is not actor.scope:
+            self._deny(actor, action, tenant_id)
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValidationError("limit 无效")
+        async with self._uow_factory(tenant_id) as uow:
+            enrollments = await uow.enrollments.list_scoped(
+                tenant_id, scope, limit
+            )
+            views: list[EnrollmentView] = []
+            rules: list[str] = []
+            for enrollment in enrollments:
+                if enrollment.tenant_id != tenant_id:
+                    self._tenant_violation(actor, action, tenant_id)
+                rules.append(
+                    self._require(
+                        actor,
+                        action,
+                        tenant_id,
+                        campaign_id=enrollment.campaign_id,
+                        account_id=enrollment.account_id,
+                        enrollment_id=enrollment.enrollment_id,
+                    )
+                )
+                views.append(self._enrollment_view(enrollment))
+        self._allow(actor, action, tenant_id, rules[0] if rules else pre_rule)
         return views

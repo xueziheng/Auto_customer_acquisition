@@ -143,6 +143,10 @@ class EnrollmentRepository(Protocol):
         self, tenant_id: TenantId, enrollment_id: EnrollmentId
     ) -> Enrollment | None: ...
 
+    async def get_by_key(
+        self, tenant_id: TenantId, key: IdempotencyKey
+    ) -> Enrollment | None: ...
+
     async def get_for_update(
         self, tenant_id: TenantId, enrollment_id: EnrollmentId
     ) -> Enrollment | None: ...
