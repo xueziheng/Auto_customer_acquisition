@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Protocol, runtime_checkable
 
 from domains.quotations.models import ForbiddenAutoCommitment
 from domains.quotations.schemas import QuoteCreateRequest, QuoteView
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -27,7 +30,93 @@ def contains_forbidden_commitment(text: str) -> list[ForbiddenAutoCommitment]:
     - 返回全部命中项，不要首个命中就返回：起草者需要一次看到
       所有要改的地方
     """
-    raise NotImplementedError
+    if (
+        not isinstance(text, str)
+        or not 1 <= len(text) <= 100_000
+        or text != text.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+    ):
+        raise ValidationError("承诺检查文本无效")
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    matched: set[ForbiddenAutoCommitment] = set()
+    for category, patterns in _COMMITMENT_PATTERNS.items():
+        if any(pattern.search(normalized) is not None for pattern in patterns):
+            matched.add(category)
+    if _AMBIGUOUS_COMMERCIAL_NUMBER.search(normalized) is not None:
+        matched.add(ForbiddenAutoCommitment.FIRST_CONCRETE_PRICE)
+    return [category for category in ForbiddenAutoCommitment if category in matched]
+
+
+def _patterns(*values: str) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(value) for value in values)
+
+
+_NUMBER = r"(?:\d{1,3}(?:[,.]\d{3})+|\d+(?:[.,]\d+)?)"
+_CURRENCY = r"(?:usd|eur|gbp|cny|rmb|jpy|cad|aud|\$|€|£|¥|人民币)"
+
+_COMMITMENT_PATTERNS: dict[
+    ForbiddenAutoCommitment,
+    tuple[re.Pattern[str], ...],
+] = {
+    ForbiddenAutoCommitment.FIRST_CONCRETE_PRICE: _patterns(
+        rf"(?:{_CURRENCY}\s*{_NUMBER}|{_NUMBER}\s*(?:usd|eur|gbp|cny|rmb|元|美元|欧元))",
+        rf"\b(?:price|total|cost)\s+(?:is|will be|=|:)\s*{_CURRENCY}?\s*{_NUMBER}",
+        rf"(?:价格|总价|单价|金额)(?:为|是|:|：)?\s*{_CURRENCY}?\s*{_NUMBER}",
+    ),
+    ForbiddenAutoCommitment.FORMAL_QUOTATION: _patterns(
+        r"\bformal\s+(?:quotation|quote)\b",
+        r"(?:正式报价|正式报盘|报价单)",
+    ),
+    ForbiddenAutoCommitment.DISCOUNT: _patterns(
+        rf"{_NUMBER}\s*%\s*(?:discount|off)\b",
+        rf"(?:折扣|优惠)(?:为|是|:|：)?\s*{_NUMBER}\s*%",
+        rf"{_NUMBER}\s*%\s*(?:折扣|优惠)",
+    ),
+    ForbiddenAutoCommitment.STOCK_COMMITMENT: _patterns(
+        rf"\b(?:have|with)\s+{_NUMBER}\s+(?:units?|pieces?|pcs)\s+in\s+stock\b",
+        r"\bin\s+stock\b",
+        rf"(?:库存|现货)(?:有|为|是|:|：)?\s*{_NUMBER}",
+    ),
+    ForbiddenAutoCommitment.DELIVERY_DATE_COMMITMENT: _patterns(
+        rf"\b(?:delivery|lead\s+time|ship(?:ment|ping)?)\b.{{0,30}}(?:within|by|in)\s+{_NUMBER}\s+(?:days?|weeks?|months?)\b",
+        rf"(?:交货期|交期|发货)(?:为|是|:|：|在)?\s*{_NUMBER}\s*(?:天|周|个月|月)(?:内)?",
+        r"(?:签署|签订).{0,12}(?:合同).{0,12}(?:发货|交货)",
+    ),
+    ForbiddenAutoCommitment.CERTIFICATION_COMMITMENT: _patterns(
+        r"\b(?:ce|fda|ul|rohs|iso\s*\d*)\s+(?:certified|approved)\b",
+        r"\b(?:is|are|fully)\s+certified\b",
+        r"(?:已通过|具备|拥有).{0,12}(?:认证|证书)",
+    ),
+    ForbiddenAutoCommitment.PAYMENT_TERMS: _patterns(
+        r"\bpayment\s+terms?\b",
+        r"\bnet\s*\d{1,3}\b",
+        r"(?:付款条件|支付条件|账期|预付款|尾款)",
+    ),
+    ForbiddenAutoCommitment.CONTRACT_TERMS: _patterns(
+        r"\b(?:formal\s+)?contract\s+terms?\b",
+        r"\bterms\s+and\s+conditions\b",
+        r"(?:签署|签订|正式).{0,12}(?:合同|协议)",
+    ),
+    ForbiddenAutoCommitment.EXCLUSIVE_DISTRIBUTION: _patterns(
+        r"\bexclusive\s+(?:distribut(?:or|ion)|agent|agency|rights?)\b",
+        r"(?:独家代理|独家经销|独家分销|独家权利)",
+    ),
+    ForbiddenAutoCommitment.QUALITY_GUARANTEE: _patterns(
+        r"\b(?:guarantee|guaranteed|warranty|warrant)\b",
+        r"(?:质量保证|品质保证|质保|保修|保证.{0,12}(?:质量|品质|可用|供应))",
+    ),
+    ForbiddenAutoCommitment.OFF_CATALOG_REFERENCE_PRICE: _patterns(
+        rf"(?:目录外|非目录).{{0,30}}(?:参考价|价格).{{0,12}}(?:{_CURRENCY}\s*)?{_NUMBER}",
+        rf"\boff[- ]catalog\b.{{0,30}}\b(?:reference|indicative)\s+price\b.{{0,12}}(?:{_CURRENCY}\s*)?{_NUMBER}",
+    ),
+}
+
+_AMBIGUOUS_COMMERCIAL_NUMBER = re.compile(
+    rf"(?:\b(?:commit|guarantee|guaranteed|total\s+will\s+be|moq\s+is)\b|承诺|保证)"
+    rf".{{0,30}}(?:{_CURRENCY}\s*)?{_NUMBER}"
+    rf"|(?:{_CURRENCY}\s*)?{_NUMBER}.{{0,30}}"
+    rf"(?:\b(?:commit|guarantee|guaranteed)\b|承诺|保证)"
+)
 
 
 @runtime_checkable
