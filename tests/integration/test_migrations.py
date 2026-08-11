@@ -413,6 +413,25 @@ async def _assert_statement_integrity_rejected(
             pytest.fail(label)
 
 
+async def _assert_deferred_integrity_rejected(
+    engine: AsyncEngine,
+    statement: TextClause,
+    params: dict[str, object],
+    constraint: str,
+    label: str,
+) -> None:
+    """显式把 deferred FK 切到 IMMEDIATE，证明提交点一定拒绝。"""
+    async with engine.connect() as conn:
+        try:
+            await conn.execute(statement, params)
+            await conn.execute(text(f"SET CONSTRAINTS {constraint} IMMEDIATE"))
+        except IntegrityError:
+            await conn.rollback()
+        else:
+            await conn.rollback()
+            pytest.fail(label)
+
+
 async def test_six_tables_exist_with_tenant_id(db_url: str) -> None:
     """六表存在，且每表含 tenant_id（硬边界 8 的 schema 落地）。
 
@@ -1955,7 +1974,7 @@ async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
             base,
             "原始地址 provider_ref 应被 CHECK 拒绝",
         )
-        await _assert_statement_integrity_rejected(
+        await _assert_deferred_integrity_rejected(
             engine,
             text(
                 "INSERT INTO tool_calls "
@@ -1967,9 +1986,10 @@ async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
                 ":now,:now)"
             ),
             base,
+            "fk_tool_calls_duplicate",
             "跨租户 duplicate self-FK 应被拒绝",
         )
-        await _assert_statement_integrity_rejected(
+        await _assert_deferred_integrity_rejected(
             engine,
             text(
                 "INSERT INTO tool_call_events "
@@ -1979,6 +1999,7 @@ async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
                 ":now,0)"
             ),
             base,
+            "fk_tool_call_events_call",
             "跨租户 event FK 应被拒绝",
         )
         await _assert_statement_integrity_rejected(
