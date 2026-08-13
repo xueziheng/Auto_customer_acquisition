@@ -1001,6 +1001,10 @@ class EmailFeedbackReceiptRow(Base):
             name="ck_email_feedback_receipt_event",
         ),
         CheckConstraint(
+            "item_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_email_feedback_receipt_fingerprint",
+        ),
+        CheckConstraint(
             "ordinal BETWEEN 0 AND 99", name="ck_email_feedback_receipt_ordinal"
         ),
         CheckConstraint(
@@ -1033,6 +1037,7 @@ class EmailFeedbackReceiptRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     mailbox_alias: Mapped[str] = mapped_column(String(32))
     provider_event_id: Mapped[str] = mapped_column(String(64))
+    item_fingerprint: Mapped[str] = mapped_column(String(64))
     ordinal: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(32))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from domains.sending_identity.models import DeliveryEventType
 from domains.sending_identity.permissions import Actor
 from domains.sending_identity.schemas import (
     AuthenticationResult,
@@ -26,6 +27,7 @@ __all__ = [
     "Actor",
     "AuthenticationResult",
     "DeliveryEventRecord",
+    "DeliveryEventType",
     "DomainReputationView",
     "IdentityRegisterRequest",
     "IdentityView",

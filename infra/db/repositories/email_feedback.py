@@ -83,6 +83,7 @@ def _receipt_values(receipt: FeedbackReceipt) -> dict[str, object]:
         "tenant_id": str(receipt.tenant_id),
         "mailbox_alias": receipt.mailbox_alias,
         "provider_event_id": receipt.provider_event_id,
+        "item_fingerprint": receipt.item_fingerprint,
         "ordinal": receipt.ordinal,
         "kind": receipt.kind.value,
         "occurred_at": receipt.occurred_at,
@@ -107,6 +108,7 @@ def _receipt_from_row(row: EmailFeedbackReceiptRow) -> FeedbackReceipt:
         tenant_id=TenantId(row.tenant_id),
         mailbox_alias=row.mailbox_alias,
         provider_event_id=row.provider_event_id,
+        item_fingerprint=row.item_fingerprint,
         ordinal=row.ordinal,
         kind=EmailFeedbackKind(row.kind),
         occurred_at=row.occurred_at,
@@ -251,6 +253,25 @@ class FeedbackCursorRepositoryImpl(_FeedbackRepository):
 
 
 class FeedbackReceiptRepositoryImpl(_FeedbackRepository):
+    async def get(
+        self,
+        tenant_id: TenantId,
+        mailbox_alias: str,
+        provider_event_id: str,
+    ) -> FeedbackReceipt | None:
+        if not self._tenant_matches(tenant_id, "feedback_receipt_get"):
+            return None
+        row = (
+            await self._session.execute(
+                select(EmailFeedbackReceiptRow).where(
+                    EmailFeedbackReceiptRow.tenant_id == self._tenant_id,
+                    EmailFeedbackReceiptRow.mailbox_alias == mailbox_alias,
+                    EmailFeedbackReceiptRow.provider_event_id == provider_event_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return _receipt_from_row(row) if row is not None else None
+
     async def append_if_absent(
         self, receipt: FeedbackReceipt
     ) -> FeedbackReceiptAppendResult:

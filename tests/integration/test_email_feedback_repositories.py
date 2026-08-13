@@ -156,6 +156,7 @@ def _receipt(ids: dict[str, object], **changes: object) -> object:
         "tenant_id": ids["tenant"],
         "mailbox_alias": "feedback-primary",
         "provider_event_id": "a" * 64,
+        "item_fingerprint": "f" * 64,
         "ordinal": 0,
         "kind": shared.EmailFeedbackKind.HARD_BOUNCE,
         "occurred_at": NOW,
@@ -230,6 +231,12 @@ def test_feedback_repository_protocols_and_records_are_strict() -> None:
             "self",
             "receipt",
         ),
+        (contract.FeedbackReceiptRepository, "get"): (
+            "self",
+            "tenant_id",
+            "mailbox_alias",
+            "provider_event_id",
+        ),
         (contract.UnsubscribeTokenRepository, "add"): ("self", "token"),
         (contract.UnsubscribeTokenRepository, "get_for_update"): (
             "self",
@@ -255,6 +262,7 @@ def test_feedback_repository_protocols_and_records_are_strict() -> None:
     for changes in (
         {"mailbox_alias": "customer@example.com"},
         {"provider_event_id": "A" * 64},
+        {"item_fingerprint": "short"},
         {"ordinal": 100},
         {"occurred_at": NOW.replace(tzinfo=None)},
         {"result": "applied"},
@@ -348,6 +356,15 @@ async def test_receipt_append_distinguishes_created_existing_and_conflict(
         assert created.winner == existing.winner == receipt
         assert conflict.winner is None
         await session.commit()
+
+    async with feedback_factory() as session:
+        repo = repositories.FeedbackReceiptRepositoryImpl(session, ids["tenant"])
+        assert await repo.get(
+            ids["tenant"], "feedback-primary", receipt.provider_event_id
+        ) == receipt
+        assert await repo.get(
+            ids["other_tenant"], "feedback-primary", receipt.provider_event_id
+        ) is None
 
 
 @pytest.mark.asyncio

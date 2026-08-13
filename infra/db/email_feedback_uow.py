@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self, cast
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.outreach.repository import (
@@ -50,6 +52,11 @@ from shared.schemas.identifiers import TenantId
 
 _logger = logging.getLogger("infra.db.email_feedback.uow")
 _security_logger = logging.getLogger("infra.db.email_feedback.security")
+
+
+def _tenant_lock_key(tenant_id: TenantId) -> int:
+    raw = hashlib.sha256(f"email-feedback:{tenant_id}".encode("ascii")).digest()[:8]
+    return int.from_bytes(raw, byteorder="big", signed=True)
 
 
 class AuditSink(Protocol):
@@ -217,6 +224,10 @@ class SqlAlchemyFeedbackPageUnitOfWork:
         self._session = session
         self._audit = _TransactionAwareAudit(self._audit_sink)
         try:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": _tenant_lock_key(self._tenant_id)},
+            )
             self.cursors = FeedbackCursorRepositoryImpl(
                 session, self._tenant_id, now=self._now
             )

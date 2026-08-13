@@ -30,6 +30,7 @@
 | `account_discovery/` | 假设需要联系人 | 1 |
 | `human_handoff/` | 接管触发条件 | 1 |
 | `employee_work_intake/` | 员工上传 | 1 |
+| `email_feedback/` | Gmail 投递反馈整页读取 | **1（深）** |
 | `sourcing_case/` | 需求达寻源门槛（Phase 1 人工推进） | 1 骨架 / 2 自动 |
 | `quote_approval/` | 报价提交审批 | 1 骨架 / 2 自动 |
 

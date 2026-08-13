@@ -247,6 +247,7 @@ async def _stage_feedback_page(uow: object, tenant: TenantId, event_id: str) -> 
             tenant_id=tenant,
             mailbox_alias="feedback-primary",
             provider_event_id=event_id,
+            item_fingerprint="f" * 64,
             ordinal=0,
             kind=shared.EmailFeedbackKind.UNPARSEABLE,
             occurred_at=NOW,
@@ -756,6 +757,9 @@ async def test_outer_uow_cleanup_never_replaces_primary_base_exception() -> None
         pass
 
     class Session:
+        async def execute(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
         async def rollback(self) -> None:
             raise CleanupFailure()
 

@@ -164,9 +164,7 @@ def _sync_email_feedback_contract(
     functions = {
         str(row[0])
         for row in conn.execute(
-            text(
-                "SELECT proname FROM pg_proc WHERE proname = ANY(:names)"
-            ),
+            text("SELECT proname FROM pg_proc WHERE proname = ANY(:names)"),
             {
                 "names": [
                     "guard_email_feedback_append_only",
@@ -1842,22 +1840,60 @@ async def test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips(
     from infra.db.session import create_engine_from
 
     forbidden = {
-        "params", "recipient", "sender", "subject", "body", "headers", "token",
-        "authorization", "dsn", "unsubscribe_url", "exception",
+        "params",
+        "recipient",
+        "sender",
+        "subject",
+        "body",
+        "headers",
+        "token",
+        "authorization",
+        "dsn",
+        "unsubscribe_url",
+        "exception",
     }
     expected_columns = {
         "tool_calls": {
-            "tenant_id", "tool_call_id", "tool_id", "tool_version", "risk_level",
-            "cost_class", "idempotency_key", "request_fingerprint",
-            "fingerprint_version", "status", "duplicate_of", "lease_owner",
-            "lease_expires_at", "attempt_count", "run_id", "user_id", "campaign_id",
-            "message_attempt_id", "provider_ref", "error_category", "retry_after_at",
-            "created_at", "updated_at", "completed_at",
+            "tenant_id",
+            "tool_call_id",
+            "tool_id",
+            "tool_version",
+            "risk_level",
+            "cost_class",
+            "idempotency_key",
+            "request_fingerprint",
+            "fingerprint_version",
+            "status",
+            "duplicate_of",
+            "lease_owner",
+            "lease_expires_at",
+            "attempt_count",
+            "run_id",
+            "user_id",
+            "campaign_id",
+            "message_attempt_id",
+            "provider_ref",
+            "error_category",
+            "retry_after_at",
+            "created_at",
+            "updated_at",
+            "completed_at",
         },
         "tool_call_events": {
-            "tenant_id", "event_id", "tool_call_id", "stage", "outcome", "rule",
-            "category", "actor_id", "run_id", "campaign_id", "message_attempt_id",
-            "occurred_at", "duration_ms", "cost_note",
+            "tenant_id",
+            "event_id",
+            "tool_call_id",
+            "stage",
+            "outcome",
+            "rule",
+            "category",
+            "actor_id",
+            "run_id",
+            "campaign_id",
+            "message_attempt_id",
+            "occurred_at",
+            "duration_ms",
+            "cost_note",
         },
     }
 
@@ -1922,17 +1958,19 @@ async def test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips(
             "ix_tool_call_events_tenant_call_occurred"
         ] == (("tenant_id", "tool_call_id", "occurred_at", "event_id"), False)
         assert {
-            "ck_tool_calls_status", "ck_tool_calls_canonical_fields",
-            "ck_tool_calls_result_fields", "ck_tool_calls_provider_ref",
+            "ck_tool_calls_status",
+            "ck_tool_calls_canonical_fields",
+            "ck_tool_calls_result_fields",
+            "ck_tool_calls_provider_ref",
             "ck_tool_calls_safe_labels",
         } <= before["tool_calls"]["checks"]
-        assert "ck_tool_call_events_safe_labels" in before["tool_call_events"][
-            "checks"
-        ]
+        assert "ck_tool_call_events_safe_labels" in before["tool_call_events"]["checks"]
 
         _run_alembic(db_url, "downgrade", "0009")
         async with engine.connect() as conn:
-            names = set(await conn.run_sync(lambda sync: inspect(sync).get_table_names()))
+            names = set(
+                await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+            )
         assert "tool_calls" not in names
         assert "tool_call_events" not in names
         _run_alembic(db_url, "upgrade", "0010")
@@ -1960,7 +1998,12 @@ async def test_0010_tool_call_events_are_append_only(db_url: str) -> None:
                     "(:tenant,:call,'email.send','v1','high','low','received',0,"
                     ":actor,:now,:now)"
                 ),
-                {"tenant": "tn_tool_guard", "call": "tcl_00000000000000000000000000", "actor": "usr_guard", "now": now},
+                {
+                    "tenant": "tn_tool_guard",
+                    "call": "tcl_00000000000000000000000000",
+                    "actor": "usr_guard",
+                    "now": now,
+                },
             )
             await conn.execute(
                 text(
@@ -1969,7 +2012,13 @@ async def test_0010_tool_call_events_are_append_only(db_url: str) -> None:
                     "duration_ms) VALUES (:tenant,:event,:call,'tenant','allowed',:actor,"
                     ":now,1)"
                 ),
-                {"tenant": "tn_tool_guard", "event": "tce_00000000000000000000000000", "call": "tcl_00000000000000000000000000", "actor": "usr_guard", "now": now},
+                {
+                    "tenant": "tn_tool_guard",
+                    "event": "tce_00000000000000000000000000",
+                    "call": "tcl_00000000000000000000000000",
+                    "actor": "usr_guard",
+                    "now": now,
+                },
             )
         for statement in (
             "UPDATE tool_call_events SET duration_ms=2 WHERE tenant_id=:tenant",
@@ -2096,9 +2145,7 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
             before_columns = await conn.run_sync(
                 lambda sync: {
                     str(item["name"])
-                    for item in inspect(sync).get_columns(
-                        "outreach_message_attempts"
-                    )
+                    for item in inspect(sync).get_columns("outreach_message_attempts")
                 }
             )
             before_checks = await conn.run_sync(
@@ -2124,9 +2171,7 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
             downgraded = await conn.run_sync(
                 lambda sync: {
                     str(item["name"])
-                    for item in inspect(sync).get_columns(
-                        "outreach_message_attempts"
-                    )
+                    for item in inspect(sync).get_columns("outreach_message_attempts")
                 }
             )
         assert "send_claimed_at" not in downgraded
@@ -2136,9 +2181,7 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
             restored_0011 = await conn.run_sync(
                 lambda sync: {
                     str(item["name"])
-                    for item in inspect(sync).get_columns(
-                        "outreach_message_attempts"
-                    )
+                    for item in inspect(sync).get_columns("outreach_message_attempts")
                 }
             )
         assert "send_claimed_at" in restored_0011
@@ -2193,8 +2236,11 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
 
     engine = create_engine_from(db_url)
     try:
+        _run_alembic(db_url, "downgrade", "0012")
         async with engine.connect() as conn:
-            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            revision = await conn.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
         assert revision == "0012"
         assert set(EMAIL_FEEDBACK_TABLES) <= await _table_names(engine)
         attempt_columns = await _columns(engine, "outreach_message_attempts")
@@ -2223,13 +2269,18 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
         } <= attempt_contract["checks"]
         assert attempt_contract["indexes"] == {
             "ix_outreach_attempts_tenant_enrollment_created": (
-                "tenant_id", "enrollment_id", "created_at", "attempt_id",
+                "tenant_id",
+                "enrollment_id",
+                "created_at",
+                "attempt_id",
             ),
             "uq_outreach_attempts_tenant_message_id": (
-                "tenant_id", "deterministic_message_id",
+                "tenant_id",
+                "deterministic_message_id",
             ),
             "uq_outreach_attempts_tenant_idempotency_header": (
-                "tenant_id", "idempotency_header",
+                "tenant_id",
+                "idempotency_header",
             ),
         }
         async with engine.connect() as conn:
@@ -2239,11 +2290,16 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
         assert contract == {
             "email_feedback_cursors": {
                 "columns": {
-                    "tenant_id", "mailbox_alias", "provider_cursor", "version",
-                    "bootstrap_started_at", "last_succeeded_at",
+                    "tenant_id",
+                    "mailbox_alias",
+                    "provider_cursor",
+                    "version",
+                    "bootstrap_started_at",
+                    "last_succeeded_at",
                 },
                 "constraints": {
-                    "pk_email_feedback_cursors", "ck_email_feedback_cursor_tenant",
+                    "pk_email_feedback_cursors",
+                    "ck_email_feedback_cursor_tenant",
                     "ck_email_feedback_cursor_mailbox",
                     "ck_email_feedback_cursor_version",
                     "ck_email_feedback_cursor_value",
@@ -2252,12 +2308,23 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
             },
             "email_feedback_receipts": {
                 "columns": {
-                    "tenant_id", "mailbox_alias", "provider_event_id", "ordinal",
-                    "kind", "occurred_at", "result", "attempt_id", "enrollment_id",
-                    "account_id", "contact_point_id", "sending_identity_id", "created_at",
+                    "tenant_id",
+                    "mailbox_alias",
+                    "provider_event_id",
+                    "ordinal",
+                    "kind",
+                    "occurred_at",
+                    "result",
+                    "attempt_id",
+                    "enrollment_id",
+                    "account_id",
+                    "contact_point_id",
+                    "sending_identity_id",
+                    "created_at",
                 },
                 "constraints": {
-                    "pk_email_feedback_receipts", "fk_email_feedback_receipts_cursor",
+                    "pk_email_feedback_receipts",
+                    "fk_email_feedback_receipts_cursor",
                     "fk_email_feedback_receipts_attempt",
                     "ck_email_feedback_receipt_tenant",
                     "ck_email_feedback_receipt_mailbox",
@@ -2269,14 +2336,21 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
                 },
                 "indexes": {
                     "ix_email_feedback_receipts_tenant_mailbox_created": (
-                        "tenant_id", "mailbox_alias", "created_at", "provider_event_id",
+                        "tenant_id",
+                        "mailbox_alias",
+                        "created_at",
+                        "provider_event_id",
                     )
                 },
             },
             "email_feedback_quarantines": {
                 "columns": {
-                    "tenant_id", "mailbox_alias", "provider_event_id", "reason",
-                    "provider_ref_digest", "created_at",
+                    "tenant_id",
+                    "mailbox_alias",
+                    "provider_event_id",
+                    "reason",
+                    "provider_ref_digest",
+                    "created_at",
                 },
                 "constraints": {
                     "pk_email_feedback_quarantines",
@@ -2286,26 +2360,39 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
                 },
                 "indexes": {
                     "ix_email_feedback_quarantines_tenant_created": (
-                        "tenant_id", "created_at", "provider_event_id",
+                        "tenant_id",
+                        "created_at",
+                        "provider_event_id",
                     )
                 },
             },
             "unsubscribe_tokens": {
                 "columns": {
-                    "tenant_id", "nonce_sha256", "contact_point_id",
-                    "message_attempt_id", "key_id", "expires_at", "consumed_at",
+                    "tenant_id",
+                    "nonce_sha256",
+                    "contact_point_id",
+                    "message_attempt_id",
+                    "key_id",
+                    "expires_at",
+                    "consumed_at",
                     "created_at",
                 },
                 "constraints": {
-                    "pk_unsubscribe_tokens", "fk_unsubscribe_token_attempt",
-                    "ck_unsubscribe_token_tenant", "ck_unsubscribe_token_nonce",
-                    "ck_unsubscribe_token_contact", "ck_unsubscribe_token_attempt",
-                    "ck_unsubscribe_token_key", "ck_unsubscribe_token_expiry",
+                    "pk_unsubscribe_tokens",
+                    "fk_unsubscribe_token_attempt",
+                    "ck_unsubscribe_token_tenant",
+                    "ck_unsubscribe_token_nonce",
+                    "ck_unsubscribe_token_contact",
+                    "ck_unsubscribe_token_attempt",
+                    "ck_unsubscribe_token_key",
+                    "ck_unsubscribe_token_expiry",
                     "ck_unsubscribe_token_consumed",
                 },
                 "indexes": {
                     "ix_unsubscribe_tokens_tenant_attempt": (
-                        "tenant_id", "message_attempt_id", "created_at",
+                        "tenant_id",
+                        "message_attempt_id",
+                        "created_at",
                     )
                 },
             },
@@ -2341,6 +2428,99 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
         await engine.dispose()
 
 
+async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> None:
+    """已应用 0012 的数据库必须经 0013 显式获得安全 payload fingerprint。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            columns = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"]): item
+                    for item in inspect(sync).get_columns(
+                        "email_feedback_receipts"
+                    )
+                }
+            )
+            constraints = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_check_constraints(
+                        "email_feedback_receipts"
+                    )
+                }
+            )
+        assert revision == "0013"
+        assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
+        assert columns["item_fingerprint"]["nullable"] is False
+        assert columns["item_fingerprint"]["default"] is None
+        assert "ck_email_feedback_receipt_fingerprint" in constraints
+
+        _run_alembic(db_url, "downgrade", "0012")
+        assert "item_fingerprint" not in await _columns(
+            engine, "email_feedback_receipts"
+        )
+        legacy_tenant = "tn_01KZX4C1000000000000000013"
+        legacy_mailbox = "feedback-legacy"
+        legacy_event = "d" * 64
+        legacy_now = datetime(2026, 8, 13, 9, 0, tzinfo=UTC)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO email_feedback_cursors "
+                    "(tenant_id,mailbox_alias,provider_cursor,version,"
+                    "bootstrap_started_at,last_succeeded_at) "
+                    "VALUES (:tenant,:mailbox,NULL,0,:now,NULL)"
+                ),
+                {
+                    "tenant": legacy_tenant,
+                    "mailbox": legacy_mailbox,
+                    "now": legacy_now,
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO email_feedback_receipts "
+                    "(tenant_id,mailbox_alias,provider_event_id,ordinal,kind,"
+                    "occurred_at,result,created_at) VALUES "
+                    "(:tenant,:mailbox,:event,0,'unparseable',:now,"
+                    "'quarantined',:now)"
+                ),
+                {
+                    "tenant": legacy_tenant,
+                    "mailbox": legacy_mailbox,
+                    "event": legacy_event,
+                    "now": legacy_now,
+                },
+            )
+
+        _run_alembic(db_url, "upgrade", "head")
+        assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
+        async with engine.connect() as conn:
+            assert (
+                await conn.scalar(
+                    text(
+                        "SELECT item_fingerprint FROM email_feedback_receipts "
+                        "WHERE tenant_id=:tenant AND mailbox_alias=:mailbox "
+                        "AND provider_event_id=:event"
+                    ),
+                    {
+                        "tenant": legacy_tenant,
+                        "mailbox": legacy_mailbox,
+                        "event": legacy_event,
+                    },
+                )
+                == "0" * 64
+            )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
 async def test_0012_email_feedback_database_guards(db_url: str) -> None:
     """真实 PG 锁定 append-only、cursor 单步、token 单向和安全词表。"""
     from infra.db.session import create_engine_from
@@ -2364,11 +2544,17 @@ async def test_0012_email_feedback_database_guards(db_url: str) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO email_feedback_receipts "
-                    "(tenant_id,mailbox_alias,provider_event_id,ordinal,kind,"
+                    "(tenant_id,mailbox_alias,provider_event_id,item_fingerprint,ordinal,kind,"
                     "occurred_at,result,created_at) VALUES "
-                    "(:tenant,:mailbox,:event,0,'unparseable',:now,'quarantined',:now)"
+                    "(:tenant,:mailbox,:event,:fingerprint,0,'unparseable',:now,'quarantined',:now)"
                 ),
-                {"tenant": tenant, "mailbox": mailbox, "event": event, "now": now},
+                {
+                    "tenant": tenant,
+                    "mailbox": mailbox,
+                    "event": event,
+                    "fingerprint": "f" * 64,
+                    "now": now,
+                },
             )
             await conn.execute(
                 text(
@@ -2443,12 +2629,37 @@ async def test_0012_email_feedback_database_guards(db_url: str) -> None:
             engine,
             text(
                 "INSERT INTO email_feedback_receipts "
-                "(tenant_id,mailbox_alias,provider_event_id,ordinal,kind,"
+                "(tenant_id,mailbox_alias,provider_event_id,item_fingerprint,ordinal,kind,"
                 "occurred_at,result,created_at) VALUES "
-                "(:tenant,:mailbox,:event,0,'soft_bounce',:now,'recorded',:now)"
+                "(:tenant,:mailbox,:event,:fingerprint,0,'unparseable',:now,"
+                "'quarantined',:now)"
             ),
-            {"tenant": tenant, "mailbox": mailbox, "event": "A" * 64, "now": now},
+            {
+                "tenant": tenant,
+                "mailbox": mailbox,
+                "event": "A" * 64,
+                "fingerprint": "f" * 64,
+                "now": now,
+            },
             "provider event ID 必须 lower-hex",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO email_feedback_receipts "
+                "(tenant_id,mailbox_alias,provider_event_id,item_fingerprint,ordinal,kind,"
+                "occurred_at,result,created_at) VALUES "
+                "(:tenant,:mailbox,:event,:fingerprint,0,'unparseable',:now,"
+                "'quarantined',:now)"
+            ),
+            {
+                "tenant": tenant,
+                "mailbox": mailbox,
+                "event": "c" * 64,
+                "fingerprint": "short",
+                "now": now,
+            },
+            "item fingerprint 必须 lower-hex 64 字符",
         )
     finally:
         await engine.dispose()

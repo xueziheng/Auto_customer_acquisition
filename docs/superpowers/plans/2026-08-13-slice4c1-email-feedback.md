@@ -570,12 +570,28 @@ Require exact-SHA GitHub Actions success before Task 4.
 
 ## Task 4: Whole-page Feedback Workflow and Atomic Domain Effects
 
+> **执行裁决（2026-08-13）**：Task 2 的 `0012` 已提交并通过精确 SHA CI，不能再原地改写。
+> 为同时满足“duplicate 零域调用”和“同 provider event 异 payload 整页冲突”，Task 4
+> 新增前向迁移 `0013_email_feedback_fingerprint`，以安全 lower-hex fingerprint 证明持久
+> payload 一致性。外层 UoW 另按 tenant 获取事务级 advisory lock，关闭 receipt 外键
+> KEY SHARE 与两域 `FOR UPDATE` 在双 mailbox 逆序页面中的真实 PostgreSQL 死锁。
+
 **Files:**
 - Modify: `workflows/email_feedback/AGENTS.md`
 - Create: `workflows/email_feedback/flow.py`
 - Modify: `workflows/email_feedback/__init__.py`
 - Modify: `workflows/AGENTS.md`
 - Modify: `infra/db/email_feedback_uow.py`
+- Create: `migrations/versions/0013_email_feedback_fingerprint.py`
+- Modify: `infra/db/tables.py`
+- Modify: `infra/db/repositories/email_feedback.py`
+- Modify: `workflows/email_feedback/repository.py`
+- Modify: `domains/outreach/service.py`
+- Modify: `domains/sending_identity/service.py`
+- Modify: `tests/integration/test_email_feedback_repositories.py`
+- Modify: `tests/integration/test_email_feedback_uow.py`
+- Modify: `tests/integration/test_migrations.py`
+- Modify: `tests/integration/test_repositories.py`
 - Create: `tests/unit/test_email_feedback_flow.py`
 - Create: `tests/integration/test_email_feedback_flow.py`
 - Modify: `tests/unit/test_outreach_delivery_feedback.py`
@@ -632,6 +648,10 @@ Inject cursor stale/lost, receipt insert, correlation repo, suppression, sending
 - [ ] **Step 5: Write replay and concurrency RED tests**
 
 Run the same page 20-way and after reconstructed processor/UoW. Assert one receipt per provider event, one quarantine, one suppression, one reputation fact, correct conditional outbox and one cursor version step. Add two mailbox processors affecting contacts in inverse provider order and assert fixed resource lock ordering/no deadlock.
+
+The durable duplicate check must compare the stored safe item fingerprint before any domain read. Because
+`0012` is already published, prove a real `0013 → 0012 → 0013` roundtrip and legacy-row backfill;
+never amend the historical migration in place.
 
 - [ ] **Step 6: Run genuine RED**
 

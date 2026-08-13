@@ -797,7 +797,7 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "email_feedback_receipts": {
             "tenant_id", "mailbox_alias", "provider_event_id", "ordinal", "kind",
-            "occurred_at", "result", "attempt_id", "enrollment_id", "account_id",
+            "item_fingerprint", "occurred_at", "result", "attempt_id", "enrollment_id", "account_id",
             "contact_point_id", "sending_identity_id", "created_at",
         },
         "email_feedback_quarantines": {

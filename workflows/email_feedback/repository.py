@@ -96,6 +96,7 @@ class FeedbackReceipt:
     tenant_id: TenantId
     mailbox_alias: str
     provider_event_id: str
+    item_fingerprint: str
     ordinal: int
     kind: EmailFeedbackKind
     occurred_at: datetime
@@ -111,6 +112,7 @@ class FeedbackReceipt:
         _require_id(self.tenant_id, "tn", "tenant_id")
         _require_mailbox(self.mailbox_alias)
         _require_lower_hex(self.provider_event_id, "provider_event_id")
+        _require_lower_hex(self.item_fingerprint, "item_fingerprint")
         if (
             not isinstance(self.ordinal, int)
             or isinstance(self.ordinal, bool)
@@ -235,6 +237,13 @@ class FeedbackCursorRepository(Protocol):
 
 @runtime_checkable
 class FeedbackReceiptRepository(Protocol):
+    async def get(
+        self,
+        tenant_id: TenantId,
+        mailbox_alias: str,
+        provider_event_id: str,
+    ) -> FeedbackReceipt | None: ...
+
     async def append_if_absent(
         self, receipt: FeedbackReceipt
     ) -> FeedbackReceiptAppendResult: ...

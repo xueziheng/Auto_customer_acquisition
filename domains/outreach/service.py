@@ -5,6 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from domains.outreach.errors import (
+    MessageAttemptConflictError as _MessageAttemptConflictError,
+)
 from domains.outreach.models import EnrollmentStopReason, SendFailureCategory
 from domains.outreach.permissions import Actor, OutreachScope
 from domains.outreach.schemas import (
@@ -35,6 +38,8 @@ from shared.schemas.identifiers import (
     SendingIdentityId,
     TenantId,
 )
+
+MessageAttemptConflictError = _MessageAttemptConflictError
 
 
 @runtime_checkable
