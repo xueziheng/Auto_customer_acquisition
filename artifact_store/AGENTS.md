@@ -1,25 +1,37 @@
-# artifact_store/ —— 原始资料存储（浅）
+# artifact_store/ —— 不可变资料与派生产物
 
 ## 职责
 
-数据平面第一层（原始资料）的存取接口：邮件原文、聊天截图、PDF、Excel、网页快照、图片、语音。
+Artifact Store 是内容寻址的受信基础设施，公共契约严格拆成两类：
 
-## 三条铁律
+- `RawArtifactStore`：邮件原文、聊天截图、PDF、Word、Excel、网页快照、图片、音频；
+- `GeneratedArtifactStore`：系统生成的派生产物，Phase 1 当前只有 `email_draft`。
 
-1. **不可变。** 资料一经写入永不修改、永不覆盖。它是所有结论的最终依据——Provenance 链的终点。修改过的"原始资料"什么都证明不了。
-2. **哈希必存。** 写入时算内容哈希，读取时可校验。哈希是「当时看到的就是这个」的唯一证明。
-3. **模型摘要不替代原文。** 摘要是派生物，存在业务层；原文永远在这里。
+生成草稿不是客户原话，也不能作为原始证据或 Provenance 链终点。禁止恢复一个混合
+Raw/Generated 的宽泛 `ArtifactStore` 接口。
 
-## 实现载体
+## 硬边界
 
-S3 / MinIO。桶结构按租户隔离（`{tenant_id}/{artifact_id}`），对象存储开版本控制防误删。
+1. **不可变。** 公共接口没有 update、delete 或 cross-tenant list。合规删除属于独立、
+   经审计的管理路径，不是业务 Store 能力。
+2. **完整性。** 写入计算 SHA-256；每次读取重算长度与 hash，异常固定告警且不返回内容。
+3. **租户隔离。** metadata 查询和 object key 都绑定 tenant；跨租户与不存在对外表现相同。
+4. **内容不进元数据。** 数据库、日志、错误、repr、workflow context 与 outbox 不得包含
+   原始 bytes、邮件 subject/body 或对象键。
+5. **分层幂等。** Raw 在同租户按 `(kind, hash)` 去重；Generated 按 tenant+幂等键比较
+   全部安全绑定，异内容或异绑定固定冲突，禁止覆盖 winner。
 
-## 依赖白名单
+## 依赖与凭证归属
 
 ```text
-允许   shared.*        禁止   domains 内部、业务判断
+允许：shared.*、本目录 Protocol
+禁止：boto3 / SQLAlchemy、domains 内部、业务授权判断
 ```
+
+S3/MinIO SDK、endpoint/bucket 传输和凭证解析只属于 `connectors/object_store/`。
+PostgreSQL metadata 只由 `infra/db/` 实现。本目录只依赖两个窄 Protocol，不持有凭证。
 
 ## Phase 1 范围
 
-存取接口、哈希校验、按租户隔离。不做：内容理解（属 agent_runtime）、生命周期分层归档。
+真实 PostgreSQL metadata、S3/MinIO bytes、租户隔离、不可变幂等与完整性校验。内容理解、
+生命周期归档、公开删除和跨租户运维接口均不在本阶段。
