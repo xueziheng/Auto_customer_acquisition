@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     PrimaryKeyConstraint,
     String,
@@ -849,12 +850,42 @@ class OutreachMessageAttemptRow(Base):
             "failure_category IN ('provider_permanent','identity_unavailable'))",
             name="ck_outreach_attempt_state_fields",
         ),
+        CheckConstraint(
+            "(deterministic_message_id IS NULL AND idempotency_header IS NULL) OR "
+            "(deterministic_message_id IS NOT NULL AND idempotency_header IS NOT NULL)",
+            name="ck_outreach_attempt_correlation_pair",
+        ),
+        CheckConstraint(
+            "deterministic_message_id IS NULL OR "
+            "(deterministic_message_id ~ "
+            "'^<[a-z0-9-]{1,32}\\.[0-9a-f]{64}@messages\\.tradeos\\.invalid>$' "
+            "AND idempotency_header ~ '^[a-z0-9-]{1,32}\\.[0-9a-f]{64}$' "
+            "AND substring(deterministic_message_id FROM "
+            "'^<([a-z0-9-]{1,32}\\.[0-9a-f]{64})@messages\\.tradeos\\.invalid>$') "
+            "= idempotency_header AND lower(idempotency_header) !~ "
+            "'(^|[-.])(bearer|token|secret|password)([-.]|$)')",
+            name="ck_outreach_attempt_correlation_grammar",
+        ),
         Index(
             "ix_outreach_attempts_tenant_enrollment_created",
             "tenant_id",
             "enrollment_id",
             "created_at",
             "attempt_id",
+        ),
+        Index(
+            "uq_outreach_attempts_tenant_message_id",
+            "tenant_id",
+            "deterministic_message_id",
+            unique=True,
+            postgresql_where=text("deterministic_message_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_outreach_attempts_tenant_idempotency_header",
+            "tenant_id",
+            "idempotency_header",
+            unique=True,
+            postgresql_where=text("idempotency_header IS NOT NULL"),
         ),
     )
 
@@ -873,6 +904,8 @@ class OutreachMessageAttemptRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     send_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deterministic_message_id: Mapped[str | None] = mapped_column(String(256))
+    idempotency_header: Mapped[str | None] = mapped_column(String(128))
 
 
 class OutreachActionRow(Base):
@@ -893,6 +926,231 @@ class OutreachActionRow(Base):
     entity_id: Mapped[str] = mapped_column(String(32))
     actor_id: Mapped[str] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmailFeedbackCursorRow(Base):
+    """邮箱反馈 cursor；只保存不透明 provider cursor，不建立值索引。"""
+
+    __tablename__ = "email_feedback_cursors"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "mailbox_alias", name="pk_email_feedback_cursors"
+        ),
+        CheckConstraint(
+            "tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_email_feedback_cursor_tenant",
+        ),
+        CheckConstraint(
+            "mailbox_alias ~ '^[a-z][a-z0-9-]{0,31}$'",
+            name="ck_email_feedback_cursor_mailbox",
+        ),
+        CheckConstraint("version >= 0", name="ck_email_feedback_cursor_version"),
+        CheckConstraint(
+            "provider_cursor IS NULL OR (length(provider_cursor) BETWEEN 1 AND 32768)",
+            name="ck_email_feedback_cursor_value",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_cursor: Mapped[str | None] = mapped_column(String(32768))
+    version: Mapped[int] = mapped_column(Integer)
+    bootstrap_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailFeedbackReceiptRow(Base):
+    """Provider feedback 的 append-only 低敏处理收据。"""
+
+    __tablename__ = "email_feedback_receipts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_event_id",
+            name="pk_email_feedback_receipts",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias"],
+            [
+                "email_feedback_cursors.tenant_id",
+                "email_feedback_cursors.mailbox_alias",
+            ],
+            ondelete="RESTRICT",
+            name="fk_email_feedback_receipts_cursor",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "attempt_id"],
+            [
+                "outreach_message_attempts.tenant_id",
+                "outreach_message_attempts.attempt_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_email_feedback_receipts_attempt",
+        ),
+        CheckConstraint(
+            "tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_email_feedback_receipt_tenant",
+        ),
+        CheckConstraint(
+            "mailbox_alias ~ '^[a-z][a-z0-9-]{0,31}$'",
+            name="ck_email_feedback_receipt_mailbox",
+        ),
+        CheckConstraint(
+            "provider_event_id ~ '^[0-9a-f]{64}$'",
+            name="ck_email_feedback_receipt_event",
+        ),
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 99", name="ck_email_feedback_receipt_ordinal"
+        ),
+        CheckConstraint(
+            "kind IN ('hard_bounce','soft_bounce','unparseable')",
+            name="ck_email_feedback_receipt_kind",
+        ),
+        CheckConstraint(
+            "result IN ('applied','recorded','quarantined')",
+            name="ck_email_feedback_receipt_result",
+        ),
+        CheckConstraint(
+            "(result='quarantined' AND kind='unparseable' AND attempt_id IS NULL "
+            "AND enrollment_id IS NULL AND account_id IS NULL "
+            "AND contact_point_id IS NULL AND sending_identity_id IS NULL) OR "
+            "(result IN ('applied','recorded') AND kind IN ('hard_bounce','soft_bounce') "
+            "AND attempt_id IS NOT NULL AND enrollment_id IS NOT NULL "
+            "AND account_id IS NOT NULL AND contact_point_id IS NOT NULL "
+            "AND sending_identity_id IS NOT NULL)",
+            name="ck_email_feedback_receipt_target",
+        ),
+        Index(
+            "ix_email_feedback_receipts_tenant_mailbox_created",
+            "tenant_id",
+            "mailbox_alias",
+            "created_at",
+            "provider_event_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_event_id: Mapped[str] = mapped_column(String(64))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    result: Mapped[str] = mapped_column(String(32))
+    attempt_id: Mapped[str | None] = mapped_column(String(32))
+    enrollment_id: Mapped[str | None] = mapped_column(String(32))
+    account_id: Mapped[str | None] = mapped_column(String(32))
+    contact_point_id: Mapped[str | None] = mapped_column(String(32))
+    sending_identity_id: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmailFeedbackQuarantineRow(Base):
+    """确定性隔离分类；不保存原始 provider 内容。"""
+
+    __tablename__ = "email_feedback_quarantines"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_event_id",
+            name="pk_email_feedback_quarantines",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias", "provider_event_id"],
+            [
+                "email_feedback_receipts.tenant_id",
+                "email_feedback_receipts.mailbox_alias",
+                "email_feedback_receipts.provider_event_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_email_feedback_quarantine_receipt",
+        ),
+        CheckConstraint(
+            "reason IN ('malformed','unsupported','missing-correlation',"
+            "'ambiguous-correlation','cross-tenant-correlation')",
+            name="ck_email_feedback_quarantine_reason",
+        ),
+        CheckConstraint(
+            "provider_ref_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_email_feedback_quarantine_digest",
+        ),
+        Index(
+            "ix_email_feedback_quarantines_tenant_created",
+            "tenant_id",
+            "created_at",
+            "provider_event_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_event_id: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(String(40))
+    provider_ref_digest: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class UnsubscribeTokenRow(Base):
+    """One-click unsubscribe token 的 nonce 摘要与一次性消费状态。"""
+
+    __tablename__ = "unsubscribe_tokens"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "nonce_sha256", name="pk_unsubscribe_tokens"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "message_attempt_id"],
+            [
+                "outreach_message_attempts.tenant_id",
+                "outreach_message_attempts.attempt_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_unsubscribe_token_attempt",
+        ),
+        CheckConstraint(
+            "tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_unsubscribe_token_tenant",
+        ),
+        CheckConstraint(
+            "octet_length(nonce_sha256)=32", name="ck_unsubscribe_token_nonce"
+        ),
+        CheckConstraint(
+            "contact_point_id ~ '^cp_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_unsubscribe_token_contact",
+        ),
+        CheckConstraint(
+            "message_attempt_id ~ '^mat_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_unsubscribe_token_attempt",
+        ),
+        CheckConstraint(
+            "key_id ~ '^[a-z0-9-]{1,32}$'",
+            name="ck_unsubscribe_token_key",
+        ),
+        CheckConstraint(
+            "expires_at = created_at + interval '90 days'",
+            name="ck_unsubscribe_token_expiry",
+        ),
+        CheckConstraint(
+            "consumed_at IS NULL OR (consumed_at >= created_at AND consumed_at < expires_at)",
+            name="ck_unsubscribe_token_consumed",
+        ),
+        Index(
+            "ix_unsubscribe_tokens_tenant_attempt",
+            "tenant_id",
+            "message_attempt_id",
+            "created_at",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    nonce_sha256: Mapped[bytes] = mapped_column(LargeBinary(32))
+    contact_point_id: Mapped[str] = mapped_column(String(32))
+    message_attempt_id: Mapped[str] = mapped_column(String(32))
+    key_id: Mapped[str] = mapped_column(String(32))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class OpportunityRow(Base):

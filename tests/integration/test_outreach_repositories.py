@@ -351,6 +351,78 @@ async def test_suppression_attempt_and_quota_atomic_outcomes(
         await session.commit()
 
 
+async def test_attempt_correlation_binding_is_atomic_unique_and_tenant_scoped(
+    outreach_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """两个关联键必须成对写入；同租户唯一，异租户与错租户查询不泄漏。"""
+    await _seed_campaign(outreach_factory)
+    repositories = importlib.import_module("infra.db.repositories.outreach")
+    contract = importlib.import_module("domains.outreach.repository")
+    schemas = importlib.import_module("domains.outreach.schemas")
+    enrollment = _enrollment(enrollment_id=EnrollmentId(new_id("enr")))
+    attempt = _attempt()
+    attempt.enrollment_id = enrollment.enrollment_id
+    binding = schemas.DeliveryCorrelationBinding(
+        deterministic_message_id=(
+            f"<feedback-route.{'a' * 64}@messages.tradeos.invalid>"
+        ),
+        idempotency_header=f"feedback-route.{'a' * 64}",
+        route_id="feedback-route",
+    )
+    async with outreach_factory() as session:
+        await repositories.EnrollmentRepositoryImpl(
+            session, TENANT_A
+        ).insert_if_absent(enrollment)
+        repo = repositories.MessageAttemptRepositoryImpl(session, TENANT_A)
+        assert (
+            await repo.create_if_absent(attempt)
+        ).status is contract.AppendStatus.CREATED
+        attempt.bind_delivery_correlation(binding)
+        bound = await repo.bind_delivery_correlation(attempt)
+        same = await repo.bind_delivery_correlation(attempt)
+        assert bound.status is contract.DeliveryCorrelationBindStatus.BOUND
+        assert same.status is contract.DeliveryCorrelationBindStatus.EXISTING
+        assert bound.winner == same.winner == attempt
+        assert (
+            await repo.find_by_deterministic_message_id(
+                TENANT_A, binding.deterministic_message_id
+            )
+            == attempt
+        )
+        assert (
+            await repo.find_by_idempotency_header(
+                TENANT_A, binding.idempotency_header
+            )
+            == attempt
+        )
+        assert (
+            await repo.find_by_deterministic_message_id(
+                TENANT_B, binding.deterministic_message_id
+            )
+            is None
+        )
+        await session.commit()
+
+    second_enrollment = _enrollment(
+        tenant_id=TENANT_A,
+        enrollment_id=EnrollmentId(new_id("enr")),
+        account_id=ProspectAccountId(new_id("acc")),
+        key="correlation-second-enrollment",
+    )
+    second = _attempt(key="correlation-second-attempt")
+    second.enrollment_id = second_enrollment.enrollment_id
+    async with outreach_factory() as session:
+        await repositories.EnrollmentRepositoryImpl(
+            session, TENANT_A
+        ).insert_if_absent(second_enrollment)
+        repo = repositories.MessageAttemptRepositoryImpl(session, TENANT_A)
+        await repo.create_if_absent(second)
+        second.bind_delivery_correlation(binding)
+        conflict = await repo.bind_delivery_correlation(second)
+        assert conflict.status is contract.DeliveryCorrelationBindStatus.CONFLICT
+        assert conflict.winner is None
+
+
 async def test_action_repository_is_idempotent_and_append_only(
     outreach_factory: async_sessionmaker[AsyncSession],
 ) -> None:

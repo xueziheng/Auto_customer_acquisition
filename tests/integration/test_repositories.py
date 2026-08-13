@@ -772,7 +772,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "attempt_id", "message_id", "campaign_id", "enrollment_id",
             "campaign_version", "step_number", "sending_identity_id", "idempotency_key",
             "state", "provider_ref", "failure_category", "created_at", "updated_at",
-            "send_claimed_at",
+            "send_claimed_at", "deterministic_message_id", "idempotency_header",
         },
         "outreach_actions": {
             "tenant_id", "action_id", "action_key", "action", "entity_id", "actor_id",
@@ -790,6 +790,23 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "event_id", "tool_call_id", "stage", "outcome", "rule",
             "category", "actor_id", "run_id", "campaign_id", "message_attempt_id",
             "occurred_at", "duration_ms", "cost_note",
+        },
+        "email_feedback_cursors": {
+            "tenant_id", "mailbox_alias", "provider_cursor", "version",
+            "bootstrap_started_at", "last_succeeded_at",
+        },
+        "email_feedback_receipts": {
+            "tenant_id", "mailbox_alias", "provider_event_id", "ordinal", "kind",
+            "occurred_at", "result", "attempt_id", "enrollment_id", "account_id",
+            "contact_point_id", "sending_identity_id", "created_at",
+        },
+        "email_feedback_quarantines": {
+            "tenant_id", "mailbox_alias", "provider_event_id", "reason",
+            "provider_ref_digest", "created_at",
+        },
+        "unsubscribe_tokens": {
+            "tenant_id", "nonce_sha256", "contact_point_id", "message_attempt_id",
+            "key_id", "expires_at", "consumed_at", "created_at",
         },
     }
     for table, cols in expected_columns.items():
@@ -838,6 +855,21 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_outreach_attempts_tenant_enrollment_created": (
             "tenant_id", "enrollment_id", "created_at", "attempt_id",
+        ),
+        "uq_outreach_attempts_tenant_message_id": (
+            "tenant_id", "deterministic_message_id",
+        ),
+        "uq_outreach_attempts_tenant_idempotency_header": (
+            "tenant_id", "idempotency_header",
+        ),
+        "ix_email_feedback_receipts_tenant_mailbox_created": (
+            "tenant_id", "mailbox_alias", "created_at", "provider_event_id",
+        ),
+        "ix_email_feedback_quarantines_tenant_created": (
+            "tenant_id", "created_at", "provider_event_id",
+        ),
+        "ix_unsubscribe_tokens_tenant_attempt": (
+            "tenant_id", "message_attempt_id", "created_at",
         ),
         "uq_tool_calls_tenant_tool_key": (
             "tenant_id", "tool_id", "idempotency_key",
@@ -925,6 +957,8 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_outreach_message_attempts", "uq_outreach_attempts_tenant_key",
             "fk_outreach_attempts_enrollment", "fk_outreach_attempts_version",
             "ck_outreach_attempt_step", "ck_outreach_attempt_state_fields",
+            "ck_outreach_attempt_correlation_pair",
+            "ck_outreach_attempt_correlation_grammar",
         },
         "outreach_actions": {
             "pk_outreach_actions", "uq_outreach_actions_tenant_key",
@@ -942,6 +976,30 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_tool_call_events", "fk_tool_call_events_call",
             "ck_tool_call_events_duration", "ck_tool_call_events_category",
             "ck_tool_call_events_safe_labels",
+        },
+        "email_feedback_cursors": {
+            "pk_email_feedback_cursors", "ck_email_feedback_cursor_tenant",
+            "ck_email_feedback_cursor_mailbox", "ck_email_feedback_cursor_version",
+            "ck_email_feedback_cursor_value",
+        },
+        "email_feedback_receipts": {
+            "pk_email_feedback_receipts", "fk_email_feedback_receipts_cursor",
+            "fk_email_feedback_receipts_attempt", "ck_email_feedback_receipt_tenant",
+            "ck_email_feedback_receipt_mailbox", "ck_email_feedback_receipt_event",
+            "ck_email_feedback_receipt_ordinal", "ck_email_feedback_receipt_kind",
+            "ck_email_feedback_receipt_result", "ck_email_feedback_receipt_target",
+        },
+        "email_feedback_quarantines": {
+            "pk_email_feedback_quarantines", "fk_email_feedback_quarantine_receipt",
+            "ck_email_feedback_quarantine_reason",
+            "ck_email_feedback_quarantine_digest",
+        },
+        "unsubscribe_tokens": {
+            "pk_unsubscribe_tokens", "fk_unsubscribe_token_attempt",
+            "ck_unsubscribe_token_tenant", "ck_unsubscribe_token_nonce",
+            "ck_unsubscribe_token_contact", "ck_unsubscribe_token_attempt",
+            "ck_unsubscribe_token_key", "ck_unsubscribe_token_expiry",
+            "ck_unsubscribe_token_consumed",
         },
     }
     for table, names in expected_constraints.items():

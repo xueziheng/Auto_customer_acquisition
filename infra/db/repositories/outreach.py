@@ -30,6 +30,8 @@ from domains.outreach.models import (
 from domains.outreach.permissions import OutreachScope, ScopeLevel
 from domains.outreach.repository import (
     AppendStatus,
+    DeliveryCorrelationBindResult,
+    DeliveryCorrelationBindStatus,
     EnrollmentInsertResult,
     EnrollmentInsertStatus,
     MessageAttemptCreateResult,
@@ -267,6 +269,8 @@ def _attempt_row(attempt: MessageAttempt) -> OutreachMessageAttemptRow:
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
         send_claimed_at=attempt.send_claimed_at,
+        deterministic_message_id=attempt.deterministic_message_id,
+        idempotency_header=attempt.idempotency_header,
     )
 
 
@@ -289,6 +293,8 @@ def _row_to_attempt(row: OutreachMessageAttemptRow) -> MessageAttempt:
         created_at=row.created_at,
         updated_at=row.updated_at,
         send_claimed_at=row.send_claimed_at,
+        deterministic_message_id=row.deterministic_message_id,
+        idempotency_header=row.idempotency_header,
     )
 
 
@@ -892,6 +898,108 @@ class MessageAttemptRepositoryImpl(_OutreachRepository):
                 send_claimed_at=attempt.send_claimed_at,
             )
         )
+
+    async def bind_delivery_correlation(
+        self, attempt: MessageAttempt
+    ) -> DeliveryCorrelationBindResult:
+        self._require_tenant(attempt.tenant_id, "outreach_attempt_delivery_bind")
+        if (
+            attempt.deterministic_message_id is None
+            or attempt.idempotency_header is None
+        ):
+            return DeliveryCorrelationBindResult(
+                DeliveryCorrelationBindStatus.CONFLICT, None
+            )
+        lock_keys = sorted(
+            (
+                f"{self._tenant_id}:message-id:{attempt.deterministic_message_id}",
+                f"{self._tenant_id}:idempotency-header:{attempt.idempotency_header}",
+            )
+        )
+        for lock_key in lock_keys:
+            await self._session.execute(
+                select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+            )
+        message_winner = await self.find_by_deterministic_message_id(
+            self._tenant_id, attempt.deterministic_message_id
+        )
+        header_winner = await self.find_by_idempotency_header(
+            self._tenant_id, attempt.idempotency_header
+        )
+        winners = tuple(
+            winner
+            for winner in (message_winner, header_winner)
+            if winner is not None
+        )
+        if any(winner.attempt_id != attempt.attempt_id for winner in winners):
+            return DeliveryCorrelationBindResult(
+                DeliveryCorrelationBindStatus.CONFLICT, None
+            )
+        row = (
+            await self._session.execute(
+                select(OutreachMessageAttemptRow)
+                .where(
+                    OutreachMessageAttemptRow.tenant_id == self._tenant_id,
+                    OutreachMessageAttemptRow.attempt_id == attempt.attempt_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return DeliveryCorrelationBindResult(
+                DeliveryCorrelationBindStatus.CONFLICT, None
+            )
+        current = (row.deterministic_message_id, row.idempotency_header)
+        desired = (
+            attempt.deterministic_message_id,
+            attempt.idempotency_header,
+        )
+        if current == desired:
+            return DeliveryCorrelationBindResult(
+                DeliveryCorrelationBindStatus.EXISTING, _row_to_attempt(row)
+            )
+        if current != (None, None):
+            return DeliveryCorrelationBindResult(
+                DeliveryCorrelationBindStatus.CONFLICT, None
+            )
+        row.deterministic_message_id = attempt.deterministic_message_id
+        row.idempotency_header = attempt.idempotency_header
+        await self._session.flush()
+        return DeliveryCorrelationBindResult(
+            DeliveryCorrelationBindStatus.BOUND, _row_to_attempt(row)
+        )
+
+    async def find_by_deterministic_message_id(
+        self, tenant_id: TenantId, deterministic_message_id: str
+    ) -> MessageAttempt | None:
+        if not self._tenant_matches(tenant_id, "outreach_attempt_message_id"):
+            return None
+        row = (
+            await self._session.execute(
+                select(OutreachMessageAttemptRow).where(
+                    OutreachMessageAttemptRow.tenant_id == self._tenant_id,
+                    OutreachMessageAttemptRow.deterministic_message_id
+                    == deterministic_message_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_attempt(row) if row is not None else None
+
+    async def find_by_idempotency_header(
+        self, tenant_id: TenantId, idempotency_header: str
+    ) -> MessageAttempt | None:
+        if not self._tenant_matches(tenant_id, "outreach_attempt_idempotency_header"):
+            return None
+        row = (
+            await self._session.execute(
+                select(OutreachMessageAttemptRow).where(
+                    OutreachMessageAttemptRow.tenant_id == self._tenant_id,
+                    OutreachMessageAttemptRow.idempotency_header
+                    == idempotency_header,
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_attempt(row) if row is not None else None
 
 
 class ActionRepositoryImpl(_OutreachRepository):

@@ -80,6 +80,13 @@ OUTREACH_TABLES: tuple[str, ...] = (
     "outreach_actions",
 )
 
+EMAIL_FEEDBACK_TABLES: tuple[str, ...] = (
+    "email_feedback_cursors",
+    "email_feedback_receipts",
+    "email_feedback_quarantines",
+    "unsubscribe_tokens",
+)
+
 # 固定注入时钟（closed_at 绑定值；非业务逻辑数字）。
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -120,6 +127,56 @@ async def _columns(engine: AsyncEngine, table: str) -> set[str]:
     """经 ``engine.connect().run_sync`` 取指定表的列名集合。"""
     async with engine.connect() as conn:
         return await conn.run_sync(_sync_columns, table)
+
+
+def _sync_email_feedback_contract(
+    conn: Connection,
+) -> tuple[dict[str, dict[str, object]], dict[str, set[str]], set[str]]:
+    inspector = inspect(conn)
+    contract: dict[str, dict[str, object]] = {}
+    for table in EMAIL_FEEDBACK_TABLES:
+        constraints = {
+            str(inspector.get_pk_constraint(table)["name"]),
+            *(str(item["name"]) for item in inspector.get_foreign_keys(table)),
+            *(str(item["name"]) for item in inspector.get_unique_constraints(table)),
+            *(str(item["name"]) for item in inspector.get_check_constraints(table)),
+        }
+        contract[table] = {
+            "columns": {str(item["name"]) for item in inspector.get_columns(table)},
+            "constraints": constraints,
+            "indexes": {
+                str(item["name"]): tuple(str(value) for value in item["column_names"])
+                for item in inspector.get_indexes(table)
+                if not item.get("duplicates_constraint")
+            },
+        }
+    trigger_rows = conn.execute(
+        text(
+            "SELECT c.relname, t.tgname FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid=t.tgrelid "
+            "WHERE NOT t.tgisinternal AND c.relname = ANY(:tables)"
+        ),
+        {"tables": list(EMAIL_FEEDBACK_TABLES)},
+    )
+    triggers = {table: set() for table in EMAIL_FEEDBACK_TABLES}
+    for table, trigger in trigger_rows:
+        triggers[str(table)].add(str(trigger))
+    functions = {
+        str(row[0])
+        for row in conn.execute(
+            text(
+                "SELECT proname FROM pg_proc WHERE proname = ANY(:names)"
+            ),
+            {
+                "names": [
+                    "guard_email_feedback_append_only",
+                    "guard_email_feedback_cursor_update",
+                    "guard_unsubscribe_token_update",
+                ]
+            },
+        )
+    }
+    return contract, triggers, functions
 
 
 _INSERT_OPPORTUNITY = text(
@@ -2075,6 +2132,18 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
         assert "send_claimed_at" not in downgraded
         _run_alembic(db_url, "upgrade", "0011")
 
+        async with engine.connect() as conn:
+            restored_0011 = await conn.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_columns(
+                        "outreach_message_attempts"
+                    )
+                }
+            )
+        assert "send_claimed_at" in restored_0011
+        _run_alembic(db_url, "upgrade", "head")
+
         helper = importlib.import_module("tests.integration.test_outreach_send_claim")
         seeded_engine, _service, _actor, attempt, _audit = await helper._ready(
             db_url, suffix="migration-guard"
@@ -2115,4 +2184,271 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
         )
     finally:
         _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
+    """0012 四表和 Attempt correlation 必须 0012→0011→0012 精确恢复。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        assert revision == "0012"
+        assert set(EMAIL_FEEDBACK_TABLES) <= await _table_names(engine)
+        attempt_columns = await _columns(engine, "outreach_message_attempts")
+        assert {"deterministic_message_id", "idempotency_header"} <= attempt_columns
+        async with engine.connect() as conn:
+            attempt_contract = await conn.run_sync(
+                lambda sync: {
+                    "checks": {
+                        str(item["name"])
+                        for item in inspect(sync).get_check_constraints(
+                            "outreach_message_attempts"
+                        )
+                    },
+                    "indexes": {
+                        str(item["name"]): tuple(item["column_names"])
+                        for item in inspect(sync).get_indexes(
+                            "outreach_message_attempts"
+                        )
+                        if not item.get("duplicates_constraint")
+                    },
+                }
+            )
+        assert {
+            "ck_outreach_attempt_correlation_pair",
+            "ck_outreach_attempt_correlation_grammar",
+        } <= attempt_contract["checks"]
+        assert attempt_contract["indexes"] == {
+            "ix_outreach_attempts_tenant_enrollment_created": (
+                "tenant_id", "enrollment_id", "created_at", "attempt_id",
+            ),
+            "uq_outreach_attempts_tenant_message_id": (
+                "tenant_id", "deterministic_message_id",
+            ),
+            "uq_outreach_attempts_tenant_idempotency_header": (
+                "tenant_id", "idempotency_header",
+            ),
+        }
+        async with engine.connect() as conn:
+            contract, triggers, functions = await conn.run_sync(
+                _sync_email_feedback_contract
+            )
+        assert contract == {
+            "email_feedback_cursors": {
+                "columns": {
+                    "tenant_id", "mailbox_alias", "provider_cursor", "version",
+                    "bootstrap_started_at", "last_succeeded_at",
+                },
+                "constraints": {
+                    "pk_email_feedback_cursors", "ck_email_feedback_cursor_tenant",
+                    "ck_email_feedback_cursor_mailbox",
+                    "ck_email_feedback_cursor_version",
+                    "ck_email_feedback_cursor_value",
+                },
+                "indexes": {},
+            },
+            "email_feedback_receipts": {
+                "columns": {
+                    "tenant_id", "mailbox_alias", "provider_event_id", "ordinal",
+                    "kind", "occurred_at", "result", "attempt_id", "enrollment_id",
+                    "account_id", "contact_point_id", "sending_identity_id", "created_at",
+                },
+                "constraints": {
+                    "pk_email_feedback_receipts", "fk_email_feedback_receipts_cursor",
+                    "fk_email_feedback_receipts_attempt",
+                    "ck_email_feedback_receipt_tenant",
+                    "ck_email_feedback_receipt_mailbox",
+                    "ck_email_feedback_receipt_event",
+                    "ck_email_feedback_receipt_ordinal",
+                    "ck_email_feedback_receipt_kind",
+                    "ck_email_feedback_receipt_result",
+                    "ck_email_feedback_receipt_target",
+                },
+                "indexes": {
+                    "ix_email_feedback_receipts_tenant_mailbox_created": (
+                        "tenant_id", "mailbox_alias", "created_at", "provider_event_id",
+                    )
+                },
+            },
+            "email_feedback_quarantines": {
+                "columns": {
+                    "tenant_id", "mailbox_alias", "provider_event_id", "reason",
+                    "provider_ref_digest", "created_at",
+                },
+                "constraints": {
+                    "pk_email_feedback_quarantines",
+                    "fk_email_feedback_quarantine_receipt",
+                    "ck_email_feedback_quarantine_reason",
+                    "ck_email_feedback_quarantine_digest",
+                },
+                "indexes": {
+                    "ix_email_feedback_quarantines_tenant_created": (
+                        "tenant_id", "created_at", "provider_event_id",
+                    )
+                },
+            },
+            "unsubscribe_tokens": {
+                "columns": {
+                    "tenant_id", "nonce_sha256", "contact_point_id",
+                    "message_attempt_id", "key_id", "expires_at", "consumed_at",
+                    "created_at",
+                },
+                "constraints": {
+                    "pk_unsubscribe_tokens", "fk_unsubscribe_token_attempt",
+                    "ck_unsubscribe_token_tenant", "ck_unsubscribe_token_nonce",
+                    "ck_unsubscribe_token_contact", "ck_unsubscribe_token_attempt",
+                    "ck_unsubscribe_token_key", "ck_unsubscribe_token_expiry",
+                    "ck_unsubscribe_token_consumed",
+                },
+                "indexes": {
+                    "ix_unsubscribe_tokens_tenant_attempt": (
+                        "tenant_id", "message_attempt_id", "created_at",
+                    )
+                },
+            },
+        }
+        assert triggers == {
+            "email_feedback_cursors": {"trg_email_feedback_cursors_guard"},
+            "email_feedback_receipts": {"trg_email_feedback_receipts_append_only"},
+            "email_feedback_quarantines": {
+                "trg_email_feedback_quarantines_append_only"
+            },
+            "unsubscribe_tokens": {"trg_unsubscribe_tokens_guard"},
+        }
+        assert functions == {
+            "guard_email_feedback_append_only",
+            "guard_email_feedback_cursor_update",
+            "guard_unsubscribe_token_update",
+        }
+
+        _run_alembic(db_url, "downgrade", "0011")
+        assert set(EMAIL_FEEDBACK_TABLES).isdisjoint(await _table_names(engine))
+        attempt_columns = await _columns(engine, "outreach_message_attempts")
+        assert {"deterministic_message_id", "idempotency_header"}.isdisjoint(
+            attempt_columns
+        )
+
+        _run_alembic(db_url, "upgrade", "head")
+        assert set(EMAIL_FEEDBACK_TABLES) <= await _table_names(engine)
+        assert {"deterministic_message_id", "idempotency_header"} <= await _columns(
+            engine, "outreach_message_attempts"
+        )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0012_email_feedback_database_guards(db_url: str) -> None:
+    """真实 PG 锁定 append-only、cursor 单步、token 单向和安全词表。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_01KZX4C1000000000000000001"
+    mailbox = "feedback-primary"
+    event = "a" * 64
+    now = datetime(2026, 8, 13, 8, 0, tzinfo=UTC)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO email_feedback_cursors "
+                    "(tenant_id,mailbox_alias,provider_cursor,version,"
+                    "bootstrap_started_at,last_succeeded_at) "
+                    "VALUES (:tenant,:mailbox,NULL,0,:now,NULL)"
+                ),
+                {"tenant": tenant, "mailbox": mailbox, "now": now},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO email_feedback_receipts "
+                    "(tenant_id,mailbox_alias,provider_event_id,ordinal,kind,"
+                    "occurred_at,result,created_at) VALUES "
+                    "(:tenant,:mailbox,:event,0,'unparseable',:now,'quarantined',:now)"
+                ),
+                {"tenant": tenant, "mailbox": mailbox, "event": event, "now": now},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO email_feedback_quarantines "
+                    "(tenant_id,mailbox_alias,provider_event_id,reason,"
+                    "provider_ref_digest,created_at) VALUES "
+                    "(:tenant,:mailbox,:event,'malformed',:digest,:now)"
+                ),
+                {
+                    "tenant": tenant,
+                    "mailbox": mailbox,
+                    "event": event,
+                    "digest": "b" * 64,
+                    "now": now,
+                },
+            )
+        for table in ("email_feedback_receipts", "email_feedback_quarantines"):
+            await _assert_statement_integrity_rejected(
+                engine,
+                text(
+                    f"UPDATE {table} SET created_at=created_at + interval '1 second' "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+                f"{table} UPDATE 必须被 append-only trigger 拒绝",
+            )
+            await _assert_statement_integrity_rejected(
+                engine,
+                text(f"DELETE FROM {table} WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+                f"{table} DELETE 必须被 append-only trigger 拒绝",
+            )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "UPDATE email_feedback_cursors SET provider_cursor='jump', version=2 "
+                "WHERE tenant_id=:tenant AND mailbox_alias=:mailbox"
+            ),
+            {"tenant": tenant, "mailbox": mailbox},
+            "cursor version 只能精确 +1",
+        )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "DELETE FROM email_feedback_cursors "
+                "WHERE tenant_id=:tenant AND mailbox_alias=:mailbox"
+            ),
+            {"tenant": tenant, "mailbox": mailbox},
+            "cursor 不可删除",
+        )
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE email_feedback_cursors SET provider_cursor='next', "
+                    "version=version+1,last_succeeded_at=:now "
+                    "WHERE tenant_id=:tenant AND mailbox_alias=:mailbox"
+                ),
+                {"tenant": tenant, "mailbox": mailbox, "now": now},
+            )
+        for bad_mailbox in ("Customer@Example.com", "UPPER", "-leading"):
+            await _assert_statement_integrity_rejected(
+                engine,
+                text(
+                    "INSERT INTO email_feedback_cursors "
+                    "(tenant_id,mailbox_alias,provider_cursor,version,bootstrap_started_at) "
+                    "VALUES (:tenant,:mailbox,NULL,0,:now)"
+                ),
+                {"tenant": tenant, "mailbox": bad_mailbox, "now": now},
+                "mailbox alias 只能是安全 operator label",
+            )
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO email_feedback_receipts "
+                "(tenant_id,mailbox_alias,provider_event_id,ordinal,kind,"
+                "occurred_at,result,created_at) VALUES "
+                "(:tenant,:mailbox,:event,0,'soft_bounce',:now,'recorded',:now)"
+            ),
+            {"tenant": tenant, "mailbox": mailbox, "event": "A" * 64, "now": now},
+            "provider event ID 必须 lower-hex",
+        )
+    finally:
         await engine.dispose()
