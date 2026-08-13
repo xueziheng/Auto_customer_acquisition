@@ -35,3 +35,12 @@ PostgreSQL metadata 只由 `infra/db/` 实现。本目录只依赖两个窄 Prot
 
 真实 PostgreSQL metadata、S3/MinIO bytes、租户隔离、不可变幂等与完整性校验。内容理解、
 生命周期归档、公开删除和跨租户运维接口均不在本阶段。
+
+## 持久化与验收
+
+- PostgreSQL 只保存安全 metadata；`raw_artifacts` 与 `artifacts` 均禁止内容、邮件正文、
+  endpoint、bucket 或 credential 列。
+- bytes 只能由 `ObjectBlobTransport` 进入 tenant-bound key。每次读取必须对数据库记录的
+  长度与 SHA-256 重新校验，不能信任对象存储返回值。
+- `scripts/demo_artifact_store.py` 是离线验收 composition，不是 production runtime factory；
+  它只能通过注入的 settings、secret resolver、UoW 与 Store 公开接口运行。

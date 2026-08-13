@@ -191,6 +191,24 @@ audit_events             审计事件（只增）
 
 `workflow_steps` 是 Phase 1 工作流引擎的核心表，由 `scheduler-worker` 定时扫描推进。表结构要能支持：状态、下次执行时间、重试次数、幂等键、等待人工标记。
 
+## Artifact Store metadata
+
+Artifact Store 的内容保存在 tenant-bound S3/MinIO object key 中，PostgreSQL 只维护两张
+不可变 metadata 表：
+
+```text
+raw_artifacts            外部取得的 Raw Artifact；tenant + kind + SHA-256 唯一
+artifacts                系统生成的 Generated Artifact；tenant + idempotency key 唯一
+```
+
+`raw_artifacts` 记录类型、哈希、长度、MIME、对象键、上传者与时间；`artifacts` 另记录
+workflow run、业务主体、序号、生成器与生成时间。两表所有查询必须显式租户过滤，object key
+必须精确包含 tenant 与 artifact ID。
+
+**禁止内容列**：两表不得加入原始内容、邮件 subject/body、JSON payload、endpoint、bucket、
+credential 或自由异常文本。对象键也是内部持久化细节，不进入公共 DTO、日志、错误、workflow
+context 或 outbox。业务 Store 没有 update、delete、cross-tenant list；合规删除是独立审计路径。
+
 ---
 
 ## 计费（Phase 3，先不建表）

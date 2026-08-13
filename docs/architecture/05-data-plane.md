@@ -16,6 +16,19 @@
 
 原始资料永不被覆盖或删除——它是所有结论的最终依据。模型摘要是派生物，不能替代原文。
 
+#### Raw Artifact（原始证据）与 Generated Artifact（派生产物）
+
+Artifact Store 明确拆成两个不可混用的索引：
+
+- **Raw Artifact（原始证据）**：邮件原文、聊天截图、PDF、Word、Excel、网页快照、图片、
+  音频等外部取得的不可变 bytes；按租户、类型和内容哈希去重。
+- **Generated Artifact（派生产物）**：TradeOS 生成的内容；Phase 1 当前仅含邮件草稿，
+  按租户与业务幂等键绑定 workflow run、主体和序号。
+
+派生产物不能作为原始证据，也不能成为 Provenance 链终点。两类内容都只进入 tenant-bound
+对象存储；PostgreSQL 只保存哈希、长度、MIME、关联 ID 与对象键等安全 metadata。读取时
+必须重新校验长度和 SHA-256，不能用模型摘要或数据库行替代原始 bytes。
+
 ### 2. 结构化业务层
 
 ```text
