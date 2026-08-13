@@ -297,3 +297,78 @@ async def test_provider_success_local_completion_failure_is_reconciliation_requi
         assert canonical.error_category == "reconciliation_required"
     finally:
         await engine.dispose()
+
+
+async def test_non_idempotent_read_uses_unique_technical_claim_without_dedup(
+    db_url: str,
+) -> None:
+    class ReadHandler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def prepare(self, ctx, preflight):
+            del ctx, preflight
+            return PreparedToolCall("f" * 64, "fp-v1", {"limit": 10}, object())
+
+        async def execute(self, tenant_id, prepared):
+            del tenant_id, prepared
+            self.calls += 1
+            return {"provider_ref": new_id("fpg")}
+
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    handler = ReadHandler()
+    registry = ToolRegistry()
+    registry.register(
+        ToolManifest(
+            tool_id="email.feedback.fetch",
+            version="v1",
+            description="读取一页邮件投递反馈",
+            risk_level=RiskLevel.LOW,
+            cost_class=CostClass.LOW,
+            requires_approval=False,
+            idempotency=IdempotencyRequirement.NONE,
+            required_permissions=("email:feedback_read",),
+            checks=("tenant", "permission"),
+        ),
+        handler,
+    )
+    gateway = ToolGateway(
+        registry,
+        {"tenant": _Stage("tenant"), "permission": _Stage("permission")},
+        lambda requested: SqlAlchemyToolGatewayUnitOfWork(
+            factory, requested, now=lambda: datetime(2026, 8, 13, 10, tzinfo=UTC)
+        ),
+        lease_duration=timedelta(minutes=1),
+        lease_owner="read-worker",
+        now=lambda: datetime(2026, 8, 13, 10, tzinfo=UTC),
+        id_factory=new_id,
+    )
+    context = ToolCallContext(
+        tenant_id=tenant,
+        user_id=UserId(new_id("usr")),
+        tool_id="email.feedback.fetch",
+        params={"mailbox_alias": "feedback-primary", "page_limit": 10},
+    )
+    try:
+        first = await gateway.invoke(context)
+        second = await gateway.invoke(context)
+        assert first.status is ToolCallStatus.SUCCEEDED
+        assert second.status is ToolCallStatus.SUCCEEDED
+        assert first.tool_call_id != second.tool_call_id
+        assert handler.calls == 2
+        async with factory() as session:
+            rows = (
+                await session.execute(
+                    select(ToolCallRow).where(ToolCallRow.tenant_id == tenant)
+                )
+            ).scalars().all()
+        assert len(rows) == 2
+        assert all(row.status == "succeeded" for row in rows)
+        assert len({row.idempotency_key for row in rows}) == 2
+        assert all(
+            row.idempotency_key == f"call:{row.tool_call_id}" for row in rows
+        )
+    finally:
+        await engine.dispose()

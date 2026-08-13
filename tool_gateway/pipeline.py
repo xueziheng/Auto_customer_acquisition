@@ -272,6 +272,7 @@ class _GatewayManifest(Protocol):
     version: str
     risk_level: _ManifestValue
     cost_class: _ManifestValue
+    idempotency: _ManifestValue
     checks: tuple[str, ...]
 
 
@@ -575,6 +576,50 @@ class ToolGateway:
                     ToolGatewayError(ToolErrorCategory.UNEXPECTED),
                     canonical=canonical_claimed,
                     stage="handler.prepare",
+                )
+        if manifest.idempotency.value == "none" and not canonical_claimed:
+            technical_key = IdempotencyKey(f"call:{call_id}")
+            try:
+                async with self._uow_factory(ctx.tenant_id) as uow:
+                    claimed = await uow.calls.claim(
+                        ctx.tenant_id,
+                        call_id,
+                        tool_id=manifest.tool_id,
+                        idempotency_key=technical_key,
+                        request_fingerprint=state.prepared.request_fingerprint,
+                        fingerprint_version=state.prepared.fingerprint_version,
+                        lease_owner=self._lease_owner,
+                        lease_expires_at=now + self._lease_duration,
+                    )
+                if (
+                    claimed.status is not ClaimStatus.CLAIMED
+                    or claimed.canonical.tool_call_id != call_id
+                ):
+                    raise ValidationError("非幂等工具技术 claim 冲突")
+                canonical_claimed = True
+                await self._append_event(
+                    ctx,
+                    call_id,
+                    "ledger",
+                    "claimed",
+                    "idempotency:none",
+                    None,
+                )
+            except TradeOSError as error:
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    self._translate_error(error),
+                    canonical=canonical_claimed,
+                    stage="ledger.claim",
+                )
+            except Exception:  # noqa: BLE001 -- Connector 前的本地故障可安全拒绝
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT),
+                    canonical=canonical_claimed,
+                    stage="ledger.claim",
                 )
         try:
             async with self._uow_factory(ctx.tenant_id) as uow:
