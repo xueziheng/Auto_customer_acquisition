@@ -6,6 +6,7 @@
 Phase 1 需要的 handler 清单（实现时逐个补）：
 
     email.send            经 connectors/gmail 发送（幂等 REQUIRED、HIGH）
+    email.feedback.fetch  经 connectors/gmail 读取 typed DSN（幂等 NONE、LOW）
     email.fetch_replies   拉取回复
     contact.verify        经 connectors/email_verification 验证可达性
     contact.enrich        经 connectors/contact_enrichment 补全
@@ -19,6 +20,12 @@ Phase 1 需要的 handler 清单（实现时逐个补）：
 凭证在 handler 内部经密钥服务获取，不进日志（硬边界 1）。
 """
 
+from .email_feedback import (
+    EmailFeedbackFetchHandler,
+    FeedbackPageSlot,
+    ToolEmailFeedbackReader,
+    ToolGatewayEmailFeedbackReader,
+)
 from .email_send import (
     DeliveryMaterial,
     DeliveryMaterialProvider,
@@ -29,6 +36,10 @@ from .email_send import (
 __all__ = [
     "DeliveryMaterial",
     "DeliveryMaterialProvider",
+    "EmailFeedbackFetchHandler",
     "EmailSendHandler",
+    "FeedbackPageSlot",
+    "ToolEmailFeedbackReader",
+    "ToolGatewayEmailFeedbackReader",
     "UnsubscribeLinkProvider",
 ]

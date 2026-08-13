@@ -22,6 +22,19 @@ from tool_gateway.pipeline import (
     ToolCallContext,
 )
 
+
+def test_email_feedback_fetch_manifest_is_low_risk_read_only_plugin() -> None:
+    module = __import__("tool_gateway.handlers.email_feedback", fromlist=["MANIFEST"])
+    manifest = module.MANIFEST
+    assert manifest.tool_id == "email.feedback.fetch"
+    assert manifest.risk_level is RiskLevel.LOW
+    assert manifest.cost_class is CostClass.FREE
+    assert manifest.idempotency is IdempotencyRequirement.NONE
+    assert manifest.checks == ("tenant", "permission")
+    assert manifest.required_permissions == ("email:feedback_read",)
+    assert manifest.requires_approval is False
+
+
 EMAIL_CHECKS = (
     "tenant",
     "permission",

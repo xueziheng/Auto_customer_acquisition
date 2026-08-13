@@ -1,27 +1,36 @@
-"""Gmail 单封发送连接器。"""
+"""Gmail 单封发送、确定性恢复与 typed 投递反馈读取连接器。"""
 
 from __future__ import annotations
 
+import base64
+import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.policy import SMTP
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlparse
 
 from connectors.base import ConnectorManifest
 from shared.errors import ValidationError
+from shared.schemas.email_feedback import EmailFeedbackItem, EmailFeedbackPage
 from tool_gateway.errors import DeliveryCertainty, ToolErrorCategory, ToolGatewayError
 
-from .transport import GmailHttpStatusError, GmailHttpTransport, GmailNetworkError
+from .feedback import parse_delivery_status
+from .transport import (
+    GmailFeedbackHttpTransport,
+    GmailHttpStatusError,
+    GmailHttpTransport,
+    GmailNetworkError,
+)
 
 MANIFEST = ConnectorManifest(
     connector_id="gmail",
     capabilities=(
         "email.send",
-        "email.fetch_replies",
-        "email.parse_bounce",
+        "email.feedback.fetch",
         "email.add_label",
         "dns.check_auth",
     ),
@@ -92,26 +101,31 @@ class _SecretValue:
     value: str = field(repr=False)
 
 
-@dataclass(frozen=True)
-class BounceEvent:
-    """解析出的退信事件。"""
-
-    original_message_ref: str
-    is_hard: bool
-    needs_review: bool
-    raw_artifact_ref: str
-    occurred_at: datetime
-    dedup_key: str
+@dataclass(frozen=True, repr=False)
+class _FeedbackCursorState:
+    mode: str
+    after_epoch: int | None
+    boundary_history_id: str | None
+    start_history_id: str | None
+    page_token: str | None
+    pending_message_refs: tuple[str, ...]
+    pending_block_offset: int
 
 
 class GmailConnector:
     manifest = MANIFEST
 
-    def __init__(self, transport: GmailHttpTransport) -> None:
+    def __init__(
+        self,
+        transport: GmailHttpTransport,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         if not isinstance(transport, GmailHttpTransport):
             raise ValidationError("Gmail transport 无效")
         self._transport = transport
         self._token: _SecretValue | None = None
+        self._now = now
 
     async def configure(self, secret_resolver: SecretResolver) -> None:
         if not isinstance(secret_resolver, SecretResolver):
@@ -178,19 +192,273 @@ class GmailConnector:
         del idempotency_key, from_identity, to, subject, body, unsubscribe_url
         raise NotImplementedError
 
-    async def fetch_new_messages(
-        self, since_cursor: str | None
-    ) -> tuple[list[dict], str]:
-        raise NotImplementedError
+    async def fetch_feedback_page(
+        self,
+        mailbox_alias: str,
+        cursor: str | None,
+        page_limit: int,
+    ) -> EmailFeedbackPage:
+        if (
+            not isinstance(mailbox_alias, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", mailbox_alias) is None
+            or not isinstance(page_limit, int)
+            or isinstance(page_limit, bool)
+            or not 1 <= page_limit <= 100
+        ):
+            raise ValidationError("Gmail feedback request 无效")
+        if self._token is None:
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
+        if not isinstance(self._transport, GmailFeedbackHttpTransport):
+            raise ValidationError("Gmail feedback transport 无效")
+        feedback_transport = cast(GmailFeedbackHttpTransport, self._transport)
+        starting_cursor = cursor
+        try:
+            state = (
+                _decode_feedback_cursor(cursor)
+                if cursor is not None
+                else await self._initial_feedback_state(
+                    self._token.value, feedback_transport
+                )
+            )
+            refs, continuation = await self._feedback_refs(
+                self._token.value, state, feedback_transport
+            )
+            items: list[EmailFeedbackItem] = []
+            pending = list(refs)
+            offset = state.pending_block_offset if state.pending_message_refs else 0
+            while pending:
+                message_ref = pending[0]
+                raw = await feedback_transport.get_raw_message(
+                    token=self._token.value, message_ref=message_ref
+                )
+                parsed = parse_delivery_status(raw, message_ref)
+                remaining = parsed[offset:]
+                capacity = page_limit - len(items)
+                items.extend(remaining[:capacity])
+                consumed = min(len(remaining), capacity)
+                if consumed < len(remaining):
+                    continuation = _FeedbackCursorState(
+                        continuation.mode,
+                        continuation.after_epoch,
+                        continuation.boundary_history_id,
+                        continuation.start_history_id,
+                        continuation.page_token,
+                        tuple(pending),
+                        offset + consumed,
+                    )
+                    break
+                pending.pop(0)
+                offset = 0
+                if len(items) == page_limit and pending:
+                    continuation = _FeedbackCursorState(
+                        continuation.mode,
+                        continuation.after_epoch,
+                        continuation.boundary_history_id,
+                        continuation.start_history_id,
+                        continuation.page_token,
+                        tuple(pending),
+                        0,
+                    )
+                    break
+            else:
+                continuation = _FeedbackCursorState(
+                    continuation.mode,
+                    continuation.after_epoch,
+                    continuation.boundary_history_id,
+                    continuation.start_history_id,
+                    continuation.page_token,
+                    (),
+                    0,
+                )
+        except (GmailHttpStatusError, GmailNetworkError) as error:
+            raise _classify_feedback_transport_error(error) from None
+        next_cursor = _encode_feedback_cursor(continuation)
+        return EmailFeedbackPage(starting_cursor, next_cursor, tuple(items))
 
-    async def parse_bounce(self, raw_message: dict) -> BounceEvent | None:
-        raise NotImplementedError
+    async def _initial_feedback_state(
+        self, token: str, transport: GmailFeedbackHttpTransport
+    ) -> _FeedbackCursorState:
+        value = self._now()
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise ValidationError("Gmail feedback clock 无效")
+        history_id = await transport.get_profile_history_id(token=token)
+        after_epoch = int((value.astimezone(UTC) - timedelta(days=30)).timestamp())
+        return _FeedbackCursorState(
+            "bootstrap", after_epoch, history_id, None, None, (), 0
+        )
+
+    async def _feedback_refs(
+        self,
+        token: str,
+        state: _FeedbackCursorState,
+        transport: GmailFeedbackHttpTransport,
+    ) -> tuple[tuple[str, ...], _FeedbackCursorState]:
+        if state.pending_message_refs:
+            return state.pending_message_refs, state
+        if state.mode == "bootstrap":
+            assert state.after_epoch is not None
+            refs, next_page = await transport.list_feedback_messages(
+                token=token,
+                after_epoch=state.after_epoch,
+                page_token=state.page_token,
+            )
+            if next_page is None:
+                continuation = _FeedbackCursorState(
+                    "history",
+                    None,
+                    None,
+                    state.boundary_history_id,
+                    None,
+                    (),
+                    0,
+                )
+            else:
+                continuation = _FeedbackCursorState(
+                    "bootstrap",
+                    state.after_epoch,
+                    state.boundary_history_id,
+                    None,
+                    next_page,
+                    (),
+                    0,
+                )
+        else:
+            assert state.start_history_id is not None
+            refs, next_page, response_history_id = (
+                await transport.list_feedback_history(
+                    token=token,
+                    start_history_id=state.start_history_id,
+                    page_token=state.page_token,
+                )
+            )
+            continuation = _FeedbackCursorState(
+                "history",
+                None,
+                None,
+                state.start_history_id if next_page is not None else response_history_id,
+                next_page,
+                (),
+                0,
+            )
+        deduplicated = tuple(dict.fromkeys(refs))
+        return deduplicated, continuation
 
     async def add_label(self, message_ref: str, label: str) -> None:
         raise NotImplementedError
 
     async def check_dns_auth(self, domain: str) -> dict[str, bool]:
         raise NotImplementedError
+
+
+def _encode_feedback_cursor(state: _FeedbackCursorState) -> str:
+    payload = {
+        "after_epoch": state.after_epoch,
+        "boundary_history_id": state.boundary_history_id,
+        "mode": state.mode,
+        "page_token": state.page_token,
+        "pending_block_offset": state.pending_block_offset,
+        "pending_message_refs": list(state.pending_message_refs),
+        "start_history_id": state.start_history_id,
+        "version": 1,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    cursor = f"gfc1.{encoded}"
+    if len(cursor) > 32768:
+        raise ValidationError("Gmail feedback cursor 无效")
+    return cursor
+
+
+def _decode_feedback_cursor(cursor: object) -> _FeedbackCursorState:
+    if (
+        not isinstance(cursor, str)
+        or not cursor.startswith("gfc1.")
+        or not 6 <= len(cursor) <= 32768
+    ):
+        raise ValidationError("Gmail feedback cursor 无效")
+    try:
+        encoded = cursor.removeprefix("gfc1.")
+        padding = "=" * (-len(encoded) % 4)
+        raw = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        raise ValidationError("Gmail feedback cursor 无效") from None
+    expected_keys = {
+        "after_epoch",
+        "boundary_history_id",
+        "mode",
+        "page_token",
+        "pending_block_offset",
+        "pending_message_refs",
+        "start_history_id",
+        "version",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValidationError("Gmail feedback cursor 无效")
+    refs = payload["pending_message_refs"]
+    strings = (
+        payload["boundary_history_id"],
+        payload["page_token"],
+        payload["start_history_id"],
+    )
+    if (
+        payload["version"] != 1
+        or payload["mode"] not in {"bootstrap", "history"}
+        or not isinstance(refs, list)
+        or len(refs) > 100
+        or not all(
+            isinstance(value, str)
+            and 1 <= len(value) <= 200
+            and all(32 < ord(char) < 127 for char in value)
+            for value in refs
+        )
+        or not all(
+            value is None
+            or (
+                isinstance(value, str)
+                and 1 <= len(value) <= 200
+                and all(32 < ord(char) < 127 for char in value)
+            )
+            for value in strings
+        )
+        or not isinstance(payload["pending_block_offset"], int)
+        or isinstance(payload["pending_block_offset"], bool)
+        or not 0 <= payload["pending_block_offset"] <= 99
+        or (
+            payload["after_epoch"] is not None
+            and (
+                not isinstance(payload["after_epoch"], int)
+                or isinstance(payload["after_epoch"], bool)
+                or payload["after_epoch"] < 0
+            )
+        )
+    ):
+        raise ValidationError("Gmail feedback cursor 无效")
+    state = _FeedbackCursorState(
+        payload["mode"],
+        payload["after_epoch"],
+        payload["boundary_history_id"],
+        payload["start_history_id"],
+        payload["page_token"],
+        tuple(refs),
+        payload["pending_block_offset"],
+    )
+    bootstrap_valid = (
+        state.after_epoch is not None
+        and state.boundary_history_id is not None
+        and state.start_history_id is None
+    )
+    history_valid = (
+        state.after_epoch is None
+        and state.boundary_history_id is None
+        and state.start_history_id is not None
+    )
+    if (state.mode == "bootstrap") != bootstrap_valid or (
+        state.mode == "history"
+    ) != history_valid:
+        raise ValidationError("Gmail feedback cursor 无效")
+    return state
 
 
 def _build_message(request: GmailSendRequest) -> bytes:
@@ -229,6 +497,23 @@ def _classify_transport_error(
     if retryable_status:
         return ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT)
     return ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT)
+
+
+def _classify_feedback_transport_error(
+    error: GmailHttpStatusError | GmailNetworkError,
+) -> ToolGatewayError:
+    classified = _classify_transport_error(error)
+    if classified.category is ToolErrorCategory.RATE_LIMITED:
+        retry_after = (
+            error.feedback_retry_after_seconds
+            if isinstance(error, GmailHttpStatusError)
+            else None
+        )
+        return ToolGatewayError(
+            ToolErrorCategory.RATE_LIMITED,
+            retry_after_seconds=retry_after,
+        )
+    return classified
 
 
 def _validate_mailbox(value: object) -> None:

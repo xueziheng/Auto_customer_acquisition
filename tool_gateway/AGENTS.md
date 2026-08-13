@@ -24,13 +24,16 @@ tool_gateway/
 │   ├── approval.py      审批状态
 │   ├── idempotency.py   幂等
 │   └── rate_limit.py    频率与配额
-└── handlers/          工具执行器注册处（实现调 connectors/）
-    └── email_send.py  Gmail 单封发送参数组装与恢复搜索
+└── handlers/             工具执行器注册处（实现调 connectors/）
+    ├── email_send.py     Gmail 单封发送参数组装与恢复搜索
+    └── email_feedback.py Gmail typed 反馈页的一次性进程内交接
 ```
 
 ## 加新工具 = manifest + handler，不改管线
 
 这是四个插件点之一。任何「加个工具要改 pipeline.py」的做法都是设计违规。
+`idempotency=NONE` 的通用 technical-claim 生命周期属于既有管线能力，不得在其中按
+具体 tool_id 分支；新只读工具仍只能增加 manifest + handler。
 
 ## Stage 顺序不可随意调换
 
@@ -71,6 +74,13 @@ tenant → permission → suppression → approval → idempotency → rate_limi
 provider reference 与 HMAC 请求指纹；**不得持久化邮箱地址、主题、正文、退订链接、
 OAuth token、完整请求或异常文本**。请求 payload/preflight 只活在单次进程内。
 
+`email.feedback.fetch` 是 LOW/FREE read 工具，只启用 `tenant → permission`，且
+`idempotency=NONE`。Gateway 仍用每次调用唯一的内部 technical claim 驱动 durable
+`RECEIVED → EXECUTING → SUCCEEDED/FAILED` 状态机；这个 claim 不构成调用者幂等语义，
+不能用于跨调用复用结果。判权通过后 trusted reader 才构造并配置 Gmail Connector。
+typed page 只进入容量一的进程内 `FeedbackPageSlot`，ledger 只能保存一次性 `fpg_`
+handle；`take()` 后立即删除，失败或 cancellation 必须清空。
+
 每次调用（含拒绝与重复）都追加结构化 event。进入 Connector 前必须先提交
 `EXECUTING` 和对应事件；这笔写入失败时不得调用 Gmail。完成 Attempt 或 canonical
 ledger 失败时也不得伪造成功。**审计写入失败必须阻断动作本身**——审计不完整时
@@ -96,5 +106,6 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 ## Phase 1 范围
 
 manifest 注册表、固定 stage 编排、Postgres canonical ledger、append-only event、
-`email.send` 单封 Gmail handler、租约恢复与人工对账边界。成本钱包仍是 Phase 3
-挂载点；不在本阶段实现自动对账扫描器、对账 UI、回复 worker 或自动重发。
+`email.send` 单封 Gmail handler、`email.feedback.fetch` typed 只读 handler、租约恢复与
+人工对账边界。成本钱包仍是 Phase 3 挂载点；不在本阶段实现自动对账扫描器、对账 UI、
+回复正文 worker 或自动重发。

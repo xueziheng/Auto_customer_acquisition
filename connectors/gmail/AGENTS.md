@@ -2,9 +2,10 @@
 
 ## 能力范围
 
-Phase 1 当前只实现经 Tool Gateway 的**单封发送**与不确定结果的**只读搜索恢复**。
-回复拉取、退信/投诉解析、标签和 DNS 检查只保留接口骨架，不能在文档、演示或 UI 中
-声称已经可运行。这个目录仍是其他 Connector 的参考实现——写新 Connector 前先读这里。
+Phase 1 当前实现经 Tool Gateway 的**单封发送**、不确定结果的**只读搜索恢复**，
+以及 Gmail RFC 3464 DSN 的 **typed 投递反馈读取**。回复正文拉取、投诉 FBL、标签和
+DNS 检查仍未实现，不能在文档、演示或 UI 中声称已经可运行。这个目录仍是其他
+Connector 的参考实现——写新 Connector 前先读这里。
 
 ## 密钥归属
 
@@ -26,11 +27,18 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 重复发送的最大来源——「发出去了但响应丢了」必须进入人工对账，不能按普通临时错误
 自动重发。
 
-## 退信与投诉回调（未实现）
+## 投递反馈读取
 
-未来退信邮件（MAILER-DAEMON）和投诉反馈应解析成结构化事件，产出
-`MessageBounced` / `ComplaintReceived`（带 dedup_key）交给域。解析必须保守：
-判断不了硬/软时按软处理并标记待人工看。Phase 1 目前没有该 worker。
+只读取 `multipart/report; report-type=delivery-status`，并严格解析
+`message/delivery-status` 的 `Status`：`5.x.x` 为 hard bounce，`4.x.x` 为 soft
+bounce，其余候选固定成为 `UNPARSEABLE`，绝不根据 Subject、正文、收件人或诊断原文
+猜测。原始 MIME 只在一次调用栈内存在；DTO 只保留 provider digest、ordinal、固定分类、
+UTC 时间与 TradeOS 自有 correlation header。普通邮件返回空页结果，不产生反馈事实。
+
+cursor 是 32 KiB 内的 v1 opaque 状态，只承载固定 30 天 bootstrap 边界、Gmail history
+边界、provider 分页 token 与有界 pending ref；所有 provider 参数仍独立 URL 编码，cursor
+不得进入日志。多 recipient block 跨页时重读不可变 Gmail message，并按 ordinal 跳过已交付
+block，禁止持久化 MIME。
 
 ## 错误分类
 
@@ -39,6 +47,7 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 429 / 配额         → RateLimited，带 Gmail 返回的 retry_after
 5xx / 网络失败且确定未写入 → provider_transient
 网络/HTTP 失败且可能已写入 → reconciliation_required
+404（history cursor 过旧）→ provider_permanent，需人工重置 bootstrap
 400（参数错）      → 不可重试（代码 bug）
 ```
 
@@ -46,17 +55,17 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 
 ```text
 configure()                                   # 只在应用 composition 内解析凭证
-health()                                      # 不返回 token/原始异常
+health_check()                                # 不返回 token/原始异常
 send_once(GmailSendRequest) -> GmailSendResult
 reconcile_once(GmailSendRequest) -> GmailSendResult  # 只搜索
-close()
+fetch_feedback_page(alias, cursor, limit) -> EmailFeedbackPage
 ```
 
-旧的 `send/fetch_new_messages/parse_bounce/add_label/check_dns_auth` 目前仍为
-`NotImplementedError` 骨架。
+旧的 free-dict `fetch_new_messages`、`BounceEvent` 与 `parse_bounce` 合同已删除，不能恢复
+第二套竞争接口。`add_label/check_dns_auth` 仍是 `NotImplementedError` 骨架。
 
 ## Phase 1 范围
 
-单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、交付确定性错误分类。
-不做：回复 worker、退信/投诉 worker、标签、DNS 检查、批量历史导入、自动重发、
-Gmail 之外的 Google 服务。
+单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、DSN typed 读取、交付
+确定性错误分类。不做：回复正文 worker、投诉 FBL、标签、DNS 检查、超过 30 天批量历史
+导入、自动重发、Gmail 之外的 Google 服务。
