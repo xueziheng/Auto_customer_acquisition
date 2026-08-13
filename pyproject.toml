@@ -29,6 +29,7 @@ dev = [
     "ruff",
     "mypy",
     "aiosqlite",  # 内存 SQLite 测试夹具驱动；使 make check / CI 不依赖 Docker（HANDBOOK 允许「内存/容器数据库」）
+    "httpx>=0.28,<0.29",  # FastAPI/ASGI API 合同测试使用 AsyncClient + ASGITransport
 ]
 
 [tool.setuptools.packages.find]
