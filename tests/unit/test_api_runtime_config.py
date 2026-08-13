@@ -49,6 +49,12 @@ _VALID_ENV = {
     "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
     "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
     "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+    "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
+    "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+    "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+        '{"2025-v1":"UNSUBSCRIBE_HMAC_2025",'
+        '"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'
+    ),
     "TRADEOS_TOOL_LEASE_SECONDS": "120",
 }
 
@@ -62,6 +68,9 @@ def test_runtime_settings_parse_exact_configuration_without_exposing_dsn() -> No
     assert settings.tool_call_fingerprint_key_ref == "tool-fingerprint-phase1"
     assert settings.tool_call_fingerprint_key_version == "v1"
     assert settings.unsubscribe_base_url == "https://unsubscribe.example.test"
+    assert settings.email_feedback_route_id == "feedback-route-v1"
+    assert settings.unsubscribe_active_key_id == "2026-v1"
+    assert len(settings.unsubscribe_key_refs) == 2
     assert settings.tool_lease.total_seconds() == 120
     assert "runtime-secret" not in repr(settings)
 
@@ -170,6 +179,19 @@ def test_unsubscribe_base_url_is_canonical_https_origin(value: str) -> None:
         )
     assert exc.value.field_name == "TRADEOS_UNSUBSCRIBE_BASE_URL"
     assert marker not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("http://127.0.0.1:8000", "http://localhost:8000", "http://[::1]:8000"),
+)
+def test_dev_runtime_accepts_canonical_loopback_unsubscribe_origin(
+    value: str,
+) -> None:
+    settings = Phase1RuntimeSettings.from_environ(
+        {**_VALID_ENV, "TRADEOS_UNSUBSCRIBE_BASE_URL": value}
+    )
+    assert settings.unsubscribe_base_url == value
 
 
 @pytest.mark.parametrize(

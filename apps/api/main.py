@@ -24,8 +24,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
+from workflows.email_feedback.unsubscribe import UnsubscribeService
+
 from .dependencies import (
     ApiDependencies,
+    ConfiguredApiDependencies,
     UnconfiguredApiDependencies,
 )
 from .middleware import (
@@ -39,6 +42,12 @@ from .routers.campaigns import router as campaigns_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.health import ReadinessProbe, build_health_router
+from .routers.unsubscribe import (
+    is_anonymous_unsubscribe_route,
+)
+from .routers.unsubscribe import (
+    router as unsubscribe_router,
+)
 
 _UNCONFIGURED_TENANT = "__tradeos_unconfigured__"
 _DEFAULT_RETRY_AFTER_SECONDS = 30
@@ -86,6 +95,7 @@ def create_app(
     lifespan: Lifespan[FastAPI] | None = None,
     cors_allowed_origins: tuple[str, ...] = (),
     readiness_probe: ReadinessProbe | None = None,
+    unsubscribe_service: UnsubscribeService | None = None,
 ) -> FastAPI:
     """构造互相隔离的 API app。
 
@@ -98,12 +108,23 @@ def create_app(
         retry_after_seconds=_DEFAULT_RETRY_AFTER_SECONDS,
     )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
+    resolved_unsubscribe_service = unsubscribe_service
+    if (
+        resolved_unsubscribe_service is None
+        and isinstance(resolved_dependencies, ConfiguredApiDependencies)
+    ):
+        resolved_unsubscribe_service = resolved_dependencies.unsubscribe_service
 
     app = FastAPI(title="TradeOS API", version="0.1.0", lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.dependencies = resolved_dependencies
+    app.state.unsubscribe_service = resolved_unsubscribe_service
     install_error_handlers(app, resolved_settings)
-    app.add_middleware(TenantAssertionMiddleware, settings=resolved_settings)
+    app.add_middleware(
+        TenantAssertionMiddleware,
+        settings=resolved_settings,
+        anonymous_route_matcher=is_anonymous_unsubscribe_route,
+    )
     if cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -116,6 +137,7 @@ def create_app(
     app.add_middleware(SafeUnhandledExceptionMiddleware)
     app.include_router(crm_router, prefix="/crm")
     app.include_router(campaigns_router, prefix="/crm")
+    app.include_router(unsubscribe_router)
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))
     _install_openapi_contract(app)

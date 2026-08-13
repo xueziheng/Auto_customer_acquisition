@@ -548,9 +548,16 @@ def _validate_https_url(value: object) -> None:
         or len(value.encode("utf-8")) > 2_048
     ):
         raise ValidationError("Gmail 退订链接无效")
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+        is_loopback_http = (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        )
+    except ValueError:
+        raise ValidationError("Gmail 退订链接无效") from None
     if (
-        parsed.scheme != "https"
+        (parsed.scheme != "https" and not is_loopback_http)
         or not parsed.netloc
         or parsed.username is not None
         or parsed.password is not None

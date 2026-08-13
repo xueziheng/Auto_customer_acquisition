@@ -364,6 +364,24 @@ class UnsubscribeTokenRepositoryImpl(_FeedbackRepository):
             )
         )
 
+    async def add_if_absent(self, token: UnsubscribeTokenRecord) -> bool:
+        self._require_tenant(token.tenant_id, "unsubscribe_token_add")
+        created = await self._session.scalar(
+            insert(UnsubscribeTokenRow).values(
+                tenant_id=str(token.tenant_id),
+                nonce_sha256=token.nonce_sha256,
+                contact_point_id=str(token.contact_point_id),
+                message_attempt_id=str(token.message_attempt_id),
+                key_id=token.key_id,
+                expires_at=token.expires_at,
+                consumed_at=token.consumed_at,
+                created_at=token.created_at,
+            ).on_conflict_do_nothing(
+                constraint="pk_unsubscribe_tokens"
+            ).returning(UnsubscribeTokenRow.nonce_sha256)
+        )
+        return created is not None
+
     async def get_for_update(
         self, tenant_id: TenantId, nonce_sha256: bytes
     ) -> UnsubscribeTokenRecord | None:

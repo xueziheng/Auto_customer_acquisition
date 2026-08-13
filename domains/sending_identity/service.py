@@ -10,6 +10,9 @@ from typing import Protocol, runtime_checkable
 
 from domains.sending_identity.models import DeliveryEventType
 from domains.sending_identity.permissions import Actor
+from domains.sending_identity.repository import (
+    SendingIdentityUnitOfWorkFactory as _SendingIdentityUnitOfWorkFactory,
+)
 from domains.sending_identity.schemas import (
     AuthenticationResult,
     DeliveryEventRecord,
@@ -35,8 +38,11 @@ __all__ = [
     "SendPermission",
     "SendReservation",
     "SendingIdentityService",
+    "SendingIdentityUnitOfWorkFactory",
     "WarmupProgressView",
 ]
+
+SendingIdentityUnitOfWorkFactory = _SendingIdentityUnitOfWorkFactory
 
 
 @runtime_checkable

@@ -8,8 +8,17 @@ from typing import Protocol, runtime_checkable
 from domains.outreach.errors import (
     MessageAttemptConflictError as _MessageAttemptConflictError,
 )
-from domains.outreach.models import EnrollmentStopReason, SendFailureCategory
+from domains.outreach.models import (
+    EnrollmentStopReason,
+    SendFailureCategory,
+)
+from domains.outreach.models import (
+    SuppressionReason as _SuppressionReason,
+)
 from domains.outreach.permissions import Actor, OutreachScope
+from domains.outreach.repository import (
+    OutreachUnitOfWorkFactory as _OutreachUnitOfWorkFactory,
+)
 from domains.outreach.schemas import (
     CampaignApprovalSnapshot,
     CampaignCreateRequest,
@@ -40,6 +49,8 @@ from shared.schemas.identifiers import (
 )
 
 MessageAttemptConflictError = _MessageAttemptConflictError
+OutreachUnitOfWorkFactory = _OutreachUnitOfWorkFactory
+SuppressionReason = _SuppressionReason
 
 
 @runtime_checkable

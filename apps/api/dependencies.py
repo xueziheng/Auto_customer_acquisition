@@ -33,6 +33,7 @@ from tool_gateway.handlers.email_send import (
     UnsubscribeLinkProvider,
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
+from workflows.email_feedback.unsubscribe import UnsubscribeService
 from workflows.engine.runner import WorkflowEngine
 
 from .middleware import ApiSettings
@@ -73,6 +74,7 @@ class ConfiguredApiDependencies:
     tool_gateway: ToolGatewayInvoker
     delivery_materials: DeliveryMaterialProvider
     unsubscribe_links: UnsubscribeLinkProvider
+    unsubscribe_service: UnsubscribeService
     employees: EmployeeServiceScope
     opportunity_authorizer: OpportunityAuthorizer
     employee_authorizer: EmployeeAuthorizer
@@ -88,6 +90,7 @@ class ConfiguredApiDependencies:
             not isinstance(self.tool_gateway, ToolGatewayInvoker)
             or not isinstance(self.delivery_materials, DeliveryMaterialProvider)
             or not isinstance(self.unsubscribe_links, UnsubscribeLinkProvider)
+            or not isinstance(self.unsubscribe_service, UnsubscribeService)
         ):
             raise TypeError("API 手工发送依赖未完整配置")
         actor = self.employee_lookup_actor

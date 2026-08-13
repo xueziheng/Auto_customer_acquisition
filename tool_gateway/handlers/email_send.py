@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from connectors.gmail.client import GmailConnector, GmailSendRequest
-from domains.outreach.schemas import MessageSendPreflight
+from domains.outreach.schemas import (
+    DeliveryCorrelationBinding,
+    MessageAttemptView,
+    MessageSendPreflight,
+)
+from domains.outreach.service import Actor, OutreachService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -17,6 +23,8 @@ from shared.schemas.identifiers import (
 )
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.pipeline import PreparedToolCall, ToolCallContext
+
+_STABLE_LINK_LABEL_RE = re.compile(r"[a-z0-9-]{1,32}")
 
 
 @dataclass(frozen=True)
@@ -49,10 +57,35 @@ class DeliveryMaterialProvider(Protocol):
 
 
 @runtime_checkable
+class UnsubscribeLink(Protocol):
+    @property
+    def tenant_id(self) -> TenantId: ...
+
+    @property
+    def attempt_id(self) -> MessageAttemptId: ...
+
+    @property
+    def contact_point_id(self) -> ContactPointId: ...
+
+    @property
+    def url(self) -> str: ...
+
+    @property
+    def active_key_id(self) -> str: ...
+
+    @property
+    def policy_version(self) -> str: ...
+
+
+@runtime_checkable
 class UnsubscribeLinkProvider(Protocol):
     async def build(
         self, tenant_id: TenantId, preflight: MessageSendPreflight
-    ) -> str: ...
+    ) -> UnsubscribeLink: ...
+
+
+class DeliveryCorrelationActorFactory(Protocol):
+    def __call__(self, attempt_id: MessageAttemptId) -> Actor: ...
 
 
 @dataclass(frozen=True)
@@ -70,6 +103,10 @@ class EmailSendHandler:
         materials: DeliveryMaterialProvider,
         unsubscribe_links: UnsubscribeLinkProvider,
         fingerprints: HmacFingerprintProvider,
+        *,
+        outreach: OutreachService,
+        outreach_actor_factory: DeliveryCorrelationActorFactory,
+        route_id: str,
     ) -> None:
         if not isinstance(materials, DeliveryMaterialProvider):
             raise ValidationError("发送材料 provider 无效")
@@ -79,6 +116,15 @@ class EmailSendHandler:
         self._materials = materials
         self._unsubscribe_links = unsubscribe_links
         self._fingerprints = fingerprints
+        self._outreach = outreach
+        self._outreach_actor_factory = outreach_actor_factory
+        self._route_id = DeliveryCorrelationBinding(
+            deterministic_message_id=(
+                f"<{route_id}.{'0' * 64}@messages.tradeos.invalid>"
+            ),
+            idempotency_header=f"{route_id}.{'0' * 64}",
+            route_id=route_id,
+        ).route_id
 
     async def prepare(
         self, ctx: ToolCallContext, preflight: object | None = None
@@ -110,29 +156,75 @@ class EmailSendHandler:
         )
         if actual != expected:
             raise ValidationError("发送材料绑定无效")
-        unsubscribe_url = await self._unsubscribe_links.build(ctx.tenant_id, preflight)
-        message_digest, _message_version = self._fingerprints.fingerprint(
+        correlation_digest, _correlation_version = self._fingerprints.fingerprint(
             (
-                b"gmail-message-id-v1",
+                b"gmail-delivery-correlation-v1",
                 str(preflight.tenant_id).encode(),
                 str(preflight.idempotency_key).encode(),
             )
         )
-        header_digest, _header_version = self._fingerprints.fingerprint(
-            (
-                b"gmail-idempotency-header-v1",
-                str(preflight.tenant_id).encode(),
-                str(preflight.idempotency_key).encode(),
-            )
+        binding = DeliveryCorrelationBinding(
+            deterministic_message_id=(
+                f"<{self._route_id}.{correlation_digest}@messages.tradeos.invalid>"
+            ),
+            idempotency_header=f"{self._route_id}.{correlation_digest}",
+            route_id=self._route_id,
         )
+        bound_attempt = await self._outreach.bind_delivery_correlation(
+            ctx.tenant_id,
+            preflight.attempt_id,
+            binding,
+            actor=self._outreach_actor_factory(preflight.attempt_id),
+        )
+        if not isinstance(bound_attempt, MessageAttemptView) or (
+            bound_attempt.tenant_id,
+            bound_attempt.attempt_id,
+            bound_attempt.campaign_id,
+            bound_attempt.enrollment_id,
+            bound_attempt.campaign_version,
+            bound_attempt.step_number,
+            bound_attempt.sending_identity_id,
+            bound_attempt.idempotency_key,
+            bound_attempt.deterministic_message_id,
+            bound_attempt.idempotency_header,
+        ) != (
+            preflight.tenant_id,
+            preflight.attempt_id,
+            preflight.campaign_id,
+            preflight.enrollment_id,
+            preflight.campaign_version,
+            preflight.step_number,
+            preflight.sending_identity_id,
+            preflight.idempotency_key,
+            binding.deterministic_message_id,
+            binding.idempotency_header,
+        ):
+            raise ValidationError("发送关联绑定结果无效")
+        unsubscribe_link = await self._unsubscribe_links.build(
+            ctx.tenant_id, preflight
+        )
+        if not isinstance(unsubscribe_link, UnsubscribeLink):
+            raise ValidationError("退订链接无效")
+        if (
+            unsubscribe_link.tenant_id != preflight.tenant_id
+            or unsubscribe_link.attempt_id != preflight.attempt_id
+            or unsubscribe_link.contact_point_id != preflight.contact_point_id
+            or not isinstance(unsubscribe_link.active_key_id, str)
+            or _STABLE_LINK_LABEL_RE.fullmatch(unsubscribe_link.active_key_id) is None
+            or not isinstance(unsubscribe_link.policy_version, str)
+            or _STABLE_LINK_LABEL_RE.fullmatch(unsubscribe_link.policy_version) is None
+        ):
+            raise ValidationError("退订链接绑定无效")
         request = GmailSendRequest(
             from_address=material.from_address,
             recipient_address=material.recipient_address,
             subject=subject,
             body=body,
-            unsubscribe_url=unsubscribe_url,
-            deterministic_message_id=f"{message_digest}@messages.tradeos.invalid",
-            idempotency_header=header_digest,
+            unsubscribe_url=unsubscribe_link.url,
+            deterministic_message_id=(
+                binding.deterministic_message_id.removeprefix("<").removesuffix(">")
+            ),
+            idempotency_header=binding.idempotency_header,
         )
         fingerprint, version = self._fingerprints.fingerprint(
             (
@@ -150,9 +242,13 @@ class EmailSendHandler:
                 material.recipient_address.encode(),
                 subject.encode(),
                 body.encode(),
-                unsubscribe_url.encode(),
-                message_digest.encode(),
-                header_digest.encode(),
+                str(unsubscribe_link.tenant_id).encode(),
+                str(unsubscribe_link.attempt_id).encode(),
+                str(unsubscribe_link.contact_point_id).encode(),
+                unsubscribe_link.active_key_id.encode(),
+                unsubscribe_link.policy_version.encode(),
+                self._route_id.encode(),
+                correlation_digest.encode(),
             )
         )
         return PreparedToolCall(

@@ -96,6 +96,7 @@ class _Secrets:
         values = {
             "fingerprint-ref": "f" * 32,
             "gmail-ref": "g" * 32,
+            "UNSUBSCRIBE_HMAC_REF": "u" * 32,
         }
         return values[secret_ref]
 
@@ -141,14 +142,6 @@ class _Materials:
         )
 
 
-class _Links:
-    async def build(self, tenant_id: TenantId, preflight: object) -> str:
-        return (
-            "https://unsubscribe.example.test/u/"
-            f"{tenant_id}/{preflight.contact_point_id}"
-        )
-
-
 def _settings(tenant: TenantId) -> Phase1RuntimeSettings:
     return Phase1RuntimeSettings.from_environ(
         {
@@ -172,6 +165,11 @@ def _settings(tenant: TenantId) -> Phase1RuntimeSettings:
             "TOOL_CALL_FINGERPRINT_KEY_REF": "fingerprint-ref",
             "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
             "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+            "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
+            "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+            "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+                '{"2026-v1":"UNSUBSCRIBE_HMAC_REF"}'
+            ),
             "TRADEOS_TOOL_LEASE_SECONDS": "30",
         }
     )
@@ -272,7 +270,10 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
     try:
         await _seed_employee(factory, tenant, boss)
         dependencies_without_send = build_phase1_dependencies(
-            _settings(tenant), factory, now=lambda: _NOW
+            _settings(tenant),
+            factory,
+            now=lambda: _NOW,
+            secret_resolver=_Secrets(),
         )
         identity_id = await dependencies_without_send.sending_identities.register(
             tenant,
@@ -382,7 +383,6 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
                 campaign_approvals=approvals,
                 reply_status=replies,
                 delivery_materials=materials,
-                unsubscribe_links=_Links(),
                 secret_resolver=_Secrets(),
                 gmail_transport=transport,
             ),
@@ -632,7 +632,6 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
                 campaign_approvals=approvals,
                 reply_status=replies,
                 delivery_materials=materials,
-                unsubscribe_links=_Links(),
                 secret_resolver=_Secrets(),
                 gmail_transport=transport,
             ),
@@ -675,7 +674,6 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
                 campaign_approvals=approvals,
                 reply_status=replies,
                 delivery_materials=materials,
-                unsubscribe_links=_Links(),
                 secret_resolver=_Secrets(),
                 gmail_transport=transport,
             ),

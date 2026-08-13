@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -61,9 +62,12 @@ from domains.outreach.permissions import (
 from domains.outreach.permissions import (
     StandardAuditLogger as OutreachStandardAuditLogger,
 )
+from domains.outreach.schemas import MessageSendPreflight
 from domains.outreach.service import (
     CampaignApprovalProvider,
     ContactEligibilityProvider,
+    OutreachService,
+    OutreachUnitOfWorkFactory,
     ReplyStatusProvider,
     SendingIdentityEligibilityProvider,
 )
@@ -81,7 +85,19 @@ from domains.sending_identity.permissions import (
 from domains.sending_identity.permissions import (
     StandardAuditLogger as SendingIdentityStandardAuditLogger,
 )
+from domains.sending_identity.service import (
+    SendingIdentityService,
+    SendingIdentityUnitOfWorkFactory,
+)
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.email_feedback_uow import (
+    AuditSink as FeedbackAuditSink,
+)
+from infra.db.email_feedback_uow import (
+    OutreachServiceBuilder,
+    SendingIdentityServiceBuilder,
+    SqlAlchemyFeedbackPageUnitOfWork,
+)
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.repositories.employees import (
@@ -109,6 +125,7 @@ from shared.errors import (
 )
 from shared.schemas.identifiers import (
     CampaignId,
+    ContactPointId,
     EmployeeId,
     EnrollmentId,
     IdempotencyKey,
@@ -130,6 +147,7 @@ from tool_gateway.handlers.email_send import (
     DeliveryMaterial,
     DeliveryMaterialProvider,
     EmailSendHandler,
+    UnsubscribeLink,
     UnsubscribeLinkProvider,
 )
 from tool_gateway.manifest import (
@@ -140,6 +158,13 @@ from tool_gateway.manifest import (
     ToolRegistry,
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult, ToolGateway
+from workflows.email_feedback.repository import FeedbackPageUnitOfWork
+from workflows.email_feedback.unsubscribe import (
+    FeedbackPageUnitOfWorkFactory,
+    UnsubscribeKeyRing,
+    UnsubscribeService,
+    UnsubscribeServiceImpl,
+)
 from workflows.human_handoff.flow import (
     HandoffEscalationNotice,
     build_human_handoff_step_handlers,
@@ -265,7 +290,7 @@ class _UnavailableManualSendSources:
         del args
         raise TransientError("发送材料未配置")
 
-    async def build(self, *args: object) -> str:
+    async def build(self, *args: object) -> UnsubscribeLink:
         del args
         raise TransientError("退订链接未配置")
 
@@ -291,7 +316,6 @@ class ManualSendComposition:
     campaign_approvals: CampaignApprovalProvider
     reply_status: ReplyStatusProvider
     delivery_materials: DeliveryMaterialProvider
-    unsubscribe_links: UnsubscribeLinkProvider
     secret_resolver: SecretResolver
     gmail_transport: GmailHttpTransport
 
@@ -302,7 +326,6 @@ class ManualSendComposition:
             (self.campaign_approvals, CampaignApprovalProvider),
             (self.reply_status, ReplyStatusProvider),
             (self.delivery_materials, DeliveryMaterialProvider),
-            (self.unsubscribe_links, UnsubscribeLinkProvider),
             (self.secret_resolver, SecretResolver),
             (self.gmail_transport, GmailHttpTransport),
         )
@@ -347,6 +370,38 @@ class _LazyGmailConnector(GmailConnector):
     async def reconcile_once(self, request: GmailSendRequest) -> GmailSendResult:
         await self._ensure_configured()
         return await super().reconcile_once(request)
+
+
+class _UnsubscribeLinkAdapter:
+    def __init__(self, service: UnsubscribeService) -> None:
+        self._service = service
+
+    async def build(
+        self, tenant_id: TenantId, preflight: MessageSendPreflight
+    ) -> UnsubscribeLink:
+        return await self._service.issue(tenant_id, preflight)
+
+
+def _unsubscribe_actor(contact_point_id: ContactPointId) -> OutreachActor:
+    return OutreachActor(
+        "system:one-click-unsubscribe",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_suppression_targets=frozenset({str(contact_point_id)}),
+        ),
+        "system",
+    )
+
+
+def _delivery_binding_actor(attempt_id: MessageAttemptId) -> OutreachActor:
+    return OutreachActor(
+        "system:manual-email-send",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_attempt_ids=frozenset({attempt_id}),
+        ),
+        "system",
+    )
 
 
 @dataclass(frozen=True)
@@ -563,6 +618,7 @@ def build_phase1_dependencies(
     *,
     now: Callable[[], datetime],
     manual_send: ManualSendComposition | None = None,
+    secret_resolver: SecretResolver | None = None,
 ) -> ConfiguredApiDependencies:
     """装配真实 Postgres、领域服务、workflow、outbox 与通知出口。"""
     tenant = TenantId(settings.tenant_id)
@@ -629,6 +685,78 @@ def build_phase1_dependencies(
         SendingIdentityStandardAuditLogger(),
         now=now,
     )
+    resolved_secret_resolver = secret_resolver or (
+        manual_send.secret_resolver if manual_send is not None else None
+    )
+    if resolved_secret_resolver is None:
+        raise TypeError("API 退订密钥依赖未完整配置")
+    unsubscribe_keys: dict[str, bytes] = {}
+    for reference in settings.unsubscribe_key_refs:
+        raw_key = resolved_secret_resolver.resolve(reference.secret_ref)
+        if not isinstance(raw_key, str):
+            raise TypeError("API 退订密钥依赖未完整配置")
+        unsubscribe_keys[reference.key_id] = raw_key.encode("utf-8")
+    key_ring = UnsubscribeKeyRing(
+        settings.unsubscribe_active_key_id,
+        unsubscribe_keys,
+    )
+
+    def build_feedback_outreach(
+        factory: OutreachUnitOfWorkFactory,
+        audit: FeedbackAuditSink,
+    ) -> OutreachService:
+        return OutreachServiceImpl(
+            factory,
+            contact_eligibility,  # type: ignore[arg-type]
+            sender_eligibility,  # type: ignore[arg-type]
+            campaign_approvals,  # type: ignore[arg-type]
+            reply_status,  # type: ignore[arg-type]
+            Phase1OutreachAuthorizer(tenant),
+            audit,  # type: ignore[arg-type]
+            now=now,
+        )
+
+    def build_feedback_sending_identity(
+        factory: SendingIdentityUnitOfWorkFactory,
+        audit: FeedbackAuditSink,
+    ) -> SendingIdentityService:
+        return SendingIdentityServiceImpl(
+            factory,
+            Phase1SendingIdentityAuthorizer(tenant),
+            audit,  # type: ignore[arg-type]
+            now=now,
+        )
+
+    outreach_builder: OutreachServiceBuilder = build_feedback_outreach
+    sending_builder: SendingIdentityServiceBuilder = build_feedback_sending_identity
+
+    def build_feedback_uow(
+        tenant_id: TenantId,
+    ) -> FeedbackPageUnitOfWork:
+        return cast(
+            FeedbackPageUnitOfWork,
+            SqlAlchemyFeedbackPageUnitOfWork(
+                factory,
+                tenant_id,
+                outreach_builder=outreach_builder,
+                sending_identity_builder=sending_builder,
+                audit_sink=OutreachStandardAuditLogger(),
+                now=now,
+            ),
+        )
+
+    feedback_uow_factory: FeedbackPageUnitOfWorkFactory = build_feedback_uow
+    unsubscribe_service = UnsubscribeServiceImpl(
+        tenant_id=tenant,
+        uow_factory=feedback_uow_factory,
+        key_ring=key_ring,
+        base_url=settings.unsubscribe_base_url,
+        actor_factory=_unsubscribe_actor,
+        now=now,
+    )
+    unsubscribe_links: UnsubscribeLinkProvider = _UnsubscribeLinkAdapter(
+        unsubscribe_service
+    )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -637,7 +765,6 @@ def build_phase1_dependencies(
     if manual_send is None:
         manual_gateway: ToolGatewayInvoker = _UnavailableToolGateway()
         delivery_materials: DeliveryMaterialProvider = unavailable_send_sources
-        unsubscribe_links: UnsubscribeLinkProvider = unavailable_send_sources
     else:
         fingerprint_key = manual_send.secret_resolver.resolve(
             settings.tool_call_fingerprint_key_ref
@@ -652,11 +779,14 @@ def build_phase1_dependencies(
         handler = EmailSendHandler(
             gmail,
             manual_send.delivery_materials,
-            manual_send.unsubscribe_links,
+            unsubscribe_links,
             HmacFingerprintProvider(
                 settings.tool_call_fingerprint_key_version,
                 fingerprint_key.encode("utf-8"),
             ),
+            outreach=outreach,
+            outreach_actor_factory=_delivery_binding_actor,
+            route_id=settings.email_feedback_route_id,
         )
         registry = ToolRegistry()
         registry.register(_email_send_manifest(), handler)
@@ -696,7 +826,6 @@ def build_phase1_dependencies(
         resolved_gateway.bind_gateway(gateway)
         manual_gateway = resolved_gateway
         delivery_materials = manual_send.delivery_materials
-        unsubscribe_links = manual_send.unsubscribe_links
     dedup = PostgresNotificationDedupStore(factory, now=now)
     router = NotificationRouter(dedup, StructuredLogOnlyPolicy())
     router.register_channel(StructuredLogChannel())
@@ -730,6 +859,7 @@ def build_phase1_dependencies(
         tool_gateway=manual_gateway,
         delivery_materials=delivery_materials,
         unsubscribe_links=unsubscribe_links,
+        unsubscribe_service=unsubscribe_service,
         employees=employees,
         opportunity_authorizer=opportunity_authorizer,
         employee_authorizer=employee_authorizer,

@@ -145,6 +145,7 @@ def _app(
         tool_gateway=manual_runtime,
         delivery_materials=manual_runtime,
         unsubscribe_links=manual_runtime,
+        unsubscribe_service=manual_runtime,
         employees=_EmployeeScope(employees, trace),
         opportunity_authorizer=opportunity_authorizer,
         employee_authorizer=_Authorizer(),

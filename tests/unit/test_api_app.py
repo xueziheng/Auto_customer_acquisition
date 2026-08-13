@@ -174,6 +174,16 @@ class _UnsubscribeLinks:
         raise AssertionError("本测试不应生成退订链接")
 
 
+class _UnsubscribeService:
+    async def issue(self, tenant_id: object, preflight: object) -> object:
+        del tenant_id, preflight
+        raise AssertionError("本测试不应签发退订 token")
+
+    async def consume(self, opaque_token: str) -> bool:
+        del opaque_token
+        return False
+
+
 def _employee(
     *,
     employee_id: str = "emp-sales",
@@ -210,6 +220,7 @@ def _configured_dependencies(
         "tool_gateway": _ToolGateway(),
         "delivery_materials": _DeliveryMaterials(),
         "unsubscribe_links": _UnsubscribeLinks(),
+        "unsubscribe_service": _UnsubscribeService(),
         "workflow_engine": object(),
         "outbox_deliverer": object(),
         "notification_router": object(),
@@ -222,6 +233,7 @@ def _configured_dependencies(
         tool_gateway=markers["tool_gateway"],
         delivery_materials=markers["delivery_materials"],
         unsubscribe_links=markers["unsubscribe_links"],
+        unsubscribe_service=markers["unsubscribe_service"],
         employees=scope,
         opportunity_authorizer=opportunity_auth,
         employee_authorizer=employee_auth,
@@ -507,6 +519,7 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
     assert dependencies.tool_gateway is markers["tool_gateway"]
     assert dependencies.delivery_materials is markers["delivery_materials"]
     assert dependencies.unsubscribe_links is markers["unsubscribe_links"]
+    assert dependencies.unsubscribe_service is markers["unsubscribe_service"]
     assert dependencies.workflow_engine is markers["workflow_engine"]
     assert dependencies.outbox_deliverer is markers["outbox_deliverer"]
     assert dependencies.notification_router is markers["notification_router"]
@@ -532,6 +545,7 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
             tool_gateway=_ToolGateway(),
             delivery_materials=_DeliveryMaterials(),
             unsubscribe_links=_UnsubscribeLinks(),
+            unsubscribe_service=_UnsubscribeService(),
             employees=scope,
             opportunity_authorizer=_AllowAuthorizer(),
             employee_authorizer=_AllowAuthorizer(),
@@ -551,6 +565,7 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
         ("tool_gateway", object()),
         ("delivery_materials", object()),
         ("unsubscribe_links", object()),
+        ("unsubscribe_service", object()),
     ],
 )
 def test_dependency_container_rejects_missing_runtime_provider(
@@ -565,6 +580,7 @@ def test_dependency_container_rejects_missing_runtime_provider(
         "tool_gateway": markers["tool_gateway"],
         "delivery_materials": markers["delivery_materials"],
         "unsubscribe_links": markers["unsubscribe_links"],
+        "unsubscribe_service": markers["unsubscribe_service"],
         "employees": scope,
         "opportunity_authorizer": dependencies.opportunity_authorizer,
         "employee_authorizer": dependencies.employee_authorizer,

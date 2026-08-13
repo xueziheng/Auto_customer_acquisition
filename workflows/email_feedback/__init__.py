@@ -14,6 +14,14 @@ from workflows.email_feedback.repository import (
     UnsubscribeTokenRecord,
     UnsubscribeTokenRepository,
 )
+from workflows.email_feedback.unsubscribe import (
+    UnsubscribeKeyReference,
+    UnsubscribeKeyRing,
+    UnsubscribeLink,
+    UnsubscribeMetrics,
+    UnsubscribeService,
+    UnsubscribeServiceImpl,
+)
 
 __all__ = [
     "FeedbackCursor",
@@ -27,6 +35,12 @@ __all__ = [
     "FeedbackReceiptAppendResult",
     "FeedbackReceiptAppendStatus",
     "FeedbackReceiptRepository",
+    "UnsubscribeKeyReference",
+    "UnsubscribeKeyRing",
+    "UnsubscribeLink",
+    "UnsubscribeMetrics",
+    "UnsubscribeService",
+    "UnsubscribeServiceImpl",
     "UnsubscribeTokenRecord",
     "UnsubscribeTokenRepository",
 ]

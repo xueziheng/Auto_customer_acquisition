@@ -77,6 +77,12 @@ class _ManualRuntime:
     async def build(self, *_args: object) -> str:
         raise AssertionError("CRM 机会测试不应生成退订链接")
 
+    async def issue(self, *_args: object) -> object:
+        raise AssertionError("CRM 机会测试不应签发退订 token")
+
+    async def consume(self, _opaque_token: str) -> bool:
+        raise AssertionError("CRM 机会测试不应消费退订 token")
+
 
 class _Employees:
     def __init__(self, trace: list[str], *, role: str = "sales") -> None:
@@ -254,6 +260,7 @@ def _app(
         tool_gateway=manual_runtime,
         delivery_materials=manual_runtime,
         unsubscribe_links=manual_runtime,
+        unsubscribe_service=manual_runtime,
         employees=_EmployeeScope(employees, trace),
         opportunity_authorizer=opportunity_authorizer,
         employee_authorizer=_Authorizer(),

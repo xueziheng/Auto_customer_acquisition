@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from connectors.gmail.client import GmailConnector
 from connectors.gmail.transport import GmailNetworkError
-from domains.outreach.schemas import MessageSendPreflight
+from domains.outreach.schemas import (
+    DeliveryCorrelationBinding,
+    MessageAttemptState,
+    MessageAttemptView,
+    MessageSendPreflight,
+)
 from infra.db.session import create_engine_from
 from infra.db.tables import ToolCallEventRow, ToolCallRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
@@ -21,6 +26,7 @@ from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
     MessageAttemptId,
+    MessageId,
     ProspectAccountId,
     SendingIdentityId,
     TenantId,
@@ -43,6 +49,7 @@ from tool_gateway.pipeline import (
     ToolGateway,
 )
 from tool_gateway.repository import ToolCallId, ToolCallRecord
+from workflows.email_feedback.unsubscribe import UnsubscribeLink
 
 
 @dataclass
@@ -113,8 +120,51 @@ class _Materials:
 class _Links:
     async def build(
         self, tenant_id: TenantId, preflight: MessageSendPreflight
-    ) -> str:
-        return f"https://unsubscribe.example.test/{tenant_id}/{preflight.attempt_id}"
+    ) -> UnsubscribeLink:
+        return UnsubscribeLink(
+            tenant_id,
+            preflight.attempt_id,
+            preflight.contact_point_id,
+            f"https://unsubscribe.example.test/{tenant_id}/{preflight.attempt_id}",
+            "2026-v1",
+            "unsubscribe-v1",
+        )
+
+
+class _Outreach:
+    def __init__(self, preflight: MessageSendPreflight, now: datetime) -> None:
+        self._preflight = preflight
+        self._now = now
+
+    async def bind_delivery_correlation(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        binding: DeliveryCorrelationBinding,
+        *,
+        actor: object,
+    ) -> MessageAttemptView:
+        del actor
+        preflight = self._preflight
+        assert (tenant_id, attempt_id) == (preflight.tenant_id, preflight.attempt_id)
+        return MessageAttemptView(
+            tenant_id=tenant_id,
+            attempt_id=attempt_id,
+            message_id=MessageId(new_id("msg")),
+            campaign_id=preflight.campaign_id,
+            enrollment_id=preflight.enrollment_id,
+            campaign_version=preflight.campaign_version,
+            step_number=preflight.step_number,
+            sending_identity_id=preflight.sending_identity_id,
+            idempotency_key=preflight.idempotency_key,
+            state=MessageAttemptState.RESERVED,
+            provider_ref=None,
+            failure_category=None,
+            created_at=self._now,
+            updated_at=self._now,
+            deterministic_message_id=binding.deterministic_message_id,
+            idempotency_header=binding.idempotency_header,
+        )
 
 
 class _Stage:
@@ -243,6 +293,9 @@ async def _harness(
         _Materials(preflight),
         _Links(),
         HmacFingerprintProvider("recovery-v1", b"r" * 32),
+        outreach=_Outreach(preflight, clock.now()),  # type: ignore[arg-type]
+        outreach_actor_factory=lambda _attempt: object(),  # type: ignore[arg-type,return-value]
+        route_id="feedback-route-v1",
     )
     registry = ToolRegistry()
     registry.register(_manifest(), handler)

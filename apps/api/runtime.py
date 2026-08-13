@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from infra.db.session import create_engine_from
+from infra.secrets import EnvironmentSecretResolver
 
 from .composition.runtime import build_phase1_dependencies
 from .main import create_app
@@ -92,6 +93,7 @@ def create_runtime_app() -> FastAPI:
             settings,
             factory,
             now=lambda: datetime.now(UTC),
+            secret_resolver=EnvironmentSecretResolver(os.environ),
         )
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
         logger.error(

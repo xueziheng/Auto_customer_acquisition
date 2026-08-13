@@ -105,6 +105,14 @@ def test_request_rejects_noncanonical_or_unsafe_wire_values(field: str, value: s
     assert value not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    ("http://127.0.0.1:8000/unsubscribe/ref", "http://localhost:8000/u/ref"),
+)
+def test_request_accepts_dev_loopback_unsubscribe_url(value: str) -> None:
+    assert _request(unsubscribe_url=value).unsubscribe_url == value
+
+
 @pytest.mark.parametrize("provider_ref", ["", "has space", "Bearer_abc", "x" * 201])
 def test_result_rejects_unsafe_provider_reference(provider_ref: str) -> None:
     result_cls = gmail_client.GmailSendResult

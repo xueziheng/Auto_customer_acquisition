@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import cast
+from typing import Protocol, cast
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -79,6 +79,10 @@ def _error_response(
     )
 
 
+class AnonymousRouteMatcher(Protocol):
+    def __call__(self, method: str, path: str) -> bool: ...
+
+
 class TenantAssertionMiddleware:
     """对每个 HTTP 请求先做固定单租户精确断言。
 
@@ -86,12 +90,24 @@ class TenantAssertionMiddleware:
     WebSocket/lifespan 不属于本切片 HTTP 契约，原样交给下层。
     """
 
-    def __init__(self, app: ASGIApp, *, settings: ApiSettings) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        settings: ApiSettings,
+        anonymous_route_matcher: AnonymousRouteMatcher | None = None,
+    ) -> None:
         self._app = app
         self._settings = settings
+        self._anonymous_route_matcher = anonymous_route_matcher
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        matcher = self._anonymous_route_matcher
+        if matcher is not None and matcher(scope["method"], scope["path"]):
             await self._app(scope, receive, send)
             return
 

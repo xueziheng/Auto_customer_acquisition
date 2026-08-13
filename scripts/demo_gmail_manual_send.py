@@ -159,21 +159,12 @@ class _DemoMaterials:
         )
 
 
-class _DemoLinks:
-    async def build(
-        self, tenant_id: TenantId, preflight: MessageSendPreflight
-    ) -> str:
-        return (
-            "https://unsubscribe.example.test/"
-            f"{tenant_id}/{preflight.contact_point_id}"
-        )
-
-
 class _DemoSecrets:
     def resolve(self, secret_ref: str) -> str:
         values = {
             "demo-fingerprint-ref": "f" * 32,
             "demo-gmail-ref": "demo-oauth-value-marker",
+            "DEMO_UNSUBSCRIBE_REF": "u" * 32,
         }
         if secret_ref not in values:
             raise PermissionDenied("演示凭证引用拒绝")
@@ -228,6 +219,11 @@ def _settings(tenant: TenantId) -> Phase1RuntimeSettings:
             "TOOL_CALL_FINGERPRINT_KEY_REF": "demo-fingerprint-ref",
             "TOOL_CALL_FINGERPRINT_KEY_VERSION": "demo-v1",
             "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+            "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
+            "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+            "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+                '{"2026-v1":"DEMO_UNSUBSCRIBE_REF"}'
+            ),
             "TRADEOS_TOOL_LEASE_SECONDS": "5",
         }
     )
@@ -288,7 +284,6 @@ async def _exercise(database_url: str) -> dict[str, object]:
     approvals = _DemoApprovals(tenant)
     replies = _DemoReplies(tenant)
     materials = _DemoMaterials()
-    links = _DemoLinks()
     secrets = _DemoSecrets()
     transport = _ControlledGmailTransport()
     engine = create_engine_from(database_url)
@@ -305,7 +300,6 @@ async def _exercise(database_url: str) -> dict[str, object]:
                 campaign_approvals=approvals,
                 reply_status=replies,
                 delivery_materials=materials,
-                unsubscribe_links=links,
                 secret_resolver=secrets,
                 gmail_transport=transport,
             ),

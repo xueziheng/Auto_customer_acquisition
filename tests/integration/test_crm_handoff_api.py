@@ -280,6 +280,7 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
                 tool_gateway=manual_runtime,
                 delivery_materials=manual_runtime,
                 unsubscribe_links=manual_runtime,
+                unsubscribe_service=manual_runtime,
                 employees=employee_scope,
                 opportunity_authorizer=api_authorizer,
                 employee_authorizer=employee_authorizer,

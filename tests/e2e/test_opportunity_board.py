@@ -35,6 +35,7 @@ from infra.db.tables import (
     ProvenanceRecordRow,
     ScoreSnapshotRow,
 )
+from infra.secrets import EnvironmentSecretResolver
 from shared.schemas.identifiers import HandoffId, OpportunityId, TenantId
 from shared.schemas.provenance import Provenance, SourceType
 
@@ -387,6 +388,9 @@ async def _prepare_real_scenario(stack: E2EStack) -> E2EScenario:
         stack.runtime_settings,
         stack.factory,
         now=clock.now,
+        secret_resolver=EnvironmentSecretResolver(
+            {"UNSUBSCRIBE_HMAC_2026": "u" * 32}
+        ),
     )
     boss_scope = OpportunityScope(level=ScopeLevel.TENANT)
     boss_actor = OpportunityActor(

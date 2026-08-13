@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -21,8 +22,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service_impl import HandoffPolicy
+from infra.secrets import validate_environment_secret_reference
 from shared.errors import ValidationError
 from shared.schemas.money import CurrencyCode, Money, WireDecimal
+from workflows.email_feedback.unsubscribe import UnsubscribeKeyReference
+
+_PUBLIC_ID = re.compile(r"[a-z0-9-]{1,32}")
+_CREDENTIAL_MARKERS = ("bearer", "token", "secret", "password")
 
 
 def _nonblank_exact(value: str) -> str:
@@ -58,11 +64,53 @@ def _parse_safe_reference(value: str) -> str:
     return value
 
 
-def _parse_https_origin(value: str) -> str:
+def _parse_key_id(value: str) -> str:
+    value = _nonblank_exact(value)
+    if _PUBLIC_ID.fullmatch(value) is None:
+        raise ValueError("key id invalid")
+    return value
+
+
+def _parse_route_id(value: str) -> str:
+    value = _parse_key_id(value)
+    if any(marker in value for marker in _CREDENTIAL_MARKERS):
+        raise ValueError("route id invalid")
+    return value
+
+
+def _parse_key_references(value: str) -> tuple[UnsubscribeKeyReference, ...]:
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in items:
+            if key in result:
+                raise ValueError("duplicate key id")
+            result[key] = item
+        return result
+
+    try:
+        payload = json.loads(value, object_pairs_hook=pairs)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        raise ValueError("key reference mapping invalid") from None
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("key reference mapping invalid")
+    references: list[UnsubscribeKeyReference] = []
+    for key_id, secret_ref in payload.items():
+        if not isinstance(secret_ref, str):
+            raise TypeError("key reference mapping invalid")
+        references.append(
+            UnsubscribeKeyReference(
+                _parse_key_id(key_id),
+                validate_environment_secret_reference(secret_ref),
+            )
+        )
+    return tuple(references)
+
+
+def _parse_unsubscribe_origin(value: str, *, dev_mode: bool) -> str:
     value = _parse_safe_reference(value)
     parsed = urlsplit(value)
     if (
-        parsed.scheme != "https"
+        parsed.scheme not in {"http", "https"}
         or parsed.username is not None
         or parsed.password is not None
         or parsed.hostname is None
@@ -72,11 +120,18 @@ def _parse_https_origin(value: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("HTTPS origin invalid")
+        raise ValueError("unsubscribe origin invalid")
+    if parsed.scheme == "http" and (
+        not dev_mode or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+    ):
+        raise ValueError("unsubscribe origin invalid")
     port = parsed.port
     host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    canonical = f"https://{host}"
-    if port is not None and port != 443:
+    canonical = f"{parsed.scheme}://{host}"
+    default_port = (parsed.scheme == "https" and port == 443) or (
+        parsed.scheme == "http" and port == 80
+    )
+    if port is not None and not default_port:
         canonical = f"{canonical}:{port}"
     if value != canonical:
         raise ValueError("HTTPS origin not canonical")
@@ -176,7 +231,7 @@ def _read[T](
 ) -> T:
     try:
         return parser(environ[name])
-    except (KeyError, ValueError, PydanticValidationError, ValidationError):
+    except (KeyError, TypeError, ValueError, PydanticValidationError, ValidationError):
         raise RuntimeConfigurationError(name) from None
 
 
@@ -198,6 +253,9 @@ class Phase1RuntimeSettings:
     tool_call_fingerprint_key_ref: str
     tool_call_fingerprint_key_version: str
     unsubscribe_base_url: str
+    email_feedback_route_id: str
+    unsubscribe_active_key_id: str
+    unsubscribe_key_refs: tuple[UnsubscribeKeyReference, ...]
     tool_lease: timedelta
 
     @classmethod
@@ -249,8 +307,25 @@ class Phase1RuntimeSettings:
         unsubscribe_base_url = _read(
             environ,
             "TRADEOS_UNSUBSCRIBE_BASE_URL",
-            _parse_https_origin,
+            lambda value: _parse_unsubscribe_origin(value, dev_mode=dev_mode),
         )
+        email_feedback_route_id = _read(
+            environ,
+            "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID",
+            _parse_route_id,
+        )
+        active_key_id = _read(
+            environ,
+            "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID",
+            _parse_key_id,
+        )
+        key_references = _read(
+            environ,
+            "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON",
+            _parse_key_references,
+        )
+        if active_key_id not in {reference.key_id for reference in key_references}:
+            raise RuntimeConfigurationError("TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID")
         tool_lease_seconds = _read(
             environ,
             "TRADEOS_TOOL_LEASE_SECONDS",
@@ -274,5 +349,8 @@ class Phase1RuntimeSettings:
             tool_call_fingerprint_key_ref=fingerprint_key_ref,
             tool_call_fingerprint_key_version=fingerprint_key_version,
             unsubscribe_base_url=unsubscribe_base_url,
+            email_feedback_route_id=email_feedback_route_id,
+            unsubscribe_active_key_id=active_key_id,
+            unsubscribe_key_refs=key_references,
             tool_lease=timedelta(seconds=tool_lease_seconds),
         )

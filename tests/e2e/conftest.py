@@ -143,6 +143,12 @@ def _runtime_process_env(
         "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+            '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'
+        ),
+        "UNSUBSCRIBE_HMAC_2026": "u" * 32,
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
     }
 
