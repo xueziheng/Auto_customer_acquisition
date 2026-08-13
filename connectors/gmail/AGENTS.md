@@ -40,6 +40,11 @@ cursor 是 32 KiB 内的 v1 opaque 状态，只承载固定 30 天 bootstrap 边
 不得进入日志。多 recipient block 跨页时重读不可变 Gmail message，并按 ordinal 跳过已交付
 block，禁止持久化 MIME。
 
+生产 transport 只连 `https://gmail.googleapis.com`。本地/测试必须显式启用 dev mode，且
+只允许带端口的 `127.0.0.1`、`localhost` 或 `::1` HTTP；凭证、路径、query、fragment 和
+任意生产替代域名一律拒绝。429 的 `Retry-After` 只接受 1–3600 秒，worker 在此期间保持
+ready 并标记 provider degraded，不回退 cursor、不伪造成功。
+
 ## 错误分类
 
 ```text

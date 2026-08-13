@@ -20,7 +20,13 @@
 2. **每次推进幂等。** scheduler 重扫、worker 崩溃重启都会导致重复触发；每步带幂等键，重复推进是 no-op。这是 Postgres 状态机方案最容易出错的地方。
 3. **LLM/IO 只在步骤 handler 内。** 状态转换本身是纯逻辑——将来迁 Temporal 时这就是 Workflow/Activity 的分界线。
 
-## 八条流程与 Phase
+`email_feedback/` 额外遵守整页原子性：先取得 tenant＋mailbox advisory transaction lock，
+再校验整页 cursor 与所有 receipt fingerprint；任一同 event 异 payload、跨租户、域服务或
+审计失败都回滚整页，旧 cursor 不动。整页成功才同时提交 receipt/quarantine、Outreach、
+Sending Identity、Action/outbox 与新 cursor。duplicate 只推进安全计数/游标，不重复业务
+效果；quarantine 只保存固定 reason 与 provider ref digest，不保存 MIME/header/address。
+
+## 九条流程与 Phase
 
 | 流程 | 触发 | Phase |
 |---|---|---|

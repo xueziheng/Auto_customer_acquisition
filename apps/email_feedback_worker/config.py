@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr
 
@@ -14,6 +15,7 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import SendingIdentityId, TenantId
 
 BOOTSTRAP_DAYS = 30
+GMAIL_API_BASE_URL = "https://gmail.googleapis.com"
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_RE = re.compile(rf"tn_{_ULID}")
 _IDENTITY_RE = re.compile(rf"sid_{_ULID}")
@@ -79,6 +81,39 @@ def _boolean(value: str) -> bool:
     raise ValueError("invalid bool")
 
 
+def _gmail_base_url(value: str, *, dev_mode: bool) -> str:
+    value = _safe_text(value)
+    if value == GMAIL_API_BASE_URL:
+        return value
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
+        raise ValueError("invalid Gmail base URL") from None
+    canonical_host = f"[{hostname}]" if hostname == "::1" else hostname
+    canonical_value = (
+        f"http://{canonical_host}:{port}"
+        if canonical_host is not None and port is not None
+        else None
+    )
+    if (
+        not dev_mode
+        or parsed.scheme != "http"
+        or hostname not in {"127.0.0.1", "localhost", "::1"}
+        or port is None
+        or not 1024 <= port <= 65535
+        or value != canonical_value
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("invalid Gmail base URL")
+    return value
+
+
 def _integer(value: str, *, minimum: int, maximum: int) -> int:
     if re.fullmatch(r"[1-9][0-9]*", value) is None:
         raise ValueError("invalid integer")
@@ -141,6 +176,8 @@ class EmailFeedbackWorkerSettings:
     gmail_oauth_token_ref: str
     tool_call_fingerprint_key_ref: str
     tool_call_fingerprint_key_version: str
+    dev_mode: bool
+    gmail_base_url: str
     config: EmailFeedbackWorkerConfig
 
     @classmethod
@@ -156,6 +193,12 @@ class EmailFeedbackWorkerSettings:
             environ,
             "TOOL_CALL_FINGERPRINT_KEY_VERSION",
             lambda value: _public(value, _VERSION_RE),
+        )
+        dev_mode = _read(environ, "TRADEOS_DEV_MODE", _boolean)
+        gmail_base_url = _read(
+            environ,
+            "TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL",
+            lambda value: _gmail_base_url(value, dev_mode=dev_mode),
         )
         tenant_id = _read(environ, "TRADEOS_TENANT_ID", _tenant)
         mailbox_alias = _read(
@@ -194,6 +237,8 @@ class EmailFeedbackWorkerSettings:
             oauth_ref,
             fingerprint_ref,
             fingerprint_version,
+            dev_mode,
+            gmail_base_url,
             EmailFeedbackWorkerConfig(
                 tenant_id,
                 mailbox_alias,

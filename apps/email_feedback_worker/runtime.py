@@ -322,7 +322,7 @@ class EmailFeedbackRuntimeFactory:
         self,
         environ: Mapping[str, str],
         *,
-        transport_factory: Callable[[], GmailHttpTransport] = GmailApiHttpTransport,
+        transport_factory: Callable[[str], GmailHttpTransport] = GmailApiHttpTransport,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._environ = environ
@@ -357,7 +357,7 @@ class EmailFeedbackRuntimeFactory:
             fingerprints = HmacFingerprintProvider(
                 settings.tool_call_fingerprint_key_version, fingerprint_key
             )
-            transport = self._transport_factory()
+            transport = self._transport_factory(settings.gmail_base_url)
             slot = FeedbackPageSlot()
             provider_reader = _GmailProviderEmailFeedbackReader(
                 lambda requested_tenant: self._connector(

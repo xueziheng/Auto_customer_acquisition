@@ -4,9 +4,9 @@
 Token、浏览器 Cookie 或其他凭证（硬边界 1）。Gateway 不是一个转发函数，而是业务域与
 Connector 之间最后一道独立、可恢复、可审计的闸门。
 
-本页只描述当前已经实现并由真实 PostgreSQL 测试证明的 Phase 1 Gmail 单封发送链路。
-自动对账扫描器、人工对账 UI、回复/退信 worker 与其他工具仍是后续能力，不能按已实现
-能力对外承诺。
+本页只描述当前已经实现并由真实 PostgreSQL 测试证明的 Phase 1 Gmail 单封发送与 typed
+DSN 反馈读取。自动对账扫描器、人工对账 UI、回复正文/投诉 worker 与其他工具仍是后续
+能力，不能按已实现能力对外承诺。
 
 ---
 
@@ -165,6 +165,18 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 
 provider 原始异常不向外传播；Gateway/API 只暴露固定 category 和有界 Retry-After。
 
+### Gmail typed 反馈读取
+
+`email.feedback.fetch` 是 LOW/FREE read，只运行 `tenant → permission`，不具备调用者幂等
+语义。Gateway 先提交 technical claim 的 `EXECUTING` 证据；Gmail Connector 只解析严格
+RFC 3464 DSN，随后把 typed page 放入容量一的进程内 slot，并在 ledger 只保存一次性
+`fpg_` handle。worker `take()` 后 handle 立即失效；失败或取消必须清空。
+
+typed page、原始 MIME/header/address、OAuth token 和 provider cursor 都不得进入 ledger、
+日志或模型上下文。page 交给 `workflows/email_feedback` 后，在 tenant＋mailbox advisory
+transaction lock 内做整页 fingerprint preflight、Outreach/Sending Identity 业务效果、
+receipt/quarantine/action/outbox 与 cursor 提交；任一步失败整页回滚。
+
 ---
 
 ## 五、崩溃与人工对账
@@ -239,12 +251,13 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Postgres canonical ledger 与 append-only event；
 - Outreach Attempt claim/completion；
 - Gmail 单封发送、确定性 header、只读恢复搜索；
+- Gmail RFC 3464 typed 反馈读取、一次性 page handle 与真实 feedback worker；
 - API 手工发送入口、离线 controlled-transport 演示与真实 PostgreSQL 恢复测试。
 
 当前明确不做：
 
 - 自动对账扫描器与对账 UI；
-- Gmail 回复、退信、投诉、标签、DNS worker；
+- Gmail 回复正文、投诉 FBL、标签、DNS worker；
 - 多渠道 Outreach；
 - Browser Agent 发送邮件；
 - 接受任意旧 approval 或绕过 Campaign current-facts；

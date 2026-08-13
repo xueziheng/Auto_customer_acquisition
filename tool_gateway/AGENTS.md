@@ -80,6 +80,9 @@ OAuth token、完整请求或异常文本**。请求 payload/preflight 只活在
 不能用于跨调用复用结果。判权通过后 trusted reader 才构造并配置 Gmail Connector。
 typed page 只进入容量一的进程内 `FeedbackPageSlot`，ledger 只能保存一次性 `fpg_`
 handle；`take()` 后立即删除，失败或 cancellation 必须清空。
+这个 handle 不是业务数据引用：不能从数据库恢复 page，也不能让 Agent/模型读取 page。
+原始 MIME、header、地址、provider cursor 与 typed page 都不进入 ledger；Connector 返回的
+page 只能在同一调用栈内由受信 worker 消费。
 
 每次调用（含拒绝与重复）都追加结构化 event。进入 Connector 前必须先提交
 `EXECUTING` 和对应事件；这笔写入失败时不得调用 Gmail。完成 Attempt 或 canonical

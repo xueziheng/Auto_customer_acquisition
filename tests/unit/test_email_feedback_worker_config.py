@@ -17,7 +17,9 @@ def _environment() -> dict[str, str]:
         "GMAIL_OAUTH_TOKEN_REF": "GMAIL_WORKER_OAUTH_TOKEN",
         "TOOL_CALL_FINGERPRINT_KEY_REF": "TOOL_WORKER_FINGERPRINT_KEY",
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "feedback-v1",
+        "TRADEOS_DEV_MODE": "false",
         "TRADEOS_TENANT_ID": new_id("tn"),
+        "TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL": "https://gmail.googleapis.com",
         "TRADEOS_EMAIL_FEEDBACK_MAILBOX_ALIAS": "delivery-feedback",
         "TRADEOS_EMAIL_FEEDBACK_SENDING_IDENTITY_ID": new_id("sid"),
         "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
@@ -39,6 +41,8 @@ def test_worker_settings_parse_strict_safe_environment() -> None:
     assert settings.gmail_oauth_token_ref == "GMAIL_WORKER_OAUTH_TOKEN"
     assert settings.tool_call_fingerprint_key_ref == "TOOL_WORKER_FINGERPRINT_KEY"
     assert settings.tool_call_fingerprint_key_version == "feedback-v1"
+    assert settings.dev_mode is False
+    assert settings.gmail_base_url == "https://gmail.googleapis.com"
     assert settings.config.mailbox_alias == "delivery-feedback"
     assert settings.config.enabled is True
     assert settings.config.health_port == 8092
@@ -59,7 +63,10 @@ def test_worker_settings_parse_strict_safe_environment() -> None:
         ("TOOL_CALL_FINGERPRINT_KEY_REF", "tool-secret"),
         ("TOOL_CALL_FINGERPRINT_KEY_VERSION", " bearer-v1"),
         ("TOOL_CALL_FINGERPRINT_KEY_VERSION", "token-secret"),
+        ("TRADEOS_DEV_MODE", "TRUE"),
         ("TRADEOS_TENANT_ID", "tenant-one"),
+        ("TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL", "http://127.0.0.1:8111"),
+        ("TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL", "https://gmail.googleapis.com/"),
         ("TRADEOS_EMAIL_FEEDBACK_SENDING_IDENTITY_ID", "sid-not-ulid"),
         ("TRADEOS_EMAIL_FEEDBACK_MAILBOX_ALIAS", "Delivery-Feedback"),
         ("TRADEOS_EMAIL_FEEDBACK_MAILBOX_ALIAS", "token-mailbox"),
@@ -102,6 +109,61 @@ def test_worker_settings_require_each_explicit_field() -> None:
         with pytest.raises(config.WorkerConfigurationError) as captured:
             config.EmailFeedbackWorkerSettings.from_environ(environment)
         assert captured.value.field_name == name
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:8111",
+        "http://localhost:8111",
+        "http://[::1]:8111",
+    ],
+)
+def test_worker_settings_allow_canonical_loopback_only_in_explicit_dev_mode(
+    base_url: str,
+) -> None:
+    config = __import__(
+        "apps.email_feedback_worker.config", fromlist=["EmailFeedbackWorkerSettings"]
+    )
+    environment = _environment()
+    environment["TRADEOS_DEV_MODE"] = "true"
+    environment["TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL"] = base_url
+
+    settings = config.EmailFeedbackWorkerSettings.from_environ(environment)
+
+    assert settings.dev_mode is True
+    assert settings.gmail_base_url == base_url
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1",
+        "http://127.0.0.1:80/path",
+        "http://127.0.0.1:8111?query=1",
+        "http://127.0.0.1:8111#fragment",
+        "http://user@127.0.0.1:8111",
+        "http://LOCALHOST:8111",
+        "http://127.0.0.1:08111",
+        "http://0.0.0.0:8111",
+        "https://example.test",
+    ],
+)
+def test_worker_settings_reject_noncanonical_or_non_gmail_base_url(
+    base_url: str,
+) -> None:
+    config = __import__(
+        "apps.email_feedback_worker.config", fromlist=["EmailFeedbackWorkerSettings"]
+    )
+    environment = _environment()
+    environment["TRADEOS_DEV_MODE"] = "true"
+    environment["TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL"] = base_url
+
+    with pytest.raises(config.WorkerConfigurationError) as captured:
+        config.EmailFeedbackWorkerSettings.from_environ(environment)
+
+    assert captured.value.field_name == "TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL"
+    assert base_url not in str(captured.value)
 
 
 def test_worker_config_rejects_bool_as_integer_at_runtime() -> None:

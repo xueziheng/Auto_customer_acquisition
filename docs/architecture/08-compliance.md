@@ -78,6 +78,21 @@ Phase 1 只保存最小 append-only 抑制事实：`tenant_id`、typed target、
 
 新增事实、按 Enrollment ID 顺序锁定并停止全部匹配活跃 Enrollment、Action 与 `SuppressionAdded` outbox 在同一事务中提交。任一写入失败则整体回滚。
 
+### RFC 8058 one-click 退订
+
+已发送邮件同时携带 `List-Unsubscribe` 与
+`List-Unsubscribe-Post: List-Unsubscribe=One-Click`。token 只包含可验证的 key ID、
+随机 nonce 与签名；数据库只存 nonce SHA-256、精确 ContactPoint/Attempt、安全 key ID、
+创建/90 天到期/消费时间，不保存 token 或 HMAC key。
+
+- GET 只返回固定说明，永不产生业务写入；
+- POST 必须是精确表单 `List-Unsubscribe=One-Click`，成功固定空 204；
+- 有效 POST 在一个事务内消费 token 并写 ContactPoint 级 `unsubscribe` 抑制；
+- 无效、过期、已用 token 对外不可区分，统一空 204；数据库/密钥临时故障必须安全失败，
+  不能把“没完成”伪装成“已退订”；
+- 轮换时 active key 用于新 token，旧 key 在既有 90 天 token 窗口内仍可验证；删除旧 key
+  前必须确认已无未过期 token。
+
 ---
 
 ## 四、WhatsApp

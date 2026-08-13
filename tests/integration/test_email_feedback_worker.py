@@ -214,7 +214,9 @@ def _worker_environment(db_url: str) -> dict[str, str]:
         "TOOL_CALL_FINGERPRINT_KEY_REF": "TOOL_WORKER_FINGERPRINT_KEY",
         "TOOL_WORKER_FINGERPRINT_KEY": "k" * 32,
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "feedback-v1",
+        "TRADEOS_DEV_MODE": "false",
         "TRADEOS_TENANT_ID": new_id("tn"),
+        "TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL": "https://gmail.googleapis.com",
         "TRADEOS_EMAIL_FEEDBACK_MAILBOX_ALIAS": "feedback",
         "TRADEOS_EMAIL_FEEDBACK_SENDING_IDENTITY_ID": new_id("sid"),
         "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-v1",
@@ -234,7 +236,7 @@ async def test_production_composition_registers_feedback_read_only_and_fetches_t
     tenant_id = environment["TRADEOS_TENANT_ID"]
     factory = runtime.EmailFeedbackRuntimeFactory(
         environment,
-        transport_factory=_FeedbackTransport,
+        transport_factory=lambda _base_url: _FeedbackTransport(),
         now=lambda: datetime(2026, 8, 13, 10, 0, tzinfo=UTC),
     )
 
@@ -259,7 +261,7 @@ async def test_production_composition_resolves_oauth_only_inside_connector_fetch
     environment.reads.clear()
     factory = runtime.EmailFeedbackRuntimeFactory(
         environment,
-        transport_factory=_FeedbackTransport,
+        transport_factory=lambda _base_url: _FeedbackTransport(),
         now=lambda: datetime(2026, 8, 13, 10, 0, tzinfo=UTC),
     )
 
@@ -278,7 +280,7 @@ async def test_runtime_factory_propagates_cleanup_failure_without_primary(
     runtime = importlib.import_module("apps.email_feedback_worker.runtime")
     factory = runtime.EmailFeedbackRuntimeFactory(
         _worker_environment(db_url),
-        transport_factory=_CleanupFailingTransport,
+        transport_factory=lambda _base_url: _CleanupFailingTransport(),
         now=lambda: datetime(2026, 8, 13, 10, 0, tzinfo=UTC),
     )
 
@@ -291,3 +293,31 @@ async def test_runtime_factory_propagates_cleanup_failure_without_primary(
         async with factory():
             raise primary
     assert captured.value is primary
+
+
+@pytest.mark.asyncio
+async def test_production_composition_passes_validated_base_url_to_transport(
+    db_url: str,
+) -> None:
+    runtime = importlib.import_module("apps.email_feedback_worker.runtime")
+    environment = _worker_environment(db_url)
+    environment["TRADEOS_DEV_MODE"] = "true"
+    environment["TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL"] = (
+        "http://127.0.0.1:18111"
+    )
+    received: list[str] = []
+
+    def transport_factory(base_url: str) -> _FeedbackTransport:
+        received.append(base_url)
+        return _FeedbackTransport()
+
+    factory = runtime.EmailFeedbackRuntimeFactory(
+        environment,
+        transport_factory=transport_factory,
+        now=lambda: datetime(2026, 8, 13, 10, 0, tzinfo=UTC),
+    )
+
+    async with factory():
+        pass
+
+    assert received == ["http://127.0.0.1:18111"]

@@ -124,6 +124,11 @@ hard bounce 自动永久抑制准确 ContactPoint，并把所有匹配的活跃 
 `stopped_bounced`。soft bounce 只由 feedback receipt 记录，不产生永久抑制、自动重试
 或 hard-bounce 信誉事实。Account 级抑制仍只允许明确的公司级请求或人工确认。
 
+RFC 8058 one-click token 只绑定一个已发送 Attempt 对应的精确 ContactPoint。GET 只返回
+固定说明，永不消费 token；POST 成功后在同一事务消费 nonce、写 ContactPoint 级
+`unsubscribe` 抑制、按 Enrollment ID 顺序停止匹配活跃 Enrollment，并追加 Action/outbox。
+token 无效、过期、已用统一返回空 204；数据库临时失败必须可重试，不能误报已退订。
+
 Attempt / audit / outbox 只记录安全 ID、typed state/category、provider reference；不得
 持久化或记录邮箱地址、主题、正文、OAuth token、完整请求与客户原话。
 

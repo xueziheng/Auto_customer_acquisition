@@ -28,7 +28,7 @@
 
 ---
 
-## 七个进程
+## 八个进程（七个已实现＋一个未来桌面进程）
 
 | 进程 | 职责 | 为什么独立 |
 |---|---|---|
@@ -38,6 +38,7 @@
 | `apps/scheduler-worker` | 扫描状态机表、推进到期流程、发出定时任务 | Phase 1 的工作流引擎驱动器，必须单独可控 |
 | `apps/browser-worker` | Playwright 浏览器操作 | 资源重、崩溃风险高，必须隔离；每租户/账号/Run 独立 BrowserContext |
 | `apps/notification-worker` | 投递站内、邮件、macOS、企业微信通知 | 外部渠道不稳定，失败重试不应阻塞主流程 |
+| `apps/email-feedback-worker` | Gmail DSN typed 读取与整页反馈提交 | OAuth/HTTP 隔离；按 tenant＋mailbox 单副本，崩溃不回退 cursor |
 | `apps/desktop-tauri` | macOS 本地能力（Phase 3，现不建目录） | 见 [ROADMAP](../../ROADMAP.md) |
 
 所有 Worker 共享同一份 `domains/` 代码，靠数据库和事件总线协作，不互相调用 HTTP。
@@ -54,6 +55,8 @@ Need Hypothesis    → domains/demand
                        domains/sending-identity 提供合规发件身份
 触达               → domains/outreach + workflows/outreach-campaign
       ↓                connectors/gmail 经 tool-gateway 发送
+投递反馈           → apps/email-feedback-worker + workflows/email-feedback
+      ↓                hard bounce 抑制联系人并写身份信誉；soft bounce 只记 receipt
 回复识别           → domains/conversations + workflows/reply-qualification
       ↓
 Validated Need     → domains/demand（带 Provenance，硬边界 4）
@@ -116,6 +119,7 @@ Phase 1 只自动化到「人工接管」这一步，寻源与报价由人工完
 - Agent 运行时：[06-agent-runtime.md](06-agent-runtime.md)
 - 发件身份与域名信誉：[07-sending-identity.md](07-sending-identity.md)
 - 合规：[08-compliance.md](08-compliance.md)
+- 触达 Campaign 与邮件反馈：[09-outreach-campaign.md](09-outreach-campaign.md)
 - 打分与反馈闭环：[09-scoring-and-feedback.md](09-scoring-and-feedback.md)
 - 数据库表清单：[10-database.md](10-database.md)
 - 部署：[11-deployment.md](11-deployment.md)

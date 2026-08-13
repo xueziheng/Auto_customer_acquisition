@@ -21,6 +21,11 @@
 
 依赖注入在各进程入口（`main.py`）完成：Repository 实现、EventBus、ToolRegistry、ConnectorRegistry、订阅关系全部在这里接线。**域内部不知道谁实现了它的 Protocol。**
 
+`email_feedback_worker` 的零参数入口只接受显式环境配置。生产 Gmail base URL 固定为
+`https://gmail.googleapis.com`；只有 `TRADEOS_DEV_MODE=true` 才允许带显式端口的
+loopback HTTP，供本地验收使用。SIGTERM 只设置停止标志，必须完成正在处理的整页事务后
+再退出；provider 429 维持 live/ready，但 ready payload 标记 `provider=degraded`。
+
 ## 依赖白名单
 
 ```text
