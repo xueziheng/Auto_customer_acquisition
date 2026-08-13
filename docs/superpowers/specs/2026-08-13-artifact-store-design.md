@@ -72,7 +72,9 @@ infra/db/
     artifacts.py             ORM rows 与 tenant-scoped repositories
     artifact_uow.py          PostgreSQL 事务边界
 
-infra/object_store/
+connectors/object_store/
+    AGENTS.md                能力、凭证、错误分类与外部 SDK 边界
+    config.py                严格 endpoint、bucket、secret-ref 与大小配置
     s3.py                    boto3 S3/MinIO adapter
 
 migrations/versions/
@@ -83,12 +85,16 @@ migrations/versions/
 
 ```text
 apps / workflows → artifact_store Protocol
-apps composition → infra concrete adapters
-infra adapters → artifact_store + shared
+apps composition → connectors.object_store + infra.db
+connectors.object_store → artifact_store + connectors base + shared
+infra.db → artifact_store + shared
 ```
 
-workflows、domains 与 agent_runtime 不导入 boto3。S3 凭证只在 concrete adapter 内部
-解析和持有；模型、Agent、DTO、返回值、日志和异常都不可见。
+`check_boundaries.py` 只允许 connectors、apps、tests 与 scripts 直接使用外部 SDK，因而
+boto3 concrete adapter 必须位于 `connectors/object_store/`，不能放进 `infra/` 或
+`artifact_store/`。workflows、domains、agent_runtime、artifact_store 与 infra.db 都不导入
+boto3。S3 凭证只在 connector adapter 内部解析和持有；模型、Agent、DTO、返回值、日志和
+异常都不可见。
 
 ## 四、公共数据契约
 
