@@ -70,6 +70,22 @@ _PUBLIC_SIGNATURES = {
     "add_suppression": ("self", "tenant_id", "request", "actor"),
     "is_suppressed": ("self", "tenant_id", "target", "actor"),
     "list_suppressions": ("self", "tenant_id", "scope", "limit", "actor"),
+    "bind_delivery_correlation": (
+        "self",
+        "tenant_id",
+        "attempt_id",
+        "binding",
+        "actor",
+    ),
+    "resolve_delivery_feedback": ("self", "tenant_id", "lookup", "actor"),
+    "apply_hard_bounce": (
+        "self",
+        "tenant_id",
+        "target",
+        "provider_event_id",
+        "occurred_at",
+        "actor",
+    ),
 }
 
 
@@ -104,6 +120,9 @@ def test_public_service_return_annotations_are_typed_views() -> None:
         "get_enrollment": schemas.EnrollmentView,
         "add_suppression": schemas.SuppressionResult,
         "is_suppressed": schemas.SuppressionView | None,
+        "bind_delivery_correlation": schemas.MessageAttemptView,
+        "resolve_delivery_feedback": schemas.DeliveryFeedbackTarget | None,
+        "apply_hard_bounce": schemas.SuppressionResult,
     }
     for name, return_type in expected.items():
         hints = get_type_hints(getattr(service.OutreachService, name))
@@ -160,6 +179,123 @@ def test_suppression_id_is_public_and_canonical() -> None:
     value = identifiers.SuppressionId(new_id("sup"))
     assert value.startswith("sup_")
     assert len(value) == 30
+
+
+def test_delivery_feedback_dtos_are_frozen_minimal_and_non_reflective() -> None:
+    """删除校验、暴露 correlation repr 或加入地址字段都会被捕获。"""
+    schemas = _schemas()
+    digest = "a" * 64
+    binding = schemas.DeliveryCorrelationBinding(
+        deterministic_message_id=f"<route-a.{digest}@messages.tradeos.invalid>",
+        idempotency_header=f"route-a.{digest}",
+        route_id="route-a",
+    )
+    lookup = schemas.DeliveryCorrelationLookup(
+        deterministic_message_id=binding.deterministic_message_id,
+    )
+    target = schemas.DeliveryFeedbackTarget(
+        tenant_id=TENANT,
+        attempt_id=MessageAttemptId(new_id("mat")),
+        enrollment_id=ENROLLMENT,
+        account_id=ACCOUNT,
+        contact_point_id=CONTACT,
+        sending_identity_id=SENDER,
+    )
+
+    assert set(binding.__dataclass_fields__) == {
+        "deterministic_message_id",
+        "idempotency_header",
+        "route_id",
+    }
+    assert set(lookup.__dataclass_fields__) == {
+        "deterministic_message_id",
+        "idempotency_header",
+    }
+    assert set(target.__dataclass_fields__) == {
+        "tenant_id",
+        "attempt_id",
+        "enrollment_id",
+        "account_id",
+        "contact_point_id",
+        "sending_identity_id",
+    }
+    assert digest not in repr(binding)
+    assert digest not in repr(lookup)
+    with pytest.raises(FrozenInstanceError):
+        target.account_id = ProspectAccountId(new_id("acc"))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {},
+        {"deterministic_message_id": 1},
+        {"idempotency_header": object()},
+        {"deterministic_message_id": "<route-a.short@messages.tradeos.invalid>"},
+        {"idempotency_header": f"route-a.{'A' * 64}"},
+        {"deterministic_message_id": f"<token.{'a' * 64}@messages.tradeos.invalid>"},
+        {"idempotency_header": f"route\n.{'a' * 64}"},
+    ],
+)
+def test_delivery_correlation_lookup_rejects_missing_or_unsafe_values(
+    values: dict[str, object],
+) -> None:
+    """缺键、自由文本、控制字符与 credential-like route 不能进入查询。"""
+    schemas = _schemas()
+    rendered = repr(values)
+    with pytest.raises(ValidationError) as error:
+        schemas.DeliveryCorrelationLookup(**values)
+    assert rendered not in str(error.value)
+
+
+def test_delivery_binding_requires_matching_route_and_digest_pair() -> None:
+    """删除 pair 校验会允许两个 header 指向不同 Attempt。"""
+    schemas = _schemas()
+    with pytest.raises(ValidationError):
+        schemas.DeliveryCorrelationBinding(
+            deterministic_message_id=(
+                f"<route-a.{'a' * 64}@messages.tradeos.invalid>"
+            ),
+            idempotency_header=f"route-a.{'b' * 64}",
+            route_id="route-a",
+        )
+    with pytest.raises(ValidationError):
+        schemas.DeliveryCorrelationBinding(
+            deterministic_message_id=(
+                f"<route-a.{'a' * 64}@messages.tradeos.invalid>"
+            ),
+            idempotency_header=f"route-a.{'a' * 64}",
+            route_id="route-b",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenant_id", 1),
+        ("attempt_id", "enr_01K00000000000000000000000"),
+        ("enrollment_id", "mat_01K00000000000000000000000"),
+        ("account_id", "cp_01K00000000000000000000000"),
+        ("contact_point_id", "acc_01K00000000000000000000000"),
+        ("sending_identity_id", "mat_01K00000000000000000000000"),
+    ],
+)
+def test_delivery_feedback_target_rejects_runtime_newtype_confusion(
+    field: str, value: object
+) -> None:
+    """NewType 在运行时是 str，目标 DTO 必须自行验证命名空间。"""
+    schemas = _schemas()
+    values: dict[str, object] = {
+        "tenant_id": TENANT,
+        "attempt_id": MessageAttemptId(new_id("mat")),
+        "enrollment_id": ENROLLMENT,
+        "account_id": ACCOUNT,
+        "contact_point_id": CONTACT,
+        "sending_identity_id": SENDER,
+    }
+    values[field] = value
+    with pytest.raises(ValidationError):
+        schemas.DeliveryFeedbackTarget(**values)
 
 
 def _contact_snapshot(**changes: object) -> object:
@@ -445,13 +581,20 @@ def test_atomic_repository_outcomes_reject_impossible_combinations() -> None:
         repository.MessageAttemptCreateResult(repository.AppendStatus.CONFLICT, None),
         repository.QuotaReservationResult(repository.QuotaReservationStatus.RESERVED, quota),
         repository.MessageAttemptCreateResult(repository.AppendStatus.CREATED, attempt),
+        repository.DeliveryCorrelationBindResult(
+            repository.DeliveryCorrelationBindStatus.BOUND, attempt
+        ),
     ]
-    assert len(valid) == 6
+    assert len(valid) == 7
     for constructor, status in (
         (repository.EnrollmentInsertResult, repository.EnrollmentInsertStatus.CREATED),
         (repository.SuppressionAppendResult, repository.AppendStatus.EXISTING),
         (repository.QuotaReservationResult, repository.QuotaReservationStatus.RESERVED),
         (repository.MessageAttemptCreateResult, repository.AppendStatus.CREATED),
+        (
+            repository.DeliveryCorrelationBindResult,
+            repository.DeliveryCorrelationBindStatus.BOUND,
+        ),
     ):
         with pytest.raises(ValidationError):
             constructor(status, object())
@@ -463,6 +606,32 @@ def test_atomic_repository_outcomes_reject_impossible_combinations() -> None:
         repository.QuotaReservationResult(repository.QuotaReservationStatus.RESERVED, None)
     with pytest.raises(ValidationError):
         repository.MessageAttemptCreateResult(repository.AppendStatus.CREATED, None)
+    with pytest.raises(ValidationError):
+        repository.DeliveryCorrelationBindResult(
+            repository.DeliveryCorrelationBindStatus.CONFLICT, attempt
+        )
+
+
+def test_attempt_repository_exposes_atomic_binding_and_tenant_scoped_lookups() -> None:
+    """删除 typed bind 或 tenant 参数会迫使 service 解析数据库异常或跨租户查找。"""
+    repository = _repository()
+    expected = {
+        "bind_delivery_correlation": ("self", "attempt"),
+        "find_by_deterministic_message_id": (
+            "self",
+            "tenant_id",
+            "deterministic_message_id",
+        ),
+        "find_by_idempotency_header": (
+            "self",
+            "tenant_id",
+            "idempotency_header",
+        ),
+    }
+    for method_name, parameters in expected.items():
+        method = getattr(repository.MessageAttemptRepository, method_name)
+        assert inspect.iscoroutinefunction(method)
+        assert tuple(inspect.signature(method).parameters) == parameters
 
 
 def test_uow_protocol_exposes_only_the_required_transactional_components() -> None:

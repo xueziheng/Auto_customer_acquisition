@@ -270,6 +270,66 @@ def _attempt(**changes: object) -> object:
     return models.MessageAttempt(**values)
 
 
+def _binding(route_id: str = "route-a", digest: str = "a" * 64) -> object:
+    schemas = _schemas()
+    return schemas.DeliveryCorrelationBinding(
+        deterministic_message_id=(
+            f"<{route_id}.{digest}@messages.tradeos.invalid>"
+        ),
+        idempotency_header=f"{route_id}.{digest}",
+        route_id=route_id,
+    )
+
+
+def test_attempt_delivery_correlation_is_pairwise_and_one_way() -> None:
+    """删除同值幂等或允许重绑都会破坏发送与反馈的确定性关联。"""
+    attempt = _attempt()
+    original = _binding()
+    attempt.bind_delivery_correlation(original)
+    attempt.bind_delivery_correlation(original)
+    assert attempt.deterministic_message_id == original.deterministic_message_id
+    assert attempt.idempotency_header == original.idempotency_header
+    assert "a" * 64 not in repr(attempt)
+    with pytest.raises(InvalidStateTransition):
+        attempt.bind_delivery_correlation(_binding("route-b", "b" * 64))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"deterministic_message_id": f"<route-a.{'a' * 64}@messages.tradeos.invalid>"},
+        {"idempotency_header": f"route-a.{'a' * 64}"},
+        {
+            "deterministic_message_id": (
+                f"<route-a.{'a' * 64}@messages.tradeos.invalid>"
+            ),
+            "idempotency_header": f"route-a.{'b' * 64}",
+        },
+        {
+            "deterministic_message_id": (
+                f"<Token.{'a' * 64}@messages.tradeos.invalid>"
+            ),
+            "idempotency_header": f"Token.{'a' * 64}",
+        },
+    ],
+)
+def test_attempt_rejects_corrupt_persisted_correlation_pair(
+    changes: dict[str, object]
+) -> None:
+    """ORM 回读的单边、错配或 credential-like pair 必须 fail closed。"""
+    with pytest.raises(ValidationError):
+        _attempt(**changes)
+
+
+def test_delivery_feedback_kind_vocabulary_is_closed() -> None:
+    """自由字符串或把 complaint 混入 DSN 合同会扩大 4C1 范围。"""
+    models = _models()
+    assert {kind.value for kind in models.DeliveryFeedbackKind} == {
+        "hard_bounce",
+        "soft_bounce",
+    }
+
+
 def test_attempt_state_requires_matching_provider_and_failure_fields() -> None:
     """provider ref 与失败类别不能出现在错误的 attempt 状态。"""
     models = _models()

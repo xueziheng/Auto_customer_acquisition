@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -28,10 +29,19 @@ from shared.schemas.identifiers import (
 )
 
 if TYPE_CHECKING:
-    from domains.outreach.schemas import SuppressionTarget
+    from domains.outreach.schemas import DeliveryCorrelationBinding, SuppressionTarget
 
 
 _ULID_ID = re.compile(r"[a-z]+_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_DELIVERY_ROUTE = re.compile(r"[a-z0-9-]{1,32}")
+_DELIVERY_DIGEST = re.compile(r"[0-9a-f]{64}")
+_DELIVERY_MESSAGE_ID = re.compile(
+    r"<([a-z0-9-]{1,32})\.([0-9a-f]{64})@messages\.tradeos\.invalid>"
+)
+_DELIVERY_IDEMPOTENCY_HEADER = re.compile(
+    r"([a-z0-9-]{1,32})\.([0-9a-f]{64})"
+)
+_CREDENTIAL_MARKERS = ("bearer", "token", "secret", "password")
 _HANDOFF_TRIGGERS = frozenset(
     {
         "quantity_provided",
@@ -68,6 +78,40 @@ def _require_id(value: object, prefix: str, field: str) -> str:
     ):
         raise ValidationError(f"{field} 无效")
     return value
+
+
+def _validate_delivery_route(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or _DELIVERY_ROUTE.fullmatch(value) is None
+        or any(marker in value for marker in _CREDENTIAL_MARKERS)
+    ):
+        raise ValidationError("delivery route 无效")
+    return value
+
+
+def _split_deterministic_message_id(value: object) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise ValidationError("deterministic_message_id 无效")
+    match = _DELIVERY_MESSAGE_ID.fullmatch(value)
+    if match is None:
+        raise ValidationError("deterministic_message_id 无效")
+    route_id, digest = match.groups()
+    _validate_delivery_route(route_id)
+    assert _DELIVERY_DIGEST.fullmatch(digest) is not None
+    return route_id, digest
+
+
+def _split_idempotency_header(value: object) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise ValidationError("idempotency_header 无效")
+    match = _DELIVERY_IDEMPOTENCY_HEADER.fullmatch(value)
+    if match is None:
+        raise ValidationError("idempotency_header 无效")
+    route_id, digest = match.groups()
+    _validate_delivery_route(route_id)
+    assert _DELIVERY_DIGEST.fullmatch(digest) is not None
+    return route_id, digest
 
 
 def _freeze_texts(
@@ -155,6 +199,11 @@ class SendFailureCategory(str, Enum):
     PROVIDER_AUTH_REQUIRED = "provider_auth_required"
     PROVIDER_PERMANENT = "provider_permanent"
     IDENTITY_UNAVAILABLE = "identity_unavailable"
+
+
+class DeliveryFeedbackKind(str, Enum):
+    HARD_BOUNCE = "hard_bounce"
+    SOFT_BOUNCE = "soft_bounce"
 
 
 _CAMPAIGN_TRANSITIONS: dict[CampaignState, frozenset[CampaignState]] = {
@@ -538,6 +587,8 @@ class MessageAttempt:
     created_at: datetime
     updated_at: datetime
     send_claimed_at: datetime | None = None
+    deterministic_message_id: str | None = dataclass_field(default=None, repr=False)
+    idempotency_header: str | None = dataclass_field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         for value, prefix, field in (
@@ -556,6 +607,19 @@ class MessageAttempt:
         _require_utc(self.updated_at, "updated_at")
         if self.send_claimed_at is not None:
             _require_utc(self.send_claimed_at, "send_claimed_at")
+        if (self.deterministic_message_id is None) != (
+            self.idempotency_header is None
+        ):
+            raise ValidationError("Message Attempt delivery correlation 必须成对")
+        if self.deterministic_message_id is not None:
+            message_route, message_digest = _split_deterministic_message_id(
+                self.deterministic_message_id
+            )
+            header_route, header_digest = _split_idempotency_header(
+                self.idempotency_header
+            )
+            if (message_route, message_digest) != (header_route, header_digest):
+                raise ValidationError("Message Attempt delivery correlation 不匹配")
         if self.state is MessageAttemptState.RESERVED:
             valid = (
                 self.provider_ref is None
@@ -595,6 +659,25 @@ class MessageAttempt:
             )
         if not valid:
             raise ValidationError("Message Attempt 状态字段不匹配")
+
+    def bind_delivery_correlation(
+        self, binding: DeliveryCorrelationBinding
+    ) -> None:
+        from domains.outreach.schemas import DeliveryCorrelationBinding
+
+        if not isinstance(binding, DeliveryCorrelationBinding):
+            raise ValidationError("delivery correlation binding 无效")
+        current = (self.deterministic_message_id, self.idempotency_header)
+        desired = (
+            binding.deterministic_message_id,
+            binding.idempotency_header,
+        )
+        if current == desired:
+            return
+        if current != (None, None):
+            raise InvalidStateTransition("Message Attempt delivery correlation 不可改写")
+        self.deterministic_message_id, self.idempotency_header = desired
+        self.__post_init__()
 
     def transition_to(
         self,

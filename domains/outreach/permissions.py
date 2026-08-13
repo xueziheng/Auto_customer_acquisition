@@ -13,7 +13,9 @@ from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
     EnrollmentId,
+    MessageAttemptId,
     ProspectAccountId,
+    SendingIdentityId,
     TenantId,
 )
 
@@ -39,6 +41,9 @@ class OutreachAction(str, Enum):
     SUPPRESSION_ADD = "suppression:add"
     SUPPRESSION_READ = "suppression:read"
     SUPPRESSION_LIST = "suppression:list"
+    MESSAGE_DELIVERY_BIND = "message:delivery_bind"
+    DELIVERY_FEEDBACK_RESOLVE = "delivery_feedback:resolve"
+    HARD_BOUNCE_APPLY = "hard_bounce:apply"
 
 
 class ScopeLevel(str, Enum):
@@ -77,6 +82,8 @@ class OutreachScope:
     allowed_account_ids: frozenset[ProspectAccountId] | None = None
     allowed_enrollment_ids: frozenset[EnrollmentId] | None = None
     allowed_suppression_targets: frozenset[str] | None = None
+    allowed_attempt_ids: frozenset[MessageAttemptId] | None = None
+    allowed_sending_identity_ids: frozenset[SendingIdentityId] | None = None
 
     def __post_init__(self) -> None:
         if self.level is not None and not isinstance(self.level, ScopeLevel):
@@ -106,6 +113,24 @@ class OutreachScope:
                 self.allowed_enrollment_ids,
                 field="allowed_enrollment_ids",
                 prefix="enr",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allowed_attempt_ids",
+            _freeze_ids(
+                self.allowed_attempt_ids,
+                field="allowed_attempt_ids",
+                prefix="mat",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allowed_sending_identity_ids",
+            _freeze_ids(
+                self.allowed_sending_identity_ids,
+                field="allowed_sending_identity_ids",
+                prefix="sid",
             ),
         )
         targets = self.allowed_suppression_targets
@@ -142,8 +167,19 @@ class OutreachScope:
                 if self.allowed_suppression_targets is not None
                 else 0
             )
+            attempt_count = (
+                len(self.allowed_attempt_ids)
+                if self.allowed_attempt_ids is not None
+                else 0
+            )
+            identity_count = (
+                len(self.allowed_sending_identity_ids)
+                if self.allowed_sending_identity_ids is not None
+                else 0
+            )
             if (
-                enrollment_count + target_count != 1
+                enrollment_count + target_count + attempt_count + identity_count
+                != 1
                 or self.allowed_campaign_ids is not None
                 or self.allowed_account_ids is not None
             ):
@@ -193,6 +229,8 @@ class OutreachAuthorizer(Protocol):
         enrollment_id: EnrollmentId | None = None,
         suppression_target: str | None = None,
         suppression_reason: SuppressionReason | None = None,
+        attempt_id: MessageAttemptId | None = None,
+        sending_identity_id: SendingIdentityId | None = None,
     ) -> str: ...
 
 
@@ -278,6 +316,9 @@ _SYSTEM_ACTIONS = frozenset(
         OutreachAction.ENROLLMENT_READ,
         OutreachAction.SUPPRESSION_ADD,
         OutreachAction.SUPPRESSION_READ,
+        OutreachAction.MESSAGE_DELIVERY_BIND,
+        OutreachAction.DELIVERY_FEEDBACK_RESOLVE,
+        OutreachAction.HARD_BOUNCE_APPLY,
     }
 )
 _SALES_ACTIONS = frozenset(
@@ -329,6 +370,8 @@ class Phase1OutreachAuthorizer:
             scope.allowed_account_ids,
             scope.allowed_enrollment_ids,
             scope.allowed_suppression_targets,
+            scope.allowed_attempt_ids,
+            scope.allowed_sending_identity_ids,
         )
         if (
             tenant_id != self._tenant_id
@@ -339,11 +382,23 @@ class Phase1OutreachAuthorizer:
         ):
             raise PermissionDenied("Phase 1 触达授权拒绝")
         if level is ScopeLevel.SYSTEM:
-            suppression_action = action in {
-                OutreachAction.SUPPRESSION_ADD,
-                OutreachAction.SUPPRESSION_READ,
-            }
-            if suppression_action != (scope.allowed_suppression_targets is not None):
+            expected_resource = {
+                OutreachAction.SUPPRESSION_ADD: "suppression",
+                OutreachAction.SUPPRESSION_READ: "suppression",
+                OutreachAction.MESSAGE_DELIVERY_BIND: "attempt",
+                OutreachAction.DELIVERY_FEEDBACK_RESOLVE: "identity",
+                OutreachAction.HARD_BOUNCE_APPLY: "identity",
+            }.get(action, "enrollment")
+            actual_resource = (
+                "suppression"
+                if scope.allowed_suppression_targets is not None
+                else "attempt"
+                if scope.allowed_attempt_ids is not None
+                else "identity"
+                if scope.allowed_sending_identity_ids is not None
+                else "enrollment"
+            )
+            if expected_resource != actual_resource:
                 raise PermissionDenied("Phase 1 触达授权拒绝")
         return level
 
@@ -377,6 +432,8 @@ class Phase1OutreachAuthorizer:
         enrollment_id: EnrollmentId | None = None,
         suppression_target: str | None = None,
         suppression_reason: SuppressionReason | None = None,
+        attempt_id: MessageAttemptId | None = None,
+        sending_identity_id: SendingIdentityId | None = None,
     ) -> str:
         level = self._eligible_level(actor, action, scope, tenant_id)
         if level in {ScopeLevel.MANAGER, ScopeLevel.SELF}:
@@ -396,6 +453,12 @@ class Phase1OutreachAuthorizer:
             if scope.allowed_suppression_targets is not None:
                 self._require_member(
                     scope.allowed_suppression_targets, suppression_target
+                )
+            if scope.allowed_attempt_ids is not None:
+                self._require_member(scope.allowed_attempt_ids, attempt_id)
+            if scope.allowed_sending_identity_ids is not None:
+                self._require_member(
+                    scope.allowed_sending_identity_ids, sending_identity_id
                 )
             if action is OutreachAction.SUPPRESSION_ADD and (
                 not isinstance(suppression_reason, SuppressionReason)
@@ -427,5 +490,7 @@ class DefaultDenyAuthorizer:
         enrollment_id: EnrollmentId | None = None,
         suppression_target: str | None = None,
         suppression_reason: SuppressionReason | None = None,
+        attempt_id: MessageAttemptId | None = None,
+        sending_identity_id: SendingIdentityId | None = None,
     ) -> str:
         raise PermissionDenied("Phase 1 触达授权拒绝")

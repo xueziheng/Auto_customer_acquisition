@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
 from domains.outreach.models import (
     CampaignBoundary,
     CampaignState,
+    DeliveryFeedbackKind,
     EnrollmentState,
     EnrollmentStopReason,
     MessageAttemptState,
@@ -18,6 +19,9 @@ from domains.outreach.models import (
     StepIntent,
     SuppressionReason,
     SuppressionScope,
+    _split_deterministic_message_id,
+    _split_idempotency_header,
+    _validate_delivery_route,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
@@ -160,6 +164,57 @@ class CampaignApprovalState(str, Enum):
 class ReplyState(str, Enum):
     NO_REPLY = "no_reply"
     REPLIED = "replied"
+
+
+@dataclass(frozen=True)
+class DeliveryCorrelationBinding:
+    deterministic_message_id: str = field(repr=False)
+    idempotency_header: str = field(repr=False)
+    route_id: str
+
+    def __post_init__(self) -> None:
+        route_id = _validate_delivery_route(self.route_id)
+        message_pair = _split_deterministic_message_id(
+            self.deterministic_message_id
+        )
+        header_pair = _split_idempotency_header(self.idempotency_header)
+        if message_pair != header_pair or message_pair[0] != route_id:
+            raise ValidationError("delivery correlation binding 不匹配")
+
+
+@dataclass(frozen=True)
+class DeliveryCorrelationLookup:
+    deterministic_message_id: str | None = field(default=None, repr=False)
+    idempotency_header: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.deterministic_message_id is None and self.idempotency_header is None:
+            raise ValidationError("delivery correlation lookup 缺少关联键")
+        if self.deterministic_message_id is not None:
+            _split_deterministic_message_id(self.deterministic_message_id)
+        if self.idempotency_header is not None:
+            _split_idempotency_header(self.idempotency_header)
+
+
+@dataclass(frozen=True)
+class DeliveryFeedbackTarget:
+    tenant_id: TenantId
+    attempt_id: MessageAttemptId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    sending_identity_id: SendingIdentityId
+
+    def __post_init__(self) -> None:
+        for value, field_name, prefix in (
+            (self.tenant_id, "tenant_id", "tn"),
+            (self.attempt_id, "attempt_id", "mat"),
+            (self.enrollment_id, "enrollment_id", "enr"),
+            (self.account_id, "account_id", "acc"),
+            (self.contact_point_id, "contact_point_id", "cp"),
+            (self.sending_identity_id, "sending_identity_id", "sid"),
+        ):
+            _require_safe_id(value, field_name, prefix=prefix)
 
 
 @dataclass(frozen=True)
@@ -508,6 +563,8 @@ class MessageAttemptView:
     created_at: datetime
     updated_at: datetime
     send_claimed_at: datetime | None = None
+    deterministic_message_id: str | None = field(default=None, repr=False)
+    idempotency_header: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -526,7 +583,7 @@ class MessageSendPreflight:
     idempotency_key: IdempotencyKey
 
     def __post_init__(self) -> None:
-        for value, field, prefix in (
+        for value, field_name, prefix in (
             (self.tenant_id, "tenant_id", "tn"),
             (self.attempt_id, "attempt_id", "mat"),
             (self.campaign_id, "campaign_id", "cmp"),
@@ -535,8 +592,8 @@ class MessageSendPreflight:
             (self.contact_point_id, "contact_point_id", "cp"),
             (self.sending_identity_id, "sending_identity_id", "sid"),
         ):
-            _require_safe_id(value, field, prefix=prefix)
-        for numeric_value, field in (
+            _require_safe_id(value, field_name, prefix=prefix)
+        for numeric_value, field_name in (
             (self.campaign_version, "campaign_version"),
             (self.step_number, "step_number"),
         ):
@@ -545,7 +602,7 @@ class MessageSendPreflight:
                 or isinstance(numeric_value, bool)
                 or numeric_value < 1
             ):
-                raise ValidationError(f"{field} 无效")
+                raise ValidationError(f"{field_name} 无效")
         _require_safe_text(self.idempotency_key, "idempotency_key", max_length=200)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from domains.outreach.models import EnrollmentStopReason, SendFailureCategory
@@ -11,6 +12,9 @@ from domains.outreach.schemas import (
     CampaignCreateRequest,
     CampaignView,
     ContactEligibilitySnapshot,
+    DeliveryCorrelationBinding,
+    DeliveryCorrelationLookup,
+    DeliveryFeedbackTarget,
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
@@ -252,3 +256,30 @@ class OutreachService(Protocol):
         limit: int,
         actor: Actor,
     ) -> list[SuppressionView]: ...
+
+    async def bind_delivery_correlation(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        binding: DeliveryCorrelationBinding,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView: ...
+
+    async def resolve_delivery_feedback(
+        self,
+        tenant_id: TenantId,
+        lookup: DeliveryCorrelationLookup,
+        *,
+        actor: Actor,
+    ) -> DeliveryFeedbackTarget | None: ...
+
+    async def apply_hard_bounce(
+        self,
+        tenant_id: TenantId,
+        target: DeliveryFeedbackTarget,
+        provider_event_id: str,
+        occurred_at: datetime,
+        *,
+        actor: Actor,
+    ) -> SuppressionResult: ...

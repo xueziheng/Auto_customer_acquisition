@@ -11,7 +11,9 @@ from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
     EnrollmentId,
+    MessageAttemptId,
     ProspectAccountId,
+    SendingIdentityId,
     TenantId,
     new_id,
 )
@@ -32,6 +34,10 @@ ACCOUNT = ProspectAccountId(new_id("acc"))
 OTHER_ACCOUNT = ProspectAccountId(new_id("acc"))
 ENROLLMENT = EnrollmentId(new_id("enr"))
 OTHER_ENROLLMENT = EnrollmentId(new_id("enr"))
+ATTEMPT = MessageAttemptId(new_id("mat"))
+OTHER_ATTEMPT = MessageAttemptId(new_id("mat"))
+IDENTITY = SendingIdentityId(new_id("sid"))
+OTHER_IDENTITY = SendingIdentityId(new_id("sid"))
 TARGET = str(ACCOUNT)
 OTHER_TARGET = str(OTHER_ACCOUNT)
 
@@ -55,6 +61,9 @@ _ALL_ACTIONS = {
     "SUPPRESSION_ADD",
     "SUPPRESSION_READ",
     "SUPPRESSION_LIST",
+    "MESSAGE_DELIVERY_BIND",
+    "DELIVERY_FEEDBACK_RESOLVE",
+    "HARD_BOUNCE_APPLY",
 }
 
 _ALLOWED = {
@@ -97,6 +106,9 @@ _ALLOWED = {
         "ENROLLMENT_READ",
         "SUPPRESSION_ADD",
         "SUPPRESSION_READ",
+        "MESSAGE_DELIVERY_BIND",
+        "DELIVERY_FEEDBACK_RESOLVE",
+        "HARD_BOUNCE_APPLY",
     },
     ("sales", "SELF"): {
         "CAMPAIGN_READ",
@@ -129,6 +141,16 @@ def _scope_for(role: str, action: object) -> object:
         return permissions.OutreachScope(
             level=permissions.ScopeLevel.SYSTEM,
             allowed_suppression_targets={TARGET},
+        )
+    if action.name == "MESSAGE_DELIVERY_BIND":
+        return permissions.OutreachScope(
+            level=permissions.ScopeLevel.SYSTEM,
+            allowed_attempt_ids={ATTEMPT},
+        )
+    if action.name in {"DELIVERY_FEEDBACK_RESOLVE", "HARD_BOUNCE_APPLY"}:
+        return permissions.OutreachScope(
+            level=permissions.ScopeLevel.SYSTEM,
+            allowed_sending_identity_ids={IDENTITY},
         )
     return permissions.OutreachScope(
         level=permissions.ScopeLevel.SYSTEM,
@@ -304,6 +326,67 @@ def test_system_scope_requires_one_target_and_cannot_expand_after_actor_creation
             level=permissions.ScopeLevel.SYSTEM,
             allowed_enrollment_ids={ENROLLMENT},
             allowed_suppression_targets={TARGET},
+        )
+
+
+@pytest.mark.parametrize(
+    ("action_name", "scope_field", "resource_field", "resource", "other"),
+    [
+        (
+            "MESSAGE_DELIVERY_BIND",
+            "allowed_attempt_ids",
+            "attempt_id",
+            ATTEMPT,
+            OTHER_ATTEMPT,
+        ),
+        (
+            "DELIVERY_FEEDBACK_RESOLVE",
+            "allowed_sending_identity_ids",
+            "sending_identity_id",
+            IDENTITY,
+            OTHER_IDENTITY,
+        ),
+        (
+            "HARD_BOUNCE_APPLY",
+            "allowed_sending_identity_ids",
+            "sending_identity_id",
+            IDENTITY,
+            OTHER_IDENTITY,
+        ),
+    ],
+)
+def test_system_delivery_feedback_actions_require_exact_resource(
+    action_name: str,
+    scope_field: str,
+    resource_field: str,
+    resource: str,
+    other: str,
+) -> None:
+    """Correlation worker 不能从一个 Attempt/Identity 横向扩到另一个。"""
+    permissions = _permissions()
+    action = permissions.OutreachAction[action_name]
+    mutable_resources = {resource}
+    scope = permissions.OutreachScope(
+        level=permissions.ScopeLevel.SYSTEM,
+        **{scope_field: mutable_resources},
+    )
+    actor = _actor("system", scope)
+    mutable_resources.add(other)
+    authorizer = permissions.Phase1OutreachAuthorizer(TENANT)
+    assert authorizer.require(
+        actor,
+        action,
+        scope,
+        TENANT,
+        **{resource_field: resource},
+    ).startswith("phase1:system:")
+    with pytest.raises(PermissionDenied):
+        authorizer.require(
+            actor,
+            action,
+            scope,
+            TENANT,
+            **{resource_field: other},
         )
 
 

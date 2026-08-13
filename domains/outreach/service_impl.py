@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -45,6 +46,7 @@ from domains.outreach.permissions import (
 )
 from domains.outreach.repository import (
     AppendStatus,
+    DeliveryCorrelationBindStatus,
     EnrollmentInsertStatus,
     OutreachUnitOfWork,
     OutreachUnitOfWorkFactory,
@@ -59,6 +61,9 @@ from domains.outreach.schemas import (
     ContactEligibilitySnapshot,
     ContactLegalBasis,
     ContactVerificationStatus,
+    DeliveryCorrelationBinding,
+    DeliveryCorrelationLookup,
+    DeliveryFeedbackTarget,
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
@@ -164,6 +169,8 @@ class OutreachServiceImpl:
         enrollment_id: EnrollmentId | None = None,
         suppression_target: str | None = None,
         suppression_reason: SuppressionReason | None = None,
+        attempt_id: MessageAttemptId | None = None,
+        sending_identity_id: SendingIdentityId | None = None,
     ) -> str:
         try:
             return self._authorizer.require(
@@ -176,6 +183,8 @@ class OutreachServiceImpl:
                 enrollment_id=enrollment_id,
                 suppression_target=suppression_target,
                 suppression_reason=suppression_reason,
+                attempt_id=attempt_id,
+                sending_identity_id=sending_identity_id,
             )
         except PermissionDenied:
             self._deny(actor, action, tenant_id)
@@ -634,7 +643,325 @@ class OutreachServiceImpl:
             created_at=attempt.created_at,
             updated_at=attempt.updated_at,
             send_claimed_at=attempt.send_claimed_at,
+            deterministic_message_id=attempt.deterministic_message_id,
+            idempotency_header=attempt.idempotency_header,
         )
+
+    async def bind_delivery_correlation(
+        self,
+        tenant_id: TenantId,
+        attempt_id: MessageAttemptId,
+        binding: DeliveryCorrelationBinding,
+        *,
+        actor: Actor,
+    ) -> MessageAttemptView:
+        action = OutreachAction.MESSAGE_DELIVERY_BIND
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(binding, DeliveryCorrelationBinding):
+            raise ValidationError("delivery correlation binding 无效")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            attempt = await uow.attempts.get_for_update(tenant_id, attempt_id)
+            if attempt is None:
+                raise ValidationError("Message Attempt 不存在")
+            if attempt.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if attempt.attempt_id != attempt_id:
+                raise ValidationError("Message Attempt 数据损坏")
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                attempt_id=attempt.attempt_id,
+            )
+            try:
+                attempt.bind_delivery_correlation(binding)
+            except InvalidStateTransition as exc:
+                raise MessageAttemptConflictError(
+                    "Message Attempt delivery correlation 冲突"
+                ) from exc
+            bound = await uow.attempts.bind_delivery_correlation(attempt)
+            if (
+                bound.status is DeliveryCorrelationBindStatus.CONFLICT
+                or bound.winner is None
+            ):
+                raise MessageAttemptConflictError(
+                    "Message Attempt delivery correlation 冲突"
+                )
+            winner = bound.winner
+            if winner.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if (
+                winner.attempt_id != attempt_id
+                or winner.deterministic_message_id
+                != binding.deterministic_message_id
+                or winner.idempotency_header != binding.idempotency_header
+            ):
+                raise MessageAttemptConflictError(
+                    "Message Attempt delivery correlation 冲突"
+                )
+            if bound.status is DeliveryCorrelationBindStatus.BOUND:
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(attempt_id),
+                        f"attempt:{attempt_id}:delivery-bind",
+                        action,
+                        now,
+                    )
+                )
+            view = self._attempt_view(winner)
+        self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def resolve_delivery_feedback(
+        self,
+        tenant_id: TenantId,
+        lookup: DeliveryCorrelationLookup,
+        *,
+        actor: Actor,
+    ) -> DeliveryFeedbackTarget | None:
+        action = OutreachAction.DELIVERY_FEEDBACK_RESOLVE
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(lookup, DeliveryCorrelationLookup):
+            raise ValidationError("delivery correlation lookup 无效")
+        async with self._uow_factory(tenant_id) as uow:
+            message_attempt = (
+                await uow.attempts.find_by_deterministic_message_id(
+                    tenant_id, lookup.deterministic_message_id
+                )
+                if lookup.deterministic_message_id is not None
+                else None
+            )
+            header_attempt = (
+                await uow.attempts.find_by_idempotency_header(
+                    tenant_id, lookup.idempotency_header
+                )
+                if lookup.idempotency_header is not None
+                else None
+            )
+            if (
+                lookup.deterministic_message_id is not None
+                and lookup.idempotency_header is not None
+                and (message_attempt is None or header_attempt is None)
+            ):
+                target = None
+                rule = None
+            else:
+                attempts = tuple(
+                    value
+                    for value in (message_attempt, header_attempt)
+                    if value is not None
+                )
+                if not attempts:
+                    target = None
+                    rule = None
+                elif any(
+                    value.attempt_id != attempts[0].attempt_id
+                    for value in attempts[1:]
+                ):
+                    raise MessageAttemptConflictError(
+                        "delivery correlation 指向不同 Message Attempt"
+                    )
+                else:
+                    attempt = attempts[0]
+                    if attempt.tenant_id != tenant_id:
+                        self._tenant_violation(actor, action, tenant_id)
+                    if (
+                        lookup.deterministic_message_id is not None
+                        and attempt.deterministic_message_id
+                        != lookup.deterministic_message_id
+                    ) or (
+                        lookup.idempotency_header is not None
+                        and attempt.idempotency_header
+                        != lookup.idempotency_header
+                    ):
+                        raise ValidationError("delivery correlation 查询结果损坏")
+                    if attempt.state is not MessageAttemptState.SENT:
+                        raise ValidationError("delivery feedback Attempt 尚未发送")
+                    enrollment = await uow.enrollments.get(
+                        tenant_id, attempt.enrollment_id
+                    )
+                    if enrollment is None:
+                        raise ValidationError("delivery feedback Enrollment 不存在")
+                    if enrollment.tenant_id != tenant_id:
+                        self._tenant_violation(actor, action, tenant_id)
+                    if (
+                        enrollment.enrollment_id != attempt.enrollment_id
+                        or enrollment.campaign_id != attempt.campaign_id
+                        or enrollment.sending_identity_id
+                        != attempt.sending_identity_id
+                    ):
+                        raise ValidationError("delivery feedback 资源绑定损坏")
+                    rule = self._require(
+                        actor,
+                        action,
+                        tenant_id,
+                        sending_identity_id=attempt.sending_identity_id,
+                    )
+                    target = DeliveryFeedbackTarget(
+                        tenant_id=tenant_id,
+                        attempt_id=attempt.attempt_id,
+                        enrollment_id=enrollment.enrollment_id,
+                        account_id=enrollment.account_id,
+                        contact_point_id=enrollment.contact_point_id,
+                        sending_identity_id=attempt.sending_identity_id,
+                    )
+        if target is None or rule is None:
+            return None
+        self._allow(actor, action, tenant_id, rule)
+        return target
+
+    @staticmethod
+    def _validate_provider_event_id(value: object) -> str:
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValidationError("provider_event_id 无效")
+        return value
+
+    async def apply_hard_bounce(
+        self,
+        tenant_id: TenantId,
+        target: DeliveryFeedbackTarget,
+        provider_event_id: str,
+        occurred_at: datetime,
+        *,
+        actor: Actor,
+    ) -> SuppressionResult:
+        action = OutreachAction.HARD_BOUNCE_APPLY
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(target, DeliveryFeedbackTarget):
+            raise ValidationError("delivery feedback target 无效")
+        event_id = self._validate_provider_event_id(provider_event_id)
+        occurred = self._validate_now(occurred_at)
+        now = self._validate_now(self._now())
+        if occurred > now + timedelta(minutes=5):
+            raise ValidationError("delivery feedback occurred_at 超出允许时间")
+        suppression_target = SuppressionTarget(
+            contact_point_id=target.contact_point_id
+        )
+        request = SuppressionRequest(
+            target=suppression_target,
+            reason=SuppressionReason.HARD_BOUNCE,
+            occurred_at=occurred,
+            source_ref=event_id,
+            idempotency_key=IdempotencyKey(f"feedback:{event_id}"),
+        )
+        entry = SuppressionEntry(
+            tenant_id=tenant_id,
+            suppression_id=SuppressionId(new_id("sup")),
+            target=suppression_target,
+            reason=SuppressionReason.HARD_BOUNCE,
+            occurred_at=occurred,
+            source_ref=event_id,
+            idempotency_key=request.idempotency_key,
+            created_at=now,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            attempt = await uow.attempts.get_for_update(
+                tenant_id, target.attempt_id
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, target.enrollment_id
+            )
+            if attempt is None or enrollment is None:
+                raise ValidationError("delivery feedback 资源不存在")
+            if attempt.tenant_id != tenant_id or enrollment.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if (
+                target.tenant_id != tenant_id
+                or attempt.attempt_id != target.attempt_id
+                or attempt.enrollment_id != target.enrollment_id
+                or attempt.sending_identity_id != target.sending_identity_id
+                or enrollment.enrollment_id != target.enrollment_id
+                or enrollment.account_id != target.account_id
+                or enrollment.contact_point_id != target.contact_point_id
+                or enrollment.sending_identity_id != target.sending_identity_id
+                or attempt.state is not MessageAttemptState.SENT
+            ):
+                raise ValidationError("delivery feedback 资源绑定不匹配")
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                sending_identity_id=target.sending_identity_id,
+            )
+            appended = await uow.suppressions.append_if_absent(entry)
+            if appended.status is AppendStatus.CONFLICT or appended.winner is None:
+                raise IdempotencyConflictError(
+                    "hard bounce feedback 已绑定不同内容"
+                )
+            winner = appended.winner
+            if winner.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if not self._same_suppression_payload(winner, request, tenant_id):
+                raise IdempotencyConflictError(
+                    "hard bounce feedback 已绑定不同内容"
+                )
+            if appended.status is AppendStatus.EXISTING:
+                result = SuppressionResult(
+                    False,
+                    self._suppression_view(winner),
+                    0,
+                )
+            else:
+                enrollments = await uow.enrollments.lock_matching_active(
+                    tenant_id, suppression_target
+                )
+                ordered = sorted(
+                    enrollments, key=lambda value: value.enrollment_id
+                )
+                for matched in ordered:
+                    if matched.tenant_id != tenant_id:
+                        self._tenant_violation(actor, action, tenant_id)
+                    if matched.contact_point_id != target.contact_point_id:
+                        raise ValidationError("hard bounce Enrollment 查询结果损坏")
+                    matched.next_send_at = None
+                    matched.transition_to(
+                        EnrollmentState.STOPPED_BOUNCED,
+                        at=now,
+                        reason=EnrollmentStopReason.HARD_BOUNCE,
+                    )
+                    await uow.enrollments.update(matched)
+                    await uow.actions.append(
+                        self._action(
+                            tenant_id,
+                            actor,
+                            str(matched.enrollment_id),
+                            f"feedback:{event_id}:enrollment:{matched.enrollment_id}:stop",
+                            action,
+                            now,
+                        )
+                    )
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(winner.suppression_id),
+                        f"feedback:{event_id}:hard-bounce",
+                        action,
+                        now,
+                    )
+                )
+                await uow.bus.publish(
+                    SuppressionAdded(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        scope=winner.target.scope.value,
+                        target_id=winner.target.canonical_id,
+                        reason=winner.reason.value,
+                    )
+                )
+                result = SuppressionResult(
+                    True,
+                    self._suppression_view(winner),
+                    len(ordered),
+                )
+        if not result.created:
+            return result
+        self._allow(actor, action, tenant_id, rule)
+        return result
 
     async def _contact_snapshot(
         self,

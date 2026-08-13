@@ -47,6 +47,12 @@ class AppendStatus(str, Enum):
     CONFLICT = "conflict"
 
 
+class DeliveryCorrelationBindStatus(str, Enum):
+    BOUND = "bound"
+    EXISTING = "existing"
+    CONFLICT = "conflict"
+
+
 class QuotaReservationStatus(str, Enum):
     RESERVED = "reserved"
     CAP_REACHED = "cap_reached"
@@ -106,6 +112,24 @@ class MessageAttemptCreateResult:
         if not isinstance(self.status, AppendStatus):
             raise ValidationError("Message Attempt create status 无效")
         _validate_winner(self.status, self.winner, MessageAttempt)
+
+
+@dataclass(frozen=True)
+class DeliveryCorrelationBindResult:
+    status: DeliveryCorrelationBindStatus
+    winner: MessageAttempt | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, DeliveryCorrelationBindStatus):
+            raise ValidationError("Delivery correlation bind status 无效")
+        expects_winner = self.status in {
+            DeliveryCorrelationBindStatus.BOUND,
+            DeliveryCorrelationBindStatus.EXISTING,
+        }
+        if expects_winner != (self.winner is not None):
+            raise ValidationError("Delivery correlation bind result 与 winner 不匹配")
+        if self.winner is not None and not isinstance(self.winner, MessageAttempt):
+            raise ValidationError("Delivery correlation bind winner 类型无效")
 
 
 @runtime_checkable
@@ -219,6 +243,18 @@ class MessageAttemptRepository(Protocol):
     ) -> MessageAttempt | None: ...
 
     async def update(self, attempt: MessageAttempt) -> None: ...
+
+    async def bind_delivery_correlation(
+        self, attempt: MessageAttempt
+    ) -> DeliveryCorrelationBindResult: ...
+
+    async def find_by_deterministic_message_id(
+        self, tenant_id: TenantId, deterministic_message_id: str
+    ) -> MessageAttempt | None: ...
+
+    async def find_by_idempotency_header(
+        self, tenant_id: TenantId, idempotency_header: str
+    ) -> MessageAttempt | None: ...
 
 
 @runtime_checkable

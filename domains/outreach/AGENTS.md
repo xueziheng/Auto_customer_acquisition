@@ -113,6 +113,17 @@ Gateway 用 canonical ledger 返回既有结果；但不能再次 claim。若 ca
 不一致，必须固定失败，不能借终态 bypass 重发。Attempt 完成失败时 Connector 结果仍按
 不确定交付处理，由 Tool Gateway 搜索恢复；本域不调用 Gmail。
 
+已发送 Attempt 的投递反馈只接受同一 tenant 内的确定性关联：完整
+`Message-ID` 或 `X-TradeOS-Idempotency-V1`。两个键同时出现时必须解析到同一
+Attempt；禁止用邮箱地址、时间、主题或正文做模糊匹配。关联绑定只能从未绑定变为一组
+合法 pair；同值重试幂等，任何改写固定拒绝。
+
+feedback worker 的 SYSTEM actor 必须收窄到一个精确 Attempt（绑定）或一个精确
+SendingIdentity（解析与 hard bounce）；空集合、多资源、无约束或错资源 scope 一律拒绝。
+hard bounce 自动永久抑制准确 ContactPoint，并把所有匹配的活跃 Enrollment 终止为
+`stopped_bounced`。soft bounce 只由 feedback receipt 记录，不产生永久抑制、自动重试
+或 hard-bounce 信誉事实。Account 级抑制仍只允许明确的公司级请求或人工确认。
+
 Attempt / audit / outbox 只记录安全 ID、typed state/category、provider reference；不得
 持久化或记录邮箱地址、主题、正文、OAuth token、完整请求与客户原话。
 
@@ -122,7 +133,7 @@ Attempt / audit / outbox 只记录安全 ID、typed state/category、provider re
 
 ## 订阅的事件
 
-`ReplyReceived`（停序列）、`MessageBounced`（硬退信 → 抑制；软退信计数，连续 3 次按硬处理）、`ComplaintReceived`（立即抑制）、`UnsubscribeReceived`（抑制，按请求范围决定级别）、`SendingIdentityThrottled` / `SendingIdentitySuspended`（暂停该身份下的发送计划）
+`ReplyReceived`（停序列）、`MessageBounced`（硬退信 → 精确关联后抑制联系人并停序列；软退信只记录 receipt）、`ComplaintReceived`（立即抑制）、`UnsubscribeReceived`（抑制，按请求范围决定级别）、`SendingIdentityThrottled` / `SendingIdentitySuspended`（暂停该身份下的发送计划）
 
 ## 禁止事项
 

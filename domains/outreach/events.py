@@ -28,7 +28,7 @@ SUBSCRIBES = (
 ``ReplyReceived``      → ``stop_enrollment(REPLY)``（幂等；创建发送尝试前
                          仍须通过 ReplyStatusProvider 现查回复事实）
 ``MessageBounced``     → 硬退信：抑制联系人并停序列；
-                         软退信：计数，连续 3 次按硬退信处理
+                         软退信：只记录 receipt，不永久抑制、不自动重试
 ``ComplaintReceived``  → 立即抑制联系人（投诉是最强的"别烦我"信号）
 ``UnsubscribeReceived``→ 抑制；请求语义覆盖公司时用 ACCOUNT 级
 ``SendingIdentityThrottled`` / ``SendingIdentitySuspended``
