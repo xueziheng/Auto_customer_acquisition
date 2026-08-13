@@ -87,6 +87,8 @@ EMAIL_FEEDBACK_TABLES: tuple[str, ...] = (
     "unsubscribe_tokens",
 )
 
+ARTIFACT_TABLES: tuple[str, ...] = ("raw_artifacts", "artifacts")
+
 # 固定注入时钟（closed_at 绑定值；非业务逻辑数字）。
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -2454,7 +2456,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0013"
+        assert revision == "0014"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2516,6 +2518,217 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                 )
                 == "0" * 64
             )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def _artifact_insert_rejected(
+    engine: AsyncEngine, statement: TextClause, values: dict[str, object]
+) -> None:
+    with pytest.raises((DBAPIError, IntegrityError)):
+        async with engine.begin() as conn:
+            await conn.execute(statement, values)
+
+
+async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
+    """0014 只增加两张 tenant metadata 表，并由真实 PostgreSQL 拒绝非法记录。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_01KZX4C1000000000000000014"
+    raw_artifact = "art_01KZX4C1000000000000000014"
+    generated_artifact = "art_01KZX4C1000000000000000015"
+    run_id = "run_01KZX4C1000000000000000014"
+    enrollment_id = "enr_01KZX4C1000000000000000014"
+    raw_values: dict[str, object] = {
+        "tenant": tenant,
+        "artifact": raw_artifact,
+        "kind": "pdf",
+        "hash": "a" * 64,
+        "size": 32,
+        "mime": "application/pdf",
+        "object_key": f"raw/{tenant}/{raw_artifact}",
+        "uploader": "usr_01KZX4C1000000000000000014",
+        "occurred": _NOW,
+    }
+    generated_values: dict[str, object] = {
+        "tenant": tenant,
+        "artifact": generated_artifact,
+        "kind": "email_draft",
+        "hash": "b" * 64,
+        "size": 64,
+        "mime": "application/vnd.tradeos.email-draft+json",
+        "object_key": f"generated/{tenant}/{generated_artifact}",
+        "run_id": run_id,
+        "subject_ref": enrollment_id,
+        "sequence": 1,
+        "key": f"{enrollment_id}:1:draft",
+        "generated_by": "outreach_agent_v1",
+        "occurred": _NOW,
+    }
+    insert_raw = text(
+        "INSERT INTO raw_artifacts "
+        "(tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,"
+        "object_key,uploaded_by,uploaded_at) VALUES "
+        "(:tenant,:artifact,:kind,:hash,:size,:mime,:object_key,:uploader,:occurred)"
+    )
+    insert_generated = text(
+        "INSERT INTO artifacts "
+        "(tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,"
+        "object_key,workflow_run_id,subject_ref,sequence_number,idempotency_key,"
+        "generated_by,generated_at) VALUES "
+        "(:tenant,:artifact,:kind,:hash,:size,:mime,:object_key,:run_id,"
+        ":subject_ref,:sequence,:key,:generated_by,:occurred)"
+    )
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            contract = await conn.run_sync(
+                lambda sync: {
+                    table: {
+                        "columns": {
+                            str(item["name"])
+                            for item in inspect(sync).get_columns(table)
+                        },
+                        "pk": str(inspect(sync).get_pk_constraint(table)["name"]),
+                        "unique": {
+                            str(item["name"])
+                            for item in inspect(sync).get_unique_constraints(table)
+                        },
+                        "checks": {
+                            str(item["name"])
+                            for item in inspect(sync).get_check_constraints(table)
+                        },
+                        "indexes": {
+                            str(item["name"])
+                            for item in inspect(sync).get_indexes(table)
+                            if not item.get("duplicates_constraint")
+                        },
+                    }
+                    for table in ARTIFACT_TABLES
+                }
+            )
+        assert revision == "0014"
+        assert contract == {
+            "raw_artifacts": {
+                "columns": {
+                    "tenant_id",
+                    "artifact_id",
+                    "kind",
+                    "content_hash",
+                    "size_bytes",
+                    "mime_type",
+                    "object_key",
+                    "uploaded_by",
+                    "uploaded_at",
+                },
+                "pk": "pk_raw_artifacts",
+                "unique": {"uq_raw_artifacts_tenant_kind_hash"},
+                "checks": {
+                    "ck_raw_artifacts_tenant",
+                    "ck_raw_artifacts_id",
+                    "ck_raw_artifacts_hash",
+                    "ck_raw_artifacts_size",
+                    "ck_raw_artifacts_kind_mime",
+                    "ck_raw_artifacts_object_key",
+                    "ck_raw_artifacts_uploader",
+                },
+                "indexes": set(),
+            },
+            "artifacts": {
+                "columns": {
+                    "tenant_id",
+                    "artifact_id",
+                    "kind",
+                    "content_hash",
+                    "size_bytes",
+                    "mime_type",
+                    "object_key",
+                    "workflow_run_id",
+                    "subject_ref",
+                    "sequence_number",
+                    "idempotency_key",
+                    "generated_by",
+                    "generated_at",
+                },
+                "pk": "pk_artifacts",
+                "unique": {"uq_artifacts_tenant_key"},
+                "checks": {
+                    "ck_artifacts_tenant",
+                    "ck_artifacts_id",
+                    "ck_artifacts_hash",
+                    "ck_artifacts_size",
+                    "ck_artifacts_kind_mime",
+                    "ck_artifacts_object_key",
+                    "ck_artifacts_run",
+                    "ck_artifacts_subject",
+                    "ck_artifacts_sequence",
+                    "ck_artifacts_idempotency",
+                    "ck_artifacts_generated_by",
+                },
+                "indexes": set(),
+            },
+        }
+
+        async with engine.begin() as conn:
+            await conn.execute(insert_raw, raw_values)
+            await conn.execute(insert_generated, generated_values)
+
+        for changed in (
+            {"hash": "A" * 64, "artifact": "art_01KZX4C1000000000000000016"},
+            {"size": 0, "artifact": "art_01KZX4C1000000000000000017"},
+            {
+                "kind": "pdf",
+                "mime": "text/html",
+                "artifact": "art_01KZX4C1000000000000000018",
+            },
+            {
+                "object_key": "raw/other/art_01KZX4C1000000000000000019",
+                "artifact": "art_01KZX4C1000000000000000019",
+            },
+        ):
+            await _artifact_insert_rejected(
+                engine, insert_raw, raw_values | changed
+            )
+        for changed in (
+            {"hash": "G" * 64, "artifact": "art_01KZX4C1000000000000000020"},
+            {"size": 0, "artifact": "art_01KZX4C1000000000000000021"},
+            {
+                "kind": "email_draft",
+                "mime": "message/rfc822",
+                "artifact": "art_01KZX4C1000000000000000022",
+            },
+            {
+                "object_key": "generated/other/art_01KZX4C1000000000000000023",
+                "artifact": "art_01KZX4C1000000000000000023",
+            },
+            {"run_id": "run_bad", "artifact": "art_01KZX4C1000000000000000024"},
+            {
+                "subject_ref": "enr_bad",
+                "key": "enr_bad:1:draft",
+                "artifact": "art_01KZX4C1000000000000000025",
+            },
+            {
+                "key": f"{enrollment_id}:2:draft",
+                "artifact": "art_01KZX4C1000000000000000026",
+            },
+            {"artifact": "art_01KZX4C1000000000000000027"},
+        ):
+            await _artifact_insert_rejected(
+                engine, insert_generated, generated_values | changed
+            )
+
+        _run_alembic(db_url, "downgrade", "0013")
+        assert set(ARTIFACT_TABLES).isdisjoint(await _table_names(engine))
+        assert "email_feedback_receipts" in await _table_names(engine)
+        _run_alembic(db_url, "upgrade", "head")
+        assert set(ARTIFACT_TABLES) <= await _table_names(engine)
+        await _artifact_insert_rejected(
+            engine,
+            insert_raw,
+            raw_values | {"hash": "A" * 64},
+        )
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

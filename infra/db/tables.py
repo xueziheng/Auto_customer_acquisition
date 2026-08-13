@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     CHAR,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -1704,3 +1705,131 @@ class WorkflowStepRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
+
+
+class RawArtifactRow(Base):
+    """``raw_artifacts`` 原始证据 metadata 行；不含内容 bytes。"""
+
+    __tablename__ = "raw_artifacts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "artifact_id", name="pk_raw_artifacts"),
+        UniqueConstraint(
+            "tenant_id",
+            "kind",
+            "content_hash",
+            name="uq_raw_artifacts_tenant_kind_hash",
+        ),
+        CheckConstraint(
+            "tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_raw_artifacts_tenant",
+        ),
+        CheckConstraint(
+            "artifact_id ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_raw_artifacts_id",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'", name="ck_raw_artifacts_hash"
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_raw_artifacts_size"),
+        CheckConstraint(
+            "(kind='email_raw' AND mime_type='message/rfc822') OR "
+            "(kind='chat_screenshot' AND mime_type IN "
+            "('image/png','image/jpeg','image/webp')) OR "
+            "(kind='pdf' AND mime_type='application/pdf') OR "
+            "(kind='word' AND mime_type="
+            "'application/vnd.openxmlformats-officedocument.wordprocessingml.document') OR "
+            "(kind='excel' AND mime_type IN "
+            "('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',"
+            "'text/csv')) OR "
+            "(kind='web_snapshot' AND mime_type='text/html') OR "
+            "(kind='image' AND mime_type IN "
+            "('image/png','image/jpeg','image/webp')) OR "
+            "(kind='audio' AND mime_type IN "
+            "('audio/mpeg','audio/wav','audio/mp4'))",
+            name="ck_raw_artifacts_kind_mime",
+        ),
+        CheckConstraint(
+            "object_key = 'raw/' || tenant_id || '/' || artifact_id",
+            name="ck_raw_artifacts_object_key",
+        ),
+        CheckConstraint(
+            "uploaded_by IS NULL OR uploaded_by ~ "
+            "'^usr_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_raw_artifacts_uploader",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(32))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    mime_type: Mapped[str] = mapped_column(String(100))
+    object_key: Mapped[str] = mapped_column(String(128))
+    uploaded_by: Mapped[str | None] = mapped_column(String(32))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GeneratedArtifactRow(Base):
+    """``artifacts`` 系统派生产物 metadata 行；不含邮件 subject/body。"""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "artifact_id", name="pk_artifacts"),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_artifacts_tenant_key"
+        ),
+        CheckConstraint(
+            "tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_artifacts_tenant",
+        ),
+        CheckConstraint(
+            "artifact_id ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_artifacts_id",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'", name="ck_artifacts_hash"
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_artifacts_size"),
+        CheckConstraint(
+            "kind='email_draft' AND mime_type="
+            "'application/vnd.tradeos.email-draft+json'",
+            name="ck_artifacts_kind_mime",
+        ),
+        CheckConstraint(
+            "object_key = 'generated/' || tenant_id || '/' || artifact_id",
+            name="ck_artifacts_object_key",
+        ),
+        CheckConstraint(
+            "workflow_run_id ~ '^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_artifacts_run",
+        ),
+        CheckConstraint(
+            "subject_ref ~ '^enr_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_artifacts_subject",
+        ),
+        CheckConstraint("sequence_number > 0", name="ck_artifacts_sequence"),
+        CheckConstraint(
+            "idempotency_key = subject_ref || ':' || sequence_number::text "
+            "|| ':' || 'draft'",
+            name="ck_artifacts_idempotency",
+        ),
+        CheckConstraint(
+            "generated_by ~ '^[a-z][a-z0-9_-]{0,63}$'",
+            name="ck_artifacts_generated_by",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(32))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    mime_type: Mapped[str] = mapped_column(String(100))
+    object_key: Mapped[str] = mapped_column(String(128))
+    workflow_run_id: Mapped[str] = mapped_column(String(32))
+    subject_ref: Mapped[str] = mapped_column(String(32))
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    generated_by: Mapped[str] = mapped_column(String(64))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

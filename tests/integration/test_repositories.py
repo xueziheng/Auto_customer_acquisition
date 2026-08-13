@@ -808,6 +808,15 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "nonce_sha256", "contact_point_id", "message_attempt_id",
             "key_id", "expires_at", "consumed_at", "created_at",
         },
+        "raw_artifacts": {
+            "tenant_id", "artifact_id", "kind", "content_hash", "size_bytes",
+            "mime_type", "object_key", "uploaded_by", "uploaded_at",
+        },
+        "artifacts": {
+            "tenant_id", "artifact_id", "kind", "content_hash", "size_bytes",
+            "mime_type", "object_key", "workflow_run_id", "subject_ref",
+            "sequence_number", "idempotency_key", "generated_by", "generated_at",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -1000,6 +1009,20 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_unsubscribe_token_contact", "ck_unsubscribe_token_attempt",
             "ck_unsubscribe_token_key", "ck_unsubscribe_token_expiry",
             "ck_unsubscribe_token_consumed",
+        },
+        "raw_artifacts": {
+            "pk_raw_artifacts", "uq_raw_artifacts_tenant_kind_hash",
+            "ck_raw_artifacts_tenant", "ck_raw_artifacts_id",
+            "ck_raw_artifacts_hash", "ck_raw_artifacts_size",
+            "ck_raw_artifacts_kind_mime", "ck_raw_artifacts_object_key",
+            "ck_raw_artifacts_uploader",
+        },
+        "artifacts": {
+            "pk_artifacts", "uq_artifacts_tenant_key", "ck_artifacts_tenant",
+            "ck_artifacts_id", "ck_artifacts_hash", "ck_artifacts_size",
+            "ck_artifacts_kind_mime", "ck_artifacts_object_key",
+            "ck_artifacts_run", "ck_artifacts_subject", "ck_artifacts_sequence",
+            "ck_artifacts_idempotency", "ck_artifacts_generated_by",
         },
     }
     for table, names in expected_constraints.items():
