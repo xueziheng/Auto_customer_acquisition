@@ -60,7 +60,10 @@ class _Handler:
     def __init__(self) -> None:
         self.execute_calls = 0
 
-    async def prepare(self, ctx: ToolCallContext) -> PreparedToolCall:
+    async def prepare(
+        self, ctx: ToolCallContext, preflight: object | None
+    ) -> PreparedToolCall:
+        del preflight
         material = str(ctx.params.get("material", "stable")).encode()
         return PreparedToolCall(
             hashlib.sha256(material).hexdigest(),

@@ -155,7 +155,9 @@ class ToolHandler(Protocol):
     - 抛 ``TransientError`` 表示可重试，其他错误不重试
     """
 
-    async def prepare(self, ctx: ToolCallContext) -> PreparedToolCall: ...
+    async def prepare(
+        self, ctx: ToolCallContext, preflight: object | None
+    ) -> PreparedToolCall: ...
 
     async def execute(
         self, tenant_id: TenantId, prepared: PreparedToolCall

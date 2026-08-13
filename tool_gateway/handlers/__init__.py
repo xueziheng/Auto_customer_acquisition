@@ -18,3 +18,17 @@ Phase 1 需要的 handler 清单（实现时逐个补）：
 约定：handler 不含业务规则，只做参数组装、connector 调用、结果转换。
 凭证在 handler 内部经密钥服务获取，不进日志（硬边界 1）。
 """
+
+from .email_send import (
+    DeliveryMaterial,
+    DeliveryMaterialProvider,
+    EmailSendHandler,
+    UnsubscribeLinkProvider,
+)
+
+__all__ = [
+    "DeliveryMaterial",
+    "DeliveryMaterialProvider",
+    "EmailSendHandler",
+    "UnsubscribeLinkProvider",
+]

@@ -146,8 +146,10 @@ class _Stage:
         self.reject = reject
 
     async def check(self, ctx, state):
-        del ctx, state
+        del ctx
         self.trace.append(self.name)
+        if self.name == "suppression.preflight":
+            state.preflight = "current-preflight"
         if self.reject:
             return CheckRejection(self.name, f"{self.name}:denied", "调用被固定规则拒绝")
         return None
@@ -172,9 +174,10 @@ class _Handler:
     def __init__(self, trace: list[str]) -> None:
         self.trace = trace
 
-    async def prepare(self, ctx):
+    async def prepare(self, ctx, preflight):
         del ctx
         self.trace.append("handler.prepare")
+        self.trace.append(f"handler.preflight:{preflight}")
         return PreparedToolCall("a" * 64, "fp-v1", {"attempt": "bound"}, object())
 
     async def execute(self, tenant_id, prepared):
@@ -259,6 +262,7 @@ async def test_gateway_success_has_exact_stage_and_side_effect_order() -> None:
         "suppression.preflight",
         "approval",
         "handler.prepare",
+        "handler.preflight:current-preflight",
         "idempotency.claim",
         "outreach.claim",
         "rate_limit.reserve",

@@ -276,7 +276,9 @@ class _GatewayManifest(Protocol):
 
 
 class _GatewayHandler(Protocol):
-    async def prepare(self, ctx: ToolCallContext) -> PreparedToolCall: ...
+    async def prepare(
+        self, ctx: ToolCallContext, preflight: object | None
+    ) -> PreparedToolCall: ...
 
     async def execute(
         self, tenant_id: TenantId, prepared: PreparedToolCall
@@ -408,7 +410,7 @@ class ToolGateway:
         for stage_name in manifest.checks:
             if stage_name == "idempotency" and state.prepared is None:
                 try:
-                    state.prepared = await handler.prepare(ctx)
+                    state.prepared = await handler.prepare(ctx, state.preflight)
                 except TradeOSError as error:
                     return await self._fail_typed(
                         ctx,
@@ -547,7 +549,7 @@ class ToolGateway:
 
         if state.prepared is None:
             try:
-                state.prepared = await handler.prepare(ctx)
+                state.prepared = await handler.prepare(ctx, state.preflight)
             except TradeOSError as error:
                 return await self._fail_typed(
                     ctx,

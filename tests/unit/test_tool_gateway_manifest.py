@@ -33,8 +33,10 @@ EMAIL_CHECKS = (
 
 
 class _Handler:
-    async def prepare(self, ctx: ToolCallContext) -> PreparedToolCall:
-        del ctx
+    async def prepare(
+        self, ctx: ToolCallContext, preflight: object | None
+    ) -> PreparedToolCall:
+        del ctx, preflight
         return PreparedToolCall("a" * 64, "fp-v1", {}, object())
 
     async def execute(
@@ -147,8 +149,10 @@ class _ExecuteOnly:
 
 
 class _SyncPrepare(_Handler):
-    def prepare(self, ctx: ToolCallContext) -> PreparedToolCall:  # type: ignore[override]
-        del ctx
+    def prepare(  # type: ignore[override]
+        self, ctx: ToolCallContext, preflight: object | None
+    ) -> PreparedToolCall:
+        del ctx, preflight
         return PreparedToolCall("a" * 64, "fp-v1", {}, object())
 
 
