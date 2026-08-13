@@ -85,6 +85,11 @@ def _runtime_env(database_url: str) -> dict[str, str]:
             '"4":"mid","5":"high","6":"high","7":"high"}}'
         ),
         "TRADEOS_OUTBOX_MAX_ATTEMPTS": "3",
+        "GMAIL_OAUTH_TOKEN_REF": "gmail-oauth-phase1",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
     }
 
 

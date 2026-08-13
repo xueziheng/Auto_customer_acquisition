@@ -45,6 +45,11 @@ _VALID_ENV = {
         '"5":"high","6":"high","7":"high"}}'
     ),
     "TRADEOS_OUTBOX_MAX_ATTEMPTS": "3",
+    "GMAIL_OAUTH_TOKEN_REF": "gmail-oauth-phase1",
+    "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
+    "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+    "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+    "TRADEOS_TOOL_LEASE_SECONDS": "120",
 }
 
 
@@ -53,6 +58,11 @@ def test_runtime_settings_parse_exact_configuration_without_exposing_dsn() -> No
     assert settings.tenant_id == "tenant-runtime"
     assert settings.scoring_policy.value_band_boundaries[0].amount == Decimal(1000)
     assert settings.t1.total_seconds() == 120
+    assert settings.gmail_oauth_token_ref == "gmail-oauth-phase1"
+    assert settings.tool_call_fingerprint_key_ref == "tool-fingerprint-phase1"
+    assert settings.tool_call_fingerprint_key_version == "v1"
+    assert settings.unsubscribe_base_url == "https://unsubscribe.example.test"
+    assert settings.tool_lease.total_seconds() == 120
     assert "runtime-secret" not in repr(settings)
 
 
@@ -76,6 +86,14 @@ def test_every_runtime_variable_is_required_and_error_is_sanitized(name: str) ->
         ("TRADEOS_TENANT_ID", "tenant-runtime "),
         ("TRADEOS_DEV_MODE", "True"),
         ("TRADEOS_DEV_MODE", "false"),
+        ("GMAIL_OAUTH_TOKEN_REF", ""),
+        ("GMAIL_OAUTH_TOKEN_REF", " gmail-oauth-phase1"),
+        ("GMAIL_OAUTH_TOKEN_REF", "gmail\noauth"),
+        ("TOOL_CALL_FINGERPRINT_KEY_REF", "tool-fingerprint-phase1 "),
+        ("TOOL_CALL_FINGERPRINT_KEY_REF", "secret\x7fref"),
+        ("TOOL_CALL_FINGERPRINT_KEY_VERSION", ""),
+        ("TOOL_CALL_FINGERPRINT_KEY_VERSION", "v1 "),
+        ("TOOL_CALL_FINGERPRINT_KEY_VERSION", "v1\x00hidden"),
     ],
 )
 def test_exact_scalar_values_reject_blank_boundary_space_or_implicit_mode(
@@ -94,7 +112,11 @@ def test_exact_scalar_values_reject_blank_boundary_space_or_implicit_mode(
 )
 @pytest.mark.parametrize(
     "name",
-    ["TRADEOS_API_RETRY_AFTER_SECONDS", "TRADEOS_OUTBOX_MAX_ATTEMPTS"],
+    [
+        "TRADEOS_API_RETRY_AFTER_SECONDS",
+        "TRADEOS_OUTBOX_MAX_ATTEMPTS",
+        "TRADEOS_TOOL_LEASE_SECONDS",
+    ],
 )
 def test_positive_integer_configuration_is_exact(name: str, value: str) -> None:
     with pytest.raises(RuntimeConfigurationError) as exc:
@@ -123,6 +145,31 @@ def test_cors_origin_is_canonical_and_exact(origin_json: str, valid: bool) -> No
     else:
         with pytest.raises(RuntimeConfigurationError):
             Phase1RuntimeSettings.from_environ(env)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "http://unsubscribe.example.test",
+        "https://user@unsubscribe.example.test",
+        "https://unsubscribe.example.test/path",
+        "https://unsubscribe.example.test?tenant=hidden",
+        "https://unsubscribe.example.test#fragment",
+        "https://UNSUBSCRIBE.example.test",
+        "https://unsubscribe.example.test/",
+        " https://unsubscribe.example.test",
+    ],
+)
+def test_unsubscribe_base_url_is_canonical_https_origin(value: str) -> None:
+    marker = "credential-marker"
+    candidate = value.replace("user", marker)
+    with pytest.raises(RuntimeConfigurationError) as exc:
+        Phase1RuntimeSettings.from_environ(
+            {**_VALID_ENV, "TRADEOS_UNSUBSCRIBE_BASE_URL": candidate}
+        )
+    assert exc.value.field_name == "TRADEOS_UNSUBSCRIBE_BASE_URL"
+    assert marker not in str(exc.value)
 
 
 @pytest.mark.parametrize(

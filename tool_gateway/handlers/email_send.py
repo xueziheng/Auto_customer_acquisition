@@ -28,8 +28,6 @@ class DeliveryMaterial:
     sending_identity_id: SendingIdentityId
     from_address: str = field(repr=False)
     recipient_address: str = field(repr=False)
-    subject: str = field(repr=False)
-    body: str = field(repr=False)
 
     def __post_init__(self) -> None:
         for value in (
@@ -89,6 +87,10 @@ class EmailSendHandler:
             raise ValidationError("发送 preflight 无效")
         if ctx.tenant_id != preflight.tenant_id:
             raise ValidationError("发送 preflight 绑定无效")
+        subject = ctx.params.get("subject")
+        body = ctx.params.get("body")
+        if not isinstance(subject, str) or not isinstance(body, str):
+            raise ValidationError("客户可见内容无效")
         material = await self._materials.resolve(ctx.tenant_id, preflight)
         if not isinstance(material, DeliveryMaterial):
             raise ValidationError("发送材料无效")
@@ -126,8 +128,8 @@ class EmailSendHandler:
         request = GmailSendRequest(
             from_address=material.from_address,
             recipient_address=material.recipient_address,
-            subject=material.subject,
-            body=material.body,
+            subject=subject,
+            body=body,
             unsubscribe_url=unsubscribe_url,
             deterministic_message_id=f"{message_digest}@messages.tradeos.invalid",
             idempotency_header=header_digest,
@@ -146,8 +148,8 @@ class EmailSendHandler:
                 str(preflight.idempotency_key).encode(),
                 material.from_address.encode(),
                 material.recipient_address.encode(),
-                material.subject.encode(),
-                material.body.encode(),
+                subject.encode(),
+                body.encode(),
                 unsubscribe_url.encode(),
                 message_digest.encode(),
                 header_digest.encode(),
@@ -158,8 +160,8 @@ class EmailSendHandler:
             fingerprint_version=version,
             audit_projection={
                 "attempt_id": str(preflight.attempt_id),
-                "subject_bytes": len(material.subject.encode()),
-                "body_bytes": len(material.body.encode()),
+                "subject_bytes": len(subject.encode()),
+                "body_bytes": len(body.encode()),
                 "has_unsubscribe": True,
             },
             payload=_EmailPayload(ctx.tenant_id, request),

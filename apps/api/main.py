@@ -35,6 +35,7 @@ from .middleware import (
     TenantAssertionMiddleware,
     install_error_handlers,
 )
+from .routers.campaigns import router as campaigns_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.health import ReadinessProbe, build_health_router
@@ -114,6 +115,7 @@ def create_app(
     # Starlette 后加的 user middleware 位于外层：安全边界必须包住其余 user middleware。
     app.add_middleware(SafeUnhandledExceptionMiddleware)
     app.include_router(crm_router, prefix="/crm")
+    app.include_router(campaigns_router, prefix="/crm")
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))
     _install_openapi_contract(app)

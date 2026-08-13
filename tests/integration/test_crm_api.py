@@ -28,7 +28,13 @@ from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, TenantId
 from shared.schemas.money import CurrencyCode, Money
-from tests.unit.test_crm_router import _HEADERS, _app, _Client, _create_body
+from tests.unit.test_crm_router import (
+    _HEADERS,
+    _app,
+    _Client,
+    _create_body,
+    _ManualRuntime,
+)
 
 
 class _AllowAuthorizer:
@@ -247,10 +253,16 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
             now=lambda: now,
         )
         api_authorizer = _AllowAuthorizer()
+        manual_runtime = _ManualRuntime()
         app = create_app(
             settings=ApiSettings(tenant_id=str(tenant), dev_mode=True, retry_after_seconds=5),
             dependencies=ConfiguredApiDependencies(
                 opportunities=service,
+                outreach=manual_runtime,
+                sending_identities=manual_runtime,
+                tool_gateway=manual_runtime,
+                delivery_materials=manual_runtime,
+                unsubscribe_links=manual_runtime,
                 employees=employee_scope,
                 opportunity_authorizer=api_authorizer,
                 employee_authorizer=employee_authorizer,
@@ -303,6 +315,11 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
         )
         app.state.dependencies = ConfiguredApiDependencies(
             opportunities=denied_service,
+            outreach=manual_runtime,
+            sending_identities=manual_runtime,
+            tool_gateway=manual_runtime,
+            delivery_materials=manual_runtime,
+            unsubscribe_links=manual_runtime,
             employees=employee_scope,
             opportunity_authorizer=api_authorizer,
             employee_authorizer=employee_authorizer,

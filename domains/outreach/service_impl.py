@@ -1202,6 +1202,8 @@ class OutreachServiceImpl:
             or campaign.approved_at != approval.approved_at
         ):
             raise CampaignApprovalRequiredError("Message Attempt 审批绑定不匹配")
+        if enrollment.state is EnrollmentState.STOPPED_SUPPRESSED:
+            raise SuppressedError("联系人或企业已进入全局抑制")
         if enrollment.state not in {
             EnrollmentState.ENROLLED,
             EnrollmentState.IN_SEQUENCE,

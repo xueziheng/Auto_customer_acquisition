@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Annotated, Protocol
+from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import Depends, Request
 
@@ -22,10 +22,17 @@ from domains.opportunities.permissions import (
     OpportunityAuthorizer,
 )
 from domains.opportunities.service import OpportunityService
+from domains.outreach.service import OutreachService
+from domains.sending_identity.service import SendingIdentityService
 from notification_gateway.dedup import NotificationDedupStore
 from notification_gateway.router import NotificationRouter
 from shared.errors import PermissionDenied, TransientError, ValidationError
 from shared.schemas.identifiers import TenantId
+from tool_gateway.handlers.email_send import (
+    DeliveryMaterialProvider,
+    UnsubscribeLinkProvider,
+)
+from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 from workflows.engine.runner import WorkflowEngine
 
 from .middleware import ApiSettings
@@ -45,6 +52,13 @@ class OutboxDeliverer(Protocol):
     async def drain(self) -> int: ...
 
 
+@runtime_checkable
+class ToolGatewayInvoker(Protocol):
+    """API 只依赖工具网关的单一调用入口。"""
+
+    async def invoke(self, ctx: ToolCallContext) -> ToolCallResult: ...
+
+
 @dataclass(frozen=True)
 class ConfiguredApiDependencies:
     """完整且已配置的 API runtime 依赖。
@@ -54,6 +68,11 @@ class ConfiguredApiDependencies:
     """
 
     opportunities: OpportunityService
+    outreach: OutreachService
+    sending_identities: SendingIdentityService
+    tool_gateway: ToolGatewayInvoker
+    delivery_materials: DeliveryMaterialProvider
+    unsubscribe_links: UnsubscribeLinkProvider
     employees: EmployeeServiceScope
     opportunity_authorizer: OpportunityAuthorizer
     employee_authorizer: EmployeeAuthorizer
@@ -65,6 +84,12 @@ class ConfiguredApiDependencies:
     configured: bool = True
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.tool_gateway, ToolGatewayInvoker)
+            or not isinstance(self.delivery_materials, DeliveryMaterialProvider)
+            or not isinstance(self.unsubscribe_links, UnsubscribeLinkProvider)
+        ):
+            raise TypeError("API 手工发送依赖未完整配置")
         actor = self.employee_lookup_actor
         if (
             actor.scope is not EmployeeScope.SYSTEM

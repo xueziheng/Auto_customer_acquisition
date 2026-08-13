@@ -88,19 +88,26 @@ def _material(preflight: MessageSendPreflight, **changes: object):
         "sending_identity_id": preflight.sending_identity_id,
         "from_address": "sender@example.com",
         "recipient_address": "buyer@example.net",
-        "subject": "TradeOS subject",
-        "body": " Exact body with spaces \n",
     }
     values.update(changes)
     return cls(**values)
 
 
-def _context(preflight: MessageSendPreflight) -> ToolCallContext:
+def _context(
+    preflight: MessageSendPreflight,
+    *,
+    subject: str = "TradeOS subject",
+    body: str = " Exact body with spaces \n",
+) -> ToolCallContext:
     return ToolCallContext(
         tenant_id=preflight.tenant_id,
         user_id=UserId("usr_01HZX3S5Y3V9BAS7X9C04S0A00"),
         tool_id="email.send",
-        params={"attempt_id": str(preflight.attempt_id)},
+        params={
+            "attempt_id": str(preflight.attempt_id),
+            "subject": subject,
+            "body": body,
+        },
         idempotency_key=preflight.idempotency_key,
         campaign_ref=str(preflight.campaign_id),
     )
@@ -145,6 +152,23 @@ async def test_prepare_resolves_material_once_and_persists_only_safe_projection(
         assert raw not in repr(prepared)
 
 
+@pytest.mark.asyncio
+async def test_prepare_sends_exact_content_that_approval_stage_checked() -> None:
+    preflight = _preflight()
+    handler, _, _, gmail = _handler(preflight)
+    subject = "Approved employee subject"
+    body = "Approved employee body"
+
+    prepared = await handler.prepare(
+        _context(preflight, subject=subject, body=body), preflight
+    )
+    await handler.execute(preflight.tenant_id, prepared)
+
+    assert len(gmail.calls) == 1
+    assert gmail.calls[0].subject == subject
+    assert gmail.calls[0].body == body
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -178,10 +202,11 @@ async def test_prepare_requires_typed_current_preflight(preflight: object) -> No
 @pytest.mark.asyncio
 async def test_fingerprint_preserves_raw_whitespace_and_changes_on_one_byte_or_link() -> None:
     preflight = _preflight()
-    handler, materials, _, _ = _handler(preflight)
+    handler, _, _, _ = _handler(preflight)
     first = await handler.prepare(_context(preflight), preflight)
-    materials.material = replace(materials.material, body="Exact body with spaces \n")
-    second = await handler.prepare(_context(preflight), preflight)
+    second = await handler.prepare(
+        _context(preflight, body="Exact body with spaces \n"), preflight
+    )
     assert first.request_fingerprint != second.request_fingerprint
 
     changed_link_handler, _, _, _ = _handler(preflight, links=["https://example.com/unsubscribe/ref_02"])

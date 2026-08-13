@@ -84,6 +84,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/crm/message-attempts/{attempt_id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Manual Email
+         * @description 以当前租户与员工身份发起唯一的受保护 Gmail Gateway 调用。
+         */
+        post: operations["send_manual_email_crm_message_attempts__attempt_id__send_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/crm/opportunities": {
         parameters: {
             query?: never;
@@ -311,6 +331,34 @@ export interface components {
          * @enum {string}
          */
         LossReason: "unreachable" | "no_reply" | "need_not_real" | "no_supply_found" | "price_too_high" | "lost_to_competitor" | "customer_went_silent" | "timing_mismatch" | "compliance_blocked" | "margin_too_low" | "internal_no_capacity" | "duplicate";
+        /**
+         * ManualEmailSendBody
+         * @description 员工唯一可提交的邮件内容；所有资源绑定均由服务端解析。
+         */
+        ManualEmailSendBody: {
+            /** Body */
+            body: string;
+            /** Subject */
+            subject: string;
+        };
+        /**
+         * ManualEmailSendResponse
+         * @description 不包含地址、正文、密钥或 URL 的安全发送结果。
+         */
+        ManualEmailSendResponse: {
+            /** Duplicate */
+            duplicate: boolean;
+            /** Error Category */
+            error_category: string | null;
+            /** Provider Ref */
+            provider_ref: string | null;
+            /** Retry After Seconds */
+            retry_after_seconds?: number | null;
+            /** Status */
+            status: string;
+            /** Tool Call Id */
+            tool_call_id: string | null;
+        };
         /**
          * Money
          * @description 金额。不可变。
@@ -837,6 +885,77 @@ export interface operations {
             };
             /** @description 接管已被接受 */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    send_manual_email_crm_message_attempts__attempt_id__send_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualEmailSendBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualEmailSendResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

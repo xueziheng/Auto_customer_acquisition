@@ -419,6 +419,14 @@ class ToolGateway:
                         canonical=False,
                         stage="handler.prepare",
                     )
+                except Exception:  # noqa: BLE001 -- provider 细节不可穿透网关边界
+                    return await self._fail_typed(
+                        ctx,
+                        call_id,
+                        ToolGatewayError(ToolErrorCategory.UNEXPECTED),
+                        canonical=False,
+                        stage="handler.prepare",
+                    )
             stage = self._checks.get(stage_name)
             if stage is None:
                 return await self._reject(
@@ -558,6 +566,14 @@ class ToolGateway:
                     canonical=canonical_claimed,
                     stage="handler.prepare",
                 )
+            except Exception:  # noqa: BLE001 -- provider 细节不可穿透网关边界
+                return await self._fail_typed(
+                    ctx,
+                    call_id,
+                    ToolGatewayError(ToolErrorCategory.UNEXPECTED),
+                    canonical=canonical_claimed,
+                    stage="handler.prepare",
+                )
         async with self._uow_factory(ctx.tenant_id) as uow:
             await uow.calls.mark_executing(ctx.tenant_id, call_id)
             await uow.calls.append_event(
@@ -574,6 +590,14 @@ class ToolGateway:
                 ctx,
                 call_id,
                 self._translate_error(error),
+                canonical=True,
+                stage="connector",
+            )
+        except Exception:  # noqa: BLE001 -- provider 细节不可穿透网关边界
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                ToolGatewayError(ToolErrorCategory.UNEXPECTED),
                 canonical=True,
                 stage="connector",
             )

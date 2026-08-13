@@ -23,6 +23,7 @@ from tests.unit.test_crm_router import (
     _Client,
     _Employees,
     _EmployeeScope,
+    _ManualRuntime,
     _Opportunities,
 )
 
@@ -136,8 +137,14 @@ def _app(
     employees = _Employees(trace, role=role)
     opportunities = _HandoffOpportunities(trace)
     opportunity_authorizer = _Authorizer(deny=deny_first_gate)
+    manual_runtime = _ManualRuntime()
     dependencies = ConfiguredApiDependencies(
         opportunities=opportunities,
+        outreach=manual_runtime,
+        sending_identities=manual_runtime,
+        tool_gateway=manual_runtime,
+        delivery_materials=manual_runtime,
+        unsubscribe_links=manual_runtime,
         employees=_EmployeeScope(employees, trace),
         opportunity_authorizer=opportunity_authorizer,
         employee_authorizer=_Authorizer(),

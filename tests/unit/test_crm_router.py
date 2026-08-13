@@ -67,6 +67,17 @@ class _Authorizer:
         return "test:allow"
 
 
+class _ManualRuntime:
+    async def invoke(self, _ctx: object) -> object:
+        raise AssertionError("CRM 机会测试不应调用手工发送")
+
+    async def resolve(self, *_args: object) -> object:
+        raise AssertionError("CRM 机会测试不应解析发送材料")
+
+    async def build(self, *_args: object) -> str:
+        raise AssertionError("CRM 机会测试不应生成退订链接")
+
+
 class _Employees:
     def __init__(self, trace: list[str], *, role: str = "sales") -> None:
         self.trace = trace
@@ -235,8 +246,14 @@ def _app(
     employees = _Employees(trace, role=role)
     opportunities = _Opportunities(trace, create_result=create_result)
     opportunity_authorizer = _Authorizer(deny=deny_first_gate)
+    manual_runtime = _ManualRuntime()
     dependencies = ConfiguredApiDependencies(
         opportunities=opportunities,
+        outreach=manual_runtime,
+        sending_identities=manual_runtime,
+        tool_gateway=manual_runtime,
+        delivery_materials=manual_runtime,
+        unsubscribe_links=manual_runtime,
         employees=_EmployeeScope(employees, trace),
         opportunity_authorizer=opportunity_authorizer,
         employee_authorizer=_Authorizer(),

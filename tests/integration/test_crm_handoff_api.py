@@ -53,6 +53,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+from tests.unit.test_crm_router import _ManualRuntime
 
 _NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
@@ -267,12 +268,18 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
             now=lambda: _NOW,
         )
         api_authorizer = _AllowAuthorizer()
+        manual_runtime = _ManualRuntime()
         app = create_app(
             settings=ApiSettings(
                 tenant_id=str(tenant), dev_mode=True, retry_after_seconds=5
             ),
             dependencies=ConfiguredApiDependencies(
                 opportunities=service,
+                outreach=manual_runtime,
+                sending_identities=manual_runtime,
+                tool_gateway=manual_runtime,
+                delivery_materials=manual_runtime,
+                unsubscribe_links=manual_runtime,
                 employees=employee_scope,
                 opportunity_authorizer=api_authorizer,
                 employee_authorizer=employee_authorizer,

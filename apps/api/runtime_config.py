@@ -51,6 +51,38 @@ def _parse_positive_integer(value: str) -> int:
     return int(value)
 
 
+def _parse_safe_reference(value: str) -> str:
+    value = _nonblank_exact(value)
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("control character forbidden")
+    return value
+
+
+def _parse_https_origin(value: str) -> str:
+    value = _parse_safe_reference(value)
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.hostname is None
+        or not parsed.hostname.isascii()
+        or parsed.hostname != parsed.hostname.lower()
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("HTTPS origin invalid")
+    port = parsed.port
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    canonical = f"https://{host}"
+    if port is not None and port != 443:
+        canonical = f"{canonical}:{port}"
+    if value != canonical:
+        raise ValueError("HTTPS origin not canonical")
+    return value
+
+
 class RuntimeConfigurationError(RuntimeError):
     """固定、脱敏的单字段配置错误。"""
 
@@ -162,6 +194,11 @@ class Phase1RuntimeSettings:
     t2: timedelta
     scoring_policy: ScoringPolicy
     outbox_max_attempts: int
+    gmail_oauth_token_ref: str
+    tool_call_fingerprint_key_ref: str
+    tool_call_fingerprint_key_version: str
+    unsubscribe_base_url: str
+    tool_lease: timedelta
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Phase1RuntimeSettings:
@@ -194,6 +231,31 @@ class Phase1RuntimeSettings:
             "TRADEOS_OUTBOX_MAX_ATTEMPTS",
             _parse_positive_integer,
         )
+        gmail_oauth_token_ref = _read(
+            environ,
+            "GMAIL_OAUTH_TOKEN_REF",
+            _parse_safe_reference,
+        )
+        fingerprint_key_ref = _read(
+            environ,
+            "TOOL_CALL_FINGERPRINT_KEY_REF",
+            _parse_safe_reference,
+        )
+        fingerprint_key_version = _read(
+            environ,
+            "TOOL_CALL_FINGERPRINT_KEY_VERSION",
+            _parse_safe_reference,
+        )
+        unsubscribe_base_url = _read(
+            environ,
+            "TRADEOS_UNSUBSCRIBE_BASE_URL",
+            _parse_https_origin,
+        )
+        tool_lease_seconds = _read(
+            environ,
+            "TRADEOS_TOOL_LEASE_SECONDS",
+            _parse_positive_integer,
+        )
         return cls(
             database_url=database_url,
             tenant_id=tenant_id,
@@ -208,4 +270,9 @@ class Phase1RuntimeSettings:
             t2=timedelta(seconds=handoff.t2_seconds),
             scoring_policy=scoring_policy,
             outbox_max_attempts=max_attempts,
+            gmail_oauth_token_ref=gmail_oauth_token_ref,
+            tool_call_fingerprint_key_ref=fingerprint_key_ref,
+            tool_call_fingerprint_key_version=fingerprint_key_version,
+            unsubscribe_base_url=unsubscribe_base_url,
+            tool_lease=timedelta(seconds=tool_lease_seconds),
         )

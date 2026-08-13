@@ -171,8 +171,14 @@ class _IdempotencyStage(_Stage):
 
 
 class _Handler:
-    def __init__(self, trace: list[str]) -> None:
+    def __init__(
+        self,
+        trace: list[str],
+        *,
+        execute_error: Exception | None = None,
+    ) -> None:
         self.trace = trace
+        self.execute_error = execute_error
 
     async def prepare(self, ctx, preflight):
         del ctx
@@ -183,6 +189,8 @@ class _Handler:
     async def execute(self, tenant_id, prepared):
         del tenant_id, prepared
         self.trace.append("handler.execute")
+        if self.execute_error is not None:
+            raise self.execute_error
         return {"provider_ref": "gmail_ref_1", "already_existed": False}
 
 
@@ -205,10 +213,14 @@ def _gateway(
     reject: str | None = None,
     fail_executing_commit: bool = False,
     fail_succeeded_commit: bool = False,
+    execute_error: Exception | None = None,
 ):
     trace: list[str] = []
     registry = ToolRegistry()
-    registry.register(_tool_manifest(), _Handler(trace))
+    registry.register(
+        _tool_manifest(),
+        _Handler(trace, execute_error=execute_error),
+    )
     ledger = _Ledger(trace)
     checks = {
         name: (
@@ -311,6 +323,20 @@ async def test_success_ledger_commit_failure_returns_reconciliation_required() -
     assert trace.count("handler.execute") == 1
     assert trace.count("outreach.record_sent") == 1
     assert trace[-1] == "ledger.failed_transient"
+
+
+async def test_unexpected_connector_error_is_safely_classified() -> None:
+    gateway, trace = _gateway(
+        execute_error=RuntimeError("provider-runtime-marker")
+    )
+
+    result = await gateway.invoke(_context())
+
+    assert result.status is ToolCallStatus.FAILED_PERMANENT
+    assert result.error_category is ToolErrorCategory.UNEXPECTED
+    assert result.output is None
+    assert trace.count("handler.execute") == 1
+    assert trace[-1] == "ledger.failed_permanent"
 
 
 class _OutreachStageService:

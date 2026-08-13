@@ -156,6 +156,24 @@ class _EmployeeServiceScope:
             self.exited += 1
 
 
+class _ToolGateway:
+    async def invoke(self, ctx: object) -> object:
+        del ctx
+        raise AssertionError("本测试不应调用手工发送 Gateway")
+
+
+class _DeliveryMaterials:
+    async def resolve(self, tenant_id: object, preflight: object) -> object:
+        del tenant_id, preflight
+        raise AssertionError("本测试不应解析发送材料")
+
+
+class _UnsubscribeLinks:
+    async def build(self, tenant_id: object, preflight: object) -> str:
+        del tenant_id, preflight
+        raise AssertionError("本测试不应生成退订链接")
+
+
 def _employee(
     *,
     employee_id: str = "emp-sales",
@@ -187,6 +205,11 @@ def _configured_dependencies(
     scope = _EmployeeServiceScope(service)
     markers = {
         "opportunities": object(),
+        "outreach": object(),
+        "sending_identities": object(),
+        "tool_gateway": _ToolGateway(),
+        "delivery_materials": _DeliveryMaterials(),
+        "unsubscribe_links": _UnsubscribeLinks(),
         "workflow_engine": object(),
         "outbox_deliverer": object(),
         "notification_router": object(),
@@ -194,6 +217,11 @@ def _configured_dependencies(
     }
     dependencies = ConfiguredApiDependencies(
         opportunities=markers["opportunities"],
+        outreach=markers["outreach"],
+        sending_identities=markers["sending_identities"],
+        tool_gateway=markers["tool_gateway"],
+        delivery_materials=markers["delivery_materials"],
+        unsubscribe_links=markers["unsubscribe_links"],
         employees=scope,
         opportunity_authorizer=opportunity_auth,
         employee_authorizer=employee_auth,
@@ -323,6 +351,7 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
         "/crm/handoffs",
         "/crm/handoffs/{handoff_id}",
         "/crm/handoffs/{handoff_id}/accept",
+        "/crm/message-attempts/{attempt_id}/send",
         "/crm/opportunities",
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
@@ -380,6 +409,7 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "/crm/handoffs",
         "/crm/handoffs/{handoff_id}",
         "/crm/handoffs/{handoff_id}/accept",
+        "/crm/message-attempts/{attempt_id}/send",
         "/crm/opportunities",
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
@@ -430,6 +460,20 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "additionalProperties": {"type": "integer"},
         "type": "object",
     }
+    send_operation = schema["paths"]["/crm/message-attempts/{attempt_id}/send"][
+        "post"
+    ]
+    assert send_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/ManualEmailSendBody"}
+    assert send_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/ManualEmailSendResponse"}
+    assert {"400", "403", "409", "429", "503"} <= set(
+        send_operation["responses"]
+    )
+    assert "ManualEmailSendBody" in schema["components"]["schemas"]
+    assert "ManualEmailSendResponse" in schema["components"]["schemas"]
     for path_item in schema["paths"].values():
         for operation in path_item.values():
             assert "422" not in operation["responses"]
@@ -458,6 +502,11 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
     assert dependencies.configured is True
     assert dependencies.employees is scope
     assert dependencies.opportunities is markers["opportunities"]
+    assert dependencies.outreach is markers["outreach"]
+    assert dependencies.sending_identities is markers["sending_identities"]
+    assert dependencies.tool_gateway is markers["tool_gateway"]
+    assert dependencies.delivery_materials is markers["delivery_materials"]
+    assert dependencies.unsubscribe_links is markers["unsubscribe_links"]
     assert dependencies.workflow_engine is markers["workflow_engine"]
     assert dependencies.outbox_deliverer is markers["outbox_deliverer"]
     assert dependencies.notification_router is markers["notification_router"]
@@ -478,6 +527,11 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
     with pytest.raises(ValueError, match="SYSTEM"):
         ConfiguredApiDependencies(
             opportunities=object(),
+            outreach=object(),
+            sending_identities=object(),
+            tool_gateway=_ToolGateway(),
+            delivery_materials=_DeliveryMaterials(),
+            unsubscribe_links=_UnsubscribeLinks(),
             employees=scope,
             opportunity_authorizer=_AllowAuthorizer(),
             employee_authorizer=_AllowAuthorizer(),
@@ -489,6 +543,40 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
                 actor_id="emp-boss", scope=EmployeeScope.TENANT, role="boss"
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid"),
+    [
+        ("tool_gateway", object()),
+        ("delivery_materials", object()),
+        ("unsubscribe_links", object()),
+    ],
+)
+def test_dependency_container_rejects_missing_runtime_provider(
+    field_name: str, invalid: object
+) -> None:
+    service = _EmployeeService(_employee())
+    dependencies, scope, markers = _configured_dependencies(service)
+    values = {
+        "opportunities": markers["opportunities"],
+        "outreach": markers["outreach"],
+        "sending_identities": markers["sending_identities"],
+        "tool_gateway": markers["tool_gateway"],
+        "delivery_materials": markers["delivery_materials"],
+        "unsubscribe_links": markers["unsubscribe_links"],
+        "employees": scope,
+        "opportunity_authorizer": dependencies.opportunity_authorizer,
+        "employee_authorizer": dependencies.employee_authorizer,
+        "workflow_engine": markers["workflow_engine"],
+        "outbox_deliverer": markers["outbox_deliverer"],
+        "notification_router": markers["notification_router"],
+        "notification_dedup_store": markers["notification_dedup_store"],
+        "employee_lookup_actor": dependencies.employee_lookup_actor,
+    }
+    values[field_name] = invalid
+    with pytest.raises(TypeError, match="API 手工发送依赖未完整配置"):
+        ConfiguredApiDependencies(**values)  # type: ignore[arg-type]
 
 
 def test_tenant_assertion_is_exact_and_never_echoes_header() -> None:

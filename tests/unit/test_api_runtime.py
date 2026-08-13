@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -12,6 +14,55 @@ from httpx import ASGITransport, AsyncClient
 from apps.api.dependencies import UnconfiguredApiDependencies
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
+from apps.api.runtime_config import Phase1RuntimeSettings
+
+
+class _ManualFacts:
+    async def get_contact_eligibility(self, *args: object) -> object:
+        del args
+        return object()
+
+    async def get_sending_identity_eligibility(self, *args: object) -> object:
+        del args
+        return object()
+
+    async def get_campaign_approval(self, *args: object) -> object:
+        del args
+        return object()
+
+    async def get_reply_status(self, *args: object) -> object:
+        del args
+        return object()
+
+
+class _ManualMaterials:
+    async def resolve(self, *args: object) -> object:
+        del args
+        return object()
+
+
+class _ManualLinks:
+    async def build(self, *args: object) -> str:
+        del args
+        return "https://unsubscribe.example.test/u/ref"
+
+
+class _ManualSecrets:
+    def __init__(self) -> None:
+        self.refs: list[str] = []
+
+    def resolve(self, secret_ref: str) -> str:
+        self.refs.append(secret_ref)
+        return "k" * 32
+
+
+class _ManualTransport:
+    async def search(self, **kwargs: object) -> None:
+        del kwargs
+
+    async def send(self, **kwargs: object) -> str:
+        del kwargs
+        return "gmail_ref_1"
 
 
 class _Probe:
@@ -35,6 +86,69 @@ def test_import_and_zero_arg_app_do_not_read_environment_or_create_engine(
     app = create_app()
     assert module.create_runtime_app
     assert isinstance(app.state.dependencies, UnconfiguredApiDependencies)
+
+
+def test_explicit_manual_send_composition_registers_real_gateway() -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    settings = Phase1RuntimeSettings.from_environ(
+        {
+            "DATABASE_URL": "postgresql+asyncpg://db.invalid/tradeos",
+            "TRADEOS_TENANT_ID": "tenant-runtime",
+            "TRADEOS_DEV_MODE": "true",
+            "TRADEOS_CORS_ALLOWED_ORIGINS": '["http://127.0.0.1:4173"]',
+            "TRADEOS_API_RETRY_AFTER_SECONDS": "30",
+            "TRADEOS_HANDOFF_POLICY": (
+                '{"sla_seconds":300,"backlog_threshold":20,'
+                '"t1_seconds":120,"t2_seconds":180}'
+            ),
+            "TRADEOS_SCORING_POLICY": (
+                '{"version":"phase1-v1","currency":"USD",'
+                '"value_band_boundaries":["1000","5000"],'
+                '"bucket_map":{"1":"low","2":"low","3":"mid",'
+                '"4":"mid","5":"high","6":"high","7":"high"}}'
+            ),
+            "TRADEOS_OUTBOX_MAX_ATTEMPTS": "3",
+            "GMAIL_OAUTH_TOKEN_REF": "gmail-oauth-phase1",
+            "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
+            "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+            "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+            "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        }
+    )
+    facts = _ManualFacts()
+    materials = _ManualMaterials()
+    links = _ManualLinks()
+    secrets = _ManualSecrets()
+    manual = module.ManualSendComposition(
+        contact_eligibility=facts,
+        sending_identity_eligibility=facts,
+        campaign_approvals=facts,
+        reply_status=facts,
+        delivery_materials=materials,
+        unsubscribe_links=links,
+        secret_resolver=secrets,
+        gmail_transport=_ManualTransport(),
+    )
+
+    dependencies = module.build_phase1_dependencies(
+        settings,
+        object(),
+        now=lambda: datetime.now(UTC),
+        manual_send=manual,
+    )
+
+    assert dependencies.delivery_materials is materials
+    assert dependencies.unsubscribe_links is links
+    assert type(dependencies.tool_gateway).__name__ == "ResolvedManualSendGateway"
+    assert secrets.refs == ["tool-fingerprint-phase1"]
+
+    with pytest.raises(TypeError, match="API 手工发送依赖未完整配置"):
+        module.build_phase1_dependencies(
+            settings,
+            object(),
+            now=lambda: datetime.now(UTC),
+            manual_send=replace(manual, delivery_materials=object()),
+        )
 
 
 @pytest.fixture
@@ -134,6 +248,11 @@ def test_invalid_database_url_failure_and_log_are_sanitized(
             '"5":"high","6":"high","7":"high"}}'
         ),
         "TRADEOS_OUTBOX_MAX_ATTEMPTS": "3",
+        "GMAIL_OAUTH_TOKEN_REF": "gmail-oauth-phase1",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "tool-fingerprint-phase1",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
     }
     monkeypatch.setattr(module.os, "environ", valid)
     with caplog.at_level(logging.ERROR), pytest.raises(
