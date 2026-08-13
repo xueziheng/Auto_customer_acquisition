@@ -2,7 +2,7 @@
 
 ## 职责
 
-七个进程（见 `docs/architecture/00-overview.md`）。**这一层只做编排与呈现**：装配依赖、暴露 HTTP、驱动 worker 循环。业务规则一律在 `domains/`，出现业务 if 就是放错了。
+七个已实现进程和一个未来桌面进程（见 `docs/architecture/00-overview.md`）。**这一层只做编排与呈现**：装配依赖、暴露 HTTP、驱动 worker 循环。业务规则一律在 `domains/`，出现业务 if 就是放错了。
 
 ## 进程清单
 
@@ -14,6 +14,7 @@
 | `scheduler_worker/` | 状态机扫描与定时任务 | 1（**单副本**） |
 | `browser_worker/` | Playwright 隔离进程 | 1（受限） |
 | `notification_worker/` | 通知投递 | 1 |
+| `email_feedback_worker/` | Gmail 投递反馈拉取与整页提交 | 1（**按租户＋邮箱别名单副本**） |
 | desktop-tauri | macOS 桌面端 | 3（不建目录，边界见 ROADMAP） |
 
 ## 装配规则

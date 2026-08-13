@@ -67,6 +67,11 @@ class _Probe:
         return self.ready
 
 
+def test_api_runtime_uses_shared_schema_probe() -> None:
+    runtime = importlib.import_module("apps.api.runtime")
+    assert runtime._assert_database_schema_current.__module__ == "infra.db.schema"
+
+
 def _unexpected_call(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("import/zero-arg create_app 不得创建 engine")
 
@@ -314,6 +319,7 @@ async def test_local_alembic_metadata_failure_is_mapped_without_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = importlib.import_module("apps.api.runtime")
+    schema = importlib.import_module("infra.db.schema")
     marker = "local-alembic-metadata-secret-marker"
 
     class _BrokenScriptDirectory:
@@ -322,7 +328,7 @@ async def test_local_alembic_metadata_failure_is_mapped_without_marker(
             del cls
             raise ValueError(marker)
 
-    monkeypatch.setattr(module, "ScriptDirectory", _BrokenScriptDirectory)
+    monkeypatch.setattr(schema, "ScriptDirectory", _BrokenScriptDirectory)
 
     with pytest.raises(
         module.RuntimeStartupError,

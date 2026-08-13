@@ -7,15 +7,17 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 
-from alembic.config import Config as AlembicConfig
-from alembic.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from infra.db.schema import (
+    DatabaseSchemaError,
+)
+from infra.db.schema import (
+    assert_database_schema_current as _assert_database_schema_current,
+)
 from infra.db.session import create_engine_from
 from infra.secrets import EnvironmentSecretResolver
 
@@ -28,7 +30,6 @@ from .runtime_config import (
 )
 
 logger = logging.getLogger(__name__)
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeStartupError(RuntimeError):
@@ -54,23 +55,11 @@ class DatabaseReadinessProbe:
 
 
 async def assert_database_schema_current(engine: AsyncEngine) -> None:
-    """要求本地与数据库都恰好处于同一个 Alembic head，不自动迁移。"""
+    """复用 infra schema probe，并保持 API 固定错误契约。"""
     try:
-        config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
-        config.set_main_option("path_separator", "os")
-        local_heads = tuple(ScriptDirectory.from_config(config).get_heads())
-        async with engine.connect() as connection:
-            database_heads = tuple(
-                await connection.run_sync(
-                    lambda sync_connection: MigrationContext.configure(
-                        sync_connection
-                    ).get_current_heads()
-                )
-            )
-    except Exception:  # noqa: BLE001 迁移读取失败统一映射为固定启动错误
+        await _assert_database_schema_current(engine)
+    except DatabaseSchemaError:
         raise RuntimeStartupError() from None
-    if len(local_heads) != 1 or database_heads != local_heads:
-        raise RuntimeStartupError()
 
 
 def create_runtime_app() -> FastAPI:
