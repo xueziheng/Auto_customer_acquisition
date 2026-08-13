@@ -148,6 +148,11 @@ class ToolCallRepositoryImpl:
             return ClaimResult(ClaimStatus.CONFLICT, canonical)
 
         if _can_reclaim(canonical, now):
+            reconciliation_only = (
+                canonical.status is ToolCallStatus.FAILED_TRANSIENT
+                and canonical.error_category
+                is ToolErrorCategory.RECONCILIATION_REQUIRED
+            )
             winner.status = ToolCallStatus.CLAIMED.value
             winner.lease_owner = lease_owner
             winner.lease_expires_at = lease_expires_at
@@ -165,7 +170,11 @@ class ToolCallRepositoryImpl:
                 error_category=None,
                 now=now,
             )
-            return ClaimResult(ClaimStatus.CLAIMED, _row_to_record(winner))
+            return ClaimResult(
+                ClaimStatus.CLAIMED,
+                _row_to_record(winner),
+                reconciliation_only=reconciliation_only,
+            )
 
         outcome = (
             ClaimStatus.DUPLICATE

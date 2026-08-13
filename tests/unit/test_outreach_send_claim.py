@@ -337,6 +337,28 @@ async def test_claimed_attempt_records_sent_once_and_rejects_changed_provider_re
         )
 
 
+async def test_sent_attempt_preflight_reaches_idempotency_but_cannot_be_claimed_again() -> None:
+    """已成功发送只允许 Gateway 查 canonical；账本缺失时仍不得再次 claim。"""
+    harness, actor, attempt = await _prepared_harness()
+    await harness.service.claim_message_send(
+        harness.tenant, attempt.attempt_id, actor=actor
+    )
+    await harness.service.record_sent(
+        harness.tenant, attempt.attempt_id, "provider_ref_1", actor=actor
+    )
+
+    preflight = await harness.service.preflight_message_send(
+        harness.tenant, attempt.attempt_id, actor=actor
+    )
+
+    assert preflight.attempt_id == attempt.attempt_id
+    assert preflight.idempotency_key == attempt.idempotency_key
+    with pytest.raises(TradeOSError):
+        await harness.service.claim_message_send(
+            harness.tenant, attempt.attempt_id, actor=actor
+        )
+
+
 def helpers_now() -> datetime:
     helpers = importlib.import_module("tests.unit.test_outreach_enrollment_service")
     return helpers.NOW

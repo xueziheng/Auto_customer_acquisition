@@ -1182,8 +1182,6 @@ class OutreachServiceImpl:
             account_id=enrollment.account_id,
             enrollment_id=enrollment.enrollment_id,
         )
-        if campaign.state is not CampaignState.ACTIVE:
-            raise CampaignNotActiveError("Campaign 当前状态不允许发送")
         version = await uow.campaigns.get_version(
             tenant_id, campaign.campaign_id, attempt.campaign_version
         )
@@ -1202,6 +1200,26 @@ class OutreachServiceImpl:
             or campaign.approved_at != approval.approved_at
         ):
             raise CampaignApprovalRequiredError("Message Attempt 审批绑定不匹配")
+        preflight = MessageSendPreflight(
+            tenant_id=tenant_id,
+            attempt_id=attempt.attempt_id,
+            campaign_id=attempt.campaign_id,
+            enrollment_id=attempt.enrollment_id,
+            account_id=enrollment.account_id,
+            contact_point_id=enrollment.contact_point_id,
+            sending_identity_id=attempt.sending_identity_id,
+            campaign_version=attempt.campaign_version,
+            step_number=attempt.step_number,
+            idempotency_key=attempt.idempotency_key,
+        )
+        if attempt.state is MessageAttemptState.SENT:
+            if enrollment.current_step < attempt.step_number:
+                raise MessageAttemptConflictError(
+                    "Message Attempt step 与 Enrollment 不匹配"
+                )
+            return attempt, preflight, rule
+        if campaign.state is not CampaignState.ACTIVE:
+            raise CampaignNotActiveError("Campaign 当前状态不允许发送")
         if enrollment.state is EnrollmentState.STOPPED_SUPPRESSED:
             raise SuppressedError("联系人或企业已进入全局抑制")
         if enrollment.state not in {
@@ -1253,18 +1271,7 @@ class OutreachServiceImpl:
             raise SendingIdentityUnavailableError("发件身份当前不可用")
         return (
             attempt,
-            MessageSendPreflight(
-                tenant_id=tenant_id,
-                attempt_id=attempt.attempt_id,
-                campaign_id=attempt.campaign_id,
-                enrollment_id=attempt.enrollment_id,
-                account_id=enrollment.account_id,
-                contact_point_id=enrollment.contact_point_id,
-                sending_identity_id=attempt.sending_identity_id,
-                campaign_version=attempt.campaign_version,
-                step_number=attempt.step_number,
-                idempotency_key=attempt.idempotency_key,
-            ),
+            preflight,
             rule,
         )
 

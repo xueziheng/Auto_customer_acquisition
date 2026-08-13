@@ -96,6 +96,26 @@ enrollment 创建时校验联系方式的 `ContactPointVerified` 状态。未验
 
 `MessageAttempt` 只是 durable、幂等的发送准备记录，**不是发送授权**。4B-2 Tool Gateway 在实际外发前必须重新检查当前 Campaign、Enrollment、回复、抑制、联系人资格、发件身份和额度；不能因 Attempt 为 `reserved` 就直接发送。
 
+Attempt 的发送状态精确为：
+
+```text
+reserved → sending → sent
+reserved / sending → failed_transient / failed_permanent
+```
+
+迁移 `0011` 增加 `send_claimed_at`。claim 必须在同一事务里锁定 Campaign →
+Enrollment → Attempt；批量 Enrollment 按 ID 排序。随后 Sending Identity 额度沿用
+domain → identity → reservation 的锁序。`sending` 是 Connector 可能已经开始的持久证据，
+不能回写成 `reserved` 来触发重发。
+
+每次发送准备都从当前事实重新计算。`sent` Attempt 可以生成终态 preflight，供 Tool
+Gateway 用 canonical ledger 返回既有结果；但不能再次 claim。若 canonical ledger 丢失或
+不一致，必须固定失败，不能借终态 bypass 重发。Attempt 完成失败时 Connector 结果仍按
+不确定交付处理，由 Tool Gateway 搜索恢复；本域不调用 Gmail。
+
+Attempt / audit / outbox 只记录安全 ID、typed state/category、provider reference；不得
+持久化或记录邮箱地址、主题、正文、OAuth token、完整请求与客户原话。
+
 ## 发布的事件
 
 `MessageSent`、`SuppressionAdded`
@@ -113,6 +133,7 @@ enrollment 创建时校验联系方式的 `ContactPointVerified` 状态。未验
 
 ## Phase 1 范围
 
-Campaign 边界模型与版本化、序列状态机、抑制名单、每日限额计数。
+Campaign 边界模型与版本化、序列状态机、抑制名单、每日限额计数、发送 Attempt claim
+与 terminal completion。
 
 不做：积分限额（Phase 3 挂载点，字段位置留好）、多渠道序列（只有邮件）、A/B 测试。

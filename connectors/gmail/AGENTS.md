@@ -2,7 +2,9 @@
 
 ## 能力范围
 
-发送邮件、拉取回复线程、接收退信/投诉信号、加标签。**这是其他 connector 的参考实现**——写新 connector 前先读这个目录。
+Phase 1 当前只实现经 Tool Gateway 的**单封发送**与不确定结果的**只读搜索恢复**。
+回复拉取、退信/投诉解析、标签和 DNS 检查只保留接口骨架，不能在文档、演示或 UI 中
+声称已经可运行。这个目录仍是其他 Connector 的参考实现——写新 Connector 前先读这里。
 
 ## 密钥归属
 
@@ -10,31 +12,51 @@ OAuth token 经密钥服务管理，引用名 `GMAIL_OAUTH_TOKEN_REF`。本 conn
 
 ## 幂等
 
-发送接口要求调用方传幂等键，connector 层再用 Gmail 的 thread/message 语义做二次防重：同一幂等键的重试**先查有没有发出去过**（搜索自定义 header），查到就返回既有 message_id 而不是再发。网络超时后的重试是重复发送的最大来源——「发出去了但响应丢了」必须按已发送处理。
+发送请求必须包含由 Tool Gateway 派生的确定性 header：
 
-## 退信与投诉回调
+```text
+Message-ID: <确定性 HMAC 派生值>
+X-TradeOS-Idempotency-V1: <确定性幂等摘要>
+List-Unsubscribe: <安全退订 URL>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
 
-退信邮件（MAILER-DAEMON）和投诉反馈解析成结构化事件，产出 `MessageBounced` / `ComplaintReceived`（带 dedup_key）交给域。**解析要保守**：判断不了硬/软的按软处理并标记待人工看，误判硬退信会错误抑制有效联系人。
+正常首次调用先按 `Message-ID` 与自定义 header 搜索；命中就返回既有 provider ref，
+未命中才发送。恢复调用 `reconcile_once` **只搜索、不发送**。网络超时后的重试是
+重复发送的最大来源——「发出去了但响应丢了」必须进入人工对账，不能按普通临时错误
+自动重发。
+
+## 退信与投诉回调（未实现）
+
+未来退信邮件（MAILER-DAEMON）和投诉反馈应解析成结构化事件，产出
+`MessageBounced` / `ComplaintReceived`（带 dedup_key）交给域。解析必须保守：
+判断不了硬/软时按软处理并标记待人工看。Phase 1 目前没有该 worker。
 
 ## 错误分类
 
 ```text
 401/403（授权失效）→ 不可重试，告警（需要人工重新授权）
 429 / 配额         → RateLimited，带 Gmail 返回的 retry_after
-5xx / 网络超时     → TransientError
+5xx / 网络失败且确定未写入 → provider_transient
+网络/HTTP 失败且可能已写入 → reconciliation_required
 400（参数错）      → 不可重试（代码 bug）
 ```
 
 ## 接口（client.py 实现）
 
 ```text
-send(idempotency_key, from_identity, to, subject, body, unsubscribe_url) -> message_ref
-fetch_new_messages(since_cursor) -> (messages, next_cursor)
-parse_bounce(raw_message) -> BounceEvent | None
-add_label(message_ref, label) -> None
-check_dns_auth(domain) -> {spf, dkim, dmarc}   # 发件域认证校验
+configure()                                   # 只在应用 composition 内解析凭证
+health()                                      # 不返回 token/原始异常
+send_once(GmailSendRequest) -> GmailSendResult
+reconcile_once(GmailSendRequest) -> GmailSendResult  # 只搜索
+close()
 ```
+
+旧的 `send/fetch_new_messages/parse_bounce/add_label/check_dns_auth` 目前仍为
+`NotImplementedError` 骨架。
 
 ## Phase 1 范围
 
-以上全部。不做：Gmail 之外的 Google 服务、批量导入历史邮件。
+单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、交付确定性错误分类。
+不做：回复 worker、退信/投诉 worker、标签、DNS 检查、批量历史导入、自动重发、
+Gmail 之外的 Google 服务。

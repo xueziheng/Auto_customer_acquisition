@@ -148,6 +148,24 @@ class GmailConnector:
             raise _classify_transport_error(error) from None
         return GmailSendResult(provider_ref, DeliveryCertainty.SENT, False)
 
+    async def reconcile_once(self, request: GmailSendRequest) -> GmailSendResult:
+        """只搜索确定性 header；未命中仍保持人工对账，绝不发送。"""
+        if not isinstance(request, GmailSendRequest):
+            raise ValidationError("Gmail send request 无效")
+        if self._token is None:
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
+        try:
+            existing = await self._transport.search(
+                token=self._token.value,
+                message_id=request.deterministic_message_id,
+                header=request.idempotency_header,
+            )
+        except (GmailHttpStatusError, GmailNetworkError) as error:
+            raise _classify_transport_error(error) from None
+        if existing is None:
+            raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)
+        return GmailSendResult(existing, DeliveryCertainty.SENT, True)
+
     async def send(
         self,
         idempotency_key: str,

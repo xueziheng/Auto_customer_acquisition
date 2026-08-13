@@ -308,8 +308,10 @@ async def test_rejection_short_circuits_every_later_side_effect(
 
 async def test_executing_commit_failure_never_calls_connector() -> None:
     gateway, trace = _gateway(fail_executing_commit=True)
-    with pytest.raises(RuntimeError, match="commit-marker"):
-        await gateway.invoke(_context())
+    result = await gateway.invoke(_context())
+    assert result.status is ToolCallStatus.FAILED_TRANSIENT
+    assert result.error_category is ToolErrorCategory.PROVIDER_TRANSIENT
+    assert "commit-marker" not in repr(result)
     assert "ledger.executing" in trace
     assert "handler.execute" not in trace
     assert "outreach.record_sent" not in trace

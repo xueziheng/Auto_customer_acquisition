@@ -179,12 +179,17 @@ class ClaimResult:
 
     status: ClaimStatus
     canonical: ToolCallRecord
+    reconciliation_only: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ClaimStatus):
             raise ValidationError("claim status 无效")
         if not isinstance(self.canonical, ToolCallRecord):
             raise ValidationError("canonical tool call 无效")
+        if not isinstance(self.reconciliation_only, bool):
+            raise ValidationError("claim 恢复模式无效")
+        if self.reconciliation_only and self.status is not ClaimStatus.CLAIMED:
+            raise ValidationError("claim 恢复模式无效")
 
 
 @runtime_checkable

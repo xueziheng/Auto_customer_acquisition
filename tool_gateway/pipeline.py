@@ -375,6 +375,7 @@ class ToolGateway:
         safe_attempt_id = attempt_id if isinstance(attempt_id, str) else None
         state = ToolInvocationState(manifest=manifest, tool_call_id=call_id)
         canonical_claimed = False
+        reconciliation_only = False
         received = ToolCallRecord(
             tenant_id=ctx.tenant_id,
             tool_call_id=call_id,
@@ -546,6 +547,7 @@ class ToolGateway:
                 call_id = claimed.canonical.tool_call_id
                 state.tool_call_id = str(call_id)
                 canonical_claimed = True
+                reconciliation_only = claimed.reconciliation_only
                 await self._append_event(
                     ctx,
                     call_id,
@@ -574,13 +576,42 @@ class ToolGateway:
                     canonical=canonical_claimed,
                     stage="handler.prepare",
                 )
-        async with self._uow_factory(ctx.tenant_id) as uow:
-            await uow.calls.mark_executing(ctx.tenant_id, call_id)
-            await uow.calls.append_event(
-                self._event(ctx, call_id, "ledger", "executing", None, None)
+        try:
+            async with self._uow_factory(ctx.tenant_id) as uow:
+                await uow.calls.mark_executing(ctx.tenant_id, call_id)
+                await uow.calls.append_event(
+                    self._event(
+                        ctx, call_id, "ledger", "executing", None, None
+                    )
+                )
+        except TradeOSError as error:
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                self._translate_error(error),
+                canonical=canonical_claimed,
+                stage="ledger.executing",
+            )
+        except Exception:  # noqa: BLE001 -- 外部动作前的本地故障可安全重试
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT),
+                canonical=canonical_claimed,
+                stage="ledger.executing",
             )
         try:
-            handler_output = await handler.execute(ctx.tenant_id, state.prepared)
+            if reconciliation_only:
+                reconcile = getattr(handler, "reconcile", None)
+                if not callable(reconcile):
+                    raise ToolGatewayError(
+                        ToolErrorCategory.RECONCILIATION_REQUIRED
+                    )
+                handler_output = await reconcile(ctx.tenant_id, state.prepared)
+            else:
+                handler_output = await handler.execute(
+                    ctx.tenant_id, state.prepared
+                )
         except ToolGatewayError as error:
             return await self._fail_typed(
                 ctx, call_id, error, canonical=True, stage="connector"

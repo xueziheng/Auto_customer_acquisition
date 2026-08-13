@@ -178,3 +178,16 @@ class EmailSendHandler:
             "provider_ref": result.provider_ref,
             "already_existed": result.already_existed,
         }
+
+    async def reconcile(
+        self, tenant_id: TenantId, prepared: PreparedToolCall
+    ) -> dict[str, str | bool | None]:
+        """模糊发送只查询既有 Gmail 消息，搜索未命中也不得重发。"""
+        payload = prepared.payload
+        if not isinstance(payload, _EmailPayload) or payload.tenant_id != tenant_id:
+            raise ValidationError("发送 payload 无效")
+        result = await self._gmail.reconcile_once(payload.request)
+        return {
+            "provider_ref": result.provider_ref,
+            "already_existed": result.already_existed,
+        }

@@ -334,12 +334,19 @@ class _LazyGmailConnector(GmailConnector):
         self._runtime_resolver = _BoundGmailSecretResolver(resolver, configured_ref)
         self._configure_lock = asyncio.Lock()
 
-    async def send_once(self, request: GmailSendRequest) -> GmailSendResult:
+    async def _ensure_configured(self) -> None:
         if not await self.health_check():
             async with self._configure_lock:
                 if not await self.health_check():
                     await self.configure(self._runtime_resolver)
+
+    async def send_once(self, request: GmailSendRequest) -> GmailSendResult:
+        await self._ensure_configured()
         return await super().send_once(request)
+
+    async def reconcile_once(self, request: GmailSendRequest) -> GmailSendResult:
+        await self._ensure_configured()
+        return await super().reconcile_once(request)
 
 
 @dataclass(frozen=True)
