@@ -104,4 +104,5 @@ def _safe_value(value: str) -> bool:
 
 
 def _is_utc(value: datetime) -> bool:
-    return value.tzinfo is not None and value.utcoffset() is not None and value.utcoffset().total_seconds() == 0
+    offset = value.utcoffset()
+    return value.tzinfo is not None and offset is not None and offset.total_seconds() == 0
