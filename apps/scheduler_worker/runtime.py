@@ -17,17 +17,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from apps.scheduler_worker.main import (
-    OutboxDrainer,
-    SchedulerConfig,
-    SchedulerRuntime,
-    WorkflowPoller,
-)
-from apps.scheduler_worker.notification_projection import (
-    NotificationAudienceResolver,
-    NotificationJobHandoffNotifier,
-    NotificationProjectionHandler,
-)
 from connectors.dns_auth.client import (
     AsyncTxtResolver,
     DnsAuthenticationConnector,
@@ -103,6 +92,17 @@ from workflows.sending_identity_auth.flow import (
 )
 
 from .config import SchedulerWorkerConfig
+from .main import (
+    OutboxDrainer,
+    SchedulerConfig,
+    SchedulerRuntime,
+    WorkflowPoller,
+)
+from .notification_projection import (
+    NotificationAudienceResolver,
+    NotificationJobHandoffNotifier,
+    NotificationProjectionHandler,
+)
 
 
 class CompleteOutboxRegistry(Protocol):
