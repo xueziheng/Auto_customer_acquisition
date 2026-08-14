@@ -28,7 +28,7 @@ from notification_gateway.templates import (
     FixedNotificationTemplateRenderer,
     NotificationRenderer,
 )
-from shared.errors import PolicyViolation, TradeOSError
+from shared.errors import PolicyViolation, TenantIsolationViolation, TradeOSError
 
 from .config import NotificationWorkerConfig
 from .health import NotificationHealthServer, NotificationHealthState
@@ -83,6 +83,7 @@ async def notification_worker_runtime(
     engine = create_engine_from(config.database_url.get_secret_value())
     server: NotificationHealthServer | None = None
     health_task: asyncio.Task[None] | None = None
+    health_started_task: asyncio.Task[None] | None = None
     primary: BaseException | None = None
     try:
         await assert_database_schema_current(engine)
@@ -97,7 +98,18 @@ async def notification_worker_runtime(
         health.mark_ready("registry")
         server = NotificationHealthServer(health, config.health_port)
         health_task = asyncio.create_task(server.serve())
-        await asyncio.sleep(0)
+        health_started_task = asyncio.create_task(server.wait_started())
+        done, _pending = await asyncio.wait(
+            (health_task, health_started_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if health_task in done:
+            await health_task
+            raise RuntimeError("notification health exited before listening")
+        await health_started_task
+        if health_task.done():
+            await health_task
+            raise RuntimeError("notification health exited before listening")
         yield NotificationWorkerRuntime(
             jobs,
             router,
@@ -113,8 +125,6 @@ async def notification_worker_runtime(
         if server is not None:
             try:
                 await server.close()
-                if health_task is not None:
-                    await health_task
             except BaseException as error:  # noqa: BLE001
                 if health_task is not None and not health_task.done():
                     health_task.cancel()
@@ -122,6 +132,20 @@ async def notification_worker_runtime(
                     cleanup_error = error
                 else:
                     logger.error("通知 worker health 资源关闭失败")
+            for task in (health_started_task, health_task):
+                if task is None:
+                    continue
+                if task is health_started_task and not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except BaseException as error:  # noqa: BLE001
+                    if primary is None and cleanup_error is None:
+                        cleanup_error = error
+                    else:
+                        logger.error("通知 worker health 任务关闭失败")
         try:
             await engine.dispose()
         except BaseException as error:  # noqa: BLE001
@@ -208,17 +232,28 @@ async def run_notification_worker(
             for claim in claims:
                 try:
                     try:
+                        if claim.tenant_id != runtime.config.tenant_id:
+                            raise TenantIsolationViolation("跨租户通知任务被拒绝")
                         notification = runtime.renderer.render(claim)
                         await runtime.router.dispatch(notification)
-                    except PolicyViolation as error:
+                    except TradeOSError as error:
                         _log_claim_failure(claim, error, phase="dispatch")
-                        await runtime.jobs.reject(
-                            runtime.config.tenant_id,
-                            claim.job_id,
-                            claim_token=claim.claim_token,
-                            error=error,
-                        )
+                        if error.is_retryable:
+                            await runtime.jobs.retry(
+                                runtime.config.tenant_id,
+                                claim.job_id,
+                                claim_token=claim.claim_token,
+                                error=error,
+                            )
+                        else:
+                            await runtime.jobs.reject(
+                                runtime.config.tenant_id,
+                                claim.job_id,
+                                claim_token=claim.claim_token,
+                                error=error,
+                            )
                     except Exception as error:  # noqa: BLE001
+                        # 未分类异常可能来自暂态基础设施；保留 retry 并由测试锁定。
                         _log_claim_failure(claim, error, phase="dispatch")
                         await runtime.jobs.retry(
                             runtime.config.tenant_id,

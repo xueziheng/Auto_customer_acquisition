@@ -116,6 +116,30 @@ async def test_in_app_channel_rejects_unsafe_or_unbound_notifications(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "private_value"),
+    [
+        ({"title": "BeArEr private-title"}, "private-title"),
+        ({"source_event": "AUTHORIZATION_private-source"}, "private-source"),
+        ({"dedup_key": "SeCrEt_private-dedup"}, "private-dedup"),
+        ({"next_step": "ToKeN private-step"}, "private-step"),
+        ({"link": "/crm/pass" + "word=private-link"}, "private-link"),
+        ({"link": "/crm/%70%61%73%73%77%6f%72%64%3Dprivate-encoded"}, "private-encoded"),
+        ({"link": "/crm/%42%65%61%72%65%72%20private-bearer"}, "private-bearer"),
+    ],
+)
+async def test_in_app_channel_rejects_casefolded_or_encoded_credential_shapes(
+    changes: dict[str, object], private_value: str
+) -> None:
+    """所有可变字符串与解码后 link 都由统一 guard 拦截且错误不回显。"""
+    store = _Store()
+    with pytest.raises(PolicyViolation, match="站内通知") as caught:
+        await _channel(store).deliver(_notification(**changes))
+    assert private_value not in str(caught.value)
+    assert store.items == []
+
+
+@pytest.mark.asyncio
 async def test_in_app_channel_rejects_raw_context_even_if_model_is_forged() -> None:
     """不能靠 Notification 构造器曾经校验过来代替最终渠道校验。"""
     forged = object.__new__(Notification)

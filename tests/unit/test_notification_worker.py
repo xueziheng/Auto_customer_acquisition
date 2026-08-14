@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+from dataclasses import replace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -16,7 +17,12 @@ from notification_gateway.jobs import (
     NotificationKind,
 )
 from notification_gateway.models import Notification, NotificationPriority
-from shared.errors import PolicyViolation, TransientError, ValidationError
+from shared.errors import (
+    PermissionDenied,
+    PolicyViolation,
+    TransientError,
+    ValidationError,
+)
 from shared.schemas.identifiers import EmployeeId, NotificationJobId, TenantId, new_id
 
 _TENANT = TenantId(new_id("tn"))
@@ -175,7 +181,11 @@ class _Jobs:
 
 
 class _Renderer:
+    def __init__(self) -> None:
+        self.seen: list[NotificationJobClaim] = []
+
     def render(self, claim: NotificationJobClaim) -> Notification:
+        self.seen.append(claim)
         return Notification(
             claim.tenant_id,
             claim.recipient,
@@ -241,6 +251,78 @@ async def test_worker_classifies_each_claim_independently_and_uses_fencing_token
     assert "bearer" not in rendered_logs
     assert "password" not in rendered_logs
     assert "secret payload" not in rendered_logs
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_cross_tenant_claim_before_renderer_or_router() -> None:
+    """仓储返回 forged typed 跨租户 claim 时必须在渲染前失败关闭。"""
+    module = _module("apps.notification_worker.runtime")
+    foreign_claim = replace(_claim(1), tenant_id=TenantId(new_id("tn")))
+    jobs = _Jobs((foreign_claim,))
+    renderer = _Renderer()
+    router = _Router([])
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(jobs, router, renderer, _config(), health)
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    await module.run_notification_worker(runtime, stop_event=stop, wait=wait)
+
+    assert renderer.seen == []
+    assert router.seen == []
+    assert jobs.retried == []
+    assert [item[1:] for item in jobs.rejected] == [
+        (foreign_claim.job_id, foreign_claim.claim_token, "TenantIsolationViolation")
+    ]
+
+
+class _FailingRenderer:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def render(self, _claim: NotificationJobClaim) -> Notification:
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_transition"),
+    [
+        (ValidationError("private validation"), "reject"),
+        (PermissionDenied("private permission"), "reject"),
+        (TransientError("private transient"), "retry"),
+        (RuntimeError("private unexpected"), "retry"),
+    ],
+)
+async def test_worker_classifies_renderer_poison_and_retryable_errors(
+    error: BaseException, expected_transition: str
+) -> None:
+    """不可重试 TradeOSError 拒绝；暂态与显式 unexpected 策略才重试。"""
+    module = _module("apps.notification_worker.runtime")
+    jobs = _Jobs((_claim(1),))
+    router = _Router([])
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(
+        jobs,
+        router,
+        _FailingRenderer(error),
+        _config(),
+        health,
+    )
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    await module.run_notification_worker(runtime, stop_event=stop, wait=wait)
+
+    assert router.seen == []
+    if expected_transition == "reject":
+        assert len(jobs.rejected) == 1 and jobs.retried == []
+    else:
+        assert len(jobs.retried) == 1 and jobs.rejected == []
 
 
 @pytest.mark.asyncio
@@ -363,6 +445,9 @@ async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
             health_started.set()
             await self.stop.wait()
 
+        async def wait_started(self):
+            await health_started.wait()
+
         async def close(self):
             health_closed.append(True)
             self.stop.set()
@@ -384,6 +469,65 @@ async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert health_closed == [True]
+    assert disposed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["immediate", "bind"])
+async def test_runtime_context_rethrows_health_startup_failure_before_yield(
+    monkeypatch: pytest.MonkeyPatch, failure_mode: str
+) -> None:
+    """serve 提前退出或绑定失败时 body 不得进入，且 engine 必须释放。"""
+    module = _module("apps.notification_worker.runtime")
+    health_closed: list[bool] = []
+    disposed: list[bool] = []
+
+    class Engine:
+        def connect(self):
+            class Connection:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return None
+
+                async def execute(self, _statement):
+                    return None
+
+            return Connection()
+
+        async def dispose(self):
+            disposed.append(True)
+
+    class Server:
+        def __init__(self, _state, _port):
+            self.waiting = asyncio.Event()
+
+        async def serve(self):
+            if failure_mode == "bind":
+                await self.waiting.wait()
+            raise OSError("private bind failure")
+
+        async def wait_started(self):
+            if failure_mode == "bind":
+                self.waiting.set()
+            await asyncio.Future()
+
+        async def close(self):
+            health_closed.append(True)
+            self.waiting.set()
+
+    monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
+    monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "NotificationHealthServer", Server)
+    entered: list[bool] = []
+
+    with pytest.raises(OSError, match="private bind failure"):
+        async with module.notification_worker_runtime(_config()):
+            entered.append(True)
+
+    assert entered == []
     assert health_closed == [True]
     assert disposed == [True]
 

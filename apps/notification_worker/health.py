@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from socket import socket
 
 import uvicorn
 from fastapi import FastAPI
@@ -17,9 +19,21 @@ _CHECKPOINTS = frozenset({"config", "schema", "database", "registry"})
 
 
 class _NoSignalUvicornServer(uvicorn.Server):
+    def __init__(self, config: uvicorn.Config) -> None:
+        super().__init__(config)
+        self._listening = asyncio.Event()
+
     @contextmanager
     def capture_signals(self) -> Generator[None]:
         yield
+
+    async def startup(self, sockets: list[socket] | None = None) -> None:
+        await super().startup(sockets)
+        if self.started:
+            self._listening.set()
+
+    async def wait_started(self) -> None:
+        await self._listening.wait()
 
 
 @dataclass
@@ -89,6 +103,9 @@ class NotificationHealthServer:
 
     async def serve(self) -> None:
         await self._server.serve()
+
+    async def wait_started(self) -> None:
+        await self._server.wait_started()
 
     async def close(self) -> None:
         self._server.should_exit = True

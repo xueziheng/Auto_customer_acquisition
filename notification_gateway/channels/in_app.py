@@ -18,6 +18,9 @@ _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_ID = re.compile(rf"tn_{_ULID}\Z")
 _EMPLOYEE_ID = re.compile(rf"emp_{_ULID}\Z")
 _JOB_ID = re.compile(rf"njb_{_ULID}\Z")
+_CREDENTIAL_MARKER = re.compile(
+    r"(?:bearer|token|secret|authorization|password)", re.IGNORECASE
+)
 _CREDENTIALS = (
     re.compile(r"[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -73,6 +76,7 @@ def _valid_notification(notification: object) -> bool:
         notification.source_event,
         notification.dedup_key,
         notification.next_step,
+        notification.link,
         notification.context.primary_id
         if isinstance(notification.context, NotificationContext)
         else None,
@@ -99,7 +103,7 @@ def _valid_notification(notification: object) -> bool:
             value is None
             or (
                 isinstance(value, str)
-                and not any(pattern.search(value) for pattern in _CREDENTIALS)
+                and not _credential_shaped(value)
             )
             for value in values
         )
@@ -137,6 +141,20 @@ def _valid_relative_link(link: str) -> bool:
         or "\\" in link
         or "\\" in normalized
         or any(ord(char) < 32 or ord(char) == 127 for char in link)
+    )
+
+
+def _credential_shaped(value: str) -> bool:
+    decoded = value
+    while True:
+        normalized = unquote(decoded)
+        if normalized == decoded:
+            break
+        decoded = normalized
+    return any(
+        pattern.search(candidate) is not None
+        for candidate in (value, decoded)
+        for pattern in (_CREDENTIAL_MARKER, *_CREDENTIALS)
     )
 
 

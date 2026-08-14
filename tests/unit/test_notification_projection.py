@@ -50,13 +50,13 @@ def _load(name: str):
 
 
 class _Audience:
-    def __init__(self, members: tuple[object, ...]) -> None:
+    def __init__(self, members: object) -> None:
         self.members = members
         self.calls: list[tuple[TenantId, DomainEvent]] = []
 
     async def recipients_for(
         self, tenant_id: TenantId, event: DomainEvent
-    ) -> tuple[object, ...]:
+    ) -> object:
         self.calls.append((tenant_id, event))
         return self.members
 
@@ -305,7 +305,168 @@ async def test_projection_wrong_tenant_foreign_member_and_empty_audience_fail_cl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("level", ["owner", "manager", "boss"])
+@pytest.mark.parametrize("foreign_first", [False, True])
+async def test_projection_materializes_and_validates_entire_audience_before_enqueue(
+    foreign_first: bool,
+) -> None:
+    """混租户受众无论排列如何都必须是 zero-job 原子失败。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    other = TenantId(new_id("tn"))
+    own = Member(_TENANT, _RECIPIENT)
+    foreign = Member(other, EmployeeId(new_id("emp")))
+    members = (foreign, own) if foreign_first else (own, foreign)
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience(members),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises(TenantIsolationViolation):
+        await handler.handle(HandoffQueueBacklogged(_TENANT, _NOW, None, 7, 480))
+
+    assert jobs.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("members", [[], (object(),)])
+async def test_projection_rejects_invalid_audience_container_or_member_atomically(
+    members: object,
+) -> None:
+    """resolver 返回形状错误时不得产生部分任务。"""
+    Handler = _load("NotificationProjectionHandler")
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience(members),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises((ValidationError, TenantIsolationViolation)):
+        await handler.handle(HandoffQueueBacklogged(_TENANT, _NOW, None, 7, 480))
+
+    assert jobs.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("depth", "expected_level"),
+    [(99, 99), (100, 99), (1_000_000, 99)],
+)
+async def test_backlog_depth_is_saturated_without_dropping_the_alert(
+    depth: int, expected_level: int
+) -> None:
+    """99 表示 99+；更深积压仍必须通知而非失败关闭。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience((Member(_TENANT, _RECIPIENT),)),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    await handler.handle(HandoffQueueBacklogged(_TENANT, _NOW, None, depth, 480))
+
+    assert len(jobs.calls) == 1
+    assert jobs.calls[0].context.level == expected_level
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", [-1, True])
+async def test_backlog_depth_rejects_non_integer_or_negative_values(depth: object) -> None:
+    """bool 不是业务计数，负数也不能伪装成合法等级。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience((Member(_TENANT, _RECIPIENT),)),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises(ValidationError):
+        await handler.handle(
+            HandoffQueueBacklogged(_TENANT, _NOW, None, depth, 480)  # type: ignore[arg-type]
+        )
+    assert jobs.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approval_id", "decision", "decided_by"),
+    [
+        (new_id("apr"), "customer_free_text", _RECIPIENT),
+        ("customer_free_text", "approved", _RECIPIENT),
+        (new_id("apr"), "approved", EmployeeId("employee_free_text")),
+    ],
+)
+async def test_approval_projection_accepts_only_stable_decisions_and_typed_ids(
+    approval_id: str, decision: str, decided_by: EmployeeId
+) -> None:
+    """安全字符自由文本也不得成为审批通知的稳定契约。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    audience = _Audience((Member(_TENANT, _RECIPIENT),))
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=audience,
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises(ValidationError):
+        await handler.handle(
+            ApprovalDecided(_TENANT, _NOW, None, approval_id, decision, decided_by)
+        )
+
+    assert audience.calls == []
+    assert jobs.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+async def test_approval_projection_preserves_both_stable_decisions(decision: str) -> None:
+    """真实 approved/rejected 都要投影且保留稳定 reason code。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience((Member(_TENANT, _RECIPIENT),)),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    await handler.handle(
+        ApprovalDecided(
+            _TENANT,
+            _NOW,
+            None,
+            new_id("apr"),
+            decision,
+            EmployeeId(new_id("emp")),
+        )
+    )
+
+    assert len(jobs.calls) == 1
+    assert jobs.calls[0].context.reason_code == decision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["owner", "manager", "boss", "boss_reminder"])
 async def test_handoff_notifier_persists_string_level_as_reason_code(level: str) -> None:
     """升级字符串不能伪造成整数 level，也不能在 scheduler 内直投渠道。"""
     Notifier = _load("NotificationJobHandoffNotifier")

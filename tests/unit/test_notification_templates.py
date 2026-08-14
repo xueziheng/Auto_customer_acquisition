@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 
 import pytest
 
@@ -17,6 +18,12 @@ from shared.schemas.identifiers import EmployeeId, NotificationJobId, TenantId, 
 
 _TENANT = TenantId(new_id("tn"))
 _EMPLOYEE = EmployeeId(new_id("emp"))
+_HANDOFF = new_id("hand")
+_OPPORTUNITY = new_id("opp")
+_IDENTITY = new_id("sid")
+_COMMITMENT = new_id("com")
+_APPROVAL = new_id("apr")
+_DECIDER = new_id("emp")
 
 
 def _renderer():
@@ -29,15 +36,32 @@ def _renderer():
 
 
 def _claim(context: NotificationContext) -> NotificationJobClaim:
+    source_event = {
+        NotificationKind.HANDOFF_ESCALATION: "HandoffEscalationNotice",
+        NotificationKind.HANDOFF_QUEUE_BACKLOGGED: "HandoffQueueBacklogged",
+        NotificationKind.SENDING_IDENTITY_SUSPENDED: "SendingIdentitySuspended",
+        NotificationKind.REPUTATION_THRESHOLD_BREACHED: "ReputationThresholdBreached",
+        NotificationKind.COMMITMENT_OVERDUE: "CommitmentOverdue",
+        NotificationKind.APPROVAL_DECIDED: "ApprovalDecided",
+    }.get(context.kind, "SafeEvent")
+    priority = (
+        NotificationPriority.NORMAL
+        if context.kind
+        in {
+            NotificationKind.REPUTATION_THRESHOLD_BREACHED,
+            NotificationKind.APPROVAL_DECIDED,
+        }
+        else NotificationPriority.URGENT
+    )
     return NotificationJobClaim(
         NotificationJobId(new_id("njb")),
         _TENANT,
         _EMPLOYEE,
-        NotificationPriority.URGENT,
+        priority,
         context,
-        "SafeEvent",
+        source_event,
         "safe:dedup",
-        "claim-token",
+        new_id("njc"),
         1,
     )
 
@@ -48,14 +72,14 @@ def _claim(context: NotificationContext) -> NotificationJobClaim:
         (
             NotificationContext(
                 NotificationKind.HANDOFF_ESCALATION,
-                "han_01",
-                "opp_01",
+                _HANDOFF,
+                _OPPORTUNITY,
                 "manager",
                 None,
             ),
             "人工接管提醒",
             "处理人工接管任务",
-            "/crm/handoffs/han_01",
+            f"/crm/handoffs/{_HANDOFF}",
         ),
         (
             NotificationContext(
@@ -72,50 +96,50 @@ def _claim(context: NotificationContext) -> NotificationJobClaim:
         (
             NotificationContext(
                 NotificationKind.SENDING_IDENTITY_SUSPENDED,
-                "sid_01",
+                _IDENTITY,
                 None,
                 "hard_bounce_rate",
                 None,
             ),
             "发件身份已熔断",
             "检查信誉指标并人工处理",
-            "/crm/sending-identities/sid_01",
+            f"/crm/sending-identities/{_IDENTITY}",
         ),
         (
             NotificationContext(
                 NotificationKind.REPUTATION_THRESHOLD_BREACHED,
-                "sid_01",
+                _IDENTITY,
                 None,
                 "complaint_rate:watch",
                 None,
             ),
             "发件信誉指标预警",
             "检查发件身份信誉趋势",
-            "/crm/sending-identities/sid_01",
+            f"/crm/sending-identities/{_IDENTITY}",
         ),
         (
             NotificationContext(
                 NotificationKind.COMMITMENT_OVERDUE,
-                "com_01",
+                _COMMITMENT,
                 None,
                 None,
                 None,
             ),
             "承诺已逾期",
             "处理逾期承诺并更新下一步",
-            "/crm/commitments/com_01",
+            f"/crm/commitments/{_COMMITMENT}",
         ),
         (
             NotificationContext(
                 NotificationKind.APPROVAL_DECIDED,
-                "apr_01",
-                "emp_01",
+                _APPROVAL,
+                _DECIDER,
                 "approved",
                 None,
             ),
             "审批已有结果",
             "查看审批结果并继续处理",
-            "/crm/approvals/apr_01",
+            f"/crm/approvals/{_APPROVAL}",
         ),
     ],
 )
@@ -138,10 +162,11 @@ def test_renderer_maps_every_kind_to_fixed_safe_template(
     "claim",
     [
         object(),
+        object.__new__(NotificationJobClaim),
         _claim(
             NotificationContext(
                 NotificationKind.HANDOFF_ESCALATION,
-                "han_01",
+                _HANDOFF,
                 None,
                 "owner",
                 None,
@@ -150,7 +175,7 @@ def test_renderer_maps_every_kind_to_fixed_safe_template(
         _claim(
             NotificationContext(
                 NotificationKind.APPROVAL_DECIDED,
-                "apr_01",
+                _APPROVAL,
                 None,
                 "approved",
                 None,
@@ -164,13 +189,173 @@ def test_renderer_rejects_malformed_claim_or_missing_required_ids(claim: object)
         _renderer().render(claim)
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            job_id=NotificationJobId("njb_bad"),
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            tenant_id=TenantId("tn_bad"),
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            recipient=EmployeeId("emp_bad"),
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            priority="urgent",  # type: ignore[arg-type]
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            priority=NotificationPriority.LOW,
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            source_event="ApprovalDecided",
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            dedup_key="Bearer private",
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            claim_token="claim-token",
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            attempt_count=0,
+        ),
+        replace(
+            _claim(
+                NotificationContext(
+                    NotificationKind.COMMITMENT_OVERDUE,
+                    _COMMITMENT,
+                    None,
+                    None,
+                    None,
+                )
+            ),
+            attempt_count=True,
+        ),
+        _claim(
+            NotificationContext(
+                NotificationKind.COMMITMENT_OVERDUE,
+                new_id("opp"),
+                None,
+                None,
+                None,
+            )
+        ),
+        _claim(
+            NotificationContext(
+                NotificationKind.APPROVAL_DECIDED,
+                _APPROVAL,
+                new_id("sid"),
+                "approved",
+                None,
+            )
+        ),
+        _claim(
+            NotificationContext(
+                NotificationKind.APPROVAL_DECIDED,
+                _APPROVAL,
+                _DECIDER,
+                "customer_free_text",
+                None,
+            )
+        ),
+    ],
+)
+def test_renderer_revalidates_complete_claim_envelope_before_render(
+    claim: NotificationJobClaim,
+) -> None:
+    """forged typed claim 不能借 dataclass 外形越过 worker 边界。"""
+    with pytest.raises(ValidationError, match="通知任务无法渲染"):
+        _renderer().render(claim)
+
+
 def test_renderer_rejects_unknown_kind_and_invalid_template_link() -> None:
     """新增 kind 未配模板或模板被误改成外链时必须失败关闭。"""
     module = importlib.import_module("notification_gateway.templates")
     renderer = _renderer()
     context = NotificationContext(
         NotificationKind.COMMITMENT_OVERDUE,
-        "com_01",
+        _COMMITMENT,
         None,
         None,
         None,

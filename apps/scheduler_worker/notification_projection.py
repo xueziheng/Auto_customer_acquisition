@@ -39,6 +39,7 @@ from workflows.human_handoff.flow import HandoffEscalationNotice
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_ID = re.compile(rf"tn_{_ULID}\Z")
 _EMPLOYEE_ID = re.compile(rf"emp_{_ULID}\Z")
+_APPROVAL_ID = re.compile(rf"apr_{_ULID}\Z")
 _SUPPORTED_EVENTS = (
     HandoffRequested,
     HandoffQueueBacklogged,
@@ -47,7 +48,8 @@ _SUPPORTED_EVENTS = (
     CommitmentOverdue,
     ApprovalDecided,
 )
-_HANDOFF_LEVELS = frozenset({"owner", "manager", "boss"})
+_HANDOFF_LEVELS = frozenset({"owner", "manager", "boss", "boss_reminder"})
+_APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
 
 
 @dataclass(frozen=True)
@@ -106,16 +108,24 @@ class NotificationProjectionHandler:
         context, priority = _project_context(event)
         fingerprint = notification_source_fingerprint(event)
         recipients = await self._audience.recipients_for(self._tenant_id, event)
+        if not isinstance(recipients, tuple):
+            raise ValidationError("通知受众容器无效")
+        if any(not isinstance(recipient, NotificationAudienceMember) for recipient in recipients):
+            raise ValidationError("通知受众成员无效")
+        if any(recipient.tenant_id != self._tenant_id for recipient in recipients):
+            raise TenantIsolationViolation("通知受众租户不一致")
+        if any(
+            not isinstance(recipient.employee_id, str)
+            or _EMPLOYEE_ID.fullmatch(recipient.employee_id) is None
+            for recipient in recipients
+        ):
+            raise ValidationError("通知受众成员无效")
+        pending: list[NotificationJob] = []
         for recipient in recipients:
-            if (
-                not isinstance(recipient, NotificationAudienceMember)
-                or recipient.tenant_id != self._tenant_id
-            ):
-                raise TenantIsolationViolation("通知受众租户不一致")
             created_at = self._now()
             if not _is_utc(created_at):
                 raise ValidationError("通知任务时间无效")
-            await self._jobs.enqueue(
+            pending.append(
                 NotificationJob(
                     NotificationJobId(self._id_factory("njb")),
                     self._tenant_id,
@@ -128,6 +138,8 @@ class NotificationProjectionHandler:
                     created_at,
                 )
             )
+        for job in pending:
+            await self._jobs.enqueue(job)
 
 
 class NotificationJobHandoffNotifier:
@@ -198,7 +210,7 @@ def _project_context(
             NotificationPriority.URGENT,
         )
     if isinstance(event, HandoffQueueBacklogged):
-        if type(event.queue_depth) is not int or not 0 <= event.queue_depth <= 99:
+        if type(event.queue_depth) is not int or event.queue_depth < 0:
             raise ValidationError("接管队列通知等级无效")
         return (
             NotificationContext(
@@ -206,7 +218,7 @@ def _project_context(
                 "handoff_queue",
                 None,
                 None,
-                event.queue_depth,
+                min(event.queue_depth, 99),
             ),
             NotificationPriority.URGENT,
         )
@@ -244,8 +256,14 @@ def _project_context(
             NotificationPriority.URGENT,
         )
     if isinstance(event, ApprovalDecided):
-        if event.decided_by is None:
-            raise ValidationError("审批通知缺少决定人")
+        if (
+            not isinstance(event.approval_id, str)
+            or _APPROVAL_ID.fullmatch(event.approval_id) is None
+            or event.decision not in _APPROVAL_DECISIONS
+            or not isinstance(event.decided_by, str)
+            or _EMPLOYEE_ID.fullmatch(event.decided_by) is None
+        ):
+            raise ValidationError("审批通知无效")
         return (
             NotificationContext(
                 NotificationKind.APPROVAL_DECIDED,

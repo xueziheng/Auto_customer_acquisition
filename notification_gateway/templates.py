@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -12,8 +13,68 @@ from notification_gateway.jobs import (
     NotificationJobClaim,
     NotificationKind,
 )
-from notification_gateway.models import Notification
+from notification_gateway.models import Notification, NotificationPriority
 from shared.errors import PolicyViolation, ValidationError
+
+_ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
+_JOB_ID = re.compile(rf"njb_{_ULID}\Z")
+_TENANT_ID = re.compile(rf"tn_{_ULID}\Z")
+_EMPLOYEE_ID = re.compile(rf"emp_{_ULID}\Z")
+_CLAIM_TOKEN = re.compile(rf"njc_{_ULID}\Z")
+_SAFE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}\Z")
+_SECRET_MARKER = re.compile(
+    r"(?:bearer|token|secret|password|authorization|akia|sk-)", re.IGNORECASE
+)
+_SOURCE_EVENTS: dict[NotificationKind, frozenset[str]] = {
+    NotificationKind.HANDOFF_ESCALATION: frozenset(
+        {"HandoffRequested", "HandoffEscalationNotice"}
+    ),
+    NotificationKind.HANDOFF_QUEUE_BACKLOGGED: frozenset({"HandoffQueueBacklogged"}),
+    NotificationKind.SENDING_IDENTITY_SUSPENDED: frozenset(
+        {"SendingIdentitySuspended"}
+    ),
+    NotificationKind.REPUTATION_THRESHOLD_BREACHED: frozenset(
+        {"ReputationThresholdBreached"}
+    ),
+    NotificationKind.COMMITMENT_OVERDUE: frozenset({"CommitmentOverdue"}),
+    NotificationKind.APPROVAL_DECIDED: frozenset({"ApprovalDecided"}),
+}
+_KIND_PRIORITIES: dict[NotificationKind, NotificationPriority] = {
+    NotificationKind.HANDOFF_ESCALATION: NotificationPriority.URGENT,
+    NotificationKind.HANDOFF_QUEUE_BACKLOGGED: NotificationPriority.URGENT,
+    NotificationKind.SENDING_IDENTITY_SUSPENDED: NotificationPriority.URGENT,
+    NotificationKind.REPUTATION_THRESHOLD_BREACHED: NotificationPriority.NORMAL,
+    NotificationKind.COMMITMENT_OVERDUE: NotificationPriority.URGENT,
+    NotificationKind.APPROVAL_DECIDED: NotificationPriority.NORMAL,
+}
+_HANDOFF_REASONS = frozenset({"owner", "manager", "boss", "boss_reminder"})
+_APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
+_KIND_IDS: dict[NotificationKind, tuple[re.Pattern[str], re.Pattern[str] | None]] = {
+    NotificationKind.HANDOFF_ESCALATION: (
+        re.compile(rf"(?:hand|han|hnd)_{_ULID}\Z"),
+        re.compile(rf"opp_{_ULID}\Z"),
+    ),
+    NotificationKind.HANDOFF_QUEUE_BACKLOGGED: (
+        re.compile(r"handoff_queue\Z"),
+        None,
+    ),
+    NotificationKind.SENDING_IDENTITY_SUSPENDED: (
+        re.compile(rf"sid_{_ULID}\Z"),
+        None,
+    ),
+    NotificationKind.REPUTATION_THRESHOLD_BREACHED: (
+        re.compile(rf"sid_{_ULID}\Z"),
+        None,
+    ),
+    NotificationKind.COMMITMENT_OVERDUE: (
+        re.compile(rf"com_{_ULID}\Z"),
+        None,
+    ),
+    NotificationKind.APPROVAL_DECIDED: (
+        re.compile(rf"apr_{_ULID}\Z"),
+        re.compile(rf"emp_{_ULID}\Z"),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -64,12 +125,15 @@ class NotificationRenderer(Protocol):
 class FixedNotificationTemplateRenderer:
     def render(self, claim: NotificationJobClaim) -> Notification:
         """校验 claim 与必填关联 ID 后，渲染固定模板。"""
-        if not isinstance(claim, NotificationJobClaim) or not isinstance(
-            claim.context, NotificationContext
-        ):
+        if not isinstance(claim, NotificationJobClaim):
             raise ValidationError("通知任务无法渲染")
-        context = claim.context
-        if not _valid_context(context):
+        try:
+            context = claim.context
+        except AttributeError:
+            raise ValidationError("通知任务无法渲染")
+        if not isinstance(context, NotificationContext):
+            raise ValidationError("通知任务无法渲染")
+        if not _valid_claim(claim) or not _valid_context(context):
             raise ValidationError("通知任务无法渲染")
         template = _TEMPLATES.get(context.kind)
         if template is None or not _required_context_present(context):
@@ -96,6 +160,71 @@ def _required_context_present(context: NotificationContext) -> bool:
     }:
         return context.secondary_id is not None
     return True
+
+
+def _valid_claim(claim: NotificationJobClaim) -> bool:
+    try:
+        return _claim_fields_valid(claim)
+    except AttributeError:
+        return False
+
+
+def _claim_fields_valid(claim: NotificationJobClaim) -> bool:
+    context = claim.context
+    id_patterns = _KIND_IDS.get(context.kind)
+    if id_patterns is None:
+        return False
+    primary, secondary = id_patterns
+    secondary_valid = (
+        context.secondary_id is None
+        if secondary is None
+        else isinstance(context.secondary_id, str)
+        and secondary.fullmatch(context.secondary_id) is not None
+    )
+    return (
+        isinstance(claim.job_id, str)
+        and _JOB_ID.fullmatch(claim.job_id) is not None
+        and isinstance(claim.tenant_id, str)
+        and _TENANT_ID.fullmatch(claim.tenant_id) is not None
+        and isinstance(claim.recipient, str)
+        and _EMPLOYEE_ID.fullmatch(claim.recipient) is not None
+        and claim.priority is _KIND_PRIORITIES.get(context.kind)
+        and isinstance(claim.source_event, str)
+        and claim.source_event in _SOURCE_EVENTS.get(context.kind, frozenset())
+        and isinstance(claim.dedup_key, str)
+        and _safe_value(claim.dedup_key)
+        and isinstance(claim.claim_token, str)
+        and _CLAIM_TOKEN.fullmatch(claim.claim_token) is not None
+        and type(claim.attempt_count) is int
+        and claim.attempt_count >= 1
+        and isinstance(context.primary_id, str)
+        and primary.fullmatch(context.primary_id) is not None
+        and secondary_valid
+        and _valid_kind_context(context)
+    )
+
+
+def _safe_value(value: str) -> bool:
+    return _SAFE_VALUE.fullmatch(value) is not None and _SECRET_MARKER.search(value) is None
+
+
+def _valid_kind_context(context: NotificationContext) -> bool:
+    if context.kind is NotificationKind.HANDOFF_ESCALATION:
+        return (
+            context.reason_code is None or context.reason_code in _HANDOFF_REASONS
+        ) and context.level is None
+    if context.kind is NotificationKind.HANDOFF_QUEUE_BACKLOGGED:
+        return context.reason_code is None and context.level is not None
+    if context.kind in {
+        NotificationKind.SENDING_IDENTITY_SUSPENDED,
+        NotificationKind.REPUTATION_THRESHOLD_BREACHED,
+    }:
+        return isinstance(context.reason_code, str) and context.level is None
+    if context.kind is NotificationKind.COMMITMENT_OVERDUE:
+        return context.reason_code is None and context.level is None
+    if context.kind is NotificationKind.APPROVAL_DECIDED:
+        return context.reason_code in _APPROVAL_DECISIONS and context.level is None
+    return False
 
 
 def _valid_context(context: NotificationContext) -> bool:
