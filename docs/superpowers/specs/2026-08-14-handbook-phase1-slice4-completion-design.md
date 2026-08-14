@@ -125,12 +125,15 @@ Connector 内，并且只能由 Tool Gateway handler 调用。
 通知任务是 scheduler 对领域 Outbox 事件的持久投影，至少包含：
 
 ```text
-tenant_id / notification_job_id / source_event_id / event_type
+tenant_id / notification_job_id / source_event_fingerprint / event_type
 recipient_employee_id / priority / context_kind / context_ids
 dedup_key / status / available_at / attempt_count / created_at / completed_at
 ```
 
-- `(tenant_id, source_event_id, recipient_employee_id, context_kind)` 唯一。
+- `source_event_fingerprint` 是对事件类型与规范序列化 payload 的 SHA-256 lower-hex；
+  原 payload 不进入通知表、日志或错误文本。`EventHandler` 当前拿不到 Outbox 行 ID，
+  因此不得伪造或为了该字段修改 Outbox 核心。
+- `(tenant_id, source_event_fingerprint, recipient_employee_id, context_kind)` 唯一。
 - `context_ids` 只包含 typed 内部 ID，不包含邮件正文、邮箱地址或客户原话。
 - 状态只允许 `pending → processing → completed|rejected`；暂时失败回到 `pending` 并设置
   `available_at`，租约超时可重新认领。
@@ -184,9 +187,13 @@ created_at / read_at
 该 registry 的全部 handler 完成后进入终态。但 handler registry 是进程内配置，两个进程
 若各自只注册部分 handler，先领取事件的进程仍可能在另一个进程创建 delivery 前把事件
 标成 `delivered`。因此 scheduler 与 notification worker 不得用两份 partial registry
-争抢同一 Outbox。scheduler 的完整 registry 中注册通知投影 handler；该 handler 在标记
-自身 delivery 完成的同一数据库事务中创建 `notification_job`。notification worker 只消费
-notification job。渠道失败不回滚原业务事务，也不撤销其他已经成功的渠道。
+争抢同一 Outbox。scheduler 的完整 registry 中注册通知投影 handler。现有
+`EventHandler` 不接收 Outbox transaction session，因此投影采用有序、幂等的两次提交：
+handler 先独立提交带 source-event-fingerprint 唯一键的 `notification_job`，成功返回后
+Outbox 才提交该 handler 的 delivery。若进程在两次提交之间崩溃，事件重投只会命中同一 job；若 job
+提交失败，handler 抛错且 delivery 保持 pending。因此不存在「delivery 已完成但 job 丢失」
+窗口，也不需要修改 Outbox 核心。notification worker 只消费 notification job。渠道失败
+不回滚原业务事务，也不撤销其他已经成功的渠道。
 
 ### 6.3 错误分类
 
