@@ -34,8 +34,14 @@ class RiskLevel(str, Enum):
     """写业务数据、创建草稿、抓供应商页面。记审计，受配额限制。"""
 
     HIGH = "high"
-    """发邮件、客户可见内容、修改发件身份。必须审批或在已批准
-    Campaign 边界内。"""
+    """发邮件、客户可见内容、修改发件身份。必须满足显式 HIGH stage profile。"""
+
+
+class HighRiskStageProfile(str, Enum):
+    """HIGH 工具的显式阶段合同；不是放宽 risk level 的旁路。"""
+
+    CUSTOMER_OUTBOUND = "customer_outbound"
+    INTERNAL_TRANSACTIONAL = "internal_transactional"
 
 
 class CostClass(str, Enum):
@@ -72,6 +78,8 @@ class ToolManifest:
         required_permissions: RBAC 权限点
         checks:         本工具要过哪些 stage。**显式列表**——
                         读 manifest 即知约束，不用读实现
+        high_risk_stage_profile: HIGH 工具的 typed 阶段合同；未声明时保持
+                                 customer-outbound 六阶段兼容
         input_schema / output_schema: JSON Schema（dict 形式）
         redact_fields:  审计中要脱敏的入参字段
     """
@@ -85,6 +93,7 @@ class ToolManifest:
     idempotency: IdempotencyRequirement
     required_permissions: tuple[str, ...]
     checks: tuple[str, ...]
+    high_risk_stage_profile: HighRiskStageProfile | None = None
     input_schema: Mapping[str, object] = field(default_factory=dict)
     output_schema: Mapping[str, object] = field(default_factory=dict)
     redact_fields: tuple[str, ...] = ()
@@ -119,19 +128,36 @@ class ToolManifest:
             raise ValidationError("tool checks 包含未知阶段")
         if tuple(stage for stage in STAGE_ORDER if stage in checks) != checks:
             raise ValidationError("tool checks 顺序无效")
+        profile = self.high_risk_stage_profile
         if self.risk_level is RiskLevel.HIGH:
-            mandatory = {
-                "tenant",
-                "permission",
-                "suppression",
-                "approval",
-                "idempotency",
-                "rate_limit",
-            }
-            if not mandatory.issubset(checks):
-                raise ValidationError("高风险工具缺少强制检查")
+            if profile is None:
+                profile = HighRiskStageProfile.CUSTOMER_OUTBOUND
+            elif not isinstance(profile, HighRiskStageProfile):
+                raise ValidationError("高风险工具阶段 profile 无效")
+            if profile is HighRiskStageProfile.INTERNAL_TRANSACTIONAL:
+                required_checks = (
+                    "tenant",
+                    "permission",
+                    "idempotency",
+                    "rate_limit",
+                )
+                if checks != required_checks:
+                    raise ValidationError("内部事务工具检查阶段无效")
+            else:
+                mandatory = {
+                    "tenant",
+                    "permission",
+                    "suppression",
+                    "approval",
+                    "idempotency",
+                    "rate_limit",
+                }
+                if not mandatory.issubset(checks):
+                    raise ValidationError("高风险工具缺少强制检查")
             if self.idempotency is not IdempotencyRequirement.REQUIRED:
                 raise ValidationError("高风险工具必须强制幂等")
+        elif profile is not None:
+            raise ValidationError("非高风险工具不得声明高风险阶段 profile")
         if (
             self.idempotency is IdempotencyRequirement.REQUIRED
             and "idempotency" not in checks
@@ -139,6 +165,7 @@ class ToolManifest:
             raise ValidationError("强制幂等工具缺少 idempotency 检查")
         object.__setattr__(self, "required_permissions", permissions)
         object.__setattr__(self, "checks", checks)
+        object.__setattr__(self, "high_risk_stage_profile", profile)
         object.__setattr__(self, "redact_fields", redact_fields)
         object.__setattr__(self, "input_schema", _freeze_json(self.input_schema))
         object.__setattr__(self, "output_schema", _freeze_json(self.output_schema))
@@ -175,8 +202,9 @@ class ToolRegistry:
 
         实现要求：
         - ``tool_id`` 重复注册直接抛错（覆盖注册会静默换掉工具行为）
-        - 校验 manifest 完整性：HIGH 风险的工具 ``checks`` 必须包含
-          approval 与 suppression；有副作用的必须 REQUIRED 幂等。
+        - 校验 manifest 完整性：HIGH 风险工具必须满足其 typed stage profile；
+          customer-outbound 含 approval/suppression，internal-transactional
+          只允许固定四阶段；全部强制 REQUIRED 幂等。
           **注册时就拦住配置错误**，不要等运行时。
         """
         if not isinstance(manifest, ToolManifest):

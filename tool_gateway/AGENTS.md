@@ -53,6 +53,19 @@ tenant → permission → suppression → approval → idempotency → rate_limi
 → 提交 EXECUTING 证据 → Gmail → Outreach 完成 Attempt → 完成 canonical tool_call
 ```
 
+所有邮件发送仍是 `RiskLevel.HIGH`。HIGH manifest 未显式声明 stage profile 时按
+`customer_outbound` 处理，并继续强制上述六阶段。唯一已批准的另一 profile 是
+`internal_transactional`，只供 notification worker 向内部员工发送固定模板事务通知：
+
+```text
+tenant → permission → idempotency → rate_limit
+```
+
+该 profile 必须显式声明、强制 `REQUIRED` 幂等，且 checks 必须与四阶段精确相等；
+LOW/MEDIUM 工具不得声明它。它不适用客户 suppression 与 Campaign approval，是因为收件人
+不是客户且内容来自固定内部模板，不代表降低风险级别。不得把它用于任意正文、客户邮件、
+Campaign 触达或绕过审批；新增 profile 也不得在 `pipeline.py` 按 tool_id 分支。
+
 顺序错了会出现「重复扣费但没发送」或更糟的「重复发送」。
 
 ## 拒绝必须结构化
@@ -108,7 +121,8 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 
 ## Phase 1 范围
 
-manifest 注册表、固定 stage 编排、Postgres canonical ledger、append-only event、
-`email.send` 单封 Gmail handler、`email.feedback.fetch` typed 只读 handler、租约恢复与
-人工对账边界。成本钱包仍是 Phase 3 挂载点；不在本阶段实现自动对账扫描器、对账 UI、
-回复正文 worker 或自动重发。
+manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
+ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部
+固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、租约恢复与人工对账
+边界。成本钱包仍是 Phase 3 挂载点；不在本阶段实现自动对账扫描器、对账 UI、回复正文
+worker 或自动重发。

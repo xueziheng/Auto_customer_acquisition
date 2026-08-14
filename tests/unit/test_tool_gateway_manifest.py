@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 import pytest
@@ -43,6 +44,20 @@ EMAIL_CHECKS = (
     "idempotency",
     "rate_limit",
 )
+INTERNAL_TRANSACTIONAL_CHECKS = (
+    "tenant",
+    "permission",
+    "idempotency",
+    "rate_limit",
+)
+
+
+def _internal_transactional_profile() -> object:
+    manifest_module = importlib.import_module("tool_gateway.manifest")
+    profile_type = getattr(manifest_module, "HighRiskStageProfile", None)
+    if profile_type is None:
+        pytest.fail("RED：HIGH internal-transactional stage profile 尚未实现")
+    return profile_type.INTERNAL_TRANSACTIONAL
 
 
 class _Handler:
@@ -88,6 +103,64 @@ def test_email_send_manifest_registers_with_exact_ordered_checks() -> None:
     assert registered is handler
     assert isinstance(handler, ToolHandler)
     assert tuple(stage for stage in STAGE_ORDER if stage in EMAIL_CHECKS) == EMAIL_CHECKS
+
+
+def test_high_internal_transactional_profile_accepts_only_exact_four_stages() -> None:
+    """员工固定模板事务发送需要 HIGH 审计且不能复用客户 suppression/approval。"""
+    profile = _internal_transactional_profile()
+    manifest = _manifest(
+        tool_id="notification.email.send",
+        checks=INTERNAL_TRANSACTIONAL_CHECKS,
+        high_risk_stage_profile=profile,
+    )
+    assert manifest.risk_level is RiskLevel.HIGH
+    assert manifest.high_risk_stage_profile is profile
+    assert manifest.checks == INTERNAL_TRANSACTIONAL_CHECKS
+
+
+@pytest.mark.parametrize(
+    "checks",
+    [
+        ("tenant", "permission", "idempotency"),
+        (*INTERNAL_TRANSACTIONAL_CHECKS, "approval"),
+        ("permission", "tenant", "idempotency", "rate_limit"),
+    ],
+)
+def test_high_internal_transactional_profile_rejects_missing_extra_or_reordered_stages(
+    checks: tuple[str, ...],
+) -> None:
+    """profile 必须精确，不允许未来把它扩成普通邮件旁路。"""
+    with pytest.raises(ValidationError):
+        _manifest(
+            tool_id="notification.email.send",
+            checks=checks,
+            high_risk_stage_profile=_internal_transactional_profile(),
+        )
+
+
+def test_legacy_high_defaults_to_customer_outbound_and_still_requires_six_stages() -> None:
+    """既有 HIGH manifest 不声明 profile 时必须保持客户外发兼容约束。"""
+    manifest_module = importlib.import_module("tool_gateway.manifest")
+    manifest = _manifest()
+    profile_type = getattr(manifest_module, "HighRiskStageProfile", None)
+    if profile_type is None:
+        pytest.fail("RED：HIGH stage profile 尚未实现")
+    assert manifest.high_risk_stage_profile is profile_type.CUSTOMER_OUTBOUND
+    with pytest.raises(ValidationError):
+        _manifest(checks=INTERNAL_TRANSACTIONAL_CHECKS)
+
+
+@pytest.mark.parametrize("risk_level", [RiskLevel.LOW, RiskLevel.MEDIUM])
+def test_non_high_manifest_rejects_high_risk_stage_profile(
+    risk_level: RiskLevel,
+) -> None:
+    """显式 HIGH profile 不得被非 HIGH 工具借用。"""
+    with pytest.raises(ValidationError):
+        _manifest(
+            risk_level=risk_level,
+            checks=INTERNAL_TRANSACTIONAL_CHECKS,
+            high_risk_stage_profile=_internal_transactional_profile(),
+        )
 
 
 @pytest.mark.parametrize("missing", ["suppression", "approval", "idempotency"])
@@ -152,7 +225,7 @@ def test_manifest_defensively_freezes_schema_and_sequence_inputs() -> None:
     assert manifest.checks == EMAIL_CHECKS
     assert manifest.redact_fields == ("subject", "body")
     with pytest.raises(TypeError):
-        manifest.input_schema["type"] = "array"
+        manifest.input_schema["type"] = "array"  # type: ignore[index]
 
 
 class _ExecuteOnly:

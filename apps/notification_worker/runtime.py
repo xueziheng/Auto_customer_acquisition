@@ -132,12 +132,6 @@ class NotificationRoutingPolicy(RoutingPolicy):
         raise PolicyViolation("通知优先级无效")
 
 
-class _UnavailableTransactionalSender:
-    async def send(self, notification: Notification) -> None:
-        del notification
-        raise PolicyViolation("事务通知邮件未配置")
-
-
 @dataclass(frozen=True, repr=False)
 class _BoundGmailSecretResolver:
     resolver: SecretResolver
@@ -262,7 +256,6 @@ async def notification_worker_runtime(
     if not isinstance(config, NotificationWorkerConfig):
         raise TypeError("通知 worker 配置类型无效")
     health = NotificationHealthState()
-    health.mark_ready("config")
     engine = create_engine_from(config.database_url.get_secret_value())
     gmail_transport: GmailHttpTransport | None = None
     server: NotificationHealthServer | None = None
@@ -270,6 +263,9 @@ async def notification_worker_runtime(
     health_started_task: asyncio.Task[None] | None = None
     primary: BaseException | None = None
     try:
+        if config.email is None:
+            raise ValidationError("事务通知邮件未配置")
+        health.mark_ready("config")
         await assert_database_schema_current(engine)
         health.mark_ready("schema")
         async with engine.connect() as connection:
@@ -281,19 +277,14 @@ async def notification_worker_runtime(
             PostgresNotificationDedupStore(factory), NotificationRoutingPolicy()
         )
         router.register_channel(InAppChannel(PostgresInAppNotificationStore(factory)))
-        if config.email is None:
-            router.register_channel(
-                EmailNotificationChannel(_UnavailableTransactionalSender())
-            )
-        else:
-            email_channel, gmail_transport = await _compose_email_channel(
-                config,
-                factory,
-                transport_factory,
-                now,
-            )
-            router.register_channel(email_channel)
-            health.mark_ready("registry")
+        email_channel, gmail_transport = await _compose_email_channel(
+            config,
+            factory,
+            transport_factory,
+            now,
+        )
+        router.register_channel(email_channel)
+        health.mark_ready("registry")
         server = NotificationHealthServer(health, config.health_port)
         health_task = asyncio.create_task(server.serve())
         health_started_task = asyncio.create_task(server.wait_started())
@@ -427,6 +418,8 @@ async def run_notification_worker(
     wait: WaitForNextCycle | None = None,
 ) -> WorkerRunResult:
     """逐周期认领；每条 claim 独立 render/dispatch/持久化结果。"""
+    if runtime.config.email is None:
+        raise ValidationError("事务通知邮件未配置")
     stop = stop_event if stop_event is not None else asyncio.Event()
     wait_next = wait if wait is not None else _default_wait
     cleanup_signals = install_stop_signals(stop)

@@ -98,12 +98,39 @@ def _job(
     )
 
 
-def _config(tenant: TenantId, db_url: str, owner: str):
-    Config = _load(
-        "apps.notification_worker.config", "NotificationWorkerConfig"
+def _config(
+    tenant: TenantId, employee: EmployeeId, db_url: str, owner: str
+):
+    config_module = importlib.import_module("apps.notification_worker.config")
+    recipient_module = importlib.import_module(
+        "apps.notification_worker.recipients"
     )
-    return Config(
-        SecretStr(db_url), tenant, 1, 20, 8093, owner
+    directory = recipient_module.ConfiguredNotificationRecipientDirectory.from_value(
+        [
+            {
+                "tenant_id": str(tenant),
+                "employee_id": str(employee),
+                "address": "owner@example.com",
+            }
+        ]
+    )
+    email = config_module.NotificationEmailSettings(
+        "https://gmail.googleapis.com",
+        new_id("sid"),
+        directory,
+        "NOTIFICATION_GMAIL_VALUE",
+        "NOTIFICATION_FINGERPRINT_VALUE",
+        "notification-v1",
+        120,
+        EnvironmentSecretResolver(
+            {
+                "NOTIFICATION_GMAIL_VALUE": "o" * 32,
+                "NOTIFICATION_FINGERPRINT_VALUE": "f" * 32,
+            }
+        ),
+    )
+    return config_module.NotificationWorkerConfig(
+        SecretStr(db_url), tenant, 1, 20, 8093, owner, email
     )
 
 
@@ -369,7 +396,7 @@ async def test_real_worker_retries_rejects_completes_and_preserves_stale_fencing
                 ]
             ),
             _Renderer(),
-            _config(tenant, db_url, "worker-a"),
+            _config(tenant, employee, db_url, "worker-a"),
             HealthState(),
         )
         stop = asyncio.Event()

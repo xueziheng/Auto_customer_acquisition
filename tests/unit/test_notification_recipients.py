@@ -178,3 +178,23 @@ def test_worker_email_settings_are_explicit_bounded_and_repr_hidden() -> None:
         del invalid[missing]
         with pytest.raises(config_module.NotificationWorkerConfigurationError):
             config_module.NotificationWorkerConfig.from_environ(invalid)
+
+    without_email = {
+        name: value
+        for name, value in environ.items()
+        if name
+        not in {
+            "TRADEOS_NOTIFICATION_GMAIL_BASE_URL",
+            "TRADEOS_NOTIFICATION_SENDING_IDENTITY_ID",
+            "TRADEOS_NOTIFICATION_RECIPIENTS_JSON",
+            "GMAIL_OAUTH_TOKEN_REF",
+            "TOOL_CALL_FINGERPRINT_KEY_REF",
+            "TOOL_CALL_FINGERPRINT_KEY_VERSION",
+            "TRADEOS_TOOL_LEASE_SECONDS",
+            "TRADEOS_DEV_MODE",
+            "NOTIFICATION_GMAIL_OAUTH_VALUE",
+            "NOTIFICATION_FINGERPRINT_VALUE",
+        }
+    }
+    with pytest.raises(config_module.NotificationWorkerConfigurationError):
+        config_module.NotificationWorkerConfig.from_environ(without_email)

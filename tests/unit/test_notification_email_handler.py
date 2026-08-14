@@ -30,6 +30,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from tool_gateway.fingerprint import HmacFingerprintProvider
+from tool_gateway.manifest import RiskLevel
 from tool_gateway.pipeline import ToolCallContext, ToolInvocationState
 
 
@@ -103,6 +104,8 @@ def test_manifest_is_the_exact_non_campaign_transactional_contract() -> None:
     module = _module("tool_gateway.handlers.notification_email")
     manifest = module.MANIFEST
     assert manifest.tool_id == "notification.email.send"
+    assert manifest.risk_level is RiskLevel.HIGH
+    assert manifest.high_risk_stage_profile.value == "internal_transactional"
     assert manifest.checks == (
         "tenant",
         "permission",

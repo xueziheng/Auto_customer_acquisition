@@ -4,9 +4,9 @@
 Token、浏览器 Cookie 或其他凭证（硬边界 1）。Gateway 不是一个转发函数，而是业务域与
 Connector 之间最后一道独立、可恢复、可审计的闸门。
 
-本页只描述当前已经实现并由真实 PostgreSQL 测试证明的 Phase 1 Gmail 单封发送与 typed
-DSN 反馈读取。自动对账扫描器、人工对账 UI、回复正文/投诉 worker 与其他工具仍是后续
-能力，不能按已实现能力对外承诺。
+本页只描述当前已经实现并由测试锁定的 Phase 1 Gmail 客户单封发送、内部员工固定模板
+事务通知与 typed DSN 反馈读取。自动对账扫描器、人工对账 UI、回复正文/投诉 worker 与
+其他工具仍是后续能力，不能按已实现能力对外承诺。
 
 ---
 
@@ -50,6 +50,29 @@ Outreach 完成 MessageAttempt
 `tenant → permission → playbook → country_policy → suppression → approval → idempotency → rate_limit`
 全序；具体工具只能按该顺序选子集。Phase 1 的 `email.send` 没有启用 playbook 与
 country-policy stage，文档不得把未执行的检查写成已经执行。
+
+### HIGH stage profile
+
+发送邮件一律记为 `RiskLevel.HIGH`。HIGH manifest 未显式指定 profile 时归一化为
+`customer_outbound`，继续要求 `email.send` 的六个强制阶段；这保持既有 manifest 行为。
+
+`internal_transactional` 是显式、窄化的 HIGH profile，只允许 notification worker 给内部
+员工发送固定模板事务通知。它精确要求：
+
+```text
+tenant → permission → idempotency → rate_limit
+```
+
+并且必须使用 `IdempotencyRequirement.REQUIRED`。这类收件人不是客户，内容也不属于
+Campaign，因此不运行客户 suppression 或 Campaign approval；审计风险仍是 HIGH。该
+profile 不接受缺段、多段或乱序，LOW/MEDIUM manifest 也不能声明。它不得承载任意正文、
+客户可见内容、Campaign 触达或商业承诺，不能成为普通邮件旁路；Gateway pipeline 仍只按
+manifest stages 通用编排，不得增加 tool-id 特判。
+
+生产 notification worker 必须完整配置专用 TRANSACTIONAL Sending Identity、员工 recipient
+directory 与 connector/fingerprint secret references。配置全缺或部分缺失均在启动期固定
+失败；direct config 的 `email=None` 也必须在 runtime context body 和首次 job claim 前拒绝，
+不能隐式退化成站内-only 后把邮件渠道持久化为终态 rejected。
 
 ---
 

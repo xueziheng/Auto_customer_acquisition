@@ -34,6 +34,7 @@ from tool_gateway.errors import ToolCallStatus, ToolErrorCategory, ToolGatewayEr
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.manifest import (
     CostClass,
+    HighRiskStageProfile,
     IdempotencyRequirement,
     RiskLevel,
     ToolManifest,
@@ -57,12 +58,13 @@ MANIFEST = ToolManifest(
     tool_id="notification.email.send",
     version="v1",
     description="发送固定模板的内部事务通知邮件",
-    risk_level=RiskLevel.MEDIUM,
+    risk_level=RiskLevel.HIGH,
     cost_class=CostClass.LOW,
     requires_approval=False,
     idempotency=IdempotencyRequirement.REQUIRED,
     required_permissions=("notification:email_send",),
     checks=("tenant", "permission", "idempotency", "rate_limit"),
+    high_risk_stage_profile=HighRiskStageProfile.INTERNAL_TRANSACTIONAL,
     input_schema={
         "type": "object",
         "required": (

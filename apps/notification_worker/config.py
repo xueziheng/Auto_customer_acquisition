@@ -28,13 +28,6 @@ _LEASE_OWNER = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 _CREDENTIAL_MARKERS = ("bearer", "token", "secret", "password", "authorization")
 _GMAIL_BASE_URL = "https://gmail.googleapis.com"
-_EMAIL_TRIGGER_FIELDS = frozenset(
-    {
-        "TRADEOS_NOTIFICATION_GMAIL_BASE_URL",
-        "TRADEOS_NOTIFICATION_SENDING_IDENTITY_ID",
-        "TRADEOS_NOTIFICATION_RECIPIENTS_JSON",
-    }
-)
 
 
 class NotificationWorkerConfigurationError(RuntimeError):
@@ -194,11 +187,7 @@ class NotificationWorkerConfig:
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Self:
         tenant_id = _read(environ, "TRADEOS_TENANT_ID", _tenant)
-        email = (
-            _email_settings(environ, tenant_id)
-            if any(name in environ for name in _EMAIL_TRIGGER_FIELDS)
-            else None
-        )
+        email = _email_settings(environ, tenant_id)
         return cls(
             _read(environ, "DATABASE_URL", _database_url),
             tenant_id,

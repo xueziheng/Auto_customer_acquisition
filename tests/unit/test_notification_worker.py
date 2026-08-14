@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 from contextlib import suppress
 from dataclasses import replace
@@ -28,6 +29,7 @@ from shared.schemas.identifiers import EmployeeId, NotificationJobId, TenantId, 
 
 _TENANT = TenantId(new_id("tn"))
 _EMPLOYEE = EmployeeId(new_id("emp"))
+_IDENTITY = new_id("sid")
 
 
 def _module(name: str):
@@ -48,6 +50,7 @@ def _config(**changes: object):
         "batch_limit": 20,
         "health_port": 8093,
         "lease_owner": "notification-worker-1",
+        "email": _email_settings(),
     }
     values.update(changes)
     return Config(**values)
@@ -61,7 +64,74 @@ def _environ() -> dict[str, str]:
         "TRADEOS_NOTIFICATION_BATCH_LIMIT": "20",
         "TRADEOS_NOTIFICATION_HEALTH_PORT": "8093",
         "TRADEOS_NOTIFICATION_LEASE_OWNER": "notification-worker-1",
+        "TRADEOS_NOTIFICATION_GMAIL_BASE_URL": "https://gmail.googleapis.com",
+        "TRADEOS_NOTIFICATION_SENDING_IDENTITY_ID": _IDENTITY,
+        "TRADEOS_NOTIFICATION_RECIPIENTS_JSON": json.dumps(
+            [
+                {
+                    "tenant_id": str(_TENANT),
+                    "employee_id": str(_EMPLOYEE),
+                    "address": "owner@example.com",
+                }
+            ],
+            separators=(",", ":"),
+        ),
+        "GMAIL_OAUTH_TOKEN_REF": "NOTIFICATION_GMAIL_VALUE",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "NOTIFICATION_FINGERPRINT_VALUE",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "notification-v1",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TRADEOS_DEV_MODE": "false",
     }
+
+
+def _email_settings():
+    config_module = _module("apps.notification_worker.config")
+    recipient_module = _module("apps.notification_worker.recipients")
+    secrets_module = _module("infra.secrets")
+    recipients = recipient_module.ConfiguredNotificationRecipientDirectory.from_value(
+        [
+            {
+                "tenant_id": str(_TENANT),
+                "employee_id": str(_EMPLOYEE),
+                "address": "owner@example.com",
+            }
+        ]
+    )
+    return config_module.NotificationEmailSettings(
+        "https://gmail.googleapis.com",
+        _IDENTITY,
+        recipients,
+        "NOTIFICATION_GMAIL_VALUE",
+        "NOTIFICATION_FINGERPRINT_VALUE",
+        "notification-v1",
+        120,
+        secrets_module.EnvironmentSecretResolver(
+            {
+                "NOTIFICATION_GMAIL_VALUE": "o" * 32,
+                "NOTIFICATION_FINGERPRINT_VALUE": "f" * 32,
+            }
+        ),
+    )
+
+
+def _patch_email_composition(
+    monkeypatch: pytest.MonkeyPatch, module: object
+) -> list[bool]:
+    closed: list[bool] = []
+
+    class Sender:
+        async def send(self, _notification: Notification) -> None:
+            return None
+
+    class Transport:
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    async def compose(*_args, **_kwargs):
+        return module.EmailNotificationChannel(Sender()), Transport()
+
+    monkeypatch.setattr(module, "_compose_email_channel", compose)
+    return closed
 
 
 def test_config_requires_exact_explicit_values_and_safe_repr() -> None:
@@ -479,6 +549,86 @@ async def test_worker_cancellation_propagates_after_signal_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_worker_rejects_missing_email_config_before_claim() -> None:
+    """direct config 不能绕过 production factory 后继续认领并终态化任务。"""
+    module = _module("apps.notification_worker.runtime")
+    jobs = _Jobs(())
+    runtime = module.NotificationWorkerRuntime(
+        jobs,
+        _Router([]),
+        _Renderer(),
+        _config(email=None),
+        _module("apps.notification_worker.health").NotificationHealthState(),
+    )
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    with pytest.raises(ValidationError, match="^事务通知邮件未配置$"):
+        await module.run_notification_worker(runtime, stop_event=stop, wait=wait)
+    assert jobs.claim_calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_missing_email_config_never_enters_body_and_disposes_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """direct config 防线必须在 health/claim 前失败，并清理已创建的 engine。"""
+    module = _module("apps.notification_worker.runtime")
+    disposed: list[bool] = []
+    servers: list[bool] = []
+    health_started = asyncio.Event()
+
+    class Engine:
+        def connect(self):
+            class Connection:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return None
+
+                async def execute(self, _statement):
+                    return None
+
+            return Connection()
+
+        async def dispose(self) -> None:
+            disposed.append(True)
+
+    class Server:
+        def __init__(self, _state, _port):
+            servers.append(True)
+            self.stop = asyncio.Event()
+
+        async def serve(self) -> None:
+            health_started.set()
+            await self.stop.wait()
+
+        async def wait_started(self) -> None:
+            await health_started.wait()
+
+        async def close(self) -> None:
+            self.stop.set()
+
+    monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
+    monkeypatch.setattr(
+        module, "assert_database_schema_current", lambda _engine: _async_none()
+    )
+    monkeypatch.setattr(module, "NotificationHealthServer", Server)
+    entered: list[bool] = []
+
+    with pytest.raises(ValidationError, match="^事务通知邮件未配置$"):
+        async with module.notification_worker_runtime(_config(email=None)):
+            entered.append(True)
+
+    assert entered == []
+    assert servers == []
+    assert disposed == [True]
+
+
+@pytest.mark.asyncio
 async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -523,6 +673,7 @@ async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
+    gmail_closed = _patch_email_composition(monkeypatch, module)
 
     entered = asyncio.Event()
 
@@ -539,6 +690,7 @@ async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
         await task
     assert health_closed == [True]
     assert disposed == [True]
+    assert gmail_closed == [True]
 
 
 @pytest.mark.asyncio
@@ -589,6 +741,7 @@ async def test_runtime_context_rethrows_health_startup_failure_before_yield(
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
+    gmail_closed = _patch_email_composition(monkeypatch, module)
     entered: list[bool] = []
 
     with pytest.raises(OSError, match="private bind failure"):
@@ -598,6 +751,7 @@ async def test_runtime_context_rethrows_health_startup_failure_before_yield(
     assert entered == []
     assert health_closed == [True]
     assert disposed == [True]
+    assert gmail_closed == [True]
 
 
 @pytest.mark.asyncio
@@ -652,6 +806,7 @@ async def test_runtime_pre_listening_cancel_finishes_both_health_tasks_and_dispo
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
+    gmail_closed = _patch_email_composition(monkeypatch, module)
 
     async def consume() -> None:
         async with module.notification_worker_runtime(_config()):
@@ -671,6 +826,7 @@ async def test_runtime_pre_listening_cancel_finishes_both_health_tasks_and_dispo
         assert server.started_task is not None and server.started_task.done()
         assert closed == [True]
         assert disposed == [True]
+        assert gmail_closed == [True]
     finally:
         if not task.done():
             task.cancel()
