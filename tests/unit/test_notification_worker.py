@@ -1,0 +1,404 @@
+"""通知 worker 的配置、健康与循环生命周期。"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import logging
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
+
+from notification_gateway.jobs import (
+    NotificationContext,
+    NotificationJobClaim,
+    NotificationKind,
+)
+from notification_gateway.models import Notification, NotificationPriority
+from shared.errors import PolicyViolation, TransientError, ValidationError
+from shared.schemas.identifiers import EmployeeId, NotificationJobId, TenantId, new_id
+
+_TENANT = TenantId(new_id("tn"))
+_EMPLOYEE = EmployeeId(new_id("emp"))
+
+
+def _module(name: str):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"RED：通知 worker 模块尚未实现（{exc}）")
+
+
+def _config(**changes: object):
+    Config = _module("apps.notification_worker.config").NotificationWorkerConfig
+    values = {
+        "database_url": SecretStr(
+            "postgresql+asyncpg://" + "worker" + ":private@db/tradeos"
+        ),
+        "tenant_id": _TENANT,
+        "poll_interval_seconds": 5,
+        "batch_limit": 20,
+        "health_port": 8093,
+        "lease_owner": "notification-worker-1",
+    }
+    values.update(changes)
+    return Config(**values)
+
+
+def _environ() -> dict[str, str]:
+    return {
+        "DATABASE_URL": "postgresql+asyncpg://" + "worker" + ":private@db/tradeos",
+        "TRADEOS_TENANT_ID": str(_TENANT),
+        "TRADEOS_NOTIFICATION_POLL_INTERVAL_SECONDS": "5",
+        "TRADEOS_NOTIFICATION_BATCH_LIMIT": "20",
+        "TRADEOS_NOTIFICATION_HEALTH_PORT": "8093",
+        "TRADEOS_NOTIFICATION_LEASE_OWNER": "notification-worker-1",
+    }
+
+
+def test_config_requires_exact_explicit_values_and_safe_repr() -> None:
+    """隐式 DSN/default 或 bool-as-int 会让生产 worker 错连环境。"""
+    module = _module("apps.notification_worker.config")
+    Config = module.NotificationWorkerConfig
+    config = Config.from_environ(_environ())
+    assert config == _config()
+    assert "private" not in repr(config)
+    for missing in _environ():
+        environ = _environ()
+        del environ[missing]
+        with pytest.raises(module.NotificationWorkerConfigurationError):
+            Config.from_environ(environ)
+    for changes in (
+        {"database_url": "raw"},
+        {"tenant_id": TenantId("bad")},
+        {"poll_interval_seconds": True},
+        {"poll_interval_seconds": 0},
+        {"batch_limit": 0},
+        {"batch_limit": 101},
+        {"health_port": 65536},
+        {"lease_owner": "Bearer-private"},
+    ):
+        with pytest.raises(ValidationError):
+            _config(**changes)
+    bad = _environ()
+    bad["TRADEOS_NOTIFICATION_BATCH_LIMIT"] = "020"
+    with pytest.raises(module.NotificationWorkerConfigurationError):
+        Config.from_environ(bad)
+
+
+@pytest.mark.asyncio
+async def test_health_has_only_exact_paths_no_redirects_and_fixed_bodies() -> None:
+    """健康端点不能暴露 schema/config 细节或宽松重定向。"""
+    module = _module("apps.notification_worker.health")
+    state = module.NotificationHealthState()
+    app = module.create_notification_health_app(state)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://health") as client:
+        live = await client.get("/health/live")
+        not_ready = await client.get("/health/ready")
+        slash = await client.get("/health/live/", follow_redirects=False)
+        missing = await client.get("/other")
+        method = await client.post("/health/live")
+        assert live.status_code == 200 and live.json() == {"status": "live"}
+        assert not_ready.status_code == 503 and not_ready.json() == {
+            "status": "not_ready"
+        }
+        assert slash.status_code == 404 and slash.json() == {
+            "code": "not_found",
+            "message": "资源不存在",
+        }
+        assert missing.json() == {"code": "not_found", "message": "资源不存在"}
+        assert method.status_code == 405 and method.json() == {
+            "code": "method_not_allowed",
+            "message": "方法不允许",
+        }
+        for checkpoint in ("config", "schema", "database"):
+            state.mark_ready(checkpoint)
+        assert state.is_ready is False
+        state.mark_ready("registry")
+        assert state.is_ready is True
+        ready = await client.get("/health/ready")
+        assert ready.status_code == 200 and ready.json() == {"status": "ready"}
+        state.mark_degraded()
+        assert (await client.get("/health/ready")).status_code == 503
+        state.mark_ok()
+        assert (await client.get("/health/ready")).status_code == 200
+    with pytest.raises(ValidationError):
+        state.mark_ready("provider")
+
+
+def _claim(index: int) -> NotificationJobClaim:
+    return NotificationJobClaim(
+        NotificationJobId(f"njb_{index}"),
+        _TENANT,
+        _EMPLOYEE,
+        NotificationPriority.URGENT,
+        NotificationContext(
+            NotificationKind.COMMITMENT_OVERDUE,
+            f"com_{index}",
+            None,
+            None,
+            None,
+        ),
+        "CommitmentOverdue",
+        f"dedup:{index}",
+        f"claim:{index}",
+        1,
+    )
+
+
+class _Jobs:
+    def __init__(self, claims: tuple[NotificationJobClaim, ...]) -> None:
+        self.claims = claims
+        self.claim_calls: list[tuple[object, ...]] = []
+        self.completed: list[tuple[object, ...]] = []
+        self.retried: list[tuple[object, ...]] = []
+        self.rejected: list[tuple[object, ...]] = []
+
+    async def claim_due(self, tenant_id: TenantId, *, limit: int, lease_owner: str):
+        self.claim_calls.append((tenant_id, limit, lease_owner))
+        claims, self.claims = self.claims, ()
+        return claims
+
+    async def complete(self, tenant_id, job_id, *, claim_token):
+        self.completed.append((tenant_id, job_id, claim_token))
+        return True
+
+    async def retry(self, tenant_id, job_id, *, claim_token, error):
+        self.retried.append((tenant_id, job_id, claim_token, type(error).__name__))
+        return True
+
+    async def reject(self, tenant_id, job_id, *, claim_token, error):
+        self.rejected.append((tenant_id, job_id, claim_token, type(error).__name__))
+        return True
+
+
+class _Renderer:
+    def render(self, claim: NotificationJobClaim) -> Notification:
+        return Notification(
+            claim.tenant_id,
+            claim.recipient,
+            claim.priority,
+            "固定标题",
+            claim.context,
+            claim.source_event,
+            claim.dedup_key,
+            source_job_id=claim.job_id,
+        )
+
+
+class _Router:
+    def __init__(self, outcomes: list[BaseException | None]) -> None:
+        self.outcomes = outcomes
+        self.seen: list[Notification] = []
+
+    async def dispatch(self, notification: Notification) -> None:
+        self.seen.append(notification)
+        outcome = self.outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+
+
+@pytest.mark.asyncio
+async def test_worker_classifies_each_claim_independently_and_uses_fencing_tokens(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """一个失败 claim 不能阻止后续成功；每次落状态必须带原 claim token。"""
+    module = _module("apps.notification_worker.runtime")
+    jobs = _Jobs((_claim(1), _claim(2), _claim(3), _claim(4)))
+    router = _Router(
+        [
+            TransientError("Bearer payload must stay hidden"),
+            PolicyViolation("pass" + "word=private"),
+            RuntimeError("secret payload"),
+            None,
+        ]
+    )
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(jobs, router, _Renderer(), _config(), health)
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, _stop: asyncio.Event) -> None:
+        stop.set()
+
+    with caplog.at_level(logging.ERROR, logger="apps.notification_worker"):
+        result = await module.run_notification_worker(
+            runtime, stop_event=stop, wait=wait
+        )
+    assert result.status is module.WorkerRunStatus.STARTED
+    assert (result.cycles_completed, result.jobs_completed) == (1, 1)
+    assert jobs.claim_calls == [(_TENANT, 20, "notification-worker-1")]
+    assert jobs.completed == [(_TENANT, NotificationJobId("njb_4"), "claim:4")]
+    assert [item[1:] for item in jobs.retried] == [
+        (NotificationJobId("njb_1"), "claim:1", "TransientError"),
+        (NotificationJobId("njb_3"), "claim:3", "RuntimeError"),
+    ]
+    assert [item[1:] for item in jobs.rejected] == [
+        (NotificationJobId("njb_2"), "claim:2", "PolicyViolation")
+    ]
+    rendered_logs = caplog.text.casefold()
+    assert "bearer" not in rendered_logs
+    assert "password" not in rendered_logs
+    assert "secret payload" not in rendered_logs
+
+
+@pytest.mark.asyncio
+async def test_worker_persistence_failure_does_not_stop_later_claims() -> None:
+    """一条 claim 的结果落库失败也不能饿死同批后续任务。"""
+    module = _module("apps.notification_worker.runtime")
+
+    class Jobs(_Jobs):
+        async def retry(self, tenant_id, job_id, *, claim_token, error):
+            if job_id == NotificationJobId("njb_1"):
+                raise RuntimeError("private persistence detail")
+            return await super().retry(
+                tenant_id,
+                job_id,
+                claim_token=claim_token,
+                error=error,
+            )
+
+    jobs = Jobs((_claim(1), _claim(2)))
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    for checkpoint in ("config", "schema", "database", "registry"):
+        health.mark_ready(checkpoint)
+    assert health.is_ready is True
+    runtime = module.NotificationWorkerRuntime(
+        jobs,
+        _Router([TransientError("private"), None]),
+        _Renderer(),
+        _config(),
+        health,
+    )
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    result = await module.run_notification_worker(
+        runtime, stop_event=stop, wait=wait
+    )
+    assert result.jobs_completed == 1
+    assert jobs.completed == [(_TENANT, NotificationJobId("njb_2"), "claim:2")]
+    assert health.is_ready is False
+
+
+@pytest.mark.asyncio
+async def test_worker_stop_during_wait_and_signal_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stop 只截断下一轮，且 signal handler 在正常退出时对称清理。"""
+    module = _module("apps.notification_worker.runtime")
+    jobs = _Jobs(())
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(jobs, _Router([]), _Renderer(), _config(), health)
+    stop = asyncio.Event()
+    cleaned: list[bool] = []
+    monkeypatch.setattr(module, "install_stop_signals", lambda _event: lambda: cleaned.append(True))
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    result = await module.run_notification_worker(runtime, stop_event=stop, wait=wait)
+    assert result.cycles_completed == 1
+    assert cleaned == [True]
+
+
+@pytest.mark.asyncio
+async def test_worker_cancellation_propagates_after_signal_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CancelledError 不能被普通 claim 错误分支吞掉。"""
+    module = _module("apps.notification_worker.runtime")
+    jobs = _Jobs(())
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(jobs, _Router([]), _Renderer(), _config(), health)
+    entered = asyncio.Event()
+    cleaned: list[bool] = []
+    monkeypatch.setattr(module, "install_stop_signals", lambda _event: lambda: cleaned.append(True))
+
+    async def wait(_seconds: int, _event: asyncio.Event) -> None:
+        entered.set()
+        await asyncio.Future()
+
+    task = asyncio.create_task(module.run_notification_worker(runtime, wait=wait))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned == [True]
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """首次 yield 后被取消也必须关闭 health task 与数据库 engine。"""
+    module = _module("apps.notification_worker.runtime")
+    health_started = asyncio.Event()
+    health_closed: list[bool] = []
+    disposed: list[bool] = []
+
+    class Engine:
+        def connect(self):
+            class Connection:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return None
+
+                async def execute(self, _statement):
+                    return None
+
+            return Connection()
+
+        async def dispose(self):
+            disposed.append(True)
+
+    class Server:
+        def __init__(self, _state, _port):
+            self.stop = asyncio.Event()
+
+        async def serve(self):
+            health_started.set()
+            await self.stop.wait()
+
+        async def close(self):
+            health_closed.append(True)
+            self.stop.set()
+
+    monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
+    monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "NotificationHealthServer", Server)
+
+    entered = asyncio.Event()
+
+    async def consume() -> None:
+        async with module.notification_worker_runtime(_config()):
+            entered.set()
+            await asyncio.Future()
+
+    task = asyncio.create_task(consume())
+    await entered.wait()
+    await health_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert health_closed == [True]
+    assert disposed == [True]
+
+
+async def _async_none() -> None:
+    return None
+
+
+def test_main_missing_configuration_returns_fixed_nonzero_without_dsn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """入口配置错误不得打印 DSN 或异常原文。"""
+    module = _module("apps.notification_worker.main")
+    monkeypatch.setattr(module.os, "environ", {})
+    with caplog.at_level(logging.ERROR, logger="apps.notification_worker"):
+        assert module.main() != 0
+    assert "postgresql" not in caplog.text
+    assert "database_url" not in caplog.text.casefold()
