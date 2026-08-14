@@ -126,17 +126,19 @@ async def notification_worker_runtime(
             try:
                 await server.close()
             except BaseException as error:  # noqa: BLE001
-                if health_task is not None and not health_task.done():
-                    health_task.cancel()
                 if primary is None:
                     cleanup_error = error
                 else:
                     logger.error("通知 worker health 资源关闭失败")
-            for task in (health_started_task, health_task):
-                if task is None:
-                    continue
-                if task is health_started_task and not task.done():
+            health_tasks = tuple(
+                task
+                for task in (health_started_task, health_task)
+                if task is not None
+            )
+            for task in health_tasks:
+                if not task.done():
                     task.cancel()
+            for task in health_tasks:
                 try:
                     await task
                 except asyncio.CancelledError:

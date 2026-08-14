@@ -159,6 +159,107 @@ def test_renderer_maps_every_kind_to_fixed_safe_template(
 
 
 @pytest.mark.parametrize(
+    "reason_code",
+    [
+        "authentication_regression",
+        "hard_bounce_rate",
+        "complaint_rate",
+        "spam_trap",
+        "blocklisted",
+    ],
+)
+def test_renderer_accepts_public_suspension_reason_vocabulary(
+    reason_code: str,
+) -> None:
+    """public suspension wire vocabulary 的每个稳定值都必须可渲染。"""
+    context = NotificationContext(
+        NotificationKind.SENDING_IDENTITY_SUSPENDED,
+        _IDENTITY,
+        None,
+        reason_code,
+        None,
+    )
+
+    assert _renderer().render(_claim(context)).context is context
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "hard_bounce_rate:watch",
+        "hard_bounce_rate:throttled",
+        "hard_bounce_rate:suspended",
+        "complaint_rate:watch",
+        "complaint_rate:throttled",
+        "complaint_rate:suspended",
+        "spam_trap:watch",
+        "spam_trap:throttled",
+        "spam_trap:suspended",
+        "blocklisted:watch",
+        "blocklisted:throttled",
+        "blocklisted:suspended",
+    ],
+)
+def test_renderer_accepts_public_reputation_metric_severity_vocabulary(
+    reason_code: str,
+) -> None:
+    """测试写死 public wire 组合，不依赖领域私有 enum 或排序实现。"""
+    context = NotificationContext(
+        NotificationKind.REPUTATION_THRESHOLD_BREACHED,
+        _IDENTITY,
+        None,
+        reason_code,
+        None,
+    )
+
+    assert _renderer().render(_claim(context)).context is context
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        NotificationContext(
+            NotificationKind.SENDING_IDENTITY_SUSPENDED,
+            _IDENTITY,
+            None,
+            "customer_free_text",
+            None,
+        ),
+        NotificationContext(
+            NotificationKind.REPUTATION_THRESHOLD_BREACHED,
+            _IDENTITY,
+            None,
+            "customer_metric:customer_severity",
+            None,
+        ),
+    ],
+)
+def test_renderer_rejects_safe_shaped_non_public_identity_reason_codes(
+    context: NotificationContext,
+) -> None:
+    """safe 字符形状不能替代稳定 suspension/reputation 词表。"""
+    with pytest.raises(ValidationError, match="通知任务无法渲染"):
+        _renderer().render(_claim(context))
+
+
+@pytest.mark.parametrize("noncanonical_handoff_id", [new_id("han"), new_id("hnd")])
+def test_renderer_accepts_only_actual_hand_handoff_wire(
+    noncanonical_handoff_id: str,
+) -> None:
+    """han/hnd 是旧测试 fixture，不得扩成 production wire 白名单。"""
+    context = NotificationContext(
+        NotificationKind.HANDOFF_ESCALATION,
+        noncanonical_handoff_id,
+        _OPPORTUNITY,
+        "owner",
+        None,
+    )
+
+    with pytest.raises(ValidationError, match="通知任务无法渲染"):
+        _renderer().render(_claim(context))
+
+
+@pytest.mark.parametrize(
     "claim",
     [
         object(),

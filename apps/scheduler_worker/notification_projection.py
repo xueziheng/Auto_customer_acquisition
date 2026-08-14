@@ -40,6 +40,10 @@ _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_ID = re.compile(rf"tn_{_ULID}\Z")
 _EMPLOYEE_ID = re.compile(rf"emp_{_ULID}\Z")
 _APPROVAL_ID = re.compile(rf"apr_{_ULID}\Z")
+_HANDOFF_ID = re.compile(rf"hand_{_ULID}\Z")
+_OPPORTUNITY_ID = re.compile(rf"opp_{_ULID}\Z")
+_SENDING_IDENTITY_ID = re.compile(rf"sid_{_ULID}\Z")
+_COMMITMENT_ID = re.compile(rf"com_{_ULID}\Z")
 _SUPPORTED_EVENTS = (
     HandoffRequested,
     HandoffQueueBacklogged,
@@ -163,6 +167,10 @@ class NotificationJobHandoffNotifier:
             or _TENANT_ID.fullmatch(notice.tenant_id) is None
             or not isinstance(notice.recipient_id, str)
             or _EMPLOYEE_ID.fullmatch(notice.recipient_id) is None
+            or not isinstance(notice.handoff_id, str)
+            or _HANDOFF_ID.fullmatch(notice.handoff_id) is None
+            or not isinstance(notice.opportunity_id, str)
+            or _OPPORTUNITY_ID.fullmatch(notice.opportunity_id) is None
             or notice.level not in _HANDOFF_LEVELS
         ):
             raise ValidationError("人工接管通知无效")
@@ -197,8 +205,13 @@ def _project_context(
     event: DomainEvent,
 ) -> tuple[NotificationContext, NotificationPriority]:
     if isinstance(event, HandoffRequested):
-        if event.opportunity_id is None:
-            raise ValidationError("人工接管通知缺少机会")
+        if (
+            not isinstance(event.handoff_id, str)
+            or _HANDOFF_ID.fullmatch(event.handoff_id) is None
+            or not isinstance(event.opportunity_id, str)
+            or _OPPORTUNITY_ID.fullmatch(event.opportunity_id) is None
+        ):
+            raise ValidationError("人工接管通知 ID 无效")
         return (
             NotificationContext(
                 NotificationKind.HANDOFF_ESCALATION,
@@ -223,6 +236,11 @@ def _project_context(
             NotificationPriority.URGENT,
         )
     if isinstance(event, SendingIdentitySuspended):
+        if (
+            not isinstance(event.sending_identity_id, str)
+            or _SENDING_IDENTITY_ID.fullmatch(event.sending_identity_id) is None
+        ):
+            raise ValidationError("发件身份通知 ID 无效")
         return (
             NotificationContext(
                 NotificationKind.SENDING_IDENTITY_SUSPENDED,
@@ -234,6 +252,11 @@ def _project_context(
             NotificationPriority.URGENT,
         )
     if isinstance(event, ReputationThresholdBreached):
+        if (
+            not isinstance(event.sending_identity_id, str)
+            or _SENDING_IDENTITY_ID.fullmatch(event.sending_identity_id) is None
+        ):
+            raise ValidationError("发件信誉通知 ID 无效")
         return (
             NotificationContext(
                 NotificationKind.REPUTATION_THRESHOLD_BREACHED,
@@ -245,6 +268,11 @@ def _project_context(
             NotificationPriority.NORMAL,
         )
     if isinstance(event, CommitmentOverdue):
+        if (
+            not isinstance(event.commitment_id, str)
+            or _COMMITMENT_ID.fullmatch(event.commitment_id) is None
+        ):
+            raise ValidationError("承诺通知 ID 无效")
         return (
             NotificationContext(
                 NotificationKind.COMMITMENT_OVERDUE,

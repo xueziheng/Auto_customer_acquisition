@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+from contextlib import suppress
 from dataclasses import replace
 
 import pytest
@@ -326,6 +327,73 @@ async def test_worker_classifies_renderer_poison_and_retryable_errors(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("context", "source_event", "priority"),
+    [
+        (
+            NotificationContext(
+                NotificationKind.SENDING_IDENTITY_SUSPENDED,
+                new_id("sid"),
+                None,
+                "customer_free_text",
+                None,
+            ),
+            "SendingIdentitySuspended",
+            NotificationPriority.URGENT,
+        ),
+        (
+            NotificationContext(
+                NotificationKind.REPUTATION_THRESHOLD_BREACHED,
+                new_id("sid"),
+                None,
+                "customer_metric:customer_severity",
+                None,
+            ),
+            "ReputationThresholdBreached",
+            NotificationPriority.NORMAL,
+        ),
+    ],
+)
+async def test_worker_rejects_non_public_identity_reason_before_router(
+    context: NotificationContext,
+    source_event: str,
+    priority: NotificationPriority,
+) -> None:
+    """合法 envelope 中的任意安全 reason 也必须在 router/dedup 前终止。"""
+    module = _module("apps.notification_worker.runtime")
+    renderer = _module(
+        "notification_gateway.templates"
+    ).FixedNotificationTemplateRenderer()
+    claim = NotificationJobClaim(
+        NotificationJobId(new_id("njb")),
+        _TENANT,
+        _EMPLOYEE,
+        priority,
+        context,
+        source_event,
+        "safe:dedup",
+        new_id("njc"),
+        1,
+    )
+    jobs = _Jobs((claim,))
+    router = _Router([])
+    health = _module("apps.notification_worker.health").NotificationHealthState()
+    runtime = module.NotificationWorkerRuntime(jobs, router, renderer, _config(), health)
+    stop = asyncio.Event()
+
+    async def wait(_seconds: int, event: asyncio.Event) -> None:
+        event.set()
+
+    await module.run_notification_worker(runtime, stop_event=stop, wait=wait)
+
+    assert router.seen == []
+    assert jobs.retried == []
+    assert [item[1:] for item in jobs.rejected] == [
+        (claim.job_id, claim.claim_token, "ValidationError")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_worker_persistence_failure_does_not_stop_later_claims() -> None:
     """一条 claim 的结果落库失败也不能饿死同批后续任务。"""
     module = _module("apps.notification_worker.runtime")
@@ -530,6 +598,84 @@ async def test_runtime_context_rethrows_health_startup_failure_before_yield(
     assert entered == []
     assert health_closed == [True]
     assert disposed == [True]
+
+
+@pytest.mark.asyncio
+async def test_runtime_pre_listening_cancel_finishes_both_health_tasks_and_disposes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """首次 listening 前一次 cancel 就必须传播且完成全部清理。"""
+    module = _module("apps.notification_worker.runtime")
+    serve_entered = asyncio.Event()
+    started_entered = asyncio.Event()
+    disposed: list[bool] = []
+    closed: list[bool] = []
+
+    class Engine:
+        def connect(self):
+            class Connection:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *args):
+                    return None
+
+                async def execute(self, _statement):
+                    return None
+
+            return Connection()
+
+        async def dispose(self):
+            disposed.append(True)
+
+    class Server:
+        def __init__(self, _state, _port):
+            self.serve_task: asyncio.Task[object] | None = None
+            self.started_task: asyncio.Task[object] | None = None
+            servers.append(self)
+
+        async def serve(self):
+            self.serve_task = asyncio.current_task()
+            serve_entered.set()
+            await asyncio.Future()
+
+        async def wait_started(self):
+            self.started_task = asyncio.current_task()
+            started_entered.set()
+            await asyncio.Future()
+
+        async def close(self):
+            closed.append(True)
+
+    servers: list[Server] = []
+
+    monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
+    monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "NotificationHealthServer", Server)
+
+    async def consume() -> None:
+        async with module.notification_worker_runtime(_config()):
+            pytest.fail("listening 前取消时 runtime body 不得进入")
+
+    task = asyncio.create_task(consume())
+    await serve_entered.wait()
+    await started_entered.wait()
+    task.cancel()
+    done, _pending = await asyncio.wait({task}, timeout=0.15)
+    try:
+        assert task in done
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        server = servers[0]
+        assert server.serve_task is not None and server.serve_task.done()
+        assert server.started_task is not None and server.started_task.done()
+        assert closed == [True]
+        assert disposed == [True]
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 async def _async_none() -> None:

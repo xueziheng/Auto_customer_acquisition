@@ -49,9 +49,22 @@ _KIND_PRIORITIES: dict[NotificationKind, NotificationPriority] = {
 }
 _HANDOFF_REASONS = frozenset({"owner", "manager", "boss", "boss_reminder"})
 _APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
+_SUSPENSION_REASONS = frozenset(
+    {
+        "authentication_regression",
+        "hard_bounce_rate",
+        "complaint_rate",
+        "spam_trap",
+        "blocklisted",
+    }
+)
+_REPUTATION_METRICS = frozenset(
+    {"hard_bounce_rate", "complaint_rate", "spam_trap", "blocklisted"}
+)
+_REPUTATION_SEVERITIES = frozenset({"watch", "throttled", "suspended"})
 _KIND_IDS: dict[NotificationKind, tuple[re.Pattern[str], re.Pattern[str] | None]] = {
     NotificationKind.HANDOFF_ESCALATION: (
-        re.compile(rf"(?:hand|han|hnd)_{_ULID}\Z"),
+        re.compile(rf"hand_{_ULID}\Z"),
         re.compile(rf"opp_{_ULID}\Z"),
     ),
     NotificationKind.HANDOFF_QUEUE_BACKLOGGED: (
@@ -215,11 +228,19 @@ def _valid_kind_context(context: NotificationContext) -> bool:
         ) and context.level is None
     if context.kind is NotificationKind.HANDOFF_QUEUE_BACKLOGGED:
         return context.reason_code is None and context.level is not None
-    if context.kind in {
-        NotificationKind.SENDING_IDENTITY_SUSPENDED,
-        NotificationKind.REPUTATION_THRESHOLD_BREACHED,
-    }:
-        return isinstance(context.reason_code, str) and context.level is None
+    if context.kind is NotificationKind.SENDING_IDENTITY_SUSPENDED:
+        return (
+            context.reason_code in _SUSPENSION_REASONS and context.level is None
+        )
+    if context.kind is NotificationKind.REPUTATION_THRESHOLD_BREACHED:
+        if not isinstance(context.reason_code, str) or context.level is not None:
+            return False
+        parts = context.reason_code.split(":")
+        return (
+            len(parts) == 2
+            and parts[0] in _REPUTATION_METRICS
+            and parts[1] in _REPUTATION_SEVERITIES
+        )
     if context.kind is NotificationKind.COMMITMENT_OVERDUE:
         return context.reason_code is None and context.level is None
     if context.kind is NotificationKind.APPROVAL_DECIDED:

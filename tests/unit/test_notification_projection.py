@@ -81,7 +81,7 @@ class _Jobs:
 
 
 def _events() -> list[tuple[DomainEvent, object, tuple[object, ...]]]:
-    handoff_id = HandoffId(new_id("han"))
+    handoff_id = HandoffId(new_id("hand"))
     opportunity_id = OpportunityId(new_id("opp"))
     identity_id = SendingIdentityId(new_id("sid"))
     commitment_id = CommitmentId(new_id("com"))
@@ -466,12 +466,95 @@ async def test_approval_projection_preserves_both_stable_decisions(decision: str
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        HandoffRequested(
+            _TENANT,
+            _NOW,
+            None,
+            HandoffId("customer_free_text"),
+            OpportunityId(new_id("opp")),
+            _RECIPIENT,
+            "reply_received",
+        ),
+        HandoffRequested(
+            _TENANT,
+            _NOW,
+            None,
+            HandoffId(new_id("han")),
+            OpportunityId(new_id("opp")),
+            _RECIPIENT,
+            "reply_received",
+        ),
+        HandoffRequested(
+            _TENANT,
+            _NOW,
+            None,
+            HandoffId(new_id("hnd")),
+            OpportunityId(new_id("opp")),
+            _RECIPIENT,
+            "reply_received",
+        ),
+        HandoffRequested(
+            _TENANT,
+            _NOW,
+            None,
+            HandoffId(new_id("hand")),
+            OpportunityId("customer_free_text"),
+            _RECIPIENT,
+            "reply_received",
+        ),
+        CommitmentOverdue(_TENANT, _NOW, None, "customer_free_text", 3600),
+        SendingIdentitySuspended(
+            _TENANT,
+            _NOW,
+            None,
+            SendingIdentityId("customer_free_text"),
+            "hard_bounce_rate",
+        ),
+        ReputationThresholdBreached(
+            _TENANT,
+            _NOW,
+            None,
+            SendingIdentityId("customer_free_text"),
+            "complaint_rate",
+            "0.01",
+            "0.001",
+            "watch",
+        ),
+    ],
+)
+async def test_projection_rejects_forged_context_ids_before_audience_lookup(
+    event: DomainEvent,
+) -> None:
+    """NewType 仍是 str；错误 wire ID 不得先写入 durable context。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    audience = _Audience((Member(_TENANT, _RECIPIENT),))
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=audience,
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises(ValidationError):
+        await handler.handle(event)
+
+    assert audience.calls == []
+    assert jobs.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("level", ["owner", "manager", "boss", "boss_reminder"])
 async def test_handoff_notifier_persists_string_level_as_reason_code(level: str) -> None:
     """升级字符串不能伪造成整数 level，也不能在 scheduler 内直投渠道。"""
     Notifier = _load("NotificationJobHandoffNotifier")
     jobs = _Jobs()
-    handoff_id = HandoffId(new_id("han"))
+    handoff_id = HandoffId(new_id("hand"))
     opportunity_id = OpportunityId(new_id("opp"))
     notice = HandoffEscalationNotice(
         _TENANT,
@@ -501,3 +584,43 @@ async def test_handoff_notifier_persists_string_level_as_reason_code(level: str)
     assert job.context.level is None
     assert job.context.secondary_id == str(opportunity_id)
     assert job.dedup_key == notice.dedup_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handoff_id", "opportunity_id"),
+    [
+        (HandoffId("customer_free_text"), OpportunityId(new_id("opp"))),
+        (HandoffId(new_id("han")), OpportunityId(new_id("opp"))),
+        (HandoffId(new_id("hnd")), OpportunityId(new_id("opp"))),
+        (HandoffId(new_id("hand")), OpportunityId("customer_free_text")),
+    ],
+)
+async def test_handoff_notifier_rejects_forged_context_ids_before_enqueue(
+    handoff_id: HandoffId,
+    opportunity_id: OpportunityId,
+) -> None:
+    """workflow notice 的两个业务 ID 都必须在创建 durable job 前重校验。"""
+    Notifier = _load("NotificationJobHandoffNotifier")
+    notice = HandoffEscalationNotice(
+        _TENANT,
+        handoff_id,
+        opportunity_id,
+        _RECIPIENT,
+        _RECIPIENT,
+        "owner",
+        _NOW,
+        _NOW + timedelta(hours=1),
+        f"human_handoff:{handoff_id}:owner",
+    )
+    jobs = _Jobs()
+    notifier = Notifier(
+        jobs,
+        now=lambda: _NOW,
+        id_factory=lambda prefix: f"{prefix}_fixed",
+    )
+
+    with pytest.raises(ValidationError):
+        await notifier.notify(notice)
+
+    assert jobs.calls == []
