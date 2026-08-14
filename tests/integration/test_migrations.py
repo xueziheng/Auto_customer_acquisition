@@ -2735,16 +2735,36 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
 
 
 async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
-    """0015 的通知任务和收件箱表可精确回退并恢复。"""
+    """0015 的表、列、索引、约束和 FK 可精确回退并恢复。"""
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            names = set(await conn.run_sync(_sync_table_names))
+            def inspect_contract(sync):
+                inspector = inspect(sync)
+                return set(inspector.get_table_names()), {
+                    table: {
+                        "columns": {str(item["name"]) for item in inspector.get_columns(table)},
+                        "checks": {str(item["name"]) for item in inspector.get_check_constraints(table)},
+                        "unique": {str(item["name"]) for item in inspector.get_unique_constraints(table)},
+                        "fks": {str(item["name"]) for item in inspector.get_foreign_keys(table)},
+                        "indexes": {str(item["name"]) for item in inspector.get_indexes(table) if not item.get("duplicates_constraint")},
+                    }
+                    for table in ("notification_jobs", "in_app_notifications")
+                }
+            names, contract = await conn.run_sync(inspect_contract)
         assert revision == "0015"
         assert {"notification_jobs", "in_app_notifications"} <= names
+        assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
+        assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
+        assert "uq_notification_jobs_source_recipient_kind" in contract["notification_jobs"]["unique"]
+        assert "ix_notification_jobs_tenant_due" in contract["notification_jobs"]["indexes"]
+        assert "fk_in_app_notifications_job" in contract["in_app_notifications"]["fks"]
+        assert "uq_in_app_notifications_source_job" in contract["in_app_notifications"]["unique"]
+        assert "ck_in_app_notifications_priority" in contract["in_app_notifications"]["checks"]
+        assert "ix_in_app_notifications_recipient_created" in contract["in_app_notifications"]["indexes"]
         _run_alembic(db_url, "downgrade", "0014")
         assert {"notification_jobs", "in_app_notifications"}.isdisjoint(await _table_names(engine))
         _run_alembic(db_url, "upgrade", "0015")

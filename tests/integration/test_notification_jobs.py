@@ -7,9 +7,10 @@ import importlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from infra.db.tables import NotificationJobRow
 from notification_gateway.models import NotificationPriority
 from shared.schemas.identifiers import EmployeeId, TenantId
 
@@ -99,3 +100,40 @@ async def test_claim_can_recover_expired_processing_lease(store) -> None:
     clock.advance(301)
     second = (await job_store.claim_due(TenantId("tn_jobs"), limit=1, lease_owner="w2"))[0]
     assert second.claim_token != first.claim_token
+
+
+@pytest.mark.asyncio
+async def test_claim_due_skips_locked_first_row_and_stale_results_do_not_mutate(store) -> None:
+    """真实 PG 锁住最早行时，另一个 worker 用 SKIP LOCKED 立即取得第二行。"""
+    job_store, _clock, engine = store
+    first_job, second_job = _job("njb_04"), _job("njb_05")
+    assert await job_store.enqueue(first_job)
+    assert await job_store.enqueue(second_job)
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    session_a = factory()
+    try:
+        await session_a.begin()
+        await session_a.execute(
+            select(NotificationJobRow).where(
+                NotificationJobRow.tenant_id == "tn_jobs",
+                NotificationJobRow.notification_job_id == "njb_04",
+            ).with_for_update()
+        )
+        claim = (await asyncio.wait_for(
+            job_store.claim_due(TenantId("tn_jobs"), limit=1, lease_owner="w2"),
+            timeout=1,
+        ))[0]
+        assert claim.job_id == second_job.job_id
+        assert not await job_store.complete(TenantId("tn_jobs"), second_job.job_id, claim_token="stale")
+        assert not await job_store.retry(TenantId("tn_jobs"), second_job.job_id, claim_token="stale", error=RuntimeError("secret"))
+        assert not await job_store.reject(TenantId("tn_jobs"), second_job.job_id, claim_token="stale", error=RuntimeError("secret"))
+        async with engine.connect() as conn:
+            row = (await conn.execute(text("SELECT status, last_error FROM notification_jobs WHERE tenant_id='tn_jobs' AND notification_job_id='njb_05'"))).one()
+        assert row.status == "processing" and row.last_error is None
+        assert await job_store.reject(TenantId("tn_jobs"), second_job.job_id, claim_token=claim.claim_token, error=RuntimeError("secret"))
+        async with engine.connect() as conn:
+            row = (await conn.execute(text("SELECT status, last_error FROM notification_jobs WHERE tenant_id='tn_jobs' AND notification_job_id='njb_05'"))).one()
+        assert row.status == "rejected" and row.last_error == "RuntimeError"
+    finally:
+        await session_a.rollback()
+        await session_a.close()

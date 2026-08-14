@@ -97,3 +97,33 @@ async def test_inbox_service_uses_utc_now_for_mark_read() -> None:
     service = InAppNotificationServiceImpl(Store(), now=lambda: now)
     await service.mark_read(TenantId("tn_01"), "not_01", actor=InboxActor(TenantId("tn_01"), EmployeeId("emp_01")))
     assert seen == [now]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["owner", "manager", "boss"])
+async def test_handoff_notifiers_preserve_escalation_level_as_reason_code(
+    level: str,
+) -> None:
+    """接管升级的字符串等级只能进入 reason_code，不能伪装成整数 level。"""
+    from apps.api.composition.runtime import RuntimeHandoffNotifier
+    from scripts.demo_opportunity_board import _DemoHandoffNotifier
+    from shared.schemas.identifiers import HandoffId, OpportunityId
+    from workflows.human_handoff.flow import HandoffEscalationNotice
+
+    delivered = []
+
+    class Router:
+        async def dispatch(self, notification: object) -> None:
+            delivered.append(notification)
+
+    notice = HandoffEscalationNotice(
+        tenant_id=TenantId("tn_01"), handoff_id=HandoffId("han_01"),
+        opportunity_id=OpportunityId("opp_01"), recipient_id=EmployeeId("emp_01"),
+        assigned_to=EmployeeId("emp_01"), level=level,
+        sla_started_at=datetime(2026, 8, 14, tzinfo=UTC),
+        sla_due_at=datetime(2026, 8, 15, tzinfo=UTC), dedup_key="handoff:1",
+    )
+    for notifier_type in (RuntimeHandoffNotifier, _DemoHandoffNotifier):
+        await notifier_type(Router()).notify(notice)  # type: ignore[arg-type]
+    assert [item.context.reason_code for item in delivered] == [level, level]
+    assert [item.context.level for item in delivered] == [None, None]
