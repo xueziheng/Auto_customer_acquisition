@@ -2749,7 +2749,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                         "columns": {str(item["name"]) for item in inspector.get_columns(table)},
                         "checks": {str(item["name"]) for item in inspector.get_check_constraints(table)},
                         "unique": {str(item["name"]) for item in inspector.get_unique_constraints(table)},
-                        "fks": {str(item["name"]) for item in inspector.get_foreign_keys(table)},
+                        "fks": {str(item["name"]): item for item in inspector.get_foreign_keys(table)},
                         "indexes": {str(item["name"]) for item in inspector.get_indexes(table) if not item.get("duplicates_constraint")},
                     }
                     for table in ("notification_jobs", "in_app_notifications")
@@ -2761,10 +2761,21 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
         assert "uq_notification_jobs_source_recipient_kind" in contract["notification_jobs"]["unique"]
         assert "ix_notification_jobs_tenant_due" in contract["notification_jobs"]["indexes"]
-        assert "fk_in_app_notifications_job" in contract["in_app_notifications"]["fks"]
+        fk = contract["in_app_notifications"]["fks"]["fk_in_app_notifications_job"]
+        assert tuple(fk["constrained_columns"]) == ("tenant_id", "source_job_id")
+        assert fk["referred_table"] == "notification_jobs"
+        assert tuple(fk["referred_columns"]) == ("tenant_id", "notification_job_id")
+        assert fk["options"]["ondelete"] == "RESTRICT"
         assert "uq_in_app_notifications_source_job" in contract["in_app_notifications"]["unique"]
         assert "ck_in_app_notifications_priority" in contract["in_app_notifications"]["checks"]
         assert "ix_in_app_notifications_recipient_created" in contract["in_app_notifications"]["indexes"]
+        for status, priority, attempts in (("invalid", "urgent", 0), ("pending", "invalid", 0), ("pending", "urgent", -1)):
+            with pytest.raises((DBAPIError, IntegrityError)):
+                async with engine.begin() as conn:
+                    await conn.execute(text("INSERT INTO notification_jobs (tenant_id,notification_job_id,source_event_fingerprint,source_event,recipient_employee_id,priority,context_kind,primary_id,dedup_key,status,available_at,attempt_count,created_at) VALUES ('tn_guard','njb_guard_' || :status,:fp,'Event','emp',:priority,'handoff_escalation','han','key',:status,now(),:attempts,now())"), {"status": status, "priority": priority, "attempts": attempts, "fp": status[0] * 64})
+        with pytest.raises((DBAPIError, IntegrityError)):
+            async with engine.begin() as conn:
+                await conn.execute(text("INSERT INTO in_app_notifications (tenant_id,notification_id,recipient_employee_id,priority,title,context_kind,primary_id,source_job_id,created_at) VALUES ('tn_guard','not_orphan','emp','urgent','title','handoff_escalation','han','njb_missing',now())"))
         _run_alembic(db_url, "downgrade", "0014")
         assert {"notification_jobs", "in_app_notifications"}.isdisjoint(await _table_names(engine))
         _run_alembic(db_url, "upgrade", "0015")

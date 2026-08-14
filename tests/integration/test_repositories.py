@@ -1028,6 +1028,15 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_artifacts_run", "ck_artifacts_subject", "ck_artifacts_sequence",
             "ck_artifacts_idempotency", "ck_artifacts_generated_by",
         },
+        "notification_jobs": {
+            "pk_notification_jobs", "uq_notification_jobs_source_recipient_kind",
+            "ck_notification_jobs_status", "ck_notification_jobs_priority",
+            "ck_notification_jobs_attempt_count",
+        },
+        "in_app_notifications": {
+            "pk_in_app_notifications", "uq_in_app_notifications_source_job",
+            "fk_in_app_notifications_job", "ck_in_app_notifications_priority",
+        },
     }
     for table, names in expected_constraints.items():
         actual = {
