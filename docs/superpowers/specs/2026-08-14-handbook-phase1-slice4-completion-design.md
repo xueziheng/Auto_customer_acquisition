@@ -180,10 +180,13 @@ created_at / read_at
 
 ### 6.2 Outbox 与通知任务
 
-现有 Outbox 是单消费语义，scheduler 与 notification worker 不得争抢同一事件。
-scheduler 的唯一 handler 在标记原事件完成的同一事务中创建 `notification_job`。
-notification worker 只消费 notification job。渠道失败不回滚原业务事务，也不撤销其他
-已经成功的渠道。
+现有 Outbox 支持同一完整 handler registry 内的 durable per-handler delivery；事件只在
+该 registry 的全部 handler 完成后进入终态。但 handler registry 是进程内配置，两个进程
+若各自只注册部分 handler，先领取事件的进程仍可能在另一个进程创建 delivery 前把事件
+标成 `delivered`。因此 scheduler 与 notification worker 不得用两份 partial registry
+争抢同一 Outbox。scheduler 的完整 registry 中注册通知投影 handler；该 handler 在标记
+自身 delivery 完成的同一数据库事务中创建 `notification_job`。notification worker 只消费
+notification job。渠道失败不回滚原业务事务，也不撤销其他已经成功的渠道。
 
 ### 6.3 错误分类
 
