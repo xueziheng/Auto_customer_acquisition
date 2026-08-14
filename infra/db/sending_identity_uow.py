@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.sending_identities import (
     AuthenticationCheckRepositoryImpl,
+    AuthenticationCheckRequestRepositoryImpl,
     IdentityActionRepositoryImpl,
     ReputationRepositoryImpl,
     SendCounterRepositoryImpl,
@@ -44,6 +45,9 @@ class SqlAlchemySendingIdentityUnitOfWork:
         self.domains = SendingDomainRepositoryImpl(session, self._tenant_id)
         self.identities = SendingIdentityRepositoryImpl(session, self._tenant_id)
         self.auth_checks = AuthenticationCheckRepositoryImpl(session, self._tenant_id)
+        self.auth_check_requests = AuthenticationCheckRequestRepositoryImpl(
+            session, self._tenant_id
+        )
         self.reputation = ReputationRepositoryImpl(session, self._tenant_id)
         self.counters = SendCounterRepositoryImpl(session, self._tenant_id)
         self.reservations = SendReservationRepositoryImpl(session, self._tenant_id)

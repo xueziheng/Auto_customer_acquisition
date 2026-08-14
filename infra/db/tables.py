@@ -388,6 +388,53 @@ class AuthenticationCheckRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class AuthenticationCheckRequestRow(Base):
+    """``sending_auth_check_requests`` 持久状态机。"""
+
+    __tablename__ = "sending_auth_check_requests"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "request_id", name="pk_sending_auth_check_requests"
+        ),
+        UniqueConstraint(
+            "tenant_id", "request_key", name="uq_sending_auth_request_tenant_key"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "sending_identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            ondelete="RESTRICT",
+            name="fk_sending_auth_request_identity",
+        ),
+        CheckConstraint(
+            "status IN ('requested','running','succeeded','failed')",
+            name="ck_sending_auth_request_status",
+        ),
+        CheckConstraint(
+            "(status IN ('requested','running') AND completed_at IS NULL) OR "
+            "(status IN ('succeeded','failed') AND completed_at IS NOT NULL)",
+            name="ck_sending_auth_request_completion",
+        ),
+        CheckConstraint(
+            "request_id ~ '^acr_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND "
+            "sending_identity_id ~ '^sid_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_sending_auth_request_ids",
+        ),
+        CheckConstraint(
+            "request_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$' AND "
+            "lower(request_key) !~ '(bearer|token|secret|password|authorization)'",
+            name="ck_sending_auth_request_key",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    request_id: Mapped[str] = mapped_column(String(32))
+    sending_identity_id: Mapped[str] = mapped_column(String(32))
+    request_key: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ReputationEventRow(Base):
     """``sending_reputation_events`` 只增行。"""
 

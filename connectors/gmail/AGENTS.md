@@ -4,7 +4,7 @@
 
 Phase 1 当前实现经 Tool Gateway 的**单封发送**、不确定结果的**只读搜索恢复**，
 以及 Gmail RFC 3464 DSN 的 **typed 投递反馈读取**。回复正文拉取、投诉 FBL、标签和
-DNS 检查仍未实现，不能在文档、演示或 UI 中声称已经可运行。这个目录仍是其他
+DNS 检查不属于 Gmail，不能在文档、演示或 UI 中声称 Gmail 提供该能力。这个目录仍是其他
 Connector 的参考实现——写新 Connector 前先读这里。
 
 ## 密钥归属
@@ -67,7 +67,8 @@ fetch_feedback_page(alias, cursor, limit) -> EmailFeedbackPage
 ```
 
 旧的 free-dict `fetch_new_messages`、`BounceEvent` 与 `parse_bounce` 合同已删除，不能恢复
-第二套竞争接口。`add_label/check_dns_auth` 仍是 `NotImplementedError` 骨架。
+第二套竞争接口。`add_label` 仍是 `NotImplementedError` 骨架；DNS 认证只由
+`connectors/dns_auth` 提供，禁止在 Gmail 恢复 DNS skeleton。
 
 ## Phase 1 范围
 

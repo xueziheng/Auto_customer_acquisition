@@ -1,8 +1,8 @@
 """单副本 scheduler worker：安全锁定后驱动 outbox 与 workflow。
 
-本模块只负责进程编排，不构造领域服务或 handler。完整注册的 runtime 必须由
-composition root 注入；当前切片尚无生产 composition，因此零参数 ``main`` 明确
-失败关闭，避免空 handler registry 把合法 outbox 事件写成死信。
+本模块只负责进程编排，不构造领域服务或 handler。完整注册的 runtime 由
+``runtime`` composition 注入；零参数 ``main`` 仍明确失败关闭，避免未提供环境与
+密钥解析器时启动 partial registry。
 """
 
 from __future__ import annotations

@@ -767,3 +767,241 @@ async def test_repeated_cycles_do_not_repeat_real_outbox_or_workflow(
         ).scalar_one()
     assert event_status == "delivered"
     assert run_status == "completed"
+
+
+def test_task4_scheduler_config_is_strict_and_redacts_database_url() -> None:
+    """生产配置缺字段失败关闭，repr/错误不暴露 DSN。"""
+    try:
+        config_module = importlib.import_module("apps.scheduler_worker.config")
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"RED：scheduler config 尚未创建（{exc.name}）")
+    secret_dsn = "postgresql+asyncpg://user:secret@example.invalid/db"
+    environ = {
+        "DATABASE_URL": secret_dsn,
+        "TRADEOS_TENANT_ID": "tn_01K2C5R6J7ABCDEFGHJKMNPQRS",
+        "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
+        "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+        "TRADEOS_SCHEDULER_LOCK_KEY": "3110001",
+        "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "3",
+        "TRADEOS_HANDOFF_T1_SECONDS": "3600",
+        "TRADEOS_HANDOFF_T2_SECONDS": "7200",
+        "TRADEOS_DKIM_SELECTOR": "s1",
+        "TRADEOS_SCHEDULER_HEALTH_PORT": "8094",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "SCHEDULER_FINGERPRINT_KEY",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+    }
+    config = config_module.SchedulerWorkerConfig.from_environ(environ)
+    assert config.dkim_selector == "s1"
+    assert secret_dsn not in repr(config)
+    assert "secret" not in repr(config)
+    for missing in environ:
+        broken = dict(environ)
+        broken.pop(missing)
+        with pytest.raises(Exception) as caught:
+            config_module.SchedulerWorkerConfig.from_environ(broken)
+        assert secret_dsn not in str(caught.value)
+        assert "secret" not in str(caught.value)
+
+    lease_too_long = dict(environ)
+    lease_too_long["TRADEOS_TOOL_LEASE_SECONDS"] = "121"
+    with pytest.raises(ValidationError):
+        config_module.SchedulerWorkerConfig.from_environ(lease_too_long)
+
+
+async def test_dns_read_rate_limit_enforces_bounded_window() -> None:
+    """rate_limit stage 必须真实限流，不能只检查 prepared 存在。"""
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    limiter = runtime_module._DnsReadRateLimitCheck(
+        max_calls=2,
+        window_seconds=60,
+        now=lambda: datetime(2026, 8, 14, 12, tzinfo=UTC),
+    )
+    context = type(
+        "Context",
+        (),
+        {"tenant_id": TenantId("tn_01K2C5R6J7ABCDEFGHJKMNPQRS")},
+    )()
+    state = type("State", (), {"prepared": object()})()
+
+    assert await limiter.check(context, state) is None
+    assert await limiter.check(context, state) is None
+    with pytest.raises(Exception) as caught:
+        await limiter.check(context, state)
+    category = getattr(caught.value, "category", None)
+    assert category is not None
+    assert category.value == "rate_limited"
+    assert getattr(caught.value, "retry_after_seconds", None) == 60
+
+
+def test_complete_registry_has_handoff_all_notification_and_auth_handlers() -> None:
+    """partial registry 会把别的订阅先标 delivered，必须一次装配完整集合。"""
+    try:
+        runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"RED：scheduler production runtime 尚未创建（{exc.name}）")
+
+    class Engine:
+        def __init__(self) -> None:
+            self.definitions: list[Any] = []
+
+        def register(self, definition) -> None:
+            self.definitions.append(definition)
+
+    class Registry:
+        def __init__(self) -> None:
+            self.handlers: list[tuple[str, str]] = []
+
+        def register_handler(self, event_type, handler_name, handler) -> None:
+            del handler
+            self.handlers.append((event_type.__name__, handler_name))
+
+    engine = Engine()
+    registry = Registry()
+    runtime_module.register_complete_scheduler(
+        engine,
+        registry,
+        notification_handler=object(),
+        t1=datetime.resolution * 3_600_000_000,
+        t2=datetime.resolution * 7_200_000_000,
+    )
+    assert {item.workflow_type for item in engine.definitions} == {
+        "human_handoff",
+        "sending_identity_authentication",
+    }
+    assert set(registry.handlers) == {
+        ("HandoffRequested", "human_handoff.requested"),
+        ("HandoffAccepted", "human_handoff.accepted"),
+        ("HandoffRequested", "notification.handoff_requested"),
+        ("HandoffQueueBacklogged", "notification.handoff_queue_backlogged"),
+        ("SendingIdentitySuspended", "notification.sending_identity_suspended"),
+        (
+            "ReputationThresholdBreached",
+            "notification.reputation_threshold_breached",
+        ),
+        ("CommitmentOverdue", "notification.commitment_overdue"),
+        ("ApprovalDecided", "notification.approval_decided"),
+        ("AuthenticationCheckRequested", "sending_identity_auth.requested"),
+    }
+
+
+def test_scheduler_exports_concrete_production_composition_and_health() -> None:
+    """Task 4 不能只留下接收预制 engine/outbox 的薄 wrapper。"""
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    for symbol in (
+        "SchedulerDomainDependencies",
+        "SchedulerRuntimeFactory",
+        "SchedulerHealthState",
+        "SchedulerHealthServer",
+    ):
+        assert hasattr(runtime_module, symbol), f"RED：缺少生产装配 {symbol}"
+
+
+async def test_production_factory_builds_complete_runtime_and_cleans_resources(
+    db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实 schema 下装配 DNS/Gateway/workflow/outbox，退出关闭 health 与 engine。"""
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+
+    class Opportunity:
+        async def record_handoff_escalation(self, *args, **kwargs):
+            del args, kwargs
+
+    class Employees:
+        async def get_employee(self, *args, **kwargs):
+            del args, kwargs
+
+    class Audience:
+        async def recipients_for(self, tenant_id, event):
+            del tenant_id, event
+            return ()
+
+    class Resolver:
+        async def resolve(self, name, rdtype):
+            del name, rdtype
+            pytest.fail("composition 不得触发真实 DNS")
+
+    class HealthServer:
+        def __init__(self, state, port):
+            self.state = state
+            self.port = port
+            self.started = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def serve(self):
+            self.started.set()
+            await self.closed.wait()
+
+        async def wait_started(self):
+            await self.started.wait()
+
+        async def close(self):
+            self.closed.set()
+
+    servers: list[HealthServer] = []
+
+    def health_factory(state, port):
+        server = HealthServer(state, port)
+        servers.append(server)
+        return server
+
+    disposed = 0
+    original_dispose = AsyncEngine.dispose
+
+    async def tracked_dispose(engine):
+        nonlocal disposed
+        disposed += 1
+        await original_dispose(engine)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", tracked_dispose)
+    environ = {
+        "DATABASE_URL": db_url,
+        "TRADEOS_TENANT_ID": "tn_01K2C5R6J7ABCDEFGHJKMNPQRS",
+        "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
+        "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+        "TRADEOS_SCHEDULER_LOCK_KEY": "3110001",
+        "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "7",
+        "TRADEOS_HANDOFF_T1_SECONDS": "3600",
+        "TRADEOS_HANDOFF_T2_SECONDS": "7200",
+        "TRADEOS_DKIM_SELECTOR": "s1",
+        "TRADEOS_SCHEDULER_HEALTH_PORT": "8094",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "SCHEDULER_FINGERPRINT_KEY",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "SCHEDULER_FINGERPRINT_KEY": "x" * 32,
+    }
+    dependencies = runtime_module.SchedulerDomainDependencies(
+        Opportunity(), Employees(), Audience()
+    )
+    factory = runtime_module.SchedulerRuntimeFactory(
+        environ,
+        dependencies,
+        resolver_factory=Resolver,
+        health_server_factory=health_factory,
+        now=lambda: datetime(2026, 8, 14, 12, tzinfo=UTC),
+    )
+    async with factory() as runtime:
+        assert runtime.outbox._max_attempts == 7
+        assert set(runtime.workflow._handlers) == {
+            "human_handoff.notify_owner",
+            "human_handoff.accept",
+            "human_handoff.escalate_manager",
+            "human_handoff.escalate_boss",
+            "human_handoff.remind_boss",
+            "sending_identity_auth.check",
+        }
+        assert set(runtime.outbox._handlers) == {
+            "HandoffRequested",
+            "HandoffAccepted",
+            "HandoffQueueBacklogged",
+            "SendingIdentitySuspended",
+            "ReputationThresholdBreached",
+            "CommitmentOverdue",
+            "ApprovalDecided",
+            "AuthenticationCheckRequested",
+        }
+        assert runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
+        assert servers[0].state.is_ready is True
+    assert servers[0].closed.is_set()
+    assert disposed == 1

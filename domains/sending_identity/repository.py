@@ -23,8 +23,14 @@ from domains.sending_identity.schemas import (
     DeliveryEventRecord,
     SendReservation,
 )
+from shared.errors import ValidationError
 from shared.events.bus import EventBus
-from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, TenantId
+from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
+    IdempotencyKey,
+    SendingIdentityId,
+    TenantId,
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,46 @@ class AuthenticationAppendResult:
             self.winner, AuthenticationCheckRecord
         ):
             raise TypeError("authentication append result 无效")
+
+
+class AuthenticationCheckRequestStatus(str, Enum):
+    REQUESTED = "requested"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class AuthenticationCheckRequestView:
+    request_id: AuthenticationCheckRequestId
+    tenant_id: TenantId
+    sending_identity_id: SendingIdentityId
+    request_key: IdempotencyKey
+    status: AuthenticationCheckRequestStatus
+    requested_at: datetime
+    completed_at: datetime | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, AuthenticationCheckRequestStatus):
+            raise ValidationError("认证检查请求状态无效")
+        terminal = self.status in {
+            AuthenticationCheckRequestStatus.SUCCEEDED,
+            AuthenticationCheckRequestStatus.FAILED,
+        }
+        if terminal != (self.completed_at is not None):
+            raise ValidationError("认证检查请求完成时间无效")
+
+
+@dataclass(frozen=True)
+class AuthenticationCheckRequestCreateResult:
+    created: bool
+    winner: AuthenticationCheckRequestView
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.created, bool) or not isinstance(
+            self.winner, AuthenticationCheckRequestView
+        ):
+            raise TypeError("认证检查请求创建结果无效")
 
 
 @dataclass(frozen=True)
@@ -151,6 +197,29 @@ class AuthenticationCheckRepository(Protocol):
 
 
 @runtime_checkable
+class AuthenticationCheckRequestRepository(Protocol):
+    async def create_or_get(
+        self, request: AuthenticationCheckRequestView
+    ) -> AuthenticationCheckRequestCreateResult: ...
+
+    async def get(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        *,
+        for_update: bool = False,
+    ) -> AuthenticationCheckRequestView | None: ...
+
+    async def transition(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        target: AuthenticationCheckRequestStatus,
+        completed_at: datetime | None,
+    ) -> AuthenticationCheckRequestView: ...
+
+
+@runtime_checkable
 class ReputationRepository(Protocol):
     async def record_event(self, event: DeliveryEventRecord) -> bool: ...
 
@@ -195,6 +264,7 @@ class SendingIdentityUnitOfWork(Protocol):
     domains: SendingDomainRepository
     identities: SendingIdentityRepository
     auth_checks: AuthenticationCheckRepository
+    auth_check_requests: AuthenticationCheckRequestRepository
     reputation: ReputationRepository
     counters: SendCounterRepository
     reservations: SendReservationRepository

@@ -33,7 +33,6 @@ MANIFEST = ConnectorManifest(
         "notification.email.send",
         "email.feedback.fetch",
         "email.add_label",
-        "dns.check_auth",
     ),
     secret_refs=("GMAIL_OAUTH_TOKEN_REF",),
     rate_limit_note="Gmail API 按用户配额；429 带 retry_after",
@@ -425,10 +424,6 @@ class GmailConnector:
 
     async def add_label(self, message_ref: str, label: str) -> None:
         raise NotImplementedError
-
-    async def check_dns_auth(self, domain: str) -> dict[str, bool]:
-        raise NotImplementedError
-
 
 def _encode_feedback_cursor(state: _FeedbackCursorState) -> str:
     payload = {

@@ -32,6 +32,7 @@ from infra.db.tables import OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
+    AuthenticationCheckRequested,
     DomainEvent,
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -50,6 +51,7 @@ from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
 
 EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
+    "AuthenticationCheckRequested": AuthenticationCheckRequested,
     "OpportunityQualified": OpportunityQualified,
     "OpportunityLost": OpportunityLost,
     "OpportunityWon": OpportunityWon,
@@ -121,6 +123,16 @@ def _validate_ratio(value: str) -> None:
 
 
 def _validate_sending_identity_event(event: DomainEvent) -> None:
+    if isinstance(event, AuthenticationCheckRequested):
+        if (
+            not isinstance(event.request_id, str)
+            or re.fullmatch(r"acr_[0-7][0-9A-HJKMNP-TV-Z]{25}", event.request_id)
+            is None
+            or not isinstance(event.sending_identity_id, str)
+            or _SAFE_SENDING_ID.fullmatch(event.sending_identity_id) is None
+        ):
+            raise _invalid_sending_event()
+        return
     if not isinstance(
         event,
         (

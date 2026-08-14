@@ -1597,7 +1597,9 @@ async def test_handoff_escalation_service_duplicate_exact_constraint_noop(
         finally:
             await seed.close()
         service = OpportunityServiceImpl(
-            lambda: SqlAlchemyOpportunityUnitOfWork(factory, tenant),
+            lambda: SqlAlchemyOpportunityUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory, tenant
+            ),
             _Scorer(),
             HandoffPolicy(sla_seconds=1, backlog_threshold=1),
             authorizer=_Auth(),
@@ -1844,3 +1846,83 @@ async def test_provenance_tenant_binding_mismatch(repo_session: AsyncSession) ->
     )
     with pytest.raises(ValueError):
         await repo.save(TenantId("tPmbB"), "opportunity", "opp-pmb", "account_name", prov)
+
+
+async def test_authentication_request_repository_idempotency_tenant_and_status(
+    repo_session: AsyncSession,
+) -> None:
+    """真实 repository 强制 tenant/key winner、合法状态与终态安全。"""
+    repository = importlib.import_module("domains.sending_identity.repository")
+    implementation = importlib.import_module(
+        "infra.db.repositories.sending_identities"
+    )
+    required = "AuthenticationCheckRequestRepositoryImpl"
+    if not hasattr(implementation, required):
+        pytest.fail(f"RED：{required} 尚未实现")
+    tenant = TenantId("tn_01K2C5R6J7ABCDEFGHJKMNPQRV")
+    other_tenant = TenantId("tn_01K2C5R6J7ABCDEFGHJKMNPQRW")
+    identity = "sid_01K2C5R6J7ABCDEFGHJKMNPQRV"
+    now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    await repo_session.execute(
+        text(
+            "INSERT INTO sending_domains(tenant_id,domain,role,created_at) "
+            "VALUES (:tenant,'task4-repo.example.com','cold_outreach',:now)"
+        ),
+        {"tenant": str(tenant), "now": now},
+    )
+    await repo_session.execute(
+        text(
+            "INSERT INTO sending_identities(tenant_id,identity_id,domain,address,state,"
+            "throttle_hard_bounce_rate,suspend_hard_bounce_rate,"
+            "throttle_complaint_rate,suspend_complaint_rate,suspend_on_spam_trap,"
+            "suspend_on_blocklist,minimum_sample,created_at) VALUES "
+            "(:tenant,:identity,'task4-repo.example.com','sales@task4-repo.example.com','auth_pending',"
+            "0.03,0.05,0.001,0.003,true,true,50,:now)"
+        ),
+        {"tenant": str(tenant), "identity": identity, "now": now},
+    )
+    repo = implementation.AuthenticationCheckRequestRepositoryImpl(
+        repo_session, tenant
+    )
+    view = repository.AuthenticationCheckRequestView(
+        importlib.import_module(
+            "shared.schemas.identifiers"
+        ).AuthenticationCheckRequestId("acr_01K2C5R6J7ABCDEFGHJKMNPQRV"),
+        tenant,
+        importlib.import_module(
+            "shared.schemas.identifiers"
+        ).SendingIdentityId(identity),
+        importlib.import_module("shared.schemas.identifiers").IdempotencyKey(
+            "repo-request-key"
+        ),
+        repository.AuthenticationCheckRequestStatus.REQUESTED,
+        now,
+        None,
+    )
+    created = await repo.create_or_get(view)
+    duplicate = await repo.create_or_get(view)
+    assert created.created is True
+    assert duplicate.created is False
+    assert duplicate.winner == view
+    assert await repo.get(other_tenant, view.request_id) is None
+    running = await repo.transition(
+        tenant,
+        view.request_id,
+        repository.AuthenticationCheckRequestStatus.RUNNING,
+        None,
+    )
+    assert running.status is repository.AuthenticationCheckRequestStatus.RUNNING
+    succeeded = await repo.transition(
+        tenant,
+        view.request_id,
+        repository.AuthenticationCheckRequestStatus.SUCCEEDED,
+        now,
+    )
+    assert succeeded.completed_at == now
+    with pytest.raises(InvalidStateTransition):
+        await repo.transition(
+            tenant,
+            view.request_id,
+            repository.AuthenticationCheckRequestStatus.RUNNING,
+            None,
+        )

@@ -20,6 +20,10 @@ Phase 1 需要的 handler 清单（实现时逐个补）：
 凭证在 handler 内部经密钥服务获取，不进日志（硬边界 1）。
 """
 
+from .dns_auth import (
+    DnsAuthenticationCheckHandler,
+    ToolGatewayDnsAuthenticationChecker,
+)
 from .email_feedback import (
     EmailFeedbackFetchHandler,
     FeedbackPageSlot,
@@ -36,10 +40,12 @@ from .email_send import (
 __all__ = [
     "DeliveryMaterial",
     "DeliveryMaterialProvider",
+    "DnsAuthenticationCheckHandler",
     "EmailFeedbackFetchHandler",
     "EmailSendHandler",
     "FeedbackPageSlot",
     "ToolEmailFeedbackReader",
+    "ToolGatewayDnsAuthenticationChecker",
     "ToolGatewayEmailFeedbackReader",
     "UnsubscribeLinkProvider",
 ]

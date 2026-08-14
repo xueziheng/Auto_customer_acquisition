@@ -32,6 +32,7 @@ import subprocess
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import pytest
 from sqlalchemy import (
@@ -160,7 +161,9 @@ def _sync_email_feedback_contract(
         ),
         {"tables": list(EMAIL_FEEDBACK_TABLES)},
     )
-    triggers = {table: set() for table in EMAIL_FEEDBACK_TABLES}
+    triggers: dict[str, set[str]] = {
+        table: set() for table in EMAIL_FEEDBACK_TABLES
+    }
     for table, trigger in trigger_rows:
         triggers[str(table)].add(str(trigger))
     functions = {
@@ -1031,7 +1034,7 @@ def _sync_outreach_guards(conn: Connection) -> tuple[dict[str, set[str]], set[st
         ),
         {"tables": list(OUTREACH_TABLES)},
     ).all()
-    triggers = {table: set() for table in OUTREACH_TABLES}
+    triggers: dict[str, set[str]] = {table: set() for table in OUTREACH_TABLES}
     for table, trigger in trigger_rows:
         triggers[str(table)].add(str(trigger))
     functions = {
@@ -1489,7 +1492,7 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
             ),
         ):
             await _assert_statement_integrity_rejected(
-                engine, restricted_sql, params, reason
+                engine, restricted_sql, cast(dict[str, object], params), reason
             )
         await _assert_statement_integrity_rejected(
             engine,
@@ -2268,7 +2271,7 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
         assert {
             "ck_outreach_attempt_correlation_pair",
             "ck_outreach_attempt_correlation_grammar",
-        } <= attempt_contract["checks"]
+        } <= cast(set[str], attempt_contract["checks"])
         assert attempt_contract["indexes"] == {
             "ix_outreach_attempts_tenant_enrollment_created": (
                 "tenant_id",
@@ -2456,7 +2459,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0015"
+        assert revision == "0016"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2609,7 +2612,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0015"
+        assert revision == "0016"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2755,7 +2758,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0015"
+        assert revision == "0016"
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2926,4 +2929,136 @@ async def test_0012_email_feedback_database_guards(db_url: str) -> None:
             "item fingerprint 必须 lower-hex 64 字符",
         )
     finally:
+        await engine.dispose()
+
+
+async def test_0016_authentication_check_requests_roundtrip_and_guards(
+    db_url: str,
+) -> None:
+    """0016→0015→0016 保留唯一/FK/状态/不可变边界。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_01K2C5R6J7ABCDEFGHJKMNPQRS"
+    identity = "sid_01K2C5R6J7ABCDEFGHJKMNPQRS"
+    request = "acr_01K2C5R6J7ABCDEFGHJKMNPQRS"
+    now = datetime(2026, 8, 14, 12, tzinfo=UTC)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0016", "RED：0016 认证请求迁移尚未创建"
+
+            def inspect_contract(sync):
+                inspector = inspect(sync)
+                return {
+                    "tables": set(inspector.get_table_names()),
+                    "columns": {
+                        str(item["name"])
+                        for item in inspector.get_columns(
+                            "sending_auth_check_requests"
+                        )
+                    },
+                    "checks": {
+                        str(item["name"])
+                        for item in inspector.get_check_constraints(
+                            "sending_auth_check_requests"
+                        )
+                    },
+                    "unique": {
+                        str(item["name"])
+                        for item in inspector.get_unique_constraints(
+                            "sending_auth_check_requests"
+                        )
+                    },
+                    "fks": {
+                        str(item["name"]): item
+                        for item in inspector.get_foreign_keys(
+                            "sending_auth_check_requests"
+                        )
+                    },
+                }
+
+            contract = await conn.run_sync(inspect_contract)
+        assert "sending_auth_check_requests" in contract["tables"]
+        assert {
+            "tenant_id",
+            "request_id",
+            "sending_identity_id",
+            "request_key",
+            "status",
+            "requested_at",
+            "completed_at",
+        } == contract["columns"]
+        assert {
+            "ck_sending_auth_request_status",
+            "ck_sending_auth_request_completion",
+            "ck_sending_auth_request_ids",
+            "ck_sending_auth_request_key",
+        } <= contract["checks"]
+        assert "uq_sending_auth_request_tenant_key" in contract["unique"]
+        fk = contract["fks"]["fk_sending_auth_request_identity"]
+        assert tuple(fk["constrained_columns"]) == (
+            "tenant_id",
+            "sending_identity_id",
+        )
+        assert tuple(fk["referred_columns"]) == ("tenant_id", "identity_id")
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO sending_domains(tenant_id,domain,role,created_at) "
+                    "VALUES (:tenant,'cold.example.com','cold_outreach',:now) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {"tenant": tenant, "now": now},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO sending_identities(tenant_id,identity_id,domain,address,state,"
+                    "throttle_hard_bounce_rate,suspend_hard_bounce_rate,"
+                    "throttle_complaint_rate,suspend_complaint_rate,suspend_on_spam_trap,"
+                    "suspend_on_blocklist,minimum_sample,created_at) VALUES "
+                    "(:tenant,:identity,'cold.example.com','sales@cold.example.com','auth_pending',"
+                    "0.03,0.05,0.001,0.003,true,true,50,:now) ON CONFLICT DO NOTHING"
+                ),
+                {"tenant": tenant, "identity": identity, "now": now},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO sending_auth_check_requests "
+                    "(tenant_id,request_id,sending_identity_id,request_key,status,requested_at) "
+                    "VALUES (:tenant,:request,:identity,'request-key','requested',:now)"
+                ),
+                {
+                    "tenant": tenant,
+                    "request": request,
+                    "identity": identity,
+                    "now": now,
+                },
+            )
+        for statement in (
+            (
+                "UPDATE sending_auth_check_requests SET sending_identity_id="
+                "'sid_01K2C5R6J7ABCDEFGHJKMNPQRT' WHERE tenant_id=:tenant"
+            ),
+            (
+                "UPDATE sending_auth_check_requests SET request_key='other-key' "
+                "WHERE tenant_id=:tenant"
+            ),
+            (
+                "UPDATE sending_auth_check_requests SET status='succeeded' "
+                "WHERE tenant_id=:tenant"
+            ),
+            "DELETE FROM sending_auth_check_requests WHERE tenant_id=:tenant",
+        ):
+            with pytest.raises((DBAPIError, IntegrityError)):
+                async with engine.begin() as conn:
+                    await conn.execute(text(statement), {"tenant": tenant})
+
+        _run_alembic(db_url, "downgrade", "0015")
+        assert "sending_auth_check_requests" not in await _table_names(engine)
+        _run_alembic(db_url, "upgrade", "0016")
+        assert "sending_auth_check_requests" in await _table_names(engine)
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

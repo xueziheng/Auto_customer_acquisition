@@ -8,12 +8,22 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.sending_identity.models import DeliveryEventType
-from domains.sending_identity.permissions import Actor
+from domains.sending_identity.models import (
+    AuthCheck,
+    AuthenticationFailureCategory,
+    AuthenticationFixInstruction,
+    DeliveryEventType,
+)
+from domains.sending_identity.permissions import Actor, ScopeLevel, SendingIdentityScope
+from domains.sending_identity.repository import (
+    AuthenticationCheckRequestStatus,
+    AuthenticationCheckRequestView,
+)
 from domains.sending_identity.repository import (
     SendingIdentityUnitOfWorkFactory as _SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.schemas import (
+    AuthenticationFailure,
     AuthenticationResult,
     DeliveryEventRecord,
     DomainReputationView,
@@ -24,10 +34,21 @@ from domains.sending_identity.schemas import (
     SendReservation,
     WarmupProgressView,
 )
-from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, TenantId
+from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
+    IdempotencyKey,
+    SendingIdentityId,
+    TenantId,
+)
 
 __all__ = [
     "Actor",
+    "AuthCheck",
+    "AuthenticationCheckRequestStatus",
+    "AuthenticationCheckRequestView",
+    "AuthenticationFailure",
+    "AuthenticationFailureCategory",
+    "AuthenticationFixInstruction",
     "AuthenticationResult",
     "DeliveryEventRecord",
     "DeliveryEventType",
@@ -35,8 +56,10 @@ __all__ = [
     "IdentityRegisterRequest",
     "IdentityView",
     "ReputationView",
+    "ScopeLevel",
     "SendPermission",
     "SendReservation",
+    "SendingIdentityScope",
     "SendingIdentityService",
     "SendingIdentityUnitOfWorkFactory",
     "WarmupProgressView",
@@ -56,6 +79,32 @@ class SendingIdentityService(Protocol):
     async def begin_authentication(
         self, tenant_id: TenantId, identity_id: SendingIdentityId, *, actor: Actor
     ) -> None: ...
+
+    async def request_authentication_check(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        request_key: IdempotencyKey,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView: ...
+
+    async def transition_authentication_check_request(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        target_status: AuthenticationCheckRequestStatus,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView: ...
+
+    async def get_authentication_check_request(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView: ...
 
     async def record_authentication_result(
         self,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -39,6 +40,8 @@ from domains.sending_identity.permissions import (
 )
 from domains.sending_identity.repository import (
     AuthenticationCheckRecord,
+    AuthenticationCheckRequestStatus,
+    AuthenticationCheckRequestView,
     IdentityActionRecord,
     ReservationOutcome,
     SendingDomain,
@@ -59,18 +62,21 @@ from domains.sending_identity.schemas import (
 )
 from domains.sending_identity.service import SendingIdentityService
 from shared.errors import (
+    IdempotencyConflict,
     InvalidStateTransition,
     PermissionDenied,
     TenantIsolationViolation,
     ValidationError,
 )
 from shared.events.catalog import (
+    AuthenticationCheckRequested,
     ReputationThresholdBreached,
     SendingIdentityActivated,
     SendingIdentitySuspended,
     SendingIdentityThrottled,
 )
 from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
     IdempotencyKey,
     SendingIdentityId,
     TenantId,
@@ -90,6 +96,9 @@ _REASON_CAP = "当日发送额度已用尽"
 _REASON_IDENTITY_REPUTATION = "身份信誉窗口已触发发送限制"
 _REASON_DOMAIN_REPUTATION = "域名信誉窗口已触发发送限制"
 _SECRET_KEY_MARKERS = ("bearer", "token", "secret", "password")
+_CANONICAL_ID = re.compile(r"[a-z]{2,8}_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
+_AUTH_REQUEST_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
+_AUTH_REQUEST_SECRET_MARKERS = (*_SECRET_KEY_MARKERS, "authorization")
 _RESUME_HARD_BOUNCE_RATE = Decimal(".024")
 _RESUME_COMPLAINT_RATE = Decimal(".0008")
 
@@ -146,6 +155,37 @@ def _safe_reservation_key(value: IdempotencyKey) -> IdempotencyKey:
     ):
         raise ValidationError("发送预留幂等键无效")
     return IdempotencyKey(cleaned)
+
+
+def _safe_auth_request_inputs(
+    identity_id: SendingIdentityId, request_key: IdempotencyKey
+) -> tuple[SendingIdentityId, IdempotencyKey]:
+    if (
+        not isinstance(identity_id, str)
+        or _CANONICAL_ID.fullmatch(identity_id) is None
+        or not identity_id.startswith("sid_")
+    ):
+        raise ValidationError("认证检查请求无效")
+    key = _safe_reservation_key(request_key)
+    if (
+        key != request_key
+        or _AUTH_REQUEST_KEY.fullmatch(key) is None
+        or any(marker in key.lower() for marker in _AUTH_REQUEST_SECRET_MARKERS)
+    ):
+        raise ValidationError("认证检查请求无效")
+    return identity_id, key
+
+
+def _safe_auth_request_id(
+    request_id: AuthenticationCheckRequestId,
+) -> AuthenticationCheckRequestId:
+    if (
+        not isinstance(request_id, str)
+        or _CANONICAL_ID.fullmatch(request_id) is None
+        or not request_id.startswith("acr_")
+    ):
+        raise ValidationError("认证检查请求 ID 无效")
+    return request_id
 
 
 def _reputation_blocks(window: ReputationWindow, identity: SendingIdentity) -> bool:
@@ -886,6 +926,142 @@ class SendingIdentityServiceImpl:
                 occurred_at=now,
             )
         self._audit_allow(actor, action, tenant_id, rule)
+
+    async def request_authentication_check(
+        self,
+        tenant_id: TenantId,
+        identity_id: SendingIdentityId,
+        request_key: IdempotencyKey,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView:
+        """原子创建认证请求、必要的首次状态迁移和 outbox 事件。"""
+        action = SendingIdentityAction.AUTH_CHECK_BEGIN
+        self._preauthorize(actor, action, tenant_id)
+        identity_id, request_key = _safe_auth_request_inputs(identity_id, request_key)
+        now = self._now()
+        candidate = AuthenticationCheckRequestView(
+            AuthenticationCheckRequestId(new_id("acr")),
+            tenant_id,
+            identity_id,
+            request_key,
+            AuthenticationCheckRequestStatus.REQUESTED,
+            now,
+            None,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            identity, rule = await self._locked_identity(
+                uow, tenant_id, identity_id, actor, action
+            )
+            if identity.state is IdentityState.RETIRED:
+                raise InvalidStateTransition("退休身份不能请求认证检查")
+            created = await uow.auth_check_requests.create_or_get(candidate)
+            winner = created.winner
+            if winner.tenant_id != tenant_id:
+                self._deny_tenant_isolation(actor, action, tenant_id)
+            if winner.sending_identity_id != identity_id:
+                raise IdempotencyConflict("认证检查请求幂等冲突")
+            if created.created:
+                if identity.state is IdentityState.CREATED:
+                    before = identity.state
+                    identity.transition_to(IdentityState.AUTH_PENDING)
+                    next_version = identity.version + 1
+                    await uow.identities.update(identity)
+                    await self._record_action(
+                        uow,
+                        identity,
+                        action=action,
+                        before=before,
+                        after=identity.state,
+                        actor=actor,
+                        rule=rule,
+                        version=next_version,
+                        occurred_at=now,
+                    )
+                await uow.bus.publish(
+                    AuthenticationCheckRequested(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        request_id=winner.request_id,
+                        sending_identity_id=identity_id,
+                    )
+                )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return winner
+
+    async def transition_authentication_check_request(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        target_status: AuthenticationCheckRequestStatus,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView:
+        """由单身份 SYSTEM actor 推动请求的严格状态机。"""
+        action = SendingIdentityAction.AUTH_RESULT_RECORD
+        self._preauthorize(actor, action, tenant_id)
+        request_id = _safe_auth_request_id(request_id)
+        if not isinstance(target_status, AuthenticationCheckRequestStatus):
+            raise ValidationError("认证检查请求状态无效")
+        now = self._now()
+        async with self._uow_factory(tenant_id) as uow:
+            current = await uow.auth_check_requests.get(
+                tenant_id, request_id, for_update=True
+            )
+            if current is None:
+                raise SendingIdentityNotFoundError("认证检查请求不存在或不属于当前租户")
+            rule = self._authorize_resource(
+                actor,
+                action,
+                tenant_id,
+                identity_id=current.sending_identity_id,
+            )
+            if (
+                current.status is AuthenticationCheckRequestStatus.RUNNING
+                and target_status is AuthenticationCheckRequestStatus.RUNNING
+            ):
+                updated = current
+            else:
+                completed_at = (
+                    now
+                    if target_status
+                    in {
+                        AuthenticationCheckRequestStatus.SUCCEEDED,
+                        AuthenticationCheckRequestStatus.FAILED,
+                    }
+                    else None
+                )
+                updated = await uow.auth_check_requests.transition(
+                    tenant_id, request_id, target_status, completed_at
+                )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return updated
+
+    async def get_authentication_check_request(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        *,
+        actor: Actor,
+    ) -> AuthenticationCheckRequestView:
+        """读取 tenant-bound 请求状态，供 workflow 在崩溃重放时收敛。"""
+        action = SendingIdentityAction.AUTH_RESULT_RECORD
+        self._preauthorize(actor, action, tenant_id)
+        request_id = _safe_auth_request_id(request_id)
+        async with self._uow_factory(tenant_id) as uow:
+            current = await uow.auth_check_requests.get(tenant_id, request_id)
+            if current is None:
+                raise SendingIdentityNotFoundError(
+                    "认证检查请求不存在或不属于当前租户"
+                )
+            rule = self._authorize_resource(
+                actor,
+                action,
+                tenant_id,
+                identity_id=current.sending_identity_id,
+            )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return current
 
     async def record_authentication_result(
         self,

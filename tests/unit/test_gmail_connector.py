@@ -321,3 +321,10 @@ async def test_transactional_error_classification_is_bounded_and_safe(
     assert caught.value.category is category
     assert caught.value.retry_after_seconds == retry_after
     assert "oauth-marker" not in str(caught.value)
+
+
+def test_gmail_has_no_dns_capability_or_dns_skeleton() -> None:
+    """DNS 只能由独立 connector 拥有，避免 Gmail 凭证边界蔓延。"""
+    assert "dns.check_auth" not in gmail_client.MANIFEST.capabilities
+    assert "dns.auth.check" not in gmail_client.MANIFEST.capabilities
+    assert not hasattr(gmail_client.GmailConnector, "check_dns_auth")

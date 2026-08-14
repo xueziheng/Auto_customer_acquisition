@@ -27,6 +27,9 @@ from domains.sending_identity.permissions import ScopeLevel, SendingIdentityScop
 from domains.sending_identity.repository import (
     AuthenticationAppendResult,
     AuthenticationCheckRecord,
+    AuthenticationCheckRequestCreateResult,
+    AuthenticationCheckRequestStatus,
+    AuthenticationCheckRequestView,
     IdentityActionRecord,
     IdentityRegistrationResult,
     ReservationOutcome,
@@ -41,6 +44,7 @@ from domains.sending_identity.schemas import (
 )
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    AuthenticationCheckRequestRow,
     AuthenticationCheckRow,
     IdentityActionRow,
     ReputationEventRow,
@@ -49,8 +53,9 @@ from infra.db.tables import (
     SendingIdentityRow,
     SendReservationRow,
 )
-from shared.errors import TenantIsolationViolation
+from shared.errors import InvalidStateTransition, TenantIsolationViolation
 from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
     IdempotencyKey,
     SendingIdentityId,
     TenantId,
@@ -233,6 +238,20 @@ def _row_to_auth(row: AuthenticationCheckRow) -> AuthenticationCheckRecord:
             check_ref=row.check_ref,
         ),
         created_at=row.created_at,
+    )
+
+
+def _row_to_auth_request(
+    row: AuthenticationCheckRequestRow,
+) -> AuthenticationCheckRequestView:
+    return AuthenticationCheckRequestView(
+        AuthenticationCheckRequestId(row.request_id),
+        TenantId(row.tenant_id),
+        SendingIdentityId(row.sending_identity_id),
+        IdempotencyKey(row.request_key),
+        AuthenticationCheckRequestStatus(row.status),
+        row.requested_at,
+        row.completed_at,
     )
 
 
@@ -552,6 +571,101 @@ class AuthenticationCheckRepositoryImpl(_SendingRepository):
             )
         ).scalar_one_or_none()
         return _row_to_auth(row) if row is not None else None
+
+
+class AuthenticationCheckRequestRepositoryImpl(_SendingRepository):
+    """认证请求的 tenant 幂等创建与严格状态转换。"""
+
+    async def create_or_get(
+        self, request: AuthenticationCheckRequestView
+    ) -> AuthenticationCheckRequestCreateResult:
+        self._require_tenant(request.tenant_id, "sending_auth_request_create_tenant")
+        result = await self._session.execute(
+            insert(AuthenticationCheckRequestRow)
+            .values(
+                tenant_id=request.tenant_id,
+                request_id=request.request_id,
+                sending_identity_id=request.sending_identity_id,
+                request_key=request.request_key,
+                status=request.status.value,
+                requested_at=request.requested_at,
+                completed_at=request.completed_at,
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "request_key"])
+            .returning(AuthenticationCheckRequestRow.request_id)
+        )
+        if result.scalar_one_or_none() is not None:
+            return AuthenticationCheckRequestCreateResult(True, request)
+        row = (
+            await self._session.execute(
+                self.scoped_query(AuthenticationCheckRequestRow)
+                .where(AuthenticationCheckRequestRow.request_key == request.request_key)
+                .with_for_update()
+            )
+        ).scalar_one()
+        return AuthenticationCheckRequestCreateResult(False, _row_to_auth_request(row))
+
+    async def get(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        *,
+        for_update: bool = False,
+    ) -> AuthenticationCheckRequestView | None:
+        if not self._tenant_matches(tenant_id, "sending_auth_request_read_tenant"):
+            return None
+        query = self.scoped_query(AuthenticationCheckRequestRow).where(
+            AuthenticationCheckRequestRow.request_id == request_id
+        )
+        if for_update:
+            query = query.with_for_update()
+        row = (await self._session.execute(query)).scalar_one_or_none()
+        return _row_to_auth_request(row) if row is not None else None
+
+    async def transition(
+        self,
+        tenant_id: TenantId,
+        request_id: AuthenticationCheckRequestId,
+        target: AuthenticationCheckRequestStatus,
+        completed_at: datetime | None,
+    ) -> AuthenticationCheckRequestView:
+        self._require_tenant(tenant_id, "sending_auth_request_transition_tenant")
+        current = await self.get(tenant_id, request_id, for_update=True)
+        allowed = {
+            AuthenticationCheckRequestStatus.REQUESTED: {
+                AuthenticationCheckRequestStatus.RUNNING
+            },
+            AuthenticationCheckRequestStatus.RUNNING: {
+                AuthenticationCheckRequestStatus.SUCCEEDED,
+                AuthenticationCheckRequestStatus.FAILED,
+            },
+        }
+        if current is None or target not in allowed.get(current.status, set()):
+            raise InvalidStateTransition("认证检查请求状态转换无效")
+        terminal = target in {
+            AuthenticationCheckRequestStatus.SUCCEEDED,
+            AuthenticationCheckRequestStatus.FAILED,
+        }
+        if terminal != (completed_at is not None):
+            raise InvalidStateTransition("认证检查请求完成时间无效")
+        await self._session.execute(
+            update(AuthenticationCheckRequestRow)
+            .where(
+                AuthenticationCheckRequestRow.tenant_id == self._tenant_id,
+                AuthenticationCheckRequestRow.request_id == request_id,
+                AuthenticationCheckRequestRow.status == current.status.value,
+            )
+            .values(status=target.value, completed_at=completed_at)
+        )
+        return AuthenticationCheckRequestView(
+            current.request_id,
+            current.tenant_id,
+            current.sending_identity_id,
+            current.request_key,
+            target,
+            current.requested_at,
+            completed_at,
+        )
 
 
 def _empty_window(window_days: int, computed_at: datetime) -> ReputationWindow:

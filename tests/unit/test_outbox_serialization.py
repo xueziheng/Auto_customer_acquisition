@@ -39,6 +39,7 @@ from shared.events.catalog import (
 )
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
     CampaignId,
     EmployeeId,
     HandoffId,
@@ -86,10 +87,48 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "ReputationThresholdBreached",
         "MessageSent",
         "SuppressionAdded",
+        "AuthenticationCheckRequested",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
     assert EVENT_REGISTRY["SuppressionAdded"] is SuppressionAdded
+    event_type = getattr(
+        importlib.import_module("shared.events.catalog"),
+        "AuthenticationCheckRequested",
+        None,
+    )
+    assert event_type is not None, "RED：AuthenticationCheckRequested 尚未创建"
+    assert EVENT_REGISTRY["AuthenticationCheckRequested"] is event_type
+
+
+def test_authentication_check_requested_roundtrip_contains_only_safe_ids() -> None:
+    """认证 request 事件不得携带 domain、selector、DNS 或凭证。"""
+    event_type = getattr(
+        importlib.import_module("shared.events.catalog"),
+        "AuthenticationCheckRequested",
+        None,
+    )
+    assert event_type is not None, "RED：AuthenticationCheckRequested 尚未创建"
+    event = event_type(
+        tenant_id=TenantId(new_id("tn")),
+        occurred_at=_NOW,
+        run_id=None,
+        request_id=AuthenticationCheckRequestId(new_id("acr")),
+        sending_identity_id=SendingIdentityId(new_id("sid")),
+    )
+    payload = _load("serialize")(event)
+    assert set(payload) == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "request_id",
+        "sending_identity_id",
+    }
+    assert _load("deserialize")(event_type, payload) == event
+    rendered = json.dumps(payload)
+    assert "selector" not in rendered
+    assert "dns" not in rendered.casefold()
+    assert "secret" not in rendered.casefold()
 
 
 @pytest.mark.parametrize(
@@ -211,7 +250,7 @@ def test_outreach_event_serializer_rejects_unsafe_payloads(event: DomainEvent) -
             tenant_id=TenantId("t1"),
             occurred_at=_NOW,
             run_id=None,
-            sending_identity_id="sales@example.com",
+            sending_identity_id=SendingIdentityId("sales@example.com"),
         ),
         SendingIdentityThrottled(
             tenant_id=TenantId("t1"),

@@ -18,6 +18,7 @@ from datetime import datetime
 from shared.errors import ValidationError
 from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
 from shared.schemas.identifiers import (
+    AuthenticationCheckRequestId,
     CampaignId,
     ContactPointId,
     ConversationId,
@@ -193,6 +194,14 @@ class SuppressionAdded(DomainEvent):
 class SendingIdentityActivated(DomainEvent):
     """发件身份完成预热进入 active。订阅方：``domains/outreach``。"""
 
+    sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
+class AuthenticationCheckRequested(DomainEvent):
+    """已创建发件身份 DNS 认证检查请求。"""
+
+    request_id: AuthenticationCheckRequestId = None  # type: ignore[assignment]
     sending_identity_id: SendingIdentityId = None  # type: ignore[assignment]
 
 
