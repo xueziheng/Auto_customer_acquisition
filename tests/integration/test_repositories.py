@@ -817,6 +817,8 @@ def test_orm_metadata_parity_with_head() -> None:
             "mime_type", "object_key", "workflow_run_id", "subject_ref",
             "sequence_number", "idempotency_key", "generated_by", "generated_at",
         },
+        "notification_jobs": {"tenant_id", "notification_job_id", "source_event_fingerprint", "source_event", "recipient_employee_id", "priority", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "dedup_key", "status", "available_at", "lease_owner", "lease_token", "lease_expires_at", "attempt_count", "last_error", "created_at", "completed_at"},
+        "in_app_notifications": {"tenant_id", "notification_id", "recipient_employee_id", "priority", "title", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "relative_link", "source_job_id", "created_at", "read_at"},
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -889,6 +891,8 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_tool_call_events_tenant_call_occurred": (
             "tenant_id", "tool_call_id", "occurred_at", "event_id",
         ),
+        "ix_notification_jobs_tenant_due": ("tenant_id", "status", "available_at"),
+        "ix_in_app_notifications_recipient_created": ("tenant_id", "recipient_employee_id", "created_at", "notification_id"),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():

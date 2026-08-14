@@ -31,12 +31,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from notification_gateway.jobs import NotificationContext, NotificationKind
 from notification_gateway.models import (
     Notification,
     NotificationChannel,
     NotificationPriority,
 )
-from shared.errors import PolicyViolation, TransientError
+from shared.errors import PolicyViolation, TransientError, ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId
 
 _NOW = datetime(2026, 8, 9, 8, 0, 0, tzinfo=UTC)
@@ -64,7 +65,7 @@ def _notification(
     *,
     priority: NotificationPriority = NotificationPriority.URGENT,
     title: str = "高意向客户需接管",
-    context: dict[str, str] | None = None,
+    context: NotificationContext | None = None,
     dedup_key: str = "opp-1:handoff",
     next_step: str | None = None,
     link: str | None = None,
@@ -76,7 +77,7 @@ def _notification(
         recipient=EmployeeId("emp-1"),
         priority=priority,
         title=title,
-        context=context if context is not None else {"客户": "Acme", "国家": "US"},
+        context=context if context is not None else NotificationContext(NotificationKind.HANDOFF_ESCALATION, "han-1", None, None, 1),
         source_event=source_event,
         dedup_key=dedup_key,
         next_step=next_step if next_step is not None else "立即接管",
@@ -605,7 +606,7 @@ async def test_structured_log_channel_emits_fixed_structured_keys(
     assert d.get("dedup_key") == n.dedup_key
     assert d.get("source_event") == "HandoffRequested"
     assert d.get("title") == n.title
-    assert d.get("context") == n.context
+    assert d.get("context") == {"kind": "handoff_escalation", "primary_id": "han-1", "secondary_id": None, "reason_code": None, "level": 1}
     assert d.get("next_step") == "立即接管"
     assert d.get("due_at") is not None
     assert d.get("link") == "/opportunities/opp-1"
@@ -671,16 +672,8 @@ async def test_structured_log_channel_rejects_credential_shaped_context(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """context 值含凭证形态内容（合成 password 赋值，运行时拼接）被 PolicyViolation 拒绝，不落日志。"""
-    StructuredLogChannel = _load("StructuredLogChannel")
-    channel = StructuredLogChannel()
-    n = _notification(context={"api_key": _synthetic_password_assignment()})
-
-    with (
-        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
-        pytest.raises(PolicyViolation),
-    ):
-        await channel.deliver(n)
-
+    with pytest.raises(ValidationError):
+        _notification(context={"api_key": _synthetic_password_assignment()})  # type: ignore[arg-type]
     assert _channel_records(caplog) == []
 
 
@@ -705,16 +698,8 @@ async def test_structured_log_channel_rejects_quoted_password_assignment_in_cont
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """引号包裹的 password 赋值在 context 值中被 PolicyViolation 拒绝，不落日志。"""
-    StructuredLogChannel = _load("StructuredLogChannel")
-    channel = StructuredLogChannel()
-    n = _notification(context={"db": _synthetic_quoted_password_assignment()})
-
-    with (
-        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
-        pytest.raises(PolicyViolation),
-    ):
-        await channel.deliver(n)
-
+    with pytest.raises(ValidationError):
+        _notification(context={"db": _synthetic_quoted_password_assignment()})  # type: ignore[arg-type]
     assert _channel_records(caplog) == []
 
 
@@ -739,16 +724,8 @@ async def test_structured_log_channel_rejects_credential_shaped_context_key(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """context key 会落日志的自由文本含凭证形态（合成 sk- token）被 PolicyViolation 拒绝，不落日志。"""
-    StructuredLogChannel = _load("StructuredLogChannel")
-    channel = StructuredLogChannel()
-    n = _notification(context={_synthetic_sk_token(): "value"})
-
-    with (
-        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
-        pytest.raises(PolicyViolation),
-    ):
-        await channel.deliver(n)
-
+    with pytest.raises(ValidationError):
+        _notification(context={_synthetic_sk_token(): "value"})  # type: ignore[arg-type]
     assert _channel_records(caplog) == []
 
 
@@ -782,16 +759,9 @@ async def test_structured_log_channel_context_key_rejection_does_not_echo_secret
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """拒绝 context key 时，异常文本本身不能回显被拒绝的凭证。"""
-    StructuredLogChannel = _load("StructuredLogChannel")
-    channel = StructuredLogChannel()
     secret = _synthetic_sk_token()
-
-    with (
-        caplog.at_level(logging.INFO, logger=_CHANNEL_LOGGER),
-        pytest.raises(PolicyViolation) as excinfo,
-    ):
-        await channel.deliver(_notification(context={secret: "value"}))
-
+    with pytest.raises(ValidationError) as excinfo:
+        _notification(context={secret: "value"})  # type: ignore[arg-type]
     assert secret not in str(excinfo.value)
     assert _channel_records(caplog) == []
 

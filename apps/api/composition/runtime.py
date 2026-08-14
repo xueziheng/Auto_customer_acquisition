@@ -111,6 +111,7 @@ from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from notification_gateway.channels.structured_log import StructuredLogChannel
+from notification_gateway.jobs import NotificationContext, NotificationKind
 from notification_gateway.models import (
     Notification,
     NotificationChannel,
@@ -254,10 +255,13 @@ class RuntimeHandoffNotifier:
                 recipient=notice.recipient_id,
                 priority=NotificationPriority.URGENT,
                 title="人工接管提醒",
-                context={
-                    "kind": "handoff_escalation",
-                    "level": notice.level,
-                },
+                context=NotificationContext(
+                    NotificationKind.HANDOFF_ESCALATION,
+                    str(notice.handoff_id),
+                    None,
+                    None,
+                    notice.level,
+                ),
                 source_event="HandoffRequested",
                 dedup_key=notice.dedup_key,
                 next_step="处理人工接管任务",

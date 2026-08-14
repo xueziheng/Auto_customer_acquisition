@@ -79,6 +79,9 @@ HandoffId = NewType("HandoffId", str)
 DirectiveId = NewType("DirectiveId", str)
 ApprovalId = NewType("ApprovalId", str)
 ChangeSetId = NewType("ChangeSetId", str)
+NotificationJobId = NewType("NotificationJobId", str)
+NotificationId = NewType("NotificationId", str)
+AuthenticationCheckRequestId = NewType("AuthenticationCheckRequestId", str)
 
 # --- Agent 运行 ---------------------------------------------------------
 

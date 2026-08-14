@@ -703,7 +703,7 @@ async def test_router_persists_malformed_protocol_relative_link_as_rejected(
         recipient=EmployeeId("emp-1"),
         priority=NotificationPriority.URGENT,
         title="需处理链接",
-        context={"客户": "Acme"},
+        context=__import__("notification_gateway.jobs", fromlist=["NotificationContext"]).NotificationContext(__import__("notification_gateway.jobs", fromlist=["NotificationKind"]).NotificationKind.HANDOFF_ESCALATION, "han-1", None, None, 1),
         source_event="HandoffRequested",
         dedup_key=key,
         link=malformed_link,

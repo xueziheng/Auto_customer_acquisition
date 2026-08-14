@@ -65,9 +65,13 @@ class StructuredLogChannel:
             notification.title,
             notification.source_event,
             notification.dedup_key,
-            *notification.context.keys(),
-            *notification.context.values(),
+            notification.context.kind.value,
+            notification.context.primary_id,
         ]
+        if notification.context.secondary_id is not None:
+            values.append(notification.context.secondary_id)
+        if notification.context.reason_code is not None:
+            values.append(notification.context.reason_code)
         if notification.next_step is not None:
             values.append(notification.next_step)
         if notification.link is not None:
@@ -115,7 +119,13 @@ class StructuredLogChannel:
             "dedup_key": notification.dedup_key,
             "source_event": notification.source_event,
             "title": notification.title,
-            "context": notification.context,
+            "context": {
+                "kind": notification.context.kind.value,
+                "primary_id": notification.context.primary_id,
+                "secondary_id": notification.context.secondary_id,
+                "reason_code": notification.context.reason_code,
+                "level": notification.context.level,
+            },
             "next_step": notification.next_step,
             "due_at": (
                 notification.due_at.isoformat()

@@ -5,9 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from shared.errors import ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId
+
+if TYPE_CHECKING:
+    from notification_gateway.jobs import NotificationContext
+    from shared.schemas.identifiers import NotificationJobId
 
 
 class NotificationPriority(str, Enum):
@@ -40,12 +45,24 @@ class Notification:
     recipient: EmployeeId
     priority: NotificationPriority
     title: str
-    context: dict[str, str]
+    context: NotificationContext
     source_event: str
     dedup_key: str
     next_step: str | None = None
     due_at: datetime | None = None
     link: str | None = None
+    source_job_id: NotificationJobId | None = None
+
+    def __post_init__(self) -> None:
+        """拒绝未类型化上下文、非枚举优先级与非 UTC 截止时间。"""
+        from notification_gateway.jobs import NotificationContext
+
+        if (
+            not isinstance(self.priority, NotificationPriority)
+            or not isinstance(self.context, NotificationContext)
+            or (self.due_at is not None and not _is_utc(self.due_at))
+        ):
+            raise ValidationError("通知无效")
 
 
 @runtime_checkable
@@ -59,3 +76,7 @@ class NotificationChannel(Protocol):
     name: str
 
     async def deliver(self, notification: Notification) -> None: ...
+
+
+def _is_utc(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None and value.utcoffset().total_seconds() == 0

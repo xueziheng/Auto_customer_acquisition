@@ -1496,6 +1496,70 @@ class NotificationDeliveryRow(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class NotificationJobRow(Base):
+    """``notification_jobs`` durable 投影行；每一事件受唯一键保护。"""
+
+    __tablename__ = "notification_jobs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "notification_job_id", name="pk_notification_jobs"),
+        UniqueConstraint("tenant_id", "source_event_fingerprint", "recipient_employee_id", "context_kind", name="uq_notification_jobs_source_recipient_kind"),
+        CheckConstraint("status IN ('pending','processing','completed','rejected')", name="ck_notification_jobs_status"),
+        CheckConstraint("priority IN ('urgent','normal','low')", name="ck_notification_jobs_priority"),
+        CheckConstraint("attempt_count >= 0", name="ck_notification_jobs_attempt_count"),
+        Index("ix_notification_jobs_tenant_due", "tenant_id", "status", "available_at"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    notification_job_id: Mapped[str] = mapped_column(String(32))
+    source_event_fingerprint: Mapped[str] = mapped_column(String(64))
+    source_event: Mapped[str] = mapped_column(String(100))
+    recipient_employee_id: Mapped[str] = mapped_column(String(32))
+    priority: Mapped[str] = mapped_column(String(16))
+    context_kind: Mapped[str] = mapped_column(String(64))
+    primary_id: Mapped[str] = mapped_column(String(100))
+    secondary_id: Mapped[str | None] = mapped_column(String(100))
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    level: Mapped[int | None] = mapped_column(Integer)
+    dedup_key: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), server_default=text("'pending'"))
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_token: Mapped[str | None] = mapped_column(String(32))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InAppNotificationRow(Base):
+    """``in_app_notifications`` 不可变内容行；read_at 是唯一可变字段。"""
+
+    __tablename__ = "in_app_notifications"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "notification_id", name="pk_in_app_notifications"),
+        UniqueConstraint("tenant_id", "source_job_id", name="uq_in_app_notifications_source_job"),
+        ForeignKeyConstraint(["tenant_id", "source_job_id"], ["notification_jobs.tenant_id", "notification_jobs.notification_job_id"], ondelete="RESTRICT", name="fk_in_app_notifications_job"),
+        CheckConstraint("priority IN ('urgent','normal','low')", name="ck_in_app_notifications_priority"),
+        Index("ix_in_app_notifications_recipient_created", "tenant_id", "recipient_employee_id", "created_at", "notification_id"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    notification_id: Mapped[str] = mapped_column(String(32))
+    recipient_employee_id: Mapped[str] = mapped_column(String(32))
+    priority: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(200))
+    context_kind: Mapped[str] = mapped_column(String(64))
+    primary_id: Mapped[str] = mapped_column(String(100))
+    secondary_id: Mapped[str | None] = mapped_column(String(100))
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    level: Mapped[int | None] = mapped_column(Integer)
+    relative_link: Mapped[str | None] = mapped_column(String(500))
+    source_job_id: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class EmployeeRow(Base):
     """``employees`` 行。"""
 

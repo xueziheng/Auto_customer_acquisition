@@ -2456,7 +2456,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0014"
+        assert revision == "0015"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2609,7 +2609,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0014"
+        assert revision == "0015"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2729,6 +2729,26 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
             insert_raw,
             raw_values | {"hash": "A" * 64},
         )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
+    """0015 的通知任务和收件箱表可精确回退并恢复。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            names = set(await conn.run_sync(_sync_table_names))
+        assert revision == "0015"
+        assert {"notification_jobs", "in_app_notifications"} <= names
+        _run_alembic(db_url, "downgrade", "0014")
+        assert {"notification_jobs", "in_app_notifications"}.isdisjoint(await _table_names(engine))
+        _run_alembic(db_url, "upgrade", "0015")
+        assert {"notification_jobs", "in_app_notifications"} <= await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()
