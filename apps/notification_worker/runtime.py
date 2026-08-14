@@ -8,27 +8,81 @@ import signal
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import Enum
+from typing import cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from connectors.gmail.client import GmailConnector, GmailHttpTransport, SecretResolver
+from connectors.gmail.transport import GmailApiHttpTransport
+from domains.sending_identity.permissions import (
+    Actor as SendingIdentityActor,
+)
+from domains.sending_identity.permissions import (
+    Phase1SendingIdentityAuthorizer,
+    ScopeLevel,
+    SendingIdentityScope,
+    StandardAuditLogger,
+)
+from domains.sending_identity.service import (
+    SendingIdentityService,
+    SendingIdentityUnitOfWorkFactory,
+)
+from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.repositories.in_app_notifications import (
     PostgresInAppNotificationStore,
 )
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.schema import assert_database_schema_current
+from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
+from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
+from notification_gateway.channels.email import EmailNotificationChannel
 from notification_gateway.channels.in_app import InAppChannel
 from notification_gateway.jobs import NotificationJobClaim, NotificationJobStore
-from notification_gateway.models import Notification, NotificationChannel
+from notification_gateway.models import (
+    Notification,
+    NotificationChannel,
+    NotificationPriority,
+)
 from notification_gateway.router import NotificationRouter, RoutingPolicy
 from notification_gateway.templates import (
     FixedNotificationTemplateRenderer,
     NotificationRenderer,
 )
-from shared.errors import PolicyViolation, TenantIsolationViolation, TradeOSError
+from shared.errors import (
+    PolicyViolation,
+    TenantIsolationViolation,
+    TradeOSError,
+    ValidationError,
+)
+from shared.schemas.identifiers import TenantId, UserId, new_id
+from tool_gateway.checks.idempotency import IdempotencyCheck
+from tool_gateway.checks.permission import PermissionCheck
+from tool_gateway.fingerprint import HmacFingerprintProvider
+from tool_gateway.handlers.notification_email import (
+    MANIFEST as NOTIFICATION_EMAIL_MANIFEST,
+)
+from tool_gateway.handlers.notification_email import (
+    NotificationEmailRateLimitCheck,
+    NotificationEmailSendHandler,
+    NotificationEmailTenantCheck,
+    ToolGatewayTransactionalNotificationSender,
+)
+from tool_gateway.manifest import ToolRegistry
+from tool_gateway.pipeline import (
+    CheckStage,
+    ToolCallContext,
+    ToolGateway,
+    ToolInvocationState,
+)
+from tool_gateway.repository import (
+    ToolGatewayUnitOfWork,
+    ToolGatewayUnitOfWorkFactory,
+)
 
 from .config import NotificationWorkerConfig
 from .health import NotificationHealthServer, NotificationHealthState
@@ -59,28 +113,158 @@ class WorkerRunResult:
 WaitForNextCycle = Callable[[int, asyncio.Event], Awaitable[None]]
 
 
-class _InAppOnlyPolicy(RoutingPolicy):
+class NotificationRoutingPolicy(RoutingPolicy):
     def channels_for(
         self,
         notification: Notification,
         available: list[NotificationChannel],
     ) -> list[NotificationChannel]:
-        del notification
-        if len(available) != 1 or available[0].name != "in_app":
+        names = [channel.name for channel in available]
+        if names != ["in_app", "email"] or len(names) != len(set(names)):
             raise PolicyViolation("通知渠道注册表无效")
-        return list(available)
+        if notification.priority in {
+            NotificationPriority.URGENT,
+            NotificationPriority.NORMAL,
+        }:
+            return list(available)
+        if notification.priority is NotificationPriority.LOW:
+            return [available[0]]
+        raise PolicyViolation("通知优先级无效")
+
+
+class _UnavailableTransactionalSender:
+    async def send(self, notification: Notification) -> None:
+        del notification
+        raise PolicyViolation("事务通知邮件未配置")
+
+
+@dataclass(frozen=True, repr=False)
+class _BoundGmailSecretResolver:
+    resolver: SecretResolver
+    configured_ref: str
+
+    def resolve(self, secret_ref: str) -> str:
+        if secret_ref != "GMAIL_OAUTH_TOKEN_REF":
+            raise ValidationError("Gmail 凭证引用无效")
+        return self.resolver.resolve(self.configured_ref)
+
+
+async def _compose_email_channel(
+    config: NotificationWorkerConfig,
+    factory: async_sessionmaker,
+    transport_factory: Callable[[str], GmailHttpTransport],
+    now: Callable[[], datetime],
+) -> tuple[EmailNotificationChannel, GmailHttpTransport]:
+    email = config.email
+    if email is None:
+        raise ValidationError("事务通知邮件未配置")
+    fingerprint_key = email.secrets.resolve(email.fingerprint_key_ref).encode(
+        "utf-8"
+    )
+    fingerprints = HmacFingerprintProvider(
+        email.fingerprint_key_version, fingerprint_key
+    )
+    transport = transport_factory(email.gmail_base_url)
+    try:
+        gmail = GmailConnector(transport, now=now)
+        await gmail.configure(
+            _BoundGmailSecretResolver(
+                email.secrets,
+                email.gmail_oauth_token_ref,
+            )
+        )
+        sending_uow_factory = cast(
+            SendingIdentityUnitOfWorkFactory,
+            lambda requested_tenant: SqlAlchemySendingIdentityUnitOfWork(
+                factory, requested_tenant, now=now
+            ),
+        )
+        sending: SendingIdentityService = SendingIdentityServiceImpl(
+            sending_uow_factory,
+            Phase1SendingIdentityAuthorizer(config.tenant_id),
+            StandardAuditLogger(),
+            now=now,
+        )
+        actor = SendingIdentityActor(
+            "system:notification",
+            SendingIdentityScope(
+                level=ScopeLevel.SYSTEM,
+                allowed_identity_ids=frozenset({email.sending_identity_id}),
+            ),
+            "system",
+        )
+        handler = NotificationEmailSendHandler(gmail, fingerprints)
+        registry = ToolRegistry()
+        registry.register(NOTIFICATION_EMAIL_MANIFEST, handler)
+        user_id = UserId(new_id("usr"))
+
+        async def authorize(
+            ctx: ToolCallContext, _state: ToolInvocationState
+        ) -> bool:
+            return (
+                ctx.tenant_id == config.tenant_id
+                and ctx.user_id == user_id
+                and ctx.tool_id == NOTIFICATION_EMAIL_MANIFEST.tool_id
+            )
+
+        checks: dict[str, CheckStage] = {
+            "tenant": NotificationEmailTenantCheck(config.tenant_id),
+            "permission": PermissionCheck(authorize),
+            "idempotency": IdempotencyCheck(),
+            "rate_limit": NotificationEmailRateLimitCheck(
+                handler,
+                email.recipients,
+                sending,
+                email.sending_identity_id,
+                actor,
+            ),
+        }
+
+        def tool_uow(requested_tenant: TenantId) -> ToolGatewayUnitOfWork:
+            return cast(
+                ToolGatewayUnitOfWork,
+                SqlAlchemyToolGatewayUnitOfWork(
+                    factory, requested_tenant, now=now
+                ),
+            )
+
+        gateway = ToolGateway(
+            registry,  # type: ignore[arg-type]
+            checks,
+            cast(ToolGatewayUnitOfWorkFactory, tool_uow),
+            lease_duration=timedelta(seconds=email.tool_lease_seconds),
+            lease_owner=config.lease_owner,
+            now=now,
+            id_factory=new_id,
+        )
+        sender = ToolGatewayTransactionalNotificationSender(
+            gateway, handler, user_id
+        )
+        return EmailNotificationChannel(sender), transport
+    except BaseException:
+        close = getattr(transport, "aclose", None)
+        if callable(close):
+            try:
+                await close()
+            except BaseException:  # noqa: BLE001 -- cleanup 不得覆盖 composition primary
+                logger.error("通知 worker Gmail 资源关闭失败")
+        raise
 
 
 @asynccontextmanager
 async def notification_worker_runtime(
     config: NotificationWorkerConfig,
+    *,
+    transport_factory: Callable[[str], GmailHttpTransport] = GmailApiHttpTransport,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> AsyncIterator[NotificationWorkerRuntime]:
-    """装配 Postgres stores、in-app router 与 health，并对称释放资源。"""
+    """装配持久 stores、精确双渠道 router 与 health，并对称释放资源。"""
     if not isinstance(config, NotificationWorkerConfig):
         raise TypeError("通知 worker 配置类型无效")
     health = NotificationHealthState()
     health.mark_ready("config")
     engine = create_engine_from(config.database_url.get_secret_value())
+    gmail_transport: GmailHttpTransport | None = None
     server: NotificationHealthServer | None = None
     health_task: asyncio.Task[None] | None = None
     health_started_task: asyncio.Task[None] | None = None
@@ -93,9 +277,23 @@ async def notification_worker_runtime(
         health.mark_ready("database")
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         jobs = PostgresNotificationJobStore(factory)
-        router = NotificationRouter(PostgresNotificationDedupStore(factory), _InAppOnlyPolicy())
+        router = NotificationRouter(
+            PostgresNotificationDedupStore(factory), NotificationRoutingPolicy()
+        )
         router.register_channel(InAppChannel(PostgresInAppNotificationStore(factory)))
-        health.mark_ready("registry")
+        if config.email is None:
+            router.register_channel(
+                EmailNotificationChannel(_UnavailableTransactionalSender())
+            )
+        else:
+            email_channel, gmail_transport = await _compose_email_channel(
+                config,
+                factory,
+                transport_factory,
+                now,
+            )
+            router.register_channel(email_channel)
+            health.mark_ready("registry")
         server = NotificationHealthServer(health, config.health_port)
         health_task = asyncio.create_task(server.serve())
         health_started_task = asyncio.create_task(server.wait_started())
@@ -148,6 +346,16 @@ async def notification_worker_runtime(
                         cleanup_error = error
                     else:
                         logger.error("通知 worker health 任务关闭失败")
+        if gmail_transport is not None:
+            close = getattr(gmail_transport, "aclose", None)
+            if callable(close):
+                try:
+                    await close()
+                except BaseException as error:  # noqa: BLE001
+                    if primary is None and cleanup_error is None:
+                        cleanup_error = error
+                    else:
+                        logger.error("通知 worker Gmail 资源关闭失败")
         try:
             await engine.dispose()
         except BaseException as error:  # noqa: BLE001

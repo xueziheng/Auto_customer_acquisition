@@ -63,6 +63,7 @@ class GmailHttpStatusError(Exception):
     retry_after_seconds: int | None = None
     may_have_written: bool = False
     feedback_retry_after_seconds: int | None = None
+    transactional_retry_after_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -85,6 +86,12 @@ class GmailHttpStatusError(Exception):
             or not 1 <= self.feedback_retry_after_seconds <= 3_600
         ):
             raise ValidationError("Gmail feedback retry-after 无效")
+        if self.transactional_retry_after_seconds is not None and (
+            not isinstance(self.transactional_retry_after_seconds, int)
+            or isinstance(self.transactional_retry_after_seconds, bool)
+            or not 1 <= self.transactional_retry_after_seconds <= 3_600
+        ):
+            raise ValidationError("Gmail transactional retry-after 无效")
         Exception.__init__(self, "Gmail HTTP 调用失败")
 
 
@@ -346,6 +353,7 @@ class GmailApiHttpTransport:
                 retry_after_seconds=retry_after,
                 may_have_written=may_have_written,
                 feedback_retry_after_seconds=feedback_retry_after,
+                transactional_retry_after_seconds=feedback_retry_after,
             ) from None
         except (URLError, TimeoutError, OSError):
             raise GmailNetworkError(may_have_written=may_have_written) from None

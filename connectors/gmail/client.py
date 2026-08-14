@@ -30,6 +30,7 @@ MANIFEST = ConnectorManifest(
     connector_id="gmail",
     capabilities=(
         "email.send",
+        "notification.email.send",
         "email.feedback.fetch",
         "email.add_label",
         "dns.check_auth",
@@ -70,6 +71,37 @@ class GmailSendRequest:
         _validate_text(self.subject, max_bytes=998, allow_newlines=False)
         _validate_text(self.body, max_bytes=1_048_576, allow_newlines=True)
         _validate_https_url(self.unsubscribe_url)
+        if _MESSAGE_ID_RE.fullmatch(self.deterministic_message_id) is None:
+            raise ValidationError("Gmail Message-ID 无效")
+        _validate_safe_id(self.idempotency_header, "Gmail 幂等 header 无效")
+
+
+@dataclass(frozen=True)
+class GmailTransactionalSendRequest:
+    """内部事务通知发送材料；与冷开发合同和退订 header 完全分离。"""
+
+    from_address: str = field(repr=False)
+    recipient_address: str = field(repr=False)
+    subject: str = field(repr=False)
+    body: str = field(repr=False)
+    deterministic_message_id: str
+    idempotency_header: str
+
+    def __post_init__(self) -> None:
+        _validate_mailbox(self.from_address)
+        _validate_mailbox(self.recipient_address)
+        _validate_text(self.subject, max_bytes=998, allow_newlines=False)
+        _validate_text(self.body, max_bytes=1_048_576, allow_newlines=True)
+        for value in (
+            self.from_address,
+            self.recipient_address,
+            self.subject,
+            self.body,
+            self.deterministic_message_id,
+            self.idempotency_header,
+        ):
+            if _credential_shaped(value):
+                raise ValidationError("Gmail transactional metadata 无效")
         if _MESSAGE_ID_RE.fullmatch(self.deterministic_message_id) is None:
             raise ValidationError("Gmail Message-ID 无效")
         _validate_safe_id(self.idempotency_header, "Gmail 幂等 header 无效")
@@ -176,6 +208,54 @@ class GmailConnector:
             )
         except (GmailHttpStatusError, GmailNetworkError) as error:
             raise _classify_transport_error(error) from None
+        if existing is None:
+            raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)
+        return GmailSendResult(existing, DeliveryCertainty.SENT, True)
+
+    async def send_transactional_once(
+        self, request: GmailTransactionalSendRequest
+    ) -> GmailSendResult:
+        """按确定性 header 查重后发送内部通知，不生成客户退订 header。"""
+        if not isinstance(request, GmailTransactionalSendRequest):
+            raise ValidationError("Gmail transactional request 无效")
+        if self._token is None:
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
+        token = self._token.value
+        try:
+            existing = await self._transport.search(
+                token=token,
+                message_id=request.deterministic_message_id,
+                header=request.idempotency_header,
+            )
+        except (GmailHttpStatusError, GmailNetworkError) as error:
+            raise _classify_transactional_transport_error(error) from None
+        if existing is not None:
+            return GmailSendResult(existing, DeliveryCertainty.SENT, True)
+        try:
+            provider_ref = await self._transport.send(
+                token=token,
+                raw_message=_build_transactional_message(request),
+            )
+        except (GmailHttpStatusError, GmailNetworkError) as error:
+            raise _classify_transactional_transport_error(error) from None
+        return GmailSendResult(provider_ref, DeliveryCertainty.SENT, False)
+
+    async def reconcile_transactional_once(
+        self, request: GmailTransactionalSendRequest
+    ) -> GmailSendResult:
+        """事务通知的不确定写入恢复只搜索，未命中绝不自动重发。"""
+        if not isinstance(request, GmailTransactionalSendRequest):
+            raise ValidationError("Gmail transactional request 无效")
+        if self._token is None:
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
+        try:
+            existing = await self._transport.search(
+                token=self._token.value,
+                message_id=request.deterministic_message_id,
+                header=request.idempotency_header,
+            )
+        except (GmailHttpStatusError, GmailNetworkError) as error:
+            raise _classify_transactional_transport_error(error) from None
         if existing is None:
             raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)
         return GmailSendResult(existing, DeliveryCertainty.SENT, True)
@@ -474,6 +554,17 @@ def _build_message(request: GmailSendRequest) -> bytes:
     return message.as_bytes()
 
 
+def _build_transactional_message(request: GmailTransactionalSendRequest) -> bytes:
+    message = EmailMessage(policy=SMTP)
+    message["From"] = request.from_address
+    message["To"] = request.recipient_address
+    message["Subject"] = request.subject
+    message["Message-ID"] = f"<{request.deterministic_message_id}>"
+    message["X-TradeOS-Idempotency-V1"] = request.idempotency_header
+    message.set_content(request.body)
+    return message.as_bytes()
+
+
 def _classify_transport_error(
     error: GmailHttpStatusError | GmailNetworkError,
 ) -> ToolGatewayError:
@@ -514,6 +605,27 @@ def _classify_feedback_transport_error(
             retry_after_seconds=retry_after,
         )
     return classified
+
+
+def _classify_transactional_transport_error(
+    error: GmailHttpStatusError | GmailNetworkError,
+) -> ToolGatewayError:
+    classified = _classify_transport_error(error)
+    if classified.category is not ToolErrorCategory.RATE_LIMITED:
+        return classified
+    retry_after = None
+    if isinstance(error, GmailHttpStatusError):
+        candidate = (
+            error.transactional_retry_after_seconds
+            if error.transactional_retry_after_seconds is not None
+            else error.retry_after_seconds
+        )
+        if candidate is not None and 1 <= candidate <= 3_600:
+            retry_after = candidate
+    return ToolGatewayError(
+        ToolErrorCategory.RATE_LIMITED,
+        retry_after_seconds=retry_after,
+    )
 
 
 def _validate_mailbox(value: object) -> None:
@@ -576,3 +688,15 @@ def _validate_safe_id(value: object, message: str) -> None:
         or any(marker in value.casefold() for marker in _SECRET_MARKERS)
     ):
         raise ValidationError(message)
+
+
+def _credential_shaped(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    lowered = value.casefold()
+    return any(marker in lowered for marker in _SECRET_MARKERS) or bool(
+        re.search(
+            r"(?:password|token|secret|authorization|bearer)\s*[:=]",
+            lowered,
+        )
+    )

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from email import policy
+from email.parser import BytesParser
 
 import pytest
 
@@ -55,7 +57,21 @@ def _request(**changes: object):
         "idempotency_header": "idem_01",
     }
     values.update(changes)
-    return cls(**values)
+    return cls(**values)  # type: ignore[arg-type]
+
+
+def _transactional_request(**changes: object):
+    cls = gmail_client.GmailTransactionalSendRequest
+    values: dict[str, object] = {
+        "from_address": "alerts@example.com",
+        "recipient_address": "employee@example.net",
+        "subject": "TradeOS notification",
+        "body": "A task needs attention.\n",
+        "deterministic_message_id": "notification.01@messages.tradeos.invalid",
+        "idempotency_header": "notification.01",
+    }
+    values.update(changes)
+    return cls(**values)  # type: ignore[arg-type]
 
 
 def _transport_symbol(name: str):
@@ -216,3 +232,92 @@ async def test_send_connection_failure_before_bytes_is_transient_not_reconciliat
 def test_request_raw_whitespace_is_preserved_not_normalized() -> None:
     request = _request(body=" line one \nline two  \n")
     assert request != replace(request, body="line one\nline two\n")
+
+
+def test_transactional_request_hides_all_delivery_material_and_rejects_unsafe_metadata() -> None:
+    request = _transactional_request()
+    rendered = repr(request)
+    for marker in (
+        "alerts@example.com",
+        "employee@example.net",
+        "TradeOS notification",
+        "task needs attention",
+    ):
+        assert marker not in rendered
+    with pytest.raises(FrozenInstanceError):
+        request.body = "changed"  # type: ignore[misc]
+
+    for field, value in (
+        ("from_address", "token-alerts@example.com"),
+        ("recipient_address", "employee@example.net\r\nBcc: leak@example.net"),
+        ("subject", "Authorization: Bearer private-marker"),
+        ("body", "pass" + "word=private-marker"),
+        ("deterministic_message_id", "secret.01@messages.tradeos.invalid"),
+        ("idempotency_header", "Bearer-private-marker"),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            _transactional_request(**{field: value})
+        assert value not in str(caught.value)
+
+
+def test_transactional_message_has_no_customer_unsubscribe_headers_and_cold_builder_is_unchanged() -> None:
+    transactional = BytesParser(policy=policy.default).parsebytes(
+        gmail_client._build_transactional_message(_transactional_request())
+    )
+    assert transactional["List-Unsubscribe"] is None
+    assert transactional["List-Unsubscribe-Post"] is None
+    assert transactional["Message-ID"] == "<notification.01@messages.tradeos.invalid>"
+    assert transactional["X-TradeOS-Idempotency-V1"] == "notification.01"
+
+    cold = gmail_client._build_message(_request())
+    assert b"List-Unsubscribe: <https://example.com/unsubscribe/ref_01>\r\n" in cold
+    assert b"List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n" in cold
+
+
+@pytest.mark.asyncio
+async def test_transactional_send_and_reconcile_use_the_same_deterministic_search_without_unsubscribe() -> None:
+    transport = _Transport()
+    connector = gmail_client.GmailConnector(transport)
+    await connector.configure(_Secrets())
+
+    sent = await connector.send_transactional_once(_transactional_request())
+    assert sent == gmail_client.GmailSendResult(
+        "gmail_ref_01", DeliveryCertainty.SENT, False
+    )
+    raw = transport.sends[0][1]
+    assert b"List-Unsubscribe" not in raw
+
+    transport.existing = "gmail_ref_01"
+    reconciled = await connector.reconcile_transactional_once(
+        _transactional_request()
+    )
+    assert reconciled == gmail_client.GmailSendResult(
+        "gmail_ref_01", DeliveryCertainty.SENT, True
+    )
+    assert len(transport.sends) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "category", "retry_after"),
+    [
+        (lambda: _transport_symbol("GmailHttpStatusError")(401), ToolErrorCategory.PROVIDER_AUTH_REQUIRED, None),
+        (lambda: _transport_symbol("GmailHttpStatusError")(403), ToolErrorCategory.PROVIDER_AUTH_REQUIRED, None),
+        (lambda: _transport_symbol("GmailHttpStatusError")(429, retry_after_seconds=17), ToolErrorCategory.RATE_LIMITED, 17),
+        (lambda: _transport_symbol("GmailHttpStatusError")(429, retry_after_seconds=3601), ToolErrorCategory.RATE_LIMITED, None),
+        (lambda: _transport_symbol("GmailNetworkError")(may_have_written=False), ToolErrorCategory.PROVIDER_TRANSIENT, None),
+        (lambda: _transport_symbol("GmailNetworkError")(may_have_written=True), ToolErrorCategory.RECONCILIATION_REQUIRED, None),
+    ],
+)
+async def test_transactional_error_classification_is_bounded_and_safe(
+    error, category, retry_after
+) -> None:
+    transport = _Transport()
+    transport.search_error = error()
+    connector = gmail_client.GmailConnector(transport)
+    await connector.configure(_Secrets())
+    with pytest.raises(ToolGatewayError) as caught:
+        await connector.send_transactional_once(_transactional_request())
+    assert caught.value.category is category
+    assert caught.value.retry_after_seconds == retry_after
+    assert "oauth-marker" not in str(caught.value)
