@@ -62,6 +62,28 @@ docker compose -f infra/docker-compose.yml up -d
 
 ---
 
+## Slice 4 演示、验收与运维
+
+发件身份 / 手动发送 / 投递反馈 / 事务通知的可重复演示与运维手册：
+
+- 进程级演示：`scripts/demo_slice4_manual_send.py`（受控模式
+  `TRADEOS_SLICE4_DEMO_MODE=controlled`），真实 services/UoWs/Tool
+  Gateway/scheduler worker/notification worker + 本地受控 Gmail HTTP 与
+  fake DNS；只直插 employee 与受控连接器配置前置，不直插业务行。
+- 容器验收：`tests/integration/test_demo_slice4_manual_send.py`（同一
+  migrated PG 跑两次，验证租户隔离、恰一次冷发、认证事实、熔断与阻断、
+  站内通知与双渠道投递状态、无效 DSN/OAuth/DNS 配置的固定脱敏失败）。
+- 运维手册：`docs/operations/slice4-email-operations.md`（env 清单、
+  Alembic/readiness、SPF/DKIM/DMARC 解读、OAuth 轮换与对账、通知积压与
+  死信、熔断恢复清单、安全日志字段、容器与真实域名验收）。
+
+真实域名验收需要 Git 之外的独立配置（冷开发域名、Google Workspace、
+ARF 反馈通道）；前提不可用时外部验收记为 `not_run`，不得宣称 Slice 4
+完成。演示与验收文档不构成新的能力声明——发送仍只经 Tool Gateway，
+DNS 认证仍只由 `connectors/dns_auth` 提供。
+
+---
+
 ## 密钥
 
 凭证只存在于三处，模型与 Agent 都碰不到（硬边界 1）：

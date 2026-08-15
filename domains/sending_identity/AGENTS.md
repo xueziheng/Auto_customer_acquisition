@@ -101,3 +101,13 @@ hard bounce 都必须严格 `< .024`，complaint 都必须严格 `< .0008`，且
 本 Slice 不含 suppression、联系人可达性、Campaign 配额或内容、Gmail/DNS Connector、
 Tool Gateway、真实发送、退信 webhook 解析、API/UI 和通知渠道。不要在本域直接补这些
 能力；它们必须先经过后续 Slice 的独立设计门禁。
+
+## Slice 4 演示与验收
+
+- 进程级演示与容器验收：`scripts/demo_slice4_manual_send.py`、
+  `tests/integration/test_demo_slice4_manual_send.py`（同一 migrated PG 跑两次：
+  不同租户、恰一次冷发、认证事实、熔断与第二次发送被真实门禁阻断、通知投递）。
+- 演示只直插 employee 与受控连接器配置前置，不直插本域业务行；演示通过后必须
+  由验收测试从数据库读回复核（不变量、租户隔离、无敏感字段持久化）。
+- 运维手册：`docs/operations/slice4-email-operations.md`。演示与文档不构成能力
+  声明；真实域名验收需独立外部前提，未完成前不得宣称 Slice 4 完成。

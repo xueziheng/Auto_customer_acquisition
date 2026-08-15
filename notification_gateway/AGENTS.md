@@ -39,3 +39,12 @@ channels/
 ## Phase 1 范围
 
 事件模型、路由、站内与邮件两个渠道。企业微信与 macOS 留接口。
+
+## Slice 4 演示与验收
+
+- 演示与容器验收覆盖熔断事件经真实 scheduler 投影成通知 job，再由真实
+  notification worker 双渠道（in_app + email）投递并落 `delivered` 状态；
+  见 `scripts/demo_slice4_manual_send.py` 与
+  `tests/integration/test_demo_slice4_manual_send.py`。
+- 演示的受众解析器是受控配置（只路由熔断事件给演示 boss）；真实部署由受众
+  解析器按事件类型与收件人偏好路由。渠道失败重试不阻塞主流程（既有约束）。

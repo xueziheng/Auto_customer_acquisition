@@ -153,3 +153,13 @@ Campaign 边界模型与版本化、序列状态机、抑制名单、每日限�
 与 terminal completion。
 
 不做：积分限额（Phase 3 挂载点，字段位置留好）、多渠道序列（只有邮件）、A/B 测试。
+
+## Slice 4 演示与验收
+
+- 演示脚本与容器验收见 `scripts/demo_slice4_manual_send.py` 与
+  `tests/integration/test_demo_slice4_manual_send.py`：手工单封发送恰一次、
+  hard bounce + complaint + spam trap 后身份熔断、第二次发送经真实身份门禁
+  阻断并按域规则 `stopped_identity_unavailable` 终止 Enrollment。
+- 演示只直插 employee 与受控连接器配置前置，不直插本域业务行；验收测试从
+  数据库读回复核状态机结果。真实域名验收前提见
+  `docs/operations/slice4-email-operations.md`。
