@@ -640,3 +640,25 @@ def test_complaint_received_publish_validates_shape_fail_closed() -> None:
         with pytest.raises(ValidationError):
             asyncio.run(bus.publish(event))
         assert session.added == [], "形状校验失败前不得写入 outbox"
+
+
+def test_complaint_received_publish_rejects_runtime_non_datetime_occurred_at() -> None:
+    """运行时把 occurred_at 改成非 datetime 必须 fail closed，不能 AttributeError。"""
+    import asyncio
+
+    bus_module = importlib.import_module("infra.db.outbox")
+    tenant = TenantId(new_id("tn"))
+    event = ComplaintReceived(
+        tenant_id=tenant,
+        occurred_at=_NOW,
+        run_id=None,
+        message_attempt_id=new_id("mat"),
+        sending_identity_id=SendingIdentityId(new_id("sid")),
+        dedup_key="c" * 64,
+    )
+    object.__setattr__(event, "occurred_at", "2026-08-15T10:00:00Z")
+    session = _RecordingSession()
+    bus = bus_module.PostgresEventBus(session, tenant, now=lambda: _NOW)
+    with pytest.raises(ValidationError):
+        asyncio.run(bus.publish(event))
+    assert session.added == []
