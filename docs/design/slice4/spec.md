@@ -118,3 +118,17 @@
 - 每条合成记录带「演示数据」；无真实 PII；无 raw secret/DNS/HTML。
 - 三页截图必须展示：outreach——选中 enrollment + 打开的发送 drawer + 一个安全 warning 状态；identities——认证/预热/容量状态卡 + auth-check 反馈；notifications——未读/已读、priority、badge、relative-link 合法/不可用两态。
 - 键盘顺序：导航 → 页面标题/刷新 → 主列表 → 详情操作；Escape 关闭并还焦；`role=alert/live region`；写控件禁用态；`prefers-reduced-motion` 禁用动效。
+
+---
+
+## 7. 视觉初审修正记录（2026-08-15，Creative Production 初审）
+
+初审结论：方向与布局通过；以下 5 项修正已并入本文件与三份 mockup，并重拍 6 张截图（`/tmp/tradeos-slice4-design/`）：
+
+1. **语言硬边界**：内部 UI 全部使用中文。无批准译名的术语采用「中文（English canonical term）」：入组记录（Enrollment）、活动（Campaign）、企业（Account）、联系人（Contact）、邮件主题（Subject）、邮件正文（Body）。「code-derived」改为「代码确定性计算」。通知类型主标签为中文（人工接管升级），原始枚举（handoff_escalation）仅作次级代码展示。
+2. **发件身份授权一致性**：authorized mockup 移除「当前账号无法查看发件身份」banner；403 作为独立状态仅保留在 spec（第 4.2 节），渲染数据时不声称无权；底部卡片不再被 banner 遮挡，卡片网格内部滚动正常。
+3. **相对链接安全规则收敛**：技术规则（单「/」开头、非「//」、同源、`router.resolve` 已注册）仅写在本 spec；用户可见提示简化为「仅打开系统内已验证的处理页面」。
+4. **可见焦点证据**：每页 1440×900 截图通过真实键盘 Tab 聚焦目标元素（outreach＝邮件主题输入框、发件身份＝「重新检查认证」按钮、通知＝「前往处理」链接），截图明确展示 3px purple focus ring + 2px offset。
+5. **截图自检**：1440×900 与 1180×800 两档：`document.scrollWidth <= innerWidth`、根文档不滚动、零 console/page error、每条合成记录带「演示数据」、无真实 PII。
+
+放行状态：等待第二次视觉放行后进入 Vue 实现（Task 7 Step 2）。
