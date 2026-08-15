@@ -9,7 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
-from email.policy import SMTP
+from email.parser import BytesHeaderParser
+from email.policy import SMTP, default
 from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlparse
 
@@ -20,6 +21,7 @@ from tool_gateway.errors import DeliveryCertainty, ToolErrorCategory, ToolGatewa
 
 from .arf import parse_abuse_report
 from .feedback import (
+    MAX_FEEDBACK_MIME_BYTES,
     message_occurred_at,
     parse_delivery_status,
     provider_ref_digest,
@@ -315,13 +317,7 @@ class GmailConnector:
                 raw = await feedback_transport.get_raw_message(
                     token=self._token.value, message_ref=message_ref
                 )
-                parsed = parse_delivery_status(raw, message_ref)
-                if not parsed:
-                    parsed = parse_abuse_report(
-                        raw,
-                        provider_ref_digest=provider_ref_digest(message_ref),
-                        occurred_at=message_occurred_at(raw),
-                    )
+                parsed = _parse_feedback_message(raw, message_ref)
                 remaining = parsed[offset:]
                 capacity = page_limit - len(items)
                 items.extend(remaining[:capacity])
@@ -435,6 +431,61 @@ class GmailConnector:
 
     async def add_label(self, message_ref: str, label: str) -> None:
         raise NotImplementedError
+
+
+_MAX_HEADER_PREFIX_BYTES = 64 * 1024
+
+
+def _top_level_report_type(raw_message: bytes) -> str | None:
+    """有界前缀（≤64 KiB）解析顶层 Content-Type 的 report-type；绝不扫描正文。
+
+    用 ``BytesHeaderParser`` 正确处理 RFC continuation folding（折行的
+    Content-Type/report-type 参数不会漏判）；header/body 分隔不在前缀内
+    （超长头或畸形）、无 Content-Type、无 report-type 参数一律返回 None——
+    调用方不得据此判定为 complaint。
+    """
+    prefix = raw_message[:_MAX_HEADER_PREFIX_BYTES]
+    separator = len(prefix)
+    for marker in (b"\r\n\r\n", b"\n\n"):
+        index = prefix.find(marker)
+        if index != -1:
+            separator = min(separator, index)
+    if separator == len(prefix):
+        return None
+    header_block = prefix[:separator]
+    message = BytesHeaderParser(policy=default).parsebytes(header_block)
+    if message.get_content_type() != "multipart/report":
+        return None
+    report_type = message.get_param("report-type")
+    if not isinstance(report_type, str):
+        return None
+    return report_type
+
+
+def _parse_feedback_message(
+    raw_message: bytes, provider_message_ref: str
+) -> tuple[EmailFeedbackItem, ...]:
+    """按顶层 report-type 分派 DSN/ARF 解析器；普通邮件返回空 tuple。
+
+    必须先于任一解析器的输入校验确定报告类型：oversized structured
+    feedback-report 必须交给 ARF 解析器产出 typed MALFORMED（供整页隔离），
+    不能先被 DSN 解析器的超大输入校验抛 ValidationError；oversized 普通
+    邮件/DSN 也不产生任何事实（不误判 complaint）。report-type 判定只读
+    有界前缀（``_top_level_report_type``），对超大 raw 不做整封 MIME 解析。
+    """
+    if _top_level_report_type(raw_message) == "feedback-report":
+        return parse_abuse_report(
+            raw_message,
+            provider_ref_digest=provider_ref_digest(provider_message_ref),
+            occurred_at=message_occurred_at(raw_message),
+        )
+    if len(raw_message) > MAX_FEEDBACK_MIME_BYTES:
+        # 超大非 feedback-report：交给 DSN 解析器只会触发其输入校验
+        # ValidationError（无 typed 隔离语义）；这里按普通邮件语义返回
+        # 空事实，绝不误判成 complaint。
+        return ()
+    return parse_delivery_status(raw_message, provider_message_ref)
+
 
 def _encode_feedback_cursor(state: _FeedbackCursorState) -> str:
     payload = {

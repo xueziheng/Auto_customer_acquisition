@@ -73,36 +73,57 @@ def _raw_payload(raw: bytes) -> bytes:
     ).encode("ascii")
 
 
-def _arf_report() -> bytes:
+def _arf_report(
+    *,
+    date_header: str | None = "Date: Thu, 13 Aug 2026 10:00:00 +0000",
+    report_pad: int = 0,
+    folded_content_type: bool = False,
+) -> bytes:
     boundary = "feedback-http-arf"
-    lines = [
-        "Date: Thu, 13 Aug 2026 10:00:00 +0000",
-        (
+    lines = []
+    if date_header is not None:
+        lines.append(date_header)
+    if folded_content_type:
+        lines.append('Content-Type: multipart/report;')
+        lines.append(' report-type="feedback-report";')
+        lines.append(f' boundary="{boundary}"')
+    else:
+        lines.append(
             'Content-Type: multipart/report; report-type="feedback-report"; '
             f'boundary="{boundary}"'
-        ),
-        "MIME-Version: 1.0",
-        "",
-        f"--{boundary}",
-        "Content-Type: text/plain",
-        "",
-        "complaint prose",
-        f"--{boundary}",
-        "Content-Type: message/feedback-report",
-        "",
-        "Feedback-Type: abuse",
-        "User-Agent: provider-test/1.0",
-        "Version: 1",
-        "",
-        f"--{boundary}",
-        "Content-Type: message/rfc822",
-        "",
-        "Message-ID: <route-v1." + "a" * 64 + "@messages.tradeos.invalid>",
-        "X-TradeOS-Idempotency-V1: route-v1." + "b" * 64,
-        "",
-        f"--{boundary}--",
-        "",
-    ]
+        )
+    lines.extend(
+        [
+            "MIME-Version: 1.0",
+            "",
+            f"--{boundary}",
+            "Content-Type: text/plain",
+            "",
+            "complaint prose",
+            f"--{boundary}",
+            "Content-Type: message/feedback-report",
+            "",
+            "Feedback-Type: abuse",
+            "User-Agent: provider-test/1.0",
+            "Version: 1",
+            "",
+        ]
+    )
+    if report_pad:
+        lines.append("x" * report_pad)
+        lines.append("")
+    lines.extend(
+        [
+            f"--{boundary}",
+            "Content-Type: message/rfc822",
+            "",
+            "Message-ID: <route-v1." + "a" * 64 + "@messages.tradeos.invalid>",
+            "X-TradeOS-Idempotency-V1: route-v1." + "b" * 64,
+            "",
+            f"--{boundary}--",
+            "",
+        ]
+    )
     return "\r\n".join(lines).encode("ascii")
 
 
@@ -465,3 +486,92 @@ async def test_cursor_is_opaque_bounded_and_caller_cannot_inject_query() -> None
     for limit in (0, 101, True):
         with pytest.raises(ValidationError):
             await connector.fetch_feedback_page("feedback-primary", None, limit)
+
+
+class _RawInjectingTransport:
+    """绕过 transport 4MiB 上限的测试 transport，直接把构造好的 raw 交给解析。"""
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def search(self, *, token: str, message_id: str, header: str) -> None:
+        del token, message_id, header
+
+    async def send(self, *, token: str, raw_message: bytes) -> str:
+        del token, raw_message
+        raise AssertionError("feedback 路径不得发送")
+
+    async def get_profile_history_id(self, *, token: str) -> str:
+        del token
+        return "100"
+
+    async def list_feedback_messages(
+        self, *, token: str, after_epoch: int, page_token: str | None
+    ) -> tuple[tuple[str, ...], str | None]:
+        del token, after_epoch, page_token
+        return (("m1",), None)
+
+    async def list_feedback_history(
+        self, *, token: str, start_history_id: str, page_token: str | None
+    ) -> tuple[tuple[str, ...], str | None, str]:
+        del token, start_history_id, page_token
+        return ((), None, "100")
+
+    async def get_raw_message(self, *, token: str, message_ref: str) -> bytes:
+        del token, message_ref
+        return self._raw
+
+
+@pytest.mark.asyncio
+async def test_oversized_structured_feedback_report_is_typed_quarantine_not_dsn_error() -> None:
+    """超大 structured feedback-report 必须 typed MALFORMED 供隔离，不能先被
+    DSN parser 抛 ValidationError。"""
+    oversized = _arf_report(report_pad=4 * 1024 * 1024)
+    connector = GmailConnector(_RawInjectingTransport(oversized))
+    await connector.configure(_Secrets())
+    page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.kind.value == "unparseable"
+    assert item.parse_issue.value == "malformed"
+    assert item.correlation is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_ordinary_mail_never_becomes_complaint_or_dsn_error() -> None:
+    """超大普通邮件不得误判成 complaint，也不得被 DSN parser 拒绝。"""
+    oversized = b"Subject: ordinary\r\n\r\n" + b"x" * (4 * 1024 * 1024 + 1)
+    connector = GmailConnector(_RawInjectingTransport(oversized))
+    await connector.configure(_Secrets())
+    page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert page.items == ()
+
+
+@pytest.mark.asyncio
+async def test_arf_without_date_is_typed_malformed_not_complaint() -> None:
+    """缺失 Date 的 ARF 必须 typed MALFORMED 供隔离，不能以 EPOCH 形成 COMPLAINT。"""
+    connector = GmailConnector(
+        _RawInjectingTransport(_arf_report(date_header=None))
+    )
+    await connector.configure(_Secrets())
+    page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.kind.value == "unparseable"
+    assert item.parse_issue.value == "malformed"
+    assert item.correlation is None
+    assert item.occurred_at == datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_folded_content_type_report_type_is_not_missed() -> None:
+    """RFC continuation folding 的 Content-Type（report-type 在续行）不得漏判。"""
+    connector = GmailConnector(
+        _RawInjectingTransport(_arf_report(folded_content_type=True))
+    )
+    await connector.configure(_Secrets())
+    page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.kind.value == "complaint"
+    assert item.parse_issue is None

@@ -3,7 +3,9 @@
 ## 能力范围
 
 Phase 1 当前实现经 Tool Gateway 的**单封发送**、不确定结果的**只读搜索恢复**，
-以及 Gmail RFC 3464 DSN 的 **typed 投递反馈读取**。回复正文拉取、投诉 FBL、标签和
+以及 Gmail 的 **typed 投递反馈读取**：RFC 3464 DSN（hard/soft bounce）与
+RFC 5965 ARF 投诉（``multipart/report; report-type=feedback-report``，
+`Feedback-Type: abuse` 才产生 COMPLAINT 事实）。回复正文拉取、标签和
 DNS 检查不属于 Gmail，不能在文档、演示或 UI 中声称 Gmail 提供该能力。这个目录仍是其他
 Connector 的参考实现——写新 Connector 前先读这里。
 
@@ -29,10 +31,13 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 
 ## 投递反馈读取
 
-只读取 `multipart/report; report-type=delivery-status`，并严格解析
-`message/delivery-status` 的 `Status`：`5.x.x` 为 hard bounce，`4.x.x` 为 soft
-bounce，其余候选固定成为 `UNPARSEABLE`，绝不根据 Subject、正文、收件人或诊断原文
-猜测。原始 MIME 只在一次调用栈内存在；DTO 只保留 provider digest、ordinal、固定分类、
+按顶层 `report-type` 分派：`delivery-status` 走 DSN 解析（`Status` `5.x.x` 为
+hard bounce、`4.x.x` 为 soft bounce，其余候选固定成为 `UNPARSEABLE`）；
+`feedback-report` 走 ARF 投诉解析（恰好一个 bounded `message/feedback-report`
+部分 + TradeOS 自有关联部分，`Feedback-Type: abuse` 才产生 COMPLAINT，缺失或
+不可解析 Date、超大 MIME、畸形 multipart、缺失/歧义 correlation 一律 typed
+`UNPARSEABLE` 供隔离）。两者都**绝不**根据 Subject、正文、收件人或诊断原文猜测。
+原始 MIME 只在一次调用栈内存在；DTO 只保留 provider digest、ordinal、固定分类、
 UTC 时间与 TradeOS 自有 correlation header。普通邮件返回空页结果，不产生反馈事实。
 
 cursor 是 32 KiB 内的 v1 opaque 状态，只承载固定 30 天 bootstrap 边界、Gmail history
@@ -72,6 +77,6 @@ fetch_feedback_page(alias, cursor, limit) -> EmailFeedbackPage
 
 ## Phase 1 范围
 
-单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、DSN typed 读取、交付
-确定性错误分类。不做：回复正文 worker、投诉 FBL、标签、DNS 检查、超过 30 天批量历史
-导入、自动重发、Gmail 之外的 Google 服务。
+单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、DSN typed 读取、
+ARF 投诉 typed 读取、交付确定性错误分类。不做：回复正文 worker、标签、DNS 检查、
+超过 30 天批量历史导入、自动重发、Gmail 之外的 Google 服务。

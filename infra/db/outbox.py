@@ -1,7 +1,9 @@
 """outbox 事件写入（P1：发布写入与业务同一事务）。
 
-- ``EVENT_REGISTRY``：显式白名单（已批准域实际发布的事件类），
-  禁止反射扫描自动放行。
+- ``EVENT_REGISTRY``：显式发布白名单——只有经契约评审、当前实际需要发布的
+  事件类型才允许写入 outbox。它**不是**由各域 PUBLISHES 声明自动推导的集合：
+  各域 ``events.py`` 的 PUBLISHES 是文档性声明，白名单以这里手工维护为准；
+  新增事件类型必须先经契约评审再加白名单，禁止反射扫描 catalog 自动放行。
 - 事件序列化用 JSON：NewType→str、datetime→ISO、Enum→value、Money→{amount,currency}
   （Decimal 用 str 保精度）、嵌套 dataclass 递归。**禁止 pickle / 动态导入 /
   不可信类型构造**——不可序列化类型直接抛 ``ValidationError``。
@@ -14,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from types import UnionType
@@ -67,8 +69,43 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "SuppressionAdded": SuppressionAdded,
     "ComplaintReceived": ComplaintReceived,
 }
-"""显式白名单：与 opportunities / sending_identity 的 PUBLISHES 一致。
-不允许用反射扫描 catalog 自动放行——新事件必须先经契约评审再加白名单。"""
+"""显式发布白名单（手工维护，见模块 docstring）：新事件必须先经契约评审。"""
+
+_LOWER_HEX_64_RE = re.compile(r"[0-9a-f]{64}")
+_ATTEMPT_ID_RE = re.compile(r"mat_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_IDENTITY_ID_RE = re.compile(r"sid_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+
+
+def _is_utc_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() == timedelta(0)
+
+
+def _validate_complaint_received_shape(event: ComplaintReceived) -> None:
+    """发布前校验 ComplaintReceived 真实字段的安全形状；无效 fail closed。
+
+    投诉是最高风险反馈：attempt/身份/dedup 任一形状异常都不允许写入 outbox
+    （否则下游反序列化或消费方会拿到未定型数据）。规则与既有安全 ID 类型
+    （``mat_``/``sid_`` + ULID 字符集、64-lower-hex digest）保持一致。
+    """
+    if not isinstance(event.occurred_at, datetime) or not _is_utc_aware(
+        event.occurred_at
+    ):
+        raise ValidationError("ComplaintReceived occurred_at 必须为 UTC datetime")
+    if (
+        not isinstance(event.message_attempt_id, str)
+        or _ATTEMPT_ID_RE.fullmatch(event.message_attempt_id) is None
+    ):
+        raise ValidationError("ComplaintReceived message_attempt_id 无效")
+    if (
+        not isinstance(event.sending_identity_id, str)
+        or _IDENTITY_ID_RE.fullmatch(event.sending_identity_id) is None
+    ):
+        raise ValidationError("ComplaintReceived sending_identity_id 无效")
+    if (
+        not isinstance(event.dedup_key, str)
+        or _LOWER_HEX_64_RE.fullmatch(event.dedup_key) is None
+    ):
+        raise ValidationError("ComplaintReceived dedup_key 无效")
 
 
 def resolve_event_type(name: str) -> type[DomainEvent]:
@@ -317,10 +354,11 @@ class PostgresEventBus:
         self._handlers: dict[str, list[EventHandler[DomainEvent]]] = {}
 
     async def publish(self, event: DomainEvent) -> None:
-        """白名单校验 → 租户一致校验 → 构造 EventEnvelope → INSERT outbox_events。
+        """白名单校验 → 租户一致校验 → 形状校验 → 构造 EventEnvelope → INSERT。
 
         事件类型必须在 ``EVENT_REGISTRY``（类身份一致，防伪造）；事件租户必须与
         总线绑定租户一致（硬边界 8，避免业务 repo 与事件 tenant 不一致写入）。
+        ``ComplaintReceived`` 额外做发布前形状校验（fail closed）。
         """
         name = type(event).__name__
         if EVENT_REGISTRY.get(name) is not type(event):
@@ -330,6 +368,8 @@ class PostgresEventBus:
                 f"事件租户 {event.tenant_id} 与总线绑定租户 {self._tenant_id} "
                 "不一致：拒绝发布（硬边界 8）"
             )
+        if name == "ComplaintReceived":
+            _validate_complaint_received_shape(cast(ComplaintReceived, event))
         envelope = EventEnvelope(
             event=event,
             event_id=new_id("evt"),

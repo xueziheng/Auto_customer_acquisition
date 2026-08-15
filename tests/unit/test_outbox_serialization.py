@@ -562,3 +562,81 @@ def test_unknown_event_type_rejected() -> None:
         resolve_event_type("NeedValidated")  # catalog 有类但不在白名单
     with pytest.raises(ValidationError):
         resolve_event_type("TotallyUnknownEvent")
+
+
+class _RecordingSession:
+    """只记录 add 调用的最小会话桩；形状校验失败时不得触达。"""
+
+    def __init__(self) -> None:
+        self.added: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+
+def test_complaint_received_publish_validates_shape_fail_closed() -> None:
+    """发布 ComplaintReceived 前校验真实字段形状；无效 fail closed，合法发布。"""
+    import asyncio
+
+    bus_module = importlib.import_module("infra.db.outbox")
+    tenant = TenantId(new_id("tn"))
+    valid = ComplaintReceived(
+        tenant_id=tenant,
+        occurred_at=_NOW,
+        run_id=None,
+        message_attempt_id=new_id("mat"),
+        sending_identity_id=SendingIdentityId(new_id("sid")),
+        dedup_key="c" * 64,
+    )
+    session = _RecordingSession()
+    bus = bus_module.PostgresEventBus(session, tenant, now=lambda: _NOW)
+    asyncio.run(bus.publish(valid))
+    assert len(session.added) == 1
+
+    invalid = (
+        ComplaintReceived(
+            tenant_id=tenant,
+            occurred_at=_NOW,
+            run_id=None,
+            message_attempt_id="not-an-attempt",
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+            dedup_key="c" * 64,
+        ),
+        ComplaintReceived(
+            tenant_id=tenant,
+            occurred_at=_NOW,
+            run_id=None,
+            message_attempt_id=new_id("mat"),
+            sending_identity_id=SendingIdentityId("not-an-identity"),
+            dedup_key="c" * 64,
+        ),
+        ComplaintReceived(
+            tenant_id=tenant,
+            occurred_at=_NOW,
+            run_id=None,
+            message_attempt_id=new_id("mat"),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+            dedup_key="Bearer-private",
+        ),
+        ComplaintReceived(
+            tenant_id=tenant,
+            occurred_at=_NOW,
+            run_id=None,
+            message_attempt_id=new_id("mat"),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+            dedup_key="short",
+        ),
+        ComplaintReceived(
+            tenant_id=tenant,
+            occurred_at=_NOW.replace(tzinfo=None),
+            run_id=None,
+            message_attempt_id=new_id("mat"),
+            sending_identity_id=SendingIdentityId(new_id("sid")),
+            dedup_key="c" * 64,
+        ),
+    )
+    for event in invalid:
+        session.added.clear()
+        with pytest.raises(ValidationError):
+            asyncio.run(bus.publish(event))
+        assert session.added == [], "形状校验失败前不得写入 outbox"

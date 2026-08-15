@@ -19,6 +19,10 @@ from shared.schemas.email_feedback import (
 )
 
 _MAX_MIME_BYTES = 4 * 1024 * 1024
+
+MAX_FEEDBACK_MIME_BYTES = _MAX_MIME_BYTES
+"""反馈 MIME 上限的公开别名：client 分派在把 raw 交给本解析器前先按此定界，
+避免超大非 feedback-report 输入在这里被输入校验抛 ValidationError。"""
 _PROVIDER_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _STATUS_RE = re.compile(r"([245])\.\d{1,3}\.\d{1,3}")
 _MESSAGE_ID_RE = re.compile(

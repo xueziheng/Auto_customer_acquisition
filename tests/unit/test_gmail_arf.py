@@ -45,22 +45,27 @@ def _arf(
     subject: str = "abuse complaint",
     body_text: str = "This message is a complaint.",
     report_body: str = "",
+    date: str | None = "Sat, 15 Aug 2026 10:00:00 +0000",
 ) -> bytes:
-    lines = [
-        "Date: Sat, 15 Aug 2026 10:00:00 +0000",
-        (
-            'Content-Type: multipart/report; report-type="feedback-report"; '
-            f'boundary="{_BOUNDARY}"'
-        ),
-        "MIME-Version: 1.0",
-        f"Subject: {subject}",
-        "",
-        f"--{_BOUNDARY}",
-        "Content-Type: text/plain",
-        "",
-        body_text,
-        "",
-    ]
+    lines = []
+    if date is not None:
+        lines.append(f"Date: {date}")
+    lines.extend(
+        [
+            (
+                'Content-Type: multipart/report; report-type="feedback-report"; '
+                f'boundary="{_BOUNDARY}"'
+            ),
+            "MIME-Version: 1.0",
+            f"Subject: {subject}",
+            "",
+            f"--{_BOUNDARY}",
+            "Content-Type: text/plain",
+            "",
+            body_text,
+            "",
+        ]
+    )
     for _ in range(report_parts):
         lines.extend(
             [
@@ -273,3 +278,15 @@ def test_invalid_inputs_raise_validation_error() -> None:
         module.parse_abuse_report(
             _arf(), provider_ref_digest=_DIGEST, occurred_at="2026-08-15T10:00:00Z"
         )
+
+
+def test_missing_or_unparseable_date_epoch_sentinel_is_typed_malformed() -> None:
+    """EPOCH 哨兵（缺失/不可解析 Date）绝不能形成 COMPLAINT 进入信誉域。"""
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    for raw in (_arf(date=None), _arf()):
+        items = _parse(raw, occurred_at=epoch)
+        assert len(items) == 1
+        assert items[0].kind is EmailFeedbackKind.UNPARSEABLE
+        assert items[0].parse_issue is EmailFeedbackParseIssue.MALFORMED
+        assert items[0].correlation is None
+        assert items[0].occurred_at == epoch

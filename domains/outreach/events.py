@@ -13,7 +13,7 @@ from shared.events.catalog import (
     UnsubscribeReceived,
 )
 
-PUBLISHES = (MessageSent, SuppressionAdded)
+PUBLISHES = (MessageSent, SuppressionAdded, ComplaintReceived)
 
 SUBSCRIBES = (
     ReplyReceived,

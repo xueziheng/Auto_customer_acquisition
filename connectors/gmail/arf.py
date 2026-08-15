@@ -104,6 +104,11 @@ def parse_abuse_report(
         raise ValidationError("ARF 输入无效")
     if not _is_utc(occurred_at):
         return (_unparseable(provider_ref_digest, EmailFeedbackParseIssue.MALFORMED),)
+    if occurred_at == _EPOCH:
+        # EPOCH 是「缺失/不可解析 Date」的哨兵（见 message_occurred_at）。
+        # 带哨兵形成 COMPLAINT 会让信誉域因 occurred_at 早于身份创建时间而
+        # 整页永久回滚；必须 typed MALFORMED 供隔离。
+        return (_unparseable(provider_ref_digest, EmailFeedbackParseIssue.MALFORMED),)
     if len(raw_message) > _MAX_MIME_BYTES:
         return (_unparseable(provider_ref_digest, EmailFeedbackParseIssue.MALFORMED),)
     message = BytesParser(policy=default).parsebytes(raw_message)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from shared.events.catalog import (
+    AuthenticationCheckRequested,
     ComplaintReceived,
     MessageBounced,
     MessageDelivered,
@@ -14,6 +15,7 @@ from shared.events.catalog import (
 )
 
 PUBLISHES = (
+    AuthenticationCheckRequested,
     SendingIdentityActivated,
     SendingIdentityThrottled,
     SendingIdentitySuspended,
