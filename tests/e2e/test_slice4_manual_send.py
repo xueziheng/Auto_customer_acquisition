@@ -25,6 +25,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import dns.asyncresolver
+import dns.message
+import dns.rdatatype
+import dns.rrset
 import pytest
 import pytest_asyncio
 from playwright.async_api import async_playwright, expect
@@ -61,6 +65,8 @@ from domains.sending_identity.schemas import (
 )
 from infra.db.session import create_engine_from
 from infra.db.tables import (
+    AuthenticationCheckRequestRow,
+    AuthenticationCheckRow,
     InAppNotificationRow,
     NotificationJobRow,
     OutreachMessageAttemptRow,
@@ -217,6 +223,55 @@ def _free_port() -> int:
         return int(listener.getsockname()[1])
 
 
+class _FakeDnsProtocol(asyncio.DatagramProtocol):
+    """本地 fake DNS（UDP）：按 fqdn 返回固定 TXT 记录并记录查询证据。"""
+
+    def __init__(self, records: dict[str, tuple[str, ...]]) -> None:
+        self.records = records
+        self.queries: list[tuple[str, str]] = []
+        self._transport: asyncio.DatagramTransport | None = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self._transport = transport  # type: ignore[assignment]
+
+    def datagram_received(self, data: bytes, addr: object) -> None:
+        try:
+            query = dns.message.from_wire(data)
+            question = query.question[0]
+            name = question.name.to_text()
+            rdtype = dns.rdatatype.to_text(question.rdtype)
+            self.queries.append((name, rdtype))
+            response = dns.message.make_response(query)
+            strings = self.records.get(name)
+            if strings is not None:
+                # TXT rdata 必须加引号：from_text 会把未引号值按空白拆成多个
+                # character-string，破坏 SPF/DKIM/DMARC 记录内容
+                response.answer.append(
+                    dns.rrset.from_text(
+                        name, 60, "IN", "TXT", *(f'"{value}"' for value in strings)
+                    )
+                )
+            wire = response.to_wire()
+        except Exception:  # noqa: BLE001 - fake 服务对畸形包静默丢弃
+            return
+        if self._transport is not None:
+            self._transport.sendto(wire, addr)  # type: ignore[arg-type]
+
+
+class _LocalDnsResolver:
+    """把 dnspython 生产 resolver 指向本地 fake DNS 端口的注入实现。"""
+
+    def __init__(self, port: int) -> None:
+        self._port = port
+
+    async def resolve(self, name: str, rdtype: str) -> object:
+        resolver = dns.asyncresolver.Resolver()
+        resolver.nameservers = ["127.0.0.1"]
+        resolver.port = self._port
+        resolver.lifetime = 2.0
+        return await resolver.resolve(name, rdtype)
+
+
 def _spawn_process(
     command: list[str],
     *,
@@ -299,6 +354,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
     fake_gmail = _FakeGmailServer()
     engine: AsyncEngine | None = None
     processes: list[object] = []
+    dns_resources: list[asyncio.DatagramTransport] = []
     try:
         await asyncio.to_thread(container.start)
         container_started = True
@@ -378,8 +434,8 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
         identity = await seeding_deps.sending_identities.register(
             tenant,
             IdentityRegisterRequest(
-                address="sales@cold.example.test",
-                domain="cold.example.test",
+                address="sales@cold.example.com",
+                domain="cold.example.com",
                 role=__import__("domains.sending_identity.models", fromlist=["DomainRole"]).DomainRole.COLD_OUTREACH,
             ),
             actor=boss_identity,
@@ -493,7 +549,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
                     account_id=preflight.account_id,
                     contact_point_id=preflight.contact_point_id,
                     sending_identity_id=preflight.sending_identity_id,
-                    from_address="sales@cold.example.test",
+                    from_address="sales@cold.example.com",
                     recipient_address="customer@example.test",
                 )
 
@@ -569,6 +625,33 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
                 created_at=_NOW,
             )
         )
+        # 本地 fake DNS（UDP）：真实 connector 经注入 resolver 查询它
+        dns_port = _free_port()
+        fake_dns = _FakeDnsProtocol(
+            {
+                "cold.example.com.": ("v=spf1 -all",),
+                "s1._domainkey.cold.example.com.": (
+                    "v=DKIM1; k=rsa; p=" + "A" * 64,
+                ),
+                "_dmarc.cold.example.com.": ("v=DMARC1; p=reject",),
+            }
+        )
+        dns_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            lambda: fake_dns, local_addr=("127.0.0.1", dns_port)
+        )
+        dns_resources.append(dns_transport)
+        # 生产 scheduler_worker 运行时环境（真实 composition，仅注入本地 DNS resolver）
+        scheduler_env = {
+            **env_for("http://placeholder.invalid"),
+            "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
+            "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+            "TRADEOS_SCHEDULER_LOCK_KEY": "3110002",
+            "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "7",
+            "TRADEOS_HANDOFF_T1_SECONDS": "2",
+            "TRADEOS_HANDOFF_T2_SECONDS": "2",
+            "TRADEOS_DKIM_SELECTOR": "s1",
+            "TRADEOS_SCHEDULER_HEALTH_PORT": str(_free_port()),
+        }
         yield_dict.update(
             {
                 "tenant": tenant,
@@ -582,6 +665,9 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
                 "notification_id": notification_id,
                 "factory": factory,
                 "fake_gmail": fake_gmail,
+                "fake_dns": fake_dns,
+                "dns_port": dns_port,
+                "scheduler_env": scheduler_env,
                 "senders": senders,
                 "app_deps": app_deps,
                 "seeding_deps": seeding_deps,
@@ -672,6 +758,8 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
                 except subprocess.TimeoutExpired:
                     process.kill()
         fake_gmail.stop()
+        for transport in dns_resources:
+            transport.close()
         if engine is not None:
             await engine.dispose()
         for handle in list(logs.values()) if "logs" in dir() else []:
@@ -769,7 +857,7 @@ def build_app(environ):
                 account_id=preflight.account_id,
                 contact_point_id=preflight.contact_point_id,
                 sending_identity_id=preflight.sending_identity_id,
-                from_address="sales@cold.example.test",
+                from_address="sales@cold.example.com",
                 recipient_address="customer@example.test",
             )
 
@@ -829,6 +917,9 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
     notification_id = slice4_stack["notification_id"]
     factory = slice4_stack["factory"]
     fake_gmail = slice4_stack["fake_gmail"]
+    fake_dns = slice4_stack["fake_dns"]
+    dns_port = slice4_stack["dns_port"]
+    scheduler_env = slice4_stack["scheduler_env"]
     app_deps = slice4_stack["app_deps"]
     web_origin = slice4_stack["web_origin"]
 
@@ -945,8 +1036,10 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await page.goto(
                 f"{web_origin}/crm/sending-identities", wait_until="networkidle"
             )
-            await expect(page.get_by_text("cold.example.test", exact=True)).to_be_visible()
+            await expect(page.get_by_text("cold.example.com", exact=True)).to_be_visible()
             await assert_no_overflow(page)
+            # 种子认证全过；worker 经真实 DNS 查询后 UI 显示其结果
+            await expect(page.get_by_text("SPF 通过")).to_be_visible()
             await page.get_by_role("button", name="重新检查认证").first.click()
             await expect(page.get_by_text("认证检查已提交")).to_be_visible()
             # 视觉态：提交反馈可见、「重新检查认证」按钮焦点环可见
@@ -956,27 +1049,82 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
                 )
                 await capture_visual(page, "sending-identities")
                 await page.set_viewport_size({"width": 1440, "height": 900})
-            # DNS worker 结果经真实服务落库后重新可见
-            await app_deps.sending_identities.record_authentication_result(
-                tenant,
-                identity,
-                AuthenticationResult(
-                    checked_at=_NOW,
-                    spf_passed=True,
-                    dkim_passed=True,
-                    dmarc_passed=True,
-                    failures=(),
-                    check_ref="auth_slice4_e2e_after",
-                ),
-                actor=SendingIdentityActor(
-                    "system:slice4-e2e",
-                    SendingIdentityScope(
-                        level=SendingIdentityScopeLevel.SYSTEM,
-                        allowed_identity_ids=frozenset({identity}),
-                    ),
-                    "system",
-                ),
+            # 真实 scheduler/worker 消费：outbox drain → workflow → tool-gateway
+            # → DNS connector → 本地 fake DNS；测试不直接写认证结果。
+            from apps.scheduler_worker.main import _run_cycle
+            from apps.scheduler_worker.runtime import (
+                SchedulerDomainDependencies,
+                SchedulerRuntimeFactory,
             )
+
+            class _StubOpportunities:
+                async def record_handoff_escalation(self, *args, **kwargs):
+                    del args, kwargs
+
+            class _StubEmployees:
+                async def get_employee(self, *args, **kwargs):
+                    del args, kwargs
+
+            class _StubAudience:
+                async def recipients_for(self, tenant_id, event):
+                    del tenant_id, event
+                    return ()
+
+            async with SchedulerRuntimeFactory(
+                scheduler_env,
+                SchedulerDomainDependencies(
+                    _StubOpportunities(), _StubEmployees(), _StubAudience()
+                ),
+                resolver_factory=lambda: _LocalDnsResolver(dns_port),
+            )() as runtime:
+                await _run_cycle(runtime, 1)
+            # 证据一：本地 fake DNS 确实收到三个 TXT 查询（真实 connector 边界）
+            assert {
+                "cold.example.com.",
+                "s1._domainkey.cold.example.com.",
+                "_dmarc.cold.example.com.",
+            } <= {name for name, _ in fake_dns.queries}, (
+                f"fake DNS 查询缺失：{fake_dns.queries}"
+            )
+            # 证据二：tool gateway ledger 恰有一条 dns.auth.check 成功调用
+            # 证据三：点击创建的认证检查请求经状态机推进到 succeeded
+            async with factory() as session:
+                dns_calls = (
+                    await session.execute(
+                        select(ToolCallRow).where(
+                            ToolCallRow.tenant_id == str(tenant),
+                            ToolCallRow.tool_id == "dns.auth.check",
+                        )
+                    )
+                ).scalars().all()
+                assert len(dns_calls) == 1, f"dns.auth.check 调用数异常：{len(dns_calls)}"
+                assert dns_calls[0].status == "succeeded"
+                requests = (
+                    await session.execute(
+                        select(AuthenticationCheckRequestRow).where(
+                            AuthenticationCheckRequestRow.tenant_id == str(tenant)
+                        )
+                    )
+                ).scalars().all()
+                assert len(requests) == 1, f"认证检查请求数异常：{len(requests)}"
+                assert requests[0].status == "succeeded"
+                assert requests[0].completed_at is not None
+                # 证据四：UI 渲染的认证状态来自 worker 的 DNS 结果——最新
+                # auth check 记录为 dns_ 前缀（非测试直写）
+                latest = (
+                    await session.execute(
+                        select(AuthenticationCheckRow)
+                        .where(
+                            AuthenticationCheckRow.tenant_id == str(tenant),
+                            AuthenticationCheckRow.identity_id == str(identity),
+                        )
+                        .order_by(AuthenticationCheckRow.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one()
+                assert latest.check_ref.startswith("dns_"), latest.check_ref
+                assert latest.spf_passed and latest.dkim_passed and latest.dmarc_passed
+            # 结果经真实服务落库后 UI 可见：卡片显示 DNS 派生结果（SPF 通过）
             await page.reload(wait_until="networkidle")
             await expect(page.get_by_text("SPF 通过")).to_be_visible()
             await assert_no_overflow(page)
