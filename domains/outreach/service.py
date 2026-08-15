@@ -35,6 +35,7 @@ from domains.outreach.schemas import (
     ReplyStatusSnapshot,
     SendDecision,
     SendingIdentityEligibilitySnapshot,
+    SequenceStepRequest,
     SuppressionRequest,
     SuppressionResult,
     SuppressionTarget,
@@ -204,6 +205,20 @@ class OutreachService(Protocol):
         工作流按 ``denial_reason`` 分流。拒绝路径与 ``prepare_message_attempt``
         相同的副作用（回复/抑制会终态化 Enrollment）。
         """
+
+    async def get_sequence_step_spec(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        *,
+        actor: Actor,
+    ) -> SequenceStepRequest:
+        """Enrollment 下一步的序列步骤规格（intent/wait_days）。
+
+        供序列工作流以 enrollment 作用域 SYSTEM actor 读取；域内解析
+        Campaign 边界，不把 campaign 读权暴露给 SYSTEM。
+        """
+        ...
 
     async def list_due_sequence_enrollments(
         self,

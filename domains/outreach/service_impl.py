@@ -1690,6 +1690,43 @@ class OutreachServiceImpl:
             None,
         )
 
+    async def get_sequence_step_spec(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        *,
+        actor: Actor,
+    ) -> SequenceStepRequest:
+        """Enrollment 下一步规格；SYSTEM enrollment 作用域可读，不暴露 campaign 读权。"""
+        action = OutreachAction.ENROLLMENT_READ
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        located = await self._locate_enrollment(tenant_id, enrollment_id)
+        async with self._uow_factory(tenant_id) as uow:
+            enrollment = await uow.enrollments.get(tenant_id, located.enrollment_id)
+            if enrollment is None:
+                raise ValidationError("Enrollment 不存在")
+            version = await uow.campaigns.get_version(
+                tenant_id, located.campaign_id, located.campaign_version
+            )
+            if version is None:
+                raise ValidationError("Enrollment Campaign 版本不存在")
+            self._require(
+                actor,
+                action,
+                tenant_id,
+                campaign_id=located.campaign_id,
+                account_id=enrollment.account_id,
+                enrollment_id=enrollment.enrollment_id,
+            )
+            step_index = enrollment.current_step
+            if step_index < 0 or step_index >= len(version.boundary.steps):
+                raise ValidationError("序列步骤越界")
+            spec = version.boundary.steps[step_index]
+        self._allow(actor, action, tenant_id, _pre_rule)
+        return SequenceStepRequest(
+            spec.step_number, spec.intent, spec.wait_days
+        )
+
     async def list_due_sequence_enrollments(
         self,
         tenant_id: TenantId,
