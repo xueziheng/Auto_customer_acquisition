@@ -80,13 +80,3 @@ fetch_feedback_page(alias, cursor, limit) -> EmailFeedbackPage
 单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、DSN typed 读取、
 ARF 投诉 typed 读取、交付确定性错误分类。不做：回复正文 worker、标签、DNS 检查、
 超过 30 天批量历史导入、自动重发、Gmail 之外的 Google 服务。
-
-## Slice 4 演示与验收
-
-- 演示脚本（`scripts/demo_slice4_manual_send.py`）使用本地受控 Gmail HTTP
-  服务（仅发送/搜索/档案/历史端点，固定 provider ref），仅作容器验收；
-  它不扩展本连接器的生产能力，也不改变生产 transport 只连
-  `https://gmail.googleapis.com` 的约束。
-- 真实域名验收（真实 OAuth、hard bounce、ARF complaint）需要独立外部前提，
-  前提不可用时记为 `not_run`；运维与验收流程见
-  `docs/operations/slice4-email-operations.md`。
