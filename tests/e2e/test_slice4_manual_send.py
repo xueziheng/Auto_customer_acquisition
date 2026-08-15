@@ -651,6 +651,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
             "TRADEOS_HANDOFF_T2_SECONDS": "2",
             "TRADEOS_DKIM_SELECTOR": "s1",
             "TRADEOS_SCHEDULER_HEALTH_PORT": str(_free_port()),
+            "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
         }
         yield_dict.update(
             {

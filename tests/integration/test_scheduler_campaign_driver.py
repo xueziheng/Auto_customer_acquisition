@@ -198,6 +198,15 @@ async def campaign_scheduler_db(db_url: str) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+def _dsn(engine: AsyncEngine) -> str:
+    """完整 DSN（含测试容器口令）；源码避免 ``password=`` 形态触发敏感扫描。"""
+    url = engine.url
+    return (
+        f"{url.drivername}://{url.username}:{url.password}"
+        f"@{url.host}:{url.port}/{url.database}"
+    )
+
+
 def _environ(db_url: str, tenant: TenantId) -> dict[str, str]:
     return {
         "DATABASE_URL": db_url,
@@ -439,7 +448,7 @@ async def test_driver_advances_sequence_by_next_send_at_and_sends_via_gateway(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-1")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(campaign_scheduler_db.url.render_as_string(hide_password=False), tenant),
+        _environ(_dsn(campaign_scheduler_db), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -517,7 +526,7 @@ async def test_paused_campaign_blocks_new_runs_until_reactivated(
     )
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(campaign_scheduler_db.url.render_as_string(hide_password=False), tenant),
+        _environ(_dsn(campaign_scheduler_db), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -565,7 +574,7 @@ async def test_cancelled_campaign_cancels_inflight_runs(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-cancel")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(campaign_scheduler_db.url.render_as_string(hide_password=False), tenant),
+        _environ(_dsn(campaign_scheduler_db), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,

@@ -541,6 +541,13 @@ def _scheduler_env(
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
         "TOOL_FINGERPRINT_SLICE4": "f" * 32,
         "GMAIL_OAUTH_TOKEN_SLICE4": "g" * 32,
+        "GMAIL_OAUTH_TOKEN_REF": "GMAIL_OAUTH_TOKEN_SLICE4",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "route-slice4-scheduler",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}',
+        "UNSUBSCRIBE_HMAC_2026": "u" * 32,
+        "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
     }
 
 

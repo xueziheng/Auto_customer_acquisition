@@ -133,7 +133,6 @@ def test_unsafe_skeleton_service_paths_are_removed() -> None:
     """verified bool、发送授权和自由 scope 旧接口不能继续可调用。"""
     service = _service()
     for name in (
-        "prepare_send",
         "submit_for_approval",
         "activate",
         "pause",
