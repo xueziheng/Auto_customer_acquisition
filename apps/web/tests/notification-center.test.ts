@@ -50,15 +50,19 @@ function asRequest(input: URL | RequestInfo): Request {
 function makeNotificationFetch(options: {
   items?: InAppNotificationView[];
   read?: (id: string) => Response;
+  list?: (call: number) => Response;
 } = {}): {
   fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
   reads: string[];
 } {
   const reads: string[] = [];
+  let listCalls = 0;
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/notifications") {
+      listCalls += 1;
+      if (options.list) return options.list(listCalls);
       return jsonResponse(options.items ?? [unread, read, low]);
     }
     if (
@@ -216,14 +220,51 @@ describe("NotificationCenter", () => {
     expect(afterStale.textContent).not.toContain("未读");
   });
 
-  it("keeps the badge count on failure and flags stale status", async () => {
-    const { fetch } = makeNotificationFetch();
+  it("keeps the last badge count and flags stale status on a real failed refresh after mark-read", async () => {
+    let listCalls = 0;
+    const { fetch } = makeNotificationFetch({
+      read: () => jsonResponse({ ...unread, read_at: "2026-08-15T09:30:00Z" }),
+      list: (call) => {
+        listCalls = call;
+        if (call === 3) {
+          // 真实非 2xx 失败：mark-read 触发的徽标刷新
+          return jsonResponse({ code: "unexpected", message: "boom" }, 500);
+        }
+        return jsonResponse([unread, read, low]);
+      },
+    });
     const { root } = await mountInbox(fetch);
+    // 初始：徽标与列表都成功加载，2 条未读
     await eventually(() => {
       expect(root.textContent).toContain("未读");
+      expect(root.querySelector('[aria-label="通知，2 条未读"]')).not.toBeNull();
     });
-    expect(root.textContent).toMatch(/\d+ 未读/);
     expect(root.textContent).not.toContain("状态可能已过期");
+    // 选中并标记已读 → 视图更新（1 未读）→ 徽标刷新失败
+    [...root.querySelectorAll("li")].find((r) =>
+      r.textContent?.includes("ntf-demo-one"),
+    )!.click();
+    await eventually(() => {
+      expect(root.textContent).toContain("标记为已读");
+    });
+    clickMarkRead(root);
+    await eventually(() => {
+      // 视图侧已更新：1 未读
+      expect(root.textContent).toMatch(/\b1 未读/);
+    });
+    // 徽标刷新确实失败过（第三次 GET 非 2xx）
+    await eventually(() => {
+      expect(listCalls).toBeGreaterThanOrEqual(3);
+      expect(root.textContent).toContain("状态可能已过期");
+    });
+    // 失败不清零：徽标保留最近可信计数 2
+    expect(root.querySelector('[aria-label="通知，2 条未读"]')).not.toBeNull();
+    // 徽标失败不得把视图的已读状态回退
+    const rowOne = [...root.querySelectorAll("li")].find((r) =>
+      r.textContent?.includes("ntf-demo-one"),
+    )!;
+    expect(rowOne.textContent).toContain("已读");
+    expect(rowOne.textContent).not.toContain("未读");
   });
 
   it("shows fixed safe state for cross-recipient read failure", async () => {

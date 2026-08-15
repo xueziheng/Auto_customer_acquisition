@@ -75,8 +75,10 @@ function makeIdentityFetch(options: {
 } = {}): {
   fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
   checkKeys: string[];
+  checkTargets: string[];
 } {
   const checkKeys: string[] = [];
+  const checkTargets: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
@@ -93,6 +95,7 @@ function makeIdentityFetch(options: {
         return jsonResponse({ code: "validation_error", message: "请求参数无效" }, 400);
       }
       checkKeys.push(body.request_key);
+      checkTargets.push(url.pathname.split("/")[3]);
       if (options.checks) return options.checks();
       return jsonResponse(
         {
@@ -109,7 +112,7 @@ function makeIdentityFetch(options: {
     }
     return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
   });
-  return { fetch, checkKeys };
+  return { fetch, checkKeys, checkTargets };
 }
 
 async function eventually(assertion: () => void): Promise<void> {
@@ -204,6 +207,52 @@ describe("SendingIdentityCenter", () => {
     });
     expect(checkKeys[0]).toBe(checkKeys[1]);
     expect(root.textContent).not.toMatch(/request_key|acr-demo-one/);
+  });
+
+  it("targets the clicked identity and isolates request keys per identity", async () => {
+    const identityB: IdentityView = {
+      ...identity,
+      address: "sales@second.example.test",
+      domain: "second.example.test",
+      identity_id: "sid-demo-two",
+    };
+    const { fetch, checkKeys, checkTargets } = makeIdentityFetch({
+      identities: [identity, identityB],
+    });
+    const { root } = await mountCenter(fetch);
+    await eventually(() => {
+      expect(root.textContent).toContain("cold.example.test");
+      expect(root.textContent).toContain("second.example.test");
+    });
+    const cardOf = (domain: string) =>
+      [...root.querySelectorAll("article")].find((card) =>
+        card.textContent?.includes(domain),
+      )!;
+    const checkOf = (domain: string) =>
+      [...cardOf(domain).querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("重新检查认证"),
+      )!;
+    // 点击 A：请求路径必须指向 A
+    checkOf("cold.example.test").click();
+    await eventually(() => {
+      expect(checkTargets).toEqual(["sid-demo-one"]);
+      expect(checkKeys).toHaveLength(1);
+    });
+    // 点击 B：请求路径必须指向 B，且 A/B 的 key 不串
+    checkOf("second.example.test").click();
+    await eventually(() => {
+      expect(checkTargets).toEqual(["sid-demo-one", "sid-demo-two"]);
+      expect(checkKeys).toHaveLength(2);
+    });
+    expect(checkKeys[0]).not.toBe(checkKeys[1]);
+    // B 重试：仍指向 B，且复用 B 自己的 key
+    checkOf("second.example.test").click();
+    await eventually(() => {
+      expect(checkTargets).toEqual(["sid-demo-one", "sid-demo-two", "sid-demo-two"]);
+      expect(checkKeys).toHaveLength(3);
+    });
+    expect(checkKeys[2]).toBe(checkKeys[1]);
+    expect(checkKeys[2]).not.toBe(checkKeys[0]);
   });
 
   it("locks double click and ignores stale responses", async () => {

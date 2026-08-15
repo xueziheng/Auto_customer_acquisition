@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* global CustomEvent, window */
 import { computed, inject, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
@@ -108,6 +109,8 @@ async function markRead(): Promise<void> {
   );
   writeLock.value = false;
   if (response.status === 200) {
+    // 通知已变化：通知顶部徽标应重新拉取计数
+    window.dispatchEvent(new CustomEvent("tradeos:notifications-changed"));
     // 接受后端返回 DTO；只允许 read_at null→datetime 的前进（单调）
     const updated = data;
     if (updated) {

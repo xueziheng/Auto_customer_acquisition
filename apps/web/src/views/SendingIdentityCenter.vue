@@ -14,10 +14,11 @@ const identities = ref<IdentityView[]>([]);
 const listLoading = ref(true);
 const listError = ref<string | null>(null);
 const checkFeedback = ref<string | null>(null);
-const checkBusy = ref(false);
+const checkBusyId = ref<string | null>(null);
 let listVersion = 0;
 let checkVersion = 0;
-let requestKey: string | null = null;
+// 幂等 request_key 按 identity 隔离：重试只复用同一个 identity 的 key
+const requestKeys = new Map<string, string>();
 
 const stateLabels: Record<string, string> = {
   created: "已创建",
@@ -85,24 +86,27 @@ function newRequestKey(): string {
   return `auth-check-${Date.now()}-${random}`;
 }
 
-async function requestCheck(): Promise<void> {
-  if (checkBusy.value) return; // 双击锁
-  checkBusy.value = true;
+async function requestCheck(identityId: string): Promise<void> {
+  if (checkBusyId.value !== null) return; // 双击锁：任一检查在途时忽略再次点击
+  checkBusyId.value = identityId;
   checkFeedback.value = null;
   const version = ++checkVersion;
-  // 每次用户意图生成一个 request_key；重试复用同一个 key。
-  if (requestKey === null) requestKey = newRequestKey();
-  const key = requestKey;
+  // 每个 identity 独立生成 request_key；该 identity 重试复用同一个 key。
+  let key = requestKeys.get(identityId);
+  if (key === undefined) {
+    key = newRequestKey();
+    requestKeys.set(identityId, key);
+  }
   const { response } = await client.POST(
     "/crm/sending-identities/{identity_id}/authentication-checks",
     {
-      params: { path: { identity_id: identities.value[0]?.identity_id ?? "" } },
+      params: { path: { identity_id: identityId } },
       body: { request_key: key },
       headers: requestHeaders(),
     },
   );
   if (version !== checkVersion) return; // stale response 忽略
-  checkBusy.value = false;
+  checkBusyId.value = null;
   if (response.status === 200) {
     checkFeedback.value = "认证检查已提交";
     return;
@@ -169,9 +173,9 @@ onBeforeUnmount(() => {
           <dt>状态</dt><dd><span class="status">{{ statusLabel(identity.state) }}</span></dd>
         </dl>
         <button
-          :disabled="checkBusy"
+          :disabled="checkBusyId !== null"
           :aria-label="`对 ${identity.domain} 重新检查认证`"
-          @click="requestCheck"
+          @click="requestCheck(identity.identity_id)"
         >
           重新检查认证
         </button>

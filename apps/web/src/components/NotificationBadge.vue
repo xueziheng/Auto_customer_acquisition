@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
 import { apiClient, createApiClient } from "../api/client";
@@ -10,6 +10,8 @@ const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const unreadCount = ref<number | null>(null);
 const stale = ref(false);
 let requestVersion = 0;
+
+const NOTIFICATIONS_CHANGED = "tradeos:notifications-changed";
 
 function requestHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -41,7 +43,16 @@ async function refresh(): Promise<void> {
 
 onMounted(() => {
   void refresh();
+  window.addEventListener(NOTIFICATIONS_CHANGED, onNotificationsChanged);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener(NOTIFICATIONS_CHANGED, onNotificationsChanged);
+});
+
+function onNotificationsChanged(): void {
+  void refresh();
+}
 
 const display = computed(() => {
   const count = unreadCount.value ?? 0;
