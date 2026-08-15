@@ -143,7 +143,8 @@ PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
   pytest tests/integration/test_demo_slice4_manual_send.py -q -W error
 ```
 
-手工跑演示（受控模式）：
+手工跑演示（受控模式；`infra/.env.example` 不启用演示模式，必须在命令行
+显式设置）：
 
 ```bash
 DATABASE_URL=<url> TRADEOS_SLICE4_DEMO_MODE=controlled \

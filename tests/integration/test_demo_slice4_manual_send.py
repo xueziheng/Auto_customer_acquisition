@@ -9,13 +9,15 @@ provider 发送、真实 DNS 认证事实、一次 hard bounce + 一次 complain
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlunsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from infra.db.session import create_engine_from
@@ -290,23 +292,93 @@ def test_demo_invalid_dsn_is_fixed_and_never_echoes_marker() -> None:
     assert marker not in result.stdout + result.stderr
 
 
-def test_demo_invalid_oauth_config_is_fixed_and_never_echoes_marker() -> None:
+async def test_demo_invalid_oauth_config_is_fixed_and_never_echoes_marker(
+    db_url: str,
+) -> None:
     marker = "slice4-oauth-marker"
-    result = _run_demo(
-        "postgresql+asyncpg://unused.invalid/tradeos",
-        extra_env={"TRADEOS_SLICE4_GMAIL_REF": marker},
-    )
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            before = (
+                await session.execute(
+                    select(func.count()).select_from(AuthenticationCheckRequestRow)
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    result = _run_demo(db_url, extra_env={"TRADEOS_SLICE4_GMAIL_REF": marker})
     assert result.returncode != 0
     assert result.stdout == ""
     assert result.stderr == _FAILURE_MESSAGE
     assert marker not in result.stdout + result.stderr
+    # 证据：OAuth 门禁在 DB 前置失败——未创建任何认证请求行
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            after = (
+                await session.execute(
+                    select(func.count()).select_from(AuthenticationCheckRequestRow)
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert after == before
 
 
-def test_demo_invalid_dns_config_is_fixed_and_never_echoes_marker() -> None:
+async def test_demo_invalid_dns_config_fails_inside_auth_workflow(db_url: str) -> None:
+    # 明确已关闭的本地端口：bind 后立即 close，端口不再监听
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            snapshot = (
+                await session.execute(
+                    select(func.max(ToolCallRow.created_at))
+                )
+            ).scalar_one()
+            if snapshot is None:
+                snapshot = datetime.min.replace(tzinfo=UTC)
+    finally:
+        await engine.dispose()
     result = _run_demo(
-        "postgresql+asyncpg://unused.invalid/tradeos",
-        extra_env={"TRADEOS_SLICE4_DNS_PORT": "1"},
+        db_url,
+        extra_env={"TRADEOS_SLICE4_DNS_PORT": str(closed_port)},
     )
     assert result.returncode != 0
     assert result.stdout == ""
     assert result.stderr == _FAILURE_MESSAGE
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            dns_rows = (
+                await session.execute(
+                    select(ToolCallRow).where(
+                        ToolCallRow.tool_id == "dns.auth.check",
+                        ToolCallRow.created_at > snapshot,
+                    )
+                )
+            ).scalars().all()
+            auth_rows = (
+                await session.execute(
+                    select(AuthenticationCheckRequestRow).where(
+                        AuthenticationCheckRequestRow.requested_at > snapshot
+                    )
+                )
+            ).scalars().all()
+    finally:
+        await engine.dispose()
+    # 证据：运行确实进入认证 workflow/DNS 阶段后 fail-closed——
+    # 真实 connector 对不可达端口查询失败并留下 failed_transient 工具行；
+    # 新租户的认证请求已被 workflow 推进（requested/running），未完成。
+    assert any(row.status == "failed_transient" for row in dns_rows), (
+        "未观察到进入 DNS 工具阶段的证据"
+    )
+    assert any(row.status in {"requested", "running"} for row in auth_rows), (
+        "未观察到认证请求被 workflow 消费的证据"
+    )
