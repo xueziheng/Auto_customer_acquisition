@@ -225,6 +225,10 @@ def _configured_dependencies(
         "outbox_deliverer": object(),
         "notification_router": object(),
         "notification_dedup_store": object(),
+        "outreach_authorizer": object(),
+        "sending_identity_authorizer": object(),
+        "campaign_scope_resolver": object(),
+        "in_app_notifications": object(),
     }
     dependencies = ConfiguredApiDependencies(
         opportunities=markers["opportunities"],
@@ -246,6 +250,10 @@ def _configured_dependencies(
             scope=EmployeeScope.SYSTEM,
             role="system",
         ),
+        outreach_authorizer=markers["outreach_authorizer"],
+        sending_identity_authorizer=markers["sending_identity_authorizer"],
+        campaign_scope_resolver=markers["campaign_scope_resolver"],
+        in_app_notifications=markers["in_app_notifications"],
     )
     return dependencies, scope, markers
 
@@ -360,6 +368,8 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
     app = reloaded.create_app()
     assert set(app.openapi()["paths"]) == {
         "/crm/analytics/loss-reasons",
+        "/crm/enrollments",
+        "/crm/enrollments/{enrollment_id}/attempts/prepare",
         "/crm/handoffs",
         "/crm/handoffs/{handoff_id}",
         "/crm/handoffs/{handoff_id}/accept",
@@ -368,6 +378,11 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
         "/crm/opportunities/{opportunity_id}/mark-lost",
+        "/crm/sending-identities",
+        "/crm/sending-identities/{identity_id}",
+        "/crm/sending-identities/{identity_id}/authentication-checks",
+        "/notifications",
+        "/notifications/{notification_id}/read",
     }
     assert app.state.dependencies.configured is False
 
@@ -418,6 +433,8 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     }
     assert set(schema["paths"]) == {
         "/crm/analytics/loss-reasons",
+        "/crm/enrollments",
+        "/crm/enrollments/{enrollment_id}/attempts/prepare",
         "/crm/handoffs",
         "/crm/handoffs/{handoff_id}",
         "/crm/handoffs/{handoff_id}/accept",
@@ -426,6 +443,11 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "/crm/opportunities/{opportunity_id}",
         "/crm/opportunities/{opportunity_id}/transition",
         "/crm/opportunities/{opportunity_id}/mark-lost",
+        "/crm/sending-identities",
+        "/crm/sending-identities/{identity_id}",
+        "/crm/sending-identities/{identity_id}/authentication-checks",
+        "/notifications",
+        "/notifications/{notification_id}/read",
     }
     create_responses = schema["paths"]["/crm/opportunities"]["post"]["responses"]
     assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
@@ -527,6 +549,20 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
         dependencies.notification_dedup_store
         is markers["notification_dedup_store"]
     )
+    assert (
+        dependencies.outreach_authorizer is markers["outreach_authorizer"]
+    )
+    assert (
+        dependencies.sending_identity_authorizer
+        is markers["sending_identity_authorizer"]
+    )
+    assert (
+        dependencies.campaign_scope_resolver
+        is markers["campaign_scope_resolver"]
+    )
+    assert (
+        dependencies.in_app_notifications is markers["in_app_notifications"]
+    )
     assert dependencies.employee_lookup_actor.scope is EmployeeScope.SYSTEM
     with pytest.raises(FrozenInstanceError):
         dependencies.opportunities = object()  # type: ignore[misc]
@@ -556,6 +592,10 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
             employee_lookup_actor=EmployeeActor(
                 actor_id="emp-boss", scope=EmployeeScope.TENANT, role="boss"
             ),
+            outreach_authorizer=object(),
+            sending_identity_authorizer=object(),
+            campaign_scope_resolver=object(),
+            in_app_notifications=object(),
         )
 
 
@@ -589,6 +629,10 @@ def test_dependency_container_rejects_missing_runtime_provider(
         "notification_router": markers["notification_router"],
         "notification_dedup_store": markers["notification_dedup_store"],
         "employee_lookup_actor": dependencies.employee_lookup_actor,
+        "outreach_authorizer": dependencies.outreach_authorizer,
+        "sending_identity_authorizer": dependencies.sending_identity_authorizer,
+        "campaign_scope_resolver": dependencies.campaign_scope_resolver,
+        "in_app_notifications": dependencies.in_app_notifications,
     }
     values[field_name] = invalid
     with pytest.raises(TypeError, match="API 手工发送依赖未完整配置"):

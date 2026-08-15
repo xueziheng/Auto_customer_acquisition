@@ -271,6 +271,10 @@ def _app(
         employee_lookup_actor=EmployeeActor(
             actor_id="system:api-identity", scope=EmployeeScope.SYSTEM, role="system"
         ),
+        outreach_authorizer=object(),
+        sending_identity_authorizer=object(),
+        campaign_scope_resolver=object(),
+        in_app_notifications=object(),
     )
     app = create_app(
         settings=ApiSettings(tenant_id="tenant-a", dev_mode=True, retry_after_seconds=5),

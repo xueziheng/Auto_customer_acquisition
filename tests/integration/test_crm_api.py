@@ -276,6 +276,10 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
                     scope=EmployeeScope.SYSTEM,
                     role="system",
                 ),
+                outreach_authorizer=object(),
+                sending_identity_authorizer=object(),
+                campaign_scope_resolver=object(),
+                in_app_notifications=object(),
             ),
         )
         body = _create_body()
@@ -332,6 +336,10 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
             employee_lookup_actor=EmployeeActor(
                 actor_id="system:api-identity", scope=EmployeeScope.SYSTEM, role="system"
             ),
+            outreach_authorizer=object(),
+            sending_identity_authorizer=object(),
+            campaign_scope_resolver=object(),
+            in_app_notifications=object(),
         )
         expected_scope = OpportunityScope(level=ScopeLevel.TENANT)
         expected_actor = OpportunityActor(

@@ -158,6 +158,10 @@ def _app(
             scope=EmployeeScope.SYSTEM,
             role="system",
         ),
+        outreach_authorizer=object(),
+        sending_identity_authorizer=object(),
+        campaign_scope_resolver=object(),
+        in_app_notifications=object(),
     )
     app = create_app(
         settings=ApiSettings(

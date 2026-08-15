@@ -24,6 +24,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/crm/enrollments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Enrollments
+         * @description 按员工作用域列出可见 Enrollment；scope 由身份与 Campaign 归属推导。
+         */
+        get: operations["list_enrollments_crm_enrollments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/enrollments/{enrollment_id}/attempts/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Message Attempt
+         * @description 先以员工 scope 验证 Enrollment 归属，再用精确 SYSTEM scope 准备 Attempt。
+         *
+         *     域内 ENROLLMENT_PREPARE_SEND 只允许 SYSTEM actor；归属验证走
+         *     ENROLLMENT_READ（域 authorizer 以真实 campaign/account/enrollment 判权）。
+         */
+        post: operations["prepare_message_attempt_crm_enrollments__enrollment_id__attempts_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/crm/handoffs": {
         parameters: {
             query?: never;
@@ -188,6 +231,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/crm/sending-identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Sending Identities
+         * @description 列出当前可参与 Campaign 的发件身份及其认证/预热/信誉状态。
+         */
+        get: operations["list_sending_identities_crm_sending_identities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/sending-identities/{identity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sending Identity */
+        get: operations["get_sending_identity_crm_sending_identities__identity_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/sending-identities/{identity_id}/authentication-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Authentication Check */
+        post: operations["request_authentication_check_crm_sending_identities__identity_id__authentication_checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Notifications
+         * @description 只返回当前员工本人的通知；任何 recipient 入参一律忽略。
+         */
+        get: operations["list_notifications_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/{notification_id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Notification Read
+         * @description 把本人收件箱中指定通知标记为已读；跨收件人一律不存在。
+         */
+        post: operations["mark_notification_read_notifications__notification_id__read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -201,6 +338,131 @@ export interface components {
             code: string;
             /** Message */
             message: string;
+        };
+        /**
+         * AuthCheck
+         * @enum {string}
+         */
+        AuthCheck: "spf" | "dkim" | "dmarc";
+        /**
+         * AuthStatusView
+         * @description 安全认证视图：仅暴露固定 failure 代码。
+         */
+        AuthStatusView: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Dkim Passed */
+            dkim_passed: boolean;
+            /** Dmarc Passed */
+            dmarc_passed: boolean;
+            /**
+             * Failures
+             * @default []
+             */
+            failures: components["schemas"]["AuthenticationFailure"][];
+            /** Spf Passed */
+            spf_passed: boolean;
+        };
+        /**
+         * AuthenticationCheckRequest
+         * @description 认证检查只接受一个幂等键；绝不接受 SPF/DKIM/DMARC 结果。
+         */
+        AuthenticationCheckRequest: {
+            /** Request Key */
+            request_key: string;
+        };
+        /**
+         * AuthenticationCheckRequestStatus
+         * @enum {string}
+         */
+        AuthenticationCheckRequestStatus: "requested" | "running" | "succeeded" | "failed";
+        /** AuthenticationCheckRequestView */
+        AuthenticationCheckRequestView: {
+            /** Completed At */
+            completed_at: string | null;
+            /** Request Id */
+            request_id: string;
+            /** Request Key */
+            request_key: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Sending Identity Id */
+            sending_identity_id: string;
+            status: components["schemas"]["AuthenticationCheckRequestStatus"];
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
+         * AuthenticationFailure
+         * @description 失败检查的固定类别和修复代码；不携带 DNS 记录或异常文本。
+         */
+        AuthenticationFailure: {
+            category: components["schemas"]["AuthenticationFailureCategory"];
+            check: components["schemas"]["AuthCheck"];
+            instruction: components["schemas"]["AuthenticationFixInstruction"];
+        };
+        /**
+         * AuthenticationFailureCategory
+         * @enum {string}
+         */
+        AuthenticationFailureCategory: "record_missing" | "record_invalid" | "alignment_failed" | "policy_insufficient" | "lookup_unavailable";
+        /**
+         * AuthenticationFixInstruction
+         * @description 固定修复代码，而非会泄漏 DNS 原文的自由文本。
+         * @enum {string}
+         */
+        AuthenticationFixInstruction: "configure_spf" | "configure_dkim" | "configure_dmarc" | "fix_alignment" | "strengthen_policy" | "retry_lookup";
+        /**
+         * DomainRole
+         * @description 域名角色；只有 ``COLD_OUTREACH`` 可承载冷开发。
+         * @enum {string}
+         */
+        DomainRole: "cold_outreach" | "primary_business" | "transactional";
+        /**
+         * EnrollmentState
+         * @enum {string}
+         */
+        EnrollmentState: "enrolled" | "in_sequence" | "replied" | "completed" | "stopped_suppressed" | "stopped_bounced" | "stopped_manual" | "stopped_identity_unavailable";
+        /**
+         * EnrollmentStopReason
+         * @enum {string}
+         */
+        EnrollmentStopReason: "reply" | "suppression" | "hard_bounce" | "manual" | "identity_unavailable";
+        /** EnrollmentView */
+        EnrollmentView: {
+            /** Account Id */
+            account_id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /** Current Step */
+            current_step: number;
+            /**
+             * Enrolled At
+             * Format: date-time
+             */
+            enrolled_at: string;
+            /** Enrollment Id */
+            enrollment_id: string;
+            /** Next Send At */
+            next_send_at: string | null;
+            /** Sending Identity Id */
+            sending_identity_id: string;
+            state: components["schemas"]["EnrollmentState"];
+            stop_reason: components["schemas"]["EnrollmentStopReason"] | null;
+            /** Stopped At */
+            stopped_at: string | null;
+            /** Tenant Id */
+            tenant_id: string;
         };
         /**
          * EvidenceLevel
@@ -320,6 +582,79 @@ export interface components {
             why_valuable: string;
         };
         /**
+         * IdentityState
+         * @description 发件身份显式状态机。``RETIRED`` 没有后继。
+         * @enum {string}
+         */
+        IdentityState: "created" | "auth_pending" | "warming" | "active" | "throttled" | "suspended" | "retired";
+        /**
+         * IdentityView
+         * @description 不含 connector/check 引用或调查文本的身份视图。
+         */
+        IdentityView: {
+            /** Activated At */
+            activated_at?: string | null;
+            /** Address */
+            address: string;
+            auth?: components["schemas"]["AuthStatusView"] | null;
+            /**
+             * Can Send Today
+             * @default false
+             */
+            can_send_today: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Domain */
+            domain: string;
+            /** Identity Id */
+            identity_id: string;
+            /**
+             * Remaining Today
+             * @default 0
+             */
+            remaining_today: number;
+            reputation?: components["schemas"]["ReputationView"] | null;
+            role: components["schemas"]["DomainRole"];
+            state: components["schemas"]["IdentityState"];
+            /** Target Daily Volume */
+            target_daily_volume?: number | null;
+            /**
+             * Usable For Cold Outreach
+             * @default false
+             */
+            usable_for_cold_outreach: boolean;
+            /**
+             * Warmup Complete
+             * @default false
+             */
+            warmup_complete: boolean;
+            /** Warmup Day */
+            warmup_day?: number | null;
+        };
+        /** InAppNotificationView */
+        InAppNotificationView: {
+            context: components["schemas"]["NotificationContext"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Notification Id */
+            notification_id: string;
+            priority: components["schemas"]["NotificationPriority"];
+            /** Read At */
+            read_at: string | null;
+            /** Relative Link */
+            relative_link: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Title */
+            title: string;
+        };
+        /**
          * LossReason
          * @description 机会终结原因。**反馈闭环的骨架。**
          *
@@ -360,6 +695,52 @@ export interface components {
             tool_call_id: string | null;
         };
         /**
+         * MessageAttemptState
+         * @enum {string}
+         */
+        MessageAttemptState: "reserved" | "sending" | "sent" | "failed_transient" | "failed_permanent";
+        /** MessageAttemptView */
+        MessageAttemptView: {
+            /** Attempt Id */
+            attempt_id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deterministic Message Id */
+            deterministic_message_id?: string | null;
+            /** Enrollment Id */
+            enrollment_id: string;
+            failure_category: components["schemas"]["SendFailureCategory"] | null;
+            /** Idempotency Header */
+            idempotency_header?: string | null;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Message Id */
+            message_id: string;
+            /** Provider Ref */
+            provider_ref: string | null;
+            /** Send Claimed At */
+            send_claimed_at?: string | null;
+            /** Sending Identity Id */
+            sending_identity_id: string;
+            state: components["schemas"]["MessageAttemptState"];
+            /** Step Number */
+            step_number: number;
+            /** Tenant Id */
+            tenant_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
          * Money
          * @description 金额。不可变。
          *
@@ -382,6 +763,43 @@ export interface components {
             /** Currency */
             currency: string;
         };
+        /**
+         * NearestThresholdView
+         * @description 最接近阈值的确定性值与距离。
+         */
+        NearestThresholdView: {
+            /** Distance */
+            distance: string;
+            /** Name */
+            name: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * NotificationContext
+         * @description 只携带固定 typed ID 与等级，禁止通知承载自由文本或凭证形态。
+         */
+        NotificationContext: {
+            kind: components["schemas"]["NotificationKind"];
+            /** Level */
+            level: number | null;
+            /** Primary Id */
+            primary_id: string;
+            /** Reason Code */
+            reason_code: string | null;
+            /** Secondary Id */
+            secondary_id: string | null;
+        };
+        /**
+         * NotificationKind
+         * @enum {string}
+         */
+        NotificationKind: "handoff_escalation" | "handoff_queue_backlogged" | "sending_identity_suspended" | "reputation_threshold_breached" | "commitment_overdue" | "approval_decided";
+        /**
+         * NotificationPriority
+         * @enum {string}
+         */
+        NotificationPriority: "urgent" | "normal" | "low";
         /**
          * OpportunityCreateRequest
          * @description 从已验证需求创建机会的入参。
@@ -657,6 +1075,45 @@ export interface components {
             source_url: string | null;
         };
         /**
+         * ReputationView
+         * @description 信誉视图，全部比率/阈值使用 Decimal。
+         */
+        ReputationView: {
+            /**
+             * Blocklist Hits
+             * @default 0
+             */
+            blocklist_hits: number;
+            /** Complaint Rate */
+            complaint_rate: string;
+            /**
+             * Computed At
+             * Format: date-time
+             */
+            computed_at: string;
+            /** Delivered */
+            delivered: number;
+            /** Delivery Rate */
+            delivery_rate: string;
+            /** Hard Bounce Rate */
+            hard_bounce_rate: string;
+            nearest_threshold?: components["schemas"]["NearestThresholdView"] | null;
+            /**
+             * Sample Sufficient
+             * @default true
+             */
+            sample_sufficient: boolean;
+            /** Sent Attempts */
+            sent_attempts: number;
+            /**
+             * Spam Trap Hits
+             * @default 0
+             */
+            spam_trap_hits: number;
+            /** Window Days */
+            window_days: number;
+        };
+        /**
          * ScoreExplanation
          * @description 打分说明，供界面展开。
          *
@@ -691,6 +1148,11 @@ export interface components {
             scorer_version: string;
             sort_key: components["schemas"]["SortKey"];
         };
+        /**
+         * SendFailureCategory
+         * @enum {string}
+         */
+        SendFailureCategory: "rate_limited" | "provider_transient" | "provider_auth_required" | "provider_permanent" | "identity_unavailable";
         /**
          * SortKey
          * @description 打分排序键：09 文档「字典序、证据主导」的落地。
@@ -785,6 +1247,86 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_enrollments_crm_enrollments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrollmentView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    prepare_message_attempt_crm_enrollments__enrollment_id__attempts_prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enrollment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageAttemptView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1129,6 +1671,210 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_sending_identities_crm_sending_identities_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_sending_identity_crm_sending_identities__identity_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    request_authentication_check_crm_sending_identities__identity_id__authentication_checks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthenticationCheckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationCheckRequestView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_notifications_notifications_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InAppNotificationView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    mark_notification_read_notifications__notification_id__read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InAppNotificationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

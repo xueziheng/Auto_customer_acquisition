@@ -42,6 +42,8 @@ from .routers.campaigns import router as campaigns_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.health import ReadinessProbe, build_health_router
+from .routers.notifications import router as notifications_router
+from .routers.sending_identities import router as sending_identities_router
 from .routers.unsubscribe import (
     is_anonymous_unsubscribe_route,
 )
@@ -137,6 +139,8 @@ def create_app(
     app.add_middleware(SafeUnhandledExceptionMiddleware)
     app.include_router(crm_router, prefix="/crm")
     app.include_router(campaigns_router, prefix="/crm")
+    app.include_router(sending_identities_router, prefix="/crm")
+    app.include_router(notifications_router)
     app.include_router(unsubscribe_router)
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))

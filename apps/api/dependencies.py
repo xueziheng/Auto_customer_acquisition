@@ -22,12 +22,35 @@ from domains.opportunities.permissions import (
     OpportunityAuthorizer,
 )
 from domains.opportunities.service import OpportunityService
+from domains.outreach.permissions import (
+    Actor as OutreachActor,
+)
+from domains.outreach.permissions import (
+    OutreachAction,
+    OutreachAuthorizer,
+    OutreachScope,
+)
+from domains.outreach.permissions import (
+    ScopeLevel as OutreachScopeLevel,
+)
 from domains.outreach.service import OutreachService
+from domains.sending_identity.permissions import (
+    Actor as SendingIdentityActor,
+)
+from domains.sending_identity.permissions import (
+    ScopeLevel as SendingIdentityScopeLevel,
+)
+from domains.sending_identity.permissions import (
+    SendingIdentityAction,
+    SendingIdentityAuthorizer,
+    SendingIdentityScope,
+)
 from domains.sending_identity.service import SendingIdentityService
 from notification_gateway.dedup import NotificationDedupStore
+from notification_gateway.inbox import InAppNotificationService, InboxActor
 from notification_gateway.router import NotificationRouter
 from shared.errors import PermissionDenied, TransientError, ValidationError
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import CampaignId, TenantId
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     UnsubscribeLinkProvider,
@@ -82,6 +105,10 @@ class ConfiguredApiDependencies:
     outbox_deliverer: OutboxDeliverer
     notification_router: NotificationRouter
     notification_dedup_store: NotificationDedupStore
+    outreach_authorizer: OutreachAuthorizer
+    sending_identity_authorizer: SendingIdentityAuthorizer
+    campaign_scope_resolver: CampaignScopeResolver
+    in_app_notifications: InAppNotificationService
     employee_lookup_actor: EmployeeActor
     configured: bool = True
 
@@ -199,3 +226,100 @@ def require_employee_action(
         return identity
 
     return gate
+
+
+class CampaignScopeResolver(Protocol):
+    """把员工（含 manager 直系下属）映射到其创建/管辖的 Campaign 集合。"""
+
+    async def campaign_ids_for(
+        self, *, created_by: frozenset[str]
+    ) -> frozenset[CampaignId]: ...
+
+
+async def resolve_outreach_scope(
+    identity: RequestIdentity,
+    dependencies: ConfiguredApiDependencies,
+) -> OutreachScope:
+    """按角色与员工机会所有权推导不可变触达作用域。
+
+    boss 直接 TENANT；manager/sales 用机会域已推导的 allowed_owners
+    （self + manager 直系下属）解析其创建/管辖的 Campaign 集合。
+    """
+    if identity.employee.role == "boss":
+        return OutreachScope(level=OutreachScopeLevel.TENANT)
+    owners = identity.opportunity_actor.scope.allowed_owners
+    created_by = frozenset(str(owner) for owner in (owners or frozenset()))
+    campaign_ids = await dependencies.campaign_scope_resolver.campaign_ids_for(
+        created_by=created_by
+    )
+    level = (
+        OutreachScopeLevel.MANAGER
+        if identity.employee.role == "manager"
+        else OutreachScopeLevel.SELF
+    )
+    return OutreachScope(level=level, allowed_campaign_ids=campaign_ids)
+
+
+async def resolve_outreach_access(
+    identity: RequestIdentity,
+    dependencies: ConfiguredApiDependencies,
+    action: OutreachAction,
+    *,
+    allowed_roles: frozenset[str],
+) -> OutreachActor:
+    """第一道触达门：角色 + authorizer preauthorize；返回派生 actor 供域调用。"""
+    if not isinstance(action, OutreachAction) or not allowed_roles:
+        raise ValidationError("API outreach gate 必须显式声明 typed action 与角色")
+    if identity.employee.role not in allowed_roles:
+        raise PermissionDenied("API role gate 默认拒绝")
+    scope = await resolve_outreach_scope(identity, dependencies)
+    actor = OutreachActor(
+        str(identity.employee.employee_id), scope, identity.employee.role
+    )
+    dependencies.outreach_authorizer.preauthorize(
+        actor, action, scope, identity.tenant_id
+    )
+    return actor
+
+
+def sending_identity_actor_for(identity: RequestIdentity) -> SendingIdentityActor:
+    """boss 的唯一发件身份读取角色；scope 恒为 TENANT。"""
+    return SendingIdentityActor(
+        str(identity.employee.employee_id),
+        SendingIdentityScope(level=SendingIdentityScopeLevel.TENANT),
+        identity.employee.role,
+    )
+
+
+async def resolve_sending_identity_access(
+    identity: RequestIdentity,
+    dependencies: ConfiguredApiDependencies,
+    action: SendingIdentityAction,
+    *,
+    allowed_roles: frozenset[str],
+) -> SendingIdentityActor:
+    """第一道发件身份门：角色 + authorizer preauthorize。"""
+    if not isinstance(action, SendingIdentityAction) or not allowed_roles:
+        raise ValidationError(
+            "API sending identity gate 必须显式声明 typed action 与角色"
+        )
+    if identity.employee.role not in allowed_roles:
+        raise PermissionDenied("API role gate 默认拒绝")
+    actor = sending_identity_actor_for(identity)
+    dependencies.sending_identity_authorizer.preauthorize(
+        actor, action, actor.scope, identity.tenant_id
+    )
+    return actor
+
+
+def require_inbox_access(
+    identity: RequestIdentity,
+    *,
+    allowed_roles: frozenset[str],
+) -> InboxActor:
+    """收件箱第一道门：任何已知员工角色；收件人恒为身份本人。"""
+    if not allowed_roles:
+        raise ValidationError("API inbox gate 必须显式声明角色")
+    if identity.employee.role not in allowed_roles:
+        raise PermissionDenied("API role gate 默认拒绝")
+    return InboxActor(identity.tenant_id, identity.employee.employee_id)

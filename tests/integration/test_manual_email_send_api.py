@@ -7,7 +7,7 @@ import importlib
 from collections import Counter
 from datetime import UTC, datetime
 
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -182,6 +182,9 @@ async def _seed_campaign(
     identity_id: SendingIdentityId,
     boss: EmployeeId,
     approval_id: ApprovalId,
+    *,
+    new_contact_limit: int = 5,
+    total_message_limit: int = 10,
 ) -> None:
     models = importlib.import_module("domains.outreach.models")
     boundary = models.CampaignBoundary(
@@ -190,8 +193,8 @@ async def _seed_campaign(
         allowed_categories=("hardware",),
         sender_identity_ids=(identity_id,),
         steps=(models.SequenceStepSpec(1, models.StepIntent.DISCOVERY, 0),),
-        daily_new_contact_limit=5,
-        daily_total_message_limit=10,
+        daily_new_contact_limit=new_contact_limit,
+        daily_total_message_limit=total_message_limit,
         handoff_triggers=(),
     )
     campaign = models.Campaign(
@@ -849,5 +852,305 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
             "g" * 32,
         ):
             assert raw not in persisted
+    finally:
+        await engine.dispose()
+
+
+async def test_manual_send_current_facts_win_and_duplicate_semantics_are_fixed(
+    db_url: str,
+) -> None:
+    """发送前事实（回复/身份/审批/额度）变更必须生效；重复与冲突语义固定。"""
+    engine = create_engine_from(db_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    boss = EmployeeId(new_id("emp"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    trace = Trace()
+    approvals = FakeApprovals(trace)
+    transport = _Transport()
+    subject = "subject-marker-current-facts"
+    body = "body-marker-current-facts"
+    try:
+        await _seed_employee(factory, tenant, boss)
+        without_send = build_phase1_dependencies(
+            _settings(tenant), factory, now=lambda: _NOW, secret_resolver=_Secrets()
+        )
+        identity_id = await without_send.sending_identities.register(
+            tenant,
+            IdentityRegisterRequest(
+                address="sender-marker@example.test",
+                domain="example.test",
+                role=importlib.import_module(
+                    "domains.sending_identity.models"
+                ).DomainRole.COLD_OUTREACH,
+            ),
+            actor=SendingIdentityActor(
+                str(boss),
+                SendingIdentityScope(level=SendingIdentityScopeLevel.TENANT),
+                "boss",
+            ),
+        )
+        system_identity = SendingIdentityActor(
+            "system:manual-send-test",
+            SendingIdentityScope(
+                level=SendingIdentityScopeLevel.SYSTEM,
+                allowed_identity_ids=frozenset({identity_id}),
+            ),
+            "system",
+        )
+        boss_identity = SendingIdentityActor(
+            str(boss),
+            SendingIdentityScope(level=SendingIdentityScopeLevel.TENANT),
+            "boss",
+        )
+        await without_send.sending_identities.begin_authentication(
+            tenant, identity_id, actor=boss_identity
+        )
+        await without_send.sending_identities.record_authentication_result(
+            tenant,
+            identity_id,
+            AuthenticationResult(
+                checked_at=_NOW,
+                spf_passed=True,
+                dkim_passed=True,
+                dmarc_passed=True,
+                failures=(),
+                check_ref="auth_current_facts",
+            ),
+            actor=system_identity,
+        )
+        await without_send.sending_identities.start_warmup(
+            tenant, identity_id, 5, actor=boss_identity
+        )
+        await _seed_campaign(
+            factory,
+            tenant,
+            campaign_id,
+            identity_id,
+            boss,
+            approval_id,
+            new_contact_limit=20,
+            total_message_limit=20,
+        )
+        contact_snapshots: dict = {}
+        reply_snapshots: dict = {}
+        approvals.values[(campaign_id, 1)] = CampaignApprovalSnapshot(
+            tenant,
+            campaign_id,
+            1,
+            approval_id,
+            CampaignApprovalState.APPROVED,
+            boss,
+            _NOW,
+        )
+        contacts = FakeContacts(contact_snapshots, trace)
+        senders = FakeSenders(
+            {
+                identity_id: SendingIdentityEligibilitySnapshot(
+                    tenant,
+                    identity_id,
+                    OutreachSenderRole.COLD_OUTREACH,
+                    True,
+                    True,
+                    10,
+                    _NOW,
+                )
+            },
+            trace,
+        )
+        replies = FakeReplies(reply_snapshots, trace)
+        dependencies = build_phase1_dependencies(
+            _settings(tenant),
+            factory,
+            now=lambda: _NOW,
+            manual_send=ManualSendComposition(
+                contact_eligibility=contacts,
+                sending_identity_eligibility=senders,
+                campaign_approvals=approvals,
+                reply_status=replies,
+                delivery_materials=_Materials(),
+                secret_resolver=_Secrets(),
+                gmail_transport=transport,
+            ),
+        )
+        app = create_app(
+            settings=ApiSettings(
+                tenant_id=str(tenant), dev_mode=True, retry_after_seconds=30
+            ),
+            dependencies=dependencies,
+        )
+        headers = {
+            "X-Tenant-Id": str(tenant),
+            "X-Employee-Id": str(boss),
+        }
+        boss_actor = OutreachActor(
+            str(boss),
+            OutreachScope(level=OutreachScopeLevel.TENANT),
+            "boss",
+        )
+
+        async def enroll_and_prepare(
+            suffix: str,
+        ) -> tuple[MessageAttemptView, ContactPointId, ProspectAccountId]:
+            account = ProspectAccountId(new_id("acc"))
+            contact = ContactPointId(new_id("cp"))
+            contact_snapshots[(contact, account)] = ContactEligibilitySnapshot(
+                tenant,
+                contact,
+                account,
+                ContactVerificationStatus.VERIFIED,
+                _NOW,
+                ContactLegalBasis.LEGITIMATE_INTEREST,
+                f"basis_current_{suffix}",
+                True,
+                "US",
+                "importer",
+                frozenset({"hardware"}),
+                _NOW,
+            )
+            reply_snapshots[(contact, account)] = ReplyStatusSnapshot(
+                tenant,
+                contact,
+                account,
+                ReplyState.NO_REPLY,
+                None,
+                _NOW,
+            )
+            enrollment = await dependencies.outreach.enroll(
+                tenant,
+                campaign_id,
+                EnrollmentCreateRequest(
+                    account, contact, IdempotencyKey(f"current-facts-{suffix}")
+                ),
+                actor=boss_actor,
+            )
+            attempt = await dependencies.outreach.prepare_message_attempt(
+                tenant,
+                enrollment.enrollment_id,
+                actor=OutreachActor(
+                    "system:manual-send-test",
+                    OutreachScope(
+                        level=OutreachScopeLevel.SYSTEM,
+                        allowed_enrollment_ids=frozenset({enrollment.enrollment_id}),
+                    ),
+                    "system",
+                ),
+            )
+            return attempt, contact, account
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            async def send(attempt: MessageAttemptView, payload: dict[str, str]) -> Response:
+                return await client.post(
+                    f"/crm/message-attempts/{attempt.attempt_id}/send",
+                    headers=headers,
+                    json=payload,
+                )
+
+            reply_attempt, reply_contact, reply_account = (
+                await enroll_and_prepare("reply")
+            )
+            # 回复事实变更：当前状态胜出，零发送。
+            reply_snapshots[(reply_contact, reply_account)] = ReplyStatusSnapshot(
+                tenant,
+                reply_contact,
+                reply_account,
+                ReplyState.REPLIED,
+                _NOW,
+                _NOW,
+            )
+            replied = await send(
+                reply_attempt, {"subject": subject, "body": body}
+            )
+            assert replied.status_code == 403
+            assert replied.json() == {
+                "code": "suppressed",
+                "message": "当前事实不允许发送",
+            }
+            assert transport.send_calls == 0
+            assert "subject-marker-current-facts" not in replied.text
+
+            sender_attempt, _, _ = await enroll_and_prepare("sender")
+            senders.snapshots[identity_id] = SendingIdentityEligibilitySnapshot(
+                tenant,
+                identity_id,
+                OutreachSenderRole.COLD_OUTREACH,
+                False,
+                False,
+                0,
+                _NOW,
+            )
+            blocked = await send(sender_attempt, {"subject": subject, "body": body})
+            assert blocked.status_code == 403
+            assert transport.send_calls == 0
+            # 恢复快照：发件身份资格是发送时刻事实，不影响后续 enrollment 准备。
+            senders.snapshots[identity_id] = SendingIdentityEligibilitySnapshot(
+                tenant,
+                identity_id,
+                OutreachSenderRole.COLD_OUTREACH,
+                True,
+                True,
+                10,
+                _NOW,
+            )
+
+            approval_attempt, _, _ = await enroll_and_prepare("approval")
+            del approvals.values[(campaign_id, 1)]
+            no_approval = await send(
+                approval_attempt, {"subject": subject, "body": body}
+            )
+            assert no_approval.status_code == 403
+            assert transport.send_calls == 0
+            # 恢复审批：审批是发送时刻事实，不影响后续 enrollment 准备。
+            approvals.values[(campaign_id, 1)] = CampaignApprovalSnapshot(
+                tenant,
+                campaign_id,
+                1,
+                approval_id,
+                CampaignApprovalState.APPROVED,
+                boss,
+                _NOW,
+            )
+
+            duplicate_attempt, _, _ = await enroll_and_prepare("duplicate")
+            first = await send(
+                duplicate_attempt, {"subject": subject, "body": body}
+            )
+            assert first.status_code == 200
+            assert first.json()["duplicate"] is False
+            assert first.json()["status"] == "succeeded"
+            second = await send(
+                duplicate_attempt, {"subject": subject, "body": body}
+            )
+            assert second.status_code == 200
+            assert second.json()["duplicate"] is True
+            conflict = await send(
+                duplicate_attempt,
+                {"subject": "different-subject-marker", "body": body},
+            )
+            assert conflict.status_code == 409
+            assert conflict.json() == {
+                "code": "idempotency_conflict",
+                "message": "发送请求与既有记录冲突",
+            }
+
+            # 当日预热额度（5）用尽后固定 429，当前状态仍然胜出。
+            for index in range(4):
+                extra, _, _ = await enroll_and_prepare(f"rate-{index}")
+                drained = await send(extra, {"subject": subject, "body": body})
+                assert drained.status_code == 200
+            rate_attempt, _, _ = await enroll_and_prepare("rate-limit")
+            rate_limited = await send(
+                rate_attempt, {"subject": subject, "body": body}
+            )
+            assert rate_limited.status_code == 429
+            assert rate_limited.json() == {
+                "code": "rate_limited",
+                "message": "发送额度暂不可用",
+            }
+            assert "body-marker-current-facts" not in rate_limited.text
     finally:
         await engine.dispose()

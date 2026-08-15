@@ -15,12 +15,23 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from domains.outreach.permissions import (
+    Actor as OutreachActor,
+)
+from domains.outreach.permissions import (
+    OutreachAction,
+    OutreachScope,
+)
+from domains.outreach.permissions import (
+    ScopeLevel as OutreachScopeLevel,
+)
+from domains.outreach.schemas import EnrollmentView, MessageAttemptView
 from shared.errors import ValidationError
-from shared.schemas.identifiers import TenantId, UserId
+from shared.schemas.identifiers import EnrollmentId, TenantId, UserId
 from tool_gateway.errors import ToolCallStatus, ToolErrorCategory
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 
@@ -29,6 +40,7 @@ from ..dependencies import (
     get_api_dependencies,
     get_api_settings,
     get_request_identity,
+    resolve_outreach_access,
 )
 from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse, ApiSettings
@@ -36,6 +48,8 @@ from ..middleware import ApiErrorResponse, ApiSettings
 router = APIRouter()
 
 _ATTEMPT_ID_RE = re.compile(r"mat_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_ENROLLMENT_ID_RE = re.compile(r"enr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_OUTREACH_ROLES = frozenset({"boss", "manager", "sales"})
 
 
 class ManualEmailSendBody(BaseModel):
@@ -175,4 +189,79 @@ async def send_manual_email(
         duplicate=result.status is ToolCallStatus.DUPLICATE,
         provider_ref=provider_ref if isinstance(provider_ref, str) else None,
         error_category=None,
+    )
+
+
+@router.get(
+    "/enrollments",
+    response_model=list[EnrollmentView],
+    responses={
+        400: {"model": ApiErrorResponse},
+        403: {"model": ApiErrorResponse},
+    },
+)
+async def list_enrollments(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[
+        ConfiguredApiDependencies, Depends(get_api_dependencies)
+    ],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[EnrollmentView]:
+    """按员工作用域列出可见 Enrollment；scope 由身份与 Campaign 归属推导。"""
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.ENROLLMENT_LIST,
+        allowed_roles=_OUTREACH_ROLES,
+    )
+    return await dependencies.outreach.list_enrollments(
+        identity.tenant_id,
+        actor.scope,
+        limit=limit,
+        actor=actor,
+    )
+
+
+@router.post(
+    "/enrollments/{enrollment_id}/attempts/prepare",
+    response_model=MessageAttemptView,
+    responses={
+        400: {"model": ApiErrorResponse},
+        403: {"model": ApiErrorResponse},
+    },
+)
+async def prepare_message_attempt(
+    enrollment_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[
+        ConfiguredApiDependencies, Depends(get_api_dependencies)
+    ],
+) -> MessageAttemptView:
+    """先以员工 scope 验证 Enrollment 归属，再用精确 SYSTEM scope 准备 Attempt。
+
+    域内 ENROLLMENT_PREPARE_SEND 只允许 SYSTEM actor；归属验证走
+    ENROLLMENT_READ（域 authorizer 以真实 campaign/account/enrollment 判权）。
+    """
+    if _ENROLLMENT_ID_RE.fullmatch(enrollment_id) is None:
+        raise ValidationError("enrollment id 无效")
+    typed_id = EnrollmentId(enrollment_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.ENROLLMENT_READ,
+        allowed_roles=_OUTREACH_ROLES,
+    )
+    await dependencies.outreach.get_enrollment(
+        identity.tenant_id, typed_id, actor=actor
+    )
+    system_actor = OutreachActor(
+        "system:api-prepare-attempt",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_enrollment_ids=frozenset({typed_id}),
+        ),
+        "system",
+    )
+    return await dependencies.outreach.prepare_message_attempt(
+        identity.tenant_id, typed_id, actor=system_actor
     )

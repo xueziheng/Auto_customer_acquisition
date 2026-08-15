@@ -293,6 +293,10 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
                     scope=EmployeeScope.SYSTEM,
                     role="system",
                 ),
+        outreach_authorizer=object(),
+        sending_identity_authorizer=object(),
+        campaign_scope_resolver=object(),
+        in_app_notifications=object(),
             ),
         )
         transport = ASGITransport(app=app, raise_app_exceptions=False)

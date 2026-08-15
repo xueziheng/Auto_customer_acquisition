@@ -10,6 +10,7 @@ from datetime import datetime
 from functools import partial
 from typing import cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from connectors.gmail.client import (
@@ -105,12 +106,18 @@ from infra.db.repositories.employees import (
     OwnershipRepositoryImpl,
     TerritoryRepositoryImpl,
 )
+from infra.db.repositories.in_app_notifications import PostgresInAppNotificationStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
+from infra.db.tables import OutreachCampaignRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from notification_gateway.channels.structured_log import StructuredLogChannel
+from notification_gateway.inbox import (
+    InAppNotificationService,
+    InAppNotificationServiceImpl,
+)
 from notification_gateway.jobs import NotificationContext, NotificationKind
 from notification_gateway.models import (
     Notification,
@@ -173,6 +180,7 @@ from workflows.human_handoff.flow import (
 )
 
 from ..dependencies import (
+    CampaignScopeResolver,
     ConfiguredApiDependencies,
     EmployeeServiceScope,
     ToolGatewayInvoker,
@@ -616,6 +624,32 @@ def _email_send_manifest() -> ToolManifest:
     )
 
 
+class PostgresCampaignScopeResolver:
+    """从 outreach_campaigns.created_by 解析员工可见 Campaign 集合（tenant-bound）。"""
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        tenant_id: TenantId,
+    ) -> None:
+        self._factory = factory
+        self._tenant_id = tenant_id
+
+    async def campaign_ids_for(
+        self, *, created_by: frozenset[str]
+    ) -> frozenset[CampaignId]:
+        if not created_by:
+            return frozenset()
+        async with self._factory() as session:
+            rows = await session.execute(
+                select(OutreachCampaignRow.campaign_id).where(
+                    OutreachCampaignRow.tenant_id == self._tenant_id,
+                    OutreachCampaignRow.created_by.in_(created_by),
+                )
+            )
+        return frozenset(CampaignId(value) for value in rows.scalars().all())
+
+
 def build_phase1_dependencies(
     settings: Phase1RuntimeSettings,
     factory: async_sessionmaker[AsyncSession],
@@ -830,6 +864,12 @@ def build_phase1_dependencies(
         resolved_gateway.bind_gateway(gateway)
         manual_gateway = resolved_gateway
         delivery_materials = manual_send.delivery_materials
+    campaign_scope_resolver: CampaignScopeResolver = PostgresCampaignScopeResolver(
+        factory, tenant
+    )
+    in_app_notifications: InAppNotificationService = InAppNotificationServiceImpl(
+        PostgresInAppNotificationStore(factory), now=now
+    )
     dedup = PostgresNotificationDedupStore(factory, now=now)
     router = NotificationRouter(dedup, StructuredLogOnlyPolicy())
     router.register_channel(StructuredLogChannel())
@@ -871,5 +911,9 @@ def build_phase1_dependencies(
         outbox_deliverer=outbox,
         notification_router=router,
         notification_dedup_store=dedup,
+        outreach_authorizer=Phase1OutreachAuthorizer(tenant),
+        sending_identity_authorizer=Phase1SendingIdentityAuthorizer(tenant),
+        campaign_scope_resolver=campaign_scope_resolver,
+        in_app_notifications=in_app_notifications,
         employee_lookup_actor=employee_system_actor,
     )
