@@ -19,6 +19,7 @@ import sys
 import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
 
 import dns.asyncresolver
 import dns.message
@@ -32,7 +33,14 @@ from apps.api.composition.runtime import (
     build_phase1_dependencies,
 )
 from apps.api.runtime_config import Phase1RuntimeSettings
+from apps.scheduler_worker.notification_projection import (
+    NotificationAudienceMember,
+)
 from connectors.gmail.transport import GmailApiHttpTransport
+from domains.employees.permissions import Actor as EmployeeActor
+from domains.employees.schemas import EmployeeView
+from domains.opportunities.permissions import Actor as OpportunityActor
+from domains.opportunities.service import OpportunityService
 from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.permissions import OutreachScope
 from domains.outreach.permissions import ScopeLevel as OutreachScopeLevel
@@ -75,10 +83,12 @@ from infra.db.tables import (
     ToolCallRow,
 )
 from shared.errors import PermissionDenied
+from shared.events.catalog import DomainEvent
 from shared.schemas.identifiers import (
     ApprovalId,
     ContactPointId,
     EmployeeId,
+    HandoffId,
     IdempotencyKey,
     ProspectAccountId,
     SendingIdentityId,
@@ -110,24 +120,32 @@ _RECIPIENT = "demo-recipient-marker@example.test"
 _SENDER = "sales@cold.example.com"
 
 
+class _CountingGmailServer(ThreadingHTTPServer):
+    """带类型计数属性的受控 Gmail HTTP 服务（handler 经 self.server 访问）。"""
+
+    send_count: int = 0
+    cold_send_count: int = 0
+    search_count: int = 0
+
+
 class _FakeGmailServer:
     """本地受控 Gmail HTTP 服务：只记发送与搜索计数，返回固定 provider ref。"""
 
     def __init__(self) -> None:
-        self._server: ThreadingHTTPServer | None = None
+        self._server: _CountingGmailServer | None = None
         self._thread: threading.Thread | None = None
 
     @property
     def send_count(self) -> int:
-        return self._server.send_count if self._server is not None else 0  # type: ignore[attr-defined]
+        return self._server.send_count if self._server is not None else 0
 
     @property
     def cold_send_count(self) -> int:
-        return self._server.cold_send_count if self._server is not None else 0  # type: ignore[attr-defined]
+        return self._server.cold_send_count if self._server is not None else 0
 
     @property
     def search_count(self) -> int:
-        return self._server.search_count if self._server is not None else 0  # type: ignore[attr-defined]
+        return self._server.search_count if self._server is not None else 0
 
     def start(self) -> str:
         class _Handler(BaseHTTPRequestHandler):
@@ -144,8 +162,9 @@ class _FakeGmailServer:
 
             def do_GET(self) -> None:
                 path = self.path
+                server = cast(_CountingGmailServer, self.server)
                 if path.startswith("/gmail/v1/users/me/messages?") and "q=" in path:
-                    self.server.search_count += 1  # type: ignore[attr-defined]
+                    server.search_count += 1
                     self._json(200, {"messages": [], "resultSizeEstimate": 0})
                     return
                 if path.startswith("/gmail/v1/users/me/messages/"):
@@ -163,7 +182,8 @@ class _FakeGmailServer:
                 if self.path == "/gmail/v1/users/me/messages/send":
                     length = int(self.headers.get("content-length", "0"))
                     payload = self.rfile.read(length)
-                    self.server.send_count += 1  # type: ignore[attr-defined]
+                    server = cast(_CountingGmailServer, self.server)
+                    server.send_count += 1
                     # 冷开发发送按 MIME 内的固定 subject marker 区分（内存计数，
                     # 不落库不输出）；事务通知邮件走同一端点但不带该 marker。
                     raw = ""
@@ -176,15 +196,12 @@ class _FakeGmailServer:
                     except (ValueError, TypeError):
                         decoded = b""
                     if b"demo-subject-marker" in decoded:
-                        self.server.cold_send_count += 1  # type: ignore[attr-defined]
-                    self._json(200, {"id": f"gmail-slice4-sent-{self.server.send_count}"})
+                        server.cold_send_count += 1
+                    self._json(200, {"id": f"gmail-slice4-sent-{server.send_count}"})
                     return
                 self._json(404, {"error": {"code": 404}})
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._server.send_count = 0  # type: ignore[attr-defined]
-        self._server.cold_send_count = 0  # type: ignore[attr-defined]
-        self._server.search_count = 0  # type: ignore[attr-defined]
+        self._server = _CountingGmailServer(("127.0.0.1", 0), _Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return f"http://127.0.0.1:{self._server.server_port}"
@@ -348,16 +365,12 @@ class _DemoAudience:
     """scheduler 通知投影的受控受众：熔断事件只通知演示 boss。"""
 
     def __init__(self, tenant: TenantId, employee_id: EmployeeId) -> None:
-        from apps.scheduler_worker.notification_projection import (
-            NotificationAudienceMember,
-        )
-
-        self._member = NotificationAudienceMember(str(tenant), str(employee_id))
+        self._member = NotificationAudienceMember(tenant, employee_id)
         self._tenant = tenant
 
     async def recipients_for(
-        self, tenant_id: TenantId, event: object
-    ) -> tuple[object, ...]:
+        self, tenant_id: TenantId, event: DomainEvent
+    ) -> tuple[NotificationAudienceMember, ...]:
         if tenant_id != self._tenant:
             raise PermissionDenied("演示通知受众拒绝")
         # 受控受众配置：只对熔断事件通知演示 boss；ReputationThresholdBreached
@@ -368,13 +381,33 @@ class _DemoAudience:
 
 
 class _StubOpportunities:
-    async def record_handoff_escalation(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
+    """机会域窄桩：满足 SchedulerDomainDependencies 的 Protocol；演示不触发接管。"""
+
+    async def record_handoff_escalation(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        level: int,
+        escalated_at: datetime,
+        *,
+        actor: OpportunityActor,
+    ) -> None:
+        del tenant_id, handoff_id, level, escalated_at, actor
+        raise NotImplementedError("演示不触发人工接管")
 
 
 class _StubEmployees:
-    async def get_employee(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
+    """员工读取窄桩：满足 HumanHandoffEmployeeReader；演示不查询员工。"""
+
+    async def get_employee(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        *,
+        actor: EmployeeActor,
+    ) -> EmployeeView:
+        del tenant_id, employee_id, actor
+        raise NotImplementedError("演示不提供员工查询")
 
 
 def _settings(tenant: TenantId, fake_gmail_url: str) -> Phase1RuntimeSettings:
@@ -474,10 +507,15 @@ async def _scheduler_cycle(
         SchedulerRuntimeFactory,
     )
 
+    # _StubOpportunities 是演示专用的窄桩（演示路径不触发人工接管，方法
+    # 永不被调用）；OpportunityService Protocol 方法众多，此处用最小精确
+    # cast 满足组合构造，不实现整份 Protocol。
     async with SchedulerRuntimeFactory(
         scheduler_env,
         SchedulerDomainDependencies(
-            _StubOpportunities(), _StubEmployees(), audience
+            cast(OpportunityService, _StubOpportunities()),
+            _StubEmployees(),
+            audience,
         ),
         resolver_factory=lambda: _LocalDnsResolver(dns_port),
     )() as runtime:
@@ -573,7 +611,7 @@ async def _exercise(database_url: str) -> dict[str, object]:
 
     fake_gmail = _FakeGmailServer()
     fake_gmail_url = fake_gmail.start()
-    dns_records = {
+    dns_records: dict[str, tuple[str, ...]] = {
         f"{_DNS_DOMAIN}.": ("v=spf1 -all",),
         f"{_DNS_SELECTOR}._domainkey.{_DNS_DOMAIN}.": (
             "v=DKIM1; k=rsa; p=" + "A" * 64,
@@ -806,8 +844,8 @@ async def _exercise(database_url: str) -> dict[str, object]:
             tenant,
             identity_id,
             DeliveryEventRecord(
-                tenant_id=str(tenant),
-                identity_id=str(identity_id),
+                tenant_id=tenant,
+                identity_id=identity_id,
                 event_type=DeliveryEventType.HARD_BOUNCED,
                 occurred_at=datetime.now(UTC),
                 dedup_key=IdempotencyKey("b" * 64),
@@ -819,8 +857,8 @@ async def _exercise(database_url: str) -> dict[str, object]:
             tenant,
             identity_id,
             DeliveryEventRecord(
-                tenant_id=str(tenant),
-                identity_id=str(identity_id),
+                tenant_id=tenant,
+                identity_id=identity_id,
                 event_type=DeliveryEventType.COMPLAINT,
                 occurred_at=datetime.now(UTC),
                 dedup_key=IdempotencyKey("c" * 64),
@@ -834,8 +872,8 @@ async def _exercise(database_url: str) -> dict[str, object]:
             tenant,
             identity_id,
             DeliveryEventRecord(
-                tenant_id=str(tenant),
-                identity_id=str(identity_id),
+                tenant_id=tenant,
+                identity_id=identity_id,
                 event_type=DeliveryEventType.SPAM_TRAP,
                 occurred_at=datetime.now(UTC),
                 dedup_key=IdempotencyKey("t" * 64),
