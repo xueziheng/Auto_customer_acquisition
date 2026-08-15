@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* global window */
 import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
