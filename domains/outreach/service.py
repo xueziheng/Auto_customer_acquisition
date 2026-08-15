@@ -27,11 +27,13 @@ from domains.outreach.schemas import (
     DeliveryCorrelationBinding,
     DeliveryCorrelationLookup,
     DeliveryFeedbackTarget,
+    DraftContent,
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
     MessageSendPreflight,
     ReplyStatusSnapshot,
+    SendDecision,
     SendingIdentityEligibilitySnapshot,
     SuppressionRequest,
     SuppressionResult,
@@ -187,6 +189,31 @@ class OutreachService(Protocol):
         *,
         actor: Actor,
     ) -> MessageAttemptView: ...
+
+    async def prepare_send(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        draft: DraftContent,
+        *,
+        actor: Actor,
+    ) -> SendDecision:
+        """序列自动发送的综合检查：回复竞态/抑制/额度/身份许可/状态。
+
+        返回 typed ``SendDecision``（授权或固定分类拒绝），不抛业务异常；
+        工作流按 ``denial_reason`` 分流。拒绝路径与 ``prepare_message_attempt``
+        相同的副作用（回复/抑制会终态化 Enrollment）。
+        """
+
+    async def list_due_sequence_enrollments(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        actor: Actor,
+    ) -> list[EnrollmentView]:
+        """列出活跃 Campaign 中到期可推进的序列 Enrollment（按到期时间排序）。"""
+        ...
 
     async def preflight_message_send(
         self,

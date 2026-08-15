@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import Protocol, Self, runtime_checkable
 
@@ -188,6 +188,14 @@ class EnrollmentRepository(Protocol):
     async def list_scoped(
         self, tenant_id: TenantId, scope: OutreachScope, limit: int
     ) -> list[Enrollment]: ...
+
+    async def list_due_for_sequence(
+        self, tenant_id: TenantId, *, limit: int, now: datetime
+    ) -> list[Enrollment]:
+        """列出活跃 Campaign 中 ``next_send_at <= now`` 且状态可推进的
+        Enrollment（按到期时间排序）。仅供 scheduler 驱动；调用方必须
+        先经 service 判权。"""
+        ...
 
 
 @runtime_checkable

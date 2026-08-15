@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -619,6 +619,50 @@ class EnrollmentRepositoryImpl(_OutreachRepository):
                         OutreachEnrollmentRow.enrolled_at.asc(),
                         OutreachEnrollmentRow.enrollment_id.asc(),
                     ).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_row_to_enrollment(row) for row in rows]
+
+
+    async def list_due_for_sequence(
+        self, tenant_id: TenantId, *, limit: int, now: datetime
+    ) -> list[Enrollment]:
+        """活跃 Campaign 中到期可推进的 Enrollment（按到期时间排序）。"""
+        if not self._tenant_matches(tenant_id, "outreach_enrollment_due_list"):
+            return []
+        rows = (
+            (
+                await self._session.execute(
+                    select(OutreachEnrollmentRow)
+                    .join(
+                        OutreachCampaignRow,
+                        and_(
+                            OutreachCampaignRow.tenant_id
+                            == OutreachEnrollmentRow.tenant_id,
+                            OutreachCampaignRow.campaign_id
+                            == OutreachEnrollmentRow.campaign_id,
+                        ),
+                    )
+                    .where(
+                        OutreachEnrollmentRow.tenant_id == self._tenant_id,
+                        OutreachCampaignRow.state == CampaignState.ACTIVE.value,
+                        OutreachEnrollmentRow.state.in_(
+                            [
+                                EnrollmentState.ENROLLED.value,
+                                EnrollmentState.IN_SEQUENCE.value,
+                            ]
+                        ),
+                        OutreachEnrollmentRow.next_send_at.is_not(None),
+                        OutreachEnrollmentRow.next_send_at <= now,
+                    )
+                    .order_by(
+                        OutreachEnrollmentRow.next_send_at.asc(),
+                        OutreachEnrollmentRow.enrollment_id.asc(),
+                    )
+                    .limit(limit)
                 )
             )
             .scalars()

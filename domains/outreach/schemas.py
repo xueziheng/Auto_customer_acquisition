@@ -623,3 +623,74 @@ class SuppressionResult:
     created: bool
     suppression: SuppressionView
     stopped_count: int
+
+
+@dataclass(frozen=True)
+class DraftContent:
+    """工作流草稿内容：主题与正文（发送前二次检查仍以当前事实为准）。"""
+
+    subject: str
+    body: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.subject, str)
+            or not self.subject.strip()
+            or len(self.subject) > 998
+        ):
+            raise ValidationError("草稿主题无效")
+        if (
+            not isinstance(self.body, str)
+            or not self.body.strip()
+            or len(self.body) > 100_000
+        ):
+            raise ValidationError("草稿正文无效")
+
+
+class SendDenialReason(str, Enum):
+    """``prepare_send`` 的固定拒绝分类；工作流据此分流，不猜原因文本。"""
+
+    REPLY_RECEIVED = "reply_received"
+    SUPPRESSED = "suppressed"
+    IDENTITY_UNAVAILABLE = "identity_unavailable"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    CAMPAIGN_NOT_ACTIVE = "campaign_not_active"
+    NOT_DUE = "not_due"
+    ENROLLMENT_TERMINAL = "enrollment_terminal"
+
+
+@dataclass(frozen=True)
+class SendAuthorization:
+    """已授权的一次序列发送：attempt 幂等键 + 工作流草稿内容。"""
+
+    tenant_id: TenantId
+    enrollment_id: EnrollmentId
+    campaign_id: CampaignId
+    campaign_version: int
+    step_number: int
+    sending_identity_id: SendingIdentityId
+    attempt_id: MessageAttemptId
+    idempotency_key: IdempotencyKey
+    subject: str
+    body: str
+
+
+@dataclass(frozen=True)
+class SendDecision:
+    """``prepare_send`` 的 typed 结果：授权或固定分类拒绝，两者互斥。"""
+
+    authorized: bool
+    authorization: SendAuthorization | None
+    denial_reason: SendDenialReason | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authorized, bool):
+            raise ValidationError("发送决策无效")
+        if self.authorized and (
+            self.authorization is None or self.denial_reason is not None
+        ):
+            raise ValidationError("发送决策无效")
+        if not self.authorized and (
+            self.authorization is not None or self.denial_reason is None
+        ):
+            raise ValidationError("发送决策无效")

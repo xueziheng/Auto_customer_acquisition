@@ -64,6 +64,7 @@ from domains.outreach.schemas import (
     DeliveryCorrelationBinding,
     DeliveryCorrelationLookup,
     DeliveryFeedbackTarget,
+    DraftContent,
     EnrollmentCreateRequest,
     EnrollmentView,
     MessageAttemptView,
@@ -71,6 +72,9 @@ from domains.outreach.schemas import (
     OutreachSenderRole,
     ReplyState,
     ReplyStatusSnapshot,
+    SendAuthorization,
+    SendDecision,
+    SendDenialReason,
     SendingIdentityEligibilitySnapshot,
     SequenceStepRequest,
     SuppressionRequest,
@@ -1625,6 +1629,103 @@ class OutreachServiceImpl:
             raise blocked
         self._allow(actor, action, tenant_id, rule)
         return view
+
+    async def prepare_send(
+        self,
+        tenant_id: TenantId,
+        enrollment_id: EnrollmentId,
+        draft: DraftContent,
+        *,
+        actor: Actor,
+    ) -> SendDecision:
+        """序列自动发送综合检查：返回 typed 决策，不抛业务异常。
+
+        复用 ``prepare_message_attempt`` 的既有检查（锁序、Campaign 状态、
+        审批绑定、到期、回复竞态、抑制、联系人/发件身份资格、步数与每日
+        额度），把业务异常映射为固定 ``SendDenialReason``。拒绝路径保留
+        ``prepare_message_attempt`` 的副作用（回复/抑制终态化 Enrollment）。
+        """
+        self._preauthorize(actor, OutreachAction.ENROLLMENT_PREPARE_SEND, tenant_id)
+        if not isinstance(draft, DraftContent):
+            raise ValidationError("草稿无效")
+        # 终态预检：区分「未到期」（等待）与「已终态」（流程完成）
+        enrollment = await self.get_enrollment(tenant_id, enrollment_id, actor=actor)
+        if enrollment.state not in {
+            EnrollmentState.ENROLLED,
+            EnrollmentState.IN_SEQUENCE,
+        }:
+            return SendDecision(False, None, SendDenialReason.ENROLLMENT_TERMINAL)
+        try:
+            view = await self.prepare_message_attempt(
+                tenant_id, enrollment_id, actor=actor
+            )
+        except ReplyAlreadyReceivedError:
+            return SendDecision(False, None, SendDenialReason.REPLY_RECEIVED)
+        except SuppressedError:
+            return SendDecision(False, None, SendDenialReason.SUPPRESSED)
+        except SendingIdentityUnavailableError:
+            return SendDecision(False, None, SendDenialReason.IDENTITY_UNAVAILABLE)
+        except CampaignQuotaExceededError:
+            return SendDecision(False, None, SendDenialReason.QUOTA_EXHAUSTED)
+        except CampaignNotActiveError:
+            return SendDecision(False, None, SendDenialReason.CAMPAIGN_NOT_ACTIVE)
+        except SequenceStepLimitError:
+            return SendDecision(False, None, SendDenialReason.ENROLLMENT_TERMINAL)
+        except InvalidStateTransition:
+            return SendDecision(False, None, SendDenialReason.NOT_DUE)
+        return SendDecision(
+            True,
+            SendAuthorization(
+                tenant_id=view.tenant_id,
+                enrollment_id=view.enrollment_id,
+                campaign_id=view.campaign_id,
+                campaign_version=view.campaign_version,
+                step_number=view.step_number,
+                sending_identity_id=view.sending_identity_id,
+                attempt_id=view.attempt_id,
+                idempotency_key=view.idempotency_key,
+                subject=draft.subject,
+                body=draft.body,
+            ),
+            None,
+        )
+
+    async def list_due_sequence_enrollments(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        actor: Actor,
+    ) -> list[EnrollmentView]:
+        """活跃 Campaign 中到期可推进的序列 Enrollment（供 scheduler 驱动）。"""
+        action = OutreachAction.ENROLLMENT_LIST
+        actor, pre_rule = self._preauthorize(actor, action, tenant_id)
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 200
+        ):
+            raise ValidationError("limit 无效")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            rows = await uow.enrollments.list_due_for_sequence(
+                tenant_id, limit=limit, now=now
+            )
+            views: list[EnrollmentView] = []
+            for row in rows:
+                if row.tenant_id != tenant_id:
+                    self._tenant_violation(actor, action, tenant_id)
+                self._require(
+                    actor,
+                    action,
+                    tenant_id,
+                    campaign_id=row.campaign_id,
+                    account_id=row.account_id,
+                    enrollment_id=row.enrollment_id,
+                )
+                views.append(self._enrollment_view(row))
+        self._allow(actor, action, tenant_id, pre_rule)
+        return views
 
     async def _validate_message_send_current_facts(
         self,
