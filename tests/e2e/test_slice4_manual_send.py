@@ -564,7 +564,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
                     reason_code="t1",
                     level=None,
                 ),
-                relative_link="/crm/handoffs/handoff-e2e",
+                relative_link="/crm/handoffs",
                 source_job_id=job_id,
                 created_at=_NOW,
             )
@@ -834,24 +834,62 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
-        browser_errors: list[str] = []
+        console_errors: list[str] = []
+        page_errors: list[str] = []
 
         def capture(page) -> None:
+            # 分开记录：application console error 与 page 未捕获异常
             page.on(
                 "console",
                 lambda message: (
-                    browser_errors.append(f"console:error:{message.text}")
+                    console_errors.append(message.text)
                     if message.type == "error"
                     else None
                 ),
             )
-            page.on("pageerror", lambda error: browser_errors.append(type(error).__name__))
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
 
         async def assert_no_overflow(page) -> None:
             metrics = await page.evaluate(
                 "() => ({w: document.documentElement.scrollWidth, c: document.documentElement.clientWidth})"
             )
             assert metrics["w"] <= metrics["c"], f"横向溢出 {metrics}"
+
+        # Creative Production 视觉关卡：仅当 TRADEOS_E2E_SCREENSHOT_DIR 设置时，
+        # 在三个关键交互态用同一真实栈抓取实际 Vue 实现（三页 × 两视口 = 6 张）；
+        # 无该环境变量时（含 CI）不写任何文件、不改变旅程。
+        screenshot_dir = os.environ.get("TRADEOS_E2E_SCREENSHOT_DIR")
+        out_dir = Path(screenshot_dir) if screenshot_dir else None
+        if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        async def focus_with_ring(page, locator) -> None:
+            # 先产生一次键盘交互，再聚焦目标，确保 :focus-visible 命中
+            # （3px solid #7c3aed 焦点环），并在截图前断言环样式确实可见。
+            await page.keyboard.press("Tab")
+            await locator.focus()
+            ring = await page.evaluate(
+                "() => {"
+                "  const s = getComputedStyle(document.activeElement);"
+                "  return s.outlineStyle === 'solid'"
+                "    && s.outlineWidth === '3px'"
+                "    && s.outlineColor === 'rgb(124, 58, 237)';"
+                "}"
+            )
+            assert ring, "焦点环不可见（:focus-visible 未命中）"
+
+        async def capture_visual(page, name: str) -> None:
+            if out_dir is None:
+                return
+            # 同一 page 先 1440×900，再 1180×800，每档均断言无横向溢出
+            for viewport, filename in (
+                ("1440x900", f"{name}-1440x900.png"),
+                ("1180x800", f"{name}-1180x800.png"),
+            ):
+                width, height = (int(part) for part in viewport.split("x"))
+                await page.set_viewport_size({"width": width, "height": height})
+                await assert_no_overflow(page)
+                await page.screenshot(path=str(out_dir / filename), full_page=False)
 
         try:
             # 1) outreach：prepare → send once
@@ -869,6 +907,11 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await page.locator("#send-body").fill(
                 "Hello, would you be open to a short call this week?"
             )
+            # 视觉态：drawer 打开、英文 subject/body 已填、subject 焦点环可见、尚未 send
+            if out_dir is not None:
+                await focus_with_ring(page, page.locator("#send-subject"))
+                await capture_visual(page, "outreach")
+                await page.set_viewport_size({"width": 1440, "height": 900})
             await page.get_by_role("button", name="发送", exact=True).click()
             await expect(page.get_by_text("发送成功")).to_be_visible(timeout=10000)
             await expect(page.locator('[role="dialog"]')).to_have_count(0)
@@ -906,6 +949,13 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await assert_no_overflow(page)
             await page.get_by_role("button", name="重新检查认证").first.click()
             await expect(page.get_by_text("认证检查已提交")).to_be_visible()
+            # 视觉态：提交反馈可见、「重新检查认证」按钮焦点环可见
+            if out_dir is not None:
+                await focus_with_ring(
+                    page, page.get_by_role("button", name="重新检查认证").first
+                )
+                await capture_visual(page, "sending-identities")
+                await page.set_viewport_size({"width": 1440, "height": 900})
             # DNS worker 结果经真实服务落库后重新可见
             await app_deps.sending_identities.record_authentication_result(
                 tenant,
@@ -997,6 +1047,13 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             row = page.locator("li", has_text=str(notification_id))
             await expect(row.locator(".unread-tag")).to_be_visible()
             await row.click()
+            # 视觉态：未读通知被选中、右侧详情 + 安全 relative_link 可见、
+            # 「前往处理」焦点环可见、尚未 mark-read
+            if out_dir is not None:
+                await expect(page.get_by_role("link", name="前往处理")).to_be_visible()
+                await focus_with_ring(page, page.get_by_role("link", name="前往处理"))
+                await capture_visual(page, "notifications")
+                await page.set_viewport_size({"width": 1180, "height": 800})
             await page.get_by_role("button", name="标记为已读").click()
             await expect(row.locator(".read-tag")).to_be_visible(timeout=10000)
             async with factory() as session:
@@ -1005,16 +1062,26 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
                     (str(tenant), str(notification_id)),
                 )
                 assert row.read_at is not None
+            # 徽标：重载后未读计数归零（唯一一条通知已读）
+            await page.reload(wait_until="networkidle")
+            await expect(
+                page.get_by_role("link", name="通知，0 条未读")
+            ).to_be_visible(timeout=10000)
+            await assert_no_overflow(page)
             await context.close()
         finally:
             await browser.close()
 
-    # 步骤 3 的失败关闭旅程会得到一次预期的 409（身份已熔断时 prepare 被拒）：
-    # 浏览器会为任何非 2xx 资源响应记一条网络错误日志，允许恰好这一条。
+    # console 证据分开报告：
+    # - page 未捕获异常必须为 0；
+    # - application console error 仅允许恰一条固定行：步骤 3 故意 409
+    #   （身份熔断后 prepare 被拒）触发的浏览器资源加载日志；
+    #   精确 allowlist，不与其他错误混过滤。
     expected_409 = (
-        "console:error:Failed to load resource: "
-        "the server responded with a status of 409 (Conflict)"
+        "Failed to load resource: the server responded with a status of 409 (Conflict)"
     )
-    assert browser_errors == [expected_409], (
-        f"浏览器 console/page 错误（应仅为步骤 3 预期的 409 资源错误）：{browser_errors}"
+    assert page_errors == [], f"page 未捕获异常必须为 0：{page_errors}"
+    assert console_errors == [expected_409], (
+        "application console error 应仅为步骤 3 预期的 409 资源加载行："
+        f"{console_errors}"
     )
