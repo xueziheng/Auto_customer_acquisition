@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from connectors.dns_auth.client import (
@@ -22,12 +22,41 @@ from connectors.dns_auth.client import (
     DnsAuthenticationConnector,
     DnsPythonAsyncResolver,
 )
+from connectors.gmail.client import (
+    GmailConnector,
+    GmailSendRequest,
+    GmailSendResult,
+    SecretResolver,
+)
+from connectors.gmail.transport import GmailHttpTransport
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
 from domains.opportunities.permissions import ScopeLevel as OpportunityScopeLevel
 from domains.opportunities.service import OpportunityService
+from domains.outreach.permissions import (
+    Actor as OutreachActor,
+)
+from domains.outreach.permissions import (
+    OutreachScope,
+    Phase1OutreachAuthorizer,
+)
+from domains.outreach.permissions import (
+    ScopeLevel as OutreachScopeLevel,
+)
+from domains.outreach.permissions import (
+    StandardAuditLogger as OutreachStandardAuditLogger,
+)
+from domains.outreach.service import (
+    CampaignApprovalProvider,
+    ContactEligibilityProvider,
+    OutreachService,
+    OutreachUnitOfWorkFactory,
+    ReplyStatusProvider,
+    SendingIdentityEligibilityProvider,
+)
+from domains.outreach.service_impl import OutreachServiceImpl
 from domains.sending_identity.permissions import (
     Phase1SendingIdentityAuthorizer,
     StandardAuditLogger,
@@ -37,7 +66,16 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.email_feedback_uow import (
+    AuditSink as FeedbackAuditSink,
+)
+from infra.db.email_feedback_uow import (
+    OutreachServiceBuilder,
+    SendingIdentityServiceBuilder,
+    SqlAlchemyFeedbackPageUnitOfWork,
+)
 from infra.db.outbox_delivery import OutboxDeliverer
+from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
@@ -56,9 +94,19 @@ from shared.events.catalog import (
     ReputationThresholdBreached,
     SendingIdentitySuspended,
 )
-from shared.schemas.identifiers import TenantId, UserId, new_id
+from shared.schemas.identifiers import (
+    ContactPointId,
+    MessageAttemptId,
+    TenantId,
+    UserId,
+    new_id,
+)
+from tool_gateway.checks.approval import ApprovalCheck
 from tool_gateway.checks.idempotency import IdempotencyCheck
 from tool_gateway.checks.permission import PermissionCheck
+from tool_gateway.checks.rate_limit import RateLimitCheck
+from tool_gateway.checks.suppression import SuppressionCheck
+from tool_gateway.checks.tenant import TenantCheck
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.dns_auth import (
@@ -68,7 +116,19 @@ from tool_gateway.handlers.dns_auth import (
     DnsAuthenticationCheckHandler,
     ToolGatewayDnsAuthenticationChecker,
 )
-from tool_gateway.manifest import ToolRegistry
+from tool_gateway.handlers.email_send import (
+    DeliveryMaterialProvider,
+    EmailSendHandler,
+    UnsubscribeLink,
+    UnsubscribeLinkProvider,
+)
+from tool_gateway.manifest import (
+    CostClass,
+    IdempotencyRequirement,
+    RiskLevel,
+    ToolManifest,
+    ToolRegistry,
+)
 from tool_gateway.pipeline import (
     CheckRejection,
     CheckStage,
@@ -80,17 +140,35 @@ from tool_gateway.repository import (
     ToolGatewayUnitOfWork,
     ToolGatewayUnitOfWorkFactory,
 )
-from workflows.engine.runner import WorkflowEngine
+from workflows.email_feedback.unsubscribe import (
+    FeedbackPageUnitOfWorkFactory,
+    UnsubscribeKeyRing,
+    UnsubscribeService,
+    UnsubscribeServiceImpl,
+)
+from workflows.engine.runner import StepHandler, WorkflowEngine
 from workflows.human_handoff.flow import (
     HumanHandoffEmployeeReader,
     build_human_handoff_step_handlers,
     register_human_handoff,
+)
+from workflows.outreach_campaign.flow import (
+    build_outreach_campaign_handlers,
+    register_outreach_campaign,
 )
 from workflows.sending_identity_auth.flow import (
     DnsAuthenticationStep,
     register_sending_identity_auth,
 )
 
+from .campaign_driver import (
+    CampaignSendDriver,
+    SchedulerCampaignPermissionCheck,
+    SchedulerCampaignSender,
+    driver_actor,
+    outreach_actor_for,
+    sending_actor_for,
+)
 from .config import SchedulerWorkerConfig
 from .main import (
     OutboxDrainer,
@@ -205,12 +283,39 @@ class SchedulerHealthServer:
 
 
 @dataclass(frozen=True)
+class CampaignMessagingComposition:
+    """部署层显式提供的发送事实、材料、凭证与 Gmail 传输（镜像 API 手工发送）。"""
+
+    contact_eligibility: ContactEligibilityProvider
+    sending_identity_eligibility: SendingIdentityEligibilityProvider
+    campaign_approvals: CampaignApprovalProvider
+    reply_status: ReplyStatusProvider
+    delivery_materials: DeliveryMaterialProvider
+    secret_resolver: SecretResolver
+    gmail_transport: GmailHttpTransport
+
+    def __post_init__(self) -> None:
+        providers = (
+            (self.contact_eligibility, ContactEligibilityProvider),
+            (self.sending_identity_eligibility, SendingIdentityEligibilityProvider),
+            (self.campaign_approvals, CampaignApprovalProvider),
+            (self.reply_status, ReplyStatusProvider),
+            (self.delivery_materials, DeliveryMaterialProvider),
+            (self.secret_resolver, SecretResolver),
+            (self.gmail_transport, GmailHttpTransport),
+        )
+        if any(not isinstance(value, contract) for value, contract in providers):
+            raise ValidationError("scheduler Campaign 发送依赖未完整配置")
+
+
+@dataclass(frozen=True)
 class SchedulerDomainDependencies:
     """尚未标准化为配置的 typed 业务依赖；禁止传 repository/raw payload。"""
 
     opportunity_service: OpportunityService
     employee_service: HumanHandoffEmployeeReader
     notification_audience: NotificationAudienceResolver
+    campaign_messaging: CampaignMessagingComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -220,6 +325,10 @@ class SchedulerDomainDependencies:
         )
         if any(not callable(item) for item in required):
             raise ValidationError("scheduler domain dependencies 无效")
+        if self.campaign_messaging is not None and not isinstance(
+            self.campaign_messaging, CampaignMessagingComposition
+        ):
+            raise ValidationError("scheduler Campaign 发送依赖未完整配置")
 
 
 class _DnsTenantCheck:
@@ -316,6 +425,110 @@ def register_complete_scheduler(
     ):
         registry.register_handler(event_type, name, notification_handler)
     register_sending_identity_auth(engine, registry)
+
+
+def _email_send_manifest() -> ToolManifest:
+    return ToolManifest(
+        tool_id="email.send",
+        version="v1",
+        description="发送当前已批准 Campaign 的单封邮件",
+        risk_level=RiskLevel.HIGH,
+        cost_class=CostClass.LOW,
+        requires_approval=False,
+        idempotency=IdempotencyRequirement.REQUIRED,
+        required_permissions=("outreach:message_send",),
+        checks=(
+            "tenant",
+            "permission",
+            "suppression",
+            "approval",
+            "idempotency",
+            "rate_limit",
+        ),
+        input_schema={
+            "type": "object",
+            "required": ("attempt_id", "subject", "body"),
+        },
+        output_schema={"type": "object"},
+        redact_fields=("subject", "body"),
+    )
+
+
+def _scheduler_delivery_binding_actor(attempt_id: MessageAttemptId) -> OutreachActor:
+    return OutreachActor(
+        "system:scheduler-campaign-send",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_attempt_ids=frozenset({attempt_id}),
+        ),
+        "system",
+    )
+
+
+def _unsubscribe_actor(contact_point_id: ContactPointId) -> OutreachActor:
+    return OutreachActor(
+        "system:scheduler-campaign-send",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_suppression_targets=frozenset({str(contact_point_id)}),
+        ),
+        "system",
+    )
+
+
+class _SchedulerUnsubscribeLinkAdapter:
+    """退订链接 provider：与 API 同一 UnsubscribeService 签发机制。"""
+
+    def __init__(self, service: UnsubscribeService) -> None:
+        self._service = service
+
+    async def build(
+        self, tenant_id: TenantId, preflight: object
+    ) -> UnsubscribeLink:
+        from domains.outreach.schemas import MessageSendPreflight
+
+        if not isinstance(preflight, MessageSendPreflight):
+            raise ValidationError("发送 preflight 无效")
+        return await self._service.issue(tenant_id, preflight)
+
+
+class _BoundGmailSecretResolver:
+    def __init__(self, resolver: SecretResolver, configured_ref: str) -> None:
+        self._resolver = resolver
+        self._configured_ref = configured_ref
+
+    def resolve(self, secret_ref: str) -> str:
+        if secret_ref != "GMAIL_OAUTH_TOKEN_REF":
+            raise ValidationError("Gmail 凭证引用无效")
+        return self._resolver.resolve(self._configured_ref)
+
+
+class _SchedulerLazyGmailConnector(GmailConnector):
+    """首次外发前只配置一次凭证；构造 runtime 不接触 secret value。"""
+
+    def __init__(
+        self,
+        transport: GmailHttpTransport,
+        resolver: SecretResolver,
+        configured_ref: str,
+    ) -> None:
+        super().__init__(transport)
+        self._runtime_resolver = _BoundGmailSecretResolver(resolver, configured_ref)
+        self._configure_lock = asyncio.Lock()
+
+    async def _ensure_configured(self) -> None:
+        if not await self.health_check():
+            async with self._configure_lock:
+                if not await self.health_check():
+                    await self.configure(self._runtime_resolver)
+
+    async def send_once(self, request: GmailSendRequest) -> GmailSendResult:
+        await self._ensure_configured()
+        return await super().send_once(request)
+
+    async def reconcile_once(self, request: GmailSendRequest) -> GmailSendResult:
+        await self._ensure_configured()
+        return await super().reconcile_once(request)
 
 
 class SchedulerRuntimeFactory:
@@ -451,11 +664,24 @@ class SchedulerRuntimeFactory:
                 ToolGatewayDnsAuthenticationChecker(gateway, tool_user),
                 dkim_selector=config.dkim_selector,
             )
+            campaign_handlers: dict[str, StepHandler] = {}
+            campaign_outreach: OutreachService | None = None
+            if self._dependencies.campaign_messaging is not None:
+                campaign_handlers, campaign_outreach = self._build_campaign_messaging(
+                    factory,
+                    config,
+                    self._dependencies.campaign_messaging,
+                    sending,
+                    fingerprints,
+                    secrets,
+                    tool_user,
+                )
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
                     **handoff_handlers,
                     "sending_identity_auth.check": auth_step,
+                    **campaign_handlers,
                 },
                 now=self._now,
             )
@@ -472,6 +698,20 @@ class SchedulerRuntimeFactory:
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
             )
+            campaign_driver: CampaignSendDriver | None = None
+            if campaign_outreach is not None:
+                register_outreach_campaign(
+                    workflow,
+                    timedelta(seconds=config.campaign_retry_interval_seconds),
+                )
+                campaign_driver = CampaignSendDriver(
+                    outreach=campaign_outreach,
+                    engine=workflow,
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                    scan_actor=driver_actor(),
+                    batch_limit=config.batch_limit,
+                )
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
                 DNS_AUTH_MANIFEST.tool_id,
             ):
@@ -490,6 +730,7 @@ class SchedulerRuntimeFactory:
                     config.batch_limit,
                     config.lock_key,
                 ),
+                campaign_driver=campaign_driver,
             )
         except BaseException as error:
             primary = error
@@ -510,6 +751,156 @@ class SchedulerRuntimeFactory:
                     cleanup_error = error
             if primary is None and cleanup_error is not None:
                 raise cleanup_error
+
+    def _build_campaign_messaging(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        config: SchedulerWorkerConfig,
+        composition: CampaignMessagingComposition,
+        sending: SendingIdentityService,
+        fingerprints: HmacFingerprintProvider,
+        secrets: EnvironmentSecretResolver,
+        tool_user: UserId,
+    ) -> tuple[dict[str, StepHandler], OutreachService]:
+        """装配 Campaign 发送链路：outreach 服务、退订链接、email.send 网关。
+
+        镜像 API 手工发送的完整检查管线（current-facts preflight/claim/额度/
+        发送/记账），返回流程 handler 与 outreach 服务供驱动使用。
+        """
+        from workflows.email_feedback.repository import FeedbackPageUnitOfWork
+
+        tenant = config.tenant_id
+        now = self._now
+        contact_eligibility = composition.contact_eligibility
+        sender_eligibility = composition.sending_identity_eligibility
+        campaign_approvals = composition.campaign_approvals
+        reply_status = composition.reply_status
+        outreach = OutreachServiceImpl(
+            lambda requested_tenant: SqlAlchemyOutreachUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory, requested_tenant, now=now
+            ),
+            contact_eligibility,  # type: ignore[arg-type]
+            sender_eligibility,  # type: ignore[arg-type]
+            campaign_approvals,  # type: ignore[arg-type]
+            reply_status,  # type: ignore[arg-type]
+            Phase1OutreachAuthorizer(tenant),
+            OutreachStandardAuditLogger(),
+            now=now,
+        )
+        unsubscribe_keys: dict[str, bytes] = {}
+        for reference in config.unsubscribe_key_refs:
+            raw_key = secrets.resolve(reference.secret_ref)
+            if not isinstance(raw_key, str):
+                raise ValidationError("scheduler 退订密钥依赖未完整配置")
+            unsubscribe_keys[reference.key_id] = raw_key.encode("utf-8")
+        key_ring = UnsubscribeKeyRing(
+            config.unsubscribe_active_key_id, unsubscribe_keys
+        )
+
+        def build_feedback_outreach(
+            uow_factory: OutreachUnitOfWorkFactory,
+            audit: FeedbackAuditSink,
+        ) -> OutreachService:
+            return OutreachServiceImpl(
+                uow_factory,
+                contact_eligibility,  # type: ignore[arg-type]
+                sender_eligibility,  # type: ignore[arg-type]
+                campaign_approvals,  # type: ignore[arg-type]
+                reply_status,  # type: ignore[arg-type]
+                Phase1OutreachAuthorizer(tenant),
+                audit,  # type: ignore[arg-type]
+                now=now,
+            )
+
+        def build_feedback_sending(
+            uow_factory: SendingIdentityUnitOfWorkFactory,
+            audit: FeedbackAuditSink,
+        ) -> SendingIdentityService:
+            return SendingIdentityServiceImpl(
+                uow_factory,
+                Phase1SendingIdentityAuthorizer(tenant),
+                audit,  # type: ignore[arg-type]
+                now=now,
+            )
+
+        def build_feedback_uow(
+            tenant_id: TenantId,
+        ) -> FeedbackPageUnitOfWork:
+            return cast(
+                FeedbackPageUnitOfWork,
+                SqlAlchemyFeedbackPageUnitOfWork(
+                    factory,
+                    tenant_id,
+                    outreach_builder=cast(
+                        OutreachServiceBuilder, build_feedback_outreach
+                    ),
+                    sending_identity_builder=cast(
+                        SendingIdentityServiceBuilder, build_feedback_sending
+                    ),
+                    audit_sink=OutreachStandardAuditLogger(),
+                    now=now,
+                ),
+            )
+
+        feedback_uow_factory: FeedbackPageUnitOfWorkFactory = build_feedback_uow
+        unsubscribe_service = UnsubscribeServiceImpl(
+            tenant_id=tenant,
+            uow_factory=feedback_uow_factory,
+            key_ring=key_ring,
+            base_url=config.unsubscribe_base_url,
+            actor_factory=_unsubscribe_actor,
+            now=now,
+        )
+        unsubscribe_links: UnsubscribeLinkProvider = (
+            _SchedulerUnsubscribeLinkAdapter(unsubscribe_service)
+        )
+        gmail = _SchedulerLazyGmailConnector(
+            composition.gmail_transport,
+            composition.secret_resolver,
+            config.gmail_oauth_token_ref,
+        )
+        handler = EmailSendHandler(
+            gmail,
+            composition.delivery_materials,
+            unsubscribe_links,
+            fingerprints,
+            outreach=outreach,
+            outreach_actor_factory=_scheduler_delivery_binding_actor,
+            route_id=config.email_feedback_route_id,
+        )
+        campaign_registry = ToolRegistry()
+        campaign_registry.register(_email_send_manifest(), handler)
+        if tuple(
+            item.tool_id for item in campaign_registry.list_manifests()
+        ) != ("email.send",):
+            raise ValidationError("scheduler Campaign registry 无效")
+        permission = SchedulerCampaignPermissionCheck(factory, tenant)
+        rate_limit = RateLimitCheck(
+            outreach, sending, outreach_actor_for, sending_actor_for
+        )
+        campaign_gateway = ToolGateway(
+            campaign_registry,  # type: ignore[arg-type]
+            {
+                "tenant": TenantCheck(),
+                "permission": PermissionCheck(permission.authorize),
+                "suppression": SuppressionCheck(outreach, outreach_actor_for),
+                "approval": ApprovalCheck(),
+                "idempotency": IdempotencyCheck(),
+                "rate_limit": rate_limit,
+            },
+            cast(
+                ToolGatewayUnitOfWorkFactory,
+                lambda requested_tenant: SqlAlchemyToolGatewayUnitOfWork(
+                    factory, requested_tenant, now=now
+                ),
+            ),
+            lease_duration=timedelta(seconds=config.tool_lease_seconds),
+            lease_owner="scheduler_campaign_send",
+            now=now,
+            id_factory=new_id,
+        )
+        sender = SchedulerCampaignSender(campaign_gateway, tenant, tool_user)
+        return build_outreach_campaign_handlers(outreach, sender), outreach
 
 
 @asynccontextmanager

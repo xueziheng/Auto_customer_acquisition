@@ -44,6 +44,12 @@ class WorkflowPoller(Protocol):
     async def poll_due(self, tenant_id: TenantId, limit: int) -> int: ...
 
 
+class CampaignDriver(Protocol):
+    """到期序列推进驱动：扫描到期 Enrollment 起 run，取消失效 run。"""
+
+    async def scan_once(self) -> int: ...
+
+
 @dataclass(frozen=True)
 class SchedulerConfig:
     """调度参数；值由 composition root 明确注入，不在业务循环里猜默认值。"""
@@ -83,6 +89,7 @@ class SchedulerRuntime:
     workflow: WorkflowPoller
     tenant_id: TenantId
     config: SchedulerConfig
+    campaign_driver: CampaignDriver | None = None
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():
@@ -167,8 +174,13 @@ def _install_stop_signals(stop_event: asyncio.Event) -> Callable[[], None]:
 
 
 async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
-    """执行一个固定顺序 cycle；三个 phase 各自隔离且不跨 phase 回滚。"""
+    """执行一个固定顺序 cycle；各 phase 隔离且不跨 phase 回滚。
+
+    顺序：outbox 前置投递 → Campaign 到期扫描（起 run）→ workflow 推进 →
+    有推进时 outbox 后置投递。
+    """
     pre_count = 0
+    campaign_count = 0
     workflow_count = 0
     post_count = 0
 
@@ -181,6 +193,17 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
             tenant_id=runtime.tenant_id,
             cycle=cycle,
         )
+
+    if runtime.campaign_driver is not None:
+        try:
+            campaign_count = await runtime.campaign_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - phase 必须隔离并统一脱敏
+            _log_phase_error(
+                phase="campaign",
+                error=error,
+                tenant_id=runtime.tenant_id,
+                cycle=cycle,
+            )
 
     workflow_succeeded = False
     try:
@@ -213,6 +236,7 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
             "tenant_id": str(runtime.tenant_id),
             "cycle": cycle,
             "outbox_pre_count": pre_count,
+            "campaign_count": campaign_count,
             "workflow_count": workflow_count,
             "outbox_post_count": post_count,
         },

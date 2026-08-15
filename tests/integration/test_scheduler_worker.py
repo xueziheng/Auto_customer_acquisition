@@ -790,6 +790,12 @@ def test_task4_scheduler_config_is_strict_and_redacts_database_url() -> None:
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
         "TOOL_CALL_FINGERPRINT_KEY_REF": "SCHEDULER_FINGERPRINT_KEY",
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
+        "GMAIL_OAUTH_TOKEN_REF": "GMAIL_OAUTH_TOKEN_REF",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "route-scheduler",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}',
     }
     config = config_module.SchedulerWorkerConfig.from_environ(environ)
     assert config.dkim_selector == "s1"
@@ -969,6 +975,12 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
         "TOOL_CALL_FINGERPRINT_KEY_REF": "SCHEDULER_FINGERPRINT_KEY",
         "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
+        "GMAIL_OAUTH_TOKEN_REF": "GMAIL_OAUTH_TOKEN_REF",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "route-scheduler",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}',
         "SCHEDULER_FINGERPRINT_KEY": "x" * 32,
     }
     dependencies = runtime_module.SchedulerDomainDependencies(
