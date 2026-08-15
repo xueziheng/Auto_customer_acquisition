@@ -13,6 +13,21 @@ const router = createRouter({
       name: "crm-handoffs",
       component: () => import("./views/crm/HandoffQueue.vue"),
     },
+    {
+      path: "/crm/outreach",
+      name: "crm-outreach",
+      component: () => import("./views/OutreachWorkbench.vue"),
+    },
+    {
+      path: "/crm/sending-identities",
+      name: "crm-sending-identities",
+      component: () => import("./views/SendingIdentityCenter.vue"),
+    },
+    {
+      path: "/notifications",
+      name: "notifications",
+      component: () => import("./views/NotificationCenter.vue"),
+    },
   ],
 });
 

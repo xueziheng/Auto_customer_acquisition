@@ -354,9 +354,18 @@ describe("handoff queue", () => {
     await eventually(() => expect(root.textContent).toContain("PACKET-ONLY-CUSTOMER-ONE"));
 
     const requests = fetch.mock.calls.map(([input]) => asRequest(input));
-    expect(new URL(requests[0]!.url).pathname).toBe("/crm/handoffs");
-    expect(new URL(requests[0]!.url).searchParams.get("limit")).toBe("50");
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+    // 全局壳新增请求：NotificationBadge 挂载即精确 GET /notifications?limit=100（仅一次）
+    const notifications = requests.filter(
+      (request) => new URL(request.url).pathname === "/notifications",
+    );
+    expect(notifications).toHaveLength(1);
+    expect(new URL(notifications[0]!.url).searchParams.get("limit")).toBe("100");
+    const pageRequests = requests.filter(
+      (request) => new URL(request.url).pathname !== "/notifications",
+    );
+    expect(new URL(pageRequests[0]!.url).pathname).toBe("/crm/handoffs");
+    expect(new URL(pageRequests[0]!.url).searchParams.get("limit")).toBe("50");
+    expect(pageRequests.map((request) => new URL(request.url).pathname)).toEqual([
       "/crm/handoffs",
       "/crm/handoffs/handoff-demo-one",
       "/crm/opportunities/opportunity-demo-one",

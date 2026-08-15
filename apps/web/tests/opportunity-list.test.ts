@@ -260,10 +260,20 @@ describe("opportunity board", () => {
     expect(root.textContent).toContain("9007199254740993.1200 USD");
 
     await eventually(() => {
-      expect(fetch).toHaveBeenCalledTimes(2);
+      // 2 个页面请求 + 全局壳 NotificationBadge 的 1 个通知请求
+      expect(fetch).toHaveBeenCalledTimes(3);
     });
     const requests = fetch.mock.calls.map(([request]) => asRequest(request));
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+    // 全局壳新增请求：NotificationBadge 挂载即精确 GET /notifications?limit=100（仅一次）
+    const notifications = requests.filter(
+      (request) => new URL(request.url).pathname === "/notifications",
+    );
+    expect(notifications).toHaveLength(1);
+    expect(new URL(notifications[0]!.url).searchParams.get("limit")).toBe("100");
+    const pageRequests = requests.filter(
+      (request) => new URL(request.url).pathname !== "/notifications",
+    );
+    expect(pageRequests.map((request) => new URL(request.url).pathname)).toEqual([
       "/crm/opportunities",
       "/crm/opportunities/opportunity-demo-one",
     ]);
