@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import cast
@@ -2459,7 +2459,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0016"
+        assert revision == "0017"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2612,7 +2612,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0016"
+        assert revision == "0017"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2758,7 +2758,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0016"
+        assert revision == "0017"
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2946,7 +2946,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0016", "RED：0016 认证请求迁移尚未创建"
+            assert revision == "0017", "RED：0017 投诉迁移尚未创建"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3059,6 +3059,265 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
         assert "sending_auth_check_requests" not in await _table_names(engine)
         _run_alembic(db_url, "upgrade", "0016")
         assert "sending_auth_check_requests" in await _table_names(engine)
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
+    """0017→0016→0017：complaint 进入 receipt kind/target 词表并可逆恢复。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_01KZX4C1000000000000000017"
+    mailbox = "feedback-complaints"
+    identity = "sid_01KZX4C1000000000000000017"
+    campaign = "cmp_01KZX4C1000000000000000017"
+    enrollment = "enr_01KZX4C1000000000000000017"
+    attempt = "mat_01KZX4C1000000000000000017"
+    account = "acc_01KZX4C1000000000000000017"
+    contact = "cp_01KZX4C1000000000000000017"
+    message = "msg_01KZX4C1000000000000000017"
+    approval = "apr_01KZX4C1000000000000000017"
+    employee = "emp_01KZX4C1000000000000000017"
+    now = datetime(2026, 8, 15, 8, 0, tzinfo=UTC)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0017", "RED：0017 投诉迁移尚未创建"
+            for constraint_name in (
+                "ck_email_feedback_receipt_kind",
+                "ck_email_feedback_receipt_target",
+            ):
+                definition = await conn.scalar(
+                    text(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conname=:name"
+                    ),
+                    {"name": constraint_name},
+                )
+                assert "complaint" in definition, f"{constraint_name} 缺少 complaint"
+
+        async def seed_chain() -> None:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO sending_domains(tenant_id,domain,role,created_at) "
+                        "VALUES (:tenant,'complaints.example.com','cold_outreach',:now) "
+                        "ON CONFLICT DO NOTHING"
+                    ),
+                    {"tenant": tenant, "now": now},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO sending_identities(tenant_id,identity_id,domain,"
+                        "address,display_name,state,connector_ref,warmup_started_on,"
+                        "target_daily_volume,activated_at,suspended_at,retired_at,"
+                        "sendable_state_before_restriction,suspension_category,version,"
+                        "throttle_hard_bounce_rate,suspend_hard_bounce_rate,"
+                        "throttle_complaint_rate,suspend_complaint_rate,"
+                        "suspend_on_spam_trap,suspend_on_blocklist,minimum_sample,"
+                        "created_at) VALUES "
+                        "(:tenant,:identity,'complaints.example.com',"
+                        "'complaints@complaints.example.com',NULL,'active',"
+                        "'complaints_connector_ref',:day,50,:now,NULL,NULL,NULL,NULL,1,"
+                        "0.03,0.05,0.001,0.003,true,true,50,:now) ON CONFLICT DO NOTHING"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "identity": identity,
+                        "day": (now - timedelta(days=40)).date(),
+                        "now": now,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO outreach_campaigns(tenant_id,campaign_id,state,"
+                        "current_version,created_by,created_at,round_robin_cursor,"
+                        "approval_id,approved_by,approved_at,paused_reason) VALUES "
+                        "(:tenant,:campaign,'active',1,:employee,:now,0,:approval,"
+                        ":employee,:now,NULL) ON CONFLICT DO NOTHING"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "campaign": campaign,
+                        "employee": employee,
+                        "approval": approval,
+                        "now": now,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO outreach_campaign_versions(tenant_id,campaign_id,"
+                        "version,name,markets,target_entity_types,allowed_categories,"
+                        "sender_identity_ids,daily_new_contact_limit,"
+                        "daily_total_message_limit,handoff_triggers,stop_on_reply,"
+                        "created_by,created_at) VALUES "
+                        "(:tenant,:campaign,1,'complaints fixture',"
+                        "CAST(:markets AS jsonb),CAST(:entities AS jsonb),"
+                        "CAST(:categories AS jsonb),CAST(:senders AS jsonb),"
+                        "10,20,CAST(:triggers AS jsonb),true,:employee,:now) "
+                        "ON CONFLICT DO NOTHING"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "campaign": campaign,
+                        "markets": '["US"]',
+                        "entities": '["business"]',
+                        "categories": '["hinges"]',
+                        "senders": f'["{identity}"]',
+                        "triggers": '["reply"]',
+                        "employee": employee,
+                        "now": now,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO outreach_enrollments(tenant_id,enrollment_id,"
+                        "campaign_id,campaign_version,account_id,contact_point_id,"
+                        "sending_identity_id,state,current_step,next_send_at,"
+                        "enrolled_at,stopped_at,stop_reason,idempotency_key) VALUES "
+                        "(:tenant,:enrollment,:campaign,1,:account,:contact,:identity,"
+                        "'in_sequence',1,:next,:now,NULL,NULL,"
+                        "'complaints-migration-enrollment') ON CONFLICT DO NOTHING"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "enrollment": enrollment,
+                        "campaign": campaign,
+                        "account": account,
+                        "contact": contact,
+                        "identity": identity,
+                        "next": now + timedelta(days=1),
+                        "now": now,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO outreach_message_attempts(tenant_id,attempt_id,"
+                        "message_id,campaign_id,enrollment_id,campaign_version,"
+                        "step_number,sending_identity_id,idempotency_key,state,"
+                        "provider_ref,failure_category,created_at,updated_at,"
+                        "send_claimed_at,deterministic_message_id,idempotency_header) "
+                        "VALUES (:tenant,:attempt,:message,:campaign,:enrollment,1,1,"
+                        ":identity,'complaints-migration-attempt','sent',"
+                        "'provider_ref_complaints',NULL,:now,:now,:now,NULL,NULL) "
+                        "ON CONFLICT DO NOTHING"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "attempt": attempt,
+                        "message": message,
+                        "campaign": campaign,
+                        "enrollment": enrollment,
+                        "identity": identity,
+                        "now": now,
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO email_feedback_cursors(tenant_id,mailbox_alias,"
+                        "provider_cursor,version,bootstrap_started_at,last_succeeded_at) "
+                        "VALUES (:tenant,:mailbox,NULL,0,:now,NULL) ON CONFLICT DO NOTHING"
+                    ),
+                    {"tenant": tenant, "mailbox": mailbox, "now": now},
+                )
+
+        complaint_receipt = text(
+            "INSERT INTO email_feedback_receipts "
+            "(tenant_id,mailbox_alias,provider_event_id,item_fingerprint,ordinal,kind,"
+            "occurred_at,result,attempt_id,enrollment_id,account_id,contact_point_id,"
+            "sending_identity_id,created_at) VALUES "
+            "(:tenant,:mailbox,:event,:fingerprint,0,'complaint',:now,'applied',"
+            ":attempt,:enrollment,:account,:contact,:identity,:now)"
+        )
+
+        await seed_chain()
+
+        # head(0017) 接受 complaint：在回滚事务内证明，不留下 append-only 行
+        # （complaint receipt 在共享容器中会破坏其后 0017 以下版本的 downgrade）。
+        async with engine.connect() as conn:
+            transaction = await conn.begin()
+            await conn.execute(
+                complaint_receipt,
+                {
+                    "tenant": tenant,
+                    "mailbox": mailbox,
+                    "event": "c" * 64,
+                    "fingerprint": "f" * 64,
+                    "attempt": attempt,
+                    "enrollment": enrollment,
+                    "account": account,
+                    "contact": contact,
+                    "identity": identity,
+                    "now": now,
+                },
+            )
+            await transaction.rollback()
+
+        _run_alembic(db_url, "downgrade", "0016")
+        await _assert_statement_integrity_rejected(
+            engine,
+            complaint_receipt,
+            {
+                "tenant": tenant,
+                "mailbox": mailbox,
+                "event": "c" * 64,
+                "fingerprint": "f" * 64,
+                "attempt": attempt,
+                "enrollment": enrollment,
+                "account": account,
+                "contact": contact,
+                "identity": identity,
+                "now": now,
+            },
+            "0016 词表不允许 complaint receipt",
+        )
+
+        _run_alembic(db_url, "upgrade", "head")
+        # 0016→0017 恢复后再次证明 complaint 可写（同样在回滚事务内）。
+        async with engine.connect() as conn:
+            transaction = await conn.begin()
+            await conn.execute(
+                complaint_receipt,
+                {
+                    "tenant": tenant,
+                    "mailbox": mailbox,
+                    "event": "c" * 64,
+                    "fingerprint": "f" * 64,
+                    "attempt": attempt,
+                    "enrollment": enrollment,
+                    "account": account,
+                    "contact": contact,
+                    "identity": identity,
+                    "now": now,
+                },
+            )
+            await transaction.rollback()
+        await _assert_statement_integrity_rejected(
+            engine,
+            text(
+                "INSERT INTO email_feedback_receipts "
+                "(tenant_id,mailbox_alias,provider_event_id,item_fingerprint,ordinal,"
+                "kind,occurred_at,result,attempt_id,enrollment_id,account_id,"
+                "contact_point_id,sending_identity_id,created_at) VALUES "
+                "(:tenant,:mailbox,:event,:fingerprint,0,'bogus',:now,'applied',"
+                ":attempt,:enrollment,:account,:contact,:identity,:now)"
+            ),
+            {
+                "tenant": tenant,
+                "mailbox": mailbox,
+                "event": "d" * 64,
+                "fingerprint": "f" * 64,
+                "attempt": attempt,
+                "enrollment": enrollment,
+                "account": account,
+                "contact": contact,
+                "identity": identity,
+                "now": now,
+            },
+            "未知 kind 必须被约束拒绝",
+        )
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

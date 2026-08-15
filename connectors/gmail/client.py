@@ -18,7 +18,12 @@ from shared.errors import ValidationError
 from shared.schemas.email_feedback import EmailFeedbackItem, EmailFeedbackPage
 from tool_gateway.errors import DeliveryCertainty, ToolErrorCategory, ToolGatewayError
 
-from .feedback import parse_delivery_status
+from .arf import parse_abuse_report
+from .feedback import (
+    message_occurred_at,
+    parse_delivery_status,
+    provider_ref_digest,
+)
 from .transport import (
     GmailFeedbackHttpTransport,
     GmailHttpStatusError,
@@ -311,6 +316,12 @@ class GmailConnector:
                     token=self._token.value, message_ref=message_ref
                 )
                 parsed = parse_delivery_status(raw, message_ref)
+                if not parsed:
+                    parsed = parse_abuse_report(
+                        raw,
+                        provider_ref_digest=provider_ref_digest(message_ref),
+                        occurred_at=message_occurred_at(raw),
+                    )
                 remaining = parsed[offset:]
                 capacity = page_limit - len(items)
                 items.extend(remaining[:capacity])

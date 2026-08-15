@@ -299,3 +299,13 @@ class OutreachService(Protocol):
         *,
         actor: Actor,
     ) -> SuppressionResult: ...
+
+    async def apply_complaint(
+        self,
+        tenant_id: TenantId,
+        target: DeliveryFeedbackTarget,
+        provider_event_id: str,
+        occurred_at: datetime,
+        *,
+        actor: Actor,
+    ) -> SuppressionResult: ...

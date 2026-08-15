@@ -131,6 +131,7 @@ async def test_one_cycle_uses_heartbeat_cursor_fetch_heartbeat_process_order() -
         quarantined=1,
         hard_bounces=1,
         soft_bounces=1,
+        complaints=0,
         next_cursor="cursor-next",
     )])
     cursor = _CursorReader([None])
@@ -163,8 +164,8 @@ async def test_one_cycle_uses_heartbeat_cursor_fetch_heartbeat_process_order() -
     assert waits == [30]
     assert Counter(name.value for name, _ in metrics.records) == Counter(
         {"processed": 1, "duplicate": 1, "quarantined": 1,
-         "hard_bounce": 1, "soft_bounce": 1, "cursor_lag": 1,
-         "consecutive_failure": 1}
+         "hard_bounce": 1, "soft_bounce": 1, "complaint": 1,
+         "cursor_lag": 1, "consecutive_failure": 1}
     )
 
 
@@ -254,7 +255,7 @@ async def test_success_resets_backoff_only_after_processor_commit() -> None:
     ])
     processor = _Processor([SimpleNamespace(
         processed=0, duplicates=0, quarantined=0, hard_bounces=0,
-        soft_bounces=0, next_cursor="cursor-next"
+        soft_bounces=0, complaints=0, next_cursor="cursor-next"
     )])
     waits: list[int] = []
     stop = asyncio.Event()
@@ -290,7 +291,7 @@ async def test_stop_set_during_fetch_finishes_current_page_without_next_cycle() 
     reader = _StoppingReader([_page()])
     processor = _Processor([SimpleNamespace(
         processed=1, duplicates=0, quarantined=0, hard_bounces=0,
-        soft_bounces=0, next_cursor="cursor-next"
+        soft_bounces=0, complaints=0, next_cursor="cursor-next"
     )])
     waits: list[int] = []
 
@@ -383,7 +384,8 @@ def test_metrics_reject_arbitrary_names() -> None:
     runtime_module = importlib.import_module("apps.email_feedback_worker.runtime")
     expected = {
         "cursor_lag", "processed", "duplicate", "quarantined",
-        "hard_bounce", "soft_bounce", "page_rollback", "consecutive_failure",
+        "hard_bounce", "soft_bounce", "complaint",
+        "page_rollback", "consecutive_failure",
     }
     assert {item.value for item in runtime_module.EmailFeedbackMetricName} == expected
     with pytest.raises(ValueError):

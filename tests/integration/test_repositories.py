@@ -1926,3 +1926,18 @@ async def test_authentication_request_repository_idempotency_tenant_and_status(
             repository.AuthenticationCheckRequestStatus.RUNNING,
             None,
         )
+
+
+def test_feedback_receipt_kind_and_target_constraints_include_complaint() -> None:
+    """ORM 词表必须与 0017 迁移一致：complaint 进入 kind 与 target 约束。"""
+    from sqlalchemy import CheckConstraint
+
+    metadata = importlib.import_module("infra.db.tables").Base.metadata
+    table = metadata.tables["email_feedback_receipts"]
+    texts = {
+        str(constraint.name): str(constraint.sqltext)
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint) and constraint.name is not None
+    }
+    assert "complaint" in texts["ck_email_feedback_receipt_kind"]
+    assert "complaint" in texts["ck_email_feedback_receipt_target"]

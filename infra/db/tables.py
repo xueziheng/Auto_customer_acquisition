@@ -1056,7 +1056,7 @@ class EmailFeedbackReceiptRow(Base):
             "ordinal BETWEEN 0 AND 99", name="ck_email_feedback_receipt_ordinal"
         ),
         CheckConstraint(
-            "kind IN ('hard_bounce','soft_bounce','unparseable')",
+            "kind IN ('hard_bounce','soft_bounce','unparseable','complaint')",
             name="ck_email_feedback_receipt_kind",
         ),
         CheckConstraint(
@@ -1067,7 +1067,8 @@ class EmailFeedbackReceiptRow(Base):
             "(result='quarantined' AND kind='unparseable' AND attempt_id IS NULL "
             "AND enrollment_id IS NULL AND account_id IS NULL "
             "AND contact_point_id IS NULL AND sending_identity_id IS NULL) OR "
-            "(result IN ('applied','recorded') AND kind IN ('hard_bounce','soft_bounce') "
+            "(result IN ('applied','recorded') AND "
+            "kind IN ('hard_bounce','soft_bounce','complaint') "
             "AND attempt_id IS NOT NULL AND enrollment_id IS NOT NULL "
             "AND account_id IS NOT NULL AND contact_point_id IS NOT NULL "
             "AND sending_identity_id IS NOT NULL)",

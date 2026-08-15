@@ -32,6 +32,24 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def provider_ref_digest(provider_message_ref: str) -> str:
+    """provider ref 的安全 lower-hex 摘要；后续持久化只用摘要。"""
+    if (
+        not isinstance(provider_message_ref, str)
+        or _PROVIDER_REF_RE.fullmatch(provider_message_ref) is None
+    ):
+        raise ValidationError("Gmail provider ref 无效")
+    return _digest(provider_message_ref)
+
+
+def message_occurred_at(raw_message: bytes) -> datetime:
+    """解析顶层 Date 为 UTC；缺失/不可解析返回 EPOCH（与 DSN 解析一致）。"""
+    if not isinstance(raw_message, bytes):
+        raise ValidationError("Gmail feedback 输入无效")
+    message = BytesParser(policy=default).parsebytes(raw_message)
+    return _occurred_at(message)
+
+
 def _occurred_at(message: Message) -> datetime:
     value = message.get("Date")
     if not isinstance(value, str):
@@ -64,7 +82,8 @@ def _unparseable(
     )
 
 
-def _original_headers(message: Message) -> EmailFeedbackCorrelation | None:
+def original_headers(message: Message) -> EmailFeedbackCorrelation | None:
+    """从唯一的 message/rfc822 部分提取 TradeOS 自有关联键；缺失/歧义返回 None。"""
     originals = [
         part for part in message.walk() if part.get_content_type() == "message/rfc822"
     ]
@@ -126,7 +145,11 @@ def parse_delivery_status(
     raw_message: bytes,
     provider_message_ref: str,
 ) -> tuple[EmailFeedbackItem, ...]:
-    """解析一封 Gmail message；普通邮件返回空 tuple。"""
+    """解析一封 Gmail message；普通邮件返回空 tuple。
+
+    ARF（report-type=feedback-report）由 ``parse_abuse_report`` 处理，这里返回
+    空 tuple 让调用方分派，绝不按 DSN 语义误判投诉。
+    """
     if (
         not isinstance(provider_message_ref, str)
         or _PROVIDER_REF_RE.fullmatch(provider_message_ref) is None
@@ -148,7 +171,10 @@ def parse_delivery_status(
                 EmailFeedbackParseIssue.MALFORMED,
             ),
         )
-    if message.get_param("report-type") != "delivery-status":
+    report_type = message.get_param("report-type")
+    if report_type == "feedback-report":
+        return ()
+    if report_type != "delivery-status":
         return (
             _unparseable(
                 provider_message_ref,
@@ -158,7 +184,7 @@ def parse_delivery_status(
             ),
         )
     blocks = _delivery_blocks(message)
-    correlation = _original_headers(message)
+    correlation = original_headers(message)
     if not blocks or len(blocks) > 100:
         return (
             _unparseable(

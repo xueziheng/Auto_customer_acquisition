@@ -44,6 +44,7 @@ class OutreachAction(str, Enum):
     MESSAGE_DELIVERY_BIND = "message:delivery_bind"
     DELIVERY_FEEDBACK_RESOLVE = "delivery_feedback:resolve"
     HARD_BOUNCE_APPLY = "hard_bounce:apply"
+    COMPLAINT_APPLY = "complaint:apply"
 
 
 class ScopeLevel(str, Enum):
@@ -319,6 +320,7 @@ _SYSTEM_ACTIONS = frozenset(
         OutreachAction.MESSAGE_DELIVERY_BIND,
         OutreachAction.DELIVERY_FEEDBACK_RESOLVE,
         OutreachAction.HARD_BOUNCE_APPLY,
+        OutreachAction.COMPLAINT_APPLY,
     }
 )
 _SALES_ACTIONS = frozenset(
@@ -388,6 +390,7 @@ class Phase1OutreachAuthorizer:
                 OutreachAction.MESSAGE_DELIVERY_BIND: "attempt",
                 OutreachAction.DELIVERY_FEEDBACK_RESOLVE: "identity",
                 OutreachAction.HARD_BOUNCE_APPLY: "identity",
+                OutreachAction.COMPLAINT_APPLY: "identity",
             }.get(action, "enrollment")
             actual_resource = (
                 "suppression"

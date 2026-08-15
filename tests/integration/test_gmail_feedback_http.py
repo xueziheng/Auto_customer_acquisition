@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import threading
 from collections.abc import Iterator
@@ -72,6 +73,39 @@ def _raw_payload(raw: bytes) -> bytes:
     ).encode("ascii")
 
 
+def _arf_report() -> bytes:
+    boundary = "feedback-http-arf"
+    lines = [
+        "Date: Thu, 13 Aug 2026 10:00:00 +0000",
+        (
+            'Content-Type: multipart/report; report-type="feedback-report"; '
+            f'boundary="{boundary}"'
+        ),
+        "MIME-Version: 1.0",
+        "",
+        f"--{boundary}",
+        "Content-Type: text/plain",
+        "",
+        "complaint prose",
+        f"--{boundary}",
+        "Content-Type: message/feedback-report",
+        "",
+        "Feedback-Type: abuse",
+        "User-Agent: provider-test/1.0",
+        "Version: 1",
+        "",
+        f"--{boundary}",
+        "Content-Type: message/rfc822",
+        "",
+        "Message-ID: <route-v1." + "a" * 64 + "@messages.tradeos.invalid>",
+        "X-TradeOS-Idempotency-V1: route-v1." + "b" * 64,
+        "",
+        f"--{boundary}--",
+        "",
+    ]
+    return "\r\n".join(lines).encode("ascii")
+
+
 class _Scenario:
     def __init__(self, responses: list[tuple[int, dict[str, str], bytes]]) -> None:
         self.responses = list(responses)
@@ -110,6 +144,49 @@ def _server(
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_arf_complaint_fetches_typed_complaint_item() -> None:
+    responses = [
+        (200, {}, b'{"historyId":"100"}'),
+        (200, {}, b'{"messages":[{"id":"m1"}]}'),
+        (200, {}, _raw_payload(_arf_report())),
+    ]
+    with _server(responses) as (base_url, _scenario):
+        connector = GmailConnector(GmailApiHttpTransport(base_url))
+        await connector.configure(_Secrets())
+        page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.kind.value == "complaint"
+    assert item.ordinal == 0
+    assert item.occurred_at == datetime(2026, 8, 13, 10, tzinfo=UTC)
+    digest = hashlib.sha256(b"m1").hexdigest()
+    assert item.provider_ref_digest == digest
+    assert item.provider_event_id == hashlib.sha256(
+        f"{digest}:0".encode("ascii")
+    ).hexdigest()
+    assert item.correlation.route_id == "route-v1"
+    assert (
+        item.correlation.deterministic_message_id
+        == "route-v1." + "a" * 64 + "@messages.tradeos.invalid"
+    )
+    assert item.correlation.idempotency_header == "route-v1." + "b" * 64
+
+
+@pytest.mark.asyncio
+async def test_plain_mail_mentioning_complaint_produces_no_feedback_facts() -> None:
+    responses = [
+        (200, {}, b'{"historyId":"100"}'),
+        (200, {}, b'{"messages":[{"id":"m2"}]}'),
+        (200, {}, _raw_payload(b"Subject: abuse complaint\r\n\r\nstop mailing us\r\n")),
+    ]
+    with _server(responses) as (base_url, _scenario):
+        connector = GmailConnector(GmailApiHttpTransport(base_url))
+        await connector.configure(_Secrets())
+        page = await connector.fetch_feedback_page("feedback-primary", None, 10)
+    assert page.items == ()
 
 
 @pytest.mark.asyncio

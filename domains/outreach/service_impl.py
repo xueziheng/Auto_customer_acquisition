@@ -91,7 +91,7 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
-from shared.events.catalog import MessageSent, SuppressionAdded
+from shared.events.catalog import ComplaintReceived, MessageSent, SuppressionAdded
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -951,6 +951,156 @@ class OutreachServiceImpl:
                         scope=winner.target.scope.value,
                         target_id=winner.target.canonical_id,
                         reason=winner.reason.value,
+                    )
+                )
+                result = SuppressionResult(
+                    True,
+                    self._suppression_view(winner),
+                    len(ordered),
+                )
+        if not result.created:
+            return result
+        self._allow(actor, action, tenant_id, rule)
+        return result
+
+    async def apply_complaint(
+        self,
+        tenant_id: TenantId,
+        target: DeliveryFeedbackTarget,
+        provider_event_id: str,
+        occurred_at: datetime,
+        *,
+        actor: Actor,
+    ) -> SuppressionResult:
+        """已确认投诉：原子抑制精确联系人、停 enrollment 并发布 ComplaintReceived。
+
+        只有 feedback worker 的 SYSTEM actor（scope 收窄到精确
+        ``sending_identity_id``）可以调用；抑制/停序列/outbox 在同一 UoW
+        内提交，任一失败整体回滚。Account 级抑制仍只允许公司级请求或人工。
+        """
+        action = OutreachAction.COMPLAINT_APPLY
+        actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
+        if not isinstance(target, DeliveryFeedbackTarget):
+            raise ValidationError("delivery feedback target 无效")
+        event_id = self._validate_provider_event_id(provider_event_id)
+        occurred = self._validate_now(occurred_at)
+        now = self._validate_now(self._now())
+        if occurred > now + timedelta(minutes=5):
+            raise ValidationError("delivery feedback occurred_at 超出允许时间")
+        suppression_target = SuppressionTarget(
+            contact_point_id=target.contact_point_id
+        )
+        request = SuppressionRequest(
+            target=suppression_target,
+            reason=SuppressionReason.COMPLAINT,
+            occurred_at=occurred,
+            source_ref=event_id,
+            idempotency_key=IdempotencyKey(f"feedback:{event_id}"),
+        )
+        entry = SuppressionEntry(
+            tenant_id=tenant_id,
+            suppression_id=SuppressionId(new_id("sup")),
+            target=suppression_target,
+            reason=SuppressionReason.COMPLAINT,
+            occurred_at=occurred,
+            source_ref=event_id,
+            idempotency_key=request.idempotency_key,
+            created_at=now,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            attempt = await uow.attempts.get_for_update(
+                tenant_id, target.attempt_id
+            )
+            enrollment = await uow.enrollments.get_for_update(
+                tenant_id, target.enrollment_id
+            )
+            if attempt is None or enrollment is None:
+                raise ValidationError("delivery feedback 资源不存在")
+            if attempt.tenant_id != tenant_id or enrollment.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if (
+                target.tenant_id != tenant_id
+                or attempt.attempt_id != target.attempt_id
+                or attempt.enrollment_id != target.enrollment_id
+                or attempt.sending_identity_id != target.sending_identity_id
+                or enrollment.enrollment_id != target.enrollment_id
+                or enrollment.account_id != target.account_id
+                or enrollment.contact_point_id != target.contact_point_id
+                or enrollment.sending_identity_id != target.sending_identity_id
+                or attempt.state is not MessageAttemptState.SENT
+            ):
+                raise ValidationError("delivery feedback 资源绑定不匹配")
+            rule = self._require(
+                actor,
+                action,
+                tenant_id,
+                sending_identity_id=target.sending_identity_id,
+            )
+            appended = await uow.suppressions.append_if_absent(entry)
+            if appended.status is AppendStatus.CONFLICT or appended.winner is None:
+                raise IdempotencyConflictError(
+                    "complaint feedback 已绑定不同内容"
+                )
+            winner = appended.winner
+            if winner.tenant_id != tenant_id:
+                self._tenant_violation(actor, action, tenant_id)
+            if not self._same_suppression_payload(winner, request, tenant_id):
+                raise IdempotencyConflictError(
+                    "complaint feedback 已绑定不同内容"
+                )
+            if appended.status is AppendStatus.EXISTING:
+                result = SuppressionResult(
+                    False,
+                    self._suppression_view(winner),
+                    0,
+                )
+            else:
+                enrollments = await uow.enrollments.lock_matching_active(
+                    tenant_id, suppression_target
+                )
+                ordered = sorted(
+                    enrollments, key=lambda value: value.enrollment_id
+                )
+                for matched in ordered:
+                    if matched.tenant_id != tenant_id:
+                        self._tenant_violation(actor, action, tenant_id)
+                    if matched.contact_point_id != target.contact_point_id:
+                        raise ValidationError("complaint Enrollment 查询结果损坏")
+                    matched.next_send_at = None
+                    matched.transition_to(
+                        EnrollmentState.STOPPED_SUPPRESSED,
+                        at=now,
+                        reason=EnrollmentStopReason.SUPPRESSION,
+                    )
+                    await uow.enrollments.update(matched)
+                    await uow.actions.append(
+                        self._action(
+                            tenant_id,
+                            actor,
+                            str(matched.enrollment_id),
+                            f"feedback:{event_id}:enrollment:{matched.enrollment_id}:stop",
+                            action,
+                            now,
+                        )
+                    )
+                await uow.actions.append(
+                    self._action(
+                        tenant_id,
+                        actor,
+                        str(winner.suppression_id),
+                        f"feedback:{event_id}:complaint",
+                        action,
+                        now,
+                    )
+                )
+                await uow.bus.publish(
+                    ComplaintReceived(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        message_attempt_id=str(target.attempt_id),
+                        sending_identity_id=target.sending_identity_id,
+                        dedup_key=event_id,
                     )
                 )
                 result = SuppressionResult(

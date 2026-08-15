@@ -81,6 +81,8 @@ def test_kind_issue_and_correlation_combinations_are_closed() -> None:
     for changes in (
         {"kind": module.EmailFeedbackKind.HARD_BOUNCE, "parse_issue": malformed},
         {"kind": module.EmailFeedbackKind.SOFT_BOUNCE, "correlation": None},
+        {"kind": module.EmailFeedbackKind.COMPLAINT, "parse_issue": malformed},
+        {"kind": module.EmailFeedbackKind.COMPLAINT, "correlation": None},
         {"kind": module.EmailFeedbackKind.UNPARSEABLE, "parse_issue": None},
         {
             "kind": module.EmailFeedbackKind.UNPARSEABLE,
@@ -95,6 +97,16 @@ def test_kind_issue_and_correlation_combinations_are_closed() -> None:
         correlation=None,
         parse_issue=malformed,
     ).parse_issue is malformed
+
+
+def test_complaint_kind_is_typed_and_requires_correlation() -> None:
+    """投诉与退信同级：必须是带精确 correlation 的已解析事实。"""
+    module = _module()
+    assert module.EmailFeedbackKind.COMPLAINT.value == "complaint"
+    item = _item(kind=module.EmailFeedbackKind.COMPLAINT)
+    assert item.kind is module.EmailFeedbackKind.COMPLAINT
+    assert item.correlation is not None
+    assert item.parse_issue is None
 
 
 @pytest.mark.parametrize(

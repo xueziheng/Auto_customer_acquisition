@@ -1,18 +1,29 @@
-"""真实 PostgreSQL 邮件反馈整页原子性、重放与并发。"""
+"""真实 PostgreSQL 邮件反馈整页原子性、重放与并发。
+
+投诉用例使用独立 module 级容器：complaint receipt（仅 0017 词表允许）若留在
+共享 session 容器中，会破坏其后迁移测试对 0017 以下版本的 downgrade
+（check constraint 重建会校验全表既有行）。隔离后共享容器始终保持
+「已提交行在全部历史版本均合法」的不变量。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import importlib
+import os
+import shutil
+import subprocess
 from collections import Counter
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from testcontainers.community.postgres import PostgresContainer
 
 from shared.errors import TransientError
 from shared.schemas.email_feedback import (
@@ -25,11 +36,56 @@ from shared.schemas.email_feedback import (
 from shared.schemas.identifiers import TenantId, new_id
 
 NOW = datetime(2026, 8, 13, 10, 0, tzinfo=UTC)
+_COMPLAINT_IMAGE = "pgvector/pgvector:pg16"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest_asyncio.fixture
 async def feedback_flow_engine(db_url: str) -> AsyncIterator[AsyncEngine]:
     engine = importlib.import_module("infra.db.session").create_engine_from(db_url)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+def _to_asyncpg(url: str) -> str:
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    raise ValueError("未知连接串 scheme：只接受 postgresql 方言")
+
+
+@pytest.fixture(scope="module")
+def complaint_postgres() -> Iterator[PostgresContainer]:
+    """投诉用例专用容器：complaint receipt 不进入共享 session 数据库。"""
+    if shutil.which("docker") is None:
+        pytest.skip("Docker 不可用")
+    with PostgresContainer(_COMPLAINT_IMAGE) as pg:
+        yield pg
+
+
+@pytest.fixture(scope="module")
+def complaint_db_url(complaint_postgres: PostgresContainer) -> str:
+    url = _to_asyncpg(complaint_postgres.get_connection_url())
+    env = {**os.environ, "DATABASE_URL": url}
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        capture_output=True,
+        check=False,
+        env=env,
+        cwd=_REPO_ROOT,
+    )
+    assert result.returncode == 0, "alembic upgrade head 失败（不输出连接内容）"
+    return url
+
+
+@pytest_asyncio.fixture
+async def complaint_flow_engine(complaint_db_url: str) -> AsyncIterator[AsyncEngine]:
+    engine = importlib.import_module("infra.db.session").create_engine_from(
+        complaint_db_url
+    )
     try:
         yield engine
     finally:
@@ -767,3 +823,437 @@ async def test_two_mailboxes_with_inverse_contact_order_complete_without_deadloc
             ("feedback-primary", "primary-v1", 1),
             ("feedback-secondary", "secondary-v1", 1),
         }
+
+
+def _complaint_item(*, event: str = "c" * 64, ordinal: int = 0, index: int = 0) -> EmailFeedbackItem:
+    return EmailFeedbackItem(
+        event,
+        event,
+        ordinal,
+        EmailFeedbackKind.COMPLAINT,
+        NOW,
+        _correlation(index),
+        None,
+    )
+
+
+def _complaint_page(
+    start: str | None, next_cursor: str, *, event: str = "c" * 64
+) -> EmailFeedbackPage:
+    return EmailFeedbackPage(start, next_cursor, (_complaint_item(event=event),))
+
+
+@pytest.mark.asyncio
+async def test_real_complaint_page_commits_all_domain_effects_and_outbox(
+    complaint_flow_engine: AsyncEngine,
+) -> None:
+    """单事务：complaint receipt、抑制、停 enrollment、信誉事件、outbox 与 cursor。"""
+    rows = importlib.import_module("infra.db.tables")
+    factory = async_sessionmaker(complaint_flow_engine, expire_on_commit=False)
+    ids = _ids()
+    await _seed(factory, ids)
+    audit = _Audit()
+    event = "c" * 64
+    result = await _processor(factory, ids, audit).process(
+        ids["tenant"],
+        "feedback-primary",
+        ids["identity"],
+        None,
+        _complaint_page(None, "complaint-v1", event=event),
+    )
+    assert (
+        result.processed,
+        result.complaints,
+        result.hard_bounces,
+        result.soft_bounces,
+        result.quarantined,
+        result.duplicates,
+    ) == (1, 1, 0, 0, 0, 0)
+    async with factory() as session:
+        receipt = (
+            (
+                await session.execute(
+                    select(rows.EmailFeedbackReceiptRow).where(
+                        rows.EmailFeedbackReceiptRow.tenant_id == ids["tenant"]
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert (receipt.kind, receipt.result) == ("complaint", "applied")
+        assert receipt.attempt_id == str(ids["attempts"][0])
+        assert receipt.contact_point_id == str(ids["contacts"][0])
+        suppression = (
+            (
+                await session.execute(
+                    select(rows.OutreachSuppressionRow).where(
+                        rows.OutreachSuppressionRow.tenant_id == ids["tenant"]
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert (
+            suppression.reason,
+            suppression.contact_point_id,
+            suppression.account_id,
+            suppression.source_ref,
+        ) == ("complaint", str(ids["contacts"][0]), None, event)
+        first_enrollment = await session.get(
+            rows.OutreachEnrollmentRow,
+            (str(ids["tenant"]), str(ids["enrollments"][0])),
+        )
+        second_enrollment = await session.get(
+            rows.OutreachEnrollmentRow,
+            (str(ids["tenant"]), str(ids["enrollments"][1])),
+        )
+        assert (
+            first_enrollment.state,
+            first_enrollment.stop_reason,
+            first_enrollment.next_send_at,
+        ) == ("stopped_suppressed", "suppression", None)
+        assert (second_enrollment.state, second_enrollment.stop_reason) == (
+            "in_sequence",
+            None,
+        )
+        reputation = (
+            (
+                await session.execute(
+                    select(rows.ReputationEventRow).where(
+                        rows.ReputationEventRow.tenant_id == ids["tenant"]
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert (
+            reputation.event_type,
+            reputation.identity_id,
+            reputation.occurred_at,
+            reputation.dedup_key,
+            reputation.source_ref,
+        ) == (
+            "complaint",
+            str(ids["identity"]),
+            NOW,
+            event,
+            "feedback_ZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGA",
+        )
+        outbox = (
+            (
+                await session.execute(
+                    select(rows.OutboxEventRow).where(
+                        rows.OutboxEventRow.tenant_id == ids["tenant"],
+                        rows.OutboxEventRow.event_type == "ComplaintReceived",
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert outbox.status == "pending"
+        payload = outbox.event_payload
+        assert payload["tenant_id"] == str(ids["tenant"])
+        assert payload["message_attempt_id"] == str(ids["attempts"][0])
+        assert payload["sending_identity_id"] == str(ids["identity"])
+        assert payload["dedup_key"] == event
+        cursor = await session.get(
+            rows.EmailFeedbackCursorRow,
+            (str(ids["tenant"]), "feedback-primary"),
+        )
+        assert (cursor.provider_cursor, cursor.version) == ("complaint-v1", 1)
+    assert len(audit.records) == 4
+    assert Counter(
+        (
+            record["actor"],
+            record["action"],
+            record["tenant_id"],
+            record["scope"],
+            record["rule"],
+        )
+        for record in audit.records
+    ) == {
+        (
+            "system:feedback",
+            "delivery_feedback:resolve",
+            ids["tenant"],
+            "system",
+            "phase1:system:system:delivery_feedback:resolve",
+        ): 1,
+        (
+            "system:feedback",
+            "identity:read",
+            ids["tenant"],
+            "system",
+            "phase1:system:system:identity:read",
+        ): 1,
+        (
+            "system:feedback",
+            "delivery_event:record",
+            ids["tenant"],
+            "system",
+            "phase1:system:system:delivery_event:record",
+        ): 1,
+        (
+            "system:feedback",
+            "complaint:apply",
+            ids["tenant"],
+            "system",
+            "phase1:system:system:complaint:apply",
+        ): 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_real_complaint_replay_is_noop_and_does_not_duplicate_audit(
+    complaint_flow_engine: AsyncEngine,
+) -> None:
+    rows = importlib.import_module("infra.db.tables")
+    factory = async_sessionmaker(complaint_flow_engine, expire_on_commit=False)
+    ids = _ids()
+    await _seed(factory, ids)
+    audit = _Audit()
+    await _processor(factory, ids, audit).process(
+        ids["tenant"],
+        "feedback-primary",
+        ids["identity"],
+        None,
+        _complaint_page(None, "complaint-v1"),
+    )
+    before_audit = len(audit.records)
+    replay = await _processor(factory, ids, audit).process(
+        ids["tenant"],
+        "feedback-primary",
+        ids["identity"],
+        "complaint-v1",
+        _complaint_page("complaint-v1", "complaint-v1"),
+    )
+    assert (replay.duplicates, replay.processed, replay.complaints) == (1, 0, 0)
+    assert len(audit.records) == before_audit
+    async with factory() as session:
+        for row_type, count in (
+            (rows.EmailFeedbackReceiptRow, 1),
+            (rows.OutreachSuppressionRow, 1),
+            (rows.ReputationEventRow, 1),
+            (rows.OutboxEventRow, 1),
+        ):
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(row_type)
+                    .where(row_type.tenant_id == ids["tenant"])
+                )
+                == count
+            )
+
+
+@pytest.mark.asyncio
+async def test_complaint_same_event_different_fingerprint_fails_before_domain_call(
+    complaint_flow_engine: AsyncEngine,
+) -> None:
+    """同 event ID 异 payload 必须在调用任何域服务前整页失败。"""
+    rows = importlib.import_module("infra.db.tables")
+    factory = async_sessionmaker(complaint_flow_engine, expire_on_commit=False)
+    ids = _ids()
+    await _seed(factory, ids)
+    async with factory() as session:
+        session.add(
+            rows.EmailFeedbackCursorRow(
+                tenant_id=str(ids["tenant"]),
+                mailbox_alias="feedback-primary",
+                provider_cursor=None,
+                version=0,
+                bootstrap_started_at=NOW,
+                last_succeeded_at=None,
+            )
+        )
+        await session.flush()
+        session.add(
+            rows.EmailFeedbackReceiptRow(
+                tenant_id=str(ids["tenant"]),
+                mailbox_alias="feedback-primary",
+                provider_event_id="c" * 64,
+                item_fingerprint="0" * 64,
+                ordinal=0,
+                kind="complaint",
+                occurred_at=NOW,
+                result="applied",
+                attempt_id=str(ids["attempts"][0]),
+                enrollment_id=str(ids["enrollments"][0]),
+                account_id=str(ids["accounts"][0]),
+                contact_point_id=str(ids["contacts"][0]),
+                sending_identity_id=str(ids["identity"]),
+                created_at=NOW,
+            )
+        )
+        await session.commit()
+
+    audit = _Audit()
+    with pytest.raises(importlib.import_module("shared.errors").ValidationError):
+        await _processor(factory, ids, audit).process(
+            ids["tenant"],
+            "feedback-primary",
+            ids["identity"],
+            None,
+            _complaint_page(None, "complaint-v1"),
+        )
+
+    assert audit.records == []
+    async with factory() as session:
+        cursor = await session.get(
+            rows.EmailFeedbackCursorRow,
+            (str(ids["tenant"]), "feedback-primary"),
+        )
+        assert (cursor.provider_cursor, cursor.version) == (None, 0)
+        assert await session.scalar(
+            select(func.count())
+            .select_from(rows.OutboxEventRow)
+            .where(rows.OutboxEventRow.tenant_id == ids["tenant"])
+        ) == 0
+        assert await session.scalar(
+            select(func.count())
+            .select_from(rows.OutreachSuppressionRow)
+            .where(rows.OutreachSuppressionRow.tenant_id == ids["tenant"])
+        ) == 0
+        assert await session.scalar(
+            select(func.count())
+            .select_from(rows.ReputationEventRow)
+            .where(rows.ReputationEventRow.tenant_id == ids["tenant"])
+        ) == 0
+
+
+@pytest.mark.asyncio
+async def test_complaint_sending_domain_failure_rolls_back_every_write_and_cursor(
+    complaint_flow_engine: AsyncEngine,
+) -> None:
+    rows = importlib.import_module("infra.db.tables")
+    factory = async_sessionmaker(complaint_flow_engine, expire_on_commit=False)
+    ids = _ids()
+    await _seed(factory, ids)
+    audit = _Audit()
+    sentinel = RuntimeError("fixed complaint sending repository failure")
+    original_builder = _sending_builder(ids["tenant"], lambda: NOW)
+
+    class FailingSending:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+        async def record_delivery_event(
+            self, *_args: object, **_kwargs: object
+        ) -> bool:
+            raise sentinel
+
+    def failing_builder(bound_factory: object, sink: object) -> object:
+        return FailingSending(original_builder(bound_factory, sink))
+
+    uow_type = importlib.import_module(
+        "infra.db.email_feedback_uow"
+    ).SqlAlchemyFeedbackPageUnitOfWork
+    processor = _processor(factory, ids, audit)
+    processor._uow_factory = lambda _tenant: uow_type(
+        factory,
+        ids["tenant"],
+        outreach_builder=_outreach_builder(ids["tenant"], lambda: NOW),
+        sending_identity_builder=failing_builder,
+        audit_sink=audit,
+        now=lambda: NOW,
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await processor.process(
+            ids["tenant"],
+            "feedback-primary",
+            ids["identity"],
+            None,
+            _complaint_page(None, "complaint-v1"),
+        )
+    assert raised.value is sentinel
+    assert audit.records == []
+    async with factory() as session:
+        for row_type in (
+            rows.EmailFeedbackCursorRow,
+            rows.EmailFeedbackReceiptRow,
+            rows.OutreachSuppressionRow,
+            rows.ReputationEventRow,
+            rows.OutboxEventRow,
+        ):
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(row_type)
+                    .where(row_type.tenant_id == ids["tenant"])
+                )
+                == 0
+            )
+
+
+@pytest.mark.asyncio
+async def test_complaint_outreach_domain_failure_rolls_back_every_write_and_cursor(
+    complaint_flow_engine: AsyncEngine,
+) -> None:
+    rows = importlib.import_module("infra.db.tables")
+    factory = async_sessionmaker(complaint_flow_engine, expire_on_commit=False)
+    ids = _ids()
+    await _seed(factory, ids)
+    audit = _Audit()
+    sentinel = RuntimeError("fixed complaint outreach repository failure")
+    original_builder = _outreach_builder(ids["tenant"], lambda: NOW)
+
+    class FailingOutreach:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+        async def apply_complaint(
+            self, *_args: object, **_kwargs: object
+        ) -> object:
+            raise sentinel
+
+    def failing_builder(bound_factory: object, sink: object) -> object:
+        return FailingOutreach(original_builder(bound_factory, sink))
+
+    uow_type = importlib.import_module(
+        "infra.db.email_feedback_uow"
+    ).SqlAlchemyFeedbackPageUnitOfWork
+    processor = _processor(factory, ids, audit)
+    processor._uow_factory = lambda _tenant: uow_type(
+        factory,
+        ids["tenant"],
+        outreach_builder=failing_builder,
+        sending_identity_builder=_sending_builder(ids["tenant"], lambda: NOW),
+        audit_sink=audit,
+        now=lambda: NOW,
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await processor.process(
+            ids["tenant"],
+            "feedback-primary",
+            ids["identity"],
+            None,
+            _complaint_page(None, "complaint-v1"),
+        )
+    assert raised.value is sentinel
+    assert audit.records == []
+    async with factory() as session:
+        for row_type in (
+            rows.EmailFeedbackCursorRow,
+            rows.EmailFeedbackReceiptRow,
+            rows.OutreachSuppressionRow,
+            rows.ReputationEventRow,
+            rows.OutboxEventRow,
+        ):
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(row_type)
+                    .where(row_type.tenant_id == ids["tenant"])
+                )
+                == 0
+            )

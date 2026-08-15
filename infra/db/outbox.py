@@ -33,6 +33,7 @@ from shared.errors import ValidationError
 from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
     AuthenticationCheckRequested,
+    ComplaintReceived,
     DomainEvent,
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -64,6 +65,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "ReputationThresholdBreached": ReputationThresholdBreached,
     "MessageSent": MessageSent,
     "SuppressionAdded": SuppressionAdded,
+    "ComplaintReceived": ComplaintReceived,
 }
 """显式白名单：与 opportunities / sending_identity 的 PUBLISHES 一致。
 不允许用反射扫描 catalog 自动放行——新事件必须先经契约评审再加白名单。"""

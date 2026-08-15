@@ -195,6 +195,7 @@ def test_feedback_repository_protocols_and_records_are_strict() -> None:
     assert {item.value for item in shared.EmailFeedbackKind} == {
         "hard_bounce",
         "soft_bounce",
+        "complaint",
         "unparseable",
     }
     assert {item.value for item in shared.EmailFeedbackResult} == {

@@ -48,6 +48,7 @@ class EmailFeedbackKind(str, Enum):
 
     HARD_BOUNCE = "hard_bounce"
     SOFT_BOUNCE = "soft_bounce"
+    COMPLAINT = "complaint"
     UNPARSEABLE = "unparseable"
 
 

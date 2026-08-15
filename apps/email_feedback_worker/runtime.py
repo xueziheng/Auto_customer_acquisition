@@ -128,6 +128,7 @@ class EmailFeedbackMetricName(str, Enum):
     QUARANTINED = "quarantined"
     HARD_BOUNCE = "hard_bounce"
     SOFT_BOUNCE = "soft_bounce"
+    COMPLAINT = "complaint"
     PAGE_ROLLBACK = "page_rollback"
     CONSECUTIVE_FAILURE = "consecutive_failure"
 
@@ -557,6 +558,7 @@ def _record_result(
         (EmailFeedbackMetricName.QUARANTINED, result.quarantined),
         (EmailFeedbackMetricName.HARD_BOUNCE, result.hard_bounces),
         (EmailFeedbackMetricName.SOFT_BOUNCE, result.soft_bounces),
+        (EmailFeedbackMetricName.COMPLAINT, result.complaints),
         (EmailFeedbackMetricName.CURSOR_LAG, 0),
         (EmailFeedbackMetricName.CONSECUTIVE_FAILURE, 0),
     )

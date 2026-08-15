@@ -23,6 +23,7 @@ import pytest
 
 from shared.errors import ValidationError
 from shared.events.catalog import (
+    ComplaintReceived,
     DomainEvent,
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -88,6 +89,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "MessageSent",
         "SuppressionAdded",
         "AuthenticationCheckRequested",
+        "ComplaintReceived",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
@@ -128,6 +130,34 @@ def test_authentication_check_requested_roundtrip_contains_only_safe_ids() -> No
     rendered = json.dumps(payload)
     assert "selector" not in rendered
     assert "dns" not in rendered.casefold()
+    assert "secret" not in rendered.casefold()
+
+
+def test_complaint_received_roundtrip_contains_only_safe_ids() -> None:
+    """投诉事件只携带 attempt/sending identity/dedup 摘要，不携带 MIME 或地址。"""
+    registry = _load("EVENT_REGISTRY")
+    assert registry["ComplaintReceived"] is ComplaintReceived
+    event = ComplaintReceived(
+        tenant_id=TenantId(new_id("tn")),
+        occurred_at=_NOW,
+        run_id=None,
+        message_attempt_id=new_id("mat"),
+        sending_identity_id=SendingIdentityId(new_id("sid")),
+        dedup_key="c" * 64,
+    )
+    payload = _load("serialize")(event)
+    assert set(payload) == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "message_attempt_id",
+        "sending_identity_id",
+        "dedup_key",
+    }
+    assert _load("deserialize")(ComplaintReceived, payload) == event
+    rendered = json.dumps(payload)
+    assert "@" not in rendered
+    assert "example.com" not in rendered
     assert "secret" not in rendered.casefold()
 
 

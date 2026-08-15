@@ -82,10 +82,18 @@ class FeedbackPageResult:
     soft_bounces: int
     quarantined: int
     next_cursor: str = field(repr=False)
+    complaints: int = 0
 
 
 @dataclass(frozen=True)
 class _HardEffect:
+    item: EmailFeedbackItem
+    target: DeliveryFeedbackTarget
+    domain: str
+
+
+@dataclass(frozen=True)
+class _ComplaintEffect:
     item: EmailFeedbackItem
     target: DeliveryFeedbackTarget
     domain: str
@@ -248,7 +256,8 @@ class FeedbackPageProcessor:
             occurred_at=item.occurred_at,
             result=(
                 EmailFeedbackResult.APPLIED
-                if item.kind is EmailFeedbackKind.HARD_BOUNCE
+                if item.kind
+                in {EmailFeedbackKind.HARD_BOUNCE, EmailFeedbackKind.COMPLAINT}
                 else EmailFeedbackResult.RECORDED
             ),
             attempt_id=target.attempt_id,
@@ -304,11 +313,20 @@ class FeedbackPageProcessor:
             page,
         )
         if not page.items and page.next_cursor == expected_cursor:
-            return FeedbackPageResult(0, 0, 0, 0, 0, page.next_cursor)
+            return FeedbackPageResult(
+                processed=0,
+                duplicates=0,
+                hard_bounces=0,
+                soft_bounces=0,
+                quarantined=0,
+                next_cursor=page.next_cursor,
+                complaints=0,
+            )
 
-        processed = duplicates = hard = soft = quarantined = 0
+        processed = duplicates = hard = soft = quarantined = complaints = 0
         critical_reasons: list[EmailFeedbackQuarantineReason] = []
         hard_effects: list[_HardEffect] = []
+        complaint_effects: list[_ComplaintEffect] = []
         created_at = self._now()
         async with self._uow_factory(tenant_id) as uow:
             cursor = await uow.cursors.lock_expected(
@@ -414,6 +432,12 @@ class FeedbackPageProcessor:
                     or not identity.domain
                 ):
                     raise ValidationError("邮件反馈发件身份查询结果损坏")
+                if item.kind is EmailFeedbackKind.COMPLAINT:
+                    complaints += 1
+                    complaint_effects.append(
+                        _ComplaintEffect(item, target, identity.domain)
+                    )
+                    continue
                 hard += 1
                 hard_effects.append(_HardEffect(item, target, identity.domain))
 
@@ -439,6 +463,30 @@ class FeedbackPageProcessor:
                     event,
                     actor=self._sending_actor(effect.target.sending_identity_id),
                 )
+            for complaint_effect in sorted(
+                complaint_effects,
+                key=lambda value: (
+                    value.domain,
+                    value.target.sending_identity_id,
+                    value.item.provider_event_id,
+                ),
+            ):
+                event = DeliveryEventRecord(
+                    tenant_id=tenant_id,
+                    identity_id=complaint_effect.target.sending_identity_id,
+                    event_type=DeliveryEventType.COMPLAINT,
+                    occurred_at=complaint_effect.item.occurred_at,
+                    dedup_key=IdempotencyKey(complaint_effect.item.provider_event_id),
+                    source_ref=_source_ref(complaint_effect.item.provider_event_id),
+                )
+                await uow.sending_identities.record_delivery_event(
+                    tenant_id,
+                    complaint_effect.target.sending_identity_id,
+                    event,
+                    actor=self._sending_actor(
+                        complaint_effect.target.sending_identity_id
+                    ),
+                )
             for effect in sorted(
                 hard_effects,
                 key=lambda value: (
@@ -454,6 +502,23 @@ class FeedbackPageProcessor:
                     effect.item.occurred_at,
                     actor=self._outreach_actor(effect.target.sending_identity_id),
                 )
+            for complaint_effect in sorted(
+                complaint_effects,
+                key=lambda value: (
+                    value.target.contact_point_id,
+                    value.target.enrollment_id,
+                    value.item.provider_event_id,
+                ),
+            ):
+                await uow.outreach.apply_complaint(
+                    tenant_id,
+                    complaint_effect.target,
+                    complaint_effect.item.provider_event_id,
+                    complaint_effect.item.occurred_at,
+                    actor=self._outreach_actor(
+                        complaint_effect.target.sending_identity_id
+                    ),
+                )
             if page.next_cursor != expected_cursor:
                 await uow.cursors.advance(cursor, page.next_cursor, created_at)
 
@@ -467,10 +532,11 @@ class FeedbackPageProcessor:
             except BaseException:  # noqa: BLE001 - 已提交隔离不能成为重放信号
                 _logger.error("邮件反馈安全告警写入失败")
         return FeedbackPageResult(
-            processed,
-            duplicates,
-            hard,
-            soft,
-            quarantined,
-            page.next_cursor,
+            processed=processed,
+            duplicates=duplicates,
+            hard_bounces=hard,
+            soft_bounces=soft,
+            quarantined=quarantined,
+            next_cursor=page.next_cursor,
+            complaints=complaints,
         )

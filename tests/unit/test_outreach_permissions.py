@@ -64,6 +64,7 @@ _ALL_ACTIONS = {
     "MESSAGE_DELIVERY_BIND",
     "DELIVERY_FEEDBACK_RESOLVE",
     "HARD_BOUNCE_APPLY",
+    "COMPLAINT_APPLY",
 }
 
 _ALLOWED = {
@@ -109,6 +110,7 @@ _ALLOWED = {
         "MESSAGE_DELIVERY_BIND",
         "DELIVERY_FEEDBACK_RESOLVE",
         "HARD_BOUNCE_APPLY",
+        "COMPLAINT_APPLY",
     },
     ("sales", "SELF"): {
         "CAMPAIGN_READ",
@@ -147,7 +149,11 @@ def _scope_for(role: str, action: object) -> object:
             level=permissions.ScopeLevel.SYSTEM,
             allowed_attempt_ids={ATTEMPT},
         )
-    if action.name in {"DELIVERY_FEEDBACK_RESOLVE", "HARD_BOUNCE_APPLY"}:
+    if action.name in {
+        "DELIVERY_FEEDBACK_RESOLVE",
+        "HARD_BOUNCE_APPLY",
+        "COMPLAINT_APPLY",
+    }:
         return permissions.OutreachScope(
             level=permissions.ScopeLevel.SYSTEM,
             allowed_sending_identity_ids={IDENTITY},
@@ -348,6 +354,13 @@ def test_system_scope_requires_one_target_and_cannot_expand_after_actor_creation
         ),
         (
             "HARD_BOUNCE_APPLY",
+            "allowed_sending_identity_ids",
+            "sending_identity_id",
+            IDENTITY,
+            OTHER_IDENTITY,
+        ),
+        (
+            "COMPLAINT_APPLY",
             "allowed_sending_identity_ids",
             "sending_identity_id",
             IDENTITY,

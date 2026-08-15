@@ -321,3 +321,35 @@ async def test_production_composition_passes_validated_base_url_to_transport(
         pass
 
     assert received == ["http://127.0.0.1:18111"]
+
+
+def test_worker_metrics_record_complaint_counts() -> None:
+    """投诉计数进入 worker 低基数指标；DSN 语义不变。"""
+    runtime = importlib.import_module("apps.email_feedback_worker.runtime")
+    config_module = importlib.import_module("apps.email_feedback_worker.config")
+    flow_module = importlib.import_module("workflows.email_feedback.flow")
+    config = config_module.EmailFeedbackWorkerConfig(
+        new_id("tn"), "feedback", new_id("sid"), "feedback-v1", enabled=True
+    )
+    recorded: list[tuple[object, dict[str, object]]] = []
+
+    class _Metrics:
+        def record(self, name: object, **kwargs: object) -> None:
+            recorded.append((name, kwargs))
+
+    result = flow_module.FeedbackPageResult(
+        processed=3,
+        duplicates=1,
+        hard_bounces=0,
+        soft_bounces=0,
+        quarantined=0,
+        complaints=2,
+        next_cursor="v1",
+    )
+    runtime._record_result(_Metrics(), config, result)
+    values = {name: kwargs["value"] for name, kwargs in recorded}
+    assert values[runtime.EmailFeedbackMetricName.COMPLAINT] == 2
+    assert values[runtime.EmailFeedbackMetricName.HARD_BOUNCE] == 0
+    assert values[runtime.EmailFeedbackMetricName.SOFT_BOUNCE] == 0
+    assert values[runtime.EmailFeedbackMetricName.PROCESSED] == 3
+    assert values[runtime.EmailFeedbackMetricName.DUPLICATE] == 1
