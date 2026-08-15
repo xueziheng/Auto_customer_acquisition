@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>发件身份中心（演示）— TradeOS</title>
+<style>
+  :root{
+    --canvas:#F5F7F7; --surface:#FFFFFF; --text-primary:#172323; --text-secondary:#526363;
+    --border:#CBD7D5; --fact:#0F766E; --fact-soft:#E7F5F2; --inference:#9A6700; --inference-soft:#FFF5D6;
+    --action:#155EEF; --danger:#B42318; --danger-soft:#FEF0EC; --warning:#B54708; --warning-soft:#FFF4E5;
+    --focus:#7C3AED; --topbar:#0E4A46; --topbar-text:#E7F5F2; --gutter:24px; --maxw:1360px;
+    --space1:4px; --space2:8px; --space3:12px; --space4:16px; --space5:24px; --space6:32px;
+    --radius:8px; --radius-sm:4px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; overflow:hidden;}
+  body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif; background:var(--canvas); color:var(--text-primary); font-size:14px; line-height:1.5;}
+  button{font:inherit; cursor:pointer; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); padding:6px 12px; color:var(--text-primary);}
+  button:focus-visible, a:focus-visible{outline:3px solid var(--focus); outline-offset:2px;}
+  button:disabled{opacity:.55; cursor:not-allowed;}
+  .topbar{background:var(--topbar); color:var(--topbar-text); display:flex; align-items:center; gap:var(--space5); padding:0 var(--gutter); height:56px; width:100%;}
+  .brand{font-weight:700; letter-spacing:.02em;}
+  nav{display:flex; gap:var(--space4);}
+  nav a{color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); opacity:.85;}
+  nav a.active{opacity:1; background:rgba(255,255,255,.14); font-weight:600;}
+  .spacer{flex:1;}
+  .badge{display:inline-flex; align-items:center; gap:6px; color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); background:rgba(255,255,255,.14);}
+  .badge-num{background:var(--danger); color:#fff; font-weight:700; border-radius:999px; min-width:20px; text-align:center; padding:0 6px; font-size:12px;}
+  .shell{max-width:var(--maxw); margin:0 auto; padding:var(--space4) var(--gutter) var(--space5); display:flex; flex-direction:column; gap:var(--space4); height:calc(100vh - 56px);}
+  .page-head{display:flex; align-items:baseline; gap:var(--space4);}
+  .page-head h1{font-size:20px;}
+  .meta{color:var(--text-secondary); font-size:12px;}
+  .grid{display:grid; grid-template-columns:repeat(3, 1fr); gap:var(--space4); overflow-y:auto; flex:1; min-height:0; align-content:start; padding-bottom:var(--space4);}
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:var(--space4); display:flex; flex-direction:column; gap:var(--space3);}
+  .card .name{font-weight:600; display:flex; align-items:center; gap:var(--space2); flex-wrap:wrap;}
+  .card .addr{color:var(--text-secondary); font-size:12px; word-break:break-all;}
+  .demo-tag{display:inline-block; background:var(--inference-soft); color:var(--inference); border:1px dashed var(--inference); border-radius:999px; font-size:11px; padding:0 6px;}
+  .status{display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid;}
+  .status.ok{color:var(--fact); border-color:var(--fact); background:var(--fact-soft);}
+  .status.warn{color:var(--warning); border-color:var(--warning); background:var(--warning-soft);}
+  .auth-grid{display:grid; grid-template-columns:repeat(3, 1fr); gap:var(--space2);}
+  .auth-item{border:1px solid var(--border); border-radius:var(--radius-sm); padding:6px 8px; font-size:12px; display:flex; align-items:center; gap:6px;}
+  .auth-item.pass{color:var(--fact); border-color:var(--fact); background:var(--fact-soft);}
+  .auth-item.fail{color:var(--danger); border-color:var(--danger); background:var(--danger-soft);}
+  .kv{display:grid; grid-template-columns:110px 1fr; gap:var(--space2) var(--space4); font-size:13px;}
+  .kv dt{color:var(--text-secondary);}
+  .kv dd{margin:0;}
+  .feedback{border:1px solid var(--fact); background:var(--fact-soft); color:var(--fact); border-radius:var(--radius); padding:var(--space3) var(--space4); display:flex; gap:var(--space3); align-items:flex-start; font-size:13px;}
+  .safe-banner{border:1px solid var(--warning); background:var(--warning-soft); color:var(--warning); border-radius:var(--radius); padding:var(--space3) var(--space4); display:flex; gap:var(--space3); align-items:flex-start; font-size:13px;}
+  @media (max-width:1240px){ :root{--gutter:20px;} .grid{grid-template-columns:repeat(2, 1fr);} }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">TradeOS 内部运营台</span>
+    <nav aria-label="主导航">
+      <a href="#">CRM</a>
+      <a href="#">触达工作台</a>
+      <a href="#" class="active" aria-current="page">发件身份</a>
+      <a href="#">通知</a>
+    </nav>
+    <span class="spacer"></span>
+    <a class="badge" href="#" aria-label="通知，3 条未读">
+      <span>通知</span><span class="badge-num">3</span><span>未读</span>
+    </a>
+  </header>
+  <div class="shell">
+    <div class="page-head">
+      <h1>发件身份中心</h1>
+      <span class="meta">仅展示后端已返回的事实 · 所有记录为演示数据</span>
+    </div>
+    <section class="grid" aria-label="发件身份卡片">
+      <article class="card">
+        <div class="name">cold.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@cold.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item pass">✓ DKIM 通过</span>
+          <span class="auth-item pass">✓ DMARC 通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>第 12 / 28 天 · 未完成</dd>
+          <dt>每日容量</dt><dd>50 / 50（已达上限，仅演示）</dd>
+          <dt>信誉</dt><dd>硬退信率 1.2% · 投诉率 0.05%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status ok">● 活跃</span></dd>
+        </dl>
+        <button class="btn-check" aria-label="对 cold.example.test 重新检查认证">重新检查认证</button>
+        <div class="feedback" role="status">
+          <span aria-hidden="true">✓</span>
+          <div>认证检查已提交（演示数据）。结果将在检查完成后于本卡展示。</div>
+        </div>
+      </article>
+      <article class="card">
+        <div class="name">apac.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@apac.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item pass">✓ DKIM 通过</span>
+          <span class="auth-item fail">✕ DMARC 未通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>第 4 / 28 天 · 未完成</dd>
+          <dt>每日容量</dt><dd>15 / 15</dd>
+          <dt>信誉</dt><dd>硬退信率 0.4% · 投诉率 0.02%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status warn">◌ 认证待修复</span></dd>
+        </dl>
+        <button aria-label="对 apac.example.test 重新检查认证">重新检查认证</button>
+      </article>
+      <article class="card">
+        <div class="name">eu.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@eu.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item pass">✓ DKIM 通过</span>
+          <span class="auth-item pass">✓ DMARC 通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>已完成（第 28 / 28 天）</dd>
+          <dt>每日容量</dt><dd>50 / 80</dd>
+          <dt>信誉</dt><dd>硬退信率 0.1% · 投诉率 0.01%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status ok">● 活跃</span></dd>
+        </dl>
+        <button aria-label="对 eu.example.test 重新检查认证">重新检查认证</button>
+      </article>
+      <article class="card">
+        <div class="name">na.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@na.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item pass">✓ DKIM 通过</span>
+          <span class="auth-item pass">✓ DMARC 通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>第 20 / 28 天 · 未完成</dd>
+          <dt>每日容量</dt><dd>40 / 50</dd>
+          <dt>信誉</dt><dd>硬退信率 2.8% · 投诉率 0.09%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status warn">◌ 观察中</span></dd>
+        </dl>
+        <button aria-label="对 na.example.test 重新检查认证">重新检查认证</button>
+      </article>
+      <article class="card">
+        <div class="name">latam.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@latam.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item fail">✕ DKIM 未通过</span>
+          <span class="auth-item pass">✓ DMARC 通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>未开始</dd>
+          <dt>每日容量</dt><dd>0 / 5</dd>
+          <dt>信誉</dt><dd>硬退信率 0.0% · 投诉率 0.00%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status warn">◌ 认证待修复</span></dd>
+        </dl>
+        <button aria-label="对 latam.example.test 重新检查认证">重新检查认证</button>
+      </article>
+      <article class="card">
+        <div class="name">mea.example.test<span class="demo-tag">演示数据</span></div>
+        <div class="addr">sales@mea.example.test（仅老板可见）</div>
+        <div class="auth-grid" aria-label="认证状态">
+          <span class="auth-item pass">✓ SPF 通过</span>
+          <span class="auth-item pass">✓ DKIM 通过</span>
+          <span class="auth-item pass">✓ DMARC 通过</span>
+        </div>
+        <dl class="kv">
+          <dt>预热</dt><dd>已完成（第 28 / 28 天）</dd>
+          <dt>每日容量</dt><dd>65 / 80</dd>
+          <dt>信誉</dt><dd>硬退信率 0.2% · 投诉率 0.01%（code-derived）</dd>
+          <dt>状态</dt><dd><span class="status ok">● 活跃</span></dd>
+        </dl>
+        <button aria-label="对 mea.example.test 重新检查认证">重新检查认证</button>
+      </article>
+    </section>
+    <div class="safe-banner" role="alert">
+      <span aria-hidden="true">⚠</span>
+      <div><strong>当前账号无法查看发件身份</strong>（演示：仅老板角色可访问此页面）。</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>触达工作台（演示）— TradeOS</title>
+<style>
+  :root{
+    --canvas:#F5F7F7; --surface:#FFFFFF; --text-primary:#172323; --text-secondary:#526363;
+    --border:#CBD7D5; --fact:#0F766E; --fact-soft:#E7F5F2; --inference:#9A6700; --inference-soft:#FFF5D6;
+    --action:#155EEF; --danger:#B42318; --danger-soft:#FEF0EC; --warning:#B54708; --warning-soft:#FFF4E5;
+    --focus:#7C3AED; --topbar:#0E4A46; --topbar-text:#E7F5F2; --gutter:24px; --maxw:1360px;
+    --space1:4px; --space2:8px; --space3:12px; --space4:16px; --space5:24px; --space6:32px;
+    --radius:8px; --radius-sm:4px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; overflow:hidden;}
+  body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif; background:var(--canvas); color:var(--text-primary); font-size:14px; line-height:1.5;}
+  button{font:inherit; cursor:pointer; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); padding:6px 12px; color:var(--text-primary);}
+  button:focus-visible, a:focus-visible, input:focus-visible{outline:3px solid var(--focus); outline-offset:2px;}
+  button:disabled{opacity:.55; cursor:not-allowed;}
+  .topbar{background:var(--topbar); color:var(--topbar-text); display:flex; align-items:center; gap:var(--space5); padding:0 var(--gutter); height:56px; width:100%;}
+  .brand{font-weight:700; letter-spacing:.02em;}
+  nav{display:flex; gap:var(--space4);}
+  nav a{color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); opacity:.85;}
+  nav a.active{opacity:1; background:rgba(255,255,255,.14); font-weight:600;}
+  .spacer{flex:1;}
+  .badge{display:inline-flex; align-items:center; gap:6px; color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); background:rgba(255,255,255,.14);}
+  .badge-num{background:var(--danger); color:#fff; font-weight:700; border-radius:999px; min-width:20px; text-align:center; padding:0 6px; font-size:12px;}
+  .shell{max-width:var(--maxw); margin:0 auto; padding:var(--space4) var(--gutter) var(--space5); display:flex; flex-direction:column; gap:var(--space4); height:calc(100vh - 56px);}
+  .page-head{display:flex; align-items:baseline; gap:var(--space4);}
+  .page-head h1{font-size:20px;}
+  .meta{color:var(--text-secondary); font-size:12px;}
+  .workbench{display:flex; gap:var(--space4); flex:1; min-height:0;}
+  .ledger{width:320px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0;}
+  .ledger-head{padding:var(--space3) var(--space4); border-bottom:1px solid var(--border); font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+  .ledger-list{overflow-y:auto; flex:1; min-height:0;}
+  .row{padding:var(--space3) var(--space4); border-bottom:1px solid var(--border); cursor:pointer;}
+  .row.selected{background:var(--fact-soft); border-left:4px solid var(--fact);}
+  .row .name{font-weight:600;}
+  .row .sub{color:var(--text-secondary); font-size:12px;}
+  .demo-tag{display:inline-block; background:var(--inference-soft); color:var(--inference); border:1px dashed var(--inference); border-radius:999px; font-size:11px; padding:0 6px; margin-left:6px;}
+  .status{display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid;}
+  .status.in-sequence{color:var(--fact); border-color:var(--fact); background:var(--fact-soft);}
+  .status.warning{color:var(--warning); border-color:var(--warning); background:var(--warning-soft);}
+  .status.replied{color:var(--inference); border-color:var(--inference); background:var(--inference-soft);}
+  .detail{flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0; position:relative;}
+  .detail-scroll{overflow-y:auto; padding:var(--space4) var(--space5); display:flex; flex-direction:column; gap:var(--space4);}
+  .kv{display:grid; grid-template-columns:110px 1fr; gap:var(--space2) var(--space4); font-size:13px;}
+  .kv dt{color:var(--text-secondary);}
+  .kv dd{margin:0; word-break:break-word;}
+  .safe-banner{border:1px solid var(--warning); background:var(--warning-soft); color:var(--warning); border-radius:var(--radius); padding:var(--space3) var(--space4); display:flex; gap:var(--space3); align-items:flex-start;}
+  .safe-banner.danger{color:var(--danger); border-color:var(--danger); background:var(--danger-soft);}
+  .actions{display:flex; gap:var(--space3); margin-top:var(--space4);}
+  .btn-primary{background:var(--action); color:#fff; border-color:var(--action);}
+  .drawer-mask{position:absolute; inset:0; background:rgba(23,35,35,.35); z-index:10;}
+  .drawer{position:absolute; top:0; right:0; bottom:0; width:440px; background:var(--surface); border-left:1px solid var(--border); box-shadow:-8px 0 24px rgba(23,35,35,.15); display:flex; flex-direction:column; z-index:11;}
+  .drawer-head{padding:var(--space4); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;}
+  .drawer-head h2{font-size:16px;}
+  .drawer-body{flex:1; overflow-y:auto; padding:var(--space4) var(--space5); display:flex; flex-direction:column; gap:var(--space4);}
+  .field label{display:block; font-weight:600; margin-bottom:var(--space2);}
+  .field .hint{color:var(--text-secondary); font-size:12px; margin-top:var(--space2);}
+  input[type=text], textarea{width:100%; border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 10px; font:inherit; color:var(--text-primary); background:var(--surface);}
+  textarea{min-height:120px; resize:vertical;}
+  .drawer-foot{padding:var(--space4); border-top:1px solid var(--border); display:flex; gap:var(--space3); justify-content:flex-end;}
+  @media (max-width:1240px){ :root{--gutter:20px;} .workbench .ledger{width:300px;} .drawer{width:440px;} }
+  @media (max-width:1180px){ .drawer{width:min(440px,100%);} }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">TradeOS 内部运营台</span>
+    <nav aria-label="主导航">
+      <a href="#">CRM</a>
+      <a href="#" class="active" aria-current="page">触达工作台</a>
+      <a href="#">发件身份</a>
+      <a href="#">通知</a>
+    </nav>
+    <span class="spacer"></span>
+    <a class="badge" href="#" aria-label="通知，3 条未读">
+      <span>通知</span><span class="badge-num">3</span><span>未读</span>
+    </a>
+  </header>
+  <div class="shell">
+    <div class="page-head">
+      <h1>触达工作台</h1>
+      <span class="meta">列表保持后端顺序 · 所有记录为演示数据</span>
+    </div>
+    <section class="workbench" aria-label="触达任务">
+      <div class="ledger">
+        <div class="ledger-head"><span>Enrollment</span><span>状态</span></div>
+        <div class="ledger-list" role="list">
+          <div class="row selected" role="listitem" tabindex="0" aria-current="true">
+            <div class="name">演示数据 · 华东五金贸易<span class="demo-tag">演示数据</span></div>
+            <div class="sub">enr_演示 步骤 1/3 · 下轮发送 2026-08-16</div>
+            <span class="status in-sequence">● 序列中</span>
+          </div>
+          <div class="row" role="listitem" tabindex="0">
+            <div class="name">演示数据 · 湾区零件采购<span class="demo-tag">演示数据</span></div>
+            <div class="sub">enr_演示 步骤 2/3 · 下轮发送 2026-08-18</div>
+            <span class="status in-sequence">● 序列中</span>
+          </div>
+          <div class="row" role="listitem" tabindex="0">
+            <div class="name">演示数据 · 中欧包装需求<span class="demo-tag">演示数据</span></div>
+            <div class="sub">enr_演示 步骤 1/3 · 已回复</div>
+            <span class="status replied">◌ 已回复</span>
+          </div>
+        </div>
+      </div>
+      <div class="detail" aria-label="选中 Enrollment 详情">
+        <div class="detail-scroll">
+          <div class="page-head"><h2>演示数据 · 华东五金贸易<span class="demo-tag">演示数据</span></h2></div>
+          <dl class="kv">
+            <dt>Campaign</dt><dd>演示数据 · 五金冷开发 v1</dd>
+            <dt>Account</dt><dd>acc_演示（虚构）</dd>
+            <dt>Contact</dt><dd>cp_演示（已验证）</dd>
+            <dt>发件身份</dt><dd>sid_演示 · cold.example.test</dd>
+            <dt>当前步骤</dt><dd>1 / 3</dd>
+            <dt>下次发送</dt><dd>2026-08-16 09:00 UTC</dd>
+          </dl>
+          <div class="safe-banner" role="alert">
+            <span aria-hidden="true">⚠</span>
+            <div><strong>发送服务暂不可用，当前事实可能已变化</strong><br>演示状态：草稿已保留，可稍后手动重试；不会自动重试写操作。</div>
+          </div>
+          <div class="actions">
+            <button class="btn-primary" aria-haspopup="dialog">准备发送</button>
+            <button>刷新列表</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div class="drawer-mask" aria-hidden="true"></div>
+  <div class="drawer" role="dialog" aria-modal="true" aria-label="发送编辑">
+    <div class="drawer-head"><h2>发送编辑</h2><button aria-label="关闭并清空草稿">Esc ✕</button></div>
+    <div class="drawer-body">
+      <div class="field">
+        <label for="demo-subject">Subject</label>
+        <input id="demo-subject" type="text" value="Re: hardware sourcing needs">
+        <div class="hint">发给客户的内容请使用英文。</div>
+      </div>
+      <div class="field">
+        <label for="demo-body">Body</label>
+        <textarea id="demo-body">Hello, we noticed your team may be sourcing hardware components. Would you be open to a short call this week?</textarea>
+        <div class="hint">发给客户的内容请使用英文。</div>
+      </div>
+      <div class="safe-banner" role="status">
+        <span aria-hidden="true">ℹ</span>
+        <div>草稿为演示数据；发送成功或权限变化后将清空草稿并关闭。</div>
+      </div>
+    </div>
+    <div class="drawer-foot">
+      <button>取消</button>
+      <button class="btn-primary">发送</button>
+    </div>
+  </div>
+</body>
+</html>
