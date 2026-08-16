@@ -50,6 +50,19 @@ class _FakePort:
         return json.dumps({"category": "auto_reply", "candidate_fields": []})
 
 
+class _RawPort:
+    """返回任意对象：模拟不遵守 ``ReplyModelPort`` 返回 str 契约的实现。"""
+
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    async def classify_reply(
+        self, *, system_prompt: str, message: dict[str, str]
+    ) -> str:
+        del system_prompt, message
+        return self._value  # type: ignore[return-value]
+
+
 def _agent(port: _FakePort) -> Any:
     module = __import__(
         "agent_runtime.qualification_agent.agent", fromlist=["QualificationAgent"]
@@ -205,6 +218,26 @@ async def test_extraction_candidates_require_vocabulary_and_verbatim_quote() -> 
         ("quantity", "50000"),
         ("size_spec", "M8 x 20mm"),
     }
+
+
+async def test_non_string_port_output_is_rejected_without_leaking() -> None:
+    """P2：port 返回非 str（None/bytes/int/list）→ 在任何 encode/len/json.loads
+    之前类型校验失败；classify 抛 ValidationError，run 不泄漏异常并返回精确
+    摘要的空 ChangeSet。"""
+    message = {
+        "message_id": "msg_boundary_type",
+        "subject": "Hello",
+        "body": "We may need hinges.",
+    }
+    for bad_value in (None, b"raw bytes", 123, ["a", "b"]):
+        port = _RawPort(bad_value)
+        agent = _agent(port)
+        with pytest.raises(ValidationError) as caught:
+            await agent.classify(message=message)
+        assert "模型输出类型无效" in str(caught.value)
+        changeset = await agent.run(_task(message), None)
+        assert changeset.changes == []
+        assert changeset.summary == "模型输出被护栏拦截：模型输出类型无效"
 
 
 async def test_oversized_model_output_is_rejected_before_parsing() -> None:

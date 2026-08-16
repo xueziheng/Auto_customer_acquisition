@@ -166,6 +166,10 @@ class QualificationAgent(CapabilityAgent):
         cls, raw: str, message: dict[str, str]
     ) -> ReplyClassificationResult:
         """受限输出校验：键白名单（无动作/置信度）、枚举类别、候选词表与 quote。"""
+        if not isinstance(raw, str):
+            # port 返回非 str（不守契约实现）：在任何 encode/len/json.loads 之前
+            # 类型校验失败，run 捕获后返回可审计空 ChangeSet，不泄漏异常
+            raise ValidationError("模型输出类型无效")
         if len(raw.encode("utf-8")) > _MAX_MODEL_OUTPUT_BYTES:
             raise ValidationError("模型输出超过大小上限")
         try:
