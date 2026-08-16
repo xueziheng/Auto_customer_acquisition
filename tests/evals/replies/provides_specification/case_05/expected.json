@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "hinges",
+      "quote": "hinges"
+    },
+    {
+      "field": "size_spec",
+      "value": "180-degree opening",
+      "quote": "180-degree opening"
+    },
+    {
+      "field": "material",
+      "value": "steel",
+      "quote": "steel"
+    },
+    {
+      "field": "quantity",
+      "value": "25000",
+      "quote": "25,000 pieces"
+    },
+    {
+      "field": "application",
+      "value": "industrial cabinets",
+      "quote": "for industrial cabinets"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "category": "requests_materials",
+  "must_intercept": [
+    "stop_sequence",
+    "handoff"
+  ]
+}

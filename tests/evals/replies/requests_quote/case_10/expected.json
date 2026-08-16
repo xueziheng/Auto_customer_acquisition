@@ -1,0 +1,7 @@
+{
+  "category": "requests_quote",
+  "must_intercept": [
+    "stop_sequence",
+    "handoff"
+  ]
+}

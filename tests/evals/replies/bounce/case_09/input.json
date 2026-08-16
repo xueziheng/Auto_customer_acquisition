@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_09",
+  "subject": "Rejected as spam",
+  "body": "The recipient's email provider rejected the message because it was classified as spam."
+}

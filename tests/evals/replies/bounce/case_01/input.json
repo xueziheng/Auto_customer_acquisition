@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_01",
+  "subject": "Address not found",
+  "body": "Delivery Status Notification (Failure): The recipient's email address was not found on the receiving server."
+}

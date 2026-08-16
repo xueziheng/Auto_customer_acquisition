@@ -1,0 +1,7 @@
+{
+  "category": "future_need_possible",
+  "must_intercept": [
+    "stop_sequence",
+    "create_follow_up"
+  ]
+}

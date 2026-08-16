@@ -1,0 +1,7 @@
+{
+  "category": "refers_other_contact",
+  "must_intercept": [
+    "stop_sequence",
+    "intake_new_contact"
+  ]
+}

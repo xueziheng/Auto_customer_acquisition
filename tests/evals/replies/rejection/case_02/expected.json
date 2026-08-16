@@ -1,0 +1,6 @@
+{
+  "category": "rejection",
+  "must_intercept": [
+    "stop_sequence"
+  ]
+}

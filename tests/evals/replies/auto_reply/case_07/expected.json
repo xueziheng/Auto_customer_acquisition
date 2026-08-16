@@ -1,0 +1,7 @@
+{
+  "category": "auto_reply",
+  "must_intercept": [],
+  "must_not_intercept": [
+    "stop_sequence"
+  ]
+}

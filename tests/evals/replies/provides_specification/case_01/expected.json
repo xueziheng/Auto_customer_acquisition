@@ -1,0 +1,30 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "hex bolts",
+      "quote": "hex bolts"
+    },
+    {
+      "field": "size_spec",
+      "value": "M8 x 20mm",
+      "quote": "M8 x 20mm"
+    },
+    {
+      "field": "material",
+      "value": "stainless steel 304",
+      "quote": "stainless steel 304"
+    },
+    {
+      "field": "quantity",
+      "value": "50000",
+      "quote": "50,000 pieces"
+    }
+  ]
+}

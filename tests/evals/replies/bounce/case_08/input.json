@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_08",
+  "subject": "DNS failure",
+  "body": "DNS lookup failed for the recipient domain, so your message could not be delivered."
+}

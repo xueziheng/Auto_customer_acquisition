@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "cable ties",
+      "quote": "cable ties"
+    },
+    {
+      "field": "material",
+      "value": "stainless steel",
+      "quote": "stainless steel"
+    },
+    {
+      "field": "size_spec",
+      "value": "4.6 mm",
+      "quote": "4.6 mm"
+    },
+    {
+      "field": "quantity",
+      "value": "15000",
+      "quote": "15,000 pieces"
+    },
+    {
+      "field": "certification_required",
+      "value": "CE",
+      "quote": "CE certified"
+    }
+  ]
+}
