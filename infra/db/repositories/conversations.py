@@ -11,6 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.conversations.models import (
+    ClassificationCorrection,
     Conversation,
     Message,
     MessageClassification,
@@ -23,6 +24,7 @@ from domains.conversations.repository import (
     MessageRepository,
 )
 from infra.db.tables import (
+    ConversationClassificationCorrectionRow,
     ConversationClassificationRow,
     ConversationRow,
     MessageRow,
@@ -82,6 +84,19 @@ def _row_to_classification(
     )
 
 
+def _row_to_correction(
+    row: ConversationClassificationCorrectionRow,
+) -> ClassificationCorrection:
+    return ClassificationCorrection(
+        correction_id=row.correction_id,
+        tenant_id=TenantId(row.tenant_id),
+        message_id=MessageId(row.message_id),
+        corrected_category=ReplyCategory(row.corrected_category),
+        corrected_by=row.corrected_by,
+        corrected_at=row.corrected_at,
+    )
+
+
 class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepository):
     """分类留痕：同 (tenant, message, classified_by) 唯一；查询强制租户过滤。"""
 
@@ -108,6 +123,58 @@ class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepos
             )
         ).scalar_one_or_none()
         return _row_to_classification(row) if row is not None else None
+
+    async def add_correction(
+        self, correction: ClassificationCorrection
+    ) -> bool:
+        """tenant-bound append；UNIQUE(tenant,message,corrected_by,corrected_category)
+        ON CONFLICT DO NOTHING → True=新插入，False=幂等冲突。"""
+        self._require_tenant(correction.tenant_id, "conversation_classification_correction_add")
+        result = await self._session.execute(
+            pg_insert(ConversationClassificationCorrectionRow)
+            .values(
+                tenant_id=str(correction.tenant_id),
+                correction_id=str(correction.correction_id),
+                message_id=str(correction.message_id),
+                corrected_category=correction.corrected_category.value,
+                corrected_by=correction.corrected_by,
+                corrected_at=correction.corrected_at,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "tenant_id",
+                    "message_id",
+                    "corrected_by",
+                    "corrected_category",
+                ]
+            )
+        )
+        return cast(CursorResult, result).rowcount > 0
+
+    async def list_corrections(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> list[ClassificationCorrection]:
+        """该 message 全部纠正，ORDER BY corrected_at ASC, correction_id ASC。"""
+        if not self._tenant_matches(tenant_id, "conversation_classification_correction_list"):
+            raise TenantIsolationViolation("跨租户数据隔离违规")
+        rows = (
+            await self._session.execute(
+                select(ConversationClassificationCorrectionRow)
+                .where(
+                    ConversationClassificationCorrectionRow.tenant_id
+                    == str(self._tenant_id),
+                    ConversationClassificationCorrectionRow.message_id
+                    == str(message_id),
+                )
+                .order_by(
+                    ConversationClassificationCorrectionRow.corrected_at,
+                    ConversationClassificationCorrectionRow.correction_id,
+                )
+            )
+        ).scalars().all()
+        return [_row_to_correction(row) for row in rows]
 
 
 def _conversation_to_row(

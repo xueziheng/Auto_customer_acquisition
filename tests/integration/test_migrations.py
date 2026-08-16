@@ -26,6 +26,7 @@ dispose），不触发 session 级 async fixture 的 teardown 事件循环问题
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -66,6 +67,7 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "outbox_events",
     "conversations",
     "messages",
+    "conversation_classification_corrections",
 )
 
 SENDING_IDENTITY_TABLES: tuple[str, ...] = (
@@ -2467,7 +2469,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0019"
+        assert revision == "0020"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2620,7 +2622,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0019"
+        assert revision == "0020"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2766,7 +2768,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0019"
+        assert revision == "0020"
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2954,7 +2956,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
+            assert revision == "0020", "当前 Alembic head 未升级到 0020"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3092,7 +3094,7 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
+            assert revision == "0020", "当前 Alembic head 未升级到 0020"
             for constraint_name in (
                 "ck_email_feedback_receipt_kind",
                 "ck_email_feedback_receipt_target",
@@ -3344,7 +3346,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
+            assert revision == "0020", "当前 Alembic head 未升级到 0020"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3419,6 +3421,169 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
         await engine.dispose()
 
 
+async def test_0020_classification_corrections_revision_present(
+    db_url: str,
+) -> None:
+    """已完成态契约：0020 迁移存在且为 alembic head。
+
+    校验 upgrade head 后 revision 为 ``"0020"``（0019 之后的新迁移）。失败
+    来源必须是缺失/错误版本的迁移文件，而非语法/fixture/ImportError/环境
+    错误。本测试不 import ORM class（由契约与往返测试负责），只锁 revision。
+    """
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        assert revision == "0020", "RED：0020 会话分类纠正迁移尚未创建"
+    finally:
+        await engine.dispose()
+
+
+async def test_0020_classification_corrections_contract_matches_orm(
+    db_url: str,
+) -> None:
+    """阶段 1 契约：0020 表列/PK/UNIQUE/CHECK 与 ORM 行语义 parity。
+
+    先断言 DB 侧契约存在（迁移已建表）；再动态解析 ORM class（尚不存在时
+    断言明确失败，而非 collection ImportError）比对列/PK/约束命名；CHECK
+    额外做语义 parity——DB 定义与 ORM CheckConstraint 提取的类别词表必须与
+    ReplyCategory 枚举完全一致（Postgres 会把 IN 规范化为 ANY，故比较
+    字面量集合而非 raw SQL）。
+    """
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0020"
+            db_contract = await conn.run_sync(
+                lambda sync: {
+                    "columns": {
+                        item["name"]: {
+                            "type": _type_key(str(item["type"])),
+                            "nullable": item["nullable"],
+                        }
+                        for item in inspect(sync).get_columns(
+                            "conversation_classification_corrections"
+                        )
+                    },
+                    "pk": list(
+                        inspect(sync).get_pk_constraint(
+                            "conversation_classification_corrections"
+                        )["constrained_columns"]
+                    ),
+                    "unique": {
+                        str(item["name"]): sorted(item["column_names"])
+                        for item in inspect(sync).get_unique_constraints(
+                            "conversation_classification_corrections"
+                        )
+                    },
+                    "checks": {
+                        str(item["name"]): str(item["sqltext"])
+                        for item in inspect(sync).get_check_constraints(
+                            "conversation_classification_corrections"
+                        )
+                    },
+                }
+            )
+    finally:
+        await engine.dispose()
+
+    orm_class = getattr(
+        importlib.import_module("infra.db.tables"),
+        "ConversationClassificationCorrectionRow",
+        None,
+    )
+    if orm_class is None:
+        raise AssertionError("RED：ORM ConversationClassificationCorrectionRow 尚未创建")
+    orm_columns = {
+        name: {
+            "type": _type_key(column.type.compile(dialect=engine.dialect)),
+            "nullable": column.nullable,
+        }
+        for name, column in orm_class.__table__.columns.items()
+    }
+    orm_pk = [
+        column.name
+        for column in orm_class.__table__.primary_key.columns
+    ]
+    orm_unique = {
+        str(constraint.name): sorted(constraint.columns.keys())
+        for constraint in orm_class.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    orm_checks = {
+        str(constraint.name): str(constraint.sqltext)
+        for constraint in orm_class.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert db_contract["columns"] == orm_columns
+    assert db_contract["pk"] == orm_pk == ["tenant_id", "correction_id"]
+    assert db_contract["unique"] == orm_unique == {
+        "uq_conversation_classification_corrections_idem": [
+            "corrected_by",
+            "corrected_category",
+            "message_id",
+            "tenant_id",
+        ]
+    }
+    assert set(db_contract["checks"]) == set(orm_checks) == {
+        "ck_conversation_classification_corrections_category"
+    }
+    # CHECK 语义 parity：从 ReplyCategory 枚举取完整 14 类词表，安全解析 DB
+    # 约束定义与 ORM CheckConstraint 文本，各自包含全部且无多余类别
+    # （不比较 raw SQL：Postgres 会把 IN 规范化为 ANY）。
+    from domains.conversations.schemas import ReplyCategory
+
+    expected_categories = {item.value for item in ReplyCategory}
+    assert len(expected_categories) == 14
+    db_check = db_contract["checks"][
+        "ck_conversation_classification_corrections_category"
+    ]
+    orm_check = orm_checks["ck_conversation_classification_corrections_category"]
+    db_values = set(re.findall(r"'([a-z_]+)'(?=::)", db_check))
+    orm_values = set(re.findall(r"'([a-z_]+)'", orm_check))
+    assert db_values == expected_categories
+    assert orm_values == expected_categories
+
+
+async def test_0020_classification_corrections_downgrade_roundtrip(
+    db_url: str,
+) -> None:
+    """0020→0019→0020 roundtrip：downgrade 后新表消失、revision 回 0019，
+    upgrade head 后表与契约恢复。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0020"
+            assert "conversation_classification_corrections" in await _table_names(engine)
+        _run_alembic(db_url, "downgrade", "0019")
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0019"
+        assert "conversation_classification_corrections" not in await _table_names(engine)
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0020"
+        assert "conversation_classification_corrections" in await _table_names(engine)
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
 async def test_0019_conversations_messages_roundtrip_and_guards(
     db_url: str,
 ) -> None:
@@ -3432,7 +3597,7 @@ async def test_0019_conversations_messages_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
+            assert revision == "0020", "当前 Alembic head 未升级到 0020"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)

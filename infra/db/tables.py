@@ -2046,3 +2046,44 @@ class ConversationClassificationRow(Base):
     category: Mapped[str] = mapped_column(String(40))
     classified_by: Mapped[str] = mapped_column(String(100))
     classified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ConversationClassificationCorrectionRow(Base):
+    """``conversation_classification_corrections``：人工纠正分类留痕。
+
+    append-only：PK(tenant, correction_id)；UNIQUE(tenant, message,
+    corrected_by, corrected_category) 是 DB 幂等键（同键并发只一行）；不同
+    纠正即使同一 corrected_at 也保留多行（评估集样本只增不改）。不存正文/
+    凭证/置信度。
+    """
+
+    __tablename__ = "conversation_classification_corrections"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "correction_id",
+            name="pk_conversation_classification_corrections",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "message_id",
+            "corrected_by",
+            "corrected_category",
+            name="uq_conversation_classification_corrections_idem",
+        ),
+        CheckConstraint(
+            "corrected_category IN ('clear_interest','willing_to_continue',"
+            "'requests_materials','requests_quote','requests_sample',"
+            "'provides_specification','no_current_need','future_need_possible',"
+            "'refers_other_contact','rejection','unsubscribe','bounce',"
+            "'auto_reply','complaint')",
+            name="ck_conversation_classification_corrections_category",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    correction_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(100))
+    corrected_category: Mapped[str] = mapped_column(String(40))
+    corrected_by: Mapped[str] = mapped_column(String(100))
+    corrected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

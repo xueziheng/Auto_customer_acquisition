@@ -1,8 +1,10 @@
-"""会话域服务实现（浅域）：入站消息持久化、分类留痕与动作决定。
+"""会话域服务实现（浅域）：入站消息持久化、分类留痕、动作决定与人工纠正。
 
 动作**决定**在域（``REPLY_ACTIONS``），**执行**在 reply_qualification 工作流。
 事件只用共享契约（``ReplyReceived`` AUTO_REPLY 除外永不发布；
 ``InboundMessageStored`` 仅 metadata-only typed ID，无正文/对象键）。
+人工纠正（``correct_classification``）append-only 留痕：不发布事件、不改原
+分类行——纠正样本是未来评估集摄取的耐久来源，覆盖掉就丢了。
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from datetime import UTC, datetime
 from domains.conversations.errors import ReingestConflictError
 from domains.conversations.models import (
     REPLY_ACTIONS,
+    ClassificationCorrection,
     Conversation,
     Message,
     MessageClassification,
@@ -313,3 +316,55 @@ class ConversationServiceImpl:
                     )
                 )
         return REPLY_ACTIONS[category]
+
+    async def correct_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        corrected_category: ReplyCategory,
+        corrected_by: str,
+    ) -> None:
+        """人工纠正分类留痕（append-only；签名契约见 service.py，此处只谈实现语义）。
+
+        - 原分类行永不修改：只 append ``ClassificationCorrection``；
+          ``classified_by`` 保留模型版本，另记纠正人
+        - 未分类 / 跨租户不可见 → ``ValidationError("消息尚未分类")``
+          fail-closed（服务按租户绑定查询，不感知其他租户，不抛
+          TenantIsolationViolation）
+        - 输入校验（tenant/message/category/corrected_by 空值、长度上限
+          32/100/100，与 DB 列对齐；时钟仅接受 UTC）全部在开 UoW 前完成，
+          固定安全摘要、不回显输入；模型构造校验为兜底
+        - 幂等：同 (tenant, message, corrected_by, corrected_category) 由 DB
+          UNIQUE + ``ON CONFLICT DO NOTHING`` 保证至多一行（不 list-then-insert，
+          TOCTOU 消除）；``add_correction`` 返回 bool 忽略
+        - 不发布任何事件、不写日志
+        """
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("纠正租户无效")
+        if len(tenant_id) > 32:
+            raise ValidationError("纠正租户超长")
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ValidationError("纠正消息无效")
+        if len(message_id) > 100:
+            raise ValidationError("纠正消息超长")
+        if not isinstance(corrected_category, ReplyCategory):
+            raise ValidationError("纠正类别无效")
+        if not isinstance(corrected_by, str) or not corrected_by.strip():
+            raise ValidationError("纠正人无效")
+        if len(corrected_by) > 100:
+            raise ValidationError("纠正人超长")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            classifications: ClassificationRepository = uow.classifications
+            if await classifications.get(tenant_id, message_id) is None:
+                raise ValidationError("消息尚未分类")
+            await classifications.add_correction(
+                ClassificationCorrection(
+                    correction_id=new_id("ccr"),
+                    tenant_id=tenant_id,
+                    message_id=message_id,
+                    corrected_category=corrected_category,
+                    corrected_by=corrected_by,
+                    corrected_at=now,
+                )
+            )

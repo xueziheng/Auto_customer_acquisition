@@ -8,7 +8,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, Self, runtime_checkable
 
-from domains.conversations.models import Conversation, Message, MessageClassification
+from domains.conversations.models import (
+    ClassificationCorrection,
+    Conversation,
+    Message,
+    MessageClassification,
+)
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     ConversationId,
@@ -58,6 +63,24 @@ class ClassificationRepository(Protocol):
         message_id: MessageId,
     ) -> MessageClassification | None:
         """该 message 的分类记录（每 message 至多一条）。"""
+        ...
+
+    async def add_correction(
+        self, correction: ClassificationCorrection
+    ) -> bool:
+        """append 一条纠正记录；返回 True=新插入，False=DB 幂等冲突（同键已存在）。
+
+        PostgreSQL ``INSERT ... ON CONFLICT DO NOTHING``，唯一键为
+        (tenant, message, corrected_by, corrected_category)；不做 list-then-insert
+        （TOCTOU 消除）。"""
+        ...
+
+    async def list_corrections(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> list[ClassificationCorrection]:
+        """该 message 的全部纠正记录，按 ``corrected_at ASC, correction_id ASC``。"""
         ...
 
 

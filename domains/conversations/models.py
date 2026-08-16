@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -115,6 +116,56 @@ class MessageClassification:
     category: ReplyCategory
     classified_by: str
     classified_at: datetime
+
+
+@dataclass
+class ClassificationCorrection:
+    """一次人工纠正分类留痕（append-only，未来评估集摄取的耐久来源）。
+
+    - ``correction_id``：域内生成（new_id("ccr")），PK 一部分；不落 shared 契约
+    - ``corrected_category``/``corrected_by``/``corrected_at``：纠正语义；
+      UNIQUE(tenant, message, corrected_by, corrected_category) 是 DB 幂等键，
+      同键并发只一行；不同纠正即使同一 corrected_at 也保留多行
+    - 原分类行（MessageClassification）永不修改（覆盖纠正样本会丢）
+    - 长度 fail-closed：correction_id/tenant_id ≤ 32、message_id/corrected_by
+      ≤ 100，与 DB 列上限对齐——超长在模型层即拒（先于 DB 报错/截断）
+    """
+
+    correction_id: str
+    tenant_id: TenantId
+    message_id: MessageId
+    corrected_category: ReplyCategory
+    corrected_by: str
+    corrected_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant_id, str) or not self.tenant_id.strip():
+            raise ValidationError("纠正租户无效")
+        if len(self.tenant_id) > 32:
+            raise ValidationError("纠正租户超长")
+        if not isinstance(self.message_id, str) or not self.message_id.strip():
+            raise ValidationError("纠正消息无效")
+        if len(self.message_id) > 100:
+            raise ValidationError("纠正消息超长")
+        if (
+            not isinstance(self.correction_id, str)
+            or not self.correction_id.strip()
+        ):
+            raise ValidationError("纠正记录 id 无效")
+        if len(self.correction_id) > 32:
+            raise ValidationError("纠正记录 id 超长")
+        if not isinstance(self.corrected_by, str) or not self.corrected_by.strip():
+            raise ValidationError("纠正人无效")
+        if len(self.corrected_by) > 100:
+            raise ValidationError("纠正人超长")
+        if not isinstance(self.corrected_category, ReplyCategory):
+            raise ValidationError("纠正类别无效")
+        if (
+            not isinstance(self.corrected_at, datetime)
+            or self.corrected_at.tzinfo is None
+            or self.corrected_at.utcoffset() != UTC.utcoffset(self.corrected_at)
+        ):
+            raise ValidationError("纠正时间必须为 UTC")
 
 
 class MessageDirection(str, Enum):
