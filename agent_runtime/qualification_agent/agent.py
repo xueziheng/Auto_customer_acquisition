@@ -95,6 +95,11 @@ class ReplyClassificationResult:
 class ReplyClassifier(Protocol):
     """评估运行器依赖的最窄分类器端口（agent 是其实现之一）。"""
 
+    @property
+    def model(self) -> str:
+        """模型标识（classified_by 留痕用；评估报告按 provider 区分）。"""
+        ...
+
     async def classify(self, *, message: dict[str, str]) -> ReplyClassificationResult: ...
 
 
