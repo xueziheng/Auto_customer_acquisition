@@ -76,6 +76,9 @@ class CampaignEventHandlers:
         raise ValidationError("未知 Campaign 事件类型")
 
     async def on_reply_received(self, event: ReplyReceived) -> None:
+        if event.outbound_message_id is None:
+            # 无出站关联：fail-closed（不停 enrollment、不唤醒 run）
+            return
         async with self._factory() as session:
             row = (
                 await session.execute(
@@ -83,7 +86,7 @@ class CampaignEventHandlers:
                         OutreachMessageAttemptRow.tenant_id
                         == str(self._tenant_id),
                         OutreachMessageAttemptRow.deterministic_message_id
-                        == str(event.message_id),
+                        == str(event.outbound_message_id),
                     )
                 )
             ).scalars().first()

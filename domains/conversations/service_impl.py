@@ -19,7 +19,7 @@ from domains.conversations.models import (
 from domains.conversations.repository import ClassificationRepository
 from shared.errors import ValidationError
 from shared.events.catalog import ReplyReceived
-from shared.schemas.identifiers import MessageId, TenantId
+from shared.schemas.identifiers import MessageId, OutboundMessageId, TenantId
 
 del _CONVERSATIONS_PUBLISHES  # 事件契约声明仅供文档；发布经 uow.bus
 
@@ -54,6 +54,8 @@ class ConversationsServiceImpl:
         message_id: MessageId,
         category: ReplyCategory,
         classified_by: str,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
     ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
@@ -75,6 +77,10 @@ class ConversationsServiceImpl:
             raise ValidationError("分类类别无效")
         if not isinstance(classified_by, str) or not classified_by.strip():
             raise ValidationError("分类者标识无效")
+        if outbound_message_id is not None and (
+            not isinstance(outbound_message_id, str) or not outbound_message_id.strip()
+        ):
+            raise ValidationError("出站消息关联无效")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
@@ -112,6 +118,7 @@ class ConversationsServiceImpl:
                         message_id=message_id,
                         conversation_id=None,
                         reply_category=category.value,
+                        outbound_message_id=outbound_message_id,
                     )
                 )
         return REPLY_ACTIONS[category]

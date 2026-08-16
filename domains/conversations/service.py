@@ -13,6 +13,7 @@ from domains.conversations.models import (
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
+    OutboundMessageId,
     ProspectAccountId,
     TenantId,
 )
@@ -44,12 +45,16 @@ class ConversationService(Protocol):
         message_id: MessageId,
         category: ReplyCategory,
         classified_by: str,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
     ) -> tuple[str, ...]:
         """落分类结果，返回 ``REPLY_ACTIONS`` 对应的动作序列。
 
         动作的**执行**在工作流（reply_qualification），本域只返回
         「该做什么」。发布 ``ReplyReceived``（AUTO_REPLY 除外——
-        自动回复不算回复）。
+        自动回复不算回复）。``outbound_message_id`` 是被回复出站消息的
+        RFC Message-ID（In-Reply-To/References 关联）；无关联传 None，
+        订阅方 fail-closed。
         """
         ...
 

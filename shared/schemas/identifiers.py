@@ -43,6 +43,9 @@ CompanyId = NewType("CompanyId", str)
 ContactId = NewType("ContactId", str)
 ConversationId = NewType("ConversationId", str)
 MessageId = NewType("MessageId", str)
+OutboundMessageId = NewType("OutboundMessageId", str)
+"""RFC 5322 出站 Message-ID（= outreach attempt 的 deterministic_message_id，
+投递关联键）。与入站 MessageId 是不同命名空间，不得混用。"""
 
 # --- 触达 ---------------------------------------------------------------
 

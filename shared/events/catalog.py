@@ -28,6 +28,7 @@ from shared.schemas.identifiers import (
     MessageId,
     NeedHypothesisId,
     OpportunityId,
+    OutboundMessageId,
     ProspectAccountId,
     QuoteId,
     RunId,
@@ -165,11 +166,17 @@ class ReplyReceived(DomainEvent):
 
     订阅方：``domains/outreach``（停止序列）、
     ``agent_runtime/qualification_agent``（分类与追问）。
+
+    ``message_id`` 是**入站**回复消息 id；``outbound_message_id`` 是被回复的
+    **出站**消息 RFC Message-ID（= outreach attempt 的 deterministic_message_id，
+    投递关联键）——两者命名空间不同，禁止混用；无出站关联时为 None，
+    消费者必须 fail-closed。
     """
 
     message_id: MessageId = None  # type: ignore[assignment]
     conversation_id: ConversationId | None = None
     reply_category: str = ""
+    outbound_message_id: OutboundMessageId | None = None
 
 
 @dataclass(frozen=True)

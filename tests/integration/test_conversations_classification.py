@@ -46,6 +46,7 @@ _REPLY_EVENT_KEYS = {
     "message_id",
     "conversation_id",
     "reply_category",
+    "outbound_message_id",
 }
 
 

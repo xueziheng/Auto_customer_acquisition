@@ -23,6 +23,7 @@ from apps.scheduler_worker.runtime import (
     SchedulerDomainDependencies,
     SchedulerRuntimeFactory,
 )
+from domains.conversations.schemas import ReplyCategory
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -74,6 +75,8 @@ from shared.schemas.identifiers import (
     ConversationId,
     EmployeeId,
     IdempotencyKey,
+    MessageId,
+    OutboundMessageId,
     ProspectAccountId,
     SendingIdentityId,
     TenantId,
@@ -405,6 +408,24 @@ def _composition(
     )
 
 
+def _conversations_service(
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    clock: MutableClock,
+) -> object:
+    """真实生产者：conversations 域分类留痕服务（共享同一 DB/outbox）。"""
+    module = __import__(
+        "domains.conversations.service_impl", fromlist=["ConversationsServiceImpl"]
+    )
+    uow_type = importlib.import_module(
+        "infra.db.conversations_uow"
+    ).SqlAlchemyConversationsUnitOfWork
+    return module.ConversationsServiceImpl(
+        lambda requested: uow_type(factory, requested, now=clock.now),
+        now=clock.now,
+    )
+
+
 def _dependencies(composition: CampaignMessagingComposition) -> SchedulerDomainDependencies:
     return SchedulerDomainDependencies(
         opportunity_service=_Opportunity(),
@@ -658,6 +679,204 @@ async def test_cancel_campaign_cancels_inflight_runs(
         assert enrollment_row.state == "enrolled"  # 从未发送，序列未推进
 
 
+async def test_classification_event_from_real_producer_stops_and_wakes(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    """真实生产者（conversations record_classification）→ outbox drain →
+    CampaignEventHandlers 端到端。
+
+    期望行为（HANDBOOK 验收：有回复立刻停）：入站回复被分类为退订且携带
+    出站关联（outbound_message_id）后，enrollment 必须 stopped（replied）、
+    wait_for_reply 被唤醒并收束。TDD RED：拟定关联 API 尚未实现（unexpected
+    keyword）——先记录该失败，再实现使其 GREEN。
+    """
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_producer", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-producer")
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+        async with factory() as session:
+            attempt = (
+                await session.execute(
+                    select(rows.OutreachMessageAttemptRow).where(
+                        rows.OutreachMessageAttemptRow.tenant_id == str(tenant)
+                    )
+                )
+            ).scalars().one()
+            outbound_id = attempt.deterministic_message_id
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        assert enrollment_row.state == "in_sequence"
+        assert run_row.status == "running"
+
+        # 真实生产者：入站回复被分类，并携带出站关联（拟定 API：outbound_message_id）
+        conversations = _conversations_service(factory, tenant, clock)
+        inbound_message_id = MessageId("msg_inbound_reply_001")
+        await conversations.record_classification(  # type: ignore[attr-defined]
+            tenant,
+            inbound_message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            outbound_message_id=OutboundMessageId(outbound_id),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        # 期望：分类后立刻停止序列并唤醒 wait_for_reply（断链时此断言失败）
+        assert enrollment_row.state == "replied"
+        assert run_row.status == "completed"
+        assert transport.sent == ["gmail-scheduler-1"]  # 不再发
+
+        # 重复分类 + 重复投递：不重复域效果（stop 幂等、事件指纹去重）
+        await conversations.record_classification(  # type: ignore[attr-defined]
+            tenant,
+            inbound_message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            outbound_message_id=OutboundMessageId(outbound_id),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        assert enrollment_row.state == "replied"  # 不变
+        assert run_row.status == "completed"  # 不变
+        assert transport.sent == ["gmail-scheduler-1"]
+
+
+async def test_classification_without_outbound_correlation_is_fail_closed(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    """明确无出站关联（outbound_message_id=None）→ 消费者 fail-closed：
+    不误停、不误唤醒——enrollment 与 run 保持原状，序列仍按计划推进
+    （是否发送由序列计划决定，本测试只锁隔离边界，不承诺发送被阻断）。"""
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_nocorr", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-nocorr")
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+        conversations = _conversations_service(factory, tenant, clock)
+        await conversations.record_classification(  # type: ignore[attr-defined]
+            tenant,
+            MessageId("msg_inbound_nocorr_001"),
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            outbound_message_id=None,  # 明确无关联
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        # fail-closed：无关联不误停、不误唤醒；事件本身不触发任何发送
+        assert enrollment_row.state == "in_sequence"
+        assert run_row.status == "running"
+        assert transport.sent == ["gmail-scheduler-1"]
+
+
 async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
@@ -760,15 +979,16 @@ async def test_reply_event_wiring_stops_enrollment_and_completes_run(
                 )
             ).scalars().one()
             message_id = attempt_row.deterministic_message_id
-        # 生产接线：经共享 outbox 发布 ReplyReceived → 域 stop + 引擎唤醒
+        # 生产接线：经共享 outbox 发布 ReplyReceived（入站 id 与出站关联分开）→ 域 stop + 引擎唤醒
         await _publish(
             factory,
             tenant,
             ReplyReceived(
                 tenant_id=tenant,
                 occurred_at=NOW + timedelta(hours=2),
-                message_id=message_id,
+                message_id=MessageId("msg_inbound_wiring_001"),
                 conversation_id=ConversationId(new_id("cv")),
+                outbound_message_id=OutboundMessageId(message_id),
             ),
         )
         await runtime.outbox.drain()  # type: ignore[attr-defined]
@@ -857,3 +1077,202 @@ async def test_identity_activated_event_wiring_wakes_waiting_run(
                 rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
             )
         assert enrollment_row.state == "in_sequence"
+
+
+async def test_reply_stops_only_the_correlated_enrollment(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    """同租户两个 enrollment：分类事件只停 outbound_message_id 关联的那条，
+    另一条序列继续（不误停）。"""
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    contacts: dict[tuple[ContactPointId, ProspectAccountId], ContactEligibilitySnapshot] = {}
+    replies: dict[tuple[ContactPointId, ProspectAccountId], ReplyStatusSnapshot] = {}
+    enrolled: list[object] = []
+    for index in range(2):
+        account = ProspectAccountId(new_id("acc"))
+        contact = ContactPointId(new_id("cp"))
+        contacts[(contact, account)] = ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, f"basis_sched_two{index}", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+        replies[(contact, account)] = ReplyStatusSnapshot(
+            tenant, contact, account, ReplyState.NO_REPLY, None, NOW
+        )
+        service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+        enrolled.append(await _enroll(service, tenant, campaign_id, contact, account, f"sched-enroll-two-{index}"))
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 2
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1", "gmail-scheduler-2"]
+        async with factory() as session:
+            attempts = (
+                await session.execute(
+                    select(rows.OutreachMessageAttemptRow).where(
+                        rows.OutreachMessageAttemptRow.tenant_id == str(tenant)
+                    )
+                )
+            ).scalars().all()
+            assert len(attempts) == 2
+            first_attempt = next(
+                a for a in attempts if a.enrollment_id == str(enrolled[0].enrollment_id)
+            )
+        conversations = _conversations_service(factory, tenant, clock)
+        await conversations.record_classification(  # type: ignore[attr-defined]
+            tenant,
+            MessageId("msg_inbound_two_001"),
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            outbound_message_id=OutboundMessageId(first_attempt.deterministic_message_id),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        async with factory() as session:
+            first_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrolled[0].enrollment_id))
+            )
+            second_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrolled[1].enrollment_id))
+            )
+        assert first_row.state == "replied"  # 被关联者停止
+        assert second_row.state == "in_sequence"  # 另一条不受影响
+
+
+async def test_cross_tenant_outbound_id_never_misfires_current_tenant(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    """outbound_message_id 属于另一租户：当前租户 handler 查询必须
+    tenant-filtered——绝不误停本租户 enrollment、不误唤醒 run。"""
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_xtenant", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-xtenant")
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    # 另一租户：真实入组并准备一次发送（产生属于 other_tenant 的 attempt 行）
+    other_campaign = CampaignId(new_id("cmp"))
+    other_approval = ApprovalId(new_id("apr"))
+    other_sender = await _seed_identity(factory, other_tenant, boss)
+    await _seed_campaign(factory, other_tenant, other_campaign, other_sender, other_approval)
+    other_account = ProspectAccountId(new_id("acc"))
+    other_contact = ContactPointId(new_id("cp"))
+    other_contacts = {
+        (other_contact, other_account): ContactEligibilitySnapshot(
+            other_tenant, other_contact, other_account,
+            ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_other", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    other_replies = {
+        (other_contact, other_account): ReplyStatusSnapshot(
+            other_tenant, other_contact, other_account, ReplyState.NO_REPLY, None, NOW
+        )
+    }
+    other_senders = _senders(other_tenant, other_sender)
+    other_service = _test_service(
+        factory, other_tenant, other_campaign, other_approval, other_sender,
+        other_contacts, other_replies, other_senders, clock,
+    )
+    other_enrollment = await _enroll(
+        other_service, other_tenant, other_campaign, other_contact, other_account,
+        "other-enroll-1",
+    )
+    system_actor = OutreachActor(
+        "system:xtenant",
+        OutreachScope(
+            level=OutreachScopeLevel.SYSTEM,
+            allowed_enrollment_ids=frozenset({other_enrollment.enrollment_id}),
+        ),
+        "system",
+    )
+    await other_service.prepare_message_attempt(  # type: ignore[attr-defined]
+        other_tenant, other_enrollment.enrollment_id, actor=system_actor
+    )
+    other_outbound = "<route-x.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@messages.tradeos.invalid>"
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        attempt = (
+            await session.execute(
+                select(rows.OutreachMessageAttemptRow).where(
+                    rows.OutreachMessageAttemptRow.tenant_id == str(other_tenant)
+                )
+            )
+        ).scalars().one()
+        attempt.deterministic_message_id = other_outbound
+        attempt.idempotency_header = "route-x.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        await session.commit()
+
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+        conversations = _conversations_service(factory, tenant, clock)
+        await conversations.record_classification(  # type: ignore[attr-defined]
+            tenant,
+            MessageId("msg_inbound_xtenant_001"),
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            outbound_message_id=OutboundMessageId(other_outbound),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        # tenant-filtered：他租户的出站 id 在本租户查不到 → 不误停、不误唤醒
+        assert enrollment_row.state == "in_sequence"
+        assert run_row.status == "running"
+        assert transport.sent == ["gmail-scheduler-1"]
