@@ -11,6 +11,14 @@ from domains.conversations.models import (
     NextQuestionSuggestion,
     ReplyCategory,
 )
+from domains.conversations.repository import (
+    ConversationsUnitOfWork as _ConversationsUnitOfWork,
+)
+
+#: 域公共 API 复出口（outreach/sending_identity 同款先例）：apps 侧
+#: 组合只能经 service 引用事务边界类型，不得直接 import repository。
+ConversationsUnitOfWork = _ConversationsUnitOfWork
+
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
