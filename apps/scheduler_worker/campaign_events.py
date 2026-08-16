@@ -125,5 +125,3 @@ class CampaignEventHandlers:
                 "SendingIdentityActivated",
                 {"occurred_at": event.occurred_at.isoformat()},
             )
-
-
