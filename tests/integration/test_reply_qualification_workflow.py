@@ -974,4 +974,3 @@ async def test_cross_tenant_apply_actions_fails_closed(
         ).scalars().all()
     assert enrollment_row.state == "enrolled"  # 未被停
     assert suppressions == []  # 未被抑制
-
