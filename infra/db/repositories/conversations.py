@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+from typing import cast
+
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.conversations.models import (
@@ -23,7 +27,7 @@ from infra.db.tables import (
     ConversationRow,
     MessageRow,
 )
-from shared.errors import TenantIsolationViolation
+from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -159,6 +163,31 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
         self._require_tenant(conversation.tenant_id, "conversation.update")
         await self._session.merge(_conversation_to_row(conversation))
 
+    async def advance_last_inbound_at(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        sent_at: datetime,
+    ) -> None:
+        """单条原子 UPDATE：last_inbound_at = GREATEST(COALESCE(既有, sent_at),
+        sent_at)。NULL 首写与并发不同 sent_at 均单调不回退；不覆盖其他字段。"""
+        self._require_tenant(tenant_id, "conversation.advance_last_inbound_at")
+        result = await self._session.execute(
+            update(ConversationRow)
+            .where(
+                ConversationRow.tenant_id == str(tenant_id),
+                ConversationRow.conversation_id == str(conversation_id),
+            )
+            .values(
+                last_inbound_at=func.greatest(
+                    func.coalesce(ConversationRow.last_inbound_at, sent_at),
+                    sent_at,
+                )
+            )
+        )
+        if cast(CursorResult, result).rowcount != 1:
+            raise ValidationError("会话不存在")
+
     async def get(
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> Conversation | None:
@@ -190,7 +219,19 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
         return _row_to_conversation(row)
 
 
+def _require_valid_external_id(message: Message) -> str:
+    """仓储边界显式 fail-closed（固定摘要，不回显值）：None/空白若以 "" 落库
+    会撞 ck_messages_external_id_nonblank 产生未分类 IntegrityError。"""
+    if (
+        not isinstance(message.external_message_id, str)
+        or not message.external_message_id.strip()
+    ):
+        raise ValidationError("消息 external Message-ID 无效")
+    return message.external_message_id
+
+
 def _message_to_row(message: Message) -> MessageRow:
+    _require_valid_external_id(message)
     return MessageRow(
         tenant_id=str(message.tenant_id),
         message_id=str(message.message_id),
@@ -199,9 +240,7 @@ def _message_to_row(message: Message) -> MessageRow:
         sent_at=message.sent_at,
         language=message.language,
         raw_artifact_ref=message.raw_artifact_ref,
-        external_message_id=(
-            message.external_message_id if message.external_message_id is not None else ""
-        ),
+        external_message_id=message.external_message_id,
         outbound_message_id=(
             str(message.outbound_message_id)
             if message.outbound_message_id is not None
@@ -245,11 +284,7 @@ class MessageRepositoryImpl(_ConversationsRepository, MessageRepository):
                 sent_at=message.sent_at,
                 language=message.language,
                 raw_artifact_ref=message.raw_artifact_ref,
-                external_message_id=(
-                    message.external_message_id
-                    if message.external_message_id is not None
-                    else ""
-                ),
+                external_message_id=_require_valid_external_id(message),
                 outbound_message_id=(
                     str(message.outbound_message_id)
                     if message.outbound_message_id is not None

@@ -211,11 +211,11 @@ class ConversationServiceImpl:
         conversation: Conversation,
         sent_at: datetime,
     ) -> None:
-        """last_inbound_at = max(既有, sent_at)：迟到旧消息不回退。"""
-        current = conversation.last_inbound_at
-        if current is None or sent_at > current:
-            conversation.last_inbound_at = sent_at
-            await uow.conversations.update(conversation)
+        """last_inbound_at = max(既有, sent_at)：委托仓储单条原子 UPDATE，
+        不做整实体 read-compare+merge——并发不同 sent_at 下旧值后提交不回退。"""
+        await uow.conversations.advance_last_inbound_at(
+            conversation.tenant_id, conversation.conversation_id, sent_at
+        )
 
     @staticmethod
     def _require_semantic_identity(

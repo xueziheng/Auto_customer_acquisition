@@ -37,6 +37,7 @@ from domains.conversations.service import ConversationService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ConversationId,
+    MessageId,
     OutboundMessageId,
     ProspectAccountId,
     TenantId,
@@ -432,3 +433,101 @@ async def test_concurrent_ingest_same_conversation_different_messages(
     await asyncio.gather(ingest(1), ingest(2))
     assert len(await _conversation_rows(factory, tenant)) == 1
     assert len(await _message_rows(factory, tenant)) == 2
+
+
+async def test_advance_last_inbound_at_is_monotonic_under_stale_read_interleaving(
+    conversations_db: AsyncEngine, tenant: TenantId, account: ProspectAccountId,
+) -> None:
+    """P2 受控交错（确定性，非概率）：T2 先读到旧 last_inbound_at（stale），
+    T1 独立事务推进到更新的 sent_at 并提交；T2 随后按旧值推进较旧 sent_at
+    并提交 —— 单调 UPDATE（GREATEST/COALESCE）必须保持 max，不回退。"""
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    await service.ingest_inbound(
+        tenant, None, account, REF_MARKER, "<mono-009@example.test>", NOW,
+    )
+    conv_rows = await _conversation_rows(factory, tenant)
+    assert len(conv_rows) == 1
+    conv_id = ConversationId(conv_rows[0].conversation_id)
+
+    repo_type = importlib.import_module(
+        "infra.db.repositories.conversations"
+    ).ConversationRepositoryImpl
+
+    # T2 先读：stale 快照（last_inbound_at == NOW）
+    async with factory() as session_t2:
+        repo_t2 = repo_type(session_t2, tenant)
+        stale = await repo_t2.get(tenant, conv_id)
+        assert stale is not None and stale.last_inbound_at == NOW
+        # T1 独立事务推进到 NOW+2h 并提交
+        async with factory() as session_t1:
+            repo_t1 = repo_type(session_t1, tenant)
+            await repo_t1.advance_last_inbound_at(
+                tenant, conv_id, NOW + timedelta(hours=2)
+            )
+            await session_t1.commit()
+        # T2 用旧值推进较旧 sent_at（NOW+1h）并提交
+        await repo_t2.advance_last_inbound_at(
+            tenant, conv_id, NOW + timedelta(hours=1)
+        )
+        await session_t2.commit()
+
+    after = (await _conversation_rows(factory, tenant))[0]
+    assert after.last_inbound_at == NOW + timedelta(hours=2)
+
+
+async def test_concurrent_ingest_different_sent_at_keeps_max(
+    conversations_db: AsyncEngine, tenant: TenantId, account: ProspectAccountId,
+) -> None:
+    """P2 服务层不变式：并发不同 sent_at 入站，最终 last_inbound_at == max。"""
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+
+    async def ingest(n: int) -> str:
+        sent = NOW + timedelta(hours=n)
+        return await service.ingest_inbound(
+            tenant, None, account, REF_MARKER,
+            f"<mono-010-{n}@example.test>", sent,
+        )
+
+    await asyncio.gather(ingest(1), ingest(2))
+    convs = await _conversation_rows(factory, tenant)
+    assert len(convs) == 1
+    assert convs[0].last_inbound_at == NOW + timedelta(hours=2)
+
+
+async def test_message_repository_rejects_blank_external_message_id(
+    conversations_db: AsyncEngine, tenant: TenantId, account: ProspectAccountId,
+) -> None:
+    """P3 仓储边界 fail-closed：external_message_id 为 None/空白时抛固定摘要
+    领域/验证错误（不回显值），不得以 "" 撞 DB CHECK 产生未分类 IntegrityError。"""
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    await service.ingest_inbound(
+        tenant, None, account, REF_MARKER, "<seed-011@example.test>", NOW,
+    )
+    conv = (await _conversation_rows(factory, tenant))[0]
+    models = importlib.import_module("domains.conversations.models")
+    repo_type = importlib.import_module(
+        "infra.db.repositories.conversations"
+    ).MessageRepositoryImpl
+
+    async with factory() as session:
+        repo = repo_type(session, tenant)
+        for bad_value in (None, "   "):
+            bad = models.Message(
+                message_id=MessageId(new_id("msg")),
+                tenant_id=tenant,
+                conversation_id=ConversationId(conv.conversation_id),
+                direction=models.MessageDirection.INBOUND,
+                sent_at=NOW,
+                raw_artifact_ref=REF_MARKER,
+                external_message_id=bad_value,
+            )
+            with pytest.raises(ValidationError, match="external Message-ID"):
+                await repo.add(bad)
+        await session.rollback()
+    assert len(await _message_rows(factory, tenant)) == 1  # 仅 seed，无坏行

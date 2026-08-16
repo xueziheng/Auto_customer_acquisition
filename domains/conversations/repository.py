@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, Self, runtime_checkable
 
 from domains.conversations.models import Conversation, Message, MessageClassification
@@ -22,6 +23,19 @@ class ConversationRepository(Protocol):
     async def add(self, conversation: Conversation) -> None: ...
 
     async def update(self, conversation: Conversation) -> None: ...
+
+    async def advance_last_inbound_at(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        sent_at: datetime,
+    ) -> None:
+        """单调推进 last_inbound_at = max(既有, sent_at)。
+
+        实现必须是单条原子 UPDATE（GREATEST/COALESCE），不得整实体
+        read-compare + merge——并发不同 sent_at 下旧值后提交会回退。
+        """
+        ...
 
     async def get(
         self, tenant_id: TenantId, conversation_id: ConversationId
