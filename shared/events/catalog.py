@@ -187,7 +187,10 @@ class ReplyReceived(DomainEvent):
     """收到客户回复。
 
     订阅方：``domains/outreach``（停止序列）、
-    ``agent_runtime/qualification_agent``（分类与追问）。
+    ``outreach_campaign``（唤醒等待步骤）。**不是** reply_qualification 的
+    前置触发——它由 ``ConversationService.record_classification`` 在分类落库
+    **之后**发布（结果事件），分类动作由 InboundMessageStored 触发的 reply
+    workflow 完成。
 
     ``message_id`` 是**入站**回复消息 id；``outbound_message_id`` 是被回复的
     **出站**消息 RFC Message-ID（= outreach attempt 的 deterministic_message_id，

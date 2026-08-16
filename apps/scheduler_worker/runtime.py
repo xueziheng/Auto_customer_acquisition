@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from agent_runtime.qualification_agent.agent import ReplyClassifier
 from connectors.dns_auth.client import (
     AsyncTxtResolver,
     DnsAuthenticationConnector,
@@ -29,6 +30,7 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from domains.conversations.service import ConversationService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.opportunities.permissions import Actor as OpportunityActor
@@ -91,6 +93,7 @@ from shared.events.catalog import (
     DomainEvent,
     HandoffQueueBacklogged,
     HandoffRequested,
+    InboundMessageStored,
     ReplyReceived,
     ReputationThresholdBreached,
     SendingIdentityActivated,
@@ -158,6 +161,14 @@ from workflows.outreach_campaign.flow import (
     build_outreach_campaign_handlers,
     register_outreach_campaign,
 )
+from workflows.reply_qualification.flow import (
+    build_reply_qualification_handlers,
+    register_reply_qualification,
+)
+from workflows.reply_qualification.ports import (
+    InputContentGuard,
+    MessageContentReader,
+)
 from workflows.sending_identity_auth.flow import (
     DnsAuthenticationStep,
     register_sending_identity_auth,
@@ -184,6 +195,7 @@ from .notification_projection import (
     NotificationJobHandoffNotifier,
     NotificationProjectionHandler,
 )
+from .reply_events import ReplyQualificationEventHandlers
 
 
 class CompleteOutboxRegistry(Protocol):
@@ -312,6 +324,47 @@ class CampaignMessagingComposition:
 
 
 @dataclass(frozen=True)
+class ReplyQualificationComposition:
+    """部署层显式提供的 reply_qualification 业务链端口（镜像 Campaign 组合）。
+
+    classifier/content_reader/input_guard/conversations/outreach 均为窄端口；
+    runtime 只做注册与接线，不构造模型/provider/凭证。生产 main 未注入真实
+    ``ReplyModelPort`` 适配器前，不提供本组合即不启用 reply flow。
+    """
+
+    classifier: ReplyClassifier
+    content_reader: MessageContentReader
+    input_guard: InputContentGuard
+    conversations: ConversationService
+    outreach: OutreachService
+
+    def __post_init__(self) -> None:
+        # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
+        # 方法做 callable 存在性校验（SchedulerDomainDependencies 同款风格），
+        # 不做整份 Protocol isinstance。
+        required = (
+            (self.classifier, "classify"),
+            (self.classifier, "model"),
+            (self.content_reader, "load"),
+            (self.input_guard, "check"),
+            (self.conversations, "record_classification"),
+            (self.outreach, "stop_enrollment"),
+            (self.outreach, "add_suppression"),
+        )
+        if any(
+            not callable(getattr(value, name, None))
+            for value, name in required
+            if name != "model"
+        ):
+            raise ValidationError("scheduler reply_qualification 依赖未完整配置")
+        # ``model`` 是 classified_by 留痕属性（非 callable）：必须为非空 str，
+        # 否则分类 provenance 断裂（reply 链实际消费它）。
+        model_value = getattr(self.classifier, "model", None)
+        if not isinstance(model_value, str) or not model_value.strip():
+            raise ValidationError("scheduler reply_qualification 依赖未完整配置")
+
+
+@dataclass(frozen=True)
 class SchedulerDomainDependencies:
     """尚未标准化为配置的 typed 业务依赖；禁止传 repository/raw payload。"""
 
@@ -319,6 +372,7 @@ class SchedulerDomainDependencies:
     employee_service: HumanHandoffEmployeeReader
     notification_audience: NotificationAudienceResolver
     campaign_messaging: CampaignMessagingComposition | None = None
+    reply_qualification: ReplyQualificationComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -332,6 +386,10 @@ class SchedulerDomainDependencies:
             self.campaign_messaging, CampaignMessagingComposition
         ):
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
+        if self.reply_qualification is not None and not isinstance(
+            self.reply_qualification, ReplyQualificationComposition
+        ):
+            raise ValidationError("scheduler reply_qualification 依赖未完整配置")
 
 
 class _DnsTenantCheck:
@@ -679,12 +737,25 @@ class SchedulerRuntimeFactory:
                     secrets,
                     tool_user,
                 )
+            reply_handlers: dict[str, StepHandler] = {}
+            if self._dependencies.reply_qualification is not None:
+                reply_composition = self._dependencies.reply_qualification
+                reply_handlers = build_reply_qualification_handlers(
+                    classifier=reply_composition.classifier,
+                    content_reader=reply_composition.content_reader,
+                    input_guard=reply_composition.input_guard,
+                    conversations=reply_composition.conversations,
+                    outreach=reply_composition.outreach,
+                    tenant_id=config.tenant_id,
+                    now=self._now,
+                )
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
                     **handoff_handlers,
                     "sending_identity_auth.check": auth_step,
                     **campaign_handlers,
+                    **reply_handlers,
                 },
                 now=self._now,
             )
@@ -731,6 +802,19 @@ class SchedulerRuntimeFactory:
                     SendingIdentityActivated,
                     "outreach_campaign.sending_identity_activated",
                     campaign_events,
+                )
+
+            if self._dependencies.reply_qualification is not None:
+                register_reply_qualification(workflow)
+                reply_events = ReplyQualificationEventHandlers(
+                    engine=workflow,
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                )
+                outbox.register_handler(
+                    InboundMessageStored,
+                    "reply_qualification.inbound_stored",
+                    reply_events,
                 )
 
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
