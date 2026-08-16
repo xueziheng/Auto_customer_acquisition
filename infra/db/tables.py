@@ -1945,3 +1945,37 @@ class GeneratedArtifactRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(200))
     generated_by: Mapped[str] = mapped_column(String(64))
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+class ConversationClassificationRow(Base):
+    """``conversation_classifications``：回复分类留痕（按 tenant/message/分类者唯一）。
+
+    同 message 允许不同 classified_by（模型版本/人工标识）并存——历史留痕供
+    按版本评估；不存任何数值置信度（硬边界 3）。
+    """
+
+    __tablename__ = "conversation_classifications"
+    __table_args__ = (
+        # 契约：每 (tenant, message) 至多一条分类（跨版本重评显式拒绝）——
+        # 唯一约束在并发下强制单行，服务层 check-then-insert 不是唯一保障
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "message_id",
+            name="pk_conversation_classifications",
+        ),
+        CheckConstraint(
+            "category IN ('clear_interest','willing_to_continue','requests_materials',"
+            "'requests_quote','requests_sample','provides_specification',"
+            "'no_current_need','future_need_possible','refers_other_contact',"
+            "'rejection','unsubscribe','bounce','auto_reply','complaint')",
+            name="ck_conversation_classifications_category",
+        ),
+        CheckConstraint(
+            "classified_at IS NOT NULL", name="ck_conversation_classifications_at"
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(100))
+    category: Mapped[str] = mapped_column(String(40))
+    classified_by: Mapped[str] = mapped_column(String(100))
+    classified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

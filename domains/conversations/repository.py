@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.conversations.models import Conversation, Message
+from domains.conversations.models import Conversation, Message, MessageClassification
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -30,6 +30,21 @@ class ConversationRepository(Protocol):
 
 
 @runtime_checkable
+@runtime_checkable
+class ClassificationRepository(Protocol):
+    """分类留痕存储。同 (tenant, message, classified_by) 唯一。"""
+
+    async def add(self, classification: MessageClassification) -> None: ...
+
+    async def get(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> MessageClassification | None:
+        """该 message 的分类记录（每 message 至多一条）。"""
+        ...
+
+
 class MessageRepository(Protocol):
     async def add(self, message: Message) -> None: ...
 
