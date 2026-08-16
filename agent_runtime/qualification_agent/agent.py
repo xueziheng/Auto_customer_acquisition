@@ -45,6 +45,9 @@ NEED_FIELD_NAMES = frozenset(
 _ALLOWED_OUTPUT_KEYS = frozenset({"category", "candidate_fields"})
 _CANDIDATE_KEYS = frozenset({"field", "value", "quote"})
 
+#: 模型输出大小上限（64 KiB）：在 json.loads 之前快速失败，防超大 payload 解析。
+_MAX_MODEL_OUTPUT_BYTES = 65_536
+
 _SYSTEM_PROMPT = """你是 TradeOS 的回复分类与需求提取模型。输入是客户对英文开发信的回复（subject 与 body）。
 只输出一个 JSON 对象，禁止输出任何其他文字、Markdown 或代码块。禁止输出任何数值置信度或概率。
 category 必须是下列 14 个枚举值之一（值必须完全一致）：
@@ -126,12 +129,19 @@ class QualificationAgent(CapabilityAgent):
     async def classify(
         self, *, message: dict[str, str]
     ) -> ReplyClassificationResult:
-        """验证受限模型输出并返回 typed 结果；无效输出抛 ValidationError（fail closed）。"""
-        _subject, _body, _message_id = self._validate_message(message)
+        """验证受限模型输出并返回 typed 结果；无效输出抛 ValidationError（fail closed）。
+
+        port 只收到 subject/body——message_id 等 identifier 绝不进模型调用。
+        """
+        self._validate_message(message)
+        port_message = {
+            "subject": message["subject"],
+            "body": message["body"],
+        }
         raw = await self._model_port.classify_reply(
-            system_prompt=_SYSTEM_PROMPT, message=message
+            system_prompt=_SYSTEM_PROMPT, message=port_message
         )
-        return self._validate_model_output(raw, message)
+        return self._validate_model_output(raw, port_message)
 
     @staticmethod
     def _validate_message(message: object) -> dict[str, str]:
@@ -156,6 +166,8 @@ class QualificationAgent(CapabilityAgent):
         cls, raw: str, message: dict[str, str]
     ) -> ReplyClassificationResult:
         """受限输出校验：键白名单（无动作/置信度）、枚举类别、候选词表与 quote。"""
+        if len(raw.encode("utf-8")) > _MAX_MODEL_OUTPUT_BYTES:
+            raise ValidationError("模型输出超过大小上限")
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -174,6 +186,7 @@ class QualificationAgent(CapabilityAgent):
         if not isinstance(raw_candidates, list):
             raise ValidationError("模型输出 candidate_fields 必须是数组")
         candidates: list[ReplyFieldCandidate] = []
+        seen_fields: dict[str, tuple[str, str]] = {}
         for item in raw_candidates:
             if not isinstance(item, dict):
                 raise ValidationError("模型输出候选字段条目无效")
@@ -200,6 +213,14 @@ class QualificationAgent(CapabilityAgent):
             if not any(quote in haystack for haystack in haystacks):
                 # quote 不在原消息中：provenance 断裂，拦截该候选
                 continue
+            previous = seen_fields.get(field)
+            if previous is not None:
+                if previous == (value, quote):
+                    # 完全相同候选：确定性去重
+                    continue
+                # 同 field 但 value/quote 不同：整份输出拒绝（无法确定取哪个）
+                raise ValidationError(f"模型输出候选字段冲突：{field}")
+            seen_fields[field] = (value, quote)
             candidates.append(ReplyFieldCandidate(field=field, value=value, quote=quote))
         return ReplyClassificationResult(category=category, candidate_fields=tuple(candidates))
 
@@ -213,9 +234,13 @@ class QualificationAgent(CapabilityAgent):
         raw_message = (task.inputs or {}).get("message")
         try:
             message = self._validate_message(raw_message)
+        except ValidationError:
+            # 消息输入校验失败：固定摘要（与模型输出护栏失败区分）
+            return self._input_rejected_changeset(task)
+        try:
             result = await self.classify(message=message)
         except ValidationError as exc:
-            # 护栏拦截：不可重试 → 带解释的空 ChangeSet（base 契约）
+            # 模型输出护栏拦截：不可重试 → 带解释的空 ChangeSet（base 契约）
             return self._intercepted_changeset(task, str(exc))
         changes: list[dict[str, Any]] = [
             {
@@ -264,4 +289,14 @@ class QualificationAgent(CapabilityAgent):
             run_id=task.run_id,
             changes=[],
             summary=f"模型输出被护栏拦截：{reason}",
+        )
+
+    @staticmethod
+    def _input_rejected_changeset(task: AgentTask) -> ChangeSet:
+        return ChangeSet(
+            change_set_id=ChangeSetId(new_id("cs")),
+            tenant_id=task.tenant_id,
+            run_id=task.run_id,
+            changes=[],
+            summary="任务输入无效",
         )

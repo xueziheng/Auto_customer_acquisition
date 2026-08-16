@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import pathlib
+import typing
 from typing import Any
 
 import pytest
@@ -138,7 +140,16 @@ async def test_model_numeric_confidence_is_intercepted() -> None:
         await agent.classify(message=message)
     changeset = await agent.run(_task(message), None)
     assert changeset.changes == []
-    assert "拦截" in changeset.summary
+    assert changeset.summary == "模型输出被护栏拦截：模型输出含未授权键：['confidence']"
+
+
+async def test_invalid_message_input_has_distinct_summary() -> None:
+    """P3-4：消息输入校验失败与模型输出护栏失败用不同 summary。"""
+    agent = _agent(_FakePort())
+    for bad_message in (None, {}, {"subject": "x"}, {"message_id": "m", "subject": "", "body": "b"}):
+        changeset = await agent.run(_task(bad_message), None)
+        assert changeset.changes == []
+        assert changeset.summary == "任务输入无效"
 
 
 async def test_model_cannot_smuggle_actions_or_unknown_keys() -> None:
@@ -148,18 +159,19 @@ async def test_model_cannot_smuggle_actions_or_unknown_keys() -> None:
         "subject": "Hello",
         "body": "We may need hinges.",
     }
-    for payload in (
-        {"category": "maybe_interesting"},
-        {"category": "rejection", "actions": ["stop_sequence"]},
-        {"category": "rejection", "side_effect": "email.send"},
-    ):
+    expectations = (
+        ({"category": "maybe_interesting"}, "模型输出了未知类别"),
+        ({"category": "rejection", "actions": ["stop_sequence"]}, "模型输出含未授权键：['actions']"),
+        ({"category": "rejection", "side_effect": "email.send"}, "模型输出含未授权键：['side_effect']"),
+    )
+    for payload, expected_summary in expectations:
         port = _FakePort([json.dumps(payload)])
         agent = _agent(port)
         with pytest.raises(ValidationError):
             await agent.classify(message=message)
         changeset = await agent.run(_task(message), None)
         assert changeset.changes == []
-        assert "拦截" in changeset.summary
+        assert changeset.summary == f"模型输出被护栏拦截：{expected_summary}"
 
 
 async def test_extraction_candidates_require_vocabulary_and_verbatim_quote() -> None:
@@ -195,36 +207,142 @@ async def test_extraction_candidates_require_vocabulary_and_verbatim_quote() -> 
     }
 
 
+async def test_oversized_model_output_is_rejected_before_parsing() -> None:
+    """P2：固定大小上限（64 KiB）在 json.loads 前拦截；超限有效/无效 JSON 均
+    不解析，run 返回可审计空 ChangeSet。"""
+    message = {
+        "message_id": "msg_boundary_size",
+        "subject": "Hello",
+        "body": "We may need hinges.",
+    }
+    oversized_valid = (
+        '{"category": "rejection", "candidate_fields": [], "padding": "'
+        + "x" * 70_000
+        + '"}'
+    )
+    oversized_invalid = "x" * 70_000
+    for raw in (oversized_valid, oversized_invalid):
+        port = _FakePort([raw])
+        agent = _agent(port)
+        with pytest.raises(ValidationError) as caught:
+            await agent.classify(message=message)
+        assert "大小上限" in str(caught.value)  # 若先解析，原因会是 JSON 类错误
+        changeset = await agent.run(_task(message), None)
+        assert changeset.changes == []
+        assert changeset.summary == "模型输出被护栏拦截：模型输出超过大小上限"
+
+
+async def test_identical_duplicate_candidates_are_deduplicated() -> None:
+    """P3-1：完全相同候选确定性去重（不重复落 ChangeSet）。"""
+    message = {
+        "message_id": "msg_boundary_dup",
+        "subject": "Bolt specification",
+        "body": "We need 50,000 pieces of M8 x 20mm hex bolts.",
+    }
+    model_output = {
+        "category": "provides_specification",
+        "candidate_fields": [
+            {"field": "quantity", "value": "50000", "quote": "50,000 pieces"},
+            {"field": "quantity", "value": "50000", "quote": "50,000 pieces"},
+            {"field": "size_spec", "value": "M8 x 20mm", "quote": "M8 x 20mm"},
+        ],
+    }
+    port = _FakePort([json.dumps(model_output)])
+    result = await _agent(port).classify(message=message)
+    assert len(result.candidate_fields) == 2
+
+
+async def test_conflicting_candidates_same_field_reject_whole_output() -> None:
+    """P3-1：同 field 但 value 或 quote 不同 → 整份输出 ValidationError。"""
+    message = {
+        "message_id": "msg_boundary_conflict",
+        "subject": "Bolt specification",
+        "body": "We need 50,000 pieces of M8 x 20mm hex bolts.",
+    }
+    for payload in (
+        {
+            "category": "provides_specification",
+            "candidate_fields": [
+                {"field": "quantity", "value": "50000", "quote": "50,000 pieces"},
+                {"field": "quantity", "value": "90000", "quote": "50,000 pieces"},
+            ],
+        },
+        {
+            "category": "provides_specification",
+            "candidate_fields": [
+                {"field": "quantity", "value": "50000", "quote": "50,000 pieces"},
+                {"field": "quantity", "value": "50000", "quote": "M8 x 20mm"},
+            ],
+        },
+    ):
+        port = _FakePort([json.dumps(payload)])
+        agent = _agent(port)
+        with pytest.raises(ValidationError) as caught:
+            await agent.classify(message=message)
+        assert "候选字段冲突" in str(caught.value)
+        changeset = await agent.run(_task(message), None)
+        assert changeset.changes == []
+        assert changeset.summary == "模型输出被护栏拦截：模型输出候选字段冲突：quantity"
+
+
 async def test_malformed_model_output_is_intercepted() -> None:
     message = {
         "message_id": "msg_boundary_6",
         "subject": "Hello",
         "body": "We may need hinges.",
     }
-    for raw in ("not json at all", '["a", "b"]', '{"category": "rejection", "candidate_fields": "nope"}'):
+    expectations = (
+        ("not json at all", "模型输出不是合法 JSON"),
+        ('["a", "b"]', "模型输出必须是 JSON 对象"),
+        ('{"category": "rejection", "candidate_fields": "nope"}', "模型输出 candidate_fields 必须是数组"),
+    )
+    for raw, expected_reason in expectations:
         port = _FakePort([raw])
         agent = _agent(port)
         with pytest.raises(ValidationError):
             await agent.classify(message=message)
         changeset = await agent.run(_task(message), None)
         assert changeset.changes == []
-        assert "拦截" in changeset.summary
+        assert changeset.summary == f"模型输出被护栏拦截：{expected_reason}"
 
 
-async def test_model_never_receives_secrets_or_identifiers() -> None:
-    """凭证不进模型：port 只收到系统提示与消息正文。"""
+async def test_port_receives_only_subject_and_body_without_identifiers() -> None:
+    """P3-2：port 只能收到 subject/body，绝不能收到 message_id/其他 identifier；
+    run 保留 message_id 用于 ChangeSet。"""
     message = {
         "message_id": "msg_boundary_7",
         "subject": "Interested",
         "body": "Yes, we are interested in your products.",
     }
     port = _FakePort()
-    await _agent(port).run(_task(message), None)
+    task = _task(message)
+    changeset = await _agent(port).run(task, None)
     _system, received = port.calls[0]
-    assert received["body"] == "Yes, we are interested in your products."
-    for marker in ("secret", "password", "token", "dsn", "postgresql"):
+    assert received == {"subject": "Interested", "body": "Yes, we are interested in your products."}
+    assert set(received) == {"subject", "body"}
+    for marker in ("secret", "password", "token", "dsn", "postgresql", "message_id", "run_id", "tenant_id"):
         assert marker not in json.dumps(received).lower()
         assert marker not in _system.lower()
+    # message_id 只在 ChangeSet 分类条目里
+    payload = _classification_entry(changeset)["payload"]
+    assert payload["message_id"] == "msg_boundary_7"
+
+
+def test_need_field_vocabulary_matches_demand_factual_contract() -> None:
+    """P3-3：agent 的 NEED_FIELD_NAMES 必须与 domains/demand ValidatedNeed 的
+    FactualField 业务字段集一致（测试侧 introspection，生产不 import 域内部）。"""
+    demand_models = importlib.import_module("domains.demand.models")
+    hints = typing.get_type_hints(demand_models.ValidatedNeed)
+    factual: set[str] = set()
+    for name, hint in hints.items():
+        candidates = (
+            typing.get_args(hint) if typing.get_origin(hint) is typing.Union else (hint,)
+        )
+        if any(typing.get_origin(arg) is demand_models.FactualField for arg in candidates):
+            factual.add(name)
+    from agent_runtime.qualification_agent.agent import NEED_FIELD_NAMES
+
+    assert NEED_FIELD_NAMES == frozenset(factual)
 
 
 def test_agent_module_imports_only_allowed_layers() -> None:
