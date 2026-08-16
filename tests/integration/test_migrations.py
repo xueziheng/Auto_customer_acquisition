@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -2946,7 +2947,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0018", "RED：0018 会话分类留痕迁移尚未创建"
+            assert revision == "0018", "RED：0017 投诉迁移尚未创建"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3084,7 +3085,7 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0018", "RED：0018 会话分类留痕迁移尚未创建"
+            assert revision == "0018", "RED：0017 投诉迁移尚未创建"
             for constraint_name in (
                 "ck_email_feedback_receipt_kind",
                 "ck_email_feedback_receipt_target",
@@ -3320,4 +3321,92 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
         )
     finally:
         _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0018_conversation_classifications_roundtrip_and_guards(
+    db_url: str,
+) -> None:
+    """0018→0017→0018：分类留痕表可逆往返；表/列/PK/CHECK 与 ORM 一致。"""
+    from sqlalchemy import CheckConstraint, inspect
+
+    from infra.db.session import create_engine_from
+    from infra.db.tables import ConversationClassificationRow
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0018", "RED：0018 会话分类留痕迁移尚未创建"
+
+            def inspect_contract(sync) -> dict[str, object]:
+                inspector = inspect(sync)
+                return {
+                    "tables": set(inspector.get_table_names()),
+                    "columns": {
+                        item["name"]: str(item["type"])
+                        for item in inspector.get_columns("conversation_classifications")
+                    },
+                    "pk": list(
+                        inspector.get_pk_constraint(
+                            "conversation_classifications"
+                        )["constrained_columns"]
+                    ),
+                    "checks": {
+                        item["name"]: item["sqltext"]
+                        for item in inspector.get_check_constraints(
+                            "conversation_classifications"
+                        )
+                    },
+                }
+
+            contract = await conn.run_sync(inspect_contract)
+        # 与 ORM 一致：列名/类型（按 DB 方言编译；反射端与 ORM 端统一归一化
+        # " WITH TIME ZONE" 后缀，避免 timestamptz 渲染差）/PK/CHECK
+        def _type_key(value: str) -> str:
+            return value.replace(" WITH TIME ZONE", "")
+
+        orm_columns = {
+            name: _type_key(str(column.type.compile(dialect=engine.dialect)))
+            for name, column in ConversationClassificationRow.__table__.columns.items()
+        }
+        orm_pk = [
+            column.name for column in ConversationClassificationRow.__table__.primary_key.columns
+        ]
+        orm_category_check = next(
+            constraint.sqltext
+            for constraint in ConversationClassificationRow.__table__.constraints
+            if isinstance(constraint, CheckConstraint)
+        )
+        assert "conversation_classifications" in contract["tables"]
+        assert {
+            name: _type_key(str(type_value))
+            for name, type_value in contract["columns"].items()
+        } == orm_columns
+        assert contract["pk"] == orm_pk == ["tenant_id", "message_id"]
+        assert set(contract["checks"]) == {
+            "ck_conversation_classifications_category"
+        }
+        # CHECK 语义 parity（不比较 raw SQL：Postgres 会把 IN 规范化为 ANY，
+        # TextClause 不能直接等于字符串）：从 ReplyCategory 枚举取完整 14 类词表，
+        # 安全解析 DB 约束定义与 ORM CheckConstraint 文本，各自包含全部且无多余类别。
+        from domains.conversations.schemas import ReplyCategory
+
+        expected_categories = {item.value for item in ReplyCategory}
+        assert len(expected_categories) == 14
+        db_check = contract["checks"]["ck_conversation_classifications_category"]
+        orm_check = str(orm_category_check)
+        db_values = set(re.findall(r"'([a-z_]+)'(?=::)", db_check))
+        orm_values = set(re.findall(r"'([a-z_]+)'", orm_check))
+        assert db_values == expected_categories
+        assert orm_values == expected_categories
+
+        # 往返：downgrade 0017 后表消失，upgrade head 后恢复且契约不变
+        _run_alembic(db_url, "downgrade", "0017")
+        assert "conversation_classifications" not in await _table_names(engine)
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
+    finally:
         await engine.dispose()

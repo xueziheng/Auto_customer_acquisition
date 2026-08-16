@@ -1969,9 +1969,6 @@ class ConversationClassificationRow(Base):
             "'rejection','unsubscribe','bounce','auto_reply','complaint')",
             name="ck_conversation_classifications_category",
         ),
-        CheckConstraint(
-            "classified_at IS NOT NULL", name="ck_conversation_classifications_at"
-        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
