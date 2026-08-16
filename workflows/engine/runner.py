@@ -40,6 +40,8 @@ class StepDefinition:
                           内——状态转换本身是纯逻辑（将来 Temporal 的
                           Workflow/Activity 分界线）
         timeout:          超时时长，到期转 TIMED_OUT 并走 on_timeout
+        timeout_context_key: 动态超时秒数的 run.context 键（与 timeout 互斥，
+                          ``wait`` 截止/进入等待时从上下文读取，支持按 run 差异化等待）
         max_retries:      TransientError 的重试上限
         retry_backoff:    重试间隔基数（指数退避）
         on_timeout:       超时后转到哪一步（None = 整个流程失败）
@@ -47,11 +49,14 @@ class StepDefinition:
         reminder_interval: WAITING_EVENT 周期提醒间隔；成功后按绝对计划重排自身
         reminder_handler_ref: 周期提醒 handler 的注册名
         inherit_planned_anchor: 是否从 predecessor 继承不可变计划锚点；默认关闭
+        run_on_entry:     WAITING_EVENT 步骤进入时先以 pending 状态跑一次 handler
+                          （入口检查）；handler 返回 wait 才转入 waiting_event
     """
 
     step_name: str
     handler_ref: str
     timeout: timedelta | None = None
+    timeout_context_key: str | None = None
     max_retries: int = 3
     retry_backoff: timedelta = timedelta(seconds=30)
     on_timeout: str | None = None
@@ -59,6 +64,7 @@ class StepDefinition:
     reminder_interval: timedelta | None = None
     reminder_handler_ref: str | None = None
     inherit_planned_anchor: bool = False
+    run_on_entry: bool = False
 
 
 @dataclass(frozen=True)

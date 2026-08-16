@@ -8,7 +8,7 @@ Enrollment 终态化或挂起发送计划，prepare 的域内二次检查兜住�
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.outreach.permissions import (
@@ -53,6 +53,7 @@ from workflows.outreach_campaign.flow import WORKFLOW_TYPE
 
 _SENDER_ACTOR_ID = "system:scheduler-campaign-send"
 _DRIVER_ACTOR_ID = "system:scheduler-campaign-driver"
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 #: permission stage 时刻 attempt 的合法状态：reserved（尚未 claim）、
 #: sending（上次 claim 后崩溃重试）、sent（成功后的幂等重放）。
@@ -187,7 +188,12 @@ class SchedulerCampaignSender:
 
 
 class CampaignSendDriver:
-    """到期 Enrollment 驱动：先取消失效 run，再为到期者起 per-step run。"""
+    """到期 Enrollment 驱动：先取消失效 run，再为到期者起单 run（每 enrollment 一条）。
+
+    幂等键按「已终态 run 代数 + 1」分代：活跃 run 存在时新扫描必然算出同代
+    键 → 引擎冲突返回既有 run；run 终态（completed/failed/cancelled）后新代
+    键才会成立 → 暂停/取消后的恢复自动起新 run，恰一次。
+    """
 
     def __init__(
         self,
@@ -207,7 +213,7 @@ class CampaignSendDriver:
         self._batch_limit = batch_limit
 
     async def _cancel_stale_runs(self) -> int:
-        """取消已取消/已完成 Campaign 的未终态 run；暂停的 run 保留（prepare 重试）。"""
+        """暂停/取消/已完成 Campaign 的未终态 run → cancel（AGENTS.md 规则）。"""
         async with self._factory() as session:
             rows = (
                 await session.execute(
@@ -226,21 +232,45 @@ class CampaignSendDriver:
             view = await self._outreach.get_campaign(
                 self._tenant_id, CampaignId(campaign_id), actor=self._scan_actor
             )
-            if view.state in {CampaignState.CANCELLED, CampaignState.COMPLETED}:
+            if view.state in {
+                CampaignState.CANCELLED,
+                CampaignState.COMPLETED,
+                CampaignState.PAUSED,
+            }:
                 await self._engine.cancel(
                     self._tenant_id, RunId(row.run_id), "campaign not active"
                 )
                 cancelled += 1
         return cancelled
 
+    async def _terminal_run_count(self, enrollment_id: EnrollmentId) -> int:
+        """该 enrollment 已终态 run 代数（completed/failed/cancelled）。"""
+        async with self._factory() as session:
+            count = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(WorkflowRunRow)
+                    .where(
+                        WorkflowRunRow.tenant_id == str(self._tenant_id),
+                        WorkflowRunRow.workflow_type == WORKFLOW_TYPE,
+                        WorkflowRunRow.subject_ref == str(enrollment_id),
+                        WorkflowRunRow.status.in_(_TERMINAL_STATUSES),
+                    )
+                )
+            ).scalar_one()
+        return int(count)
+
     async def scan_once(self) -> int:
-        """取消失效 run 并为到期 Enrollment 起 per-step run；返回启动数。"""
+        """取消失效 run 并为到期 Enrollment 起单 run；返回尝试启动数。"""
         await self._cancel_stale_runs()
         due = await self._outreach.list_due_sequence_enrollments(
             self._tenant_id, limit=self._batch_limit, actor=self._scan_actor
         )
         started = 0
         for enrollment in due:
+            generation = (
+                await self._terminal_run_count(enrollment.enrollment_id) + 1
+            )
             await self._engine.start(
                 self._tenant_id,
                 WORKFLOW_TYPE,
@@ -249,7 +279,7 @@ class CampaignSendDriver:
                     "enrollment_id": str(enrollment.enrollment_id),
                     "campaign_id": str(enrollment.campaign_id),
                 },
-                f"campaign:{enrollment.enrollment_id}:step{enrollment.current_step + 1}",
+                f"campaign:{enrollment.enrollment_id}:run{generation}",
             )
             started += 1
         return started

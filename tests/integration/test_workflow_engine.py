@@ -2012,7 +2012,11 @@ async def test_timeout_commit_failure_fails_observably_without_next_cycle_loop(
                     str(bad),
                     str(tenant),
                     step_name="conflict",
-                    key=f"{tenant}:wfstep:{bad}:escalate",
+                    # 步骤幂等键按实例唯一（含 planned_at）：注入同实例冲突行
+                    key=(
+                        f"{tenant}:wfstep:{bad}:escalate:"
+                        f"{clock.now().isoformat()}"
+                    ),
                     status="cancelled",
                 ),
             )

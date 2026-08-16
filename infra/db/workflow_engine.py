@@ -212,11 +212,18 @@ class PostgresWorkflowEngine:
                     )
             if (
                 step.wait_event_type is not None
-                and step.timeout is not None
+                and (step.timeout is not None or step.timeout_context_key is not None)
                 and step.on_timeout is None
             ):
                 raise ValueError(
                     f"WAITING_EVENT step {step.step_name} 配置 timeout 时必须配置 on_timeout"
+                )
+            if step.timeout_context_key is not None and (
+                step.wait_event_type is None or step.timeout is not None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} timeout_context_key 仅适用于无静态 timeout 的 "
+                    "WAITING_EVENT"
                 )
         self._definitions[key] = definition
 
@@ -250,7 +257,7 @@ class PostgresWorkflowEngine:
         definition = self._definition_for(workflow_type)
         first_step = definition.steps[0]
         anchor = scheduled_at if scheduled_at is not None else self._now()
-        first_planned_at = anchor + self._wait_delay(first_step)
+        first_planned_at = anchor + self._entry_delay(first_step, initial_context)
         run_id = new_id("run")
         session = self._factory()
         try:
@@ -283,7 +290,10 @@ class PostgresWorkflowEngine:
                         # 首步本身等待事件时直接进入 waiting_event：poll_due 不领取，
                         # 只由 deliver_event 触发（与 advance 到等待步骤语义一致）。
                         status=(
-                            "waiting_event" if first_step.wait_event_type else "pending"
+                            "pending"
+                            if first_step.wait_event_type is None
+                            or first_step.run_on_entry
+                            else "waiting_event"
                         ),
                     )
                 )
@@ -385,7 +395,8 @@ class PostgresWorkflowEngine:
             (definition.workflow_type, definition.version, step.step_name)
             for definition in self._definitions.values()
             for step in definition.steps
-            if step.wait_event_type is not None and step.timeout is not None
+            if step.wait_event_type is not None
+            and (step.timeout is not None or step.timeout_context_key is not None)
         ]
         reminder_steps = [
             (definition.workflow_type, definition.version, step.step_name)
@@ -706,7 +717,7 @@ class PostgresWorkflowEngine:
                 if next_def.inherit_planned_anchor
                 else now
             )
-            next_planned_at = next_anchor + self._wait_delay(next_def)
+            next_planned_at = next_anchor + self._entry_delay(next_def, merged)
             step_row.status = "completed"
             run_row.current_step = next_name
             run_row.status = StepStatus.RUNNING.value
@@ -722,10 +733,14 @@ class PostgresWorkflowEngine:
                     reminder_index=(
                         1 if next_def.reminder_interval is not None else None
                     ),
-                    # 等待事件的下一步直接进入 waiting_event：poll_due 不领取，
-                    # 只由 deliver_event 触发（避免 handler 在无事件上下文中误跑）。
+                    # 等待事件的下一步默认直接进入 waiting_event（只由
+                    # deliver_event 触发）；run_on_entry 步骤以 pending 进入，
+                    # 先跑一次入口检查，返回 wait 才转入 waiting_event。
                     status=(
-                        "waiting_event" if next_def.wait_event_type else "pending"
+                        "pending"
+                        if next_def.wait_event_type is None
+                        or next_def.run_on_entry
+                        else "waiting_event"
                     ),
                 )
             )
@@ -733,6 +748,10 @@ class PostgresWorkflowEngine:
             step_row.status = (
                 "waiting_event" if step_def.wait_event_type else "waiting_human"
             )
+            if step_def.wait_event_type:
+                # 进入等待即排定超时截止（动态上下文或静态 timeout），
+                # 到期由 poll_due 领取做 on_timeout；事件可提前唤醒。
+                step_row.due_at = now + self._wait_delay(step_def, merged)
             run_row.next_poll_at = None
             run_row.context = merged
         elif action == "complete":
@@ -770,7 +789,9 @@ class PostgresWorkflowEngine:
             if target_def.inherit_planned_anchor
             else now
         )
-        target_planned_at = target_anchor + self._wait_delay(target_def)
+        target_planned_at = target_anchor + self._entry_delay(
+            target_def, run_row.context
+        )
         step_row.status = StepStatus.TIMED_OUT.value
         step_row.updated_at = now
         run_row.current_step = target
@@ -787,9 +808,10 @@ class PostgresWorkflowEngine:
                     1 if target_def.reminder_interval is not None else None
                 ),
                 status=(
-                    StepStatus.WAITING_EVENT.value
-                    if target_def.wait_event_type
-                    else StepStatus.PENDING.value
+                    StepStatus.PENDING.value
+                    if target_def.wait_event_type is None
+                    or target_def.run_on_entry
+                    else StepStatus.WAITING_EVENT.value
                 ),
             )
         )
@@ -1035,7 +1057,7 @@ class PostgresWorkflowEngine:
         reminder_index: int | None = None,
         status: str = "pending",
     ) -> WorkflowStepRow:
-        """新建 step 行：durable 幂等键 = {tenant}:wfstep:{run_id}:{step_name}。"""
+        """新建 step 行：durable 幂等键按步骤实例唯一（step_name 可被循环复用）。"""
         return WorkflowStepRow(
             step_id=new_id("wfs"),
             run_id=run_id,
@@ -1046,7 +1068,10 @@ class PostgresWorkflowEngine:
             attempt=0,
             error=None,
             due_at=due_at,
-            idempotency_key=f"{tenant_id}:wfstep:{run_id}:{step_name}",
+            idempotency_key=(
+                f"{tenant_id}:wfstep:{run_id}:{step_name}:"
+                f"{planned_at.isoformat()}"
+            ),
         )
 
     def _row_to_run(
@@ -1073,9 +1098,34 @@ class PostgresWorkflowEngine:
         )
 
     @staticmethod
-    def _wait_delay(step: StepDefinition) -> timedelta:
+    def _entry_delay(
+        step: StepDefinition, context: dict[str, Any] | None
+    ) -> timedelta:
+        """进入步骤时的首次到期延迟。
+
+        普通步骤与 run_on_entry 等待步骤立即执行（0）；其余等待步骤按
+        静态/动态超时排定首次到期。
+        """
         if step.wait_event_type is None:
             return timedelta(0)
+        if step.run_on_entry:
+            return timedelta(0)
+        return PostgresWorkflowEngine._wait_delay(step, context)
+
+    @staticmethod
+    def _wait_delay(
+        step: StepDefinition, context: dict[str, Any] | None
+    ) -> timedelta:
+        """等待步骤的截止延迟：动态上下文超时优先，其次静态 timeout/reminder。"""
+        if step.wait_event_type is None:
+            return timedelta(0)
+        if step.timeout_context_key is not None:
+            value = (context or {}).get(step.timeout_context_key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"step {step.step_name} 动态超时上下文无效"
+                )
+            return timedelta(seconds=value)
         return step.timeout or step.reminder_interval or timedelta(0)
 
     @staticmethod

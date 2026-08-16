@@ -43,6 +43,7 @@ from domains.outreach.permissions import (
     OutreachAction,
     OutreachAuthorizer,
     OutreachScope,
+    ScopeLevel,
 )
 from domains.outreach.repository import (
     AppendStatus,
@@ -112,6 +113,16 @@ from shared.schemas.identifiers import (
 )
 
 _tenant_logger = logging.getLogger("security.tenant_isolation")
+
+
+_AUTOMATIC_STOP_STATE_BY_REASON: dict[EnrollmentStopReason, EnrollmentState] = {
+    EnrollmentStopReason.REPLY: EnrollmentState.REPLIED,
+    EnrollmentStopReason.SUPPRESSION: EnrollmentState.STOPPED_SUPPRESSED,
+    EnrollmentStopReason.HARD_BOUNCE: EnrollmentState.STOPPED_BOUNCED,
+    EnrollmentStopReason.IDENTITY_UNAVAILABLE: (
+        EnrollmentState.STOPPED_IDENTITY_UNAVAILABLE
+    ),
+}
 
 
 class OutreachServiceImpl:
@@ -2168,8 +2179,14 @@ class OutreachServiceImpl:
     ) -> EnrollmentView:
         action = OutreachAction.ENROLLMENT_STOP
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
-        if reason is not EnrollmentStopReason.MANUAL:
-            raise ValidationError("人工停止只接受 manual reason")
+        if reason is not EnrollmentStopReason.MANUAL and (
+            actor.role != "system"
+            or actor.scope.level is not ScopeLevel.SYSTEM
+            or actor.scope.allowed_enrollment_ids != frozenset({enrollment_id})
+        ):
+            # 自动停止（回复/抑制/硬退信/身份不可用）只允许 SYSTEM 且精确单
+            # enrollment（事件订阅路径）；人工停止保留原语义
+            raise ValidationError("自动停止只接受收窄 SYSTEM 作用域")
         located = await self._locate_enrollment(tenant_id, enrollment_id)
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
@@ -2194,12 +2211,20 @@ class OutreachServiceImpl:
                 account_id=enrollment.account_id,
                 enrollment_id=enrollment.enrollment_id,
             )
-            if enrollment.state is not EnrollmentState.STOPPED_MANUAL:
+            target_state = _AUTOMATIC_STOP_STATE_BY_REASON.get(reason)
+            if reason is EnrollmentStopReason.MANUAL:
+                target_state = EnrollmentState.STOPPED_MANUAL
+            if (
+                target_state is not None
+                and enrollment.state is not target_state
+                and enrollment.state
+                in {EnrollmentState.ENROLLED, EnrollmentState.IN_SEQUENCE}
+            ):
                 enrollment.next_send_at = None
                 enrollment.transition_to(
-                    EnrollmentState.STOPPED_MANUAL,
+                    target_state,
                     at=now,
-                    reason=EnrollmentStopReason.MANUAL,
+                    reason=reason,
                 )
                 await uow.enrollments.update(enrollment)
             await uow.actions.append(
@@ -2207,7 +2232,7 @@ class OutreachServiceImpl:
                     tenant_id,
                     actor,
                     str(enrollment.enrollment_id),
-                    f"enrollment:{enrollment.enrollment_id}:manual-stop",
+                    f"enrollment:{enrollment.enrollment_id}:stop:{reason.value}",
                     action,
                     now,
                 )

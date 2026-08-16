@@ -1,8 +1,9 @@
 """scheduler 驱动 Campaign 序列自动发送的端到端验收（真实 Postgres）。
 
-TDD RED：驱动/发送链路尚不存在，本文件导入即失败。覆盖：到期扫描起
-per-step run → 完整 email.send 管线（preflight/claim/额度/发送/记账）；
-next_send_at 门控；暂停不发新 run；取消后未终态 run 被取消。
+TDD RED：单 run 驱动/事件接线尚不存在，本文件导入即失败。覆盖：每
+enrollment 一条 run 按 wait_days 自动推进；暂停/取消 → 未终态 run 取消、
+激活恢复起新 run；ReplyReceived / SendingIdentityActivated 生产事件接线
+（outbox → 域 stop + 引擎 deliver_event）；并发扫描恰一次。
 """
 
 from __future__ import annotations
@@ -121,11 +122,9 @@ class _Transport:
 
     def __init__(self) -> None:
         self.sent: list[str] = []
-        self.search_calls = 0
 
     async def search(self, **kwargs: object) -> None:
         del kwargs
-        self.search_calls += 1
 
     async def send(self, **kwargs: object) -> str:
         del kwargs
@@ -239,17 +238,23 @@ async def _seed_campaign(
     campaign_id: CampaignId,
     sender: SendingIdentityId,
     approval_id: ApprovalId,
+    *,
+    step_count: int = 2,
 ) -> None:
     uow_type = importlib.import_module("infra.db.outreach_uow").SqlAlchemyOutreachUnitOfWork
+    steps = (
+        SequenceStepSpec(1, StepIntent.DISCOVERY, 0),
+        *(
+            SequenceStepSpec(index, StepIntent.FOLLOW_UP, 1)
+            for index in range(2, step_count + 1)
+        ),
+    )
     boundary = CampaignBoundary(
         markets=("US",),
         target_entity_types=("importer",),
         allowed_categories=("hardware",),
         sender_identity_ids=(sender,),
-        steps=(
-            SequenceStepSpec(1, StepIntent.DISCOVERY, 0),
-            SequenceStepSpec(2, StepIntent.FOLLOW_UP, 1),
-        ),
+        steps=steps,
         daily_new_contact_limit=5,
         daily_total_message_limit=7,
         handoff_triggers=(),
@@ -322,20 +327,13 @@ def _test_service(
     sender: SendingIdentityId,
     contacts: dict[tuple[ContactPointId, ProspectAccountId], ContactEligibilitySnapshot],
     replies: dict[tuple[ContactPointId, ProspectAccountId], ReplyStatusSnapshot],
+    senders: FakeSenders,
     clock: MutableClock,
 ):
     trace = Trace()
     approvals = FakeApprovals(trace)
     approvals.values[(campaign_id, 1)] = CampaignApprovalSnapshot(
         tenant, campaign_id, 1, approval_id, CampaignApprovalState.APPROVED, APPROVER, NOW
-    )
-    senders = FakeSenders(
-        {
-            sender: SendingIdentityEligibilitySnapshot(
-                tenant, sender, OutreachSenderRole.COLD_OUTREACH, True, True, 100, NOW
-            )
-        },
-        trace,
     )
     uow_type = importlib.import_module("infra.db.outreach_uow").SqlAlchemyOutreachUnitOfWork
     service_type = importlib.import_module("domains.outreach.service_impl").OutreachServiceImpl
@@ -371,11 +369,11 @@ async def _enroll(
     )
 
 
-async def _poll(runtime: object, tenant: TenantId) -> None:
-    for _ in range(10):
-        count = await runtime.workflow.poll_due(tenant, 10)  # type: ignore[attr-defined]
-        if count == 0:
-            return
+async def _poll(runtime: object, tenant: TenantId, clock: MutableClock) -> None:
+    # 等待步骤首次到期 = 时钟推进后：逐轮推进时钟再轮询（不提前退出）
+    for _ in range(12):
+        clock.value = clock.value + timedelta(seconds=1)
+        await runtime.workflow.poll_due(tenant, 10)  # type: ignore[attr-defined]
 
 
 def _composition(
@@ -386,19 +384,12 @@ def _composition(
     sender: SendingIdentityId,
     contacts: dict[tuple[ContactPointId, ProspectAccountId], ContactEligibilitySnapshot],
     replies: dict[tuple[ContactPointId, ProspectAccountId], ReplyStatusSnapshot],
+    senders: FakeSenders,
 ) -> CampaignMessagingComposition:
     trace = Trace()
     approvals = FakeApprovals(trace)
     approvals.values[(campaign_id, 1)] = CampaignApprovalSnapshot(
         tenant, campaign_id, 1, approval_id, CampaignApprovalState.APPROVED, APPROVER, NOW
-    )
-    senders = FakeSenders(
-        {
-            sender: SendingIdentityEligibilitySnapshot(
-                tenant, sender, OutreachSenderRole.COLD_OUTREACH, True, True, 100, NOW
-            )
-        },
-        trace,
     )
     return CampaignMessagingComposition(
         contact_eligibility=FakeContacts(contacts, trace),
@@ -420,14 +411,26 @@ def _dependencies(composition: CampaignMessagingComposition) -> SchedulerDomainD
     )
 
 
-async def test_driver_advances_sequence_by_next_send_at_and_sends_via_gateway(
+def _senders(
+    tenant: TenantId, sender: SendingIdentityId, *, sendable: bool = True
+) -> FakeSenders:
+    trace = Trace()
+    return FakeSenders(
+        {
+            sender: SendingIdentityEligibilitySnapshot(
+                tenant, sender, OutreachSenderRole.COLD_OUTREACH, sendable, True, 100, NOW
+            )
+        },
+        trace,
+    )
+
+async def test_driver_starts_single_run_per_enrollment_and_advances_by_wait_days(
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
     campaign_id = CampaignId(new_id("cmp"))
     approval_id = ApprovalId(new_id("apr"))
-    sender: SendingIdentityId
     boss = EmployeeId(new_id("emp"))
     account = ProspectAccountId(new_id("acc"))
     contact = ContactPointId(new_id("cp"))
@@ -444,12 +447,13 @@ async def test_driver_advances_sequence_by_next_send_at_and_sends_via_gateway(
     sender = await _seed_identity(factory, tenant, boss)
     await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
     clock = MutableClock(NOW)
-    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, clock)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-1")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
         _environ(_dsn(campaign_scheduler_db), tenant),
-        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
         now=clock.now,
@@ -457,52 +461,57 @@ async def test_driver_advances_sequence_by_next_send_at_and_sends_via_gateway(
     rows = importlib.import_module("infra.db.tables")
     async with runtime_factory() as runtime:
         assert runtime.campaign_driver is not None
-        # 到期扫描起第 1 步 run → poll 推进 → 完整 email.send 管线发送
-        started = await runtime.campaign_driver.scan_once()
-        assert started == 1
-        await _poll(runtime, tenant)
+        # 每 enrollment 一条 run：扫描起 run → poll 推进第 1 封
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
         assert transport.sent == ["gmail-scheduler-1"]
         async with factory() as session:
-            attempts = (
+            run_rows = (
                 await session.execute(
-                    select(rows.OutreachMessageAttemptRow).where(
-                        rows.OutreachMessageAttemptRow.tenant_id == str(tenant)
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
                     )
                 )
             ).scalars().all()
             enrollment_row = await session.get(
                 rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
             )
-        assert len(attempts) == 1
-        assert attempts[0].state == "sent"
-        assert attempts[0].provider_ref == "gmail-scheduler-1"
+        assert len(run_rows) == 1  # 单 run
+        assert run_rows[0].status == "running"
         assert enrollment_row.state == "in_sequence"
-        assert enrollment_row.current_step == 1
-        assert enrollment_row.next_send_at == NOW + timedelta(days=1)
-        # 未到期（next_send_at 在未来）→ 扫描不起新 run
-        assert await runtime.campaign_driver.scan_once() == 0
-        # 跨过 wait_days → 第 2 步 run → 发送 → enrollment completed
+        # wait_days 真实时间推进：未到期不推进；跨天后 wait_for_reply 超时发第 2 封
+        clock.value = NOW + timedelta(hours=12)
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
         clock.value = NOW + timedelta(days=1)
-        started = await runtime.campaign_driver.scan_once()
-        assert started == 1
-        await _poll(runtime, tenant)
+        await _poll(runtime, tenant, clock)
         assert transport.sent == ["gmail-scheduler-1", "gmail-scheduler-2"]
         async with factory() as session:
+            run_rows = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().all()
             enrollment_row = await session.get(
                 rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
             )
+        assert len(run_rows) == 1  # 仍是同一条 run
         assert enrollment_row.state == "completed"
-        assert enrollment_row.next_send_at is None
+        # 已完成的 enrollment 不再起 run
+        assert await runtime.campaign_driver.scan_once() == 0
 
 
-async def test_paused_campaign_blocks_new_runs_until_reactivated(
+async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
     campaign_id = CampaignId(new_id("cmp"))
     approval_id = ApprovalId(new_id("apr"))
-    sender: SendingIdentityId
     boss = EmployeeId(new_id("emp"))
     account = ProspectAccountId(new_id("acc"))
     contact = ContactPointId(new_id("cp"))
@@ -519,41 +528,65 @@ async def test_paused_campaign_blocks_new_runs_until_reactivated(
     sender = await _seed_identity(factory, tenant, boss)
     await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
     clock = MutableClock(NOW)
-    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, clock)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
     await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-pause")
-    await service.pause_campaign(  # type: ignore[attr-defined]
-        tenant, campaign_id, "paused-for-test", actor=_boss()
-    )
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
         _environ(_dsn(campaign_scheduler_db), tenant),
-        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
         now=clock.now,
     )
+    rows = importlib.import_module("infra.db.tables")
     async with runtime_factory() as runtime:
-        # 暂停 → 到期列表为空（域只列 ACTIVE Campaign）→ 不发
+        assert await runtime.campaign_driver.scan_once() == 1
+        # 暂停 → 下次扫描取消未终态 run（AGENTS.md：暂停/取消 → 收 cancel）
+        await service.pause_campaign(  # type: ignore[attr-defined]
+            tenant, campaign_id, "paused-for-test", actor=_boss()
+        )
         assert await runtime.campaign_driver.scan_once() == 0
-        await _poll(runtime, tenant)
+        await _poll(runtime, tenant, clock)
         assert transport.sent == []
-        # 恢复激活 → 扫描起 run → 发送
+        async with factory() as session:
+            run_rows = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().all()
+        assert len(run_rows) == 1
+        assert run_rows[0].status == "cancelled"
+        # 激活 → 扫描起新 run（新代幂等键）→ 发送
         await service.activate_campaign(  # type: ignore[attr-defined]
             tenant, campaign_id, actor=_boss()
         )
         assert await runtime.campaign_driver.scan_once() == 1
-        await _poll(runtime, tenant)
+        await _poll(runtime, tenant, clock)
         assert transport.sent == ["gmail-scheduler-1"]
+        async with factory() as session:
+            run_rows = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().all()
+        assert len(run_rows) == 2  # 恢复 = 新代 run，恰一次
+        assert [row.status for row in run_rows] == ["cancelled", "running"]
 
 
-async def test_cancelled_campaign_cancels_inflight_runs(
+async def test_cancel_campaign_cancels_inflight_runs(
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
     campaign_id = CampaignId(new_id("cmp"))
     approval_id = ApprovalId(new_id("apr"))
-    sender: SendingIdentityId
     boss = EmployeeId(new_id("emp"))
     account = ProspectAccountId(new_id("acc"))
     contact = ContactPointId(new_id("cp"))
@@ -570,12 +603,13 @@ async def test_cancelled_campaign_cancels_inflight_runs(
     sender = await _seed_identity(factory, tenant, boss)
     await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
     clock = MutableClock(NOW)
-    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, clock)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-cancel")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
         _environ(_dsn(campaign_scheduler_db), tenant),
-        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies)),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
         now=clock.now,
@@ -588,7 +622,7 @@ async def test_cancelled_campaign_cancels_inflight_runs(
             tenant, campaign_id, actor=_boss()
         )
         assert await runtime.campaign_driver.scan_once() == 0
-        await _poll(runtime, tenant)
+        await _poll(runtime, tenant, clock)
         assert transport.sent == []
         async with factory() as session:
             run_rows = (
@@ -605,3 +639,58 @@ async def test_cancelled_campaign_cancels_inflight_runs(
         assert len(run_rows) == 1
         assert run_rows[0].status == "cancelled"
         assert enrollment_row.state == "enrolled"  # 从未发送，序列未推进
+
+
+async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_conc", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-conc")
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        results = await asyncio.gather(
+            runtime.campaign_driver.scan_once(),
+            runtime.campaign_driver.scan_once(),
+        )
+        assert results == [1, 1]  # 幂等键：同代冲突返回既有 run
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]  # provider 恰一次
+        async with factory() as session:
+            run_rows = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().all()
+        assert len(run_rows) == 1

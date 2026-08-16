@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -33,6 +34,7 @@ from domains.outreach.schemas import (
     SendDenialReason,
     SendingIdentityEligibilitySnapshot,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -55,6 +57,7 @@ from tests.outreach_fakes import (
 
 _models = importlib.import_module("domains.outreach.models")
 Campaign = _models.Campaign
+EnrollmentStopReason = _models.EnrollmentStopReason
 CampaignBoundary = _models.CampaignBoundary
 CampaignState = _models.CampaignState
 CampaignVersion = _models.CampaignVersion
@@ -493,3 +496,44 @@ async def test_list_due_sequence_enrollments_filters_by_state_due_and_campaign(
     assert second_id not in due_ids
     assert third_id not in due_ids
     assert len(due) == 1
+
+
+async def test_automatic_stop_requires_narrow_system_scope_and_is_idempotent(
+    sequence_engine: AsyncEngine,
+) -> None:
+    """``stop_enrollment(REPLY)`` 事件订阅契约：非 SYSTEM 拒绝、SYSTEM 精确单
+    enrollment 可停、重复投递幂等。"""
+    factory = async_sessionmaker(sequence_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    sender = SendingIdentityId(new_id("sid"))
+    await _seed_campaign(factory, tenant, campaign_id, (sender,), approval_id)
+    clock = MutableClock(NOW)
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {(contact, account): _verified_contact(tenant, contact, account)}
+    replies = {(contact, account): _no_reply(tenant, contact, account)}
+    service = _service(
+        factory, tenant, campaign_id, approval_id, (sender,), contacts, replies, clock
+    )
+    enrollment, system = await _enroll_and_system(
+        service, tenant, campaign_id, contact, account, "seq-enroll-auto-stop"
+    )
+    # 非 SYSTEM（boss TENANT）不能自动停止
+    boss = Actor("boss:sequence", OutreachScope(level=ScopeLevel.TENANT), "boss")
+    with pytest.raises(ValidationError):
+        await service.stop_enrollment(  # type: ignore[attr-defined]
+            tenant, enrollment.enrollment_id, EnrollmentStopReason.REPLY, actor=boss
+        )
+    # SYSTEM 精确单 enrollment → replied
+    view = await service.stop_enrollment(  # type: ignore[attr-defined]
+        tenant, enrollment.enrollment_id, EnrollmentStopReason.REPLY, actor=system
+    )
+    assert view.state.value == "replied"
+    assert view.next_send_at is None
+    # 重复投递幂等：再次 stop 仍是 replied，不抛错
+    again = await service.stop_enrollment(  # type: ignore[attr-defined]
+        tenant, enrollment.enrollment_id, EnrollmentStopReason.REPLY, actor=system
+    )
+    assert again.state.value == "replied"

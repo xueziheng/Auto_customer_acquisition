@@ -712,6 +712,7 @@ class SchedulerRuntimeFactory:
                     scan_actor=driver_actor(),
                     batch_limit=config.batch_limit,
                 )
+
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
                 DNS_AUTH_MANIFEST.tool_id,
             ):
@@ -900,7 +901,7 @@ class SchedulerRuntimeFactory:
             id_factory=new_id,
         )
         sender = SchedulerCampaignSender(campaign_gateway, tenant, tool_user)
-        return build_outreach_campaign_handlers(outreach, sender), outreach
+        return build_outreach_campaign_handlers(outreach, sender, now), outreach
 
 
 @asynccontextmanager
