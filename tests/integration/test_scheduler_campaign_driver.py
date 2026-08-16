@@ -569,7 +569,7 @@ async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
     clock = MutableClock(NOW)
     senders = _senders(tenant, sender)
     service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
-    await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-pause")
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-pause")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
         _environ(_dsn(campaign_scheduler_db), tenant),
@@ -616,7 +616,15 @@ async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
                 )
             ).scalars().all()
         assert len(run_rows) == 2  # 恢复 = 新代 run，恰一次
-        assert [row.status for row in run_rows] == ["cancelled", "running"]
+        # 确定性语义断言：代次编码在 run 幂等键里（campaign:{enr}:run{gen}），
+        # 不依赖无 ORDER BY 查询的行序——旧代(gen1)必须 cancelled，新代(gen2)
+        # 必须 running；同一代 status 恰好一 cancelled 一 running。
+        by_key = {row.idempotency_key: row.status for row in run_rows}
+        assert by_key == {
+            f"campaign:{enrollment.enrollment_id}:run1": "cancelled",
+            f"campaign:{enrollment.enrollment_id}:run2": "running",
+        }
+        assert sorted(row.status for row in run_rows) == ["cancelled", "running"]
 
 
 async def test_cancel_campaign_cancels_inflight_runs(
