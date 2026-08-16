@@ -100,8 +100,17 @@ class ConversationService(Protocol):
         missing_fields: list[str],
         completeness: int,
     ) -> NextQuestionSuggestion:
-        """下一问建议。输入是需求完整度的缺失字段（由上层从 demand
-        域查得传入），输出最多两个主题。"""
+        """下一问建议（确定性选择，只读）。
+
+        - ``missing_fields`` 顺序是**上游优先级契约**（最关键的在前）；
+          本域不做 topic 白名单、不发明业务优先级，仅稳定去重
+          （保留首次出现）后取前 2
+        - 空列表合法：无缺失字段即无追问（``topics`` 为空）
+        - ``completeness`` 是 0–5 确定性等级（非模型置信度），仅用于
+          reason 说明；输入由上层从 demand 域查得传入
+        - 会话必须存在于本租户（不存在/跨租户不可见 → fail-closed）
+        - 只读：不发布事件、不写 outbox、不写日志
+        """
         ...
 
     async def get_conversation(

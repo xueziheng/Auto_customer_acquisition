@@ -20,6 +20,7 @@ from domains.conversations.models import (
     Message,
     MessageClassification,
     MessageDirection,
+    NextQuestionSuggestion,
     ReplyCategory,
 )
 from domains.conversations.repository import (
@@ -316,6 +317,62 @@ class ConversationServiceImpl:
                     )
                 )
         return REPLY_ACTIONS[category]
+
+    async def suggest_next_questions(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        missing_fields: list[str],
+        completeness: int,
+    ) -> NextQuestionSuggestion:
+        """下一问建议（确定性选择；契约见 service.py docstring）。
+
+        - 输入校验全部在开 UoW 前完成（固定摘要，不回显输入）
+        - 稳定去重保留上游首次出现 → 截断前 2；不发明业务优先级/白名单
+        - tenant-bound 校验会话存在：不存在/跨租户不可见 → "会话不存在"
+          （即使 missing_fields 为空也检查）
+        - 只读：不发布事件、不写 outbox、不写日志
+        """
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("会话租户无效")
+        if len(tenant_id) > 32:
+            raise ValidationError("会话租户超长")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValidationError("会话标识无效")
+        if len(conversation_id) > 32:
+            raise ValidationError("会话标识超长")
+        if type(missing_fields) is not list:
+            raise ValidationError("缺失字段必须是列表")
+        for field in missing_fields:
+            if (
+                not isinstance(field, str)
+                or not field.strip()
+                or field != field.strip()
+            ):
+                raise ValidationError("缺失字段无效")
+        if isinstance(completeness, bool) or not isinstance(completeness, int):
+            raise ValidationError("完整度必须为 0–5 的整数")
+        if not 0 <= completeness <= 5:
+            raise ValidationError("完整度必须为 0–5 的整数")
+        topics: list[str] = []
+        seen: set[str] = set()
+        for field in missing_fields:
+            if field not in seen:
+                seen.add(field)
+                topics.append(field)
+            if len(topics) == 2:
+                break
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.conversations.get(tenant_id, conversation_id) is None:
+                raise ValidationError("会话不存在")
+        if not topics:
+            reason = "无缺失字段，无需追问"
+        else:
+            reason = (
+                f"完整度 {completeness}/5，缺失字段（按上游顺序取前 2）："
+                f"{'、'.join(topics)}"
+            )
+        return NextQuestionSuggestion(topics=topics, reason=reason)
 
     async def correct_classification(
         self,

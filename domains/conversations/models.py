@@ -224,16 +224,41 @@ class NextQuestionSuggestion:
 
     字段：
         topics:  该问的主题，**最多两个**（十几个问题的审讯式追问
-                 会直接终结对话）
+                 会直接终结对话）；允许为空（无缺失字段即无追问）
         reason:  为什么问这两个（基于缺失字段与完整度级别）
 
     主题是「问什么」（application / size_range / quantity …），
-    措辞由 ``qualification_agent`` 生成。
+    措辞由 ``qualification_agent`` 生成。校验契约见 ``__post_init__``。
     """
 
     topics: list[str]
     reason: str
 
     def __post_init__(self) -> None:
-        """校验 ``len(topics) <= 2``。"""
-        raise NotImplementedError
+        """校验与防御性拷贝（契约见 plan 2026-08-16-next-question-selection）。
+
+        - ``topics`` 必须 list（拒绝 str/tuple）、0..2 个；每项必须 str、
+          strip 后非空、且 ``item == item.strip()``（拒绝元素前后空白）；
+          必须无重复；无长度上限（topic 无 DB 长度定义，不自造 max）
+        - ``reason`` 必须 str、strip 后非空；不拒绝自身前后空白（内部
+          固定格式生成，最小语义只要求非空）
+        - 校验全部通过后 ``object.__setattr__`` 换新 list：只切断「构造后
+          调用方继续修改传入源列表」的别名路径；``topics`` 属性自身仍是
+          可变 list（frozen 只挡属性重绑），不宣称深度不可变
+        """
+        if type(self.topics) is not list:
+            raise ValidationError("建议主题必须是列表")
+        if len(self.topics) > 2:
+            raise ValidationError("建议主题最多两个")
+        for topic in self.topics:
+            if (
+                not isinstance(topic, str)
+                or not topic.strip()
+                or topic != topic.strip()
+            ):
+                raise ValidationError("建议主题无效")
+        if len(set(self.topics)) != len(self.topics):
+            raise ValidationError("建议主题重复")
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValidationError("建议理由无效")
+        object.__setattr__(self, "topics", list(self.topics))
