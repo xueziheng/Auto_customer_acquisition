@@ -91,7 +91,9 @@ from shared.events.catalog import (
     DomainEvent,
     HandoffQueueBacklogged,
     HandoffRequested,
+    ReplyReceived,
     ReputationThresholdBreached,
+    SendingIdentityActivated,
     SendingIdentitySuspended,
 )
 from shared.schemas.identifiers import (
@@ -169,6 +171,7 @@ from .campaign_driver import (
     outreach_actor_for,
     sending_actor_for,
 )
+from .campaign_events import CampaignEventHandlers
 from .config import SchedulerWorkerConfig
 from .main import (
     OutboxDrainer,
@@ -711,6 +714,23 @@ class SchedulerRuntimeFactory:
                     tenant_id=config.tenant_id,
                     scan_actor=driver_actor(),
                     batch_limit=config.batch_limit,
+                )
+                # 生产事件接线：回复停序列 + 唤醒、身份激活唤醒（非测试直投）
+                campaign_events = CampaignEventHandlers(
+                    outreach=campaign_outreach,
+                    engine=workflow,
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                )
+                outbox.register_handler(
+                    ReplyReceived,
+                    "outreach_campaign.reply_received",
+                    campaign_events,
+                )
+                outbox.register_handler(
+                    SendingIdentityActivated,
+                    "outreach_campaign.sending_identity_activated",
+                    campaign_events,
                 )
 
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (

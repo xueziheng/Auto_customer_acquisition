@@ -63,12 +63,15 @@ from domains.sending_identity.schemas import (
     IdentityRegisterRequest,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.outbox import PostgresEventBus
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
+from shared.events.catalog import ReplyReceived, SendingIdentityActivated
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
     ContactPointId,
+    ConversationId,
     EmployeeId,
     IdempotencyKey,
     ProspectAccountId,
@@ -424,6 +427,20 @@ def _senders(
         trace,
     )
 
+async def _publish(
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    event: object,
+) -> None:
+    session = factory()
+    try:
+        bus = PostgresEventBus(session, tenant)
+        await bus.publish(event)  # type: ignore[arg-type]
+        await session.commit()
+    finally:
+        await session.close()
+
+
 async def test_driver_starts_single_run_per_enrollment_and_advances_by_wait_days(
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
@@ -694,3 +711,149 @@ async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
                 )
             ).scalars().all()
         assert len(run_rows) == 1
+
+async def test_reply_event_wiring_stops_enrollment_and_completes_run(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_reply", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-reply")
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+        async with factory() as session:
+            attempt_row = (
+                await session.execute(
+                    select(rows.OutreachMessageAttemptRow).where(
+                        rows.OutreachMessageAttemptRow.tenant_id == str(tenant)
+                    )
+                )
+            ).scalars().one()
+            message_id = attempt_row.deterministic_message_id
+        # 生产接线：经共享 outbox 发布 ReplyReceived → 域 stop + 引擎唤醒
+        await _publish(
+            factory,
+            tenant,
+            ReplyReceived(
+                tenant_id=tenant,
+                occurred_at=NOW + timedelta(hours=2),
+                message_id=message_id,
+                conversation_id=ConversationId(new_id("cv")),
+            ),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+            run_row = (
+                await session.execute(
+                    select(rows.WorkflowRunRow).where(
+                        rows.WorkflowRunRow.tenant_id == str(tenant),
+                        rows.WorkflowRunRow.workflow_type == "outreach_campaign",
+                    )
+                )
+            ).scalars().one()
+        assert enrollment_row.state == "replied"  # 域 stop_enrollment(REPLY)
+        assert run_row.status == "completed"  # deliver_event → wait_for_reply 收束
+        # 跨越多天也绝不再发
+        clock.value = NOW + timedelta(days=5)
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+
+
+async def test_identity_activated_event_wiring_wakes_waiting_run(
+    campaign_scheduler_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_sched_identity", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(tenant, contact, account, ReplyState.NO_REPLY, None, NOW)
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    senders = _senders(tenant, sender)
+    service = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-identity")
+    # 身份不可用 → prepare 拒绝 → wait_event(SendingIdentityActivated)
+    senders.snapshots[sender] = SendingIdentityEligibilitySnapshot(
+        tenant, sender, OutreachSenderRole.COLD_OUTREACH, False, True, 100, NOW
+    )
+    transport = _Transport()
+    runtime_factory = SchedulerRuntimeFactory(
+        _environ(_dsn(campaign_scheduler_db), tenant),
+        _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
+        resolver_factory=_Resolver,
+        health_server_factory=_HealthServer,
+        now=clock.now,
+    )
+    rows = importlib.import_module("infra.db.tables")
+    async with runtime_factory() as runtime:
+        assert await runtime.campaign_driver.scan_once() == 1
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == []  # prepare 拒绝 → 等待，绝不发送
+        # 身份可用 + 生产事件（发送身份域在激活时发布）→ 唤醒 → 发送
+        senders.snapshots[sender] = SendingIdentityEligibilitySnapshot(
+            tenant, sender, OutreachSenderRole.COLD_OUTREACH, True, True, 100, NOW
+        )
+        await _publish(
+            factory,
+            tenant,
+            SendingIdentityActivated(
+                tenant_id=tenant,
+                occurred_at=NOW + timedelta(hours=1),
+                sending_identity_id=sender,
+            ),
+        )
+        await runtime.outbox.drain()  # type: ignore[attr-defined]
+        await _poll(runtime, tenant, clock)
+        assert transport.sent == ["gmail-scheduler-1"]
+        async with factory() as session:
+            enrollment_row = await session.get(
+                rows.OutreachEnrollmentRow, (str(tenant), str(enrollment.enrollment_id))
+            )
+        assert enrollment_row.state == "in_sequence"

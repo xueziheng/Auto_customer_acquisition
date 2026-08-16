@@ -44,6 +44,7 @@ from shared.events.catalog import (
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
+    ReplyReceived,
     ReputationThresholdBreached,
     SendingIdentityActivated,
     SendingIdentitySuspended,
@@ -68,6 +69,9 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "MessageSent": MessageSent,
     "SuppressionAdded": SuppressionAdded,
     "ComplaintReceived": ComplaintReceived,
+    # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享
+    # outbox 入口对回复管道（切片 6 producer）开放，接线可端到端验证
+    "ReplyReceived": ReplyReceived,
 }
 """显式发布白名单（手工维护，见模块 docstring）：新事件必须先经契约评审。"""
 
