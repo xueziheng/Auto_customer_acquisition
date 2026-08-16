@@ -238,30 +238,56 @@ class ValidatedNeed:
     def completeness(self) -> int:
         """需求完整度 0–5。**由字段推导，不可手动设置。**
 
+        累积阶梯 = 最高连续满足级别（plan 2026-08-16-demand-completeness-derivation）：
+
         ```text
-        1  product_category 有
-        2  application 或 size_spec 有
-        3  quantity 有                    ← 寻源门槛
-        4  destination 且 required_by 有
-        5  material、size_spec、quantity、destination 齐全
+        0  product_category 无（防御性处理运行时非法/遗留对象；类型契约仍要求它）
+        1  product_category 有，application 与 size_spec 都无
+        2  application 或 size_spec 至少一个有，但 quantity 无
+        3  quantity 有，但 destination 或 required_by 至少一个无  ← 寻源门槛
+        4  destination 与 required_by 都有，但 material 或 size_spec 至少一个无
+        5  累积前置全部满足（material 与 size_spec 都有；application 不因
+           level 5 单独强制——size_spec 最终必有即满足 level 2 的 OR）
         ```
 
-        手动设置会被乐观填高，然后寻源门槛失效——那会导致带着
-        模糊需求去问供应商，拿不到可用报价还消耗信誉。
+        presence 只判 ``FactualField is None``，不检查 value 真值、不做字段值
+        业务验证（quantity=0 也算存在）。手动设置会被乐观填高，然后寻源门槛
+        失效——那会导致带着模糊需求去问供应商，拿不到可用报价还消耗信誉。
         """
-        raise NotImplementedError
+        if self.product_category is None:
+            return 0
+        if self.application is None and self.size_spec is None:
+            return 1
+        if self.quantity is None:
+            return 2
+        if self.destination is None or self.required_by is None:
+            return 3
+        if self.material is None or self.size_spec is None:
+            return 4
+        return 5
 
     def is_sourcing_ready(self) -> bool:
         """是否可以进寻源。要求完整度 ≥ 3（数量明确）。"""
-        raise NotImplementedError
+        return self.completeness >= 3
 
     def missing_fields_for_sourcing(self) -> list[str]:
-        """还缺什么才能寻源。
+        """还缺什么才能寻源（只返回当前阻塞 level-3 门槛的最低层）。
 
-        供 ``qualification_agent`` 决定下一个该问客户什么——
-        一次只问最关键的一两项，不要抛出十几个问题。
+        固定顺序分支（plan 2026-08-16-demand-completeness-derivation）：
+        ``["product_category"]`` → ``["application", "size_spec"]``（替代条件
+        成对）→ ``["quantity"]`` → ``[]``（completeness ≥ 3）。不列出
+        destination/required_by/material 等后续完整化字段——函数名与本域权威
+        门槛是进入 sourcing_ready（≥3），不把后续所有字段一次抛给客户。
+        供 ``qualification_agent`` 决定下一个该问客户什么——一次只问最关键的
+        一两项，不要抛出十几个问题。
         """
-        raise NotImplementedError
+        if self.product_category is None:
+            return ["product_category"]
+        if self.application is None and self.size_spec is None:
+            return ["application", "size_spec"]
+        if self.quantity is None:
+            return ["quantity"]
+        return []
 
 
 @dataclass

@@ -143,7 +143,7 @@ inferred → outreach_queued → contacted → validated
 ### Validated Need
 
 ```text
-validated → sourcing_ready（完整度达 5）→ sourcing_in_progress → quoted
+validated → sourcing_ready（完整度 ≥ 3）→ sourcing_in_progress → quoted
          └→ paused（客户暂缓）
          └→ closed（需求消失）
 ```
