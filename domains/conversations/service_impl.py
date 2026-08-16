@@ -8,28 +8,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
 
-from domains.conversations.events import PUBLISHES as _CONVERSATIONS_PUBLISHES
 from domains.conversations.models import (
     REPLY_ACTIONS,
     MessageClassification,
     ReplyCategory,
 )
-from domains.conversations.repository import ClassificationRepository
+from domains.conversations.repository import (
+    ClassificationRepository,
+    ConversationsUnitOfWork,
+)
 from shared.errors import ValidationError
 from shared.events.catalog import ReplyReceived
 from shared.schemas.identifiers import MessageId, OutboundMessageId, TenantId
 
-del _CONVERSATIONS_PUBLISHES  # 事件契约声明仅供文档；发布经 uow.bus
 
-
-class ConversationsServiceImpl:
-    """``ConversationsService`` 的 Postgres 实现。"""
+class ConversationServiceImpl:
+    """``ConversationService`` 的 Postgres 实现。"""
 
     def __init__(
         self,
-        uow_factory: Callable[[TenantId], Any],
+        uow_factory: Callable[[TenantId], ConversationsUnitOfWork],
         *,
         now: Callable[[], datetime],
     ) -> None:
@@ -84,7 +83,7 @@ class ConversationsServiceImpl:
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
-            await uow.lock_message(message_id)
+            await uow.lock_message(tenant_id, message_id)
             classifications: ClassificationRepository = uow.classifications
             existing = await classifications.get(tenant_id, message_id)
             if existing is not None:

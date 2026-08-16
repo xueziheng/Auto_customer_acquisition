@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.conversations.models import Conversation, Message, MessageClassification
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -30,9 +31,8 @@ class ConversationRepository(Protocol):
 
 
 @runtime_checkable
-@runtime_checkable
 class ClassificationRepository(Protocol):
-    """分类留痕存储。同 (tenant, message, classified_by) 唯一。"""
+    """分类留痕存储。每 (tenant, message) 至多一条（跨版本重评由服务层显式拒绝）。"""
 
     async def add(self, classification: MessageClassification) -> None: ...
 
@@ -43,6 +43,34 @@ class ClassificationRepository(Protocol):
     ) -> MessageClassification | None:
         """该 message 的分类记录（每 message 至多一条）。"""
         ...
+
+
+@runtime_checkable
+class ConversationsUnitOfWork(Protocol):
+    """conversations 域事务边界（域级接口；实现为 SqlAlchemyConversationsUnitOfWork）。
+
+    服务层只依赖本 Protocol——仓储、消息锁与事件总线都在事务内串行化。
+    """
+
+    classifications: ClassificationRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+    async def lock_message(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> None: ...
+
+    async def has_published_reply(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> bool: ...
 
 
 class MessageRepository(Protocol):

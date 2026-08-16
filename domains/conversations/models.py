@@ -104,9 +104,9 @@ REPLY_ACTIONS: dict[ReplyCategory, tuple[str, ...]] = {
 class MessageClassification:
     """一次回复分类留痕。
 
-    按 (tenant_id, message_id, classified_by) 唯一：同一 message 允许不同
-    ``classified_by``（模型版本/人工标识）的记录并存——历史留痕供按版本
-    评估分类质量；相同分类者重复落库幂等，冲突由服务层 fail closed。
+    每 (tenant_id, message_id) 至多一条（DB 唯一约束在并发下强制单行）：
+    跨 model_version 重评由服务层显式拒绝（未来由显式 reclassify API 承担）；
+    ``classified_by`` 即分类者标识（模型版本/人工标识），用于按版本评估。
     """
 
     tenant_id: TenantId

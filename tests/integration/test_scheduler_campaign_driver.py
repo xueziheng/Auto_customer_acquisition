@@ -24,6 +24,7 @@ from apps.scheduler_worker.runtime import (
     SchedulerRuntimeFactory,
 )
 from domains.conversations.schemas import ReplyCategory
+from domains.conversations.service import ConversationService
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -412,15 +413,15 @@ def _conversations_service(
     factory: async_sessionmaker[AsyncSession],
     tenant: TenantId,
     clock: MutableClock,
-) -> object:
+) -> ConversationService:
     """真实生产者：conversations 域分类留痕服务（共享同一 DB/outbox）。"""
-    module = __import__(
-        "domains.conversations.service_impl", fromlist=["ConversationsServiceImpl"]
-    )
     uow_type = importlib.import_module(
         "infra.db.conversations_uow"
     ).SqlAlchemyConversationsUnitOfWork
-    return module.ConversationsServiceImpl(
+    impl_type = importlib.import_module(
+        "domains.conversations.service_impl"
+    ).ConversationServiceImpl
+    return impl_type(
         lambda requested: uow_type(factory, requested, now=clock.now),
         now=clock.now,
     )
@@ -752,7 +753,7 @@ async def test_classification_event_from_real_producer_stops_and_wakes(
         # 真实生产者：入站回复被分类，并携带出站关联（拟定 API：outbound_message_id）
         conversations = _conversations_service(factory, tenant, clock)
         inbound_message_id = MessageId("msg_inbound_reply_001")
-        await conversations.record_classification(  # type: ignore[attr-defined]
+        await conversations.record_classification(
             tenant,
             inbound_message_id,
             ReplyCategory.UNSUBSCRIBE,
@@ -780,7 +781,7 @@ async def test_classification_event_from_real_producer_stops_and_wakes(
         assert transport.sent == ["gmail-scheduler-1"]  # 不再发
 
         # 重复分类 + 重复投递：不重复域效果（stop 幂等、事件指纹去重）
-        await conversations.record_classification(  # type: ignore[attr-defined]
+        await conversations.record_classification(
             tenant,
             inbound_message_id,
             ReplyCategory.UNSUBSCRIBE,
@@ -850,7 +851,7 @@ async def test_classification_without_outbound_correlation_is_fail_closed(
         await _poll(runtime, tenant, clock)
         assert transport.sent == ["gmail-scheduler-1"]
         conversations = _conversations_service(factory, tenant, clock)
-        await conversations.record_classification(  # type: ignore[attr-defined]
+        await conversations.record_classification(
             tenant,
             MessageId("msg_inbound_nocorr_001"),
             ReplyCategory.UNSUBSCRIBE,
@@ -1135,7 +1136,7 @@ async def test_reply_stops_only_the_correlated_enrollment(
                 a for a in attempts if a.enrollment_id == str(enrolled[0].enrollment_id)
             )
         conversations = _conversations_service(factory, tenant, clock)
-        await conversations.record_classification(  # type: ignore[attr-defined]
+        await conversations.record_classification(
             tenant,
             MessageId("msg_inbound_two_001"),
             ReplyCategory.UNSUBSCRIBE,
@@ -1251,7 +1252,7 @@ async def test_cross_tenant_outbound_id_never_misfires_current_tenant(
         await _poll(runtime, tenant, clock)
         assert transport.sent == ["gmail-scheduler-1"]
         conversations = _conversations_service(factory, tenant, clock)
-        await conversations.record_classification(  # type: ignore[attr-defined]
+        await conversations.record_classification(
             tenant,
             MessageId("msg_inbound_xtenant_001"),
             ReplyCategory.UNSUBSCRIBE,

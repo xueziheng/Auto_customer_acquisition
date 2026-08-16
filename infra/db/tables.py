@@ -1947,10 +1947,11 @@ class GeneratedArtifactRow(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class ConversationClassificationRow(Base):
-    """``conversation_classifications``：回复分类留痕（按 tenant/message/分类者唯一）。
+    """``conversation_classifications``：回复分类留痕。
 
-    同 message 允许不同 classified_by（模型版本/人工标识）并存——历史留痕供
-    按版本评估；不存任何数值置信度（硬边界 3）。
+    每 (tenant, message) 至多一条（PK 唯一约束在并发下强制单行；跨版本重评
+    由服务层显式拒绝）；classified_by 为分类者标识（模型版本/人工标识），
+    用于按版本评估；不存任何数值置信度（硬边界 3）。
     """
 
     __tablename__ = "conversation_classifications"

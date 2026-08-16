@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.conversations.schemas import ReplyCategory
+from domains.conversations.service import ConversationService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import MessageId, TenantId, new_id
 
@@ -69,14 +70,14 @@ async def conversations_db(db_url: str) -> AsyncIterator[AsyncEngine]:
 
 def _service(
     factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
-) -> object:
-    module = __import__(
-        "domains.conversations.service_impl", fromlist=["ConversationsServiceImpl"]
-    )
+) -> ConversationService:
     uow_type = importlib.import_module(
         "infra.db.conversations_uow"
     ).SqlAlchemyConversationsUnitOfWork
-    return module.ConversationsServiceImpl(
+    impl_type = importlib.import_module(
+        "domains.conversations.service_impl"
+    ).ConversationServiceImpl
+    return impl_type(
         lambda requested: uow_type(factory, requested, now=clock.now),
         now=clock.now,
     )
@@ -123,7 +124,7 @@ async def test_record_classification_persists_with_provenance_and_publishes_cont
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
 
-    actions = await service.record_classification(  # type: ignore[attr-defined]
+    actions = await service.record_classification(
         tenant, message_id, ReplyCategory.UNSUBSCRIBE, classified_by="test-model-v1"
     )
     assert actions == ("stop_sequence", "suppress")  # 动作由域 REPLY_ACTIONS 决定
@@ -158,10 +159,10 @@ async def test_same_message_and_version_is_idempotent_and_conflict_fails_closed(
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
 
-    first = await service.record_classification(  # type: ignore[attr-defined]
+    first = await service.record_classification(
         tenant, message_id, ReplyCategory.COMPLAINT, classified_by="test-model-v1"
     )
-    second = await service.record_classification(  # type: ignore[attr-defined]
+    second = await service.record_classification(
         tenant, message_id, ReplyCategory.COMPLAINT, classified_by="test-model-v1"
     )
     assert first == second == ("stop_sequence", "suppress", "record_complaint")
@@ -172,7 +173,7 @@ async def test_same_message_and_version_is_idempotent_and_conflict_fails_closed(
     assert len(replies) == 1  # 至多发布一次
 
     with pytest.raises(ValidationError):
-        await service.record_classification(  # type: ignore[attr-defined]
+        await service.record_classification(
             tenant, message_id, ReplyCategory.REJECTION, classified_by="test-model-v1"
         )
     rows = await _classification_rows(factory, tenant)
@@ -192,11 +193,11 @@ async def test_cross_model_version_re_evaluation_is_explicitly_rejected(
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
 
-    await service.record_classification(  # type: ignore[attr-defined]
+    await service.record_classification(
         tenant, message_id, ReplyCategory.UNSUBSCRIBE, classified_by="test-model-v1"
     )
     with pytest.raises(ValidationError):
-        await service.record_classification(  # type: ignore[attr-defined]
+        await service.record_classification(
             tenant, message_id, ReplyCategory.REJECTION, classified_by="test-model-v2"
         )
     rows = await _classification_rows(factory, tenant)
@@ -218,11 +219,11 @@ async def test_auto_reply_never_publishes(
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
 
-    actions = await service.record_classification(  # type: ignore[attr-defined]
+    actions = await service.record_classification(
         tenant, message_id, ReplyCategory.AUTO_REPLY, classified_by="test-model-v1"
     )
     assert actions == ()
-    await service.record_classification(  # type: ignore[attr-defined]
+    await service.record_classification(
         tenant, message_id, ReplyCategory.AUTO_REPLY, classified_by="test-model-v1"
     )
     rows = await _classification_rows(factory, tenant)
@@ -321,7 +322,7 @@ async def test_unknown_category_is_rejected(
     service = _service(factory, tenant, clock)
 
     with pytest.raises(ValidationError):
-        await service.record_classification(  # type: ignore[attr-defined]
+        await service.record_classification(
             tenant, message_id, "maybe_interesting", classified_by="test-model-v1"
         )
     assert await _classification_rows(factory, tenant) == []

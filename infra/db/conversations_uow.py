@@ -38,11 +38,16 @@ class SqlAlchemyConversationsUnitOfWork:
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 
-    async def lock_message(self, message_id: MessageId) -> None:
+    async def lock_message(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> None:
         """同 (tenant, message) 事务级 advisory 锁：把「查重→落分类→发布事件」
         串行化——并发下只有首个事务能发布 ReplyReceived（exactly-once 由
-        锁 + message 唯一约束共同保证，不依赖检查时序或单线程）。"""
-        key = zlib.crc32(f"{self._tenant_id}:{message_id}".encode()) & 0x7FFFFFFF
+        锁 + message 唯一约束共同保证，不依赖检查时序或单线程）。
+        跨租户调用 fail closed。"""
+        if tenant_id != self._tenant_id:
+            raise TenantIsolationViolation("跨租户数据隔离违规")
+        key = zlib.crc32(f"{tenant_id}:{message_id}".encode()) & 0x7FFFFFFF
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(:key)"), {"key": key}
         )
