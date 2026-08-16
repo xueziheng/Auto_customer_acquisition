@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from domains.conversations.models import (
@@ -29,13 +30,25 @@ class ConversationService(Protocol):
         conversation_id: ConversationId | None,
         account_id: ProspectAccountId,
         raw_artifact_ref: str,
-        sent_at: str,
+        external_message_id: str,
+        sent_at: datetime,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
     ) -> MessageId:
-        """写入入站消息。
+        """写入入站消息并发布 ``InboundMessageStored``（metadata-only）。
 
-        - 原文先落 artifact_store，这里只存引用——摘要不替代原文
-        - 无既有会话则新建
-        - 幂等：同一邮件（Message-ID 头）重复投递不重复入库
+        - 原文先落 artifact_store（上游契约），这里只存引用——摘要不替代原文
+        - ``external_message_id`` 是入站邮件 Message-ID 头值（精确匹配，
+          含尖括号形态，禁止 normalize）；必填非空——Phase 1 服务契约的
+          fail-closed 接入限制，缺失该头的合法邮件会被拒绝需人工处理
+        - 幂等/冲突：同 (tenant, external_message_id) 且语义完全一致
+          （conversation/account、raw_artifact_ref、sent_at、
+          outbound_message_id）→ 返回既有 MessageId 且不再发事件；任一
+          不一致 → ``ReingestConflictError``（固定安全摘要）
+        - ``conversation_id`` 非 None：必须存在且 tenant/account/channel=email
+          匹配，否则 fail-closed；None 才按 (tenant, account, channel)
+          并发安全 get-or-create
+        - ``last_inbound_at`` = max(既有值, sent_at)——迟到旧消息不回退
         """
         ...
 

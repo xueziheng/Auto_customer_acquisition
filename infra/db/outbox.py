@@ -40,6 +40,7 @@ from shared.events.catalog import (
     HandoffAccepted,
     HandoffQueueBacklogged,
     HandoffRequested,
+    InboundMessageStored,
     MessageSent,
     OpportunityLost,
     OpportunityQualified,
@@ -67,6 +68,9 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "SendingIdentitySuspended": SendingIdentitySuspended,
     "ReputationThresholdBreached": ReputationThresholdBreached,
     "MessageSent": MessageSent,
+    # conversations 入站消息落库即发布（切片 6 producer）：metadata-only，
+    # 下一片 scheduler 订阅后按 outbound_message_id 解析并启动 reply run
+    "InboundMessageStored": InboundMessageStored,
     "SuppressionAdded": SuppressionAdded,
     "ComplaintReceived": ComplaintReceived,
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享

@@ -73,7 +73,7 @@ def _load(symbol: str):
 
 
 def test_event_registry_is_explicit_whitelist() -> None:
-    """EVENT_REGISTRY 只含已批准的 opportunities 与 sending identity 事件。"""
+    """EVENT_REGISTRY 只含经契约评审、当前实际需要发布的事件。"""
     EVENT_REGISTRY = _load("EVENT_REGISTRY")
     assert set(EVENT_REGISTRY) == {
         "OpportunityQualified",
@@ -91,6 +91,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "AuthenticationCheckRequested",
         "ComplaintReceived",
         "ReplyReceived",
+        "InboundMessageStored",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["MessageSent"] is MessageSent

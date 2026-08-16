@@ -3,13 +3,34 @@
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domains.conversations.models import MessageClassification, ReplyCategory
-from domains.conversations.repository import ClassificationRepository
-from infra.db.tables import ConversationClassificationRow
+from domains.conversations.models import (
+    Conversation,
+    Message,
+    MessageClassification,
+    MessageDirection,
+    ReplyCategory,
+)
+from domains.conversations.repository import (
+    ClassificationRepository,
+    ConversationRepository,
+    MessageRepository,
+)
+from infra.db.tables import (
+    ConversationClassificationRow,
+    ConversationRow,
+    MessageRow,
+)
 from shared.errors import TenantIsolationViolation
-from shared.schemas.identifiers import MessageId, TenantId
+from shared.schemas.identifiers import (
+    ConversationId,
+    MessageId,
+    OutboundMessageId,
+    ProspectAccountId,
+    TenantId,
+)
 
 _tenant_logger = __import__("logging").getLogger("infra.db.repositories.conversations")
 
@@ -83,3 +104,226 @@ class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepos
             )
         ).scalar_one_or_none()
         return _row_to_classification(row) if row is not None else None
+
+
+def _conversation_to_row(
+    conversation: Conversation,
+) -> ConversationRow:
+    return ConversationRow(
+        tenant_id=str(conversation.tenant_id),
+        conversation_id=str(conversation.conversation_id),
+        account_id=str(conversation.account_id),
+        channel=conversation.channel,
+        created_at=conversation.created_at,
+        last_inbound_at=conversation.last_inbound_at,
+        last_outbound_at=conversation.last_outbound_at,
+    )
+
+
+def _row_to_conversation(row: ConversationRow) -> Conversation:
+    return Conversation(
+        conversation_id=ConversationId(row.conversation_id),
+        tenant_id=TenantId(row.tenant_id),
+        account_id=ProspectAccountId(row.account_id),
+        channel=row.channel,
+        created_at=row.created_at,
+        last_inbound_at=row.last_inbound_at,
+        last_outbound_at=row.last_outbound_at,
+    )
+
+
+class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepository):
+    """tenant-bound 会话仓储：get-or-create 的冲突由服务层 ON CONFLICT 兜底。"""
+
+    async def add(self, conversation: Conversation) -> None:
+        """get-or-create 的插入侧：UNIQUE(tenant, account, channel) 冲突
+        DO NOTHING（并发胜者不报错），调用方随后重读既有行。"""
+        self._require_tenant(conversation.tenant_id, "conversation.add")
+        await self._session.execute(
+            pg_insert(ConversationRow)
+            .values(
+                tenant_id=str(conversation.tenant_id),
+                conversation_id=str(conversation.conversation_id),
+                account_id=str(conversation.account_id),
+                channel=conversation.channel,
+                created_at=conversation.created_at,
+                last_inbound_at=conversation.last_inbound_at,
+                last_outbound_at=conversation.last_outbound_at,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "account_id", "channel"]
+            )
+        )
+
+    async def update(self, conversation: Conversation) -> None:
+        self._require_tenant(conversation.tenant_id, "conversation.update")
+        await self._session.merge(_conversation_to_row(conversation))
+
+    async def get(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> Conversation | None:
+        self._require_tenant(tenant_id, "conversation.get")
+        row = await self._session.get(
+            ConversationRow, (str(tenant_id), str(conversation_id))
+        )
+        if row is None:
+            return None
+        self._require_tenant(TenantId(row.tenant_id), "conversation.get")
+        return _row_to_conversation(row)
+
+    async def find_by_account_channel(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, channel: str
+    ) -> Conversation | None:
+        self._require_tenant(tenant_id, "conversation.find_by_account_channel")
+        row = (
+            await self._session.execute(
+                select(ConversationRow).where(
+                    ConversationRow.tenant_id == str(tenant_id),
+                    ConversationRow.account_id == str(account_id),
+                    ConversationRow.channel == channel,
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            return None
+        self._require_tenant(TenantId(row.tenant_id), "conversation.find")
+        return _row_to_conversation(row)
+
+
+def _message_to_row(message: Message) -> MessageRow:
+    return MessageRow(
+        tenant_id=str(message.tenant_id),
+        message_id=str(message.message_id),
+        conversation_id=str(message.conversation_id),
+        direction=message.direction.value,
+        sent_at=message.sent_at,
+        language=message.language,
+        raw_artifact_ref=message.raw_artifact_ref,
+        external_message_id=(
+            message.external_message_id if message.external_message_id is not None else ""
+        ),
+        outbound_message_id=(
+            str(message.outbound_message_id)
+            if message.outbound_message_id is not None
+            else None
+        ),
+    )
+
+
+def _row_to_message(row: MessageRow) -> Message:
+    return Message(
+        message_id=MessageId(row.message_id),
+        tenant_id=TenantId(row.tenant_id),
+        conversation_id=ConversationId(row.conversation_id),
+        direction=MessageDirection(row.direction),
+        sent_at=row.sent_at,
+        raw_artifact_ref=row.raw_artifact_ref,
+        external_message_id=row.external_message_id or None,
+        outbound_message_id=(
+            OutboundMessageId(row.outbound_message_id)
+            if row.outbound_message_id is not None
+            else None
+        ),
+        language=row.language,
+    )
+
+
+class MessageRepositoryImpl(_ConversationsRepository, MessageRepository):
+    """tenant-bound 消息仓储；external_message_id 唯一约束由 DB 强制。"""
+
+    async def add(self, message: Message) -> None:
+        """幂等插入侧：UNIQUE(tenant, external_message_id) 冲突 DO NOTHING
+        （并发胜者不报错），调用方随后重读胜者行做语义比对。"""
+        self._require_tenant(message.tenant_id, "message.add")
+        await self._session.execute(
+            pg_insert(MessageRow)
+            .values(
+                tenant_id=str(message.tenant_id),
+                message_id=str(message.message_id),
+                conversation_id=str(message.conversation_id),
+                direction=message.direction.value,
+                sent_at=message.sent_at,
+                language=message.language,
+                raw_artifact_ref=message.raw_artifact_ref,
+                external_message_id=(
+                    message.external_message_id
+                    if message.external_message_id is not None
+                    else ""
+                ),
+                outbound_message_id=(
+                    str(message.outbound_message_id)
+                    if message.outbound_message_id is not None
+                    else None
+                ),
+            )
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "external_message_id"]
+            )
+        )
+
+    async def get(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> Message | None:
+        self._require_tenant(tenant_id, "message.get")
+        row = await self._session.get(
+            MessageRow, (str(tenant_id), str(message_id))
+        )
+        if row is None:
+            return None
+        self._require_tenant(TenantId(row.tenant_id), "message.get")
+        return _row_to_message(row)
+
+    async def update(self, message: Message) -> None:
+        self._require_tenant(message.tenant_id, "message.update")
+        await self._session.merge(_message_to_row(message))
+
+    async def find_by_external_id(
+        self, tenant_id: TenantId, external_message_id: str
+    ) -> Message | None:
+        self._require_tenant(tenant_id, "message.find_by_external_id")
+        row = (
+            await self._session.execute(
+                select(MessageRow).where(
+                    MessageRow.tenant_id == str(tenant_id),
+                    MessageRow.external_message_id == external_message_id,
+                )
+            )
+        ).scalars().first()
+        if row is None:
+            return None
+        self._require_tenant(TenantId(row.tenant_id), "message.find")
+        return _row_to_message(row)
+
+    async def list_for_conversation(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> list[Message]:
+        self._require_tenant(tenant_id, "message.list_for_conversation")
+        rows = (
+            await self._session.execute(
+                select(MessageRow)
+                .where(
+                    MessageRow.tenant_id == str(tenant_id),
+                    MessageRow.conversation_id == str(conversation_id),
+                )
+                .order_by(MessageRow.sent_at)
+            )
+        ).scalars().all()
+        return [_row_to_message(row) for row in rows]
+
+    async def has_inbound_since(
+        self, tenant_id: TenantId, conversation_id: ConversationId, since: str
+    ) -> bool:
+        self._require_tenant(tenant_id, "message.has_inbound_since")
+        row = (
+            await self._session.execute(
+                select(MessageRow.message_id)
+                .where(
+                    MessageRow.tenant_id == str(tenant_id),
+                    MessageRow.conversation_id == str(conversation_id),
+                    MessageRow.direction == "inbound",
+                    MessageRow.sent_at > since,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        return row is not None

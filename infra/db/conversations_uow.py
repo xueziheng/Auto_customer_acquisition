@@ -11,7 +11,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.outbox import PostgresEventBus
-from infra.db.repositories.conversations import ClassificationRepositoryImpl
+from infra.db.repositories.conversations import (
+    ClassificationRepositoryImpl,
+    ConversationRepositoryImpl,
+    MessageRepositoryImpl,
+)
 from infra.db.tables import OutboxEventRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import MessageId, TenantId
@@ -35,6 +39,8 @@ class SqlAlchemyConversationsUnitOfWork:
         session = self._factory()
         self._session = session
         self.classifications = ClassificationRepositoryImpl(session, self._tenant_id)
+        self.conversations = ConversationRepositoryImpl(session, self._tenant_id)
+        self.messages = MessageRepositoryImpl(session, self._tenant_id)
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 

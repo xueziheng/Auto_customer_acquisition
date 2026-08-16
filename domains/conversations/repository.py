@@ -21,6 +21,8 @@ from shared.schemas.identifiers import (
 class ConversationRepository(Protocol):
     async def add(self, conversation: Conversation) -> None: ...
 
+    async def update(self, conversation: Conversation) -> None: ...
+
     async def get(
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> Conversation | None: ...
@@ -53,6 +55,8 @@ class ConversationsUnitOfWork(Protocol):
     """
 
     classifications: ClassificationRepository
+    conversations: ConversationRepository
+    messages: MessageRepository
     bus: EventBus
 
     async def __aenter__(self) -> Self: ...

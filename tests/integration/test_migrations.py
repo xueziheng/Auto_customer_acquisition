@@ -52,6 +52,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
+def _type_key(value: str) -> str:
+    """类型归一化：去除方言相关的时间戳后缀（反射端与 ORM 端统一）。"""
+    return value.replace(" WITH TIME ZONE", "")
+
+
 EXPECTED_TABLES: tuple[str, ...] = (
     "opportunities",
     "score_snapshots",
@@ -59,6 +64,8 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "loss_records",
     "provenance_records",
     "outbox_events",
+    "conversations",
+    "messages",
 )
 
 SENDING_IDENTITY_TABLES: tuple[str, ...] = (
@@ -2460,7 +2467,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0018"
+        assert revision == "0019"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2613,7 +2620,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0018"
+        assert revision == "0019"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2759,7 +2766,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0018"
+        assert revision == "0019"
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2947,7 +2954,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0018", "RED：0017 投诉迁移尚未创建"
+            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3085,7 +3092,7 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0018", "RED：0017 投诉迁移尚未创建"
+            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
             for constraint_name in (
                 "ck_email_feedback_receipt_kind",
                 "ck_email_feedback_receipt_target",
@@ -3337,7 +3344,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0018", "RED：0018 会话分类留痕迁移尚未创建"
+            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3404,6 +3411,107 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
         # 往返：downgrade 0017 后表消失，upgrade head 后恢复且契约不变
         _run_alembic(db_url, "downgrade", "0017")
         assert "conversation_classifications" not in await _table_names(engine)
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
+    finally:
+        await engine.dispose()
+
+
+async def test_0019_conversations_messages_roundtrip_and_guards(
+    db_url: str,
+) -> None:
+    """0019→0018→0019：会话/消息表可逆往返；列/PK/FK/UNIQUE/CHECK 与 ORM 一致。"""
+    from sqlalchemy import inspect
+
+    from infra.db.session import create_engine_from
+    from infra.db.tables import ConversationRow, MessageRow
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0019", "RED：0019 会话消息迁移尚未创建"
+
+            def inspect_contract(sync) -> dict[str, object]:
+                inspector = inspect(sync)
+                return {
+                    "tables": set(inspector.get_table_names()),
+                    "conversations": {
+                        "columns": {
+                            item["name"]: _type_key(str(item["type"]))
+                            for item in inspector.get_columns("conversations")
+                        },
+                        "pk": list(
+                            inspector.get_pk_constraint("conversations")[
+                                "constrained_columns"
+                            ]
+                        ),
+                        "unique": {
+                            str(item["name"])
+                            for item in inspector.get_unique_constraints(
+                                "conversations"
+                            )
+                        },
+                    },
+                    "messages": {
+                        "columns": {
+                            item["name"]: _type_key(str(item["type"]))
+                            for item in inspector.get_columns("messages")
+                        },
+                        "pk": list(
+                            inspector.get_pk_constraint("messages")[
+                                "constrained_columns"
+                            ]
+                        ),
+                        "unique": {
+                            str(item["name"])
+                            for item in inspector.get_unique_constraints("messages")
+                        },
+                        "fks": {
+                            str(item["name"]): item
+                            for item in inspector.get_foreign_keys("messages")
+                        },
+                        "checks": {
+                            str(item["name"])
+                            for item in inspector.get_check_constraints("messages")
+                        },
+                    },
+                }
+
+            contract = await conn.run_sync(inspect_contract)
+        assert {"conversations", "messages"} <= contract["tables"]
+
+        # ORM 契约比对
+        conv_orm_columns = {
+            name: _type_key(column.type.compile(dialect=engine.dialect))
+            for name, column in ConversationRow.__table__.columns.items()
+        }
+        msg_orm_columns = {
+            name: _type_key(column.type.compile(dialect=engine.dialect))
+            for name, column in MessageRow.__table__.columns.items()
+        }
+        assert contract["conversations"]["columns"] == conv_orm_columns
+        assert contract["conversations"]["pk"] == ["tenant_id", "conversation_id"]
+        assert "uq_conversations_tenant_account_channel" in contract["conversations"][
+            "unique"
+        ]
+        assert contract["messages"]["columns"] == msg_orm_columns
+        assert contract["messages"]["pk"] == ["tenant_id", "message_id"]
+        assert "uq_messages_tenant_external_id" in contract["messages"]["unique"]
+        assert "fk_messages_conversation" in contract["messages"]["fks"]
+        assert {
+            "ck_messages_direction",
+            "ck_messages_external_id_nonblank",
+            "ck_messages_raw_ref_nonblank",
+        } <= contract["messages"]["checks"]
+
+        # 往返：downgrade 0018 后新表消失，upgrade head 后恢复且契约不变
+        _run_alembic(db_url, "downgrade", "0018")
+        names_after = await _table_names(engine)
+        assert "conversations" not in names_after
+        assert "messages" not in names_after
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             restored = await conn.run_sync(inspect_contract)

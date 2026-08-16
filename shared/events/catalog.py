@@ -149,6 +149,28 @@ class ContactPointVerified(DomainEvent):
 
 
 @dataclass(frozen=True)
+class InboundMessageStored(DomainEvent):
+    """入站消息已持久化（metadata-only，最小披露）。
+
+    由 ``ConversationService.ingest_inbound`` 在消息行落库的同事务发布。
+    与 ``ReplyReceived`` 区分：后者是分类落库**之后**的结果事件；本事件是
+    触发 reply_qualification 的前置信号（「入站原文已存 artifact + Message
+    已持久化」），订阅方按 ``outbound_message_id`` 精确匹配
+    ``attempt.deterministic_message_id`` 解析被回复出站消息。
+
+    字段最小披露（按消费者需要逐一保留）：
+    - ``message_id``：入站消息 id（run 的 subject_ref + 幂等键）
+    - ``outbound_message_id``：被回复出站消息的 RFC Message-ID（In-Reply-To/
+      References 关联）；无关联为 None，消费者必须 fail-closed
+
+    不含正文/主题/地址/raw_artifact_ref/对象键（artifact_store 边界 4）。
+    """
+
+    message_id: MessageId = None  # type: ignore[assignment]
+    outbound_message_id: OutboundMessageId | None = None
+
+
+@dataclass(frozen=True)
 class MessageSent(DomainEvent):
     """已向客户发出一条消息。
 

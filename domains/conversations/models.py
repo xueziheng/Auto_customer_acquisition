@@ -12,6 +12,7 @@ from enum import Enum
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
+    OutboundMessageId,
     ProspectAccountId,
     TenantId,
 )
@@ -157,6 +158,8 @@ class Message:
     direction: MessageDirection
     sent_at: datetime
     raw_artifact_ref: str
+    external_message_id: str | None = None
+    outbound_message_id: OutboundMessageId | None = None
     language: str | None = None
     body_preview: str | None = None
     classification: ReplyCategory | None = None

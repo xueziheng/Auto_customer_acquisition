@@ -1,7 +1,8 @@
-"""会话域服务实现（浅域）：分类留痕与动作决定。
+"""会话域服务实现（浅域）：入站消息持久化、分类留痕与动作决定。
 
 动作**决定**在域（``REPLY_ACTIONS``），**执行**在 reply_qualification 工作流。
-事件只用共享 ``ReplyReceived`` 契约（AUTO_REPLY 除外，永不发布）。
+事件只用共享契约（``ReplyReceived`` AUTO_REPLY 除外永不发布；
+``InboundMessageStored`` 仅 metadata-only typed ID，无正文/对象键）。
 """
 
 from __future__ import annotations
@@ -9,9 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from domains.conversations.errors import ReingestConflictError
 from domains.conversations.models import (
     REPLY_ACTIONS,
+    Conversation,
+    Message,
     MessageClassification,
+    MessageDirection,
     ReplyCategory,
 )
 from domains.conversations.repository import (
@@ -19,8 +24,15 @@ from domains.conversations.repository import (
     ConversationsUnitOfWork,
 )
 from shared.errors import ValidationError
-from shared.events.catalog import ReplyReceived
-from shared.schemas.identifiers import MessageId, OutboundMessageId, TenantId
+from shared.events.catalog import InboundMessageStored, ReplyReceived
+from shared.schemas.identifiers import (
+    ConversationId,
+    MessageId,
+    OutboundMessageId,
+    ProspectAccountId,
+    TenantId,
+    new_id,
+)
 
 
 class ConversationServiceImpl:
@@ -46,6 +58,186 @@ class ConversationServiceImpl:
         ):
             raise ValidationError("服务时钟必须为 UTC")
         return value
+
+    async def ingest_inbound(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId | None,
+        account_id: ProspectAccountId,
+        raw_artifact_ref: str,
+        external_message_id: str,
+        sent_at: datetime,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
+    ) -> MessageId:
+        """入站消息落库 + 同事务发布 InboundMessageStored（契约见 service.py）。
+
+        并发安全：conversations 用 (tenant, account, channel) ON CONFLICT
+        get-or-create；messages 用 (tenant, external_message_id) 冲突后重读
+        语义比对——同语义返回既有 MessageId 且不重复发事件，异语义
+        ``ReingestConflictError`` fail-closed（固定安全摘要）。
+        """
+        if not isinstance(tenant_id, str) or not tenant_id:
+            raise ValidationError("会话租户无效")
+        if not isinstance(account_id, str) or not account_id:
+            raise ValidationError("会话账户无效")
+        if (
+            not isinstance(raw_artifact_ref, str)
+            or not raw_artifact_ref.strip()
+        ):
+            raise ValidationError("消息原文引用无效")
+        if (
+            not isinstance(external_message_id, str)
+            or not external_message_id.strip()
+        ):
+            raise ValidationError("消息 external Message-ID 无效")
+        sent_at = self._validate_utc_input(sent_at, "sent_at")
+        if outbound_message_id is not None and (
+            not isinstance(outbound_message_id, str)
+            or not outbound_message_id.strip()
+        ):
+            raise ValidationError("出站消息关联无效")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            conversation = await self._resolve_conversation(
+                uow, tenant_id, conversation_id, account_id, sent_at
+            )
+            existing = await uow.messages.find_by_external_id(
+                tenant_id, external_message_id
+            )
+            if existing is not None:
+                self._require_semantic_identity(
+                    existing,
+                    conversation.conversation_id,
+                    raw_artifact_ref,
+                    sent_at,
+                    outbound_message_id,
+                )
+                return existing.message_id
+            message = Message(
+                message_id=MessageId(new_id("msg")),
+                tenant_id=tenant_id,
+                conversation_id=conversation.conversation_id,
+                direction=MessageDirection.INBOUND,
+                sent_at=sent_at,
+                raw_artifact_ref=raw_artifact_ref,
+                external_message_id=external_message_id,
+                outbound_message_id=outbound_message_id,
+            )
+            await uow.messages.add(message)
+            # 并发冲突后重读胜者：语义一致 → 返回既有 id，不重复发事件
+            winner = await uow.messages.find_by_external_id(
+                tenant_id, external_message_id
+            )
+            if winner is None or winner.message_id != message.message_id:
+                if winner is None:
+                    raise ValidationError("消息写入竞态异常")
+                self._require_semantic_identity(
+                    winner,
+                    conversation.conversation_id,
+                    raw_artifact_ref,
+                    sent_at,
+                    outbound_message_id,
+                )
+                return winner.message_id
+            await uow.bus.publish(
+                InboundMessageStored(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    run_id=None,
+                    message_id=message.message_id,
+                    outbound_message_id=outbound_message_id,
+                )
+            )
+            return message.message_id
+
+    @staticmethod
+    def _validate_utc_input(value: datetime, label: str) -> datetime:
+        if (
+            not isinstance(value, datetime)
+            or value.tzinfo is None
+            or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValidationError(f"{label} 必须为 UTC")
+        return value
+
+    async def _resolve_conversation(
+        self,
+        uow: ConversationsUnitOfWork,
+        tenant_id: TenantId,
+        conversation_id: ConversationId | None,
+        account_id: ProspectAccountId,
+        sent_at: datetime,
+    ) -> Conversation:
+        """conversation_id 非 None：必须存在且匹配，否则 fail-closed；
+        None：按 (tenant, account, channel=email) 并发安全 get-or-create。"""
+        channel = "email"
+        if conversation_id is not None:
+            existing = await uow.conversations.get(tenant_id, conversation_id)
+            if existing is None:
+                raise ValidationError("会话不存在")
+            if existing.account_id != account_id:
+                raise ValidationError("会话与账户不匹配")
+            if existing.channel != channel:
+                raise ValidationError("会话渠道不匹配")
+            await self._bump_last_inbound(uow, existing, sent_at)
+            return existing
+        conversation = await uow.conversations.find_by_account_channel(
+            tenant_id, account_id, channel
+        )
+        if conversation is None:
+            created = Conversation(
+                conversation_id=ConversationId(new_id("con")),
+                tenant_id=tenant_id,
+                account_id=account_id,
+                channel=channel,
+                created_at=self._now(),
+                last_inbound_at=sent_at,
+            )
+            await uow.conversations.add(created)
+            # 并发胜者可能已提交：重读既有行（无论赢/输都以其为准）
+            conversation = await uow.conversations.find_by_account_channel(
+                tenant_id, account_id, channel
+            )
+            if conversation is None:
+                raise ValidationError("会话创建竞态异常")
+        # 既有会话路径与竞态路径统一：last_inbound_at = max(既有, sent_at)
+        await self._bump_last_inbound(uow, conversation, sent_at)
+        return conversation
+
+    async def _bump_last_inbound(
+        self,
+        uow: ConversationsUnitOfWork,
+        conversation: Conversation,
+        sent_at: datetime,
+    ) -> None:
+        """last_inbound_at = max(既有, sent_at)：迟到旧消息不回退。"""
+        current = conversation.last_inbound_at
+        if current is None or sent_at > current:
+            conversation.last_inbound_at = sent_at
+            await uow.conversations.update(conversation)
+
+    @staticmethod
+    def _require_semantic_identity(
+        message: Message,
+        conversation_id: ConversationId,
+        raw_artifact_ref: str,
+        sent_at: datetime,
+        outbound_message_id: OutboundMessageId | None,
+    ) -> None:
+        """同 external_message_id 的语义完全一致校验；不一致 fail-closed。
+
+        account 语义已由 conversation_id 承载（conversation 唯一于
+        tenant+account+channel）。"""
+        if (
+            message.conversation_id != conversation_id
+            or message.raw_artifact_ref != raw_artifact_ref
+            or message.sent_at != sent_at
+            or message.outbound_message_id != outbound_message_id
+        ):
+            raise ReingestConflictError(
+                "同 external_message_id 消息语义不一致，拒绝重复入库"
+            )
 
     async def record_classification(
         self,

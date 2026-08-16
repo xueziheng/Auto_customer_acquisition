@@ -1450,6 +1450,75 @@ class ProvenanceRecordRow(Base):
     page_hash: Mapped[str | None] = mapped_column(String(200))
 
 
+class ConversationRow(Base):
+    """``conversations`` 会话（跨渠道，Phase 1 只有邮件）；tenant+account+channel 唯一。"""
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "conversation_id", name="pk_conversations"),
+        UniqueConstraint(
+            "tenant_id",
+            "account_id",
+            "channel",
+            name="uq_conversations_tenant_account_channel",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    conversation_id: Mapped[str] = mapped_column(String(32))
+    account_id: Mapped[str] = mapped_column(String(32))
+    channel: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_outbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
+class MessageRow(Base):
+    """``messages`` 消息（含方向、语言、原文引用）；external Message-ID 租户内唯一。"""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "message_id", name="pk_messages"),
+        UniqueConstraint(
+            "tenant_id",
+            "external_message_id",
+            name="uq_messages_tenant_external_id",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id"],
+            ["conversations.tenant_id", "conversations.conversation_id"],
+            ondelete="RESTRICT",
+            name="fk_messages_conversation",
+        ),
+        CheckConstraint(
+            "direction IN ('inbound', 'outbound')",
+            name="ck_messages_direction",
+        ),
+        CheckConstraint(
+            "length(btrim(external_message_id)) > 0",
+            name="ck_messages_external_id_nonblank",
+        ),
+        CheckConstraint(
+            "length(btrim(raw_artifact_ref)) > 0",
+            name="ck_messages_raw_ref_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(32))
+    conversation_id: Mapped[str] = mapped_column(String(32))
+    direction: Mapped[str] = mapped_column(String(16))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    language: Mapped[str | None] = mapped_column(String(16))
+    raw_artifact_ref: Mapped[str] = mapped_column(String(100))
+    external_message_id: Mapped[str] = mapped_column(String(256))
+    outbound_message_id: Mapped[str | None] = mapped_column(String(256))
+
+
 class OutboxEventRow(Base):
     """``outbox_events`` 行（非只增；仅 status/delivered_at/attempt/next_attempt_at/
     last_error 可更新，由 0005 自管 DB guard 强制；UNIQUE(tenant_id,event_id) 供
