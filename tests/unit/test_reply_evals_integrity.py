@@ -211,6 +211,19 @@ def test_unsubscribe_suppress_scope_is_contact_or_account() -> None:
         )
 
 
+def test_input_bodies_are_unique_across_corpus() -> None:
+    """全部用例正文唯一（归一化空白与小写）；防复制粘贴占位样本，不只验 ID。"""
+    seen: dict[str, str] = {}
+    for _category, case_dir, input_payload, _expected in _sample_pairs():
+        body = input_payload.get("body")
+        assert isinstance(body, str) and body.strip(), f"{case_dir.name}: body 缺失"
+        normalized = " ".join(body.lower().split())
+        assert normalized not in seen, (
+            f"正文重复：{case_dir.name} 与 {seen[normalized]}（归一化后相同）"
+        )
+        seen[normalized] = f"{case_dir.name}"
+
+
 def test_extract_fields_use_demand_vocabulary_with_verbatim_quotes() -> None:
     """提取字段用 demand 词表；quote 必须逐字指向原消息（provenance）。"""
     for _category, case_dir, input_payload, expected in _sample_pairs():
