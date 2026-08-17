@@ -92,6 +92,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "ComplaintReceived",
         "ReplyReceived",
         "InboundMessageStored",
+        "DemandSignalCaptured",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
