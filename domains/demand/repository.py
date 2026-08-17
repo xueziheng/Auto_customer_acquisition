@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.demand.models import (
     DemandSignal,
@@ -16,6 +16,7 @@ from domains.demand.models import (
     NeedHypothesis,
     ValidatedNeed,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     DemandSignalId,
     NeedClusterId,
@@ -28,7 +29,13 @@ from shared.schemas.identifiers import (
 
 @runtime_checkable
 class DemandSignalRepository(Protocol):
-    async def add(self, signal: DemandSignal) -> None: ...
+    async def add(self, signal: DemandSignal) -> bool:
+        """来源身份冲突返回 False（不入库）；True=新插入。
+
+        dedup identity = (tenant_id, entity_name, signal_type, source_type,
+        source_id)——全非空五列（规格 §4；page_hash 可空 tuple 方案已否决）。
+        """
+        ...
 
     async def get(
         self, tenant_id: TenantId, signal_id: DemandSignalId
@@ -39,13 +46,22 @@ class DemandSignalRepository(Protocol):
         tenant_id: TenantId,
         entity_name: str,
         signal_type: str,
-        page_hash: str | None,
+        source_type: str,
+        source_id: str,
     ) -> DemandSignal | None:
-        """按 ``(entity_name, signal_type, page_hash)`` 查重复信号。
+        """按来源身份 5 列查重复信号（同事务重读胜者用）。"""
+        ...
 
-        去重的意义不只是省存储：重复信号会让证据计数虚高，进而推高
-        置信度档位（``derive_confidence`` 规则 2 靠独立证据数上浮）。
-        """
+    async def discard(
+        self,
+        tenant_id: TenantId,
+        signal_id: DemandSignalId,
+        reason: str,
+    ) -> DemandSignal | None:
+        """tenant-bound SELECT ... FOR UPDATE，返回转换前快照（规格 §6.1）：
+        不存在 → None；CAPTURED → 同事务 UPDATE 为 discarded+reason 后返回
+        更新前 snapshot；DISCARDED/LINKED_TO_HYPOTHESIS → 不改动返回当前
+        snapshot。调用方不得把返回对象当作 DB 当前态。"""
         ...
 
     async def list_unlinked(
@@ -53,6 +69,23 @@ class DemandSignalRepository(Protocol):
     ) -> list[DemandSignal]:
         """列出尚未关联到假设的信号，供假设生成任务消费。"""
         ...
+
+
+@runtime_checkable
+class DemandUnitOfWork(Protocol):
+    """demand 域事务边界（域级接口；实现为 SqlAlchemyDemandUnitOfWork）。"""
+
+    signals: DemandSignalRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
 
 
 @runtime_checkable

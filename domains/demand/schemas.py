@@ -21,6 +21,8 @@ class SignalCaptureRequest:
 
     字段：
         signal_type, entity_name, raw_observation
+        source_id:     来源身份（网页=页面哈希；非网页=调用方提供的记录 identity）
+        extracted_by:  提取者（模型版本标识或 "human"）
         possible_need:  可能的需求方向（参考，不是结论）
         source_url:     网页来源必填
         page_hash:      网页来源必填
@@ -28,7 +30,7 @@ class SignalCaptureRequest:
         source_type:    见 ``SourceType``
 
     校验：``source_type == WEB_PAGE`` 时 ``source_url`` 与 ``page_hash``
-    必填。服务层拒绝不合格入参，不做"友好补全"。
+    必填，且 ``source_id == page_hash``。服务层拒绝不合格入参，不做"友好补全"。
     """
 
     signal_type: str
@@ -36,6 +38,11 @@ class SignalCaptureRequest:
     raw_observation: str
     observed_at: datetime
     source_type: str
+    source_id: str
+    """来源身份：网页类 = 页面哈希；非网页类 = message/upload/provider/
+    员工录入记录 identity（调用方提供）。"""
+    extracted_by: str
+    """提取者（模型版本标识或 "human"；Provenance 要求具体版本）。"""
     possible_need: str | None = None
     source_url: str | None = None
     page_hash: str | None = None

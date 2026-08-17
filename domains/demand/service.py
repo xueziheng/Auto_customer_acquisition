@@ -39,18 +39,27 @@ class DemandService(Protocol):
         """记录一条需求信号。
 
         实现要求：
-        - 网页来源必须有 URL + page_hash + observed_at，缺则拒绝。
-          没有哈希的网页证据在页面变更后无法自证。
-        - 去重：同一 ``(entity_name, signal_type, page_hash)`` 视为
-          同一信号，返回已有 ID，不重复计费也不重复计数
-        - 发布 ``DemandSignalCaptured``
+        - 输入（SignalCaptureRequest）由调用方提供 source_id/extracted_by；
+          WEB_PAGE 时 source_id == page_hash 且 source_url/page_hash 必填，
+          缺失抛 MissingWebEvidenceError
+        - 去重 key = (tenant_id, entity_name, signal_type, source_type,
+          source_id)（全非空 5 列）：同一来源身份视为同一信号，返回已有
+          ID，不重复计费也不重复计数、不重复发布事件
+        - 发布 ``DemandSignalCaptured``（仅新插入时；metadata-only）
         """
         ...
 
     async def discard_signal(
         self, tenant_id: TenantId, signal_id: str, reason: str
     ) -> None:
-        """丢弃信号。原因必填，用于评估各信号源的信噪比。"""
+        """丢弃信号。原因必填，用于评估各信号源的信噪比。
+
+        - 不存在/跨租户不可见 → ValidationError("需求信号不存在")
+        - LINKED_TO_HYPOTHESIS → InvalidStateTransition（保护证据链）
+        - 已 DISCARDED：同 reason 幂等 no-op；不同 reason → InvalidStateTransition
+          （拒绝覆盖 first reason）
+        - 不发布事件
+        """
         ...
 
     # --- 假设 -----------------------------------------------------------
