@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service import DemandService
 from shared.errors import (
+    InvalidStateTransition,
     TenantIsolationViolation,
     ValidationError,
 )
@@ -485,3 +486,222 @@ async def test_capture_publish_failure_rolls_back_signal(demand_db: AsyncEngine)
         await service.capture_signal(tenant, _request())
     assert await _signal_rows(factory, tenant) == []  # 业务行回滚
     assert await _outbox_events(factory, tenant) == []
+
+
+async def test_discard_captured_to_discarded_persists_first_reason(
+    demand_db: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """captured→discarded：落 first reason；status/reason 往返；成功路径
+    不新增 outbox 事件（仅 capture 的 1 条）且全程零日志。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    caplog.clear()
+
+    signal_id = await service.capture_signal(tenant, _request())
+    await service.discard_signal(tenant, signal_id, "noise")
+    rows = await _signal_rows(factory, tenant)
+    assert len(rows) == 1
+    assert rows[0].status == "discarded"
+    assert rows[0].discard_reason == "noise"
+    events = await _outbox_events(factory, tenant)
+    assert len(events) == 1  # 仅 capture 事件；discard 不写 outbox
+    assert caplog.records == []  # 成功路径零日志
+
+
+async def test_discard_idempotent_same_reason_and_conflict_on_different(
+    demand_db: AsyncEngine,
+) -> None:
+    """同 reason 幂等 no-op；不同 reason → InvalidStateTransition 且 first 保留。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+
+    signal_id = await service.capture_signal(tenant, _request())
+    await service.discard_signal(tenant, signal_id, "noise")
+    await service.discard_signal(tenant, signal_id, "noise")  # 幂等
+    rows = await _signal_rows(factory, tenant)
+    assert len(rows) == 1 and rows[0].discard_reason == "noise"
+    with pytest.raises(InvalidStateTransition) as exc_info:
+        await service.discard_signal(tenant, signal_id, "duplicate")
+    assert str(exc_info.value) == "丢弃原因冲突，拒绝覆盖"
+    rows = await _signal_rows(factory, tenant)
+    assert rows[0].discard_reason == "noise"  # first reason 保留
+
+
+async def test_discard_linked_rejected(demand_db: AsyncEngine) -> None:
+    """LINKED_TO_HYPOTHESIS → InvalidStateTransition（保护证据链）。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    tables = importlib.import_module("infra.db.tables")
+    # 直插 linked 行（模拟假设已关联）
+    signal_id = new_id("sig")
+    async with factory() as session:
+        session.add(
+            tables.DemandSignalRow(
+                tenant_id=str(tenant),
+                signal_id=signal_id,
+                signal_type="product_line_expansion",
+                entity_name="Acme Manufacturing",
+                raw_observation=OBSERVATION_MARKER,
+                observed_at=NOW,
+                status="linked_to_hypothesis",
+                source_type="web_page",
+                source_id="sha256:pagehash001",
+                extracted_by="model-v1",
+                extracted_at=NOW,
+                source_url="https://example.com/acme",
+                page_hash="sha256:pagehash001",
+            )
+        )
+        await session.commit()
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    with pytest.raises(InvalidStateTransition) as exc_info:
+        await service.discard_signal(tenant, signal_id, "noise")
+    assert str(exc_info.value) == "已关联假设的信号不可丢弃"
+    rows = await _signal_rows(factory, tenant)
+    assert rows[0].status == "linked_to_hypothesis"  # 未改动
+
+
+async def test_discard_missing_or_cross_tenant_invisible(
+    demand_db: AsyncEngine,
+) -> None:
+    """不存在/跨租户不可见 → 统一 ValidationError("需求信号不存在")。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant_a = TenantId(new_id("tn"))
+    tenant_b = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service_a = _service(factory, tenant_a, clock)
+    service_b = _service(factory, tenant_b, clock)
+
+    ghost = new_id("sig")
+    with pytest.raises(ValidationError) as exc_info:
+        await service_a.discard_signal(tenant_a, ghost, "noise")
+    assert str(exc_info.value) == "需求信号不存在"
+
+    signal_id = await service_a.capture_signal(tenant_a, _request())
+    with pytest.raises(ValidationError) as exc_info:
+        await service_b.discard_signal(tenant_b, signal_id, "noise")
+    assert str(exc_info.value) == "需求信号不存在"
+    rows_a = await _signal_rows(factory, tenant_a)
+    assert rows_a[0].status == "captured"  # B 的操作无副作用
+
+
+async def test_discard_concurrent_same_reason_both_succeed_single_reason(
+    demand_db: AsyncEngine,
+) -> None:
+    """并发同 reason → 双成功且单一 reason 落库。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service_a = _service(factory, tenant, clock)
+    service_b = _service(factory, tenant, clock)
+
+    signal_id = await service_a.capture_signal(tenant, _request())
+    results = await asyncio.gather(
+        service_a.discard_signal(tenant, signal_id, "noise"),
+        service_b.discard_signal(tenant, signal_id, "noise"),
+        return_exceptions=True,
+    )
+    assert all(r is None for r in results), results
+    rows = await _signal_rows(factory, tenant)
+    assert len(rows) == 1
+    assert rows[0].status == "discarded" and rows[0].discard_reason == "noise"
+
+
+async def test_discard_concurrent_different_reasons_one_wins_one_conflict(
+    demand_db: AsyncEngine,
+) -> None:
+    """并发不同 reason → 一胜一 InvalidStateTransition，first reason 保留。
+
+    确定性编排（消除 SELECT 时序竞态）：A 的 discard 持 FOR UPDATE 行锁且
+    未提交（固定 1s 窗口）时 B 才发起 discard——有锁则 B 的 SELECT 阻塞至
+    A 提交（读到已 discarded 行 → 冲突）；无锁则 B 在窗口内立即读到转换前
+    captured（双成功，本测试必 RED）。B 的冲突仍由服务层 InvalidStateTransition
+    承担。
+    """
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service_a = _service(factory, tenant, clock)
+    service_b = _service(factory, tenant, clock)
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+
+    signal_id = await service_a.capture_signal(tenant, _request())
+    a_locked = asyncio.Event()
+
+    async def run_a() -> None:
+        async with uow_type(factory, tenant, now=clock.now) as uow:
+            snapshot = await uow.signals.discard(
+                tenant, _models.DemandSignalId(signal_id), "noise"
+            )
+            assert snapshot is not None
+            a_locked.set()
+            await asyncio.sleep(1.0)  # 持锁窗口：B 的 discard 必然落在锁期内
+
+    async def run_b() -> object:
+        await a_locked.wait()  # A 已持锁未提交
+        return await service_b.discard_signal(tenant, signal_id, "duplicate")
+
+    results = await asyncio.gather(run_a(), run_b(), return_exceptions=True)
+    assert [r for r in results if r is not None]  # 恰一方冲突
+    assert any(isinstance(r, InvalidStateTransition) for r in results)
+    rows = await _signal_rows(factory, tenant)
+    assert rows[0].status == "discarded"
+    assert rows[0].discard_reason in {"noise", "duplicate"}
+
+
+async def test_discard_snapshot_semantics_and_rollback(demand_db: AsyncEngine) -> None:
+    """repo 返回转换前快照；失败注入 → 整事务回滚（既有 committed 状态保留）。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+
+    # 快照语义：repo 直接调用，captured 行返回快照 status=captured，但 DB 已更新
+    signal = _models.DemandSignal(
+        signal_id=_models.DemandSignalId(new_id("sig")),
+        tenant_id=tenant,
+        signal_type=_models.SignalType.PRODUCT_LINE_EXPANSION,
+        entity_name="Acme Manufacturing",
+        raw_observation=OBSERVATION_MARKER,
+        observed_at=NOW,
+        provenance=_provenance_for(),
+    )
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        assert await uow.signals.add(signal) is True
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        snapshot = await uow.signals.discard(tenant, signal.signal_id, "noise")
+        assert snapshot is not None
+        assert snapshot.status is _models.SignalStatus.CAPTURED  # 转换前快照
+    rows = await _signal_rows(factory, tenant)
+    assert rows[0].status == "discarded"  # UoW 提交后 DB 已是 discarded
+
+    # 回滚：新 CAPTURED 信号在同一失败事务内被 discard → 整个 UoW 回滚，
+    # fresh 保持 captured 且无 reason；既有 committed 行（discarded/noise）不变
+    fresh = _models.DemandSignal(
+        signal_id=_models.DemandSignalId(new_id("sig")),
+        tenant_id=tenant,
+        signal_type=_models.SignalType.PRODUCT_LINE_EXPANSION,
+        entity_name="Beta Manufacturing",
+        raw_observation=OBSERVATION_MARKER,
+        observed_at=NOW,
+        provenance=_provenance_for(),
+    )
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        assert await uow.signals.add(fresh) is True  # 提交：fresh 为 CAPTURED
+    with pytest.raises(RuntimeError, match="boom"):
+        async with uow_type(factory, tenant, now=clock.now) as uow:
+            await uow.signals.discard(tenant, fresh.signal_id, "noise2")
+            raise RuntimeError("boom")
+    rows = await _signal_rows(factory, tenant)
+    assert len(rows) == 2
+    by_id = {str(row.signal_id): row for row in rows}
+    assert by_id[str(signal.signal_id)].status == "discarded"  # 既有行不变
+    assert by_id[str(signal.signal_id)].discard_reason == "noise"
+    assert by_id[str(fresh.signal_id)].status == "captured"  # 回滚：未落 discarded
+    assert by_id[str(fresh.signal_id)].discard_reason is None  # 回滚：无 reason

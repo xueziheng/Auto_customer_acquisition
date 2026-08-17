@@ -181,5 +181,28 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
         signal_id: DemandSignalId,
         reason: str,
     ) -> DemandSignal | None:
-        """Task 4 实现；此处为满足 Protocol 的显式桩（同 list_unlinked 先例）。"""
-        raise NotImplementedError
+        """tenant-bound SELECT ... FOR UPDATE，返回转换前快照（规格 §6.1）。
+
+        不存在 → None；CAPTURED → 先捕获 snapshot 再同事务 UPDATE 为
+        discarded+reason，返回 snapshot（调用方不得当 DB 当前态）；
+        DISCARDED / LINKED_TO_HYPOTHESIS → 不改动，返回当前 snapshot。
+        """
+        self._require_tenant(tenant_id, "demand_signal_discard")
+        row = (
+            await self._session.execute(
+                select(DemandSignalRow)
+                .where(
+                    DemandSignalRow.tenant_id == str(self._tenant_id),
+                    DemandSignalRow.signal_id == str(signal_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        snapshot = _row_to_signal(row)
+        if row.status == SignalStatus.CAPTURED.value:
+            row.status = SignalStatus.DISCARDED.value
+            row.discard_reason = reason
+            await self._session.flush()
+        return snapshot

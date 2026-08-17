@@ -16,7 +16,7 @@ from domains.demand.errors import MissingWebEvidenceError
 from domains.demand.models import DemandSignal, SignalStatus, SignalType
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import SignalCaptureRequest
-from shared.errors import ValidationError
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import DemandSignalCaptured
 from shared.schemas.identifiers import DemandSignalId, TenantId, new_id
 from shared.schemas.provenance import Provenance, SourceType
@@ -161,3 +161,43 @@ class DemandServiceImpl:
             if winner is None:
                 raise ValidationError("信号写入竞态异常")
             return str(winner.signal_id)
+
+    async def discard_signal(
+        self, tenant_id: TenantId, signal_id: str, reason: str
+    ) -> None:
+        """丢弃信号（契约见 service.py docstring + 规格 §8）。
+
+        service 只用 repo 返回的转换前快照判定：None=不存在/跨租户不可见；
+        LINKED=拒绝；DISCARDED 同 reason=幂等 no-op、不同 reason=冲突；
+        CAPTURED=本次完成转换（DB 已更新）。
+        """
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id.strip()
+            or tenant_id != tenant_id.strip()
+        ):
+            raise ValidationError("信号租户无效")
+        if len(tenant_id) > 32:
+            raise ValidationError("信号租户超长")
+        if (
+            not isinstance(signal_id, str)
+            or not signal_id.strip()
+            or signal_id != signal_id.strip()
+        ):
+            raise ValidationError("信号标识无效")
+        if len(signal_id) > 32:
+            raise ValidationError("信号标识超长")
+        reason_text = self._require_text(reason, "丢弃原因")
+        assert reason_text is not None  # can_be_none=False 已保证非 None：收窄以通过 mypy
+        async with self._uow_factory(tenant_id) as uow:
+            snapshot = await uow.signals.discard(
+                tenant_id, DemandSignalId(signal_id), reason_text
+            )
+            if snapshot is None:
+                raise ValidationError("需求信号不存在")
+            if snapshot.status is SignalStatus.LINKED_TO_HYPOTHESIS:
+                raise InvalidStateTransition("已关联假设的信号不可丢弃")
+            if snapshot.status is SignalStatus.DISCARDED:
+                if snapshot.discard_reason == reason_text:
+                    return
+                raise InvalidStateTransition("丢弃原因冲突，拒绝覆盖")
