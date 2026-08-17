@@ -2087,3 +2087,92 @@ class ConversationClassificationCorrectionRow(Base):
     corrected_category: Mapped[str] = mapped_column(String(40))
     corrected_by: Mapped[str] = mapped_column(String(100))
     corrected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+_DEMAND_SIGNAL_TYPES = (
+    "'public_rfq','tender_notice','inbound_inquiry','trade_show_request',"
+    "'historical_unclosed_need','supplier_referral','product_line_expansion',"
+    "'facility_expansion','new_market_entry','procurement_role_hiring',"
+    "'distributor_change','new_certification','large_contract_won',"
+    "'funding_or_merger','stockout_observed','negative_product_review',"
+    "'supplier_complaint','marketplace_seller_activity','catalog_gap',"
+    "'value_chain_adjacency','complementary_category'"
+)
+_DEMAND_SIGNAL_STATUSES = "'captured','linked_to_hypothesis','discarded'"
+_DEMAND_SOURCE_TYPES = (
+    "'conversation','web_page','upload','employee_input',"
+    "'agent_inference','external_api'"
+)
+
+
+class DemandSignalRow(Base):
+    """``demand_signals`` 行（规格 2026-08-16 §5）：模型字段 + Provenance 展开列。"""
+
+    __tablename__ = "demand_signals"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "signal_id", name="pk_demand_signals"),
+        UniqueConstraint(
+            "tenant_id",
+            "entity_name",
+            "signal_type",
+            "source_type",
+            "source_id",
+            name="uq_demand_signals_source_identity",
+        ),
+        CheckConstraint(
+            f"signal_type IN ({_DEMAND_SIGNAL_TYPES})", name="ck_demand_signals_type"
+        ),
+        CheckConstraint(
+            f"status IN ({_DEMAND_SIGNAL_STATUSES})", name="ck_demand_signals_status"
+        ),
+        CheckConstraint(
+            f"source_type IN ({_DEMAND_SOURCE_TYPES})",
+            name="ck_demand_signals_source_type",
+        ),
+        CheckConstraint(
+            "(confirmed_by IS NULL) = (confirmed_at IS NULL)",
+            name="ck_demand_signals_confirmed_pair",
+        ),
+        CheckConstraint(
+            "source_type <> 'web_page' OR "
+            "(btrim(source_url) <> '' AND btrim(page_hash) <> '' "
+            "AND source_id = page_hash)",
+            name="ck_demand_signals_web_evidence",
+        ),
+        CheckConstraint(
+            "(status = 'discarded') = "
+            "(discard_reason IS NOT NULL AND btrim(discard_reason) <> '')",
+            name="ck_demand_signals_discard_reason",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(signal_id) <> '' AND "
+            "btrim(entity_name) <> '' AND btrim(raw_observation) <> '' AND "
+            "btrim(source_id) <> '' AND btrim(extracted_by) <> ''",
+            name="ck_demand_signals_core_nonblank",
+        ),
+        CheckConstraint(
+            "(possible_need IS NULL OR btrim(possible_need) <> '') AND "
+            "(source_url IS NULL OR btrim(source_url) <> '') AND "
+            "(page_hash IS NULL OR btrim(page_hash) <> '')",
+            name="ck_demand_signals_optional_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    signal_id: Mapped[str] = mapped_column(String(32))
+    signal_type: Mapped[str] = mapped_column(String(40))
+    entity_name: Mapped[str] = mapped_column(String(200))
+    raw_observation: Mapped[str] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32), server_default=text("'captured'"))
+    possible_need: Mapped[str | None] = mapped_column(Text)
+    account_id: Mapped[str | None] = mapped_column(String(32))
+    discard_reason: Mapped[str | None] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(200))
+    extracted_by: Mapped[str] = mapped_column(String(64))
+    extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(String(32))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_url: Mapped[str | None] = mapped_column(String(2000))
+    page_hash: Mapped[str | None] = mapped_column(String(200))
