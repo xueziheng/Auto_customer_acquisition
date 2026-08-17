@@ -140,10 +140,11 @@ class DemandService(Protocol):
         实现要求：
         - 每个 ``extracted_fields`` 的值都要包成 ``FactualField``，
           ``provenance.source_id`` 指向 ``source_message_id``
+        - ``extracted_fields`` 键 ⊆ {product_category} ∪ 10 个可变更业务字段
+          （11 键白名单）；product_category 必填且创建后不可变
         - 完整度由字段推导，不接受传入
         - 假设状态转为 ``validated``
         - 发布 ``NeedValidated``
-        - 尝试归入需求簇（失败不阻塞主流程——聚类是增强，不是必需）
         """
         ...
 
@@ -154,21 +155,23 @@ class DemandService(Protocol):
         fields: dict,
         source_message_id: MessageId,
         updated_by: EmployeeId | None = None,
-    ) -> ValidatedNeedView:
+    ) -> None:
         """补全需求字段（客户在后续对话里给了更多信息）。
 
         实现要求：
         - 每个新字段都要有自己的 provenance，指向说这句话的消息
         - **字段值变更要保留历史**，不能直接覆盖。客户把数量从 5000
           改成 3000 是重要的商业信息（可能预算收紧），覆盖掉就丢了。
-        - 完整度变化跨过 3 级门槛时，发布状态转换事件
+        - 跨过 3 级门槛自动置 sourcing_ready，**不发事件**（catalog 无匹配
+          schema，最小语义）
         """
         ...
 
     async def mark_sourcing_ready(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
     ) -> None:
-        """标记为可寻源。完整度不足 3 抛 ``InvalidStateTransition``。"""
+        """标记为可寻源。完整度不足 3 抛 ``SourcingThresholdNotMetError``
+        （既有域错误，消息含 missing_fields）。"""
         ...
 
     # --- 查询 -----------------------------------------------------------

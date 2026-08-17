@@ -76,6 +76,8 @@ class DemandUnitOfWork(Protocol):
     """demand 域事务边界（域级接口；实现为 SqlAlchemyDemandUnitOfWork）。"""
 
     signals: DemandSignalRepository
+    hypotheses: NeedHypothesisRepository
+    needs: ValidatedNeedRepository
     bus: EventBus
 
     async def __aenter__(self) -> Self: ...
@@ -90,7 +92,10 @@ class DemandUnitOfWork(Protocol):
 
 @runtime_checkable
 class NeedHypothesisRepository(Protocol):
-    async def add(self, hypothesis: NeedHypothesis) -> None: ...
+    async def add(self, hypothesis: NeedHypothesis) -> bool:
+        """新插入返回 True；活跃冲突（(tenant_id, account_id, category) 部分唯一
+        索引命中）返回 False（spec D2）。"""
+        ...
 
     async def get(
         self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId
@@ -109,6 +114,12 @@ class NeedHypothesisRepository(Protocol):
         用于避免重复创建——否则同一家公司会被不同批次的探索反复
         生成假设，然后被联系多次，直接推高投诉率。
         """
+        ...
+
+    async def get_for_update(
+        self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId
+    ) -> NeedHypothesis | None:
+        """SELECT ... FOR UPDATE 读假设（转换路径行锁，spec D7）。"""
         ...
 
     async def list_for_outreach(
@@ -133,6 +144,12 @@ class ValidatedNeedRepository(Protocol):
     async def get(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
     ) -> ValidatedNeed | None: ...
+
+    async def get_for_update(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> ValidatedNeed | None:
+        """SELECT ... FOR UPDATE 读已验证需求（转换路径行锁，spec D7）。"""
+        ...
 
     async def update(self, need: ValidatedNeed) -> None: ...
 

@@ -135,17 +135,15 @@ observed → linked_to_hypothesis
 ### Need Hypothesis
 
 ```text
-inferred → outreach_queued → contacted → validated
-        │                              └→ rejected（客户明确表示无需求）
-        └→ discarded（证据不足 / 命中排除类别 / 联系不上）
+inferred → contacting → validated
+        │              └→ rejected（客户明确表示无需求；rejected 必带原因）
 ```
 
 ### Validated Need
 
 ```text
-validated → sourcing_ready（完整度 ≥ 3）→ sourcing_in_progress → quoted
-         └→ paused（客户暂缓）
-         └→ closed（需求消失）
+validated → sourcing_ready（完整度 ≥ 3）→ handed_to_sourcing
+         └→ fulfilled / withdrawn / lost（终态）
 ```
 
 ### Trade Opportunity

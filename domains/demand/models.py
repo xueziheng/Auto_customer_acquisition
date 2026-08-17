@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.evidence import EvidenceItem, EvidenceLevel
 from shared.schemas.identifiers import (
     ConversationId,
@@ -25,6 +26,41 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import Money
 from shared.schemas.provenance import FactualField, InferredField, Provenance
+
+# 硬边界 5/6 证据等级映射表（写成常量不做 if 链；finding 4 仅三直接档）
+_CUSTOMER_DIRECT_SIGNAL_TYPES = frozenset(
+    {"public_rfq", "inbound_inquiry", "tender_notice"}
+)
+_COMPANY_EVENT_SIGNAL_TYPES = frozenset(
+    {
+        "product_line_expansion",
+        "facility_expansion",
+        "new_market_entry",
+        "procurement_role_hiring",
+        "distributor_change",
+        "new_certification",
+        "large_contract_won",
+        "funding_or_merger",
+    }
+)
+_EVIDENCE_LEVEL_RANK: dict[EvidenceLevel, int] = {
+    level: i for i, level in enumerate(EvidenceLevel)
+}
+_PROMOTABLE_SOURCE_TYPES = frozenset({"conversation", "upload", "employee_input"})
+_AGENT_INFERENCE_SIGNAL_TYPES = frozenset(
+    {
+        "trade_show_request",
+        "historical_unclosed_need",
+        "supplier_referral",
+        "stockout_observed",
+        "negative_product_review",
+        "supplier_complaint",
+        "marketplace_seller_activity",
+        "catalog_gap",
+        "value_chain_adjacency",
+        "complementary_category",
+    }
+)
 
 
 class SignalType(str, Enum):
@@ -106,17 +142,25 @@ class DemandSignal:
 
     @property
     def evidence_level(self) -> EvidenceLevel:
-        """信号对应的证据等级。
+        """信号对应的证据等级（映射表见模块级常量；spec D3/finding 4）。
 
-        映射规则（直接需求类信号强于企业变化类）：
-        - ``PUBLIC_RFQ`` / ``INBOUND_INQUIRY`` / ``TENDER_NOTICE``
-          → ``CUSTOMER_INTEREST_REPLY`` 或更高，取决于是否含规格
-        - 企业变化类 → ``PUBLIC_COMPANY_EVENT``
-        - 产业链推断类 → ``AGENT_INDUSTRY_INFERENCE``
-
-        映射表要写成模块级常量，不写成 if 链——它会被反复查阅和调整。
+        公开 RFQ/入站询盘/招标公告 → CUSTOMER_INTEREST_REPLY（规格内容不升级）；
+        企业变化类 → PUBLIC_COMPANY_EVENT；产业链推断类 → AGENT_INDUSTRY_INFERENCE。
         """
-        raise NotImplementedError
+        # 防御：类型注解保证为 SignalType，但直插/遗留对象可能携带裸字符串
+        # （测试覆盖未知值 → ValidationError）；枚举成员取 .value
+        value = (
+            self.signal_type.value
+            if isinstance(self.signal_type, SignalType)
+            else str(self.signal_type)
+        )
+        if value in _CUSTOMER_DIRECT_SIGNAL_TYPES:
+            return EvidenceLevel.CUSTOMER_INTEREST_REPLY
+        if value in _COMPANY_EVENT_SIGNAL_TYPES:
+            return EvidenceLevel.PUBLIC_COMPANY_EVENT
+        if value in _AGENT_INFERENCE_SIGNAL_TYPES:
+            return EvidenceLevel.AGENT_INDUSTRY_INFERENCE
+        raise ValidationError("未知信号类型")
 
 
 class HypothesisStatus(str, Enum):
@@ -159,24 +203,29 @@ class NeedHypothesis:
     validated_need_id: ValidatedNeedId | None = None
 
     def evidence(self) -> list[EvidenceItem]:
-        """汇总全部证据，供置信度推导使用。
-
-        实现要求：来自同一页面或同一条消息的证据只算一条——
-        同一页面抓两次不是两个独立证据（见 ``derive_confidence`` 规则 2）。
-        """
-        raise NotImplementedError
+        """汇总证据（纯域内、零 IO，spec D1）：based_on 按 (source_type,
+        source_id) 去重，组内保留等级最高一条，并列取先出现；输出保持组首现顺序。"""
+        by_source: dict[tuple[str, str], EvidenceItem] = {}
+        order: list[tuple[str, str]] = []
+        for item in self.reasoning.based_on:
+            key = (item.source_type, item.source_id)
+            current = by_source.get(key)
+            if current is None:
+                by_source[key] = item
+                order.append(key)
+            elif _EVIDENCE_LEVEL_RANK[item.level] > _EVIDENCE_LEVEL_RANK[current.level]:
+                by_source[key] = item
+        return [by_source[key] for key in order]
 
     def can_promote_to_validated(self) -> bool:
-        """能否晋升为已验证需求。
-
-        **本域最重要的判断。** 唯一通过条件：存在至少一条证据等级
-        ≥ ``CUSTOMER_INTEREST_REPLY`` 且 ``source_type`` 属于
-        ``CONVERSATION`` / ``UPLOAD`` / ``EMPLOYEE_INPUT``。
-
-        Agent 推断不论多少条都不通过。不要为"证据很多"开后门——
-        一百条推断加起来仍然是推断。
-        """
-        raise NotImplementedError
+        """唯一通过条件：存在证据等级 ≥ CUSTOMER_INTEREST_REPLY 且来源类型
+        属于 conversation/upload/employee_input。Agent 推断不论多少条都不通过。"""
+        required_rank = _EVIDENCE_LEVEL_RANK[EvidenceLevel.CUSTOMER_INTEREST_REPLY]
+        return any(
+            _EVIDENCE_LEVEL_RANK[item.level] >= required_rank
+            and item.source_type in _PROMOTABLE_SOURCE_TYPES
+            for item in self.evidence()
+        )
 
 
 class NeedStatus(str, Enum):

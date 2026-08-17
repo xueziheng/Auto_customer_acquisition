@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib
 import inspect
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -23,6 +23,8 @@ from shared.events.catalog import DemandSignalCaptured
 
 _repository = importlib.import_module("domains.demand.repository")
 DemandSignalRepository = _repository.DemandSignalRepository
+NeedHypothesisRepository = _repository.NeedHypothesisRepository
+ValidatedNeedRepository = _repository.ValidatedNeedRepository
 DemandUnitOfWork = _repository.DemandUnitOfWork
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -93,3 +95,57 @@ def test_repository_and_uow_protocol_shapes() -> None:
 
 def test_demand_signal_captured_registered_in_event_registry() -> None:
     assert EVENT_REGISTRY["DemandSignalCaptured"] is DemandSignalCaptured
+
+
+def test_hypothesis_and_need_repositories_gain_get_for_update() -> None:
+    """契约纠偏（spec D7）：两个 repo 各增 get_for_update，参数名精确。"""
+    expected = {
+        "add": ["self", "hypothesis"],
+        "get": ["self", "tenant_id", "hypothesis_id"],
+        "update": ["self", "hypothesis"],
+        "get_for_update": ["self", "tenant_id", "hypothesis_id"],
+        "find_active_by_account_and_category": [
+            "self",
+            "tenant_id",
+            "account_id",
+            "category",
+        ],
+        "list_for_outreach": ["self", "tenant_id", "countries", "limit"],
+    }
+    for method, params in expected.items():
+        signature = inspect.signature(getattr(NeedHypothesisRepository, method))
+        assert list(signature.parameters) == params, method
+    expected_need = {
+        "add": ["self", "need"],
+        "get": ["self", "tenant_id", "need_id"],
+        "update": ["self", "need"],
+        "get_for_update": ["self", "tenant_id", "need_id"],
+        "append_field_history": [
+            "self",
+            "tenant_id",
+            "need_id",
+            "field_name",
+            "old_value",
+            "new_value",
+            "source_message_id",
+            "changed_by",
+        ],
+        "list_sourcing_ready": ["self", "tenant_id", "limit"],
+        "list_by_account": ["self", "tenant_id", "account_id"],
+    }
+    for method, params in expected_need.items():
+        signature = inspect.signature(getattr(ValidatedNeedRepository, method))
+        assert list(signature.parameters) == params, method
+    # P1-1/P2-8：返回契约锁死——add 必须 bool；get_for_update 必须含 None 的联合注解
+    assert get_type_hints(NeedHypothesisRepository.add)["return"] is bool
+    assert "None" in str(
+        get_type_hints(NeedHypothesisRepository.get_for_update)["return"]
+    )
+
+
+def test_demand_uow_protocol_gains_hypotheses_and_needs() -> None:
+    """UoW 协议成员（spec D12）：signals/hypotheses/needs/bus，无 clusters。"""
+    attrs = set(getattr(DemandUnitOfWork, "__protocol_attrs__", ()))
+    assert {"signals", "hypotheses", "needs", "bus", "__aenter__", "__aexit__"} <= attrs
+    # spec D12 / Phase 1：UoW 不得有 clusters 成员（NeedCluster 整体非本片范围）
+    assert "clusters" not in attrs

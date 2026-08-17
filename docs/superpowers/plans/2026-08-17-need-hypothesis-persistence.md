@@ -45,7 +45,7 @@ tests/integration/test_need_hypotheses.py                                 Task 3
 
 ## Plan Delivery Gate（实施前提）
 
-- [ ] **Step 0: 本计划文件 docs commit**（照 2026-08-17-demand-signal-persistence 的 ab92690 先例；仅当监督方批准本计划后执行）：`git add --chmod=-x docs/superpowers/plans/2026-08-17-need-hypothesis-persistence.md` → `git ls-files --stage` 验 100644 → `git diff --cached --check` → commit 消息逐字 `docs(demand): plan need hypothesis persistence` → push → exact-HEAD CI success。
+- [x] **Step 0: 本计划文件 docs commit**（照 2026-08-17-demand-signal-persistence 的 ab92690 先例；仅当监督方批准本计划后执行）：`git add --chmod=-x docs/superpowers/plans/2026-08-17-need-hypothesis-persistence.md` → `git ls-files --stage` 验 100644 → `git diff --cached --check` → commit 消息逐字 `docs(demand): plan need hypothesis persistence` → push → exact-HEAD CI success。
 
 ---
 
@@ -69,7 +69,7 @@ tests/integration/test_need_hypotheses.py                                 Task 3
 - `NeedHypothesis.can_promote_to_validated() -> bool`：存在至少一条证据等级 ≥ `CUSTOMER_INTEREST_REPLY` 且 `source_type` ∈ {`conversation`, `upload`, `employee_input`}（D6）。
 - `service.py` D19 纠偏：`update_need_fields(..., updated_by: str | None = None) -> None`（原 `-> ValidatedNeedView`）；`mark_sourcing_ready` docstring「完整度不足 3 抛 `SourcingThresholdNotMetError`」；`promote_to_validated` docstring 删除「尝试归入需求簇（失败不阻塞主流程）」子句；`update_need_fields` docstring「完整度变化跨过 3 级门槛时，发布状态转换事件」改为「不发事件——catalog 无匹配 schema（最小语义）」；`promote_to_validated` docstring 补全「`extracted_fields` 键 ⊆ {product_category} ∪ 10 个可变更业务字段（11 键）」。
 
-- [ ] **Step 1: 写失败测试（tests/unit/test_need_hypothesis_models.py 新增 + test_demand_signal_contracts.py 扩展）**
+- [x] **Step 1: 写失败测试（tests/unit/test_need_hypothesis_models.py 新增 + test_demand_signal_contracts.py 扩展）**
 
 `tests/unit/test_need_hypothesis_models.py`（importlib 动态取域内模型，check_boundaries domain-internals 规则）：
 
@@ -301,7 +301,7 @@ def test_demand_uow_protocol_gains_hypotheses_and_needs() -> None:
 
 （`NeedHypothesisRepository`/`ValidatedNeedRepository` 经现有 `_repository = importlib.import_module("domains.demand.repository")` 解析；`inspect` 已导入。）
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 cd /Volumes/T7/Company/Auto_customer_acquisition/.worktrees/handbook-phase1-slice4-execution
@@ -311,7 +311,7 @@ conda run -n tradeos-py312 python -m pytest tests/unit/test_need_hypothesis_mode
 
 Expected: **FAIL**——models 三方法以 `NotImplementedError` 失败（证据去重/门槛/映射用例），契约用例以 `AttributeError: type object 'NeedHypothesisRepository' has no attribute 'get_for_update'` 与 UoW 协议成员缺失失败（缺契约纠偏）。记录 rc=1 与每个失败原因。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `domains/demand/models.py`——模块级常量与三方法实现（追加在 `DemandSignal.evidence_level` property 处替换桩；`SignalStatus` 前加映射常量）：
 
@@ -455,7 +455,7 @@ _AGENT_INFERENCE_SIGNAL_TYPES = frozenset(
 
 (3d) `docs/architecture/01-domain-model.md` D18 状态图同步：§四 Need Hypothesis 块 `inferred → outreach_queued → contacted → validated / rejected / discarded` → `inferred → contacting → validated / rejected（rejected 必带原因）`；Validated Need 块 `validated → sourcing_ready（完整度 ≥ 3）→ sourcing_in_progress → quoted / paused / closed` → `validated → sourcing_ready（完整度 ≥ 3）→ handed_to_sourcing / fulfilled / withdrawn / lost`（与 models.py `HypothesisStatus`/`NeedStatus` 逐字一致）。
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/unit/test_need_hypothesis_models.py tests/unit/test_demand_signal_contracts.py -q -W error
@@ -464,7 +464,7 @@ conda run -n tradeos-py312 python -m pytest tests/unit -q -W error
 
 Expected: 全部 PASS（unit 全量以实际收集计数为准——P3-7，不预设数字）。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check domains/demand tests/unit/test_need_hypothesis_models.py tests/unit/test_demand_signal_contracts.py
@@ -476,7 +476,7 @@ git diff --check
 
 Expected: 全部 rc=0。（`models.py` 的 `ValidationError` 导入已在 Step 3a 的 imports 代码块并入，P3-8。）
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 NotImplementedError×N + AttributeError 契约缺失、GREEN 计数、diff 4 文件）
+- [x] **Step 6: 停止等待监督方复审**（汇报 RED 原因 NotImplementedError×N + AttributeError 契约缺失、GREEN 计数、diff 4 文件）
 
 复审通过后，提交前执行 mutation proof（临时 apply_patch → 精确测试 RED → 恢复 → GREEN → `git diff` 无残留）：
 
@@ -484,7 +484,7 @@ Expected: 全部 rc=0。（`models.py` 的 `ValidationError` 导入已在 Step 3
 |---|---|---|---|
 | M0 | `can_promote_to_validated` 去掉 `source_type in _PROMOTABLE_SOURCE_TYPES` 条件（只查等级） | `test_can_promote_requires_customer_evidence_from_whitelisted_sources` | `web_reply`（CUSTOMER_INTEREST_REPLY×web_page）不再被拒 → 断言失败 |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**
 
 ```bash
 export PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH
