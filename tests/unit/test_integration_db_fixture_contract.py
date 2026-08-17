@@ -30,7 +30,7 @@ class _SpyRequest:
 
 class _FakeContainer:
     def get_connection_url(self) -> str:
-        return "postgresql+psycopg2://tradeos:pw@127.0.0.1:5432/tradeos_test"
+        return "postgresql+psycopg2://tradeos@127.0.0.1:5432/tradeos_test"
 
 
 class _FallbackRequest:
@@ -68,23 +68,23 @@ def test_resolve_db_url_unset_keeps_container_fallback(
 ) -> None:
     """未设置 → 惰性调用容器 getter 并转 asyncpg（既有 fallback 语义）。"""
     monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
-    url = _resolve_db_url(None, lambda: "postgresql+psycopg2://tradeos:pw@127.0.0.1:5432/tradeos_test")
-    assert url == "postgresql+asyncpg://tradeos:pw@127.0.0.1:5432/tradeos_test"
+    url = _resolve_db_url(None, lambda: "postgresql+psycopg2://tradeos@127.0.0.1:5432/tradeos_test")
+    assert url == "postgresql+asyncpg://tradeos@127.0.0.1:5432/tradeos_test"
 
 
 def test_to_asyncpg_conversions() -> None:
     """三种 scheme 转换：psycopg2/裸 postgresql → asyncpg；asyncpg 原样透传。"""
-    assert _to_asyncpg("postgresql+psycopg2://u:p@h:5432/d") == (
-        "postgresql+asyncpg://u:p@h:5432/d"
+    assert _to_asyncpg("postgresql+psycopg2://u@h:5432/d") == (
+        "postgresql+asyncpg://u@h:5432/d"
     )
-    assert _to_asyncpg("postgresql://u:p@h:5432/d") == (
-        "postgresql+asyncpg://u:p@h:5432/d"
+    assert _to_asyncpg("postgresql://u@h:5432/d") == (
+        "postgresql+asyncpg://u@h:5432/d"
     )
-    assert _to_asyncpg("postgresql+asyncpg://u:p@h:5432/d") == (
-        "postgresql+asyncpg://u:p@h:5432/d"
+    assert _to_asyncpg("postgresql+asyncpg://u@h:5432/d") == (
+        "postgresql+asyncpg://u@h:5432/d"
     )
     with pytest.raises(ValueError):
-        _to_asyncpg("mysql://u:p@h:3306/d")
+        _to_asyncpg("mysql://u@h:3306/d")
 
 
 def _fail_never_called() -> str:
