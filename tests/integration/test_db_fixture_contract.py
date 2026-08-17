@@ -4,6 +4,8 @@ RED 预期：旧 conftest 的 ``db_url(_migrated, _postgres_container)`` 为静�
 依赖（单参调用 TypeError）、``_to_asyncpg`` 不认 asyncpg scheme（ValueError）。
 GREEN 后：TEST_DATABASE_URL 已设置时选择逻辑与真实 fixture 均不触碰容器
 （spy/哨兵证明）；未设置时保持既有容器 fallback（CI 兼容）；URL 一律 asyncpg。
+本文件置于 tests/integration/：同目录 conftest 自然提供 db_url fixture，
+无需 pytest_plugins（其跨目录注册与全量收集冲突，CI 实证）。
 """
 
 from __future__ import annotations
@@ -11,8 +13,6 @@ from __future__ import annotations
 import importlib
 
 import pytest
-
-pytest_plugins = ("tests.integration.conftest",)
 
 from tests.integration.conftest import RedactedUrl, _resolve_db_url, _to_asyncpg
 
