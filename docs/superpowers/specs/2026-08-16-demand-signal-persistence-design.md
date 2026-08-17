@@ -84,8 +84,9 @@ CHECK   ck_demand_signals_status              status IN (SignalStatus 全 3 枚�
 CHECK   ck_demand_signals_source_type         source_type IN (SourceType 全 6 枚举值)
 CHECK   ck_demand_signals_confirmed_pair      (confirmed_by IS NULL) = (confirmed_at IS NULL)
 CHECK   ck_demand_signals_web_evidence        source_type <> 'web_page' OR
-                                               (btrim(source_url) <> '' AND btrim(page_hash) <> ''
-                                                AND source_id = page_hash)
+                                               (source_url IS NOT NULL AND btrim(source_url) <> '' AND
+                                                page_hash IS NOT NULL AND btrim(page_hash) <> '' AND
+                                                source_id = page_hash)
 CHECK   ck_demand_signals_discard_reason      (status = 'discarded') =
                                                (discard_reason IS NOT NULL AND btrim(discard_reason) <> '')
 CHECK   ck_demand_signals_core_nonblank       btrim(tenant_id) <> '' AND btrim(signal_id) <> ''

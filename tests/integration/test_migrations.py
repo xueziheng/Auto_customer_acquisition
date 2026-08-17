@@ -3863,8 +3863,9 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         ),
         "ck_demand_signals_web_evidence": (
             "source_type <> 'web_page' OR "
-            "(btrim(source_url) <> '' AND btrim(page_hash) <> '' "
-            "AND source_id = page_hash)"
+            "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
+            "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
+            "source_id = page_hash)"
         ),
         "ck_demand_signals_discard_reason": (
             "(status = 'discarded') = "
@@ -3912,4 +3913,96 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
         assert "demand_signals" in await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
+    db_url: str,
+) -> None:
+    """0021 web_evidence CHECK 的 NULL 空窗回归：NULL url/hash 必须被拒绝。
+
+    当前约束 ``source_type <> 'web_page' OR (btrim(source_url) <> '' AND
+    btrim(page_hash) <> '' AND source_id = page_hash)`` 在 web 行 url/hash 为
+    NULL 时整体求值为 NULL——PostgreSQL CHECK 只拒绝 FALSE，NULL 视为通过，
+    NULL 网页证据可绕过约束。本测试先证明合法 WEB 与非 WEB 行被接受（OR
+    分支语义不回归），再逐一证明 WEB source_url=NULL 与 page_hash=NULL 被
+    拒绝（断言消息指明逃逸的可空字段）。修复前本测试必须 RED（NULL 行被
+    接受），修复后 GREEN。
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+
+    async def _insert(
+        signal_id: str,
+        source_type: str,
+        source_id: str,
+        source_url: str | None,
+        page_hash: str | None,
+    ) -> None:
+        url_lit = "NULL" if source_url is None else f"'{source_url}'"
+        hash_lit = "NULL" if page_hash is None else f"'{page_hash}'"
+        sql = (
+            "INSERT INTO demand_signals (tenant_id, signal_id, signal_type, "
+            "entity_name, raw_observation, observed_at, status, source_type, "
+            "source_id, extracted_by, extracted_at, source_url, page_hash) "
+            "VALUES "
+            f"('t1','{signal_id}','product_line_expansion','Acme','obs',"
+            f"'2026-08-17T09:00:00Z','captured','{source_type}',"
+            f"'{source_id}','m1','2026-08-17T09:00:00Z',{url_lit},{hash_lit})"
+        )
+        async with engine.begin() as conn:
+            await conn.execute(text(sql))
+
+    try:
+        # 合法 WEB 行（url/hash 非空且 source_id == page_hash）必须被接受
+        await _insert(
+            "sig_web_ok",
+            "web_page",
+            "sha256:pwebok",
+            "https://example.com/a",
+            "sha256:pwebok",
+        )
+        # 合法非 WEB 行（url/hash 可为 NULL）必须被接受
+        await _insert(
+            "sig_conv_ok",
+            "conversation",
+            "sha256:pconv",
+            None,
+            None,
+        )
+        # WEB source_url=NULL 必须被拒绝
+        try:
+            await _insert(
+                "sig_web_null_url",
+                "web_page",
+                "sha256:pnullurl",
+                None,
+                "sha256:pnullurl",
+            )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError(
+                "RED：web 行 source_url=NULL 未被 ck_demand_signals_web_evidence 拒绝"
+            )
+        # WEB page_hash=NULL 必须被拒绝
+        try:
+            await _insert(
+                "sig_web_null_hash",
+                "web_page",
+                "sha256:pnullhash",
+                "https://example.com/a",
+                None,
+            )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError(
+                "RED：web 行 page_hash=NULL 未被 ck_demand_signals_web_evidence 拒绝"
+            )
+    finally:
         await engine.dispose()

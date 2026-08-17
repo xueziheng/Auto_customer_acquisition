@@ -77,8 +77,9 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "source_type <> 'web_page' OR "
-            "(btrim(source_url) <> '' AND btrim(page_hash) <> '' "
-            "AND source_id = page_hash)",
+            "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
+            "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
+            "source_id = page_hash)",
             name="ck_demand_signals_web_evidence",
         ),
         sa.CheckConstraint(
