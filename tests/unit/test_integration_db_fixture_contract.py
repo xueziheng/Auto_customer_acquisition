@@ -1,0 +1,116 @@
+"""集成 DB fixture 契约（本地 PG harness 小任务；纯单元，零 Docker/DB 触发）。
+
+RED 预期：旧 conftest 的 ``db_url(_migrated, _postgres_container)`` 为静态 fixture
+依赖（单参调用 TypeError）、``_to_asyncpg`` 不认 asyncpg scheme（ValueError）。
+GREEN 后：TEST_DATABASE_URL 已设置时选择逻辑与真实 fixture 均不触碰容器
+（spy/哨兵证明）；未设置时保持既有容器 fallback（CI 兼容）；URL 一律 asyncpg。
+"""
+
+from __future__ import annotations
+
+import importlib
+
+import pytest
+
+pytest_plugins = ("tests.integration.conftest",)
+
+from tests.integration.conftest import RedactedUrl, _resolve_db_url, _to_asyncpg
+
+
+class _SpyRequest:
+    """记录 getfixturevalue 调用；被请求即失败（env 路径不得触碰容器 fixture）。"""
+
+    def __init__(self) -> None:
+        self.requested: list[str] = []
+
+    def getfixturevalue(self, name: str):
+        self.requested.append(name)
+        raise AssertionError(f"TEST_DATABASE_URL 路径不应请求 fixture: {name}")
+
+
+class _FakeContainer:
+    def get_connection_url(self) -> str:
+        return "postgresql+psycopg2://tradeos:pw@127.0.0.1:5432/tradeos_test"
+
+
+class _FallbackRequest:
+    """未设置 TEST_DATABASE_URL 时的 fallback 路径：记录请求顺序并返回假容器。"""
+
+    def __init__(self) -> None:
+        self.requested: list[str] = []
+
+    def getfixturevalue(self, name: str):
+        self.requested.append(name)
+        if name == "_migrated":
+            return None
+        if name == "_postgres_container":
+            return _FakeContainer()
+        raise KeyError(name)
+
+
+def test_resolve_db_url_env_priority_never_calls_container_getter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TEST_DATABASE_URL 已设置 → 直接返回 asyncpg URL，容器 getter 零调用。"""
+    monkeypatch.setenv(
+        "TEST_DATABASE_URL",
+        "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test",
+    )
+    url = _resolve_db_url(
+        "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test",
+        _fail_never_called,
+    )
+    assert url == "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test"
+
+
+def test_resolve_db_url_unset_keeps_container_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未设置 → 惰性调用容器 getter 并转 asyncpg（既有 fallback 语义）。"""
+    monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
+    url = _resolve_db_url(None, lambda: "postgresql+psycopg2://tradeos:pw@127.0.0.1:5432/tradeos_test")
+    assert url == "postgresql+asyncpg://tradeos:pw@127.0.0.1:5432/tradeos_test"
+
+
+def test_to_asyncpg_conversions() -> None:
+    """三种 scheme 转换：psycopg2/裸 postgresql → asyncpg；asyncpg 原样透传。"""
+    assert _to_asyncpg("postgresql+psycopg2://u:p@h:5432/d") == (
+        "postgresql+asyncpg://u:p@h:5432/d"
+    )
+    assert _to_asyncpg("postgresql://u:p@h:5432/d") == (
+        "postgresql+asyncpg://u:p@h:5432/d"
+    )
+    assert _to_asyncpg("postgresql+asyncpg://u:p@h:5432/d") == (
+        "postgresql+asyncpg://u:p@h:5432/d"
+    )
+    with pytest.raises(ValueError):
+        _to_asyncpg("mysql://u:p@h:3306/d")
+
+
+def _fail_never_called() -> str:
+    raise AssertionError("TEST_DATABASE_URL 路径不应调用容器 getter")
+
+
+def test_db_url_fixture_env_path_never_touches_container(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """真实 fixture 级证明：env 路径下 _docker_available/PostgresContainer 均
+    不得被触碰（哨兵被调用即抛错）；db_url 返回脱敏 RedactedUrl。"""
+    monkeypatch.setenv(
+        "TEST_DATABASE_URL",
+        "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test",
+    )
+    conftest = importlib.import_module("tests.integration.conftest")
+
+    def _docker_sentinel() -> bool:
+        raise AssertionError("env 路径不应探测 docker")
+
+    def _container_sentinel(*args: object, **kwargs: object):
+        raise AssertionError("env 路径不应构造容器")
+
+    monkeypatch.setattr(conftest, "_docker_available", _docker_sentinel)
+    monkeypatch.setattr(conftest, "PostgresContainer", _container_sentinel)
+    url = request.getfixturevalue("db_url")
+    assert url == "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test"
+    assert isinstance(url, RedactedUrl)

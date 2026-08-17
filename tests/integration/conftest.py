@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -45,6 +45,8 @@ def _to_asyncpg(url: str) -> str:
         return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql+asyncpg://"):
+        return url
     raise ValueError("未知连接串 scheme：只接受 postgresql 方言，无法转为 asyncpg")
 
 
@@ -72,10 +74,24 @@ def _migrated(_postgres_container: PostgresContainer) -> None:
     assert result.returncode == 0, "alembic upgrade head 失败（不输出连接内容）"
 
 
+def _resolve_db_url(env_url: str | None, container_url: Callable[[], str]) -> str:
+    """连接串选择：TEST_DATABASE_URL 优先（转 asyncpg）；否则惰性取容器 URL。
+    纯函数便于单元契约测试（本地 PG harness 小任务）。"""
+    if env_url:
+        return _to_asyncpg(env_url)
+    return _to_asyncpg(container_url())
+
+
 @pytest.fixture(scope="session")
-def db_url(_migrated: None, _postgres_container: PostgresContainer) -> RedactedUrl:
-    """容器 asyncpg 连接串（已迁移），repr 脱敏。"""
-    return RedactedUrl(_to_asyncpg(_postgres_container.get_connection_url()))
+def db_url(request: pytest.FixtureRequest) -> RedactedUrl:
+    """测试库连接串（repr 脱敏）。TEST_DATABASE_URL 已设置时直接返回本地库
+    （**不请求** _postgres_container，零 Docker）；未设置时惰性走既有容器
+    fallback（_migrated 迁移 + _postgres_container），保持 CI 兼容。"""
+    def _container_url() -> str:
+        request.getfixturevalue("_migrated")
+        return request.getfixturevalue("_postgres_container").get_connection_url()
+
+    return RedactedUrl(_resolve_db_url(os.environ.get("TEST_DATABASE_URL"), _container_url))
 
 
 @pytest_asyncio.fixture(scope="session")
