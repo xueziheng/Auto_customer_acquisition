@@ -2891,7 +2891,7 @@ Expected: 全部 rc=0。
 
 **Interfaces（规格 §6.4-§6.6 权威）：** `update_need_fields(tenant_id, need_id: str, fields: dict[str, object], source_message_id: str, updated_by: str | None = None) -> None`（D19(a) 已改为 None）；`mark_sourcing_ready(tenant_id, need_id: str) -> None`；`get_confidence(tenant_id, hypothesis_id: str) -> ConfidenceResult`。update 白名单 = 10 个可变更字段（不含 product_category）；自动推进仅 VALIDATED 且 <3→≥3（finding 7）；跨门槛不发事件（D9/D19(d)）；历史先捕获 old 再写新值（同事务）。
 
-- [ ] **Step 1: 写失败测试（spec 9.3 测试 9-11）**
+- [x] **Step 1: 写失败测试（spec 9.3 测试 9-11）**
 
 ```python
 async def _promote_basic_need(
@@ -3068,7 +3068,7 @@ async def test_get_confidence_derived_live(demand_db: AsyncEngine) -> None:
         await service.get_confidence(tenant, new_id("hyp"))
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k "update_need_fields or mark_sourcing_ready or get_confidence" -q -W error
@@ -3076,7 +3076,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: **FAIL**——`AttributeError: 'DemandServiceImpl' object has no attribute 'update_need_fields'`（及 mark/get_confidence）。记录 rc=1。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `domains/demand/service_impl.py`——三方法（`update_need_fields` 返回 None；`mark_sourcing_ready` 用 `SourcingThresholdNotMetError`；`get_confidence` 现算；imports 增量，**P2-B：基于 Task 4/5 已并入状态，只加新符号**）：
 - 扩展 `from domains.demand.errors import ...` 行：增 `SourcingThresholdNotMetError`（`InsufficientEvidenceError`/`HypothesisAlreadyResolvedError` 已由 Task 5 并入）——**仅此一项**
@@ -3219,7 +3219,7 @@ Expected: **FAIL**——`AttributeError: 'DemandServiceImpl' object has no attri
             )
 ```
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -q -W error
@@ -3227,7 +3227,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check domains/demand tests/integration/test_need_hypotheses.py
@@ -3240,7 +3240,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_demand_signal
 
 Expected: 全部 rc=0。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 AttributeError、GREEN 计数、diff 2 文件）
+- [x] **Step 6: 停止等待监督方复审**（RED 原因 AttributeError；GREEN 20 项需求测试、39 项定向回归；diff 2 个实现/测试文件）
 
 复审通过后，提交前执行 mutation proof：
 
@@ -3248,7 +3248,7 @@ Expected: 全部 rc=0。
 |---|---|---|---|
 | M4 | `update_need_fields` 删除 `append_field_history` 调用 | `test_update_need_fields_history_and_auto_advance` | 历史表为空 → `len(history) == 2` 断言失败（P3-1：与测试断言一致） |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `domains/demand/service_impl.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): update needs with field history and sourcing gates`；Expected：2 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `domains/demand/service_impl.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): update needs with field history and sourcing gates`；Expected：2 文件 index 100644、local == origin、CI `OK`）
 
 ---
 

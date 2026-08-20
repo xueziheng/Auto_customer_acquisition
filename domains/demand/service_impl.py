@@ -19,6 +19,7 @@ from domains.demand.errors import (
     HypothesisAlreadyResolvedError,
     InsufficientEvidenceError,
     MissingWebEvidenceError,
+    SourcingThresholdNotMetError,
 )
 from domains.demand.models import (
     DemandSignal,
@@ -38,7 +39,12 @@ from shared.events.catalog import (
     NeedHypothesisRejected,
     NeedValidated,
 )
-from shared.schemas.evidence import EvidenceItem, EvidenceLevel, derive_confidence
+from shared.schemas.evidence import (
+    ConfidenceResult,
+    EvidenceItem,
+    EvidenceLevel,
+    derive_confidence,
+)
 from shared.schemas.identifiers import (
     DemandSignalId,
     EmployeeId,
@@ -85,6 +91,7 @@ _TEXT_PROMOTE_FIELDS = _PROMOTE_FIELD_WHITELIST - {
     "required_by",
     "target_price",
 }
+_UPDATE_FIELD_WHITELIST = _PROMOTE_FIELD_WHITELIST - {"product_category"}
 
 
 def _merge_evidence(
@@ -174,6 +181,18 @@ def _highest_promotable_evidence_level(
         key=_EVIDENCE_RANK.__getitem__,
         default=EvidenceLevel.AGENT_INDUSTRY_INFERENCE,
     )
+
+
+def _factual_value_to_text(field: FactualField[object] | None) -> str | None:
+    """将事实字段值确定性序列化为历史表文本。"""
+    if field is None:
+        return None
+    value = field.value
+    if isinstance(value, Money):
+        return str(value.amount)
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 class DemandServiceImpl:
@@ -670,4 +689,157 @@ class DemandServiceImpl:
                     hypothesis_id=hypothesis.hypothesis_id,
                     reason=reason,
                 )
+            )
+
+    async def update_need_fields(
+        self,
+        tenant_id: TenantId,
+        need_id: str,
+        fields: dict[str, object],
+        source_message_id: str,
+        updated_by: str | None = None,
+    ) -> None:
+        """补全需求事实字段，并在同一事务中追加字段历史。"""
+        if (
+            not isinstance(need_id, str)
+            or not need_id.strip()
+            or need_id != need_id.strip()
+        ):
+            raise ValidationError("已验证需求标识无效")
+        if len(need_id) > 40:
+            raise ValidationError("已验证需求标识超长")
+        if (
+            not isinstance(source_message_id, str)
+            or not source_message_id.strip()
+            or source_message_id != source_message_id.strip()
+        ):
+            raise ValidationError("来源消息无效")
+        if len(source_message_id) > 40:
+            raise ValidationError("来源消息超长")
+        if not isinstance(fields, dict) or not fields:
+            raise ValidationError("更新字段不能为空")
+        if set(fields) - _UPDATE_FIELD_WHITELIST:
+            raise ValidationError("未知需求字段")
+        if updated_by is not None and (
+            not isinstance(updated_by, str)
+            or not updated_by.strip()
+            or updated_by != updated_by.strip()
+            or len(updated_by) > 40
+        ):
+            raise ValidationError("更新人无效")
+        coerced = {
+            name: _coerce_field_value(name, value) for name, value in fields.items()
+        }
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            need = await uow.needs.get_for_update(
+                tenant_id, ValidatedNeedId(need_id)
+            )
+            if need is None:
+                raise ValidationError("已验证需求不存在")
+            if need.status in (
+                NeedStatus.FULFILLED,
+                NeedStatus.WITHDRAWN,
+                NeedStatus.LOST,
+            ):
+                raise InvalidStateTransition("需求已终结，字段不可变更")
+
+            updater = EmployeeId(updated_by) if updated_by else None
+            updated = replace(need)
+            for name, value in coerced.items():
+                old_text = _factual_value_to_text(
+                    cast(FactualField[object] | None, getattr(need, name))
+                )
+                new_field = FactualField(
+                    value=value,
+                    provenance=Provenance(
+                        source_type=SourceType.CONVERSATION,
+                        source_id=source_message_id,
+                        extracted_by=updated_by or "human",
+                        extracted_at=now,
+                        confirmed_by=updater,
+                        confirmed_at=now if updater else None,
+                    ),
+                )
+                new_text = _factual_value_to_text(new_field)
+                assert new_text is not None
+                await uow.needs.append_field_history(
+                    tenant_id,
+                    need.need_id,
+                    name,
+                    old_text,
+                    new_text,
+                    source_message_id,
+                    updated_by,
+                )
+                setattr(updated, name, new_field)
+            if (
+                updated.status is NeedStatus.VALIDATED
+                and updated.completeness >= 3
+            ):
+                updated.status = NeedStatus.SOURCING_READY
+            await uow.needs.update(updated)
+
+    async def mark_sourcing_ready(
+        self,
+        tenant_id: TenantId,
+        need_id: str,
+    ) -> None:
+        """在完整度达到三级后，将需求幂等标记为可寻源。"""
+        if (
+            not isinstance(need_id, str)
+            or not need_id.strip()
+            or need_id != need_id.strip()
+        ):
+            raise ValidationError("已验证需求标识无效")
+        if len(need_id) > 40:
+            raise ValidationError("已验证需求标识超长")
+        async with self._uow_factory(tenant_id) as uow:
+            need = await uow.needs.get_for_update(
+                tenant_id, ValidatedNeedId(need_id)
+            )
+            if need is None:
+                raise ValidationError("已验证需求不存在")
+            if need.status in (
+                NeedStatus.FULFILLED,
+                NeedStatus.WITHDRAWN,
+                NeedStatus.LOST,
+            ):
+                raise InvalidStateTransition("需求已终结，不可标记可寻源")
+            if need.status in (
+                NeedStatus.SOURCING_READY,
+                NeedStatus.HANDED_TO_SOURCING,
+            ):
+                return
+            if not need.is_sourcing_ready():
+                raise SourcingThresholdNotMetError(
+                    "完整度不足，不能进寻源：还缺 "
+                    + "、".join(need.missing_fields_for_sourcing())
+                )
+            await uow.needs.update(
+                replace(need, status=NeedStatus.SOURCING_READY)
+            )
+
+    async def get_confidence(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: str,
+    ) -> ConfidenceResult:
+        """根据当前证据集现场推导置信档位，不读取或保存概率。"""
+        if (
+            not isinstance(hypothesis_id, str)
+            or not hypothesis_id.strip()
+            or hypothesis_id != hypothesis_id.strip()
+        ):
+            raise ValidationError("需求假设标识无效")
+        if len(hypothesis_id) > 40:
+            raise ValidationError("需求假设标识超长")
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get(
+                tenant_id, NeedHypothesisId(hypothesis_id)
+            )
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            return derive_confidence(
+                hypothesis.evidence(), now=self._validate_now(self._now())
             )

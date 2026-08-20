@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from domains.demand.errors import (
     HypothesisAlreadyResolvedError,
     InsufficientEvidenceError,
+    SourcingThresholdNotMetError,
 )
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service import DemandService
@@ -811,3 +812,198 @@ async def test_reject_semantics(demand_db: AsyncEngine) -> None:
         await service.reject_hypothesis(
             tenant, validated_id, "no_budget", "emp-1"
         )
+
+
+async def _promote_basic_need(
+    service: DemandService,
+    tenant: TenantId,
+    category: str = "hinges",
+) -> str:
+    """创建并晋升一个完整度为 1 的基础需求。"""
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant, category)
+    return await service.promote_to_validated(
+        tenant,
+        hypothesis_id,
+        "msg_conv_001",
+        {"product_category": category},
+        None,
+    )
+
+
+async def test_update_need_fields_history_and_auto_advance(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    need_id = await _promote_basic_need(service, tenant)
+    tables = importlib.import_module("infra.db.tables")
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {"application": "marine use", "quantity": 5000},
+        "msg_conv_010",
+        "emp-1",
+    )
+    async with factory() as session:
+        history = (
+            await session.execute(
+                select(tables.ValidatedNeedFieldHistoryRow).where(
+                    tables.ValidatedNeedFieldHistoryRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+        need_row = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.need_id == str(need_id)
+                )
+            )
+        ).scalar_one()
+    assert len(history) == 2
+    entry = next(item for item in history if item.field_name == "quantity")
+    assert entry.old_value is None
+    assert entry.new_value == "5000"
+    assert entry.source_message_id == "msg_conv_010"
+    assert entry.changed_by == "emp-1"
+    assert need_row.status == "sourcing_ready"
+    assert need_row.quantity["value"] == 5000
+    validated_events = [
+        event
+        for event in await _outbox_events(factory, tenant)
+        if event.event_type == "NeedValidated"
+    ]
+    assert len(validated_events) == 1
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {"destination": "Rotterdam"},
+        "msg_conv_011",
+        "emp-1",
+    )
+    async with factory() as session:
+        need_row = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.need_id == str(need_id)
+                )
+            )
+        ).scalar_one()
+    assert need_row.status == "sourcing_ready"
+
+    with pytest.raises(ValidationError, match="未知需求字段"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"product_category": "other"},
+            "msg_conv_012",
+            "emp-1",
+        )
+    with pytest.raises(ValidationError, match="未知需求字段"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"bogus_field": "x"},
+            "msg_conv_012",
+            "emp-1",
+        )
+    with pytest.raises(ValidationError, match="需求字段类型无效"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"quantity": "not-an-int"},
+            "msg_conv_012",
+            "emp-1",
+        )
+
+    async with _uow_type()(factory, tenant, now=clock.now) as uow:
+        frozen = await uow.needs.get_for_update(
+            tenant, _models.ValidatedNeedId(need_id)
+        )
+        assert frozen is not None
+        await uow.needs.update(
+            _models.ValidatedNeed(
+                **{**frozen.__dict__, "status": _models.NeedStatus.FULFILLED}
+            )
+        )
+
+    from shared.errors import InvalidStateTransition
+
+    with pytest.raises(InvalidStateTransition, match="需求已终结"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"quantity": 1},
+            "msg_conv_013",
+            "emp-1",
+        )
+
+
+async def test_mark_sourcing_ready_gates(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    need_id = await _promote_basic_need(service, tenant)
+    with pytest.raises(SourcingThresholdNotMetError) as exc_info:
+        await service.mark_sourcing_ready(tenant, need_id)
+    assert "application" in str(exc_info.value)
+    assert "size_spec" in str(exc_info.value)
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {"application": "marine use", "quantity": 200},
+        "msg_conv_020",
+        None,
+    )
+    await service.mark_sourcing_ready(tenant, need_id)
+    await service.mark_sourcing_ready(tenant, need_id)
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.need_id == str(need_id)
+                )
+            )
+        ).scalar_one()
+    assert row.status == "sourcing_ready"
+
+    async with _uow_type()(factory, tenant, now=clock.now) as uow:
+        back = await uow.needs.get_for_update(
+            tenant, _models.ValidatedNeedId(need_id)
+        )
+        assert back is not None
+        await uow.needs.update(
+            _models.ValidatedNeed(
+                **{**back.__dict__, "status": _models.NeedStatus.VALIDATED}
+            )
+        )
+    await service.mark_sourcing_ready(tenant, need_id)
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.need_id == str(need_id)
+                )
+            )
+        ).scalar_one()
+    assert row.status == "sourcing_ready"
+
+
+async def test_get_confidence_derived_live(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant)
+    result = await service.get_confidence(tenant, hypothesis_id)
+    assert result.tier.value in {"mid_high", "high", "very_high", "extreme"}
+    assert "base_from_highest" in result.applied_rules
+    assert result.explanation
+    with pytest.raises(ValidationError, match="需求假设不存在"):
+        await service.get_confidence(tenant, new_id("hyp"))
