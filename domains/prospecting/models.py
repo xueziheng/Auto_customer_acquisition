@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
+from domains.prospecting.errors import MissingAssessmentRefError
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
     ProspectAccountId,
@@ -29,6 +32,13 @@ class VerificationStatus(str, Enum):
     risky 地址的实际退信率不可预测，赌它可用的代价是域名信誉。"""
 
     INVALID = "invalid"
+
+
+class ContactPointKind(str, Enum):
+    """Phase 1 支持的联系方式类型；社交渠道明确不在范围内。"""
+
+    EMAIL = "email"
+    PHONE = "phone"
 
 
 class LegalBasisType(str, Enum):
@@ -79,6 +89,17 @@ class LegalBasisRecord:
     source_url: str | None = None
     assessment_ref: str | None = None
 
+    def __post_init__(self) -> None:
+        _require_text(self.source, "法律依据字段无效")
+        _require_optional_text(self.source_url, "法律依据字段无效")
+        _require_optional_text(self.assessment_ref, "法律依据字段无效")
+        _require_utc(self.collected_at, "法律依据时间必须为 UTC")
+        if (
+            self.basis is LegalBasisType.LEGITIMATE_INTEREST
+            and self.assessment_ref is None
+        ):
+            raise MissingAssessmentRefError("正当利益依据缺少评估引用")
+
 
 @dataclass
 class ProspectAccount:
@@ -100,6 +121,19 @@ class ProspectAccount:
     size_hint: str | None = None
     source_signal_refs: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        _require_text(str(self.account_id), "潜在企业字段无效")
+        _require_text(str(self.tenant_id), "潜在企业字段无效")
+        _require_text(self.name, "潜在企业字段无效")
+        _require_text(self.country, "潜在企业字段无效")
+        _require_optional_text(self.website_domain, "潜在企业字段无效")
+        _require_optional_text(self.entity_type, "潜在企业字段无效")
+        _require_optional_text(self.industry, "潜在企业字段无效")
+        _require_optional_text(self.size_hint, "潜在企业字段无效")
+        _require_utc(self.created_at, "潜在企业时间必须为 UTC")
+        if any(not _is_exact_nonblank(item) for item in self.source_signal_refs):
+            raise ValidationError("潜在企业来源引用无效")
+
 
 @dataclass
 class ProspectContact:
@@ -112,6 +146,15 @@ class ProspectContact:
     full_name: str | None = None
     role_title: str | None = None
     language: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(str(self.contact_id), "潜在联系人字段无效")
+        _require_text(str(self.tenant_id), "潜在联系人字段无效")
+        _require_text(str(self.account_id), "潜在联系人字段无效")
+        _require_optional_text(self.full_name, "潜在联系人字段无效")
+        _require_optional_text(self.role_title, "潜在联系人字段无效")
+        _require_optional_text(self.language, "潜在联系人字段无效")
+        _require_utc(self.created_at, "潜在联系人时间必须为 UTC")
 
 
 @dataclass
@@ -133,8 +176,9 @@ class ContactPoint:
     contact_point_id: ContactPointId
     tenant_id: TenantId
     contact_id: ProspectContactId
-    kind: str
+    kind: ContactPointKind
     value: str
+    value_hash: str
     legal_basis: LegalBasisRecord
     created_at: datetime
     verification: VerificationStatus = VerificationStatus.UNVERIFIED
@@ -145,4 +189,58 @@ class ContactPoint:
     def may_enter_sequence(self) -> bool:
         """能否进序列。仅 ``VERIFIED``。RISKY 不行——赌它可用的
         代价是域名信誉（硬边界 6）。"""
-        raise NotImplementedError
+        return self.verification is VerificationStatus.VERIFIED
+
+    def __post_init__(self) -> None:
+        _require_text(str(self.contact_point_id), "联系方式字段无效")
+        _require_text(str(self.tenant_id), "联系方式字段无效")
+        _require_text(str(self.contact_id), "联系方式字段无效")
+        if not isinstance(self.kind, ContactPointKind):
+            raise ValidationError("联系方式类型无效")
+        _require_text(self.value, "联系方式字段无效")
+        if re.fullmatch(r"[0-9a-f]{64}", self.value_hash) is None:
+            raise ValidationError("联系方式指纹无效")
+        _require_utc(self.created_at, "联系方式时间必须为 UTC")
+        _require_optional_text(
+            self.verification_provider, "联系方式验证状态无效"
+        )
+        _require_optional_text(self.enrichment_cost_note, "联系方式字段无效")
+        if self.verification is VerificationStatus.UNVERIFIED:
+            valid_shape = (
+                self.verified_at is None and self.verification_provider is None
+            )
+        elif self.verification is VerificationStatus.VERIFIED:
+            valid_shape = (
+                self.verified_at is not None
+                and self.verification_provider is not None
+                and _is_utc(self.verified_at)
+            )
+        else:
+            valid_shape = (
+                self.verified_at is None and self.verification_provider is not None
+            )
+        if not valid_shape:
+            raise ValidationError("联系方式验证状态无效")
+
+
+def _is_exact_nonblank(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip()
+
+
+def _require_text(value: object, message: str) -> None:
+    if not _is_exact_nonblank(value):
+        raise ValidationError(message)
+
+
+def _require_optional_text(value: str | None, message: str) -> None:
+    if value is not None:
+        _require_text(value, message)
+
+
+def _is_utc(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() == timedelta(0)
+
+
+def _require_utc(value: datetime, message: str) -> None:
+    if not _is_utc(value):
+        raise ValidationError(message)

@@ -4,12 +4,25 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.prospecting.models import ContactPoint, ProspectAccount
+from domains.prospecting.repository import (
+    ProspectingUnitOfWork as _ProspectingUnitOfWork,
+)
+from domains.prospecting.schemas import (
+    AccountResolveRequest,
+    ContactCreateRequest,
+    ContactPointCreateRequest,
+    ContactPointView,
+    ProspectAccountView,
+    VerificationStatus,
+)
 from shared.schemas.identifiers import (
     ContactPointId,
     ProspectAccountId,
+    ProspectContactId,
     TenantId,
 )
+
+ProspectingUnitOfWork = _ProspectingUnitOfWork
 
 
 @runtime_checkable
@@ -29,12 +42,20 @@ class EnrichmentProvider(Protocol):
 
 
 @runtime_checkable
+class ContactValueHasher(Protocol):
+    """对 canonical 联系方式做稳定 HMAC 指纹；实现由组合根注入。"""
+
+    def fingerprint(self, canonical_value: str) -> str:
+        """返回 64 位小写十六进制；不得记录输入或密钥。"""
+        ...
+
+
+@runtime_checkable
 class ProspectingService(Protocol):
     """潜客服务。"""
 
     async def resolve_account(
-        self, tenant_id: TenantId, entity_name: str, website_domain: str | None,
-        country: str,
+        self, tenant_id: TenantId, request: AccountResolveRequest
     ) -> ProspectAccountId:
         """企业消歧：返回既有 account 或新建。
 
@@ -43,8 +64,14 @@ class ProspectingService(Protocol):
         """
         ...
 
+    async def create_contact(
+        self, tenant_id: TenantId, request: ContactCreateRequest
+    ) -> ProspectContactId:
+        """在当前租户的既有企业下创建联系人。"""
+        ...
+
     async def add_contact_point(
-        self, tenant_id: TenantId, contact_point: ContactPoint
+        self, tenant_id: TenantId, request: ContactPointCreateRequest
     ) -> ContactPointId:
         """录入联系方式。``legal_basis`` 缺失直接拒绝——
         入库即处理，处理必须有依据。"""
@@ -54,7 +81,7 @@ class ProspectingService(Protocol):
         self,
         tenant_id: TenantId,
         contact_point_id: ContactPointId,
-        result: str,
+        result: VerificationStatus,
         provider: str,
     ) -> None:
         """落验证结果。VERIFIED 时发布 ``ContactPointVerified``
@@ -63,7 +90,7 @@ class ProspectingService(Protocol):
 
     async def handle_erasure_request(
         self, tenant_id: TenantId, contact_point_value: str
-    ) -> None:
+    ) -> int:
         """数据主体删除请求。
 
         跨表清理个人数据，但**保留最小化的抑制记录**（哈希化的地址）
@@ -74,4 +101,10 @@ class ProspectingService(Protocol):
 
     async def get_account(
         self, tenant_id: TenantId, account_id: ProspectAccountId
-    ) -> ProspectAccount: ...
+    ) -> ProspectAccountView: ...
+
+    async def list_verified_contact_points(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ContactPointView]:
+        """只返回当前租户、指定企业下 VERIFIED 的联系方式。"""
+        ...

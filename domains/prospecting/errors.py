@@ -23,3 +23,23 @@ class MissingAssessmentRefError(ValidationError):
 
     依赖正当利益的前提是能拿出评估记录，不是假设自己有。
     """
+
+
+class ProspectingConflictError(ValidationError):
+    """同一唯一身份对应不同业务语义，拒绝静默覆盖。"""
+
+
+class ProspectAccountNotFoundError(ValidationError):
+    """潜在企业在当前租户不可见。"""
+
+
+class ProspectContactNotFoundError(ValidationError):
+    """潜在联系人在当前租户不可见。"""
+
+
+class ContactPointNotFoundError(ValidationError):
+    """联系方式在当前租户不可见。"""
+
+
+class ErasedContactPointError(ValidationError):
+    """该联系方式已响应删除/反对处理请求，不得再次采集。"""
