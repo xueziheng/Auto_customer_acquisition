@@ -255,6 +255,12 @@ domains/demand                       四层完整落地
 
 **陷阱**：每轮探索要有信号数和页面读取数上限。没有上限的探索循环会在一夜之间烧掉预算，且产出的大多是噪音。
 
+**当前实现进度（2026-08-20）**：`domains/prospecting` 的持久化子切片已完成——
+企业/联系人/联系方式/法律依据、租户隔离、可达性验证门禁、原子 outbox 和删除后
+hash suppression 已落地并通过 PostgreSQL 并发与回滚测试。这不等于切片 7 或 Phase 1
+完成：联系人 Provider connector/tool、`account_discovery` workflow、Campaign 入组接线
+和 Demand Radar API/UI 仍未实现，下一步按这个依赖顺序继续。
+
 ---
 
 ## 四、每次改动的自检

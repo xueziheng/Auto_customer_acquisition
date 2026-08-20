@@ -58,8 +58,9 @@ market_hypotheses         市场级假设（哪类企业、哪个国家值得投
 ```text
 prospect_accounts        潜在企业
 prospect_contacts        潜在联系人
-contact_points           联系方式（邮箱/电话/社交），含可达性验证状态与法律依据
+contact_points           联系方式（Phase 1 仅邮箱/电话），含可达性验证状态
 contact_legal_basis      处理依据留痕：依据类型、主体类型、来源、评估引用
+prospecting_erasure_suppressions 删除/反对处理后的不可恢复 HMAC 指纹
 lead_scores              打分快照（不可变，含 gates_passed、factors、outcome 回填）
 lead_ownership           客户归属锁（粒度是企业）
 outreach_campaigns       Campaign current 状态、当前版本、审批绑定与轮询游标
@@ -74,7 +75,16 @@ delivery_events          投递事件：送达、打开、退信、投诉
 consent_records          同意记录（WhatsApp opt-in、表单同意）
 ```
 
-`contact_points` 的可达性验证状态是发送前置条件（硬边界 6）。未验证的联系方式不得出现在 `sequence_enrollments` 中。
+`contact_points` 的可达性验证状态是发送前置条件（硬边界 6）。未验证的联系方式不得进入 `outreach_enrollments`。
+
+迁移 0023 已落地上述四张 prospecting 业务表及
+`prospecting_erasure_suppressions`：所有主键、外键、唯一键和查询均包含
+`tenant_id`。同租户 canonical domain 用于企业消歧；联系方式按
+`(tenant_id, kind, value_hash)` 去重。验证转换在行锁下执行，只有
+`verified` 能被账户查询返回，且“非 verified → verified”与 metadata-only
+`ContactPointVerified` outbox 同事务提交。删除请求会级联清除联系方式和法律依据，
+只在联系人已无其他联系方式时删除联系人；企业事实保留。删除抑制表只保存稳定 HMAC
+指纹，trigger 拒绝 UPDATE/DELETE，原始地址不得进入该表。
 
 迁移 0009 的八张 `outreach_*` 表都用 tenant composite PK/FK/unique key。`outreach_enrollments` 有 `(tenant_id, account_id)` 的 active partial unique，只允许同租户同账户一条 `enrolled`/`in_sequence` 记录；所有查询仍显式带 tenant 过滤。
 

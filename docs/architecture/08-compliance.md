@@ -78,6 +78,21 @@ Phase 1 只保存最小 append-only 抑制事实：`tenant_id`、typed target、
 
 新增事实、按 Enrollment ID 顺序锁定并停止全部匹配活跃 Enrollment、Action 与 `SuppressionAdded` outbox 在同一事务中提交。任一写入失败则整体回滚。
 
+### 删除抑制与发送抑制的职责分离
+
+Phase 1 有两类不能互相替代的抑制事实：
+
+- `prospecting_erasure_suppressions` 保存 canonical 联系方式的稳定 HMAC-SHA256
+  指纹，负责“删除后不可再次采集”。它不保存原值、联系方式类型或业务备注；写入后由
+  数据库 trigger 禁止 UPDATE/DELETE。HMAC 使用独立的 privacy-suppression key，
+  不能复用数据库、邮箱或模型凭证；轮换必须先迁移旧指纹的查询能力。
+- `outreach_suppressions` 保存 `ContactPointId` / `ProspectAccountId` typed target 与
+  固定 reason，负责“发送前不可放行”，并可停止匹配的活跃 Enrollment。
+
+响应删除请求时，prospecting 在一个事务中追加 hash suppression、删除联系方式及其
+法律依据，并在无剩余联系方式时删除联系人；企业事实和既有 outreach suppression
+保留。前者阻止重新采集，后者阻止重新发送。只实现其中一个都会留下绕过路径。
+
 ### RFC 8058 one-click 退订
 
 已发送邮件同时携带 `List-Unsubscribe` 与
