@@ -103,3 +103,42 @@ async def test_record_verification_rejects_non_utc_clock_before_uow() -> None:
             VerificationStatus.VERIFIED,
             "provider-v1",
         )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [" padded@example.com ", "not-an-address", "004912345678"],
+)
+async def test_erasure_rejects_invalid_value_before_uow(raw: str) -> None:
+    service = _module().ProspectingServiceImpl(_never_uow, _StableHasher())
+    with pytest.raises(ValidationError):
+        await service.handle_erasure_request(TenantId("tenant-erase-invalid"), raw)
+
+
+class _InvalidHasher:
+    def fingerprint(self, canonical_value: str) -> str:
+        del canonical_value
+        return "not-a-safe-hash"
+
+
+async def test_erasure_rejects_invalid_hash_before_uow() -> None:
+    service = _module().ProspectingServiceImpl(_never_uow, _InvalidHasher())
+    with pytest.raises(ValidationError, match="联系方式指纹无效"):
+        await service.handle_erasure_request(
+            TenantId("tenant-erase-hash"), "privacy@example.com"
+        )
+
+
+class _LeakyFailingHasher:
+    def fingerprint(self, canonical_value: str) -> str:
+        raise RuntimeError(canonical_value)
+
+
+async def test_erasure_redacts_hasher_failure() -> None:
+    raw_value = "private.marker@example.com"
+    service = _module().ProspectingServiceImpl(_never_uow, _LeakyFailingHasher())
+    with pytest.raises(ValidationError, match="联系方式指纹计算失败") as error:
+        await service.handle_erasure_request(
+            TenantId("tenant-erase-hasher-failure"), raw_value
+        )
+    assert raw_value not in str(error.value)

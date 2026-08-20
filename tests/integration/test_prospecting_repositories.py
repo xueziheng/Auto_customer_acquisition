@@ -10,9 +10,10 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from domains.prospecting.schemas import ContactPointCreateRequest, ContactPointKind
 from infra.db.tables import OutboxEventRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
@@ -242,6 +243,72 @@ def _verification_service(
         _StableTestHasher(),
         now=lambda: now,
     )
+
+
+async def _seed_service_contact_points(
+    service: object,
+    tenant: TenantId,
+    *,
+    domain: str,
+    values: tuple[tuple[ContactPointKind, str], ...],
+) -> tuple[
+    ProspectAccountId,
+    ProspectContactId,
+    list[ContactPointId],
+    ContactPointCreateRequest,
+]:
+    from domains.prospecting.schemas import (
+        AccountResolveRequest,
+        ContactCreateRequest,
+        ContactType,
+        LegalBasisInput,
+        LegalBasisType,
+        SubjectType,
+    )
+
+    account_id = await service.resolve_account(  # type: ignore[attr-defined]
+        tenant,
+        AccountResolveRequest(
+            entity_name="Privacy Test Account",
+            country="DE",
+            website_domain=domain,
+        ),
+    )
+    contact_id = await service.create_contact(  # type: ignore[attr-defined]
+        tenant,
+        ContactCreateRequest(
+            account_id=account_id,
+            full_name="Privacy Test Contact",
+            role_title="Procurement Manager",
+            language="en",
+        ),
+    )
+    basis = LegalBasisInput(
+        basis=LegalBasisType.LEGITIMATE_INTEREST,
+        subject_type=SubjectType.LEGAL_ENTITY,
+        contact_type=ContactType.PERSONAL_BUSINESS,
+        source="company_website",
+        source_url=f"https://{domain}/contact",
+        collected_at=NOW,
+        assessment_ref="lia-privacy-test",
+    )
+    point_ids = []
+    first_request: ContactPointCreateRequest | None = None
+    for kind, value in values:
+        request = ContactPointCreateRequest(
+            contact_id=contact_id,
+            kind=kind,
+            value=value,
+            legal_basis=basis,
+            enrichment_cost_note="privacy-provider-tier",
+        )
+        if first_request is None:
+            first_request = request
+        point_ids.append(
+            await service.add_contact_point(tenant, request)  # type: ignore[attr-defined]
+        )
+    assert first_request is not None
+    return account_id, contact_id, point_ids, first_request
 
 
 async def test_service_resolves_and_records_contacts_with_compliance_gates(
@@ -573,3 +640,203 @@ async def test_verification_bus_failure_rolls_back_and_retry_succeeds(
             )
         ).scalars().all()
     assert len(events_after_retry) == 1
+
+
+async def test_erasure_service_removes_personal_data_and_blocks_recollection(
+    prospect_engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    from domains.prospecting.errors import ErasedContactPointError
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+    from infra.db.tables import (
+        ContactLegalBasisRow,
+        ContactPointRow,
+        ProspectAccountRow,
+        ProspectContactRow,
+        ProspectingErasureSuppressionRow,
+    )
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    service = _verification_service(factory)
+    sensitive_value = "erase.marker.9271@Privacy.Example"
+    canonical_sensitive = "erase.marker.9271@privacy.example"
+    phone_value = "+491234567890"
+    unknown_value = "unknown.marker.9271@privacy.example"
+    account_id, contact_id, point_ids, email_request = (
+        await _seed_service_contact_points(
+            service,
+            tenant,
+            domain="privacy-a.example",
+            values=(
+                (ContactPointKind.EMAIL, sensitive_value),
+                (ContactPointKind.PHONE, phone_value),
+            ),
+        )
+    )
+    other_account, other_contact, other_points, _other_request = (
+        await _seed_service_contact_points(
+            service,
+            other_tenant,
+            domain="privacy-b.example",
+            values=((ContactPointKind.EMAIL, sensitive_value),),
+        )
+    )
+    del other_account, other_contact
+
+    caplog.clear()
+    assert await service.handle_erasure_request(tenant, sensitive_value) == 1
+    assert await service.handle_erasure_request(tenant, sensitive_value) == 0
+    assert await service.handle_erasure_request(tenant, unknown_value) == 0
+    with pytest.raises(ErasedContactPointError, match="联系方式已被删除") as error:
+        await service.add_contact_point(tenant, email_request)  # type: ignore[attr-defined]
+    assert canonical_sensitive not in str(error.value)
+    assert sensitive_value not in str(error.value)
+
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        assert await uow.contacts.get_contact_point(tenant, point_ids[0]) is None
+        assert await uow.contacts.get_contact_point(tenant, point_ids[1]) is not None
+        assert await uow.contacts.get_contact(tenant, contact_id) is not None
+        assert await uow.accounts.get(tenant, account_id) is not None
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, other_tenant, now=lambda: NOW
+    ) as uow:
+        assert (
+            await uow.contacts.get_contact_point(other_tenant, other_points[0])
+            is not None
+        )
+
+    assert await service.handle_erasure_request(tenant, phone_value) == 1
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        assert await uow.contacts.get_contact(tenant, contact_id) is None
+        assert await uow.accounts.get(tenant, account_id) is not None
+
+    async with factory() as session:
+        snapshot = {
+            "points": (
+                await session.execute(
+                    select(ContactPointRow.__table__).where(
+                        ContactPointRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+            "basis": (
+                await session.execute(
+                    select(ContactLegalBasisRow.__table__).where(
+                        ContactLegalBasisRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+            "contacts": (
+                await session.execute(
+                    select(ProspectContactRow.__table__).where(
+                        ProspectContactRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+            "accounts": (
+                await session.execute(
+                    select(ProspectAccountRow.__table__).where(
+                        ProspectAccountRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+            "outbox": (
+                await session.execute(
+                    select(OutboxEventRow.__table__).where(
+                        OutboxEventRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+            "suppressions": (
+                await session.execute(
+                    select(ProspectingErasureSuppressionRow.__table__).where(
+                        ProspectingErasureSuppressionRow.tenant_id == str(tenant)
+                    )
+                )
+            ).mappings().all(),
+        }
+    persisted = repr(snapshot)
+    for marker in (sensitive_value, canonical_sensitive, phone_value, unknown_value):
+        assert marker not in persisted
+        assert marker not in caplog.text
+
+
+async def test_concurrent_erasure_deletes_once_and_keeps_one_suppression(
+    prospect_engine: AsyncEngine,
+) -> None:
+    from infra.db.tables import ProspectingErasureSuppressionRow
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _verification_service(factory)
+    raw_value = "concurrent.erase@privacy.example"
+    _account_id, _contact_id, _point_ids, _request = (
+        await _seed_service_contact_points(
+            service,
+            tenant,
+            domain="privacy-concurrent.example",
+            values=((ContactPointKind.EMAIL, raw_value),),
+        )
+    )
+    results = await asyncio.gather(
+        *(service.handle_erasure_request(tenant, raw_value) for _ in range(20))  # type: ignore[attr-defined]
+    )
+    assert sum(results) == 1
+    async with factory() as session:
+        suppression_count = await session.scalar(
+            select(func.count())
+            .select_from(ProspectingErasureSuppressionRow)
+            .where(ProspectingErasureSuppressionRow.tenant_id == str(tenant))
+        )
+    assert suppression_count == 1
+
+
+async def test_erasure_repository_failure_rolls_back_then_retry_succeeds(
+    prospect_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+    from infra.db.repositories.prospecting import ProspectContactRepositoryImpl
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _verification_service(factory)
+    raw_value = "rollback.erase@privacy.example"
+    _account_id, _contact_id, point_ids, _request = (
+        await _seed_service_contact_points(
+            service,
+            tenant,
+            domain="privacy-rollback.example",
+            values=((ContactPointKind.EMAIL, raw_value),),
+        )
+    )
+    original = ProspectContactRepositoryImpl.erase_personal_data
+
+    async def _fail_after_erasure(
+        repository: ProspectContactRepositoryImpl,
+        bound_tenant: TenantId,
+        value_hash: str,
+    ) -> int:
+        await original(repository, bound_tenant, value_hash)
+        raise RuntimeError("erasure rollback marker")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            ProspectContactRepositoryImpl,
+            "erase_personal_data",
+            _fail_after_erasure,
+        )
+        with pytest.raises(RuntimeError, match="erasure rollback marker"):
+            await service.handle_erasure_request(tenant, raw_value)  # type: ignore[attr-defined]
+
+    value_hash = _StableTestHasher().fingerprint(raw_value)
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        assert await uow.contacts.get_contact_point(tenant, point_ids[0]) is not None
+        assert await uow.contacts.is_erasure_suppressed(tenant, value_hash) is False
+    assert await service.handle_erasure_request(tenant, raw_value) == 1  # type: ignore[attr-defined]

@@ -111,6 +111,18 @@ def _canonical_contact_value(kind: ContactPointKind, raw: str) -> str:
     return value
 
 
+def _fingerprint_contact_value(
+    hasher: ContactValueHasher, canonical_value: str
+) -> str:
+    try:
+        value_hash = hasher.fingerprint(canonical_value)
+    except Exception:  # noqa: BLE001 - 阻断底层异常回显原始个人数据
+        raise ValidationError("联系方式指纹计算失败") from None
+    if not isinstance(value_hash, str) or _HASH.fullmatch(value_hash) is None:
+        raise ValidationError("联系方式指纹无效")
+    return value_hash
+
+
 def _account_view(account: ProspectAccount) -> ProspectAccountView:
     return ProspectAccountView(
         account_id=account.account_id,
@@ -218,9 +230,7 @@ class ProspectingServiceImpl:
             collected_at=basis_input.collected_at,
             assessment_ref=basis_input.assessment_ref,
         )
-        value_hash = self._hasher.fingerprint(canonical)
-        if not isinstance(value_hash, str) or _HASH.fullmatch(value_hash) is None:
-            raise ValidationError("联系方式指纹无效")
+        value_hash = _fingerprint_contact_value(self._hasher, canonical)
         point = ContactPoint(
             contact_point_id=ContactPointId(new_id("cp")),
             tenant_id=tenant_id,
@@ -327,5 +337,13 @@ class ProspectingServiceImpl:
     async def handle_erasure_request(
         self, tenant_id: TenantId, contact_point_value: str
     ) -> int:
-        """Task 6 实现：hash suppression 与个人数据清除同事务。"""
-        raise NotImplementedError
+        """清除个人数据，并只保留不可恢复的 canonical value 指纹。"""
+        kind = (
+            ContactPointKind.PHONE
+            if contact_point_value.startswith("+")
+            else ContactPointKind.EMAIL
+        )
+        canonical = _canonical_contact_value(kind, contact_point_value)
+        value_hash = _fingerprint_contact_value(self._hasher, canonical)
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.contacts.erase_personal_data(tenant_id, value_hash)
