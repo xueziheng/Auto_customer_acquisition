@@ -1,4 +1,4 @@
-"""需求域服务实现（浅域：2026-08-17 计划 Task 3/4 只实现 capture/discard）。
+"""需求域服务实现（需求信号与需求假设生命周期）。
 
 捕获语义（规格 §5/§7）：输入校验全部在开 UoW 前完成；所有 str 输入
 item == item.strip()；WEB_PAGE 强约束（url+hash 非空且 source_id ==
@@ -13,13 +13,52 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from domains.demand.errors import MissingWebEvidenceError
-from domains.demand.models import DemandSignal, SignalStatus, SignalType
+from domains.demand.models import DemandSignal, NeedHypothesis, SignalStatus, SignalType
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import SignalCaptureRequest
 from shared.errors import InvalidStateTransition, ValidationError
-from shared.events.catalog import DemandSignalCaptured
-from shared.schemas.identifiers import DemandSignalId, TenantId, new_id
-from shared.schemas.provenance import Provenance, SourceType
+from shared.events.catalog import DemandSignalCaptured, NeedHypothesisCreated
+from shared.schemas.evidence import EvidenceItem, EvidenceLevel, derive_confidence
+from shared.schemas.identifiers import (
+    DemandSignalId,
+    NeedHypothesisId,
+    ProspectAccountId,
+    TenantId,
+    new_id,
+)
+from shared.schemas.provenance import InferredField, Provenance, SourceType
+
+_EVIDENCE_RANK = {level: index for index, level in enumerate(EvidenceLevel)}
+
+
+def _merge_evidence(
+    existing: list[EvidenceItem], incoming: list[EvidenceItem]
+) -> list[EvidenceItem]:
+    """以来源身份做幂等并集，保持首次出现顺序。"""
+    merged: list[EvidenceItem] = []
+    position: dict[tuple[str, str], int] = {}
+    for item in existing + incoming:
+        key = (item.source_type, item.source_id)
+        index = position.get(key)
+        if index is None:
+            position[key] = len(merged)
+            merged.append(item)
+        elif _EVIDENCE_RANK[item.level] > _EVIDENCE_RANK[merged[index].level]:
+            merged[index] = item
+    return merged
+
+
+def _merge_ids(
+    existing: list[DemandSignalId], incoming: list[DemandSignalId]
+) -> list[DemandSignalId]:
+    """信号 ID 幂等并集，保持首次出现顺序。"""
+    merged: list[DemandSignalId] = []
+    seen: set[str] = set()
+    for signal_id in existing + incoming:
+        if str(signal_id) not in seen:
+            seen.add(str(signal_id))
+            merged.append(signal_id)
+    return merged
 
 
 class DemandServiceImpl:
@@ -201,3 +240,127 @@ class DemandServiceImpl:
                 if snapshot.discard_reason == reason_text:
                     return
                 raise InvalidStateTransition("丢弃原因冲突，拒绝覆盖")
+
+    async def create_hypothesis(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        category: str,
+        signal_ids: list[str],
+        reasoning: str,
+        inferred_by: str,
+    ) -> NeedHypothesisId:
+        """用租户内信号快照创建或幂等并入活跃需求假设。"""
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id.strip()
+            or tenant_id != tenant_id.strip()
+        ):
+            raise ValidationError("租户无效")
+        if len(tenant_id) > 40:
+            raise ValidationError("租户超长")
+        if (
+            not isinstance(account_id, str)
+            or not account_id.strip()
+            or account_id != account_id.strip()
+        ):
+            raise ValidationError("目标企业无效")
+        if len(account_id) > 40:
+            raise ValidationError("目标企业超长")
+        category_text = self._require_text(category, "需求类别", max_len=200)
+        assert category_text is not None
+        if (
+            not isinstance(signal_ids, list)
+            or not signal_ids
+            or any(
+                not isinstance(signal_id, str)
+                or not signal_id.strip()
+                or signal_id != signal_id.strip()
+                for signal_id in signal_ids
+            )
+        ):
+            raise ValidationError("需求信号不能为空")
+        if any(len(signal_id) > 40 for signal_id in signal_ids):
+            raise ValidationError("需求信号标识无效")
+        reasoning_text = self._require_text(reasoning, "推断理由")
+        inferred_by_text = self._require_text(inferred_by, "推断者", max_len=64)
+        assert reasoning_text is not None and inferred_by_text is not None
+        now = self._validate_now(self._now())
+        evidence: list[EvidenceItem] = []
+        async with self._uow_factory(tenant_id) as uow:
+            for signal_id in signal_ids:
+                signal = await uow.signals.get(tenant_id, DemandSignalId(signal_id))
+                if signal is None:
+                    raise ValidationError("需求信号不存在")
+                if signal.status is SignalStatus.DISCARDED:
+                    raise ValidationError("需求信号已丢弃")
+                evidence.append(
+                    EvidenceItem(
+                        level=signal.evidence_level,
+                        source_type=signal.provenance.source_type.value,
+                        source_id=signal.provenance.source_id,
+                        observed_at=signal.observed_at,
+                        summary=signal.raw_observation,
+                    )
+                )
+            incoming_ids = _merge_ids(
+                [], [DemandSignalId(signal_id) for signal_id in signal_ids]
+            )
+            evidence = _merge_evidence([], evidence)
+            hypothesis = NeedHypothesis(
+                hypothesis_id=NeedHypothesisId(new_id("hyp")),
+                tenant_id=tenant_id,
+                account_id=account_id,
+                category=category_text,
+                reasoning=InferredField(
+                    value=reasoning_text,
+                    based_on=evidence,
+                    inferred_by=inferred_by_text,
+                    inferred_at=now,
+                ),
+                signal_ids=incoming_ids,
+                created_at=now,
+            )
+            inserted = await uow.hypotheses.add(hypothesis)
+            if inserted:
+                await uow.bus.publish(
+                    NeedHypothesisCreated(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        hypothesis_id=hypothesis.hypothesis_id,
+                        account_id=account_id,
+                        category=category_text,
+                        confidence_tier=derive_confidence(evidence, now=now).tier,
+                    )
+                )
+                return hypothesis.hypothesis_id
+            winner = await uow.hypotheses.find_active_by_account_and_category(
+                tenant_id, account_id, category_text
+            )
+            if winner is None:
+                raise ValidationError("需求假设写入竞态异常")
+            active = await uow.hypotheses.get_for_update(
+                tenant_id, winner.hypothesis_id
+            )
+            if active is None:
+                raise ValidationError("需求假设写入竞态异常")
+            merged = NeedHypothesis(
+                hypothesis_id=active.hypothesis_id,
+                tenant_id=active.tenant_id,
+                account_id=active.account_id,
+                category=active.category,
+                reasoning=InferredField(
+                    value=active.reasoning.value,
+                    based_on=_merge_evidence(active.reasoning.based_on, evidence),
+                    inferred_by=active.reasoning.inferred_by,
+                    inferred_at=now,
+                ),
+                signal_ids=_merge_ids(active.signal_ids, incoming_ids),
+                created_at=active.created_at,
+                status=active.status,
+                rejection_reason=active.rejection_reason,
+                validated_need_id=active.validated_need_id,
+            )
+            await uow.hypotheses.update(merged)
+            return merged.hypothesis_id

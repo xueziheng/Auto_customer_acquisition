@@ -43,6 +43,9 @@ from shared.events.catalog import (
     HandoffRequested,
     InboundMessageStored,
     MessageSent,
+    NeedHypothesisCreated,
+    NeedHypothesisRejected,
+    NeedValidated,
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
@@ -77,6 +80,9 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     # demand 信号捕获即发布（切片 7 producer）：metadata-only（signal_id/
     # entity_name/signal_type/source_url），不含 raw_observation/possible_need
     "DemandSignalCaptured": DemandSignalCaptured,
+    "NeedHypothesisCreated": NeedHypothesisCreated,
+    "NeedHypothesisRejected": NeedHypothesisRejected,
+    "NeedValidated": NeedValidated,
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享
     # outbox 入口对回复管道（切片 6 producer）开放，接线可端到端验证
     "ReplyReceived": ReplyReceived,

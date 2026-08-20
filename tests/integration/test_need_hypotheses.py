@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -13,9 +14,11 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from shared.errors import TenantIsolationViolation
+from domains.demand.schemas import SignalCaptureRequest
+from domains.demand.service import DemandService
+from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import Money
 from shared.schemas.provenance import SourceType
@@ -23,6 +26,17 @@ from shared.schemas.provenance import SourceType
 _models = importlib.import_module("domains.demand.models")
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
+OBSERVATION_MARKER = "Acme SECRET-OBSERVATION-77 opened a new plant in Rotterdam."
+
+
+@dataclass
+class MutableClock:
+    value: datetime
+    calls: int = 0
+
+    def now(self) -> datetime:
+        self.calls += 1
+        return self.value
 
 
 @pytest_asyncio.fixture
@@ -36,6 +50,69 @@ async def demand_db(db_url: str) -> AsyncIterator[AsyncEngine]:
 
 def _uow_type():
     return importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+
+
+def _service(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
+) -> DemandService:
+    impl_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    return impl_type(
+        lambda requested: _uow_type()(factory, requested, now=clock.now),
+        now=clock.now,
+    )
+
+
+def _request(**overrides: object) -> SignalCaptureRequest:
+    fields: dict[str, object] = {
+        "signal_type": "inbound_inquiry",
+        "entity_name": "Acme Manufacturing",
+        "raw_observation": OBSERVATION_MARKER,
+        "observed_at": NOW,
+        "source_type": "conversation",
+        "source_id": "msg_conv_001",
+        "extracted_by": "model-v1",
+    }
+    fields.update(overrides)
+    return SignalCaptureRequest(**fields)
+
+
+async def _signal(
+    service: DemandService, tenant: TenantId, **overrides: object
+) -> str:
+    return await service.capture_signal(tenant, _request(**overrides))
+
+
+async def _hypothesis_rows(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId
+) -> list[object]:
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                select(tables.NeedHypothesisRow).where(
+                    tables.NeedHypothesisRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+    return list(rows)
+
+
+async def _outbox_events(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId
+) -> list[object]:
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                select(tables.OutboxEventRow)
+                .where(tables.OutboxEventRow.tenant_id == str(tenant))
+                .order_by(
+                    tables.OutboxEventRow.published_at,
+                    tables.OutboxEventRow.event_id,
+                )
+            )
+        ).scalars().all()
+    return list(rows)
 
 
 def _hypothesis(**overrides: object):
@@ -297,3 +374,194 @@ async def test_repo_cross_tenant_raises_and_audit_has_no_content(
     for record in critical:
         assert record.message == "检测到跨租户数据隔离违规"
         assert getattr(record, "tenant_id", None) == str(tenant_b)
+
+
+async def test_create_hypothesis_roundtrip_persists_evidence_snapshot(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    signal_id = await _signal(service, tenant)
+
+    hypothesis_id = await service.create_hypothesis(
+        tenant,
+        _models.ProspectAccountId(new_id("acc")),
+        "stainless steel hinges",
+        [signal_id],
+        "Acme 新增产品线，可能需要耐腐蚀五金",
+        "model-v1",
+    )
+    assert hypothesis_id.startswith("hyp_")
+    rows = await _hypothesis_rows(factory, tenant)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.hypothesis_id == hypothesis_id
+    assert row.category == "stainless steel hinges"
+    assert row.status == "inferred"
+    assert row.signal_ids == [signal_id]
+    assert row.reasoning["inferred_by"] == "model-v1"
+    assert row.reasoning["based_on"][0]["source_id"] == "msg_conv_001"
+    events = await _outbox_events(factory, tenant)
+    assert len(events) == 2
+    created = [event for event in events if event.event_type == "NeedHypothesisCreated"]
+    assert len(created) == 1
+    payload = dict(created[0].event_payload)
+    assert set(payload) <= {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "hypothesis_id",
+        "account_id",
+        "category",
+        "confidence_tier",
+    }
+    assert OBSERVATION_MARKER not in str(payload)
+
+
+async def test_create_hypothesis_merges_into_active_hypothesis(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    account = _models.ProspectAccountId(new_id("acc"))
+    first = await _signal(service, tenant)
+    second = await _signal(service, tenant, source_id="msg_conv_002")
+
+    first_id = await service.create_hypothesis(
+        tenant, account, "stainless steel hinges", [first], "推断一", "model-v1"
+    )
+    merged_id = await service.create_hypothesis(
+        tenant, account, "stainless steel hinges", [second], "推断一", "model-v1"
+    )
+    assert merged_id == first_id
+    rows = await _hypothesis_rows(factory, tenant)
+    assert len(rows) == 1
+    assert sorted(rows[0].signal_ids) == sorted([first, second])
+    sources = {item["source_id"] for item in rows[0].reasoning["based_on"]}
+    assert sources == {"msg_conv_001", "msg_conv_002"}
+    assert len(await _outbox_events(factory, tenant)) == 3
+
+
+async def test_create_hypothesis_merge_same_source_keeps_highest_evidence(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    account = _models.ProspectAccountId(new_id("acc"))
+    public_signal = await _signal(
+        service,
+        tenant,
+        signal_type="facility_expansion",
+        source_id="msg_shared",
+    )
+    direct_signal = await _signal(
+        service,
+        tenant,
+        signal_type="inbound_inquiry",
+        source_id="msg_shared",
+    )
+    await service.create_hypothesis(
+        tenant, account, "hinges", [public_signal], "推断", "model-v1"
+    )
+    await service.create_hypothesis(
+        tenant, account, "hinges", [direct_signal], "推断", "model-v1"
+    )
+    rows = await _hypothesis_rows(factory, tenant)
+    evidence = rows[0].reasoning["based_on"]
+    assert len(evidence) == 1
+    assert evidence[0]["level"] == "customer_interest_reply"
+
+
+async def test_create_hypothesis_concurrent_same_key_exactly_one_row_one_event(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service_a = _service(factory, tenant, clock)
+    service_b = _service(factory, tenant, clock)
+    signal_id = await _signal(service_a, tenant)
+    account = _models.ProspectAccountId(new_id("acc"))
+
+    results = await asyncio.gather(
+        service_a.create_hypothesis(
+            tenant, account, "stainless steel hinges", [signal_id], "推断", "model-v1"
+        ),
+        service_b.create_hypothesis(
+            tenant, account, "stainless steel hinges", [signal_id], "推断", "model-v1"
+        ),
+        return_exceptions=True,
+    )
+    assert all(isinstance(result, str) for result in results), results
+    assert results[0] == results[1]
+    assert len(await _hypothesis_rows(factory, tenant)) == 1
+    assert len(await _outbox_events(factory, tenant)) == 2
+
+
+async def test_create_hypothesis_same_category_different_accounts_are_distinct(
+    demand_db: AsyncEngine,
+) -> None:
+    """活跃唯一身份必须包含 account_id，不能把不同企业误并。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    first_signal = await _signal(service, tenant)
+    second_signal = await _signal(service, tenant, source_id="msg_conv_002")
+    first_id = await service.create_hypothesis(
+        tenant,
+        _models.ProspectAccountId(new_id("acc")),
+        "stainless steel hinges",
+        [first_signal],
+        "推断",
+        "model-v1",
+    )
+    second_id = await service.create_hypothesis(
+        tenant,
+        _models.ProspectAccountId(new_id("acc")),
+        "stainless steel hinges",
+        [second_signal],
+        "推断",
+        "model-v1",
+    )
+    assert first_id != second_id
+    assert len(await _hypothesis_rows(factory, tenant)) == 2
+    assert len(await _outbox_events(factory, tenant)) == 4
+
+
+async def test_create_hypothesis_rejects_bad_or_invisible_signals(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    other_service = _service(factory, other_tenant, clock)
+    account = _models.ProspectAccountId(new_id("acc"))
+    with pytest.raises(ValidationError, match="需求信号不能为空"):
+        await service.create_hypothesis(
+            tenant, account, "cat", [], "推断", "model-v1"
+        )
+    with pytest.raises(ValidationError, match="需求信号不存在"):
+        await service.create_hypothesis(
+            tenant, account, "cat", [new_id("sig")], "推断", "model-v1"
+        )
+    invisible = await _signal(other_service, other_tenant, source_id="msg_other")
+    with pytest.raises(ValidationError, match="需求信号不存在"):
+        await service.create_hypothesis(
+            tenant, account, "cat", [invisible], "推断", "model-v1"
+        )
+    signal_id = await _signal(service, tenant)
+    await service.discard_signal(tenant, signal_id, "noise")
+    with pytest.raises(ValidationError, match="需求信号已丢弃"):
+        await service.create_hypothesis(
+            tenant, account, "cat", [signal_id], "推断", "model-v1"
+        )
+    assert await _hypothesis_rows(factory, tenant) == []

@@ -2025,7 +2025,7 @@ Expected: 全部 rc=0（demand 信号既有 19 项回归通过）。
 
 **Interfaces（规格 §6.1 权威）：** `create_hypothesis(tenant_id, account_id: ProspectAccountId, category: str, signal_ids: list[str], reasoning: str, inferred_by: str) -> NeedHypothesisId`；校验先于 UoW（错误摘要见 spec §11）；DISCARDED 信号 → `ValidationError("需求信号已丢弃")`（D3/finding 5）；并入不发事件（D5）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 (1a) `tests/unit/test_outbox_serialization.py` 白名单期望集追加三项：`"NeedHypothesisCreated"`/`"NeedHypothesisRejected"`/`"NeedValidated"`。
 
@@ -2155,7 +2155,7 @@ async def test_create_hypothesis_rejects_bad_input_before_uow(
 
 （spec 9.3-13 的 service 不可见侧：`create_hypothesis` 引用他租户信号 → `ValidationError("需求信号不存在")`，并入本文件该 Task 的 `test_create_hypothesis_*` 补充用例。）
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k create_hypothesis -q -W error
@@ -2164,7 +2164,7 @@ conda run -n tradeos-py312 python -m pytest tests/unit/test_outbox_serialization
 
 Expected: **FAIL**——create 用例 `AttributeError: 'DemandServiceImpl' object has no attribute 'create_hypothesis'`；白名单用例 `AssertionError`（期望集缺三项）。记录 rc=1。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `infra/db/outbox.py` `EVENT_REGISTRY` 追加：
 
@@ -2333,7 +2333,7 @@ def _merge_ids(
     return merged
 ```
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k create_hypothesis -q -W error
@@ -2343,7 +2343,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: 全部 PASS（含 Task 3 存量用例）。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check domains/demand infra/db tests/integration/test_need_hypotheses.py tests/unit/test_outbox_serialization.py
@@ -2356,7 +2356,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_demand_signal
 
 Expected: 全部 rc=0。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 AttributeError/白名单 AssertionError、GREEN 计数、diff 4 文件）
+- [x] **Step 6: 停止等待监督方复审**（汇报 RED 原因 AttributeError/白名单 AssertionError、GREEN 计数、diff 4 文件）
 
 复审通过后，提交前执行 mutation proofs（每项：临时 apply_patch → 精确测试 RED → 恢复 → GREEN → `git diff` 无残留）：
 
@@ -2367,7 +2367,7 @@ Expected: 全部 rc=0。
 | M6 | 并入分支也发布 `NeedHypothesisCreated` | `test_create_hypothesis_merges_into_active_hypothesis` | outbox 事件数 4（断言 3 失败） |
 | M7 | `create_hypothesis` 删除 DISCARDED 检查 | `test_create_hypothesis_rejects_bad_input_before_uow` | `pytest.raises(ValidationError, match="需求信号已丢弃")` DID NOT RAISE |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `infra/db/outbox.py` `tests/unit/test_outbox_serialization.py` `domains/demand/service_impl.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): create hypotheses with dedup and evidence snapshots`；Expected：4 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `infra/db/outbox.py` `tests/unit/test_outbox_serialization.py` `domains/demand/service_impl.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): create hypotheses with dedup and evidence snapshots`；Expected：4 文件 index 100644、local == origin、CI `OK`）
 
 ---
 

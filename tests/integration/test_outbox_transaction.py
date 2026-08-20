@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from infra.db.tables import OpportunityRow, OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.catalog import (
-    NeedValidated,
+    NeedClusterFormed,
     OpportunityWon,
     ReputationThresholdBreached,
     SendingIdentityActivated,
@@ -214,10 +214,13 @@ async def test_bus_publish_unknown_event_rejected(engine_fx: AsyncEngine) -> Non
     session = sf()
     try:
         bus = PostgresEventBus(session, TenantId("tBus4"))
-        evt = NeedValidated(
-            tenant_id=TenantId("tBus4"), occurred_at=_NOW, run_id=RunId("r4"),
-            need_id=ValidatedNeedId("n1"), account_id=None, category="hinges",
-            evidence_level=None, completeness=3,
+        evt = NeedClusterFormed(
+            tenant_id=TenantId("tBus4"),
+            occurred_at=_NOW,
+            run_id=RunId("r4"),
+            cluster_id="cluster-1",
+            category="hinges",
+            member_count=2,
         )
         with pytest.raises(ValidationError):
             await bus.publish(evt)

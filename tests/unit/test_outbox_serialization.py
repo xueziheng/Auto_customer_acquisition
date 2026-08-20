@@ -93,6 +93,9 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "ReplyReceived",
         "InboundMessageStored",
         "DemandSignalCaptured",
+        "NeedHypothesisCreated",
+        "NeedHypothesisRejected",
+        "NeedValidated",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
@@ -562,7 +565,7 @@ def test_unknown_event_type_rejected() -> None:
     """未注册事件类型：resolve_event_type 抛 ValidationError（发布/反序列化入口）。"""
     resolve_event_type = _load("resolve_event_type")
     with pytest.raises(ValidationError):
-        resolve_event_type("NeedValidated")  # catalog 有类但不在白名单
+        resolve_event_type("NeedClusterFormed")  # catalog 有类但本切片明确不注册
     with pytest.raises(ValidationError):
         resolve_event_type("TotallyUnknownEvent")
 
