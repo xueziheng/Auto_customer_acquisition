@@ -71,6 +71,12 @@ class ContactRepository(Protocol):
         self, tenant_id: TenantId, contact_point_id: ContactPointId
     ) -> ContactPoint | None: ...
 
+    async def get_contact_point_for_update(
+        self, tenant_id: TenantId, contact_point_id: ContactPointId
+    ) -> ContactPoint | None:
+        """租户过滤后锁行，供验证状态机串行化。"""
+        ...
+
     async def update_contact_point(self, cp: ContactPoint) -> None: ...
 
     async def find_by_value_hash(
