@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.demand import DemandSignalRepositoryImpl
+from infra.db.repositories.need_hypotheses import (
+    NeedHypothesisRepositoryImpl,
+    ValidatedNeedRepositoryImpl,
+)
 from shared.schemas.identifiers import TenantId
 
 
@@ -31,6 +35,12 @@ class SqlAlchemyDemandUnitOfWork:
         session = self._factory()
         self._session = session
         self.signals = DemandSignalRepositoryImpl(session, self._tenant_id)
+        self.hypotheses = NeedHypothesisRepositoryImpl(
+            session, self._tenant_id, now=self._now
+        )
+        self.needs = ValidatedNeedRepositoryImpl(
+            session, self._tenant_id, now=self._now
+        )
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 

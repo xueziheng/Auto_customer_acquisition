@@ -1038,7 +1038,7 @@ Expected: 全部 rc=0。
 
 **Interfaces（规格 §5 权威）：** 全部方法签名与 `repository.py` Protocol 逐字一致（含 Task 1 新增 `get_for_update`）；`add`（假设）返回 `bool`（True=新插入，False=活跃冲突）；`append_field_history` 单行 INSERT；action 审计名：`need_hypothesis_add/get/update/get_for_update/find_active_by_account_and_category/list_for_outreach`、`validated_need_add/get/update/get_for_update/append_field_history/list_sourcing_ready/list_by_account`。
 
-- [ ] **Step 1: 写失败测试（test_need_hypotheses.py 新增；集成 fixture 复用 demand 切片模式）**
+- [x] **Step 1: 写失败测试（test_need_hypotheses.py 新增；集成 fixture 复用 demand 切片模式）**
 
 ```python
 """NeedHypothesis + ValidatedNeed 仓储/服务集成（2026-08-17 计划 Task 3-7；
@@ -1392,7 +1392,7 @@ async def test_repo_get_for_update_locks_and_validated_jsonb_roundtrip(
     assert b_result is not None and b_result.need_id == need.need_id
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 find . -name "._*" -not -path "./.git/*" -delete
@@ -1401,7 +1401,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: **FAIL**——`ModuleNotFoundError: No module named 'infra.db.repositories.need_hypotheses'`（Task 3 用例）；UoW 用例 `AttributeError`（`SqlAlchemyDemandUnitOfWork` 无 `hypotheses`/`needs`）。记录 rc=1。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `infra/db/repositories/need_hypotheses.py`——JSONB 序列化器 + 两个 Impl（镜像 `demand.py` 先例：`_DemandRepository` 基座同名 `_tenant_matches`/`_require_tenant`/`_tenant_logger`）：
 
@@ -1982,7 +1982,7 @@ from infra.db.repositories.need_hypotheses import (
         )
 ```
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -q -W error
@@ -1990,7 +1990,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check infra/db/repositories/need_hypotheses.py infra/db/demand_uow.py tests/integration/test_need_hypotheses.py
@@ -2003,7 +2003,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_demand_signal
 
 Expected: 全部 rc=0（demand 信号既有 19 项回归通过）。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 ModuleNotFoundError/AttributeError、GREEN 计数、diff 3 文件）
+- [x] **Step 6: 停止等待监督方复审**（汇报 RED 原因 ModuleNotFoundError/AttributeError、GREEN 计数、diff 3 文件）
 
 复审通过后，提交前执行 mutation proof：
 
@@ -2011,7 +2011,7 @@ Expected: 全部 rc=0（demand 信号既有 19 项回归通过）。
 |---|---|---|---|
 | M-R | `add` 的 `index_where` 谓词改错（`status = 'inferred'`） | Task 3 内新增仓储侧 parity 用例（断言 `add` 的 `index_where` 谓词语义：值集合 == {'inferred','contacting'} 且含 status 标识符，P1-2 同款语义比较） | 谓词语义比较断言失败 |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `infra/db/repositories/need_hypotheses.py` `infra/db/demand_uow.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): hypothesis and need repositories with tenant isolation`；Expected：3 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `infra/db/repositories/need_hypotheses.py` `infra/db/demand_uow.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): hypothesis and need repositories with tenant isolation`；Expected：3 文件 index 100644、local == origin、CI `OK`）
 
 ---
 
