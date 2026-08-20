@@ -10,25 +10,81 @@ page_hash）；去重 key 全非空 5 列；重复返回既有 ID 不重复发�
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
+from typing import cast
 
-from domains.demand.errors import MissingWebEvidenceError
-from domains.demand.models import DemandSignal, NeedHypothesis, SignalStatus, SignalType
+from domains.demand.errors import (
+    HypothesisAlreadyResolvedError,
+    InsufficientEvidenceError,
+    MissingWebEvidenceError,
+)
+from domains.demand.models import (
+    DemandSignal,
+    HypothesisStatus,
+    NeedHypothesis,
+    NeedStatus,
+    SignalStatus,
+    SignalType,
+    ValidatedNeed,
+)
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import SignalCaptureRequest
 from shared.errors import InvalidStateTransition, ValidationError
-from shared.events.catalog import DemandSignalCaptured, NeedHypothesisCreated
+from shared.events.catalog import (
+    DemandSignalCaptured,
+    NeedHypothesisCreated,
+    NeedHypothesisRejected,
+    NeedValidated,
+)
 from shared.schemas.evidence import EvidenceItem, EvidenceLevel, derive_confidence
 from shared.schemas.identifiers import (
     DemandSignalId,
+    EmployeeId,
+    MessageId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
+    ValidatedNeedId,
     new_id,
 )
-from shared.schemas.provenance import InferredField, Provenance, SourceType
+from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import (
+    FactualField,
+    InferredField,
+    Provenance,
+    SourceType,
+)
 
 _EVIDENCE_RANK = {level: index for index, level in enumerate(EvidenceLevel)}
+_PROMOTABLE_SOURCE_TYPES = frozenset(
+    {
+        SourceType.CONVERSATION.value,
+        SourceType.UPLOAD.value,
+        SourceType.EMPLOYEE_INPUT.value,
+    }
+)
+_PROMOTE_FIELD_WHITELIST = frozenset(
+    {
+        "product_category",
+        "application",
+        "material",
+        "size_spec",
+        "quantity",
+        "packaging",
+        "destination",
+        "required_by",
+        "target_price",
+        "current_supply_issue",
+        "certification_required",
+    }
+)
+_TEXT_PROMOTE_FIELDS = _PROMOTE_FIELD_WHITELIST - {
+    "quantity",
+    "required_by",
+    "target_price",
+}
 
 
 def _merge_evidence(
@@ -59,6 +115,65 @@ def _merge_ids(
             seen.add(str(signal_id))
             merged.append(signal_id)
     return merged
+
+
+def _coerce_field_value(name: str, value: object) -> object:
+    """把外部字段转成域模型要求的确定性类型。"""
+    if name == "quantity":
+        if isinstance(value, bool):
+            raise ValidationError("需求字段类型无效")
+        try:
+            return int(value)  # type: ignore[call-overload]
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("需求字段类型无效") from exc
+    if name == "required_by":
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValidationError("需求字段类型无效") from exc
+    if name == "target_price":
+        if not isinstance(value, dict):
+            raise ValidationError("需求字段类型无效")
+        try:
+            return Money(
+                amount=Decimal(str(value["amount"])),
+                currency=CurrencyCode(str(value["currency"])),
+            )
+        except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+            raise ValidationError("需求字段类型无效") from exc
+    if name in _TEXT_PROMOTE_FIELDS and (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+    ):
+        raise ValidationError("需求字段类型无效")
+    return value
+
+
+def _highest_evidence_level(hypothesis: NeedHypothesis) -> EvidenceLevel:
+    """返回假设证据的最高等级，用于可解释的拒绝信息。"""
+    return max(
+        (item.level for item in hypothesis.evidence()),
+        key=_EVIDENCE_RANK.__getitem__,
+        default=EvidenceLevel.AGENT_INDUSTRY_INFERENCE,
+    )
+
+
+def _highest_promotable_evidence_level(
+    hypothesis: NeedHypothesis,
+) -> EvidenceLevel:
+    """返回真正满足晋升门槛的最高证据等级。"""
+    minimum = _EVIDENCE_RANK[EvidenceLevel.CUSTOMER_INTEREST_REPLY]
+    return max(
+        (
+            item.level
+            for item in hypothesis.evidence()
+            if _EVIDENCE_RANK[item.level] >= minimum
+            and item.source_type in _PROMOTABLE_SOURCE_TYPES
+        ),
+        key=_EVIDENCE_RANK.__getitem__,
+        default=EvidenceLevel.AGENT_INDUSTRY_INFERENCE,
+    )
 
 
 class DemandServiceImpl:
@@ -364,3 +479,195 @@ class DemandServiceImpl:
             )
             await uow.hypotheses.update(merged)
             return merged.hypothesis_id
+
+    async def promote_to_validated(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: str,
+        source_message_id: str,
+        extracted_fields: dict[str, object],
+        confirmed_by: str | None = None,
+    ) -> ValidatedNeedId:
+        """将具备客户直接证据的假设原子晋升为已验证需求。"""
+        if (
+            not isinstance(hypothesis_id, str)
+            or not hypothesis_id.strip()
+            or hypothesis_id != hypothesis_id.strip()
+        ):
+            raise ValidationError("需求假设标识无效")
+        if len(hypothesis_id) > 40:
+            raise ValidationError("需求假设标识超长")
+        if (
+            not isinstance(source_message_id, str)
+            or not source_message_id.strip()
+            or source_message_id != source_message_id.strip()
+        ):
+            raise ValidationError("来源消息无效")
+        if len(source_message_id) > 40:
+            raise ValidationError("来源消息超长")
+        if not isinstance(extracted_fields, dict) or not extracted_fields:
+            raise ValidationError("提取字段不能为空")
+        if set(extracted_fields) - _PROMOTE_FIELD_WHITELIST:
+            raise ValidationError("未知需求字段")
+        if "product_category" not in extracted_fields:
+            raise ValidationError("产品类别不能为空")
+        if confirmed_by is not None and (
+            not isinstance(confirmed_by, str)
+            or not confirmed_by.strip()
+            or confirmed_by != confirmed_by.strip()
+        ):
+            raise ValidationError("确认人无效")
+        if confirmed_by is not None and len(confirmed_by) > 40:
+            raise ValidationError("确认人无效")
+        coerced = {
+            name: _coerce_field_value(name, value)
+            for name, value in extracted_fields.items()
+        }
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get_for_update(
+                tenant_id, NeedHypothesisId(hypothesis_id)
+            )
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            if hypothesis.status is HypothesisStatus.VALIDATED:
+                if hypothesis.validated_need_id is None:
+                    raise ValidationError("需求假设写入竞态异常")
+                return hypothesis.validated_need_id
+            if hypothesis.status is HypothesisStatus.REJECTED:
+                raise HypothesisAlreadyResolvedError("已否决的假设不可晋升")
+            if not hypothesis.can_promote_to_validated():
+                highest = _highest_evidence_level(hypothesis)
+                raise InsufficientEvidenceError(
+                    "证据不足，不可晋升为已验证需求："
+                    f"当前最高证据等级 {highest.value}，"
+                    "要求 ≥ customer_interest_reply 且来源为会话/上传/员工录入"
+                )
+
+            confirmer = EmployeeId(confirmed_by) if confirmed_by else None
+            fields: dict[str, FactualField[object]] = {}
+            for name, value in coerced.items():
+                fields[name] = FactualField(
+                    value=value,
+                    provenance=Provenance(
+                        source_type=SourceType.CONVERSATION,
+                        source_id=source_message_id,
+                        extracted_by=confirmed_by or "human",
+                        extracted_at=now,
+                        confirmed_by=confirmer,
+                        confirmed_at=now if confirmer else None,
+                    ),
+                )
+
+            need = ValidatedNeed(
+                need_id=ValidatedNeedId(new_id("need")),
+                tenant_id=tenant_id,
+                account_id=hypothesis.account_id,
+                product_category=cast(
+                    FactualField[str], fields["product_category"]
+                ),
+                source_message_id=MessageId(source_message_id),
+                created_at=now,
+                source_conversation_id=None,
+                application=cast(FactualField[str] | None, fields.get("application")),
+                material=cast(FactualField[str] | None, fields.get("material")),
+                size_spec=cast(FactualField[str] | None, fields.get("size_spec")),
+                quantity=cast(FactualField[int] | None, fields.get("quantity")),
+                packaging=cast(FactualField[str] | None, fields.get("packaging")),
+                destination=cast(
+                    FactualField[str] | None, fields.get("destination")
+                ),
+                required_by=cast(
+                    FactualField[date] | None, fields.get("required_by")
+                ),
+                target_price=cast(
+                    FactualField[Money] | None, fields.get("target_price")
+                ),
+                current_supply_issue=cast(
+                    FactualField[str] | None, fields.get("current_supply_issue")
+                ),
+                certification_required=cast(
+                    FactualField[str] | None,
+                    fields.get("certification_required"),
+                ),
+                confirmed_by=confirmer,
+                cluster_id=None,
+            )
+            if need.completeness >= 3:
+                need = replace(need, status=NeedStatus.SOURCING_READY)
+            await uow.needs.add(need)
+            await uow.hypotheses.update(
+                replace(
+                    hypothesis,
+                    status=HypothesisStatus.VALIDATED,
+                    validated_need_id=need.need_id,
+                )
+            )
+            await uow.bus.publish(
+                NeedValidated(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    run_id=None,
+                    need_id=need.need_id,
+                    account_id=need.account_id,
+                    category=hypothesis.category,
+                    evidence_level=_highest_promotable_evidence_level(hypothesis),
+                    completeness=need.completeness,
+                )
+            )
+            return need.need_id
+
+    async def reject_hypothesis(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: str,
+        loss_reason: str,
+        rejected_by: str | None = None,
+    ) -> None:
+        """否决活跃假设，保留首次拒绝原因并发布一次领域事件。"""
+        if (
+            not isinstance(hypothesis_id, str)
+            or not hypothesis_id.strip()
+            or hypothesis_id != hypothesis_id.strip()
+        ):
+            raise ValidationError("需求假设标识无效")
+        if len(hypothesis_id) > 40:
+            raise ValidationError("需求假设标识超长")
+        reason = self._require_text(loss_reason, "拒绝原因", max_len=200)
+        assert reason is not None
+        if rejected_by is not None and (
+            not isinstance(rejected_by, str)
+            or not rejected_by.strip()
+            or rejected_by != rejected_by.strip()
+            or len(rejected_by) > 40
+        ):
+            raise ValidationError("拒绝人无效")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get_for_update(
+                tenant_id, NeedHypothesisId(hypothesis_id)
+            )
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            if hypothesis.status is HypothesisStatus.VALIDATED:
+                raise HypothesisAlreadyResolvedError("已验证需求不可否决")
+            if hypothesis.status is HypothesisStatus.REJECTED:
+                if hypothesis.rejection_reason == reason:
+                    return
+                raise InvalidStateTransition("拒绝原因冲突，拒绝覆盖")
+            await uow.hypotheses.update(
+                replace(
+                    hypothesis,
+                    status=HypothesisStatus.REJECTED,
+                    rejection_reason=reason,
+                )
+            )
+            await uow.bus.publish(
+                NeedHypothesisRejected(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    run_id=None,
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    reason=reason,
+                )
+            )

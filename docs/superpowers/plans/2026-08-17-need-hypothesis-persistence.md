@@ -2379,7 +2379,7 @@ Expected: 全部 rc=0。
 
 **Interfaces（规格 §6.2/§6.3 权威）：** `promote_to_validated(tenant_id, hypothesis_id: str, source_message_id: str, extracted_fields: dict[str, object], confirmed_by: str | None = None) -> ValidatedNeedId`；`reject_hypothesis(tenant_id, hypothesis_id: str, loss_reason: str, rejected_by: str | None = None) -> None`。11 键白名单 `_PROMOTE_FIELD_WHITELIST = {"product_category", "application", "material", "size_spec", "quantity", "packaging", "destination", "required_by", "target_price", "current_supply_issue", "certification_required"}`；初始完整度 ≥ 3 → SOURCING_READY（finding 6）；幂等返回既有 need_id（D7）。
 
-- [ ] **Step 1: 写失败测试（spec 9.3 测试 5-8）**
+- [x] **Step 1: 写失败测试（spec 9.3 测试 5-8）**
 
 ```python
 async def _create_promotable_hypothesis(
@@ -2585,7 +2585,7 @@ async def test_reject_semantics(demand_db: AsyncEngine) -> None:
         await service.reject_hypothesis(tenant, validated_id, "no_budget", "emp-1")
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k "promote or reject" -q -W error
@@ -2593,7 +2593,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: **FAIL**——`AttributeError: 'DemandServiceImpl' object has no attribute 'promote_to_validated'`（及 reject）。记录 rc=1。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `domains/demand/service_impl.py`——模块级白名单/类型辅助 + 两方法（imports 增量，**P2-B：基于 Task 4 已并入状态，只加新符号、不重复**）：
 - 扩展 `from domains.demand.models import ...` 行：增 `HypothesisStatus, NeedStatus, ValidatedNeed`（`NeedHypothesis` 已由 Task 4 并入）
@@ -2849,7 +2849,7 @@ def _factual_value_to_text(field: FactualField[object] | None) -> str | None:
 
 （**P3-3：`rejected_by` 仅校验（str/strip/≤40 → `"拒绝人无效"`），当前 schema 与 `NeedHypothesisRejected` 事件均无该字段——不落库**；规格签名保留该参数（service.py docstring 权威），如需留痕属后续独立切片。）
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k "promote or reject" -q -W error
@@ -2858,7 +2858,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check domains/demand tests/integration/test_need_hypotheses.py
@@ -2870,7 +2870,7 @@ git diff --check
 
 Expected: 全部 rc=0。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 AttributeError、GREEN 计数、diff 2 文件）
+- [x] **Step 6: 停止等待监督方复审**（RED 原因 AttributeError；GREEN 17 项；复审发现并修复可选 JSONB `None` 必须落 SQL NULL，故 diff 3 个实现/测试文件）
 
 复审通过后，提交前执行 mutation proofs：
 
@@ -2879,7 +2879,7 @@ Expected: 全部 rc=0。
 | M3 | `promote_to_validated` 删除 `can_promote_to_validated()` 检查 | `test_promote_rejects_agent_inference_evidence` | `pytest.raises(InsufficientEvidenceError)` DID NOT RAISE |
 | M5 | `reject_hypothesis` 不同 reason 改无条件返回 | `test_reject_semantics` | `pytest.raises(InvalidStateTransition)` DID NOT RAISE |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `domains/demand/service_impl.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): promote and reject hypotheses deterministically`；Expected：2 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `domains/demand/service_impl.py` `infra/db/tables.py` `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `feat(demand): promote and reject hypotheses deterministically`；Expected：3 文件 index 100644、local == origin、CI `OK`）
 
 ---
 

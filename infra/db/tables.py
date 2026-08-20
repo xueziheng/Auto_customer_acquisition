@@ -1591,16 +1591,38 @@ class ValidatedNeedRow(Base):
     source_conversation_id: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'validated'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    application: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    material: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    size_spec: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    quantity: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    packaging: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    destination: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    required_by: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    target_price: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    current_supply_issue: Mapped[dict | None] = mapped_column(postgresql.JSONB)
-    certification_required: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    # 可选事实字段的缺省值必须是 SQL NULL；JSON ``null`` 不携带 provenance，
+    # 且会违反上面的对象形状约束。
+    application: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    material: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    size_spec: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    quantity: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    packaging: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    destination: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    required_by: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    target_price: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    current_supply_issue: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    certification_required: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
     confirmed_by: Mapped[str | None] = mapped_column(String(40))
 
 

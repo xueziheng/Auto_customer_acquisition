@@ -16,6 +16,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from domains.demand.errors import (
+    HypothesisAlreadyResolvedError,
+    InsufficientEvidenceError,
+)
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service import DemandService
 from shared.errors import TenantIsolationViolation, ValidationError
@@ -565,3 +569,245 @@ async def test_create_hypothesis_rejects_bad_or_invisible_signals(
             tenant, account, "cat", [signal_id], "推断", "model-v1"
         )
     assert await _hypothesis_rows(factory, tenant) == []
+
+
+async def _create_promotable_hypothesis(
+    service: DemandService,
+    tenant: TenantId,
+    category: str = "stainless steel hinges",
+) -> str:
+    """创建带客户直接兴趣证据、可晋升的需求假设。"""
+    signal_id = await _signal(service, tenant)
+    return await service.create_hypothesis(
+        tenant,
+        _models.ProspectAccountId(new_id("acc")),
+        category,
+        [signal_id],
+        "入站询盘表明可能需要五金件",
+        "model-v1",
+    )
+
+
+async def test_promote_rejects_agent_inference_evidence(
+    demand_db: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    signal_id = await _signal(
+        service,
+        tenant,
+        signal_type="product_line_expansion",
+        source_type="web_page",
+        source_id="sha256:pagehash001",
+        source_url="https://example.com/acme",
+        page_hash="sha256:pagehash001",
+    )
+    hypothesis_id = await service.create_hypothesis(
+        tenant,
+        _models.ProspectAccountId(new_id("acc")),
+        "hinges",
+        [signal_id],
+        "工厂扩建，可能需要五金",
+        "model-v1",
+    )
+    before = len(await _outbox_events(factory, tenant))
+
+    with pytest.raises(InsufficientEvidenceError):
+        await service.promote_to_validated(
+            tenant,
+            hypothesis_id,
+            "msg_conv_001",
+            {"product_category": "hinges"},
+            "emp-1",
+        )
+
+    rows = await _hypothesis_rows(factory, tenant)
+    assert rows[0].status == "inferred"
+    assert len(await _outbox_events(factory, tenant)) == before
+
+
+async def test_promote_success_status_and_event(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant)
+
+    need_id = await service.promote_to_validated(
+        tenant,
+        hypothesis_id,
+        "msg_conv_001",
+        {"product_category": "hinges"},
+        "emp-1",
+    )
+    assert need_id.startswith("need_")
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        need_rows = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+    assert len(need_rows) == 1
+    row = need_rows[0]
+    assert row.status == "validated"
+    assert row.product_category["value"] == "hinges"
+    assert row.product_category["provenance"]["source_id"] == "msg_conv_001"
+    assert row.product_category["provenance"]["confirmed_by"] == "emp-1"
+    hyp_rows = await _hypothesis_rows(factory, tenant)
+    assert hyp_rows[0].status == "validated"
+    assert hyp_rows[0].validated_need_id == need_id
+    events = await _outbox_events(factory, tenant)
+    validated = [event for event in events if event.event_type == "NeedValidated"]
+    assert len(validated) == 1
+    payload = dict(validated[0].event_payload)
+    assert set(payload) <= {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "need_id",
+        "account_id",
+        "category",
+        "evidence_level",
+        "completeness",
+    }
+    assert payload["completeness"] == 1
+    assert payload["evidence_level"] == "customer_interest_reply"
+    assert OBSERVATION_MARKER not in str(payload)
+
+    hypothesis2 = await _create_promotable_hypothesis(
+        service, tenant, category="aluminum profiles"
+    )
+    need2 = await service.promote_to_validated(
+        tenant,
+        hypothesis2,
+        "msg_conv_002",
+        {
+            "product_category": "aluminum profiles",
+            "application": "marine use",
+            "quantity": 5000,
+        },
+        None,
+    )
+    async with factory() as session:
+        row2 = (
+            await session.execute(
+                select(tables.ValidatedNeedRow).where(
+                    tables.ValidatedNeedRow.need_id == str(need2)
+                )
+            )
+        ).scalar_one()
+    assert row2.status == "sourcing_ready"
+    assert row2.quantity["value"] == 5000
+
+    with pytest.raises(ValidationError, match="产品类别不能为空"):
+        await service.promote_to_validated(
+            tenant,
+            hypothesis2,
+            "msg_conv_003",
+            {"quantity": 5000},
+            None,
+        )
+
+
+async def test_promote_idempotent_and_concurrent(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant)
+    fields = {"product_category": "hinges", "quantity": 3000}
+    need_id = await service.promote_to_validated(
+        tenant, hypothesis_id, "msg_conv_001", fields, None
+    )
+    again = await service.promote_to_validated(
+        tenant, hypothesis_id, "msg_conv_001", fields, None
+    )
+    assert again == need_id
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        count = len(
+            (
+                await session.execute(
+                    select(tables.ValidatedNeedRow).where(
+                        tables.ValidatedNeedRow.tenant_id == str(tenant)
+                    )
+                )
+            ).scalars().all()
+        )
+    assert count == 1
+    validated = [
+        event
+        for event in await _outbox_events(factory, tenant)
+        if event.event_type == "NeedValidated"
+    ]
+    assert len(validated) == 1
+
+    hypothesis2 = await _create_promotable_hypothesis(
+        service, tenant, category="hinges bulk"
+    )
+    service_b = _service(factory, tenant, clock)
+    results = await asyncio.gather(
+        service.promote_to_validated(
+            tenant, hypothesis2, "msg_conv_010", fields, None
+        ),
+        service_b.promote_to_validated(
+            tenant, hypothesis2, "msg_conv_010", fields, None
+        ),
+        return_exceptions=True,
+    )
+    assert all(isinstance(result, str) for result in results), results
+    assert results[0] == results[1]
+    validated = [
+        event
+        for event in await _outbox_events(factory, tenant)
+        if event.event_type == "NeedValidated"
+    ]
+    assert len(validated) == 2
+
+
+async def test_reject_semantics(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant)
+    await service.reject_hypothesis(tenant, hypothesis_id, "no_budget", "emp-1")
+    await service.reject_hypothesis(tenant, hypothesis_id, "no_budget", "emp-1")
+    rows = await _hypothesis_rows(factory, tenant)
+    assert rows[0].status == "rejected"
+    assert rows[0].rejection_reason == "no_budget"
+
+    from shared.errors import InvalidStateTransition
+
+    with pytest.raises(InvalidStateTransition) as exc_info:
+        await service.reject_hypothesis(tenant, hypothesis_id, "no_reply", "emp-1")
+    assert str(exc_info.value) == "拒绝原因冲突，拒绝覆盖"
+    rows = await _hypothesis_rows(factory, tenant)
+    assert rows[0].rejection_reason == "no_budget"
+    rejected = [
+        event
+        for event in await _outbox_events(factory, tenant)
+        if event.event_type == "NeedHypothesisRejected"
+    ]
+    assert len(rejected) == 1
+    assert dict(rejected[0].event_payload)["reason"] == "no_budget"
+
+    validated_id = await _create_promotable_hypothesis(
+        service, tenant, "validated target"
+    )
+    await service.promote_to_validated(
+        tenant,
+        validated_id,
+        "msg_conv_020",
+        {"product_category": "hinges"},
+        None,
+    )
+    with pytest.raises(HypothesisAlreadyResolvedError):
+        await service.reject_hypothesis(
+            tenant, validated_id, "no_budget", "emp-1"
+        )
