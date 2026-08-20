@@ -64,3 +64,10 @@ def test_public_request_collections_are_immutable() -> None:
         source_signal_refs=("sig-1", "sig-2"),
     )
     assert request.source_signal_refs == ("sig-1", "sig-2")
+
+
+def test_contact_point_verified_is_registered_for_transactional_outbox() -> None:
+    from infra.db.outbox import resolve_event_type
+    from shared.events.catalog import ContactPointVerified
+
+    assert resolve_event_type("ContactPointVerified") is ContactPointVerified

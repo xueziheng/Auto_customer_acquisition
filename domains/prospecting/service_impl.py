@@ -1,0 +1,296 @@
+"""prospecting 浅域服务：确定性消歧、录入与合规门禁。"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+
+from domains.prospecting.errors import (
+    ErasedContactPointError,
+    ProspectAccountNotFoundError,
+    ProspectContactNotFoundError,
+    ProspectingConflictError,
+)
+from domains.prospecting.models import (
+    ContactPoint,
+    ContactPointKind,
+    LegalBasisRecord,
+    ProspectAccount,
+    ProspectContact,
+    VerificationStatus,
+)
+from domains.prospecting.repository import ProspectingUnitOfWork
+from domains.prospecting.schemas import (
+    AccountResolveRequest,
+    ContactCreateRequest,
+    ContactPointCreateRequest,
+    ContactPointView,
+    ProspectAccountView,
+)
+from domains.prospecting.service import ContactValueHasher
+from shared.errors import ValidationError
+from shared.schemas.identifiers import (
+    ContactPointId,
+    ProspectAccountId,
+    ProspectContactId,
+    TenantId,
+    new_id,
+)
+
+_DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_HASH = re.compile(r"[0-9a-f]{64}")
+_PHONE = re.compile(r"\+[1-9][0-9]{7,14}")
+
+
+def _require_text(value: str, message: str) -> None:
+    if not value or value != value.strip():
+        raise ValidationError(message)
+
+
+def _optional_text(value: str | None, message: str) -> None:
+    if value is not None:
+        _require_text(value, message)
+
+
+def _utc_now(now: Callable[[], datetime]) -> datetime:
+    value = now()
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValidationError("服务时钟必须为 UTC")
+    return value
+
+
+def _canonical_domain(raw: str) -> str:
+    _require_text(raw, "企业网站域名无效")
+    if any(marker in raw for marker in (":", "/", "?", "#", "@")):
+        raise ValidationError("企业网站域名无效")
+    host = raw.removesuffix(".")
+    try:
+        canonical = host.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValidationError("企业网站域名无效") from exc
+    labels = canonical.split(".")
+    if (
+        len(canonical) > 253
+        or len(labels) < 2
+        or any(_DOMAIN_LABEL.fullmatch(label) is None for label in labels)
+    ):
+        raise ValidationError("企业网站域名无效")
+    return canonical
+
+
+def _canonical_contact_value(kind: ContactPointKind, raw: str) -> str:
+    if kind is ContactPointKind.PHONE:
+        _require_text(raw, "电话号码无效")
+        if _PHONE.fullmatch(raw) is None:
+            raise ValidationError("电话号码无效")
+        return raw
+    _require_text(raw, "邮箱地址无效")
+    if kind is not ContactPointKind.EMAIL or raw.count("@") != 1:
+        raise ValidationError("邮箱地址无效")
+    local, domain = raw.rsplit("@", 1)
+    if (
+        not local
+        or len(local) > 64
+        or any(char.isspace() for char in local)
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+    ):
+        raise ValidationError("邮箱地址无效")
+    try:
+        canonical_domain = _canonical_domain(domain)
+    except ValidationError as exc:
+        raise ValidationError("邮箱地址无效") from exc
+    value = f"{local}@{canonical_domain}"
+    if len(value) > 320:
+        raise ValidationError("邮箱地址无效")
+    return value
+
+
+def _account_view(account: ProspectAccount) -> ProspectAccountView:
+    return ProspectAccountView(
+        account_id=account.account_id,
+        tenant_id=account.tenant_id,
+        name=account.name,
+        country=account.country,
+        created_at=account.created_at,
+        website_domain=account.website_domain,
+        entity_type=account.entity_type,
+        industry=account.industry,
+        size_hint=account.size_hint,
+        source_signal_refs=tuple(account.source_signal_refs),
+    )
+
+
+class ProspectingServiceImpl:
+    def __init__(
+        self,
+        uow_factory: Callable[[TenantId], ProspectingUnitOfWork],
+        contact_value_hasher: ContactValueHasher,
+        *,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._hasher = contact_value_hasher
+        self._now = now or (lambda: datetime.now(UTC))
+
+    async def resolve_account(
+        self, tenant_id: TenantId, request: AccountResolveRequest
+    ) -> ProspectAccountId:
+        _require_text(str(tenant_id), "租户标识无效")
+        _require_text(request.entity_name, "潜在企业字段无效")
+        _require_text(request.country, "潜在企业字段无效")
+        _optional_text(request.entity_type, "潜在企业字段无效")
+        _optional_text(request.industry, "潜在企业字段无效")
+        _optional_text(request.size_hint, "潜在企业字段无效")
+        if any(not item or item != item.strip() for item in request.source_signal_refs):
+            raise ValidationError("潜在企业来源引用无效")
+        domain = (
+            _canonical_domain(request.website_domain)
+            if request.website_domain is not None
+            else None
+        )
+        source_refs = list(dict.fromkeys(request.source_signal_refs))
+        account = ProspectAccount(
+            account_id=ProspectAccountId(new_id("acc")),
+            tenant_id=tenant_id,
+            name=request.entity_name,
+            country=request.country,
+            created_at=_utc_now(self._now),
+            website_domain=domain,
+            entity_type=request.entity_type,
+            industry=request.industry,
+            size_hint=request.size_hint,
+            source_signal_refs=source_refs,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.accounts.add(account):
+                return account.account_id
+            if domain is None:
+                raise ProspectingConflictError("潜在企业唯一身份冲突")
+            winner = await uow.accounts.find_by_domain(tenant_id, domain)
+            if winner is None:
+                raise ProspectingConflictError("潜在企业消歧冲突")
+            merged = await uow.accounts.merge_source_signal_refs(
+                tenant_id, winner.account_id, tuple(source_refs)
+            )
+            if merged is None:
+                raise ProspectingConflictError("潜在企业消歧冲突")
+            return winner.account_id
+
+    async def create_contact(
+        self, tenant_id: TenantId, request: ContactCreateRequest
+    ) -> ProspectContactId:
+        _optional_text(request.full_name, "潜在联系人字段无效")
+        _optional_text(request.role_title, "潜在联系人字段无效")
+        _optional_text(request.language, "潜在联系人字段无效")
+        contact = ProspectContact(
+            contact_id=ProspectContactId(new_id("pc")),
+            tenant_id=tenant_id,
+            account_id=request.account_id,
+            created_at=_utc_now(self._now),
+            full_name=request.full_name,
+            role_title=request.role_title,
+            language=request.language,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.accounts.get(tenant_id, request.account_id) is None:
+                raise ProspectAccountNotFoundError("潜在企业不存在")
+            await uow.contacts.add_contact(contact)
+        return contact.contact_id
+
+    async def add_contact_point(
+        self, tenant_id: TenantId, request: ContactPointCreateRequest
+    ) -> ContactPointId:
+        canonical = _canonical_contact_value(request.kind, request.value)
+        _optional_text(request.enrichment_cost_note, "联系方式字段无效")
+        basis_input = request.legal_basis
+        basis = LegalBasisRecord(
+            basis=basis_input.basis,
+            subject_type=basis_input.subject_type,
+            contact_type=basis_input.contact_type,
+            source=basis_input.source,
+            source_url=basis_input.source_url,
+            collected_at=basis_input.collected_at,
+            assessment_ref=basis_input.assessment_ref,
+        )
+        value_hash = self._hasher.fingerprint(canonical)
+        if not isinstance(value_hash, str) or _HASH.fullmatch(value_hash) is None:
+            raise ValidationError("联系方式指纹无效")
+        point = ContactPoint(
+            contact_point_id=ContactPointId(new_id("cp")),
+            tenant_id=tenant_id,
+            contact_id=request.contact_id,
+            kind=request.kind,
+            value=canonical,
+            value_hash=value_hash,
+            legal_basis=basis,
+            created_at=_utc_now(self._now),
+            enrichment_cost_note=request.enrichment_cost_note,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.contacts.is_erasure_suppressed(tenant_id, value_hash):
+                raise ErasedContactPointError("联系方式已被删除或反对处理")
+            if await uow.contacts.get_contact(tenant_id, request.contact_id) is None:
+                raise ProspectContactNotFoundError("潜在联系人不存在")
+            if await uow.contacts.add_contact_point(point):
+                return point.contact_point_id
+            existing = await uow.contacts.find_by_value_hash(
+                tenant_id, request.kind, value_hash
+            )
+            if existing is not None and (
+                existing.contact_id == point.contact_id
+                and existing.value == point.value
+                and existing.legal_basis == point.legal_basis
+                and existing.enrichment_cost_note == point.enrichment_cost_note
+            ):
+                return existing.contact_point_id
+            raise ProspectingConflictError("联系方式唯一身份冲突")
+
+    async def get_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> ProspectAccountView:
+        async with self._uow_factory(tenant_id) as uow:
+            account = await uow.accounts.get(tenant_id, account_id)
+        if account is None:
+            raise ProspectAccountNotFoundError("潜在企业不存在")
+        return _account_view(account)
+
+    async def list_verified_contact_points(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ContactPointView]:
+        async with self._uow_factory(tenant_id) as uow:
+            points = await uow.contacts.list_verified_for_account(tenant_id, account_id)
+        return [
+            ContactPointView(
+                contact_point_id=point.contact_point_id,
+                tenant_id=point.tenant_id,
+                contact_id=point.contact_id,
+                account_id=account_id,
+                kind=point.kind,
+                value=point.value,
+                verification=point.verification,
+                created_at=point.created_at,
+                verified_at=point.verified_at,
+                verification_provider=point.verification_provider,
+                enrichment_cost_note=point.enrichment_cost_note,
+            )
+            for point in points
+        ]
+
+    async def record_verification(
+        self,
+        tenant_id: TenantId,
+        contact_point_id: ContactPointId,
+        result: VerificationStatus,
+        provider: str,
+    ) -> None:
+        """Task 5 实现：状态转换与 outbox 必须同事务。"""
+        raise NotImplementedError
+
+    async def handle_erasure_request(
+        self, tenant_id: TenantId, contact_point_value: str
+    ) -> int:
+        """Task 6 实现：hash suppression 与个人数据清除同事务。"""
+        raise NotImplementedError

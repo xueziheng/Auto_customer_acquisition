@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -193,3 +194,127 @@ async def test_prospecting_uow_commits_and_rolls_back(prospect_engine: AsyncEngi
     async with factory() as session:
         repo = ProspectAccountRepositoryImpl(session, tenant)
         assert await repo.get(tenant, rolled_back.account_id) is None
+
+
+class _StableTestHasher:
+    def fingerprint(self, canonical_value: str) -> str:
+        return hashlib.sha256(canonical_value.encode()).hexdigest()
+
+
+async def test_service_resolves_and_records_contacts_with_compliance_gates(
+    prospect_engine: AsyncEngine,
+) -> None:
+    from domains.prospecting.errors import (
+        ErasedContactPointError,
+        ProspectingConflictError,
+    )
+    from domains.prospecting.schemas import (
+        AccountResolveRequest,
+        ContactCreateRequest,
+        ContactPointCreateRequest,
+        ContactPointKind,
+        ContactType,
+        LegalBasisInput,
+        LegalBasisType,
+        SubjectType,
+    )
+    from domains.prospecting.service_impl import ProspectingServiceImpl
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId("tenant-prospect-service")
+    service = ProspectingServiceImpl(
+        lambda bound: SqlAlchemyProspectingUnitOfWork(factory, bound, now=lambda: NOW),
+        _StableTestHasher(),
+        now=lambda: NOW,
+    )
+    first = await service.resolve_account(
+        tenant,
+        AccountResolveRequest(
+            entity_name="Acme",
+            country="DE",
+            website_domain="Acme.Example.",
+            source_signal_refs=("sig-1",),
+        ),
+    )
+    repeated = await service.resolve_account(
+        tenant,
+        AccountResolveRequest(
+            entity_name="Acme GmbH",
+            country="DE",
+            website_domain="acme.example",
+            source_signal_refs=("sig-2",),
+        ),
+    )
+    assert repeated == first
+    view = await service.get_account(tenant, first)
+    assert view.website_domain == "acme.example"
+    assert view.source_signal_refs == ("sig-1", "sig-2")
+    without_domain_a = await service.resolve_account(
+        tenant, AccountResolveRequest(entity_name="Same Name", country="DE")
+    )
+    without_domain_b = await service.resolve_account(
+        tenant, AccountResolveRequest(entity_name="Same Name", country="DE")
+    )
+    assert without_domain_a != without_domain_b
+
+    contact_id = await service.create_contact(
+        tenant,
+        ContactCreateRequest(
+            account_id=first,
+            full_name="Alex Buyer",
+            role_title="Procurement Manager",
+            language="en",
+        ),
+    )
+    basis = LegalBasisInput(
+        basis=LegalBasisType.LEGITIMATE_INTEREST,
+        subject_type=SubjectType.LEGAL_ENTITY,
+        contact_type=ContactType.PERSONAL_BUSINESS,
+        source="company_website",
+        source_url="https://acme.example/contact",
+        collected_at=NOW,
+        assessment_ref="lia-1",
+    )
+    request = ContactPointCreateRequest(
+        contact_id=contact_id,
+        kind=ContactPointKind.EMAIL,
+        value="Buyer.Name@Acme.Example",
+        legal_basis=basis,
+        enrichment_cost_note="provider tier one",
+    )
+    point_id = await service.add_contact_point(tenant, request)
+    assert await service.add_contact_point(tenant, request) == point_id
+    with pytest.raises(ProspectingConflictError, match="联系方式唯一身份冲突"):
+        await service.add_contact_point(
+            tenant,
+            ContactPointCreateRequest(
+                contact_id=contact_id,
+                kind=request.kind,
+                value=request.value,
+                legal_basis=LegalBasisInput(
+                    basis=basis.basis,
+                    subject_type=basis.subject_type,
+                    contact_type=basis.contact_type,
+                    source="different_source",
+                    collected_at=NOW,
+                    assessment_ref="lia-1",
+                ),
+                enrichment_cost_note=request.enrichment_cost_note,
+            ),
+        )
+
+    erased_value = "erased@acme.example"
+    erased_hash = _StableTestHasher().fingerprint(erased_value)
+    async with SqlAlchemyProspectingUnitOfWork(factory, tenant, now=lambda: NOW) as uow:
+        assert await uow.contacts.erase_personal_data(tenant, erased_hash) == 0
+    with pytest.raises(ErasedContactPointError, match="联系方式已被删除"):
+        await service.add_contact_point(
+            tenant,
+            ContactPointCreateRequest(
+                contact_id=contact_id,
+                kind=ContactPointKind.EMAIL,
+                value=erased_value,
+                legal_basis=basis,
+            ),
+        )

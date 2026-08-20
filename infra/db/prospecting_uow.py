@@ -8,15 +8,21 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domains.prospecting.repository import AccountRepository, ContactRepository
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.prospecting import (
     ProspectAccountRepositoryImpl,
     ProspectContactRepositoryImpl,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import TenantId
 
 
 class SqlAlchemyProspectingUnitOfWork:
+    accounts: AccountRepository
+    contacts: ContactRepository
+    bus: EventBus
+
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
