@@ -2399,3 +2399,223 @@ class DemandSignalRow(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_url: Mapped[str | None] = mapped_column(String(2000))
     page_hash: Mapped[str | None] = mapped_column(String(200))
+
+
+class ProspectAccountRow(Base):
+    """潜在企业；非空 canonical domain 在租户内唯一。"""
+
+    __tablename__ = "prospect_accounts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "account_id", name="pk_prospect_accounts"),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(account_id) <> '' AND "
+            "btrim(name) <> '' AND btrim(country) <> ''",
+            name="ck_prospect_accounts_core_nonblank",
+        ),
+        CheckConstraint(
+            "(website_domain IS NULL OR btrim(website_domain) <> '') AND "
+            "(entity_type IS NULL OR btrim(entity_type) <> '') AND "
+            "(industry IS NULL OR btrim(industry) <> '') AND "
+            "(size_hint IS NULL OR btrim(size_hint) <> '')",
+            name="ck_prospect_accounts_optional_nonblank",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(source_signal_refs) = 'array'",
+            name="ck_prospect_accounts_source_refs_jsonb",
+        ),
+        Index(
+            "uq_prospect_accounts_domain",
+            "tenant_id",
+            "website_domain",
+            unique=True,
+            postgresql_where=text("website_domain IS NOT NULL"),
+        ),
+        Index("ix_prospect_accounts_name", "tenant_id", "country", "name"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(200))
+    country: Mapped[str] = mapped_column(String(16))
+    website_domain: Mapped[str | None] = mapped_column(String(253))
+    entity_type: Mapped[str | None] = mapped_column(String(80))
+    industry: Mapped[str | None] = mapped_column(String(160))
+    size_hint: Mapped[str | None] = mapped_column(String(80))
+    source_signal_refs: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProspectContactRow(Base):
+    """潜在联系人；企业外键始终带 tenant。"""
+
+    __tablename__ = "prospect_contacts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "contact_id", name="pk_prospect_contacts"),
+        ForeignKeyConstraint(
+            ["tenant_id", "account_id"],
+            ["prospect_accounts.tenant_id", "prospect_accounts.account_id"],
+            name="fk_prospect_contacts_account",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(contact_id) <> '' AND "
+            "btrim(account_id) <> ''",
+            name="ck_prospect_contacts_core_nonblank",
+        ),
+        CheckConstraint(
+            "(full_name IS NULL OR btrim(full_name) <> '') AND "
+            "(role_title IS NULL OR btrim(role_title) <> '') AND "
+            "(language IS NULL OR btrim(language) <> '')",
+            name="ck_prospect_contacts_optional_nonblank",
+        ),
+        Index(
+            "ix_prospect_contacts_account",
+            "tenant_id",
+            "account_id",
+            "created_at",
+            "contact_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    contact_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    full_name: Mapped[str | None] = mapped_column(String(200))
+    role_title: Mapped[str | None] = mapped_column(String(200))
+    language: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ContactPointRow(Base):
+    """联系方式；只有确定性 hash 用于去重，原值绝不进入 outbox。"""
+
+    __tablename__ = "contact_points"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "contact_point_id", name="pk_contact_points"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "contact_id"],
+            ["prospect_contacts.tenant_id", "prospect_contacts.contact_id"],
+            name="fk_contact_points_contact",
+        ),
+        UniqueConstraint(
+            "tenant_id", "kind", "value_hash", name="uq_contact_points_value_hash"
+        ),
+        CheckConstraint("kind IN ('email','phone')", name="ck_contact_points_kind"),
+        CheckConstraint(
+            "verification_status IN ('unverified','verified','risky','invalid')",
+            name="ck_contact_points_verification_status",
+        ),
+        CheckConstraint(
+            "value_hash ~ '^[0-9a-f]{64}$'", name="ck_contact_points_value_hash"
+        ),
+        CheckConstraint(
+            "(verification_status = 'verified') = (verified_at IS NOT NULL)",
+            name="ck_contact_points_verified_pair",
+        ),
+        CheckConstraint(
+            "(verification_status = 'unverified') = "
+            "(verification_provider IS NULL)",
+            name="ck_contact_points_provider_state",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(contact_point_id) <> '' AND "
+            "btrim(contact_id) <> '' AND btrim(value) <> ''",
+            name="ck_contact_points_core_nonblank",
+        ),
+        CheckConstraint(
+            "(verification_provider IS NULL OR btrim(verification_provider) <> '') "
+            "AND (enrichment_cost_note IS NULL OR btrim(enrichment_cost_note) <> '')",
+            name="ck_contact_points_optional_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    contact_point_id: Mapped[str] = mapped_column(String(40))
+    contact_id: Mapped[str] = mapped_column(String(40))
+    kind: Mapped[str] = mapped_column(String(16))
+    value: Mapped[str] = mapped_column(String(320))
+    value_hash: Mapped[str] = mapped_column(String(64))
+    verification_status: Mapped[str] = mapped_column(
+        String(20), server_default=text("'unverified'")
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verification_provider: Mapped[str | None] = mapped_column(String(100))
+    enrichment_cost_note: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ContactLegalBasisRow(Base):
+    """联系方式的一对一法律依据留痕。"""
+
+    __tablename__ = "contact_legal_basis"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "contact_point_id", name="pk_contact_legal_basis"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "contact_point_id"],
+            ["contact_points.tenant_id", "contact_points.contact_point_id"],
+            ondelete="CASCADE",
+            name="fk_contact_legal_basis_contact_point",
+        ),
+        CheckConstraint(
+            "basis IN ('legitimate_interest','consent','existing_customer')",
+            name="ck_contact_legal_basis_basis",
+        ),
+        CheckConstraint(
+            "subject_type IN ('legal_entity','sole_trader','natural_person')",
+            name="ck_contact_legal_basis_subject_type",
+        ),
+        CheckConstraint(
+            "contact_type IN ('role_based','personal_business')",
+            name="ck_contact_legal_basis_contact_type",
+        ),
+        CheckConstraint(
+            "basis <> 'legitimate_interest' OR "
+            "(assessment_ref IS NOT NULL AND btrim(assessment_ref) <> '')",
+            name="ck_contact_legal_basis_li_assessment",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(contact_point_id) <> '' AND "
+            "btrim(source) <> ''",
+            name="ck_contact_legal_basis_core_nonblank",
+        ),
+        CheckConstraint(
+            "(source_url IS NULL OR btrim(source_url) <> '') AND "
+            "(assessment_ref IS NULL OR btrim(assessment_ref) <> '')",
+            name="ck_contact_legal_basis_optional_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    contact_point_id: Mapped[str] = mapped_column(String(40))
+    basis: Mapped[str] = mapped_column(String(32))
+    subject_type: Mapped[str] = mapped_column(String(32))
+    contact_type: Mapped[str] = mapped_column(String(32))
+    source: Mapped[str] = mapped_column(String(100))
+    source_url: Mapped[str | None] = mapped_column(String(2000))
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    assessment_ref: Mapped[str | None] = mapped_column(String(200))
+
+
+class ProspectingErasureSuppressionRow(Base):
+    """删除请求最小事实；数据库 trigger 强制 append-only。"""
+
+    __tablename__ = "prospecting_erasure_suppressions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "value_hash", name="pk_prospecting_erasure_suppressions"
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> ''", name="ck_prospecting_erasure_tenant_nonblank"
+        ),
+        CheckConstraint(
+            "value_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_prospecting_erasure_value_hash",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    value_hash: Mapped[str] = mapped_column(String(64))
+    erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
