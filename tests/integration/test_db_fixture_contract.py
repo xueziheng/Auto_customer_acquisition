@@ -93,24 +93,17 @@ def _fail_never_called() -> str:
 
 def test_db_url_fixture_env_path_never_touches_container(
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
 ) -> None:
-    """真实 fixture 级证明：env 路径下 _docker_available/PostgresContainer 均
-    不得被触碰（哨兵被调用即抛错）；db_url 返回脱敏 RedactedUrl。"""
+    """直接验证 fixture 构建逻辑，避免 session 缓存掩盖 env 优先级。"""
     monkeypatch.setenv(
         "TEST_DATABASE_URL",
         "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test",
     )
     conftest = importlib.import_module("tests.integration.conftest")
+    fixture_request = _SpyRequest()
 
-    def _docker_sentinel() -> bool:
-        raise AssertionError("env 路径不应探测 docker")
+    url = conftest._build_db_url(fixture_request)
 
-    def _container_sentinel(*args: object, **kwargs: object):
-        raise AssertionError("env 路径不应构造容器")
-
-    monkeypatch.setattr(conftest, "_docker_available", _docker_sentinel)
-    monkeypatch.setattr(conftest, "PostgresContainer", _container_sentinel)
-    url = request.getfixturevalue("db_url")
     assert url == "postgresql+asyncpg://tradeos@127.0.0.1:55432/tradeos_test"
     assert isinstance(url, RedactedUrl)
+    assert fixture_request.requested == []

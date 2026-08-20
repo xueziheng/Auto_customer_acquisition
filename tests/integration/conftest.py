@@ -82,16 +82,22 @@ def _resolve_db_url(env_url: str | None, container_url: Callable[[], str]) -> st
     return _to_asyncpg(container_url())
 
 
-@pytest.fixture(scope="session")
-def db_url(request: pytest.FixtureRequest) -> RedactedUrl:
-    """测试库连接串（repr 脱敏）。TEST_DATABASE_URL 已设置时直接返回本地库
-    （**不请求** _postgres_container，零 Docker）；未设置时惰性走既有容器
-    fallback（_migrated 迁移 + _postgres_container），保持 CI 兼容。"""
+def _build_db_url(request: pytest.FixtureRequest) -> RedactedUrl:
+    """构建测试库连接串；独立函数允许契约测试绕过 session fixture 缓存。"""
+
     def _container_url() -> str:
         request.getfixturevalue("_migrated")
         return request.getfixturevalue("_postgres_container").get_connection_url()
 
     return RedactedUrl(_resolve_db_url(os.environ.get("TEST_DATABASE_URL"), _container_url))
+
+
+@pytest.fixture(scope="session")
+def db_url(request: pytest.FixtureRequest) -> RedactedUrl:
+    """测试库连接串（repr 脱敏）。TEST_DATABASE_URL 已设置时直接返回本地库
+    （**不请求** _postgres_container，零 Docker）；未设置时惰性走既有容器
+    fallback（_migrated 迁移 + _postgres_container），保持 CI 兼容。"""
+    return _build_db_url(request)
 
 
 @pytest_asyncio.fixture(scope="session")
