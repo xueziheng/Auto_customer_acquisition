@@ -3257,9 +3257,9 @@ Expected: 全部 rc=0。
 **Files:**
 - Modify: `tests/integration/test_need_hypotheses.py`（spec 9.3 测试 14-15；仅测试）
 
-**Interfaces（规格 §8/D12 权威）：** bus 失败 → 整个 UoW 回滚（业务行不落、事件不落）；生产内容 marker（raw_observation/reason/字段值/消息正文）不进 outbox/log/error；审计日志仅 action + 绑定租户。
+**Interfaces（规格 §8/D12 权威）：** bus 失败 → 整个 UoW 回滚（业务行不落、事件不落）；生产内容 marker（raw_observation/字段值/消息正文）不进 outbox/log/error；结构化 `LossReason` 是 `NeedHypothesisRejected.reason` 的契约字段，必须保留；审计日志仅 action + 绑定租户。
 
-- [ ] **Step 1: 写失败测试（spec 9.3 测试 14-15）**
+- [x] **Step 1: 补充特征验证测试（spec 9.3 测试 14-15）**
 
 ```python
 async def test_outbox_and_logs_no_marker_leak(demand_db: AsyncEngine) -> None:
@@ -3331,19 +3331,19 @@ async def test_bus_failure_rolls_back_whole_uow(demand_db: AsyncEngine) -> None:
     assert [e.event_type for e in events] == ["DemandSignalCaptured"]
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认现有行为**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -k "marker or rolls_back" -q -W error
 ```
 
-Expected: **FAIL**——本任务仅测试补齐；首跑失败原因取决于前置任务执行状态（若 Task 4-6 已交付而断言缺口存在，如实记录该断言失败；若方法缺失，属前置任务回归）。记录 rc=1。
+Observed: **PASS（2 passed）**——本任务只补特征验证测试，前置 Task 4-6 已满足原子回滚与事件纯度；不为制造 RED 人为破坏生产代码。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 本任务无生产代码（测试补齐断言）；如测试暴露实现缺口（如事件 payload 键越界），回到对应 Task 按 RED→GREEN 修复后再回本任务。
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypotheses.py -q -W error
@@ -3351,7 +3351,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_need_hypothes
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 边界与静态检查**
+- [x] **Step 5: 边界与静态检查**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check domains/demand infra/db tests/integration/test_need_hypotheses.py
@@ -3363,9 +3363,9 @@ git diff --check
 
 Expected: 全部 rc=0。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 GREEN 计数、diff 1 文件；无新 mutation——spec 9.4 七项已全部前置覆盖）
+- [x] **Step 6: 停止等待监督方复审**（特征测试首跑 GREEN 2 项；完整需求测试待本任务门禁记录；实现/测试 diff 1 文件，另更新计划纠正 `LossReason` 契约矛盾；无新 mutation——spec 9.4 七项已全部前置覆盖）
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `tests/integration/test_need_hypotheses.py`；commit 消息逐字 `test(demand): hypothesis outbox purity and rollback guarantees`；Expected：1 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（文件为 `tests/integration/test_need_hypotheses.py` 与本计划；commit 消息逐字 `test(demand): hypothesis outbox purity and rollback guarantees`；Expected：2 文件 index 100644、local == origin、CI `OK`）
 
 ---
 

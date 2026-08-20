@@ -1007,3 +1007,147 @@ async def test_get_confidence_derived_live(demand_db: AsyncEngine) -> None:
     assert result.explanation
     with pytest.raises(ValidationError, match="需求假设不存在"):
         await service.get_confidence(tenant, new_id("hyp"))
+
+
+async def test_outbox_and_logs_no_marker_leak(
+    demand_db: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    field_marker = "PRIVATE-FIELD-MARKER-93"
+    caplog.clear()
+
+    hypothesis_id = await _create_promotable_hypothesis(service, tenant)
+    await service.promote_to_validated(
+        tenant,
+        hypothesis_id,
+        "msg_conv_001",
+        {
+            "product_category": "hinges",
+            "quantity": 100,
+            "current_supply_issue": field_marker,
+        },
+        "emp-1",
+    )
+    rejected_id = await _create_promotable_hypothesis(
+        service, tenant, "rejected category"
+    )
+    await service.reject_hypothesis(tenant, rejected_id, "no_budget", "emp-1")
+
+    events = await _outbox_events(factory, tenant)
+    assert len(events) >= 5
+    allowed = {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "signal_id",
+        "entity_name",
+        "signal_type",
+        "source_url",
+        "hypothesis_id",
+        "account_id",
+        "category",
+        "confidence_tier",
+        "reason",
+        "need_id",
+        "evidence_level",
+        "completeness",
+    }
+    for event in events:
+        assert set(event.event_payload) <= allowed, event.event_type
+        blob = str(event.event_payload)
+        assert OBSERVATION_MARKER not in blob
+        assert field_marker not in blob
+    rejected = [
+        event
+        for event in events
+        if event.event_type == "NeedHypothesisRejected"
+    ]
+    assert [event.event_payload["reason"] for event in rejected] == ["no_budget"]
+    assert caplog.records == []
+
+
+async def test_bus_failure_rolls_back_whole_uow(demand_db: AsyncEngine) -> None:
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    uow_type = _uow_type()
+    impl_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    service = _service(factory, tenant, clock)
+
+    class _FailingBus:
+        async def publish(self, event: object) -> None:
+            raise RuntimeError("bus down")
+
+        async def publish_many(self, events: list[object]) -> None:
+            raise RuntimeError("bus down")
+
+    class _BusFailureUoW:
+        def __init__(self) -> None:
+            self._inner = uow_type(factory, tenant, now=clock.now)
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            self._inner.bus = _FailingBus()  # type: ignore[assignment]
+            return self._inner
+
+        async def __aexit__(self, *args: object):
+            return await self._inner.__aexit__(*args)
+
+    failing = impl_type(
+        lambda _tenant: _BusFailureUoW(),  # type: ignore[arg-type]
+        now=clock.now,
+    )
+    signal_id = await _signal(service, tenant)
+    account_id = _models.ProspectAccountId(new_id("acc"))
+    with pytest.raises(RuntimeError, match="bus down"):
+        await failing.create_hypothesis(
+            tenant,
+            account_id,
+            "hinges",
+            [signal_id],
+            "推断",
+            "model-v1",
+        )
+    assert await _hypothesis_rows(factory, tenant) == []
+    events = await _outbox_events(factory, tenant)
+    assert [event.event_type for event in events] == ["DemandSignalCaptured"]
+
+    hypothesis_id = await service.create_hypothesis(
+        tenant,
+        account_id,
+        "hinges",
+        [signal_id],
+        "推断",
+        "model-v1",
+    )
+    before = [event.event_type for event in await _outbox_events(factory, tenant)]
+    with pytest.raises(RuntimeError, match="bus down"):
+        await failing.promote_to_validated(
+            tenant,
+            hypothesis_id,
+            "msg_conv_020",
+            {"product_category": "hinges"},
+            None,
+        )
+    rows = await _hypothesis_rows(factory, tenant)
+    assert len(rows) == 1
+    assert rows[0].status == "inferred"
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        need_count = len(
+            (
+                await session.execute(
+                    select(tables.ValidatedNeedRow).where(
+                        tables.ValidatedNeedRow.tenant_id == str(tenant)
+                    )
+                )
+            ).scalars().all()
+        )
+    assert need_count == 0
+    assert [
+        event.event_type for event in await _outbox_events(factory, tenant)
+    ] == before
