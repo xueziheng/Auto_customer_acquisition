@@ -7,7 +7,9 @@ from types import ModuleType
 
 import pytest
 
+from domains.prospecting.schemas import VerificationStatus
 from shared.errors import ValidationError
+from shared.schemas.identifiers import ContactPointId, TenantId
 
 
 def _module() -> ModuleType:
@@ -52,3 +54,52 @@ def test_phone_requires_e164_shape() -> None:
     ) == "+491234567890"
     with pytest.raises(ValidationError, match="电话号码无效"):
         _module()._canonical_contact_value(_module().ContactPointKind.PHONE, "00491234")
+
+
+class _StableHasher:
+    def fingerprint(self, canonical_value: str) -> str:
+        del canonical_value
+        return "a" * 64
+
+
+def _never_uow(_tenant_id: TenantId):
+    raise AssertionError("输入校验失败时不得打开事务")
+
+
+@pytest.mark.parametrize(
+    ("result", "provider", "message"),
+    [
+        ("verified", "provider-v1", "验证结果无效"),
+        (VerificationStatus.VERIFIED, "", "验证服务标识无效"),
+        (VerificationStatus.VERIFIED, " padded ", "验证服务标识无效"),
+    ],
+)
+async def test_record_verification_rejects_invalid_input_before_uow(
+    result: object, provider: str, message: str
+) -> None:
+    service = _module().ProspectingServiceImpl(_never_uow, _StableHasher())
+    with pytest.raises(ValidationError, match=message):
+        await service.record_verification(
+            TenantId("tenant-verify-validation"),
+            ContactPointId("cp-verify-validation"),
+            result,  # type: ignore[arg-type]
+            provider,
+        )
+
+
+async def test_record_verification_rejects_non_utc_clock_before_uow() -> None:
+    from datetime import datetime
+
+    naive_now = datetime(2026, 8, 20, 12)  # noqa: DTZ001 - 验证拒绝 naive 时钟
+    service = _module().ProspectingServiceImpl(
+        _never_uow,
+        _StableHasher(),
+        now=lambda: naive_now,
+    )
+    with pytest.raises(ValidationError, match="服务时钟必须为 UTC"):
+        await service.record_verification(
+            TenantId("tenant-verify-clock"),
+            ContactPointId("cp-verify-clock"),
+            VerificationStatus.VERIFIED,
+            "provider-v1",
+        )

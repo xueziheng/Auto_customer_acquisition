@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 from collections.abc import AsyncIterator
@@ -9,14 +10,17 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from infra.db.tables import OutboxEventRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
     ContactPointId,
     ProspectAccountId,
     ProspectContactId,
     TenantId,
+    new_id,
 )
 
 _models = importlib.import_module("domains.prospecting.models")
@@ -201,6 +205,45 @@ class _StableTestHasher:
         return hashlib.sha256(canonical_value.encode()).hexdigest()
 
 
+async def _seed_verification_points(
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    suffixes: tuple[str, ...],
+) -> tuple[ProspectAccountId, list[ContactPointId]]:
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+
+    account = _account(tenant, "verification")
+    points: list[ContactPointId] = []
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        assert await uow.accounts.add(account) is True
+        for suffix in suffixes:
+            contact = _contact(tenant, account.account_id, suffix)
+            point = _point(tenant, contact.contact_id, suffix)
+            await uow.contacts.add_contact(contact)
+            assert await uow.contacts.add_contact_point(point) is True
+            points.append(point.contact_point_id)
+    return account.account_id, points
+
+
+def _verification_service(
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    now: datetime = NOW,
+):
+    from domains.prospecting.service_impl import ProspectingServiceImpl
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+
+    return ProspectingServiceImpl(
+        lambda bound: SqlAlchemyProspectingUnitOfWork(
+            factory, bound, now=lambda: now
+        ),
+        _StableTestHasher(),
+        now=lambda: now,
+    )
+
+
 async def test_service_resolves_and_records_contacts_with_compliance_gates(
     prospect_engine: AsyncEngine,
 ) -> None:
@@ -318,3 +361,215 @@ async def test_service_resolves_and_records_contacts_with_compliance_gates(
                 legal_basis=basis,
             ),
         )
+
+
+async def test_verification_state_machine_filters_and_publishes_metadata_only(
+    prospect_engine: AsyncEngine,
+) -> None:
+    from domains.prospecting.errors import ContactPointNotFoundError
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    account_id, point_ids = await _seed_verification_points(
+        factory, tenant, ("verify-a", "verify-b", "verify-c", "verify-d")
+    )
+    service = _verification_service(factory)
+    results = (
+        _models.VerificationStatus.UNVERIFIED,
+        _models.VerificationStatus.VERIFIED,
+        _models.VerificationStatus.RISKY,
+        _models.VerificationStatus.INVALID,
+    )
+    for point_id, result in zip(point_ids, results, strict=True):
+        await service.record_verification(tenant, point_id, result, "provider-v1")
+
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        stored = [
+            await uow.contacts.get_contact_point(tenant, point_id)
+            for point_id in point_ids
+        ]
+    assert [point.verification for point in stored if point is not None] == list(
+        results
+    )
+    assert stored[0] is not None and stored[0].verification_provider is None
+    assert stored[1] is not None and stored[1].verified_at == NOW
+    assert stored[1].verification_provider == "provider-v1"
+    assert stored[2] is not None and stored[2].verified_at is None
+    assert stored[3] is not None and stored[3].verified_at is None
+    visible = await service.list_verified_contact_points(tenant, account_id)
+    assert [item.contact_point_id for item in visible] == [point_ids[1]]
+
+    async with factory() as session:
+        events = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert len(events) == 1
+    assert set(events[0].event_payload) == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "contact_point_id",
+        "verification_result",
+    }
+    assert events[0].event_payload["contact_point_id"] == str(point_ids[1])
+    assert events[0].event_payload["verification_result"] == "verified"
+
+    await service.record_verification(
+        tenant, point_ids[1], _models.VerificationStatus.VERIFIED, "provider-v2"
+    )
+    async with factory() as session:
+        repeated = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert len(repeated) == 1
+
+    await service.record_verification(
+        tenant, point_ids[1], _models.VerificationStatus.RISKY, "provider-v3"
+    )
+    assert await service.list_verified_contact_points(tenant, account_id) == []
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        risky = await uow.contacts.get_contact_point(tenant, point_ids[1])
+    assert risky is not None
+    assert risky.verification is _models.VerificationStatus.RISKY
+    assert risky.verified_at is None
+    assert risky.verification_provider == "provider-v3"
+    await service.record_verification(
+        tenant, point_ids[1], _models.VerificationStatus.VERIFIED, "provider-v4"
+    )
+    async with factory() as session:
+        reverified = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert len(reverified) == 2
+
+    with pytest.raises(ContactPointNotFoundError, match="潜在联系方式不存在"):
+        await service.record_verification(
+            TenantId(new_id("tn")),
+            point_ids[1],
+            _models.VerificationStatus.VERIFIED,
+            "provider-v1",
+        )
+    with pytest.raises(ContactPointNotFoundError, match="潜在联系方式不存在"):
+        await service.record_verification(
+            tenant,
+            ContactPointId(new_id("cp")),
+            _models.VerificationStatus.VERIFIED,
+            "provider-v1",
+        )
+
+
+async def test_concurrent_verification_emits_exactly_one_event(
+    prospect_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    _account_id, point_ids = await _seed_verification_points(
+        factory, tenant, ("concurrent-a",)
+    )
+    point_id = point_ids[0]
+    service = _verification_service(factory)
+    await asyncio.gather(
+        *(
+            service.record_verification(
+                tenant,
+                point_id,
+                _models.VerificationStatus.VERIFIED,
+                "provider-v1",
+            )
+            for _ in range(20)
+        )
+    )
+    async with factory() as session:
+        events = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert len(events) == 1
+
+
+async def test_verification_bus_failure_rolls_back_and_retry_succeeds(
+    prospect_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from infra.db.outbox import PostgresEventBus
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+
+    factory = async_sessionmaker(prospect_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    _account_id, point_ids = await _seed_verification_points(
+        factory, tenant, ("rollback-a",)
+    )
+    point_id = point_ids[0]
+    service = _verification_service(factory)
+
+    async def _fail_publish(_bus: PostgresEventBus, _event: object) -> None:
+        raise RuntimeError("outbox failure marker")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(PostgresEventBus, "publish", _fail_publish)
+        with pytest.raises(RuntimeError, match="outbox failure marker"):
+            await service.record_verification(
+                tenant,
+                point_id,
+                _models.VerificationStatus.VERIFIED,
+                "provider-v1",
+            )
+
+    async with SqlAlchemyProspectingUnitOfWork(
+        factory, tenant, now=lambda: NOW
+    ) as uow:
+        rolled_back = await uow.contacts.get_contact_point(tenant, point_id)
+    assert rolled_back is not None
+    assert rolled_back.verification is _models.VerificationStatus.UNVERIFIED
+    assert rolled_back.verified_at is None
+    assert rolled_back.verification_provider is None
+    async with factory() as session:
+        events_before_retry = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert events_before_retry == []
+
+    await service.record_verification(
+        tenant,
+        point_id,
+        _models.VerificationStatus.VERIFIED,
+        "provider-v1",
+    )
+    async with factory() as session:
+        events_after_retry = (
+            await session.execute(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "ContactPointVerified",
+                )
+            )
+        ).scalars().all()
+    assert len(events_after_retry) == 1

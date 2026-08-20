@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from domains.prospecting.errors import (
+    ContactPointNotFoundError,
     ErasedContactPointError,
     ProspectAccountNotFoundError,
     ProspectContactNotFoundError,
@@ -30,6 +32,7 @@ from domains.prospecting.schemas import (
 )
 from domains.prospecting.service import ContactValueHasher
 from shared.errors import ValidationError
+from shared.events.catalog import ContactPointVerified
 from shared.schemas.identifiers import (
     ContactPointId,
     ProspectAccountId,
@@ -286,8 +289,40 @@ class ProspectingServiceImpl:
         result: VerificationStatus,
         provider: str,
     ) -> None:
-        """Task 5 实现：状态转换与 outbox 必须同事务。"""
-        raise NotImplementedError
+        """行锁下转换验证状态，并与 metadata-only outbox 原子提交。"""
+        if not isinstance(result, VerificationStatus):
+            raise ValidationError("验证结果无效")
+        _require_text(provider, "验证服务标识无效")
+        verified_at = _utc_now(self._now)
+        async with self._uow_factory(tenant_id) as uow:
+            current = await uow.contacts.get_contact_point_for_update(
+                tenant_id, contact_point_id
+            )
+            if current is None:
+                raise ContactPointNotFoundError("潜在联系方式不存在")
+            if current.verification is result:
+                return
+            updated = replace(
+                current,
+                verification=result,
+                verified_at=(
+                    verified_at if result is VerificationStatus.VERIFIED else None
+                ),
+                verification_provider=(
+                    None if result is VerificationStatus.UNVERIFIED else provider
+                ),
+            )
+            await uow.contacts.update_contact_point(updated)
+            if result is VerificationStatus.VERIFIED:
+                await uow.bus.publish(
+                    ContactPointVerified(
+                        tenant_id=tenant_id,
+                        occurred_at=verified_at,
+                        run_id=None,
+                        contact_point_id=contact_point_id,
+                        verification_result=result.value,
+                    )
+                )
 
     async def handle_erasure_request(
         self, tenant_id: TenantId, contact_point_value: str
