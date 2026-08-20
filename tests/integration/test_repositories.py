@@ -819,6 +819,26 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "notification_jobs": {"tenant_id", "notification_job_id", "source_event_fingerprint", "source_event", "recipient_employee_id", "priority", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "dedup_key", "status", "available_at", "lease_owner", "lease_token", "lease_expires_at", "attempt_count", "last_error", "created_at", "completed_at"},
         "in_app_notifications": {"tenant_id", "notification_id", "recipient_employee_id", "priority", "title", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "relative_link", "source_job_id", "created_at", "read_at"},
+        "prospect_accounts": {
+            "tenant_id", "account_id", "name", "country", "website_domain",
+            "entity_type", "industry", "size_hint", "source_signal_refs", "created_at",
+        },
+        "prospect_contacts": {
+            "tenant_id", "contact_id", "account_id", "full_name", "role_title",
+            "language", "created_at",
+        },
+        "contact_points": {
+            "tenant_id", "contact_point_id", "contact_id", "kind", "value",
+            "value_hash", "verification_status", "verified_at",
+            "verification_provider", "enrichment_cost_note", "created_at",
+        },
+        "contact_legal_basis": {
+            "tenant_id", "contact_point_id", "basis", "subject_type", "contact_type",
+            "source", "source_url", "collected_at", "assessment_ref",
+        },
+        "prospecting_erasure_suppressions": {
+            "tenant_id", "value_hash", "erased_at",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -898,6 +918,11 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_validated_need_field_history_need": (
             "tenant_id", "need_id", "changed_at",
+        ),
+        "uq_prospect_accounts_domain": ("tenant_id", "website_domain"),
+        "ix_prospect_accounts_name": ("tenant_id", "country", "name"),
+        "ix_prospect_contacts_account": (
+            "tenant_id", "account_id", "created_at", "contact_id",
         ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
@@ -1042,6 +1067,36 @@ def test_orm_metadata_parity_with_head() -> None:
         "in_app_notifications": {
             "pk_in_app_notifications", "uq_in_app_notifications_source_job",
             "fk_in_app_notifications_job", "ck_in_app_notifications_priority",
+        },
+        "prospect_accounts": {
+            "pk_prospect_accounts", "ck_prospect_accounts_core_nonblank",
+            "ck_prospect_accounts_optional_nonblank",
+            "ck_prospect_accounts_source_refs_jsonb",
+        },
+        "prospect_contacts": {
+            "pk_prospect_contacts", "fk_prospect_contacts_account",
+            "ck_prospect_contacts_core_nonblank",
+            "ck_prospect_contacts_optional_nonblank",
+        },
+        "contact_points": {
+            "pk_contact_points", "fk_contact_points_contact",
+            "uq_contact_points_value_hash", "ck_contact_points_kind",
+            "ck_contact_points_verification_status", "ck_contact_points_value_hash",
+            "ck_contact_points_verified_pair", "ck_contact_points_provider_state",
+            "ck_contact_points_core_nonblank", "ck_contact_points_optional_nonblank",
+        },
+        "contact_legal_basis": {
+            "pk_contact_legal_basis", "fk_contact_legal_basis_contact_point",
+            "ck_contact_legal_basis_basis", "ck_contact_legal_basis_subject_type",
+            "ck_contact_legal_basis_contact_type",
+            "ck_contact_legal_basis_li_assessment",
+            "ck_contact_legal_basis_core_nonblank",
+            "ck_contact_legal_basis_optional_nonblank",
+        },
+        "prospecting_erasure_suppressions": {
+            "pk_prospecting_erasure_suppressions",
+            "ck_prospecting_erasure_tenant_nonblank",
+            "ck_prospecting_erasure_value_hash",
         },
     }
     for table, names in expected_constraints.items():
