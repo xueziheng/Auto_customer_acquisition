@@ -893,6 +893,12 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_notification_jobs_tenant_due": ("tenant_id", "status", "available_at"),
         "ix_in_app_notifications_recipient_created": ("tenant_id", "recipient_employee_id", "created_at", "notification_id"),
+        "uq_need_hypotheses_active_account_category": (
+            "tenant_id", "account_id", "category",
+        ),
+        "ix_validated_need_field_history_need": (
+            "tenant_id", "need_id", "changed_at",
+        ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():

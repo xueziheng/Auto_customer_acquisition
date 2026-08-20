@@ -69,6 +69,9 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "messages",
     "conversation_classification_corrections",
     "demand_signals",
+    "need_hypotheses",
+    "validated_needs",
+    "validated_need_field_history",
 )
 
 SENDING_IDENTITY_TABLES: tuple[str, ...] = (
@@ -2470,7 +2473,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0021"
+        assert revision == "0022"
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2623,7 +2626,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0021"
+        assert revision == "0022"
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2769,7 +2772,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0021"
+        assert revision == "0022"
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2957,7 +2960,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021", "当前 Alembic head 未升级到 0021"
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3095,7 +3098,7 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021", "当前 Alembic head 未升级到 0021"
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
             for constraint_name in (
                 "ck_email_feedback_receipt_kind",
                 "ck_email_feedback_receipt_target",
@@ -3347,7 +3350,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021", "当前 Alembic head 未升级到 0021"
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3426,7 +3429,7 @@ async def test_0021_demand_signals_revision_present(
     db_url: str,
 ) -> None:
     """已完成态契约：0021 迁移存在且为 alembic head。
-    校验 upgrade head 后 revision 为 "0021"；失败来源必须是缺失/错误版本的
+    校验 upgrade head 后 revision 为 "0022"；失败来源必须是缺失/错误版本的
     迁移文件，而非语法/fixture/ImportError/环境错误。"""
     from sqlalchemy import text
 
@@ -3436,7 +3439,7 @@ async def test_0021_demand_signals_revision_present(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0021", "当前 Alembic head 未升级到 0021"
+        assert revision == "0022", "当前 Alembic head 未升级到 0022"
     finally:
         await engine.dispose()
 
@@ -3460,7 +3463,7 @@ async def test_0020_classification_corrections_contract_matches_orm(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021"
+            assert revision == "0022"
             db_contract = await conn.run_sync(
                 lambda sync: {
                     "columns": {
@@ -3565,7 +3568,7 @@ async def test_0020_classification_corrections_downgrade_roundtrip(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021"
+            assert revision == "0022"
             assert "conversation_classification_corrections" in await _table_names(engine)
         _run_alembic(db_url, "downgrade", "0019")
         async with engine.connect() as conn:
@@ -3575,7 +3578,7 @@ async def test_0020_classification_corrections_downgrade_roundtrip(
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021"
+            assert revision == "0022"
         assert "conversation_classification_corrections" in await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
@@ -3595,7 +3598,7 @@ async def test_0019_conversations_messages_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021", "当前 Alembic head 未升级到 0021"
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3698,7 +3701,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021", "当前 Alembic head 未升级到 0021"
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
             db_contract = await conn.run_sync(
                 lambda sync: {
                     "columns": {
@@ -3899,7 +3902,7 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021"
+            assert revision == "0022"
             assert "demand_signals" in await _table_names(engine)
         _run_alembic(db_url, "downgrade", "0020")
         async with engine.connect() as conn:
@@ -3909,7 +3912,7 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0021"
+            assert revision == "0022"
         assert "demand_signals" in await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
@@ -4004,5 +4007,214 @@ async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
             raise AssertionError(
                 "RED：web 行 page_hash=NULL 未被 ck_demand_signals_web_evidence 拒绝"
             )
+    finally:
+        await engine.dispose()
+
+
+async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
+    """0022 契约：3 表列（含 server_default）/PK/CHECK/FK/部分唯一索引与 ORM 语义 parity。"""
+    import re
+
+    from sqlalchemy import CheckConstraint, ForeignKeyConstraint, inspect, text
+
+    from infra.db.session import create_engine_from
+
+    def _normalize_default(value: object) -> str | None:
+        """server_default 归一化：去 PG cast 标注与引号，空视为无默认（0021 先例，P3-2）。"""
+        if value is None:
+            return None
+        text_value = str(value)
+        text_value = re.sub(r"::[a-z_ ]+", "", text_value)
+        text_value = text_value.strip("'\"")
+        return text_value or None
+
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0022", "当前 Alembic head 未升级到 0022"
+            db_contract = await conn.run_sync(
+                lambda sync: {
+                    table: {
+                        "columns": {
+                            item["name"]: {
+                                "type": str(
+                                    item["type"].compile(dialect=engine.dialect)
+                                ),
+                                "nullable": item["nullable"],
+                                "default": _normalize_default(item.get("default")),
+                            }
+                            for item in inspect(sync).get_columns(table)
+                        },
+                        "pk": list(
+                            inspect(sync).get_pk_constraint(table)["constrained_columns"]
+                        ),
+                        "checks": {
+                            str(item["name"]): str(item["sqltext"])
+                            for item in inspect(sync).get_check_constraints(table)
+                        },
+                        "fks": {
+                            (str(fk["constrained_columns"]), str(fk["referred_table"]))
+                            for fk in inspect(sync).get_foreign_keys(table)
+                        },
+                        "indexes": {
+                            str(item["name"]): {
+                                "unique": item["unique"],
+                                "cols": item["column_names"],
+                                "where": (
+                                    str(
+                                        item.get("dialect_options", {}).get(
+                                            "postgresql_where", ""
+                                        )
+                                    )
+                                    if item["unique"]
+                                    else None
+                                ),
+                            }
+                            for item in inspect(sync).get_indexes(table)
+                        },
+                    }
+                    for table in (
+                        "need_hypotheses",
+                        "validated_needs",
+                        "validated_need_field_history",
+                    )
+                }
+            )
+    finally:
+        await engine.dispose()
+
+    from infra.db.tables import (
+        NeedHypothesisRow,
+        ValidatedNeedFieldHistoryRow,
+        ValidatedNeedRow,
+    )
+
+    orm_contract = {}
+    for table_name, row in (
+        ("need_hypotheses", NeedHypothesisRow),
+        ("validated_needs", ValidatedNeedRow),
+        ("validated_need_field_history", ValidatedNeedFieldHistoryRow),
+    ):
+        table = row.__table__
+        orm_contract[table_name] = {
+            "columns": {
+                name: {
+                    "type": str(column.type.compile(dialect=engine.dialect)),
+                    "nullable": column.nullable,
+                    "default": _normalize_default(
+                        column.server_default.arg
+                        if column.server_default is not None
+                        else None
+                    ),
+                }
+                for name, column in table.columns.items()
+            },
+            "pk": [column.name for column in table.primary_key.columns],
+            "checks": {
+                str(c.name): str(c.sqltext)
+                for c in table.constraints
+                if isinstance(c, CheckConstraint)
+            },
+            "fks": {
+                (
+                    str([col.name for col in c.columns]),
+                    str(c.elements[0].target_fullname.split(".")[0]),
+                )
+                for c in table.constraints
+                if isinstance(c, ForeignKeyConstraint)
+            },
+            "indexes": {
+                str(index.name): {
+                    "unique": index.unique,
+                    "cols": list(index.columns.keys()),
+                    "where": (
+                        str(index.dialect_options["postgresql"]["where"])
+                        if index.unique
+                        and "where" in index.dialect_options["postgresql"]
+                        else None
+                    ),
+                }
+                for index in table.indexes
+            },
+        }
+    for table_name in ("need_hypotheses", "validated_needs", "validated_need_field_history"):
+        assert orm_contract[table_name]["columns"] == db_contract[table_name]["columns"]
+        assert orm_contract[table_name]["pk"] == db_contract[table_name]["pk"]
+        assert set(orm_contract[table_name]["checks"]) == set(db_contract[table_name]["checks"])
+        assert orm_contract[table_name]["fks"] == db_contract[table_name]["fks"]
+        # P1-2：indexes 的原始 "where" 文本不作等值比较（PG 会把 IN (...) 归一化为
+        # = ANY(ARRAY[...])）；unique/cols 严格等值，谓词语义由下方专项断言覆盖
+        def _without_where(indexes: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+            return {
+                name: {k: v for k, v in entry.items() if k != "where"}
+                for name, entry in indexes.items()
+            }
+
+        assert _without_where(orm_contract[table_name]["indexes"]) == _without_where(
+            db_contract[table_name]["indexes"]
+        )
+    assert "ck_need_hypotheses_category_nonblank" in db_contract["need_hypotheses"]["checks"]
+    assert (
+        "ck_validated_needs_source_message_nonblank"
+        in db_contract["validated_needs"]["checks"]
+    )
+    # 部分唯一索引谓词 parity（spec D2/finding 3，迁移侧）：**语义比较而非脆弱
+    # 字符串等值**——PG 会把 IN (...) 归一化为 = ANY(ARRAY[...])（P1-2）。
+    def _predicate_semantics(where: str) -> tuple[frozenset[str], frozenset[str]]:
+        """谓词语义：字符串字面量值集合 + 标识符集合（沿用 _canonical 归一化思路）。"""
+        return (
+            frozenset(re.findall(r"'([^']*)'", where)),
+            frozenset(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", where)),
+        )
+
+    db_index = db_contract["need_hypotheses"]["indexes"][
+        "uq_need_hypotheses_active_account_category"
+    ]
+    orm_index = orm_contract["need_hypotheses"]["indexes"][
+        "uq_need_hypotheses_active_account_category"
+    ]
+    for side, entry in (("db", db_index), ("orm", orm_index)):
+        assert entry["unique"] is True, side
+        assert entry["cols"] == ["tenant_id", "account_id", "category"], side
+        values, idents = _predicate_semantics(entry["where"] or "")
+        assert values == frozenset({"inferred", "contacting"}), side
+        assert "status" in idents, side
+    db_values, _ = _predicate_semantics(db_index["where"] or "")
+    orm_values, _ = _predicate_semantics(orm_index["where"] or "")
+    assert db_values == orm_values == frozenset({"inferred", "contacting"})
+
+
+async def test_0022_downgrade_roundtrip(db_url: str) -> None:
+    """0022→0021→0022（真实 downgrade/upgrade，P2-3）：downgrade 后 3 表消失、
+    revision 回 0021；upgrade head 后 3 表恢复、revision 回 0022。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+
+    tables = (
+        "need_hypotheses",
+        "validated_needs",
+        "validated_need_field_history",
+    )
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0022", "roundtrip 前置：head 应已升级到 0022"
+        for table in tables:
+            assert table in await _table_names(engine), f"head 应含 {table}"
+        _run_alembic(db_url, "downgrade", "0021")
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0021", "downgrade 到 0021 后 revision 应为 0021"
+        for table in tables:
+            assert table not in await _table_names(engine), f"downgrade 后应无 {table}"
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            assert revision == "0022", "upgrade head 后 revision 应为 0022"
+        for table in tables:
+            assert table in await _table_names(engine), f"upgrade 后应恢复 {table}"
     finally:
         await engine.dispose()

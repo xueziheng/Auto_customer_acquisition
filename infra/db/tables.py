@@ -1450,6 +1450,206 @@ class ProvenanceRecordRow(Base):
     page_hash: Mapped[str | None] = mapped_column(String(200))
 
 
+_HYPOTHESIS_STATUSES = "'inferred','contacting','validated','rejected'"
+_NEED_STATUSES = (
+    "'validated','sourcing_ready','handed_to_sourcing',"
+    "'fulfilled','withdrawn','lost'"
+)
+
+
+class NeedHypothesisRow(Base):
+    """``need_hypotheses`` 行（spec 2026-08-17 §4.1）。"""
+
+    __tablename__ = "need_hypotheses"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "hypothesis_id", name="pk_need_hypotheses"),
+        ForeignKeyConstraint(
+            ["tenant_id", "validated_need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_need_hypotheses_validated_need",
+        ),
+        Index(
+            "uq_need_hypotheses_active_account_category",
+            "tenant_id",
+            "account_id",
+            "category",
+            unique=True,
+            postgresql_where=text("status IN ('inferred','contacting')"),
+        ),
+        CheckConstraint(
+            f"status IN ({_HYPOTHESIS_STATUSES})", name="ck_need_hypotheses_status"
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(hypothesis_id) <> '' AND "
+            "btrim(account_id) <> '' AND btrim(category) <> ''",
+            name="ck_need_hypotheses_core_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(category) <> ''",
+            name="ck_need_hypotheses_category_nonblank",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(reasoning) = 'object'",
+            name="ck_need_hypotheses_reasoning_jsonb",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(signal_ids) = 'array'",
+            name="ck_need_hypotheses_signal_ids_jsonb",
+        ),
+        CheckConstraint(
+            "(status = 'rejected') = "
+            "(rejection_reason IS NOT NULL AND btrim(rejection_reason) <> '')",
+            name="ck_need_hypotheses_rejection_reason",
+        ),
+        CheckConstraint(
+            "(status = 'validated') = (validated_need_id IS NOT NULL)",
+            name="ck_need_hypotheses_validated_link",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    hypothesis_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str] = mapped_column(String(200))
+    reasoning: Mapped[dict] = mapped_column(postgresql.JSONB)
+    signal_ids: Mapped[list] = mapped_column(postgresql.JSONB)
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'inferred'"))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    validated_need_id: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ValidatedNeedRow(Base):
+    """``validated_needs`` 行（spec 2026-08-17 §4.2；无 cluster_id 列）。"""
+
+    __tablename__ = "validated_needs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "need_id", name="pk_validated_needs"),
+        CheckConstraint(
+            f"status IN ({_NEED_STATUSES})", name="ck_validated_needs_status"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(product_category) = 'object'",
+            name="ck_validated_needs_category_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(need_id) <> '' AND "
+            "btrim(account_id) <> '' AND btrim(source_message_id) <> ''",
+            name="ck_validated_needs_core_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(source_message_id) <> ''",
+            name="ck_validated_needs_source_message_nonblank",
+        ),
+        CheckConstraint(
+            "(application IS NULL) OR jsonb_typeof(application) = 'object'",
+            name="ck_validated_needs_application_jsonb",
+        ),
+        CheckConstraint(
+            "(material IS NULL) OR jsonb_typeof(material) = 'object'",
+            name="ck_validated_needs_material_jsonb",
+        ),
+        CheckConstraint(
+            "(size_spec IS NULL) OR jsonb_typeof(size_spec) = 'object'",
+            name="ck_validated_needs_size_spec_jsonb",
+        ),
+        CheckConstraint(
+            "(quantity IS NULL) OR jsonb_typeof(quantity) = 'object'",
+            name="ck_validated_needs_quantity_jsonb",
+        ),
+        CheckConstraint(
+            "(packaging IS NULL) OR jsonb_typeof(packaging) = 'object'",
+            name="ck_validated_needs_packaging_jsonb",
+        ),
+        CheckConstraint(
+            "(destination IS NULL) OR jsonb_typeof(destination) = 'object'",
+            name="ck_validated_needs_destination_jsonb",
+        ),
+        CheckConstraint(
+            "(required_by IS NULL) OR jsonb_typeof(required_by) = 'object'",
+            name="ck_validated_needs_required_by_jsonb",
+        ),
+        CheckConstraint(
+            "(target_price IS NULL) OR jsonb_typeof(target_price) = 'object'",
+            name="ck_validated_needs_target_price_jsonb",
+        ),
+        CheckConstraint(
+            "(current_supply_issue IS NULL) OR jsonb_typeof(current_supply_issue) = 'object'",
+            name="ck_validated_needs_current_supply_issue_jsonb",
+        ),
+        CheckConstraint(
+            "(certification_required IS NULL) OR jsonb_typeof(certification_required) = 'object'",
+            name="ck_validated_needs_certification_required_jsonb",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    product_category: Mapped[dict] = mapped_column(postgresql.JSONB)
+    source_message_id: Mapped[str] = mapped_column(String(40))
+    source_conversation_id: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(20), server_default=text("'validated'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    application: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    material: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    size_spec: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    quantity: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    packaging: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    destination: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    required_by: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    target_price: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    current_supply_issue: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    certification_required: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    confirmed_by: Mapped[str | None] = mapped_column(String(40))
+
+
+class ValidatedNeedFieldHistoryRow(Base):
+    """``validated_need_field_history`` 行（spec 2026-08-17 §4.3；append-only）。"""
+
+    __tablename__ = "validated_need_field_history"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "history_id", name="pk_validated_need_field_history"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_validated_need_field_history_need",
+        ),
+        Index(
+            "ix_validated_need_field_history_need",
+            "tenant_id",
+            "need_id",
+            "changed_at",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(history_id) <> '' AND "
+            "btrim(need_id) <> '' AND btrim(field_name) <> '' AND "
+            "btrim(new_value) <> '' AND btrim(source_message_id) <> ''",
+            name="ck_validated_need_field_history_core_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(field_name) <> ''",
+            name="ck_validated_need_field_history_field_name_nonblank",
+        ),
+        CheckConstraint(
+            "btrim(new_value) <> ''",
+            name="ck_validated_need_field_history_new_value_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    history_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    field_name: Mapped[str] = mapped_column(String(64))
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str] = mapped_column(Text)
+    source_message_id: Mapped[str] = mapped_column(String(40))
+    changed_by: Mapped[str | None] = mapped_column(String(40))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ConversationRow(Base):
     """``conversations`` 会话（跨渠道，Phase 1 只有邮件）；tenant+account+channel 唯一。"""
 

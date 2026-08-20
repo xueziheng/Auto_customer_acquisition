@@ -524,7 +524,7 @@ Expected: 6 文件 index mode 全部 `100644`；push 后 local == origin；CI �
 - `validated_need_field_history`：PK `pk_validated_need_field_history (tenant_id, history_id)`；查询索引 `ix_validated_need_field_history_need (tenant_id, need_id, changed_at)`（非唯一）；CHECK `ck_validated_need_field_history_field_name_nonblank`、`ck_validated_need_field_history_new_value_nonblank`、`ck_validated_need_field_history_core_nonblank`；FK `fk_validated_need_field_history_need (need_id) → validated_needs.need_id`（NO ACTION）。
 - 无 `cluster_id` 列（spec D4/finding 1）；JSONB 用 `postgresql.JSONB()`。
 
-- [ ] **Step 1: 写失败测试（test_migrations.py 更新 + 0022 契约/往返测试）**
+- [x] **Step 1: 写失败测试（test_migrations.py 更新 + 0022 契约/往返测试）**
 
 (1a) 全局诚实更新（0020→0021 同款先例）：`EXPECTED_TABLES` 元组追加 `"need_hypotheses"`/`"validated_needs"`/`"validated_need_field_history"`（**P3-3：不预设元组行数，以 `grep -n 'EXPECTED_TABLES' tests/integration/test_migrations.py` 实际定位**）；**0021 head 断言以 grep 驱动更新（P3-1，不依赖陈旧行号）**：
 ```bash
@@ -731,7 +731,7 @@ async def test_0022_downgrade_roundtrip(db_url: str) -> None:
 
 （`_run_alembic`/`_table_names` 为该文件既有 helper（0020 往返测试先例，`_run_alembic(db_url, "downgrade", "0019")` 同款）；`_table_names` 已存在于文件级。）
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 ```bash
 find . -name "._*" -not -path "./.git/*" -delete
@@ -740,7 +740,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_migrations.py
 
 Expected: **FAIL**——新 0022 契约/往返测试以 `assert revision == "0022"` 失败（head 仍 0021、表不存在）；全局 head 断言更新处若遗漏会以断言失败暴露。记录 rc=1 与首因。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 (3a) `migrations/versions/0022_need_hypotheses.py`（down_revision=`0021`；先建 `validated_needs`（被引用），再 `need_hypotheses`，再 `validated_need_field_history`；downgrade 逆序 drop）：
 
@@ -997,7 +997,7 @@ class NeedHypothesisRow(Base):
 
 （`ValidatedNeedRow`：11 个 JSONB 列（product_category 非空 + 10 个可空）与 10 个 `ck_validated_needs_<field>_jsonb` CHECK、status CHECK、core CHECK、无 cluster_id；`ValidatedNeedFieldHistoryRow`：8 列 + PK + `ix_validated_need_field_history_need` Index + 3 个 CHECK + FK——两行类按上述同款风格完整写出，字段与迁移逐字一致。`_HYPOTHESIS_STATUSES`/`_NEED_STATUSES` 模块常量在 tables.py 对应区定义。）
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 ```bash
 conda run -n tradeos-py312 python -m pytest tests/integration/test_migrations.py -q -W error
@@ -1005,7 +1005,7 @@ conda run -n tradeos-py312 python -m pytest tests/integration/test_migrations.py
 
 Expected: 全部 PASS（含 0022 契约/往返与既有 0020/0021 测试语义保留；0021 契约测试 head 断言已随全局更新为 0022）。
 
-- [ ] **Step 5: 边界与静态检查 + 定向回归**
+- [x] **Step 5: 边界与静态检查 + 定向回归**
 
 ```bash
 conda run -n tradeos-py312 python -m ruff check infra/db/tables.py tests/integration/test_migrations.py
@@ -1017,7 +1017,7 @@ git diff --check
 
 Expected: 全部 rc=0。
 
-- [ ] **Step 6: 停止等待监督方复审**（汇报 RED 原因 revision 0022 缺失、GREEN 计数、diff 3 文件）
+- [x] **Step 6: 停止等待监督方复审**（汇报 RED 原因 revision 0022 缺失、GREEN 计数、diff 3 文件）
 
 复审通过后，提交前执行 mutation proof：
 
@@ -1025,7 +1025,7 @@ Expected: 全部 rc=0。
 |---|---|---|---|
 | M-P | 迁移部分唯一索引的 `postgresql_where` 谓词改错（如 `status = 'inferred'`） | `test_0022_need_hypotheses_contract_matches_orm` | 谓词语义比较断言失败（值集合 ≠ {'inferred','contacting'}） |
 
-- [ ] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `migrations/versions/0022_need_hypotheses.py` `infra/db/tables.py` `tests/integration/test_migrations.py`；commit 消息逐字 `feat(demand): add need hypothesis tables via 0022`；Expected：3 文件 index 100644、local == origin、CI `OK`）
+- [x] **Step 7: 复审通过后提交/推送/exact-HEAD CI**（命令块同 Task 1 Step 7；文件为 `migrations/versions/0022_need_hypotheses.py` `infra/db/tables.py` `tests/integration/test_migrations.py`；commit 消息逐字 `feat(demand): add need hypothesis tables via 0022`；Expected：3 文件 index 100644、local == origin、CI `OK`）
 
 ---
 
