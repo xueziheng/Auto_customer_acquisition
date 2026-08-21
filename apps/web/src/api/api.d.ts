@@ -325,10 +325,101 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/prospects/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Accounts */
+        get: operations["list_accounts_prospects_accounts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/accounts/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Account */
+        get: operations["get_account_prospects_accounts__account_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/accounts/{account_id}/contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Contacts */
+        get: operations["list_contacts_prospects_accounts__account_id__contacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/discoveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Discovery */
+        post: operations["start_discovery_prospects_discoveries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AccountDiscoveryStartBody
+         * @description 账户发现唯一可提交输入；身份与租户必须来自服务端。
+         */
+        AccountDiscoveryStartBody: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Hypothesis Id */
+            hypothesis_id: string;
+            /** Role Hints */
+            role_hints: string[];
+        };
+        /** AccountDiscoveryStartResponse */
+        AccountDiscoveryStartResponse: {
+            /** Run Id */
+            run_id: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Workflow Type */
+            workflow_type: string;
+        };
         /**
          * ApiErrorResponse
          * @description 所有 HTTP 错误共用的扁平外部契约。
@@ -418,6 +509,68 @@ export interface components {
          * @enum {string}
          */
         AuthenticationFixInstruction: "configure_spf" | "configure_dkim" | "configure_dmarc" | "fix_alignment" | "strengthen_policy" | "retry_lookup";
+        /**
+         * ContactPointDetailView
+         * @description 联系方式详情；法律依据与验证观察均来自同一租户事务快照。
+         */
+        ContactPointDetailView: {
+            /** Assessment Ref */
+            assessment_ref?: string | null;
+            /**
+             * Collected At
+             * Format: date-time
+             */
+            collected_at: string;
+            contact_point: components["schemas"]["ContactPointView"];
+            contact_type: components["schemas"]["ContactType"];
+            legal_basis: components["schemas"]["LegalBasisType"];
+            /** Legal Basis Source */
+            legal_basis_source: string;
+            /** Source Url */
+            source_url?: string | null;
+            subject_type: components["schemas"]["SubjectType"];
+        };
+        /**
+         * ContactPointKind
+         * @description Phase 1 支持的联系方式类型；社交渠道明确不在范围内。
+         * @enum {string}
+         */
+        ContactPointKind: "email" | "phone";
+        /** ContactPointView */
+        ContactPointView: {
+            /** Account Id */
+            account_id: string;
+            /** Contact Id */
+            contact_id: string;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Enrichment Cost Note */
+            enrichment_cost_note?: string | null;
+            kind: components["schemas"]["ContactPointKind"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Value */
+            value: string;
+            verification: components["schemas"]["VerificationStatus"];
+            /** Verification Checked At */
+            verification_checked_at?: string | null;
+            /** Verification Cost Note */
+            verification_cost_note?: string | null;
+            /** Verification Provider */
+            verification_provider?: string | null;
+            /** Verified At */
+            verified_at?: string | null;
+        };
+        /**
+         * ContactType
+         * @enum {string}
+         */
+        ContactType: "role_based" | "personal_business";
         /**
          * DomainRole
          * @description 域名角色；只有 ``COLD_OUTREACH`` 可承载冷开发。
@@ -654,6 +807,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * LegalBasisType
+         * @enum {string}
+         */
+        LegalBasisType: "legitimate_interest" | "consent" | "existing_customer";
         /**
          * LossReason
          * @description 机会终结原因。**反馈闭环的骨架。**
@@ -999,6 +1157,79 @@ export interface components {
             target_price?: components["schemas"]["Money"] | null;
         };
         /**
+         * ProspectAccountDetailView
+         * @description 企业详情；来源信号、联系人和法律依据均可追溯。
+         */
+        ProspectAccountDetailView: {
+            account: components["schemas"]["ProspectAccountView"];
+            /**
+             * Contacts
+             * @default []
+             */
+            contacts: components["schemas"]["ProspectContactDetailView"][];
+        };
+        /** ProspectAccountView */
+        ProspectAccountView: {
+            /** Account Id */
+            account_id: string;
+            /** Country */
+            country: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Entity Type */
+            entity_type?: string | null;
+            /** Industry */
+            industry?: string | null;
+            /** Name */
+            name: string;
+            /** Size Hint */
+            size_hint?: string | null;
+            /**
+             * Source Signal Refs
+             * @default []
+             */
+            source_signal_refs: string[];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Website Domain */
+            website_domain?: string | null;
+        };
+        /**
+         * ProspectContactDetailView
+         * @description 联系人及其联系方式；仅供已判权的内部员工视图。
+         */
+        ProspectContactDetailView: {
+            contact: components["schemas"]["ProspectContactView"];
+            /**
+             * Contact Points
+             * @default []
+             */
+            contact_points: components["schemas"]["ContactPointDetailView"][];
+        };
+        /** ProspectContactView */
+        ProspectContactView: {
+            /** Account Id */
+            account_id: string;
+            /** Contact Id */
+            contact_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Full Name */
+            full_name?: string | null;
+            /** Language */
+            language?: string | null;
+            /** Role Title */
+            role_title?: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
          * Provenance
          * @description 一个字段值的来源记录。
          *
@@ -1176,6 +1407,13 @@ export interface components {
          */
         SourceType: "conversation" | "web_page" | "upload" | "employee_input" | "agent_inference" | "external_api";
         /**
+         * SubjectType
+         * @description 收件主体类型。欧洲和英国的规则按这个分叉：法人、独资经营者、
+         *     自然人适用不同要求，职务邮箱与个人邮箱也不同。
+         * @enum {string}
+         */
+        SubjectType: "legal_entity" | "sole_trader" | "natural_person";
+        /**
          * ValidatedNeedEvidence
          * @description 已验证需求的证据契约（S3-6 R5/F6）。
          *
@@ -1212,6 +1450,12 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * VerificationStatus
+         * @description 联系方式可达性验证状态（硬边界 6）。
+         * @enum {string}
+         */
+        VerificationStatus: "unverified" | "verified" | "risky" | "invalid";
     };
     responses: never;
     parameters: never;
@@ -1875,6 +2119,132 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_accounts_prospects_accounts_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProspectAccountView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_account_prospects_accounts__account_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProspectAccountDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_contacts_prospects_accounts__account_id__contacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProspectContactDetailView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    start_discovery_prospects_discoveries_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDiscoveryStartBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDiscoveryStartResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -73,6 +73,8 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
+from domains.prospecting.service import ContactValueHasher
+from domains.prospecting.service_impl import ProspectingServiceImpl
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
 )
@@ -101,6 +103,7 @@ from infra.db.email_feedback_uow import (
 )
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
+from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.repositories.employees import (
     EmployeeRepositoryImpl,
     OwnershipRepositoryImpl,
@@ -166,6 +169,7 @@ from tool_gateway.manifest import (
     ToolRegistry,
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult, ToolGateway
+from workflows.account_discovery.flow import build_account_discovery_definition
 from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 from workflows.email_feedback.unsubscribe import (
     FeedbackPageUnitOfWorkFactory,
@@ -173,6 +177,7 @@ from workflows.email_feedback.unsubscribe import (
     UnsubscribeService,
     UnsubscribeServiceImpl,
 )
+from workflows.engine.runner import WorkflowRun
 from workflows.human_handoff.flow import (
     HandoffEscalationNotice,
     build_human_handoff_step_handlers,
@@ -234,6 +239,29 @@ class RequestScopedHandoffEmployeeReader:
     ) -> EmployeeView:
         async with self._scope(tenant_id) as service:
             return await service.get_employee(tenant_id, employee_id, actor=actor)
+
+
+class _DomainSeparatedContactValueHasher(ContactValueHasher):
+    """复用运行期 HMAC key，但用固定域标签隔离联系方式指纹语义。"""
+
+    def __init__(self, provider: HmacFingerprintProvider) -> None:
+        self._provider = provider
+
+    def fingerprint(self, canonical_value: str) -> str:
+        digest, _version = self._provider.fingerprint(
+            (b"contact-value-v1", canonical_value.encode("utf-8"))
+        )
+        return digest
+
+
+class _StartOnlyWorkflowHandler:
+    """API 只创建 run；若误执行步骤则固定失败关闭。"""
+
+    async def execute(
+        self, run: WorkflowRun
+    ) -> tuple[str, str | None, dict[str, object]]:
+        del run
+        raise TransientError("账户发现步骤只能由 scheduler 执行")
 
 
 class StructuredLogOnlyPolicy:
@@ -795,6 +823,22 @@ def build_phase1_dependencies(
     unsubscribe_links: UnsubscribeLinkProvider = _UnsubscribeLinkAdapter(
         unsubscribe_service
     )
+    fingerprint_key = resolved_secret_resolver.resolve(
+        settings.tool_call_fingerprint_key_ref
+    )
+    if not isinstance(fingerprint_key, str):
+        raise TypeError("API 指纹依赖未完整配置")
+    fingerprint_provider = HmacFingerprintProvider(
+        settings.tool_call_fingerprint_key_version,
+        fingerprint_key.encode("utf-8"),
+    )
+    prospecting = ProspectingServiceImpl(
+        lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
+            factory, requested_tenant, now=now
+        ),
+        _DomainSeparatedContactValueHasher(fingerprint_provider),
+        now=now,
+    )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -804,11 +848,6 @@ def build_phase1_dependencies(
         manual_gateway: ToolGatewayInvoker = _UnavailableToolGateway()
         delivery_materials: DeliveryMaterialProvider = unavailable_send_sources
     else:
-        fingerprint_key = manual_send.secret_resolver.resolve(
-            settings.tool_call_fingerprint_key_ref
-        )
-        if not isinstance(fingerprint_key, str):
-            raise TypeError("API 手工发送依赖未完整配置")
         gmail = _LazyGmailConnector(
             manual_send.gmail_transport,
             manual_send.secret_resolver,
@@ -818,10 +857,7 @@ def build_phase1_dependencies(
             gmail,
             manual_send.delivery_materials,
             unsubscribe_links,
-            HmacFingerprintProvider(
-                settings.tool_call_fingerprint_key_version,
-                fingerprint_key.encode("utf-8"),
-            ),
+            fingerprint_provider,
             outreach=outreach,
             outreach_actor_factory=_delivery_binding_actor,
             route_id=settings.email_feedback_route_id,
@@ -878,16 +914,22 @@ def build_phase1_dependencies(
         OpportunityScope(level=ScopeLevel.SYSTEM),
         "system",
     )
-    handlers = build_human_handoff_step_handlers(
-        opportunity_service=opportunities,
-        employee_service=RequestScopedHandoffEmployeeReader(employees),
-        notifier=RuntimeHandoffNotifier(router),
-        opportunity_system_actor=opportunity_system_actor,
-        employee_system_actor=employee_system_actor,
-        t1=settings.t1,
-        t2=settings.t2,
-        now=now,
+    handlers = dict(
+        build_human_handoff_step_handlers(
+            opportunity_service=opportunities,
+            employee_service=RequestScopedHandoffEmployeeReader(employees),
+            notifier=RuntimeHandoffNotifier(router),
+            opportunity_system_actor=opportunity_system_actor,
+            employee_system_actor=employee_system_actor,
+            t1=settings.t1,
+            t2=settings.t2,
+            now=now,
+        )
     )
+    account_definition = build_account_discovery_definition()
+    start_only_handler = _StartOnlyWorkflowHandler()
+    for step in account_definition.steps:
+        handlers[step.handler_ref] = start_only_handler
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
     outbox = OutboxDeliverer(
         factory,
@@ -896,6 +938,7 @@ def build_phase1_dependencies(
         max_attempts=settings.outbox_max_attempts,
     )
     register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
+    workflow.register(account_definition)
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -916,4 +959,5 @@ def build_phase1_dependencies(
         campaign_scope_resolver=campaign_scope_resolver,
         in_app_notifications=in_app_notifications,
         employee_lookup_actor=employee_system_actor,
+        prospecting=prospecting,
     )

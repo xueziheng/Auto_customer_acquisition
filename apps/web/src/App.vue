@@ -10,12 +10,23 @@ const appName: string = "TradeOS";
     <header class="topbar">
       <span class="brand">TradeOS 内部运营台</span>
       <nav aria-label="主导航">
-        <RouterLink to="/crm/opportunities">CRM</RouterLink>
-        <RouterLink to="/crm/outreach">触达工作台</RouterLink>
-        <RouterLink to="/crm/sending-identities">发件身份</RouterLink>
-        <RouterLink to="/notifications">通知</RouterLink>
+        <RouterLink to="/prospects/accounts">
+          客户发现
+        </RouterLink>
+        <RouterLink to="/crm/opportunities">
+          CRM
+        </RouterLink>
+        <RouterLink to="/crm/outreach">
+          触达工作台
+        </RouterLink>
+        <RouterLink to="/crm/sending-identities">
+          发件身份
+        </RouterLink>
+        <RouterLink to="/notifications">
+          通知
+        </RouterLink>
       </nav>
-      <span class="spacer"></span>
+      <span class="spacer" />
       <NotificationBadge />
     </header>
     <RouterView />

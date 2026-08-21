@@ -34,6 +34,7 @@ from domains.outreach.permissions import (
     ScopeLevel as OutreachScopeLevel,
 )
 from domains.outreach.service import OutreachService
+from domains.prospecting.service import ProspectingService
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
 )
@@ -110,6 +111,7 @@ class ConfiguredApiDependencies:
     campaign_scope_resolver: CampaignScopeResolver
     in_app_notifications: InAppNotificationService
     employee_lookup_actor: EmployeeActor
+    prospecting: ProspectingService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

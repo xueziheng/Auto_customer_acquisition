@@ -4,6 +4,11 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: "/prospects/accounts",
+      name: "customer-discovery",
+      component: () => import("./views/customer-discovery/CustomerDiscovery.vue"),
+    },
+    {
       path: "/crm/opportunities",
       name: "crm-opportunities",
       component: () => import("./views/crm/OpportunityList.vue"),
