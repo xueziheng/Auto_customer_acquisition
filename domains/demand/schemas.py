@@ -16,6 +16,23 @@ from shared.schemas.money import Money
 
 
 @dataclass(frozen=True)
+class DemandSignalView:
+    """需求雷达信号视图；事实观察与可能需求保持结构分离。"""
+
+    signal_id: str
+    signal_type: str
+    entity_name: str
+    raw_observation: str
+    possible_need: str | None
+    status: str
+    observed_at: datetime
+    source_type: str
+    source_ref: str
+    source_url: str | None
+    is_inference: bool = False
+
+
+@dataclass(frozen=True)
 class HypothesisDiscoveryEvidenceView:
     """账户发现可消费的单条信号投影；保留内部 signal ID 与公开来源。"""
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from domains.demand.schemas import (
+    DemandSignalView,
     HypothesisDiscoveryView,
     HypothesisView,
     NeedClusterView,
@@ -26,6 +27,17 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+
+
+@runtime_checkable
+class DemandAccountNameReader(Protocol):
+    """由上层适配 Prospecting 的最小展示名端口；demand 不跨域导入。"""
+
+    async def names_for(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]: ...
 
 
 @runtime_checkable
@@ -176,6 +188,35 @@ class DemandService(Protocol):
         ...
 
     # --- 查询 -----------------------------------------------------------
+
+    async def list_signals(
+        self,
+        tenant_id: TenantId,
+        *,
+        signal_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[DemandSignalView]: ...
+
+    async def list_hypotheses(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[HypothesisView]: ...
+
+    async def get_hypothesis(
+        self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId
+    ) -> HypothesisView: ...
+
+    async def list_needs(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[ValidatedNeedView]: ...
 
     async def get_hypothesis_for_discovery(
         self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId

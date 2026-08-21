@@ -352,6 +352,29 @@ class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisReposito
         ).scalars().all()
         return [_row_to_hypothesis(row) for row in rows]
 
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[NeedHypothesis]:
+        self._require_tenant(tenant_id, "need_hypothesis_list_for_radar")
+        statement = select(NeedHypothesisRow).where(
+            NeedHypothesisRow.tenant_id == str(self._tenant_id)
+        )
+        if status is not None:
+            statement = statement.where(NeedHypothesisRow.status == status)
+        rows = (
+            await self._session.execute(
+                statement.order_by(
+                    NeedHypothesisRow.created_at.desc(),
+                    NeedHypothesisRow.hypothesis_id,
+                ).limit(limit)
+            )
+        ).scalars().all()
+        return [_row_to_hypothesis(row) for row in rows]
+
 
 _FIELD_KINDS: dict[str, str] = {
     "product_category": "str",
@@ -544,6 +567,29 @@ class ValidatedNeedRepositoryImpl(_HypothesisRepository, ValidatedNeedRepository
                     ValidatedNeedRow.account_id == str(account_id),
                 )
                 .order_by(ValidatedNeedRow.created_at, ValidatedNeedRow.need_id)
+            )
+        ).scalars().all()
+        return [_row_to_need(row) for row in rows]
+
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[ValidatedNeed]:
+        self._require_tenant(tenant_id, "validated_need_list_for_radar")
+        statement = select(ValidatedNeedRow).where(
+            ValidatedNeedRow.tenant_id == str(self._tenant_id)
+        )
+        if status is not None:
+            statement = statement.where(ValidatedNeedRow.status == status)
+        rows = (
+            await self._session.execute(
+                statement.order_by(
+                    ValidatedNeedRow.created_at.desc(),
+                    ValidatedNeedRow.need_id,
+                ).limit(limit)
             )
         ).scalars().all()
         return [_row_to_need(row) for row in rows]

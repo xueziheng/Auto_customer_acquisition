@@ -70,6 +70,15 @@ class DemandSignalRepository(Protocol):
         """列出尚未关联到假设的信号，供假设生成任务消费。"""
         ...
 
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        signal_type: str | None,
+        status: str | None,
+        limit: int,
+    ) -> list[DemandSignal]: ...
+
 
 @runtime_checkable
 class DemandUnitOfWork(Protocol):
@@ -136,6 +145,14 @@ class NeedHypothesisRepository(Protocol):
         """
         ...
 
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[NeedHypothesis]: ...
+
 
 @runtime_checkable
 class ValidatedNeedRepository(Protocol):
@@ -186,6 +203,14 @@ class ValidatedNeedRepository(Protocol):
     ) -> list[ValidatedNeed]:
         """某企业的全部已验证需求。员工打开客户页面时要看到这个。"""
         ...
+
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[ValidatedNeed]: ...
 
 
 @runtime_checkable

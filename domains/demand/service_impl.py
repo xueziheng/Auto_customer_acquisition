@@ -32,10 +32,16 @@ from domains.demand.models import (
 )
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import (
+    DemandSignalView,
+    EvidenceSummary,
     HypothesisDiscoveryEvidenceView,
     HypothesisDiscoveryView,
+    HypothesisView,
+    NeedFieldView,
     SignalCaptureRequest,
+    ValidatedNeedView,
 )
+from domains.demand.service import DemandAccountNameReader
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
@@ -207,11 +213,17 @@ class DemandServiceImpl:
         uow_factory: Callable[[TenantId], DemandUnitOfWork],
         *,
         now: Callable[[], datetime],
+        account_names: DemandAccountNameReader | None = None,
     ) -> None:
         if not callable(uow_factory) or not callable(now):
             raise ValidationError("需求服务依赖无效")
         self._uow_factory = uow_factory
         self._now = now
+        if account_names is not None and not isinstance(
+            account_names, DemandAccountNameReader
+        ):
+            raise ValidationError("需求账户展示名依赖无效")
+        self._account_names = account_names
 
     @staticmethod
     def _validate_now(value: datetime) -> datetime:
@@ -893,3 +905,288 @@ class DemandServiceImpl:
                 evidence=tuple(evidence),
                 source_signal_refs=refs,
             )
+
+    async def list_signals(
+        self,
+        tenant_id: TenantId,
+        *,
+        signal_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[DemandSignalView]:
+        """列出事实观察；possible_need 始终保留在独立推断字段。"""
+        self._validate_radar_query(tenant_id, limit)
+        if signal_type is not None:
+            try:
+                SignalType(signal_type)
+            except ValueError:
+                raise ValidationError("需求信号类型筛选无效") from None
+        if status is not None:
+            try:
+                SignalStatus(status)
+            except ValueError:
+                raise ValidationError("需求信号状态筛选无效") from None
+        async with self._uow_factory(tenant_id) as uow:
+            signals = await uow.signals.list_for_radar(
+                tenant_id,
+                signal_type=signal_type,
+                status=status,
+                limit=limit,
+            )
+        return [
+            DemandSignalView(
+                signal_id=str(signal.signal_id),
+                signal_type=signal.signal_type.value,
+                entity_name=signal.entity_name,
+                raw_observation=signal.raw_observation,
+                possible_need=signal.possible_need,
+                status=signal.status.value,
+                observed_at=signal.observed_at,
+                source_type=signal.provenance.source_type.value,
+                source_ref=signal.provenance.source_id,
+                source_url=signal.provenance.source_url,
+            )
+            for signal in signals
+        ]
+
+    async def list_hypotheses(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[HypothesisView]:
+        self._validate_radar_query(tenant_id, limit)
+        if status is not None:
+            try:
+                HypothesisStatus(status)
+            except ValueError:
+                raise ValidationError("需求假设状态筛选无效") from None
+        async with self._uow_factory(tenant_id) as uow:
+            hypotheses = await uow.hypotheses.list_for_radar(
+                tenant_id,
+                status=status,
+                limit=limit,
+            )
+            signals_by_hypothesis: list[list[DemandSignal]] = []
+            for hypothesis in hypotheses:
+                signals_by_hypothesis.append(
+                    await self._load_signals(uow, tenant_id, hypothesis)
+                )
+        names = await self._load_account_names(
+            tenant_id,
+            tuple(hypothesis.account_id for hypothesis in hypotheses),
+        )
+        now = self._validate_now(self._now())
+        return [
+            self._hypothesis_view(
+                hypothesis,
+                signals,
+                names[hypothesis.account_id],
+                now,
+            )
+            for hypothesis, signals in zip(
+                hypotheses,
+                signals_by_hypothesis,
+                strict=True,
+            )
+        ]
+
+    async def get_hypothesis(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+    ) -> HypothesisView:
+        self._validate_radar_query(tenant_id, 1)
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get(tenant_id, hypothesis_id)
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            signals = await self._load_signals(uow, tenant_id, hypothesis)
+        names = await self._load_account_names(
+            tenant_id,
+            (hypothesis.account_id,),
+        )
+        return self._hypothesis_view(
+            hypothesis,
+            signals,
+            names[hypothesis.account_id],
+            self._validate_now(self._now()),
+        )
+
+    async def list_needs(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[ValidatedNeedView]:
+        self._validate_radar_query(tenant_id, limit)
+        if status is not None:
+            try:
+                NeedStatus(status)
+            except ValueError:
+                raise ValidationError("已验证需求状态筛选无效") from None
+        async with self._uow_factory(tenant_id) as uow:
+            needs = await uow.needs.list_for_radar(
+                tenant_id,
+                status=status,
+                limit=limit,
+            )
+        names = await self._load_account_names(
+            tenant_id,
+            tuple(need.account_id for need in needs),
+        )
+        return [
+            self._validated_need_view(need, names[need.account_id])
+            for need in needs
+        ]
+
+    async def get_need(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+    ) -> ValidatedNeedView:
+        self._validate_radar_query(tenant_id, 1)
+        async with self._uow_factory(tenant_id) as uow:
+            need = await uow.needs.get(tenant_id, need_id)
+        if need is None:
+            raise ValidationError("已验证需求不存在")
+        names = await self._load_account_names(tenant_id, (need.account_id,))
+        return self._validated_need_view(need, names[need.account_id])
+
+    @staticmethod
+    def _validate_radar_query(tenant_id: TenantId, limit: int) -> None:
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or tenant_id != tenant_id.strip()
+            or type(limit) is not int
+            or not 1 <= limit <= 200
+        ):
+            raise ValidationError("需求雷达查询无效")
+
+    @staticmethod
+    async def _load_signals(
+        uow: DemandUnitOfWork,
+        tenant_id: TenantId,
+        hypothesis: NeedHypothesis,
+    ) -> list[DemandSignal]:
+        signals: list[DemandSignal] = []
+        for signal_id in hypothesis.signal_ids:
+            signal = await uow.signals.get(tenant_id, signal_id)
+            if signal is None or signal.status is SignalStatus.DISCARDED:
+                raise ValidationError("需求假设证据链不完整")
+            signals.append(signal)
+        if not signals:
+            raise ValidationError("需求假设证据链不完整")
+        return signals
+
+    async def _load_account_names(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]:
+        unique_ids = tuple(dict.fromkeys(account_ids))
+        if not unique_ids:
+            return {}
+        if self._account_names is None:
+            raise ValidationError("需求账户展示名依赖未配置")
+        names = await self._account_names.names_for(tenant_id, unique_ids)
+        if (
+            not isinstance(names, dict)
+            or set(names) != set(unique_ids)
+            or any(
+                not isinstance(name, str)
+                or not name
+                or name != name.strip()
+                or len(name) > 200
+                for name in names.values()
+            )
+        ):
+            raise ValidationError("需求账户展示名结果无效")
+        return names
+
+    @staticmethod
+    def _hypothesis_view(
+        hypothesis: NeedHypothesis,
+        signals: list[DemandSignal],
+        account_name: str,
+        now: datetime,
+    ) -> HypothesisView:
+        if len(signals) != len(hypothesis.signal_ids):
+            raise ValidationError("需求假设证据链不完整")
+        confidence = derive_confidence(hypothesis.evidence(), now=now)
+        return HypothesisView(
+            hypothesis_id=str(hypothesis.hypothesis_id),
+            account_id=str(hypothesis.account_id),
+            account_name=account_name,
+            category=hypothesis.category,
+            reasoning=hypothesis.reasoning.value,
+            confidence_tier=confidence.tier.value,
+            confidence_explanation=confidence.explanation,
+            evidence=[
+                EvidenceSummary(
+                    level=signal.evidence_level.value,
+                    summary=signal.raw_observation,
+                    observed_at=signal.observed_at,
+                    source_url=signal.provenance.source_url,
+                    source_ref=signal.provenance.source_id,
+                )
+                for signal in signals
+            ],
+            status=hypothesis.status.value,
+            created_at=hypothesis.created_at,
+        )
+
+    @staticmethod
+    def _validated_need_view(
+        need: ValidatedNeed,
+        account_name: str,
+    ) -> ValidatedNeedView:
+        fields: list[NeedFieldView] = []
+        for name in _PROMOTE_FIELD_WHITELIST:
+            field = getattr(need, name)
+            if field is None:
+                continue
+            value = field.value
+            if isinstance(value, Money):
+                display = f"{value.amount} {value.currency}"
+            elif isinstance(value, date):
+                display = value.isoformat()
+            else:
+                display = str(value)
+            fields.append(
+                NeedFieldView(
+                    name=name,
+                    value=display,
+                    source_ref=field.provenance.source_id,
+                    confirmed_by=(
+                        str(field.provenance.confirmed_by)
+                        if field.provenance.confirmed_by is not None
+                        else None
+                    ),
+                )
+            )
+        fields.sort(key=lambda item: item.name)
+        return ValidatedNeedView(
+            need_id=str(need.need_id),
+            account_id=str(need.account_id),
+            account_name=account_name,
+            product_category=need.product_category.value,
+            fields=fields,
+            completeness=need.completeness,
+            missing_for_sourcing=need.missing_fields_for_sourcing(),
+            status=need.status.value,
+            created_at=need.created_at,
+            quantity=need.quantity.value if need.quantity is not None else None,
+            destination=(
+                need.destination.value if need.destination is not None else None
+            ),
+            required_by=(
+                need.required_by.value if need.required_by is not None else None
+            ),
+            target_price=(
+                need.target_price.value if need.target_price is not None else None
+            ),
+        )

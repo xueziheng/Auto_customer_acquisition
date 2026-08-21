@@ -172,8 +172,48 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
     async def list_unlinked(
         self, tenant_id: TenantId, limit: int
     ) -> list[DemandSignal]:
-        """本切片不实现：无假设消费者，不发明排序/limit 语义（规格 §6.1）。"""
-        raise NotImplementedError
+        self._require_tenant(tenant_id, "demand_signal_list_unlinked")
+        rows = (
+            await self._session.execute(
+                select(DemandSignalRow)
+                .where(
+                    DemandSignalRow.tenant_id == str(self._tenant_id),
+                    DemandSignalRow.status == SignalStatus.CAPTURED.value,
+                )
+                .order_by(
+                    DemandSignalRow.observed_at,
+                    DemandSignalRow.signal_id,
+                )
+                .limit(limit)
+            )
+        ).scalars().all()
+        return [_row_to_signal(row) for row in rows]
+
+    async def list_for_radar(
+        self,
+        tenant_id: TenantId,
+        *,
+        signal_type: str | None,
+        status: str | None,
+        limit: int,
+    ) -> list[DemandSignal]:
+        self._require_tenant(tenant_id, "demand_signal_list_for_radar")
+        statement = select(DemandSignalRow).where(
+            DemandSignalRow.tenant_id == str(self._tenant_id)
+        )
+        if signal_type is not None:
+            statement = statement.where(DemandSignalRow.signal_type == signal_type)
+        if status is not None:
+            statement = statement.where(DemandSignalRow.status == status)
+        rows = (
+            await self._session.execute(
+                statement.order_by(
+                    DemandSignalRow.observed_at.desc(),
+                    DemandSignalRow.signal_id,
+                ).limit(limit)
+            )
+        ).scalars().all()
+        return [_row_to_signal(row) for row in rows]
 
     async def discard(
         self,
