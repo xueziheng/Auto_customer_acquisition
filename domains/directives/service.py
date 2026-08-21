@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from domains.directives.models import DirectiveContent
-from domains.directives.schemas import DirectiveView, ProposalView
+from domains.directives.schemas import (
+    DemandDiscoveryPlanInput,
+    DirectiveView,
+    ProposalView,
+)
 from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId
 
 
@@ -35,6 +39,18 @@ class DirectiveService(Protocol):
         - ``raw_text`` 原样保存：解析错误的争议要回到原话
         - 探索配比两项之和必须为 100
         """
+        ...
+
+    async def submit_discovery_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        plan: DemandDiscoveryPlanInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+    ) -> str:
+        """提交需求探索提案；域内转换为不可变指令内容并二次校验。"""
         ...
 
     async def confirm_proposal(

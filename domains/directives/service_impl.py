@@ -21,7 +21,11 @@ from domains.directives.models import (
     ProposalState,
 )
 from domains.directives.repository import DirectiveUnitOfWorkFactory
-from domains.directives.schemas import DirectiveView, ProposalView
+from domains.directives.schemas import (
+    DemandDiscoveryPlanInput,
+    DirectiveView,
+    ProposalView,
+)
 from domains.directives.service import DirectiveEmployeeReader
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import DirectiveActivated
@@ -367,6 +371,53 @@ class DirectiveServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             await uow.proposals.add(proposal)
         return proposal.proposal_id
+
+    async def submit_discovery_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        plan: DemandDiscoveryPlanInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+    ) -> str:
+        if not isinstance(plan, DemandDiscoveryPlanInput):
+            raise ValidationError("需求探索提案输入无效")
+        return await self.submit_proposal(
+            tenant_id,
+            raw_text,
+            DirectiveContent(
+                objective=DirectiveObjective.DISCOVER_AND_VALIDATE_DEMAND,
+                demand_discovery=DemandDiscoveryConfig(
+                    objective=plan.objective,
+                    queries=[
+                        DiscoverySearchQueryConfig(
+                            query=item.query,
+                            country=item.country,
+                            category=item.category,
+                            limit=item.limit,
+                        )
+                        for item in plan.queries
+                    ],
+                    target_countries=list(plan.target_countries),
+                    target_categories=list(plan.target_categories),
+                    excluded_countries=list(plan.excluded_countries),
+                    excluded_categories=list(plan.excluded_categories),
+                    max_search_queries=plan.max_search_queries,
+                    max_pages_read=plan.max_pages_read,
+                    max_signals=plan.max_signals,
+                    max_hypotheses=plan.max_hypotheses,
+                    minimum_confidence_tier=plan.minimum_confidence_tier,
+                    strategy_group=plan.strategy_group,
+                    campaign_id=plan.campaign_id,
+                    role_hints=list(plan.role_hints),
+                    assessment_ref=plan.assessment_ref,
+                ),
+            ),
+            interpretation_summary,
+            expected_behavior_changes,
+            parsed_by,
+        )
 
     async def confirm_proposal(
         self,

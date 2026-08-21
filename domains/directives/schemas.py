@@ -7,6 +7,37 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
+class DiscoverySearchQueryInput:
+    """公开的需求探索查询输入；域内仍会独立校验。"""
+
+    query: str
+    country: str
+    category: str
+    limit: int
+
+
+@dataclass(frozen=True)
+class DemandDiscoveryPlanInput:
+    """Trade Manager 提交给指令域的公开需求探索计划。"""
+
+    objective: str
+    queries: tuple[DiscoverySearchQueryInput, ...]
+    target_countries: tuple[str, ...]
+    target_categories: tuple[str, ...]
+    excluded_countries: tuple[str, ...]
+    excluded_categories: tuple[str, ...]
+    max_search_queries: int
+    max_pages_read: int
+    max_signals: int
+    max_hypotheses: int
+    minimum_confidence_tier: str
+    strategy_group: str
+    campaign_id: str
+    role_hints: tuple[str, ...]
+    assessment_ref: str
+
+
+@dataclass(frozen=True)
 class ProposalView:
     """提案视图 —— 老板确认界面的数据源。
 
