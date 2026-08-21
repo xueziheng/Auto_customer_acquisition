@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     CostSheetId,
     EmployeeId,
@@ -120,6 +121,45 @@ class QuoteLine:
     moq: int | None = None
     lead_time_days: int | None = None
 
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.line_number, bool)
+            or not isinstance(self.line_number, int)
+            or self.line_number <= 0
+        ):
+            raise ValidationError("报价行号必须为正整数")
+        if not isinstance(self.description, str) or not self.description.strip():
+            raise ValidationError("报价行描述不能为空")
+        if (
+            isinstance(self.quantity, bool)
+            or not isinstance(self.quantity, int)
+            or self.quantity <= 0
+        ):
+            raise ValidationError("报价行数量必须为正整数")
+        if self.unit_price.amount < 0 or self.line_total.amount < 0:
+            raise ValidationError("报价行金额不能为负")
+        if self.unit_price.currency != self.line_total.currency:
+            raise ValidationError("报价行币种不一致")
+        if self.line_total != self.unit_price.multiply(self.quantity):
+            raise ValidationError("报价行总额必须等于单价乘数量")
+        if (
+            not isinstance(self.price_snapshot_ref, str)
+            or not self.price_snapshot_ref.strip()
+        ):
+            raise ValidationError("价格快照引用不能为空")
+        if self.moq is not None and (
+            isinstance(self.moq, bool)
+            or not isinstance(self.moq, int)
+            or self.moq <= 0
+        ):
+            raise ValidationError("MOQ 必须为正整数")
+        if self.lead_time_days is not None and (
+            isinstance(self.lead_time_days, bool)
+            or not isinstance(self.lead_time_days, int)
+            or self.lead_time_days < 0
+        ):
+            raise ValidationError("交期天数不能为负")
+
 
 @dataclass
 class Quote:
@@ -163,6 +203,39 @@ class Quote:
     sent_at: datetime | None = None
     decided_at: datetime | None = None
     customer_feedback: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.version, bool)
+            or not isinstance(self.version, int)
+            or self.version <= 0
+        ):
+            raise ValidationError("报价版本必须为正整数")
+        if not isinstance(self.currency, str) or self.total.currency != self.currency:
+            raise ValidationError("报价币种与总额币种不一致")
+        if (
+            self.created_at.utcoffset() is None
+            or self.valid_until.utcoffset() is None
+            or self.valid_until <= self.created_at
+        ):
+            raise ValidationError("报价有效期必须晚于创建时间")
+        if not self.lines:
+            raise ValidationError("报价至少一行")
+        line_numbers = [line.line_number for line in self.lines]
+        if len(line_numbers) != len(set(line_numbers)):
+            raise ValidationError("报价行号不能重复")
+        if any(
+            line.unit_price.currency != self.currency
+            or line.line_total.currency != self.currency
+            for line in self.lines
+        ):
+            raise ValidationError("报价行币种与报价币种不一致")
+        expected_total = sum(
+            (line.line_total.amount for line in self.lines),
+            start=self.total.amount * 0,
+        )
+        if expected_total != self.total.amount:
+            raise ValidationError("报价总额必须等于报价行合计")
 
     def can_transition_to(self, target: QuoteState) -> bool:
         return target in ALLOWED_TRANSITIONS[self.state]
