@@ -10,6 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     CostSheetId,
     EmployeeId,
@@ -95,6 +96,24 @@ class CostItem:
     source_ref: str | None = None
     entered_by: EmployeeId | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.item_type, CostItemType):
+            raise ValidationError("成本项类型无效")
+        if not isinstance(self.amount, Money) or self.amount.amount < 0:
+            raise ValidationError("成本项金额不能为负")
+        if self.price_basis not in {
+            PriceBasis.INDICATIVE,
+            PriceBasis.QUOTED,
+            CostSheetVersion.ACTUAL.value,
+        }:
+            raise ValidationError("成本项价格基准无效")
+        if not isinstance(self.is_per_unit, bool):
+            raise ValidationError("成本项计价方式无效")
+        if self.entered_by is not None and (
+            not isinstance(self.source_ref, str) or not self.source_ref.strip()
+        ):
+            raise ValidationError("人工确认成本项必须有来源引用")
+
 
 @dataclass
 class CostSheet:
@@ -128,6 +147,49 @@ class CostSheet:
     created_by: EmployeeId | None = None
     locked_at: datetime | None = None
     risk_acceptance: RiskAcceptance | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version_type, CostSheetVersion):
+            raise ValidationError("成本表版本类型无效")
+        if (
+            isinstance(self.version_number, bool)
+            or not isinstance(self.version_number, int)
+            or self.version_number <= 0
+        ):
+            raise ValidationError("成本表版本号必须为正整数")
+        if (
+            isinstance(self.quantity, bool)
+            or not isinstance(self.quantity, int)
+            or self.quantity <= 0
+        ):
+            raise ValidationError("成本表数量必须为正整数")
+        for currency in (self.base_currency, self.quote_currency):
+            if (
+                not isinstance(currency, str)
+                or len(currency) != 3
+                or not currency.isascii()
+                or not currency.isalpha()
+                or not currency.isupper()
+            ):
+                raise ValidationError("成本表币种无效")
+        if self.created_at.utcoffset() is None:
+            raise ValidationError("成本表创建时间必须含时区")
+        if not isinstance(self.items, list) or any(
+            not isinstance(item, CostItem) for item in self.items
+        ):
+            raise ValidationError("成本表项目无效")
+        if self.version_type is CostSheetVersion.QUOTED and (
+            not isinstance(self.fx_snapshot_id, str) or not self.fx_snapshot_id.strip()
+        ):
+            raise ValidationError("QUOTED 成本表必须绑定汇率快照")
+        if self.locked_at is not None and (
+            self.locked_at.utcoffset() is None or self.locked_at < self.created_at
+        ):
+            raise ValidationError("成本表锁定时间无效")
+        if self.risk_acceptance is not None and not isinstance(
+            self.risk_acceptance, RiskAcceptance
+        ):
+            raise ValidationError("参考价风险接受记录无效")
 
     def has_indicative_items(self) -> bool:
         """是否含参考价成本项。
@@ -176,6 +238,14 @@ class RiskAcceptance:
     accepted_by: EmployeeId
     accepted_at: datetime
     justification: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted_by, str) or not self.accepted_by.strip():
+            raise ValidationError("风险接受人无效")
+        if self.accepted_at.utcoffset() is None:
+            raise ValidationError("风险接受时间必须含时区")
+        if not isinstance(self.justification, str) or not self.justification.strip():
+            raise ValidationError("风险接受理由不能为空")
 
 
 @dataclass(frozen=True)
