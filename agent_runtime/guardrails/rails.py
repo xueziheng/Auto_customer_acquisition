@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import ChangeSet
@@ -92,6 +95,76 @@ class TenantConsistencyRail:
                     self._walk(child, f"{location}[{index}]", expected_tenant)
                 )
         return violations
+
+
+_PROBABILITY_KEY_PARTS = ("confidence", "probability", "likelihood")
+_NUMERIC_VALUE = re.compile(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)\s*%?")
+_PROBABILITY_TEXT = re.compile(
+    r"(?:置信度|概率|confidence|probability|likelihood)"
+    r"\s*(?:(?:约|为|is|of)\s*|[:=]\s*)?"
+    r"(?:\d+(?:\.\d+)?|\.\d+)\s*%?",
+)
+
+
+class NoProbabilityOutputRail:
+    """禁止把模型产生的数值概率伪装成可测量的业务置信度。"""
+
+    name = "no_probability_output"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            violations.extend(self._walk(change, f"changes[{index}]", None))
+        return violations
+
+    def _walk(
+        self,
+        value: object,
+        location: str,
+        field_name: str | None,
+    ) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        if self._is_numeric_probability(field_name, value) or (
+            isinstance(value, str)
+            and _PROBABILITY_TEXT.search(
+                unicodedata.normalize("NFKC", value).casefold()
+            )
+            is not None
+        ):
+            violations.append(
+                RailViolation(
+                    rail=self.name,
+                    location=location,
+                    detail="模型输出包含数值概率或置信度",
+                    how_to_fix="改用证据等级，由确定性代码推导离散置信度",
+                )
+            )
+            return violations
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                key_text = str(key)
+                violations.extend(
+                    self._walk(child, f"{location}.{key_text}", key_text)
+                )
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                violations.extend(
+                    self._walk(child, f"{location}[{index}]", field_name)
+                )
+        return violations
+
+    @staticmethod
+    def _is_numeric_probability(field_name: str | None, value: object) -> bool:
+        if field_name is None:
+            return False
+        normalized_name = field_name.casefold()
+        if not any(part in normalized_name for part in _PROBABILITY_KEY_PARTS):
+            return False
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float, Decimal)):
+            return True
+        return isinstance(value, str) and _NUMERIC_VALUE.fullmatch(value.strip()) is not None
 
 
 class GuardrailChecker:

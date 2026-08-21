@@ -7,6 +7,7 @@ import pytest
 from agent_runtime.base import ChangeSet
 from agent_runtime.guardrails.rails import (
     GuardrailChecker,
+    NoProbabilityOutputRail,
     RailViolation,
     TenantConsistencyRail,
 )
@@ -131,3 +132,40 @@ def test_tenant_consistency_rail_allows_matching_or_absent_nested_tenant() -> No
     ]
 
     assert TenantConsistencyRail().check(change_set) == []
+
+
+def test_probability_rail_finds_numeric_fields_and_hidden_text_values() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "payload": {
+                "confidence": 67,
+                "analysis": "该线索的置信度约 70%，建议继续跟进。",
+                "items": [{"purchase_probability": "0.42"}],
+            }
+        }
+    ]
+
+    violations = NoProbabilityOutputRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.confidence",
+        "changes[0].payload.analysis",
+        "changes[0].payload.items[0].purchase_probability",
+    ]
+    assert all(violation.rail == "no_probability_output" for violation in violations)
+
+
+def test_probability_rail_allows_discrete_evidence_labels() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "payload": {
+                "confidence": "strong",
+                "evidence_level": "customer_confirmed",
+                "analysis": "客户已明确确认材质和数量。",
+            }
+        }
+    ]
+
+    assert NoProbabilityOutputRail().check(change_set) == []
