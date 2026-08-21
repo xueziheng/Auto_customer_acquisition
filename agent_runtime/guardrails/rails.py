@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -45,6 +46,52 @@ class Rail(Protocol):
     name: str
 
     def check(self, change_set: ChangeSet) -> list[RailViolation]: ...
+
+
+class TenantConsistencyRail:
+    """拒绝 Change Set 中任何越出顶层租户边界的嵌套数据。"""
+
+    name = "tenant_consistency"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            violations.extend(
+                self._walk(change, f"changes[{index}]", change_set.tenant_id)
+            )
+        return violations
+
+    def _walk(
+        self,
+        value: object,
+        location: str,
+        expected_tenant: str,
+    ) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                child_location = f"{location}.{key}"
+                if key == "tenant_id" and (
+                    not isinstance(child, str) or child != expected_tenant
+                ):
+                    violations.append(
+                        RailViolation(
+                            rail=self.name,
+                            location=child_location,
+                            detail="变更数据的租户与 Change Set 租户不一致",
+                            how_to_fix="移除跨租户数据，并用当前租户重新读取业务对象",
+                        )
+                    )
+                else:
+                    violations.extend(
+                        self._walk(child, child_location, expected_tenant)
+                    )
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                violations.extend(
+                    self._walk(child, f"{location}[{index}]", expected_tenant)
+                )
+        return violations
 
 
 class GuardrailChecker:

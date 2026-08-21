@@ -8,6 +8,7 @@ from agent_runtime.base import ChangeSet
 from agent_runtime.guardrails.rails import (
     GuardrailChecker,
     RailViolation,
+    TenantConsistencyRail,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, RunId, TenantId
@@ -90,3 +91,43 @@ def test_checker_rejects_duplicate_names_and_fails_closed_on_rail_error() -> Non
 def test_checker_rejects_invalid_rail(invalid: object) -> None:
     with pytest.raises(ValidationError, match="护栏实现无效"):
         GuardrailChecker().register(invalid)  # type: ignore[arg-type]
+
+
+def test_tenant_consistency_rail_reports_every_cross_tenant_location() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "demand",
+            "operation": "update",
+            "tenant_id": "tenant-two",
+            "payload": {
+                "tenant_id": "tenant-one",
+                "evidence": [{"tenant_id": "tenant-three"}],
+            },
+        },
+        {"domain": "outreach", "payload": {"tenant_id": 7}},
+    ]
+
+    violations = TenantConsistencyRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].tenant_id",
+        "changes[0].payload.evidence[0].tenant_id",
+        "changes[1].payload.tenant_id",
+    ]
+    assert all(violation.rail == "tenant_consistency" for violation in violations)
+
+
+def test_tenant_consistency_rail_allows_matching_or_absent_nested_tenant() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "demand",
+            "payload": {
+                "tenant_id": "tenant-one",
+                "items": [{"name": "hinge"}],
+            },
+        }
+    ]
+
+    assert TenantConsistencyRail().check(change_set) == []
