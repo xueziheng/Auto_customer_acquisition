@@ -81,9 +81,19 @@ class Commitment:
 
     @property
     def is_confirmed(self) -> bool:
-        raise NotImplementedError
+        return self.confirmed_by is not None
 
     def is_overdue_at(self, now: datetime) -> bool:
         """是否逾期。``due_at_uncertain`` 的承诺不判逾期——
         先让员工确认时间。"""
-        raise NotImplementedError
+        open_statuses = {
+            CommitmentStatus.PENDING,
+            CommitmentStatus.WAITING_CUSTOMER,
+            CommitmentStatus.OVERDUE,
+        }
+        return (
+            self.is_confirmed
+            and not self.due_at_uncertain
+            and self.status in open_statuses
+            and now >= self.due_at
+        )
