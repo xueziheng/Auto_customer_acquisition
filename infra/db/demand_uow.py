@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.demand import DemandSignalRepositoryImpl
+from infra.db.repositories.need_clusters import NeedClusterRepositoryImpl
 from infra.db.repositories.need_hypotheses import (
     NeedHypothesisRepositoryImpl,
     ValidatedNeedRepositoryImpl,
@@ -39,6 +40,9 @@ class SqlAlchemyDemandUnitOfWork:
             session, self._tenant_id, now=self._now
         )
         self.needs = ValidatedNeedRepositoryImpl(
+            session, self._tenant_id, now=self._now
+        )
+        self.clusters = NeedClusterRepositoryImpl(
             session, self._tenant_id, now=self._now
         )
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)

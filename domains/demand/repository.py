@@ -87,6 +87,7 @@ class DemandUnitOfWork(Protocol):
     signals: DemandSignalRepository
     hypotheses: NeedHypothesisRepository
     needs: ValidatedNeedRepository
+    clusters: NeedClusterRepository
     bus: EventBus
 
     async def __aenter__(self) -> Self: ...
@@ -232,3 +233,7 @@ class NeedClusterRepository(Protocol):
         样本少时简单规则更可预测、更好调试。
         """
         ...
+
+    async def list_for_radar(
+        self, tenant_id: TenantId, *, limit: int
+    ) -> list[NeedCluster]: ...

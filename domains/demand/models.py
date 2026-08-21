@@ -364,6 +364,7 @@ class NeedCluster:
     tenant_id: TenantId
     category: str
     member_need_ids: list[ValidatedNeedId] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
     countries: list[str] = field(default_factory=list)
     total_potential_quantity: int | None = None
     recurring_demand: bool | None = None
@@ -376,4 +377,5 @@ class NeedCluster:
         Phase 2 用。判断依据：成员数、合计数量、重复采购迹象、
         跨国家分布。达标时通知产品负责人，不自动创建产品。
         """
-        raise NotImplementedError
+        # Phase 2 才定义规模门槛；Phase 1 只能保守地不提议，不能自造阈值。
+        return False

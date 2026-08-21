@@ -37,6 +37,7 @@ from shared.schemas.identifiers import (
     DemandSignalId,
     EmployeeId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -405,6 +406,7 @@ def _need_to_row(need: ValidatedNeed) -> ValidatedNeedRow:
         "status": need.status.value,
         "created_at": need.created_at,
         "confirmed_by": str(need.confirmed_by) if need.confirmed_by else None,
+        "cluster_id": str(need.cluster_id) if need.cluster_id else None,
     }
     for field_name in _FIELD_KINDS:
         values[field_name] = _factual_to_json(getattr(need, field_name))
@@ -452,7 +454,9 @@ def _row_to_need(row: ValidatedNeedRow) -> ValidatedNeed:
             FactualField[str] | None, field("certification_required")
         ),
         confirmed_by=EmployeeId(row.confirmed_by) if row.confirmed_by else None,
-        cluster_id=None,
+        cluster_id=(
+            NeedClusterId(row.cluster_id) if row.cluster_id is not None else None
+        ),
     )
 
 
@@ -496,6 +500,7 @@ class ValidatedNeedRepositoryImpl(_HypothesisRepository, ValidatedNeedRepository
         values: dict[str, object] = {
             "status": need.status.value,
             "confirmed_by": str(need.confirmed_by) if need.confirmed_by else None,
+            "cluster_id": str(need.cluster_id) if need.cluster_id else None,
         }
         for field_name in _FIELD_KINDS:
             values[field_name] = _factual_to_json(getattr(need, field_name))
