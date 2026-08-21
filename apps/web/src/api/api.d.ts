@@ -1545,6 +1545,8 @@ export interface components {
             created_at: string;
             /** Decided At */
             decided_at?: string | null;
+            /** Decided By Id */
+            decided_by_id?: string | null;
             /** Decided By Name */
             decided_by_name?: string | null;
             /** Expected Behavior Changes */

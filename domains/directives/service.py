@@ -103,6 +103,15 @@ class DirectiveService(Protocol):
         self, tenant_id: TenantId, limit: int = 20
     ) -> list[DirectiveView]: ...
 
+    async def get_confirmed_discovery_plan(
+        self,
+        tenant_id: TenantId,
+        proposal_id: str,
+        confirmed_by: EmployeeId,
+    ) -> DemandDiscoveryPlanInput:
+        """读取由指定老板确认的探索计划，供 workflow 在每步重新核对。"""
+        ...
+
 
 @runtime_checkable
 class DirectiveEmployeeReader(Protocol):

@@ -53,6 +53,7 @@ class ProposalView:
     state: str
     created_at: datetime
     decided_at: datetime | None = None
+    decided_by_id: str | None = None
     decided_by_name: str | None = None
 
 

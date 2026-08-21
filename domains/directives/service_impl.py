@@ -24,6 +24,7 @@ from domains.directives.repository import DirectiveUnitOfWorkFactory
 from domains.directives.schemas import (
     DemandDiscoveryPlanInput,
     DirectiveView,
+    DiscoverySearchQueryInput,
     ProposalView,
 )
 from domains.directives.service import DirectiveEmployeeReader
@@ -596,11 +597,64 @@ class DirectiveServiceImpl:
             state=proposal.state.value,
             created_at=proposal.created_at,
             decided_at=proposal.decided_at,
+            decided_by_id=(
+                None
+                if proposal.decided_by is None
+                else str(proposal.decided_by)
+            ),
             decided_by_name=(
                 None
                 if proposal.decided_by is None
                 else names[proposal.decided_by]
             ),
+        )
+
+    async def get_confirmed_discovery_plan(
+        self,
+        tenant_id: TenantId,
+        proposal_id: str,
+        confirmed_by: EmployeeId,
+    ) -> DemandDiscoveryPlanInput:
+        self._validate_tenant(tenant_id)
+        _text(proposal_id, "指令提案标识无效", maximum=40)
+        _text(str(confirmed_by), "指令确认员工无效", maximum=64)
+        async with self._uow_factory(tenant_id) as uow:
+            proposal = await uow.proposals.get(tenant_id, proposal_id)
+        if (
+            proposal is None
+            or proposal.state is not ProposalState.CONFIRMED
+            or proposal.decided_by != confirmed_by
+            or proposal.parsed.objective
+            is not DirectiveObjective.DISCOVER_AND_VALIDATE_DEMAND
+            or proposal.parsed.demand_discovery is None
+        ):
+            raise InvalidStateTransition("需求探索提案未由当前发起人确认")
+        plan = proposal.parsed.demand_discovery
+        _validate_demand_discovery(plan)
+        return DemandDiscoveryPlanInput(
+            objective=plan.objective,
+            queries=tuple(
+                DiscoverySearchQueryInput(
+                    query=item.query,
+                    country=item.country,
+                    category=item.category,
+                    limit=item.limit,
+                )
+                for item in plan.queries
+            ),
+            target_countries=tuple(plan.target_countries),
+            target_categories=tuple(plan.target_categories),
+            excluded_countries=tuple(plan.excluded_countries),
+            excluded_categories=tuple(plan.excluded_categories),
+            max_search_queries=plan.max_search_queries,
+            max_pages_read=plan.max_pages_read,
+            max_signals=plan.max_signals,
+            max_hypotheses=plan.max_hypotheses,
+            minimum_confidence_tier=plan.minimum_confidence_tier,
+            strategy_group=plan.strategy_group,
+            campaign_id=plan.campaign_id,
+            role_hints=tuple(plan.role_hints),
+            assessment_ref=plan.assessment_ref,
         )
 
     async def list_versions(

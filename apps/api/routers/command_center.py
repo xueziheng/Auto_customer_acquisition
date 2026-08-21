@@ -144,13 +144,16 @@ async def confirm_discovery_proposal(
     active = await directives.get_active(identity.tenant_id)
     if active is None or active.source_proposal_id != proposal_id:
         raise InvalidStateTransition("该提案已不是当前生效指令，不能启动需求探索")
+    confirmed = await directives.get_proposal(identity.tenant_id, proposal_id)
+    if confirmed.decided_by_id is None:
+        raise InvalidStateTransition("需求探索提案缺少确认人")
     run_id = await dependencies.workflow_engine.start(
         identity.tenant_id,
         "demand_discovery",
         proposal_id,
         {
             "proposal_id": proposal_id,
-            "acting_user_id": str(identity.employee.employee_id),
+            "acting_user_id": confirmed.decided_by_id,
         },
         f"demand-discovery:{proposal_id}",
     )
