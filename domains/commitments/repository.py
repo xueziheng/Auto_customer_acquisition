@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.commitments.models import Commitment, CommitmentStatus
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import CommitmentId, EmployeeId, TenantId
 
 
@@ -16,7 +17,21 @@ from shared.schemas.identifiers import CommitmentId, EmployeeId, TenantId
 class CommitmentRepository(Protocol):
     async def add(self, commitment: Commitment) -> None: ...
 
+    async def add_if_absent(
+        self, commitment: Commitment
+    ) -> tuple[Commitment, bool]:
+        """按 ``(tenant_id, source_message_id, action)`` 原子插入。
+
+        返回 ``(持久化 winner, 是否本次创建)``。必须由唯一约束实现，
+        禁止先查后插。
+        """
+        ...
+
     async def get(
+        self, tenant_id: TenantId, commitment_id: CommitmentId
+    ) -> Commitment | None: ...
+
+    async def get_for_update(
         self, tenant_id: TenantId, commitment_id: CommitmentId
     ) -> Commitment | None: ...
 
@@ -40,3 +55,23 @@ class CommitmentRepository(Protocol):
         employee_id: EmployeeId,
         statuses: list[CommitmentStatus],
     ) -> list[Commitment]: ...
+
+
+@runtime_checkable
+class CommitmentUnitOfWork(Protocol):
+    commitments: CommitmentRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+
+@runtime_checkable
+class CommitmentUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> CommitmentUnitOfWork: ...
