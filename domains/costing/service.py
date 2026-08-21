@@ -5,7 +5,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
-from domains.costing.models import CostBreakdown, CostItem, CostSheet, MarginRule
+from domains.costing.models import (
+    CostBreakdown,
+    CostItem,
+    CostItemType,
+    CostSheet,
+    MarginRule,
+)
 from domains.costing.schemas import CostSheetView, QuoteReadiness
 from shared.schemas.identifiers import (
     CostSheetId,
@@ -13,6 +19,11 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
+
+
+def cost_item_type_values() -> tuple[str, ...]:
+    """返回成本项公共词表，供上层校验建议而不导入域内部模型。"""
+    return tuple(item_type.value for item_type in CostItemType)
 
 
 def compute_breakdown(
