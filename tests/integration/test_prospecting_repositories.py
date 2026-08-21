@@ -6,14 +6,18 @@ import asyncio
 import hashlib
 import importlib
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from domains.prospecting.schemas import ContactPointCreateRequest, ContactPointKind
+from domains.prospecting.schemas import (
+    ContactPointCreateRequest,
+    ContactPointKind,
+    VerificationRecordRequest,
+)
 from infra.db.tables import OutboxEventRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
@@ -245,6 +249,23 @@ def _verification_service(
     )
 
 
+def _verification_request(
+    contact_point_id: ContactPointId,
+    result: object,
+    *,
+    checked_at: datetime = NOW,
+    provider: str = "provider-v1",
+    cost_note: str = "hunter.email_verifier.counted",
+) -> VerificationRecordRequest:
+    return VerificationRecordRequest(
+        contact_point_id,
+        result,  # type: ignore[arg-type]
+        provider,
+        checked_at,
+        cost_note,
+    )
+
+
 async def _seed_service_contact_points(
     service: object,
     tenant: TenantId,
@@ -449,7 +470,9 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
         _models.VerificationStatus.INVALID,
     )
     for point_id, result in zip(point_ids, results, strict=True):
-        await service.record_verification(tenant, point_id, result, "provider-v1")
+        await service.record_verification(
+            tenant, _verification_request(point_id, result)
+        )
 
     async with SqlAlchemyProspectingUnitOfWork(
         factory, tenant, now=lambda: NOW
@@ -461,7 +484,9 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
     assert [point.verification for point in stored if point is not None] == list(
         results
     )
-    assert stored[0] is not None and stored[0].verification_provider is None
+    assert stored[0] is not None and stored[0].verification_provider == "provider-v1"
+    assert stored[0].verification_checked_at == NOW
+    assert stored[0].verification_cost_note == "hunter.email_verifier.counted"
     assert stored[1] is not None and stored[1].verified_at == NOW
     assert stored[1].verification_provider == "provider-v1"
     assert stored[2] is not None and stored[2].verified_at is None
@@ -490,7 +515,13 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
     assert events[0].event_payload["verification_result"] == "verified"
 
     await service.record_verification(
-        tenant, point_ids[1], _models.VerificationStatus.VERIFIED, "provider-v2"
+        tenant,
+        _verification_request(
+            point_ids[1],
+            _models.VerificationStatus.VERIFIED,
+            checked_at=NOW + timedelta(seconds=1),
+            provider="provider-v2",
+        ),
     )
     async with factory() as session:
         repeated = (
@@ -504,7 +535,13 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
     assert len(repeated) == 1
 
     await service.record_verification(
-        tenant, point_ids[1], _models.VerificationStatus.RISKY, "provider-v3"
+        tenant,
+        _verification_request(
+            point_ids[1],
+            _models.VerificationStatus.RISKY,
+            checked_at=NOW + timedelta(seconds=2),
+            provider="provider-v3",
+        ),
     )
     assert await service.list_verified_contact_points(tenant, account_id) == []
     async with SqlAlchemyProspectingUnitOfWork(
@@ -516,7 +553,13 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
     assert risky.verified_at is None
     assert risky.verification_provider == "provider-v3"
     await service.record_verification(
-        tenant, point_ids[1], _models.VerificationStatus.VERIFIED, "provider-v4"
+        tenant,
+        _verification_request(
+            point_ids[1],
+            _models.VerificationStatus.VERIFIED,
+            checked_at=NOW + timedelta(seconds=3),
+            provider="provider-v4",
+        ),
     )
     async with factory() as session:
         reverified = (
@@ -532,17 +575,21 @@ async def test_verification_state_machine_filters_and_publishes_metadata_only(
     with pytest.raises(ContactPointNotFoundError, match="潜在联系方式不存在"):
         await service.record_verification(
             TenantId(new_id("tn")),
-            point_ids[1],
-            _models.VerificationStatus.VERIFIED,
-            "provider-v1",
+            _verification_request(point_ids[1], _models.VerificationStatus.VERIFIED),
         )
     with pytest.raises(ContactPointNotFoundError, match="潜在联系方式不存在"):
         await service.record_verification(
             tenant,
-            ContactPointId(new_id("cp")),
-            _models.VerificationStatus.VERIFIED,
-            "provider-v1",
+            _verification_request(
+                ContactPointId(new_id("cp")), _models.VerificationStatus.VERIFIED
+            ),
         )
+
+    with pytest.raises(ContactPointNotFoundError, match="潜在联系方式不存在"):
+        await service.get_contact_point(TenantId(new_id("tn")), point_ids[1])
+    point_view = await service.get_contact_point(tenant, point_ids[1])
+    assert point_view.account_id == account_id
+    assert point_view.verification_checked_at == NOW + timedelta(seconds=3)
 
 
 async def test_concurrent_verification_emits_exactly_one_event(
@@ -559,9 +606,7 @@ async def test_concurrent_verification_emits_exactly_one_event(
         *(
             service.record_verification(
                 tenant,
-                point_id,
-                _models.VerificationStatus.VERIFIED,
-                "provider-v1",
+                _verification_request(point_id, _models.VerificationStatus.VERIFIED),
             )
             for _ in range(20)
         )
@@ -600,9 +645,7 @@ async def test_verification_bus_failure_rolls_back_and_retry_succeeds(
         with pytest.raises(RuntimeError, match="outbox failure marker"):
             await service.record_verification(
                 tenant,
-                point_id,
-                _models.VerificationStatus.VERIFIED,
-                "provider-v1",
+                _verification_request(point_id, _models.VerificationStatus.VERIFIED),
             )
 
     async with SqlAlchemyProspectingUnitOfWork(
@@ -626,9 +669,7 @@ async def test_verification_bus_failure_rolls_back_and_retry_succeeds(
 
     await service.record_verification(
         tenant,
-        point_id,
-        _models.VerificationStatus.VERIFIED,
-        "provider-v1",
+        _verification_request(point_id, _models.VerificationStatus.VERIFIED),
     )
     async with factory() as session:
         events_after_retry = (

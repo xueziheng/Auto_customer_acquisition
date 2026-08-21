@@ -29,9 +29,10 @@ from domains.prospecting.schemas import (
     ContactPointCreateRequest,
     ContactPointView,
     ProspectAccountView,
+    VerificationRecordRequest,
 )
 from domains.prospecting.service import ContactValueHasher
-from shared.errors import ValidationError
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import ContactPointVerified
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -135,6 +136,26 @@ def _account_view(account: ProspectAccount) -> ProspectAccountView:
         industry=account.industry,
         size_hint=account.size_hint,
         source_signal_refs=tuple(account.source_signal_refs),
+    )
+
+
+def _contact_point_view(
+    point: ContactPoint, account_id: ProspectAccountId
+) -> ContactPointView:
+    return ContactPointView(
+        contact_point_id=point.contact_point_id,
+        tenant_id=point.tenant_id,
+        contact_id=point.contact_id,
+        account_id=account_id,
+        kind=point.kind,
+        value=point.value,
+        verification=point.verification,
+        created_at=point.created_at,
+        verified_at=point.verified_at,
+        verification_provider=point.verification_provider,
+        verification_checked_at=point.verification_checked_at,
+        verification_cost_note=point.verification_cost_note,
+        enrichment_cost_note=point.enrichment_cost_note,
     )
 
 
@@ -270,67 +291,87 @@ class ProspectingServiceImpl:
             raise ProspectAccountNotFoundError("潜在企业不存在")
         return _account_view(account)
 
+    async def get_contact_point(
+        self, tenant_id: TenantId, contact_point_id: ContactPointId
+    ) -> ContactPointView:
+        async with self._uow_factory(tenant_id) as uow:
+            point = await uow.contacts.get_contact_point(tenant_id, contact_point_id)
+            if point is None:
+                raise ContactPointNotFoundError("潜在联系方式不存在")
+            contact = await uow.contacts.get_contact(tenant_id, point.contact_id)
+            if contact is None:
+                raise ContactPointNotFoundError("潜在联系方式不存在")
+            return _contact_point_view(point, contact.account_id)
+
     async def list_verified_contact_points(
         self, tenant_id: TenantId, account_id: ProspectAccountId
     ) -> list[ContactPointView]:
         async with self._uow_factory(tenant_id) as uow:
             points = await uow.contacts.list_verified_for_account(tenant_id, account_id)
-        return [
-            ContactPointView(
-                contact_point_id=point.contact_point_id,
-                tenant_id=point.tenant_id,
-                contact_id=point.contact_id,
-                account_id=account_id,
-                kind=point.kind,
-                value=point.value,
-                verification=point.verification,
-                created_at=point.created_at,
-                verified_at=point.verified_at,
-                verification_provider=point.verification_provider,
-                enrichment_cost_note=point.enrichment_cost_note,
-            )
-            for point in points
-        ]
+        return [_contact_point_view(point, account_id) for point in points]
 
     async def record_verification(
         self,
         tenant_id: TenantId,
-        contact_point_id: ContactPointId,
-        result: VerificationStatus,
-        provider: str,
+        request: VerificationRecordRequest,
     ) -> None:
         """行锁下转换验证状态，并与 metadata-only outbox 原子提交。"""
-        if not isinstance(result, VerificationStatus):
+        if not isinstance(request.result, VerificationStatus):
             raise ValidationError("验证结果无效")
-        _require_text(provider, "验证服务标识无效")
-        verified_at = _utc_now(self._now)
+        _require_text(request.provider, "验证服务标识无效")
+        _require_text(request.cost_note, "验证成本说明无效")
+        if (
+            request.checked_at.tzinfo is None
+            or request.checked_at.utcoffset() != timedelta(0)
+        ):
+            raise ValidationError("验证观察时间必须为 UTC")
         async with self._uow_factory(tenant_id) as uow:
             current = await uow.contacts.get_contact_point_for_update(
-                tenant_id, contact_point_id
+                tenant_id, request.contact_point_id
             )
             if current is None:
                 raise ContactPointNotFoundError("潜在联系方式不存在")
-            if current.verification is result:
-                return
+            if current.verification_checked_at is not None:
+                if request.checked_at < current.verification_checked_at:
+                    raise InvalidStateTransition("验证结果早于当前观察")
+                if request.checked_at == current.verification_checked_at:
+                    same_observation = (
+                        current.verification is request.result
+                        and current.verification_provider == request.provider
+                        and current.verification_cost_note == request.cost_note
+                    )
+                    if same_observation:
+                        return
+                    raise ProspectingConflictError("验证观察时间冲突")
+            transitioned_to_verified = (
+                current.verification is not VerificationStatus.VERIFIED
+                and request.result is VerificationStatus.VERIFIED
+            )
             updated = replace(
                 current,
-                verification=result,
+                verification=request.result,
                 verified_at=(
-                    verified_at if result is VerificationStatus.VERIFIED else None
+                    (
+                        current.verified_at
+                        if current.verification is VerificationStatus.VERIFIED
+                        else request.checked_at
+                    )
+                    if request.result is VerificationStatus.VERIFIED
+                    else None
                 ),
-                verification_provider=(
-                    None if result is VerificationStatus.UNVERIFIED else provider
-                ),
+                verification_provider=request.provider,
+                verification_checked_at=request.checked_at,
+                verification_cost_note=request.cost_note,
             )
             await uow.contacts.update_contact_point(updated)
-            if result is VerificationStatus.VERIFIED:
+            if transitioned_to_verified:
                 await uow.bus.publish(
                     ContactPointVerified(
                         tenant_id=tenant_id,
-                        occurred_at=verified_at,
+                        occurred_at=request.checked_at,
                         run_id=None,
-                        contact_point_id=contact_point_id,
-                        verification_result=result.value,
+                        contact_point_id=request.contact_point_id,
+                        verification_result=request.result.value,
                     )
                 )
 

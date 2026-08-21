@@ -2514,9 +2514,16 @@ class ContactPointRow(Base):
             name="ck_contact_points_verified_pair",
         ),
         CheckConstraint(
-            "(verification_status = 'unverified') = "
-            "(verification_provider IS NULL)",
-            name="ck_contact_points_provider_state",
+            "(verification_checked_at IS NULL AND "
+            "verification_cost_note IS NULL AND "
+            "((verification_status = 'unverified' AND "
+            "verification_provider IS NULL) OR "
+            "(verification_status <> 'unverified' AND "
+            "verification_provider IS NOT NULL))) OR "
+            "(verification_checked_at IS NOT NULL AND "
+            "verification_provider IS NOT NULL AND "
+            "verification_cost_note IS NOT NULL)",
+            name="ck_contact_points_verification_observation",
         ),
         CheckConstraint(
             "btrim(tenant_id) <> '' AND btrim(contact_point_id) <> '' AND "
@@ -2525,6 +2532,8 @@ class ContactPointRow(Base):
         ),
         CheckConstraint(
             "(verification_provider IS NULL OR btrim(verification_provider) <> '') "
+            "AND (verification_cost_note IS NULL OR "
+            "btrim(verification_cost_note) <> '') "
             "AND (enrichment_cost_note IS NULL OR btrim(enrichment_cost_note) <> '')",
             name="ck_contact_points_optional_nonblank",
         ),
@@ -2541,6 +2550,10 @@ class ContactPointRow(Base):
     )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verification_provider: Mapped[str | None] = mapped_column(String(100))
+    verification_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    verification_cost_note: Mapped[str | None] = mapped_column(String(200))
     enrichment_cost_note: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

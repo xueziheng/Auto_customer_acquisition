@@ -105,6 +105,8 @@ def _rows_to_point(row: ContactPointRow, basis: ContactLegalBasisRow) -> Contact
         verification=VerificationStatus(row.verification_status),
         verified_at=row.verified_at,
         verification_provider=row.verification_provider,
+        verification_checked_at=row.verification_checked_at,
+        verification_cost_note=row.verification_cost_note,
         enrichment_cost_note=row.enrichment_cost_note,
     )
 
@@ -258,6 +260,8 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
                 verification_status=cp.verification.value,
                 verified_at=cp.verified_at,
                 verification_provider=cp.verification_provider,
+                verification_checked_at=cp.verification_checked_at,
+                verification_cost_note=cp.verification_cost_note,
                 enrichment_cost_note=cp.enrichment_cost_note,
                 created_at=cp.created_at,
             )
@@ -331,6 +335,8 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
         row.verification_status = cp.verification.value
         row.verified_at = cp.verified_at
         row.verification_provider = cp.verification_provider
+        row.verification_checked_at = cp.verification_checked_at
+        row.verification_cost_note = cp.verification_cost_note
         await self._session.flush()
 
     async def find_by_value_hash(

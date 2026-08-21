@@ -13,7 +13,7 @@ from domains.prospecting.schemas import (
     ContactPointCreateRequest,
     ContactPointView,
     ProspectAccountView,
-    VerificationStatus,
+    VerificationRecordRequest,
 )
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -80,12 +80,19 @@ class ProspectingService(Protocol):
     async def record_verification(
         self,
         tenant_id: TenantId,
-        contact_point_id: ContactPointId,
-        result: VerificationStatus,
-        provider: str,
+        request: VerificationRecordRequest,
     ) -> None:
-        """落验证结果。VERIFIED 时发布 ``ContactPointVerified``
-        （outreach 域的入组前提）。"""
+        """落带时间与成本说明的验证观察。
+
+        只有首次进入 VERIFIED 才发布 ``ContactPointVerified``；旧结果与
+        同时间冲突必须拒绝，完整相同请求幂等返回。
+        """
+        ...
+
+    async def get_contact_point(
+        self, tenant_id: TenantId, contact_point_id: ContactPointId
+    ) -> ContactPointView:
+        """按租户读取联系方式；跨租户与不存在使用同一 NotFound。"""
         ...
 
     async def handle_erasure_request(

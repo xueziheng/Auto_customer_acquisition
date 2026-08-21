@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime
 from typing import get_type_hints
@@ -20,6 +21,7 @@ from domains.prospecting.schemas import (
     LegalBasisType,
     ProspectAccountView,
     SubjectType,
+    VerificationRecordRequest,
     VerificationStatus,
 )
 from domains.prospecting.service import ProspectingService
@@ -64,10 +66,23 @@ def test_service_public_annotations_use_views_and_requests() -> None:
     resolve = get_type_hints(ProspectingService.resolve_account)
     add_point = get_type_hints(ProspectingService.add_contact_point)
     get_account = get_type_hints(ProspectingService.get_account)
+    record_verification = get_type_hints(ProspectingService.record_verification)
+    get_contact_point_method = getattr(ProspectingService, "get_contact_point", None)
 
     assert resolve["request"] is AccountResolveRequest
     assert add_point["request"] is ContactPointCreateRequest
     assert get_account["return"] is ProspectAccountView
+    assert record_verification.get("request") is VerificationRecordRequest
+    assert get_contact_point_method is not None
+    get_contact_point = get_type_hints(get_contact_point_method)
+    assert get_contact_point["return"] is ContactPointView
+
+
+def test_record_verification_rejects_legacy_positional_contract() -> None:
+    parameters = tuple(
+        inspect.signature(ProspectingService.record_verification).parameters
+    )
+    assert parameters == ("self", "tenant_id", "request")
 
 
 def test_public_request_collections_are_immutable() -> None:
