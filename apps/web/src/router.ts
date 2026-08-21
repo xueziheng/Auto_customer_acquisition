@@ -14,6 +14,11 @@ const router = createRouter({
       component: () => import("./views/demand-radar/DemandRadar.vue"),
     },
     {
+      path: "/demand/needs/:needId",
+      name: "validated-need-detail",
+      component: () => import("./views/demand-radar/ValidatedNeedDetail.vue"),
+    },
+    {
       path: "/prospects/accounts",
       name: "customer-discovery",
       component: () => import("./views/customer-discovery/CustomerDiscovery.vue"),

@@ -336,6 +336,9 @@ onMounted(() => void loadRadar());
                 v-else
                 class="complete"
               >关键字段已齐备</span>
+              <RouterLink :to="`/demand/needs/${need.need_id}`">
+                查看完整证据链 →
+              </RouterLink>
             </footer>
           </article>
         </div>
