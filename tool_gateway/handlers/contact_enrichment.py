@@ -97,7 +97,7 @@ class _ToolGatewayInvoker(Protocol):
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult: ...
 
 
-class _HunterProviderContactEnricher:
+class HunterProviderContactEnricher:
     """全部 Gateway checks 通过后才创建 connector 并解析凭证。"""
 
     def __init__(
@@ -123,6 +123,9 @@ class _HunterProviderContactEnricher:
             raise ValidationError("Hunter 联系人 connector 无效")
         await connector.configure(self._secret_resolver)
         return await connector.find_contacts(company_domain, role_hints)
+
+
+_HunterProviderContactEnricher = HunterProviderContactEnricher
 
 
 @dataclass(frozen=True, repr=False)
@@ -320,5 +323,6 @@ def _canonical_hints(raw_hints: tuple[object, ...]) -> tuple[str, ...]:
 __all__ = (
     "MANIFEST",
     "ContactEnrichmentHandler",
+    "HunterProviderContactEnricher",
     "ToolGatewayContactEnricher",
 )

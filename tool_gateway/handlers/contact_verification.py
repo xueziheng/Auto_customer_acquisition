@@ -88,7 +88,7 @@ class _ToolGatewayInvoker(Protocol):
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult: ...
 
 
-class _HunterProviderContactVerifier:
+class HunterProviderContactVerifier:
     """全部 Gateway checks 通过后才创建 connector 并解析凭证。"""
 
     def __init__(
@@ -113,6 +113,9 @@ class _HunterProviderContactVerifier:
             raise ValidationError("Hunter 邮箱验证 connector 无效")
         await connector.configure(self._secret_resolver)
         return await connector.verify(email)
+
+
+_HunterProviderContactVerifier = HunterProviderContactVerifier
 
 
 @dataclass(frozen=True, repr=False)
@@ -309,5 +312,6 @@ def _utc(value: datetime) -> bool:
 __all__ = (
     "MANIFEST",
     "ContactVerificationHandler",
+    "HunterProviderContactVerifier",
     "ToolGatewayContactVerifier",
 )
