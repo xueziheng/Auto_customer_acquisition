@@ -97,12 +97,16 @@ class FindCompanyDetailsStep:
         self,
         task_reader: AccountDiscoveryTaskReader,
         capability: AccountDiscoveryCapability,
+        actor_resolver: AccountDiscoveryActorResolver,
     ) -> None:
         self._task_reader = task_reader
         self._capability = capability
+        self._actor_resolver = actor_resolver
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         hypothesis_id, _campaign_id, acting_user, _hints, _assessment = _base_context(run)
+        # 在模型与 Provider 产生任何成本之前，从持久员工记录重新推导权限。
+        await self._actor_resolver.resolve(run.tenant_id, acting_user)
         source = await self._task_reader.load(run.tenant_id, hypothesis_id, acting_user)
         result = await self._capability.run(
             AgentTask(

@@ -85,7 +85,7 @@ def build_account_discovery_handlers(
 ) -> dict[str, StepHandler]:
     return {
         "account_discovery.find_company_details": FindCompanyDetailsStep(
-            task_reader, capability
+            task_reader, capability, actor_resolver
         ),
         "account_discovery.resolve_account": ResolveAccountStep(prospecting),
         "account_discovery.find_contacts": FindContactsStep(
