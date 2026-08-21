@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import ChangeSet
+from domains.quotations.service import contains_forbidden_commitment
 from shared.errors import ValidationError
 
 
@@ -200,6 +201,65 @@ class FactInferenceSeparationRail:
         self, location: str, detail: str, how_to_fix: str
     ) -> RailViolation:
         return RailViolation(self.name, location, detail, how_to_fix)
+
+
+class NoForbiddenCommitmentRail:
+    """拒绝未经审批的客户可见商业承诺。"""
+
+    name = "no_forbidden_commitment"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            if (
+                not isinstance(change, Mapping)
+                or change.get("domain") != "outreach"
+                or change.get("operation") != "create_draft"
+            ):
+                continue
+            payload = change.get("payload")
+            if not isinstance(payload, Mapping):
+                violations.append(self._invalid(f"changes[{index}].payload"))
+                continue
+            approval_ref = change.get("approval_ref", payload.get("approval_ref"))
+            if isinstance(approval_ref, str) and approval_ref.strip():
+                continue
+            seen: set[str] = set()
+            for field_name in ("subject", "body"):
+                location = f"changes[{index}].payload.{field_name}"
+                text = payload.get(field_name)
+                if not isinstance(text, str):
+                    violations.append(self._invalid(location))
+                    continue
+                try:
+                    commitments = contains_forbidden_commitment(text)
+                except ValidationError:
+                    violations.append(self._invalid(location))
+                    continue
+                for commitment in commitments:
+                    if commitment.value in seen:
+                        continue
+                    seen.add(commitment.value)
+                    violations.append(
+                        RailViolation(
+                            rail=self.name,
+                            location=location,
+                            detail=(
+                                "客户可见草稿含未审批承诺："
+                                f"{commitment.value}"
+                            ),
+                            how_to_fix="删除承诺内容，或取得逐次人工审批引用",
+                        )
+                    )
+        return violations
+
+    def _invalid(self, location: str) -> RailViolation:
+        return RailViolation(
+            rail=self.name,
+            location=location,
+            detail="客户可见草稿文本无效，已失败关闭",
+            how_to_fix="提供完整且无控制字符的 subject/body 后重新检查",
+        )
 
 
 class TenantConsistencyRail:

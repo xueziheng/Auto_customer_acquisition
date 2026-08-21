@@ -9,6 +9,7 @@ from agent_runtime.guardrails.rails import (
     EvidenceRequiredRail,
     FactInferenceSeparationRail,
     GuardrailChecker,
+    NoForbiddenCommitmentRail,
     NoProbabilityOutputRail,
     RailViolation,
     TenantConsistencyRail,
@@ -327,3 +328,54 @@ def test_fact_inference_rail_accepts_separate_fact_and_inference_shapes() -> Non
     ]
 
     assert FactInferenceSeparationRail().check(change_set) == []
+
+
+def test_forbidden_commitment_rail_reports_every_unapproved_customer_promise() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Quotation update",
+                "body": "The price is USD 2.50 and delivery will be within 10 days.",
+            },
+        }
+    ]
+
+    violations = NoForbiddenCommitmentRail().check(change_set)
+
+    assert [violation.detail for violation in violations] == [
+        "客户可见草稿含未审批承诺：first_concrete_price",
+        "客户可见草稿含未审批承诺：delivery_date_commitment",
+    ]
+    assert all(violation.location == "changes[0].payload.body" for violation in violations)
+
+
+def test_forbidden_commitment_rail_allows_safe_or_explicitly_approved_drafts() -> None:
+    safe = _change_set()
+    safe.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Quick sourcing question",
+                "body": "Which components are currently hardest for your team to source?",
+            },
+        }
+    ]
+    approved = _change_set()
+    approved.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "approval_ref": "approval-one",
+            "payload": {
+                "subject": "Quotation update",
+                "body": "The price is USD 2.50.",
+            },
+        }
+    ]
+
+    assert NoForbiddenCommitmentRail().check(safe) == []
+    assert NoForbiddenCommitmentRail().check(approved) == []
