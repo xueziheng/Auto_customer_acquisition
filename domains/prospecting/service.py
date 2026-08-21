@@ -12,7 +12,9 @@ from domains.prospecting.schemas import (
     ContactCreateRequest,
     ContactPointCreateRequest,
     ContactPointView,
+    ProspectAccountDetailView,
     ProspectAccountView,
+    ProspectContactDetailView,
     VerificationRecordRequest,
 )
 from shared.schemas.identifiers import (
@@ -109,6 +111,24 @@ class ProspectingService(Protocol):
     async def get_account(
         self, tenant_id: TenantId, account_id: ProspectAccountId
     ) -> ProspectAccountView: ...
+
+    async def list_accounts(
+        self, tenant_id: TenantId, *, limit: int = 50
+    ) -> list[ProspectAccountView]:
+        """列出租户内潜在企业；limit 固定限制在 1..200。"""
+        ...
+
+    async def get_account_detail(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> ProspectAccountDetailView:
+        """读取企业、联系人、联系方式与法律依据的同租户详情。"""
+        ...
+
+    async def list_contacts_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ProspectContactDetailView]:
+        """读取企业下联系人；企业不存在与跨租户使用同一 NotFound。"""
+        ...
 
     async def list_verified_contact_points(
         self, tenant_id: TenantId, account_id: ProspectAccountId

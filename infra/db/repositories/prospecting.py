@@ -164,6 +164,23 @@ class ProspectAccountRepositoryImpl(_TenantBound, AccountRepository):
         ).scalar_one_or_none()
         return _row_to_account(row) if row is not None else None
 
+    async def list_accounts(
+        self, tenant_id: TenantId, *, limit: int
+    ) -> list[ProspectAccount]:
+        self._require_tenant(tenant_id, "prospect_account_list")
+        rows = (
+            await self._session.execute(
+                select(ProspectAccountRow)
+                .where(ProspectAccountRow.tenant_id == str(self._tenant_id))
+                .order_by(
+                    ProspectAccountRow.created_at.desc(),
+                    ProspectAccountRow.account_id.desc(),
+                )
+                .limit(limit)
+            )
+        ).scalars()
+        return [_row_to_account(row) for row in rows]
+
     async def search_by_name(
         self, tenant_id: TenantId, name: str, country: str
     ) -> list[ProspectAccount]:
@@ -246,6 +263,25 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
         ).scalar_one_or_none()
         return _row_to_contact(row) if row is not None else None
 
+    async def list_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ProspectContact]:
+        self._require_tenant(tenant_id, "prospect_contact_list_account")
+        rows = (
+            await self._session.execute(
+                select(ProspectContactRow)
+                .where(
+                    ProspectContactRow.tenant_id == str(self._tenant_id),
+                    ProspectContactRow.account_id == str(account_id),
+                )
+                .order_by(
+                    ProspectContactRow.created_at.desc(),
+                    ProspectContactRow.contact_id.desc(),
+                )
+            )
+        ).scalars()
+        return [_row_to_contact(row) for row in rows]
+
     async def add_contact_point(self, cp: ContactPoint) -> bool:
         self._require_tenant(cp.tenant_id, "contact_point_add")
         result = await self._session.execute(
@@ -311,6 +347,31 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
     ) -> ContactPoint | None:
         self._require_tenant(tenant_id, "contact_point_get")
         return await self._get_point(contact_point_id, for_update=False)
+
+    async def list_for_contact(
+        self, tenant_id: TenantId, contact_id: ProspectContactId
+    ) -> list[ContactPoint]:
+        self._require_tenant(tenant_id, "contact_point_list_contact")
+        rows = await self._session.execute(
+            select(ContactPointRow, ContactLegalBasisRow)
+            .join(
+                ContactLegalBasisRow,
+                (ContactLegalBasisRow.tenant_id == ContactPointRow.tenant_id)
+                & (
+                    ContactLegalBasisRow.contact_point_id
+                    == ContactPointRow.contact_point_id
+                ),
+            )
+            .where(
+                ContactPointRow.tenant_id == str(self._tenant_id),
+                ContactPointRow.contact_id == str(contact_id),
+            )
+            .order_by(
+                ContactPointRow.created_at.desc(),
+                ContactPointRow.contact_point_id.desc(),
+            )
+        )
+        return [_rows_to_point(point, basis) for point, basis in rows]
 
     async def get_contact_point_for_update(
         self, tenant_id: TenantId, contact_point_id: ContactPointId

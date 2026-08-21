@@ -23,12 +23,15 @@ __all__ = (
     "AccountResolveRequest",
     "ContactCreateRequest",
     "ContactPointCreateRequest",
+    "ContactPointDetailView",
     "ContactPointKind",
     "ContactPointView",
     "ContactType",
     "LegalBasisInput",
     "LegalBasisType",
+    "ProspectAccountDetailView",
     "ProspectAccountView",
+    "ProspectContactDetailView",
     "ProspectContactView",
     "SubjectType",
     "VerificationRecordRequest",
@@ -124,3 +127,33 @@ class ContactPointView:
     verification_checked_at: datetime | None = None
     verification_cost_note: str | None = None
     enrichment_cost_note: str | None = None
+
+
+@dataclass(frozen=True)
+class ContactPointDetailView:
+    """联系方式详情；法律依据与验证观察均来自同一租户事务快照。"""
+
+    contact_point: ContactPointView
+    legal_basis: LegalBasisType
+    subject_type: SubjectType
+    contact_type: ContactType
+    legal_basis_source: str
+    collected_at: datetime
+    source_url: str | None = None
+    assessment_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class ProspectContactDetailView:
+    """联系人及其联系方式；仅供已判权的内部员工视图。"""
+
+    contact: ProspectContactView
+    contact_points: tuple[ContactPointDetailView, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProspectAccountDetailView:
+    """企业详情；来源信号、联系人和法律依据均可追溯。"""
+
+    account: ProspectAccountView
+    contacts: tuple[ProspectContactDetailView, ...] = ()

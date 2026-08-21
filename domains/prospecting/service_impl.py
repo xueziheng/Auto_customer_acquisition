@@ -27,8 +27,12 @@ from domains.prospecting.schemas import (
     AccountResolveRequest,
     ContactCreateRequest,
     ContactPointCreateRequest,
+    ContactPointDetailView,
     ContactPointView,
+    ProspectAccountDetailView,
     ProspectAccountView,
+    ProspectContactDetailView,
+    ProspectContactView,
     VerificationRecordRequest,
 )
 from domains.prospecting.service import ContactValueHasher
@@ -156,6 +160,34 @@ def _contact_point_view(
         verification_checked_at=point.verification_checked_at,
         verification_cost_note=point.verification_cost_note,
         enrichment_cost_note=point.enrichment_cost_note,
+    )
+
+
+def _contact_view(contact: ProspectContact) -> ProspectContactView:
+    return ProspectContactView(
+        contact_id=contact.contact_id,
+        tenant_id=contact.tenant_id,
+        account_id=contact.account_id,
+        created_at=contact.created_at,
+        full_name=contact.full_name,
+        role_title=contact.role_title,
+        language=contact.language,
+    )
+
+
+def _contact_point_detail(
+    point: ContactPoint, account_id: ProspectAccountId
+) -> ContactPointDetailView:
+    basis = point.legal_basis
+    return ContactPointDetailView(
+        contact_point=_contact_point_view(point, account_id),
+        legal_basis=basis.basis,
+        subject_type=basis.subject_type,
+        contact_type=basis.contact_type,
+        legal_basis_source=basis.source,
+        collected_at=basis.collected_at,
+        source_url=basis.source_url,
+        assessment_ref=basis.assessment_ref,
     )
 
 
@@ -290,6 +322,50 @@ class ProspectingServiceImpl:
         if account is None:
             raise ProspectAccountNotFoundError("潜在企业不存在")
         return _account_view(account)
+
+    async def list_accounts(
+        self, tenant_id: TenantId, *, limit: int = 50
+    ) -> list[ProspectAccountView]:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 200
+        ):
+            raise ValidationError("潜在企业查询数量无效")
+        async with self._uow_factory(tenant_id) as uow:
+            accounts = await uow.accounts.list_accounts(tenant_id, limit=limit)
+        return [_account_view(account) for account in accounts]
+
+    async def list_contacts_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ProspectContactDetailView]:
+        async with self._uow_factory(tenant_id) as uow:
+            account = await uow.accounts.get(tenant_id, account_id)
+            if account is None:
+                raise ProspectAccountNotFoundError("潜在企业不存在")
+            contacts = await uow.contacts.list_for_account(tenant_id, account_id)
+            details: list[ProspectContactDetailView] = []
+            for contact in contacts:
+                points = await uow.contacts.list_for_contact(
+                    tenant_id, contact.contact_id
+                )
+                details.append(
+                    ProspectContactDetailView(
+                        contact=_contact_view(contact),
+                        contact_points=tuple(
+                            _contact_point_detail(point, account_id)
+                            for point in points
+                        ),
+                    )
+                )
+        return details
+
+    async def get_account_detail(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> ProspectAccountDetailView:
+        account = await self.get_account(tenant_id, account_id)
+        contacts = await self.list_contacts_for_account(tenant_id, account_id)
+        return ProspectAccountDetailView(account=account, contacts=tuple(contacts))
 
     async def get_contact_point(
         self, tenant_id: TenantId, contact_point_id: ContactPointId

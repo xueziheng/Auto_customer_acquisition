@@ -38,6 +38,12 @@ class AccountRepository(Protocol):
         """消歧主查询：域名相同即同一企业。"""
         ...
 
+    async def list_accounts(
+        self, tenant_id: TenantId, *, limit: int
+    ) -> list[ProspectAccount]:
+        """按创建时间倒序列出租户内企业。"""
+        ...
+
     async def search_by_name(
         self, tenant_id: TenantId, name: str, country: str
     ) -> list[ProspectAccount]:
@@ -63,6 +69,12 @@ class ContactRepository(Protocol):
         self, tenant_id: TenantId, contact_id: ProspectContactId
     ) -> ProspectContact | None: ...
 
+    async def list_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> list[ProspectContact]:
+        """按创建时间倒序列出指定企业的联系人。"""
+        ...
+
     async def add_contact_point(self, cp: ContactPoint) -> bool:
         """联系方式与法律依据原子新增；指纹冲突返回 False。"""
         ...
@@ -70,6 +82,12 @@ class ContactRepository(Protocol):
     async def get_contact_point(
         self, tenant_id: TenantId, contact_point_id: ContactPointId
     ) -> ContactPoint | None: ...
+
+    async def list_for_contact(
+        self, tenant_id: TenantId, contact_id: ProspectContactId
+    ) -> list[ContactPoint]:
+        """列出指定联系人的全部联系方式与法律依据。"""
+        ...
 
     async def get_contact_point_for_update(
         self, tenant_id: TenantId, contact_point_id: ContactPointId
