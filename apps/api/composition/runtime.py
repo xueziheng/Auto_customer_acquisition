@@ -13,6 +13,11 @@ from typing import cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from agent_runtime.trade_manager import (
+    StructuredTradeManagerModelPort,
+    TradeManagerAgent,
+)
 from connectors.gmail.client import (
     GmailConnector,
     GmailSendRequest,
@@ -20,8 +25,10 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from connectors.openai import OpenAIJsonModelClient
 from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
+from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
@@ -96,6 +103,7 @@ from domains.sending_identity.service import (
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
+from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
 )
@@ -173,6 +181,7 @@ from tool_gateway.manifest import (
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult, ToolGateway
 from workflows.account_discovery.flow import build_account_discovery_definition
+from workflows.demand_discovery.flow import build_demand_discovery_definition
 from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 from workflows.email_feedback.unsubscribe import (
     FeedbackPageUnitOfWorkFactory,
@@ -246,6 +255,40 @@ class RequestScopedHandoffEmployeeReader:
     ) -> EmployeeView:
         async with self._scope(tenant_id) as service:
             return await service.get_employee(tenant_id, employee_id, actor=actor)
+
+
+class RequestScopedDirectiveEmployeeReader:
+    """用员工域公开服务为指令域提供老板校验与展示名。"""
+
+    def __init__(
+        self,
+        scope: EmployeeServiceScope,
+        actor: EmployeeActor,
+    ) -> None:
+        self._scope = scope
+        self._actor = actor
+
+    async def is_active_boss(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> bool:
+        async with self._scope(tenant_id) as service:
+            employees = await service.list_active(tenant_id, actor=self._actor)
+        return any(
+            employee.employee_id == employee_id and employee.role == "boss"
+            for employee in employees
+        )
+
+    async def names_for(
+        self, tenant_id: TenantId, employee_ids: tuple[EmployeeId, ...]
+    ) -> dict[EmployeeId, str]:
+        async with self._scope(tenant_id) as service:
+            employees = await service.list_active(tenant_id, actor=self._actor)
+        wanted = set(employee_ids)
+        return {
+            employee.employee_id: employee.name
+            for employee in employees
+            if employee.employee_id in wanted
+        }
 
 
 class _DomainSeparatedContactValueHasher(ContactValueHasher):
@@ -867,6 +910,31 @@ def build_phase1_dependencies(
         EmployeeScope.SYSTEM,
         "system",
     )
+    directive_employees = RequestScopedDirectiveEmployeeReader(
+        employees, employee_system_actor
+    )
+    directives = DirectiveServiceImpl(
+        lambda requested_tenant: SqlAlchemyDirectiveUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory,
+            requested_tenant,
+            now=now,
+        ),
+        directive_employees,
+        now=now,
+    )
+    model_client = OpenAIJsonModelClient(
+        settings.openai_api_key_ref,
+        resolved_secret_resolver,
+    )
+    trade_manager = TradeManagerAgent(
+        settings.trade_manager_model,
+        StructuredTradeManagerModelPort(
+            model_client,
+            settings.trade_manager_model,
+        ),
+        None,
+        CredentialMarkerGuard(),
+    )
     if manual_send is None:
         manual_gateway: ToolGatewayInvoker = _UnavailableToolGateway()
         delivery_materials: DeliveryMaterialProvider = unavailable_send_sources
@@ -950,8 +1018,9 @@ def build_phase1_dependencies(
         )
     )
     account_definition = build_account_discovery_definition()
+    demand_definition = build_demand_discovery_definition()
     start_only_handler = _StartOnlyWorkflowHandler()
-    for step in account_definition.steps:
+    for step in (*account_definition.steps, *demand_definition.steps):
         handlers[step.handler_ref] = start_only_handler
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
     outbox = OutboxDeliverer(
@@ -962,6 +1031,7 @@ def build_phase1_dependencies(
     )
     register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
     workflow.register(account_definition)
+    workflow.register(demand_definition)
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -984,4 +1054,6 @@ def build_phase1_dependencies(
         employee_lookup_actor=employee_system_actor,
         prospecting=prospecting,
         demand_radar=demand_radar,
+        directives=directives,
+        trade_manager=trade_manager,
     )

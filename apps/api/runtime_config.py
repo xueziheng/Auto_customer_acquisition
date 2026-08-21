@@ -257,6 +257,8 @@ class Phase1RuntimeSettings:
     unsubscribe_active_key_id: str
     unsubscribe_key_refs: tuple[UnsubscribeKeyReference, ...]
     tool_lease: timedelta
+    openai_api_key_ref: str = "OPENAI_API_KEY"
+    trade_manager_model: str = "gpt-5-mini"
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Phase1RuntimeSettings:
@@ -331,6 +333,15 @@ class Phase1RuntimeSettings:
             "TRADEOS_TOOL_LEASE_SECONDS",
             _parse_positive_integer,
         )
+        try:
+            openai_api_key_ref = validate_environment_secret_reference(
+                environ.get("OPENAI_API_KEY_REF", "OPENAI_API_KEY")
+            )
+        except ValidationError:
+            raise RuntimeConfigurationError("OPENAI_API_KEY_REF") from None
+        trade_manager_model = _parse_safe_reference(
+            environ.get("TRADEOS_TRADE_MANAGER_MODEL", "gpt-5-mini")
+        )
         return cls(
             database_url=database_url,
             tenant_id=tenant_id,
@@ -353,4 +364,6 @@ class Phase1RuntimeSettings:
             unsubscribe_active_key_id=active_key_id,
             unsubscribe_key_refs=key_references,
             tool_lease=timedelta(seconds=tool_lease_seconds),
+            openai_api_key_ref=openai_api_key_ref,
+            trade_manager_model=trade_manager_model,
         )

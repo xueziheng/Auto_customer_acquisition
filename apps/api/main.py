@@ -39,6 +39,7 @@ from .middleware import (
     install_error_handlers,
 )
 from .routers.campaigns import router as campaigns_router
+from .routers.command_center import router as command_center_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
@@ -144,6 +145,7 @@ def create_app(
     app.include_router(sending_identities_router, prefix="/crm")
     app.include_router(customer_discovery_router, prefix="/prospects")
     app.include_router(demand_radar_router, prefix="/demand")
+    app.include_router(command_center_router, prefix="/commands")
     app.include_router(notifications_router)
     app.include_router(unsubscribe_router)
     if readiness_probe is not None:

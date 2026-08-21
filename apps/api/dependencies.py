@@ -8,12 +8,14 @@ from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import Depends, Request
 
+from agent_runtime.trade_manager import TradeManagerAgent
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
     NeedClusterView,
     ValidatedNeedView,
 )
+from domains.directives.service import DirectiveService
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
@@ -187,6 +189,8 @@ class ConfiguredApiDependencies:
     employee_lookup_actor: EmployeeActor
     prospecting: ProspectingService | None = None
     demand_radar: DemandRadarService | None = None
+    directives: DirectiveService | None = None
+    trade_manager: TradeManagerAgent | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

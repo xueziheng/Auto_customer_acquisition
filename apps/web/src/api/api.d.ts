@@ -4,6 +4,74 @@
  */
 
 export interface paths {
+    "/commands/discovery-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Discovery Proposal */
+        post: operations["create_discovery_proposal_commands_discovery_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/discovery-proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Discovery Proposal */
+        get: operations["get_discovery_proposal_commands_discovery_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/discovery-proposals/{proposal_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Discovery Proposal */
+        post: operations["confirm_discovery_proposal_commands_discovery_proposals__proposal_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/discovery-proposals/{proposal_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Discovery Proposal */
+        post: operations["reject_discovery_proposal_commands_discovery_proposals__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/crm/analytics/loss-reasons": {
         parameters: {
             query?: never;
@@ -724,6 +792,29 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** DiscoveryConfirmationResponse */
+        DiscoveryConfirmationResponse: {
+            /** Directive Id */
+            directive_id: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Run Id */
+            run_id: string;
+            /** Workflow Type */
+            workflow_type: string;
+        };
+        /** DiscoveryProposalBody */
+        DiscoveryProposalBody: {
+            /** Message */
+            message: string;
+        };
+        /** DiscoveryRejectionResponse */
+        DiscoveryRejectionResponse: {
+            /** Proposal Id */
+            proposal_id: string;
+            /** State */
+            state: string;
+        };
         /**
          * DomainRole
          * @description 域名角色；只有 ``COLD_OUTREACH`` 可承载冷开发。
@@ -1440,6 +1531,38 @@ export interface components {
             target_price?: components["schemas"]["Money"] | null;
         };
         /**
+         * ProposalView
+         * @description 提案视图 —— 老板确认界面的数据源。
+         *
+         *     界面必须并排展示三样东西：原话、系统的理解、预计行为变化。
+         *     只展示解析字段的确认界面发现不了误解析。
+         */
+        ProposalView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By Name */
+            decided_by_name?: string | null;
+            /** Expected Behavior Changes */
+            expected_behavior_changes: string[];
+            /** Interpretation Summary */
+            interpretation_summary: string;
+            /** Parsed Fields */
+            parsed_fields: {
+                [key: string]: string;
+            };
+            /** Proposal Id */
+            proposal_id: string;
+            /** Raw Text */
+            raw_text: string;
+            /** State */
+            state: string;
+        };
+        /**
          * ProspectAccountDetailView
          * @description 企业详情；来源信号、联系人和法律依据均可追溯。
          */
@@ -1792,6 +1915,132 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_discovery_proposal_commands_discovery_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryProposalBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProposalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_discovery_proposal_commands_discovery_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProposalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_discovery_proposal_commands_discovery_proposals__proposal_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryConfirmationResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    reject_discovery_proposal_commands_discovery_proposals__proposal_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryRejectionResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     loss_reason_breakdown_crm_analytics_loss_reasons_get: {
         parameters: {
             query?: {

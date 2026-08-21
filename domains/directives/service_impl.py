@@ -668,6 +668,7 @@ class DirectiveServiceImpl:
         handoff = content.handoff
         return DirectiveView(
             directive_id=str(directive.directive_id),
+            source_proposal_id=directive.source_proposal_id,
             version=directive.version,
             objective=content.objective.value,
             activated_at=directive.activated_at,

@@ -57,6 +57,10 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/commands/discovery-proposals",
+    "/commands/discovery-proposals/{proposal_id}",
+    "/commands/discovery-proposals/{proposal_id}/confirm",
+    "/commands/discovery-proposals/{proposal_id}/reject",
     "/crm/analytics/loss-reasons",
     "/crm/enrollments",
     "/crm/enrollments/{enrollment_id}/attempts/prepare",

@@ -61,6 +61,7 @@ class DirectiveView:
     """生效指令视图。"""
 
     directive_id: str
+    source_proposal_id: str
     version: int
     objective: str
     activated_at: datetime
