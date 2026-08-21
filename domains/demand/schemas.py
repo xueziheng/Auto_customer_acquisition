@@ -16,6 +16,26 @@ from shared.schemas.money import Money
 
 
 @dataclass(frozen=True)
+class HypothesisDiscoveryEvidenceView:
+    """账户发现可消费的单条信号投影；保留内部 signal ID 与公开来源。"""
+
+    signal_id: str
+    summary: str
+    source_url: str | None
+
+
+@dataclass(frozen=True)
+class HypothesisDiscoveryView:
+    """账户发现模型安全投影；推断与支撑信号仍在结构上分离。"""
+
+    hypothesis_id: str
+    category: str
+    reasoning: str
+    evidence: tuple[HypothesisDiscoveryEvidenceView, ...]
+    source_signal_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SignalCaptureRequest:
     """记录信号的入参。
 

@@ -31,7 +31,11 @@ from domains.demand.models import (
     ValidatedNeed,
 )
 from domains.demand.repository import DemandUnitOfWork
-from domains.demand.schemas import SignalCaptureRequest
+from domains.demand.schemas import (
+    HypothesisDiscoveryEvidenceView,
+    HypothesisDiscoveryView,
+    SignalCaptureRequest,
+)
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
@@ -842,4 +846,49 @@ class DemandServiceImpl:
                 raise ValidationError("需求假设不存在")
             return derive_confidence(
                 hypothesis.evidence(), now=self._validate_now(self._now())
+            )
+
+    async def get_hypothesis_for_discovery(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+    ) -> HypothesisDiscoveryView:
+        """返回活跃假设及其原始信号的最小、租户隔离投影。"""
+        if (
+            not isinstance(hypothesis_id, str)
+            or not hypothesis_id
+            or hypothesis_id != hypothesis_id.strip()
+            or len(hypothesis_id) > 40
+        ):
+            raise ValidationError("需求假设标识无效")
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get(tenant_id, hypothesis_id)
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            if hypothesis.status not in (
+                HypothesisStatus.INFERRED,
+                HypothesisStatus.CONTACTING,
+            ):
+                raise InvalidStateTransition("需求假设当前不可用于账户发现")
+            evidence: list[HypothesisDiscoveryEvidenceView] = []
+            for signal_id in hypothesis.signal_ids:
+                signal = await uow.signals.get(tenant_id, signal_id)
+                if signal is None or signal.status is SignalStatus.DISCARDED:
+                    raise ValidationError("需求假设证据链不完整")
+                evidence.append(
+                    HypothesisDiscoveryEvidenceView(
+                        signal_id=str(signal.signal_id),
+                        summary=signal.raw_observation,
+                        source_url=signal.provenance.source_url,
+                    )
+                )
+            if not evidence:
+                raise ValidationError("需求假设证据链不完整")
+            refs = tuple(item.signal_id for item in evidence)
+            return HypothesisDiscoveryView(
+                hypothesis_id=str(hypothesis.hypothesis_id),
+                category=hypothesis.category,
+                reasoning=hypothesis.reasoning.value,
+                evidence=tuple(evidence),
+                source_signal_refs=refs,
             )

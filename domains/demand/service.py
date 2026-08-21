@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from domains.demand.schemas import (
+    HypothesisDiscoveryView,
     HypothesisView,
     NeedClusterView,
     SignalCaptureRequest,
@@ -175,6 +176,16 @@ class DemandService(Protocol):
         ...
 
     # --- 查询 -----------------------------------------------------------
+
+    async def get_hypothesis_for_discovery(
+        self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId
+    ) -> HypothesisDiscoveryView:
+        """读取账户发现所需的最小安全投影。
+
+        只返回仍处于 inferred/contacting 的假设、内部 signal ID、观察摘要与
+        公开来源 URL；不暴露仓储对象、联系人数据或来源凭证。
+        """
+        ...
 
     async def get_need(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
