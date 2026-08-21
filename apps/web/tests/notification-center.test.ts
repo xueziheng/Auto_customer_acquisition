@@ -2,6 +2,7 @@ import { createApp, nextTick, type App as VueApp } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApiClient } from "../src/api/client";
+import NotificationBadge from "../src/components/NotificationBadge.vue";
 import type { components } from "../src/api/api";
 import App from "../src/App.vue";
 import router from "../src/router";
@@ -137,6 +138,27 @@ afterEach(() => {
 });
 
 describe("NotificationCenter", () => {
+  it("keeps the badge in a safe stale state when the request itself throws", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError("network unavailable");
+    });
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    const app = createApp(NotificationBadge);
+    app.provide(
+      "tradeos-api-client",
+      createApiClient({ baseUrl: "https://tradeos.test", fetch }),
+    );
+    app.use(router);
+    app.mount(root);
+
+    await eventually(() => {
+      expect(root.textContent).toContain("状态可能已过期");
+      expect(root.querySelector('[aria-label="通知，0 条未读"]')).not.toBeNull();
+    });
+    app.unmount();
+  });
+
   it("registers the route and renders unread/read with text and priority labels", async () => {
     expect(router.getRoutes().map((route) => route.path)).toContain("/notifications");
     const { fetch } = makeNotificationFetch();

@@ -24,6 +24,11 @@ const router = createRouter({
       component: () => import("./views/campaigns/CampaignCenter.vue"),
     },
     {
+      path: "/inbox",
+      name: "smart-inbox",
+      component: () => import("./views/inbox/SmartInbox.vue"),
+    },
+    {
       path: "/approvals",
       name: "approval-center",
       component: () => import("./views/approvals/ApprovalCenter.vue"),

@@ -22,6 +22,9 @@ const appName: string = "TradeOS";
         <RouterLink to="/campaigns">
           Campaign
         </RouterLink>
+        <RouterLink to="/inbox">
+          智能收件箱
+        </RouterLink>
         <RouterLink to="/approvals">
           审批
         </RouterLink>
@@ -33,9 +36,6 @@ const appName: string = "TradeOS";
         </RouterLink>
         <RouterLink to="/crm/sending-identities">
           发件身份
-        </RouterLink>
-        <RouterLink to="/notifications">
-          通知
         </RouterLink>
       </nav>
       <span class="spacer" />
@@ -132,12 +132,15 @@ button:disabled {
 .brand {
   font-weight: 700;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 nav {
   display: flex;
   gap: var(--space4);
   overflow-x: auto;
   white-space: nowrap;
+  min-width: 0;
 }
 nav a {
   color: var(--topbar-text);
@@ -209,6 +212,22 @@ nav a.router-link-active {
 @media (max-width: 1240px) {
   :root {
     --gutter: 20px;
+  }
+}
+@media (max-width: 700px) {
+  .topbar {
+    height: 104px;
+    flex-wrap: wrap;
+    gap: var(--space2);
+    padding: var(--space2) var(--gutter);
+  }
+  .topbar nav {
+    order: 3;
+    flex-basis: 100%;
+    gap: var(--space2);
+  }
+  .shell {
+    height: calc(100vh - 104px);
   }
 }
 @media (prefers-reduced-motion: reduce) {

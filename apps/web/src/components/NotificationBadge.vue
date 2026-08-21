@@ -26,20 +26,26 @@ function requestHeaders(): Record<string, string> {
 async function refresh(): Promise<void> {
   const version = ++requestVersion;
   const previous = unreadCount.value;
-  const { data, response } = await client.GET("/notifications", {
-    params: { query: { limit: 100 } },
-    headers: requestHeaders(),
-  });
-  if (version !== requestVersion) return; // stale response 忽略
-  if (response.status !== 200) {
-    // 失败不清零：保留最近可信计数并标记过期
+  try {
+    const { data, response } = await client.GET("/notifications", {
+      params: { query: { limit: 100 } },
+      headers: requestHeaders(),
+    });
+    if (version !== requestVersion) return; // stale response 忽略
+    if (response.status !== 200) {
+      // 失败不清零：保留最近可信计数并标记过期
+      if (unreadCount.value === null && previous !== null) unreadCount.value = previous;
+      stale.value = true;
+      return;
+    }
+    const items = data ?? [];
+    unreadCount.value = items.filter((item) => item.read_at === null).length;
+    stale.value = false;
+  } catch {
+    if (version !== requestVersion) return;
     if (unreadCount.value === null && previous !== null) unreadCount.value = previous;
     stale.value = true;
-    return;
   }
-  const items = data ?? [];
-  unreadCount.value = items.filter((item) => item.read_at === null).length;
-  stale.value = false;
 }
 
 onMounted(() => {
@@ -78,12 +84,14 @@ const display = computed(() => {
 .badge {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 6px;
   color: var(--topbar-text);
   text-decoration: none;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.14);
+  white-space: nowrap;
 }
 .badge-num {
   background: var(--danger);
@@ -98,5 +106,10 @@ const display = computed(() => {
 .badge-stale {
   font-size: 11px;
   color: var(--warning-soft);
+}
+@media (max-width: 700px) {
+  .badge-stale {
+    display: none;
+  }
 }
 </style>
