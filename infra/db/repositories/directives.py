@@ -14,11 +14,13 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.directives.models import (
+    DemandDiscoveryConfig,
     Directive,
     DirectiveContent,
     DirectiveObjective,
     DirectiveProposal,
     DiscoveryConfig,
+    DiscoverySearchQueryConfig,
     HandoffRules,
     MarketAssignment,
     OutreachBounds,
@@ -70,6 +72,41 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
                 ),
             }
         ),
+        "demand_discovery": (
+            None
+            if content.demand_discovery is None
+            else {
+                "objective": content.demand_discovery.objective,
+                "queries": [
+                    {
+                        "query": item.query,
+                        "country": item.country,
+                        "category": item.category,
+                        "limit": item.limit,
+                    }
+                    for item in content.demand_discovery.queries
+                ],
+                "target_countries": list(content.demand_discovery.target_countries),
+                "target_categories": list(content.demand_discovery.target_categories),
+                "excluded_countries": list(
+                    content.demand_discovery.excluded_countries
+                ),
+                "excluded_categories": list(
+                    content.demand_discovery.excluded_categories
+                ),
+                "max_search_queries": content.demand_discovery.max_search_queries,
+                "max_pages_read": content.demand_discovery.max_pages_read,
+                "max_signals": content.demand_discovery.max_signals,
+                "max_hypotheses": content.demand_discovery.max_hypotheses,
+                "minimum_confidence_tier": (
+                    content.demand_discovery.minimum_confidence_tier
+                ),
+                "strategy_group": content.demand_discovery.strategy_group,
+                "campaign_id": content.demand_discovery.campaign_id,
+                "role_hints": list(content.demand_discovery.role_hints),
+                "assessment_ref": content.demand_discovery.assessment_ref,
+            }
+        ),
         "outreach": (
             None
             if content.outreach is None
@@ -111,6 +148,7 @@ def _content_from_json(value: object) -> DirectiveContent:
         "objective",
         "market_assignments",
         "discovery",
+        "demand_discovery",
         "outreach",
         "handoff",
         "paused_markets",
@@ -155,6 +193,95 @@ def _content_from_json(value: object) -> DirectiveContent:
             excluded_buyer_types=_string_list(
                 item["excluded_buyer_types"], "excluded_buyer_types"
             ),
+        )
+
+    demand_raw = data["demand_discovery"]
+    demand_discovery = None
+    if demand_raw is not None:
+        item = _mapping(demand_raw, "demand_discovery")
+        demand_keys = {
+            "objective",
+            "queries",
+            "target_countries",
+            "target_categories",
+            "excluded_countries",
+            "excluded_categories",
+            "max_search_queries",
+            "max_pages_read",
+            "max_signals",
+            "max_hypotheses",
+            "minimum_confidence_tier",
+            "strategy_group",
+            "campaign_id",
+            "role_hints",
+            "assessment_ref",
+        }
+        if set(item) != demand_keys:
+            raise ValidationError("需求探索计划持久化字段无效")
+        query_rows = item["queries"]
+        if not isinstance(query_rows, list):
+            raise ValidationError("需求探索查询持久化字段无效")
+        queries: list[DiscoverySearchQueryConfig] = []
+        for query_value in query_rows:
+            query = _mapping(query_value, "demand_discovery.queries")
+            if set(query) != {"query", "country", "category", "limit"}:
+                raise ValidationError("需求探索查询持久化字段无效")
+            if (
+                not isinstance(query["query"], str)
+                or not isinstance(query["country"], str)
+                or not isinstance(query["category"], str)
+                or type(query["limit"]) is not int
+            ):
+                raise ValidationError("需求探索查询持久化字段无效")
+            queries.append(
+                DiscoverySearchQueryConfig(
+                    query=query["query"],
+                    country=query["country"],
+                    category=query["category"],
+                    limit=query["limit"],
+                )
+            )
+        text_fields = (
+            "objective",
+            "minimum_confidence_tier",
+            "strategy_group",
+            "campaign_id",
+            "assessment_ref",
+        )
+        int_fields = (
+            "max_search_queries",
+            "max_pages_read",
+            "max_signals",
+            "max_hypotheses",
+        )
+        if any(not isinstance(item[name], str) for name in text_fields) or any(
+            type(item[name]) is not int for name in int_fields
+        ):
+            raise ValidationError("需求探索计划持久化字段无效")
+        demand_discovery = DemandDiscoveryConfig(
+            objective=cast(str, item["objective"]),
+            queries=queries,
+            target_countries=_string_list(
+                item["target_countries"], "target_countries"
+            ),
+            target_categories=_string_list(
+                item["target_categories"], "target_categories"
+            ),
+            excluded_countries=_string_list(
+                item["excluded_countries"], "excluded_countries"
+            ),
+            excluded_categories=_string_list(
+                item["excluded_categories"], "excluded_categories"
+            ),
+            max_search_queries=cast(int, item["max_search_queries"]),
+            max_pages_read=cast(int, item["max_pages_read"]),
+            max_signals=cast(int, item["max_signals"]),
+            max_hypotheses=cast(int, item["max_hypotheses"]),
+            minimum_confidence_tier=cast(str, item["minimum_confidence_tier"]),
+            strategy_group=cast(str, item["strategy_group"]),
+            campaign_id=cast(str, item["campaign_id"]),
+            role_hints=_string_list(item["role_hints"], "role_hints"),
+            assessment_ref=cast(str, item["assessment_ref"]),
         )
 
     outreach_raw = data["outreach"]
@@ -205,6 +332,7 @@ def _content_from_json(value: object) -> DirectiveContent:
             objective=DirectiveObjective(objective),
             market_assignments=assignments,
             discovery=discovery,
+            demand_discovery=demand_discovery,
             outreach=outreach,
             handoff=handoff,
             paused_markets=_string_list(data["paused_markets"], "paused_markets"),

@@ -56,6 +56,37 @@ class DiscoveryConfig:
 
 
 @dataclass(frozen=True)
+class DiscoverySearchQueryConfig:
+    """老板确认的一条公开网页搜索查询及其单次结果上限。"""
+
+    query: str
+    country: str
+    category: str
+    limit: int
+
+
+@dataclass(frozen=True)
+class DemandDiscoveryConfig:
+    """需求探索工作流的完整不可变输入；所有预算必须显式确认。"""
+
+    objective: str
+    queries: list[DiscoverySearchQueryConfig]
+    target_countries: list[str]
+    target_categories: list[str]
+    excluded_countries: list[str]
+    excluded_categories: list[str]
+    max_search_queries: int
+    max_pages_read: int
+    max_signals: int
+    max_hypotheses: int
+    minimum_confidence_tier: str
+    strategy_group: str
+    campaign_id: str
+    role_hints: list[str]
+    assessment_ref: str
+
+
+@dataclass(frozen=True)
 class OutreachBounds:
     """触达边界段。落到 Campaign 校验。"""
 
@@ -84,6 +115,7 @@ class DirectiveContent:
     objective: DirectiveObjective
     market_assignments: list[MarketAssignment] = field(default_factory=list)
     discovery: DiscoveryConfig | None = None
+    demand_discovery: DemandDiscoveryConfig | None = None
     outreach: OutreachBounds | None = None
     handoff: HandoffRules | None = None
     paused_markets: list[str] = field(default_factory=list)

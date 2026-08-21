@@ -8,11 +8,13 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from domains.directives.models import (
+    DemandDiscoveryConfig,
     Directive,
     DirectiveContent,
     DirectiveObjective,
     DirectiveProposal,
     DiscoveryConfig,
+    DiscoverySearchQueryConfig,
     HandoffRules,
     MarketAssignment,
     OutreachBounds,
@@ -23,6 +25,7 @@ from domains.directives.schemas import DirectiveView, ProposalView
 from domains.directives.service import DirectiveEmployeeReader
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import DirectiveActivated
+from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId, new_id
 
 _PROPOSAL_TTL = timedelta(days=7)
@@ -102,6 +105,14 @@ def _validate_content(content: DirectiveContent) -> DirectiveContent:
             maximum_items=100,
             maximum_length=100,
         )
+    demand_discovery = content.demand_discovery
+    if demand_discovery is not None:
+        _validate_demand_discovery(demand_discovery)
+    if (
+        content.objective is DirectiveObjective.DISCOVER_AND_VALIDATE_DEMAND
+        and demand_discovery is None
+    ):
+        raise ValidationError("需求探索指令必须包含完整探索计划")
     outreach = content.outreach
     if outreach is not None and (
         not isinstance(outreach, OutreachBounds)
@@ -170,6 +181,39 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
         fields["focus_categories"] = ", ".join(
             content.discovery.focus_categories
         )
+    if content.demand_discovery is not None:
+        plan = content.demand_discovery
+        fields.update(
+            {
+                "discovery_objective": plan.objective,
+                "queries": json.dumps(
+                    [
+                        {
+                            "query": item.query,
+                            "country": item.country,
+                            "category": item.category,
+                            "limit": item.limit,
+                        }
+                        for item in plan.queries
+                    ],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "target_countries": ", ".join(plan.target_countries),
+                "target_categories": ", ".join(plan.target_categories),
+                "excluded_countries": ", ".join(plan.excluded_countries),
+                "excluded_categories": ", ".join(plan.excluded_categories),
+                "max_search_queries": str(plan.max_search_queries),
+                "max_pages_read": str(plan.max_pages_read),
+                "max_signals": str(plan.max_signals),
+                "max_hypotheses": str(plan.max_hypotheses),
+                "minimum_confidence_tier": plan.minimum_confidence_tier,
+                "strategy_group": plan.strategy_group,
+                "campaign_id": plan.campaign_id,
+                "role_hints": ", ".join(plan.role_hints),
+                "assessment_ref": plan.assessment_ref,
+            }
+        )
     if content.outreach is not None:
         fields["max_sequence_messages"] = str(
             content.outreach.max_sequence_messages
@@ -183,6 +227,93 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
     if content.monthly_budget_credits is not None:
         fields["monthly_budget_credits"] = str(content.monthly_budget_credits)
     return fields
+
+
+def _validate_demand_discovery(config: DemandDiscoveryConfig) -> None:
+    if not isinstance(config, DemandDiscoveryConfig):
+        raise ValidationError("需求探索计划无效")
+    _text(config.objective, "需求探索目标无效", maximum=1_000)
+    targets_countries = _strings(
+        config.target_countries,
+        "需求探索目标国家无效",
+        maximum_items=100,
+        maximum_length=2,
+        allow_empty=False,
+    )
+    targets_categories = _strings(
+        config.target_categories,
+        "需求探索目标品类无效",
+        maximum_items=100,
+        maximum_length=100,
+        allow_empty=False,
+    )
+    excluded_countries = _strings(
+        config.excluded_countries,
+        "需求探索排除国家无效",
+        maximum_items=100,
+        maximum_length=2,
+    )
+    excluded_categories = _strings(
+        config.excluded_categories,
+        "需求探索排除品类无效",
+        maximum_items=100,
+        maximum_length=100,
+    )
+    if any(
+        len(country) != 2 or not country.isascii() or not country.isupper()
+        for country in (*targets_countries, *excluded_countries)
+    ):
+        raise ValidationError("需求探索国家必须为大写两位代码")
+    if set(targets_countries) & set(excluded_countries) or set(
+        targets_categories
+    ) & set(excluded_categories):
+        raise ValidationError("需求探索目标命中排除项")
+    caps = (
+        (config.max_search_queries, 100),
+        (config.max_pages_read, 50),
+        (config.max_signals, 100),
+        (config.max_hypotheses, 100),
+    )
+    if any(type(value) is not int or not 1 <= value <= maximum for value, maximum in caps):
+        raise ValidationError("需求探索硬上限无效")
+    if (
+        not isinstance(config.queries, list)
+        or not config.queries
+        or len(config.queries) > 100
+        or len(config.queries) > config.max_search_queries
+    ):
+        raise ValidationError("需求探索查询无效")
+    seen_queries: set[tuple[str, str, str]] = set()
+    for item in config.queries:
+        if not isinstance(item, DiscoverySearchQueryConfig):
+            raise ValidationError("需求探索查询无效")
+        query = _text(item.query, "需求探索查询无效", maximum=400)
+        if len(query.split()) > 50:
+            raise ValidationError("需求探索查询无效")
+        if (
+            item.country not in targets_countries
+            or item.category not in targets_categories
+            or type(item.limit) is not int
+            or not 1 <= item.limit <= 20
+        ):
+            raise ValidationError("需求探索查询超出确认范围")
+        identity = (query, item.country, item.category)
+        if identity in seen_queries:
+            raise ValidationError("需求探索查询不能重复")
+        seen_queries.add(identity)
+    try:
+        ConfidenceTier(config.minimum_confidence_tier)
+    except ValueError:
+        raise ValidationError("需求探索置信档位门槛无效") from None
+    _text(config.strategy_group, "需求探索策略组无效", maximum=64)
+    _text(config.campaign_id, "需求探索 Campaign 无效", maximum=40)
+    _strings(
+        config.role_hints,
+        "需求探索角色提示无效",
+        maximum_items=10,
+        maximum_length=200,
+    )
+    _text(config.assessment_ref, "需求探索评估引用无效", maximum=200)
 
 
 class DirectiveServiceImpl:
