@@ -197,6 +197,10 @@ from .campaign_driver import (
 )
 from .campaign_events import CampaignEventHandlers
 from .config import SchedulerWorkerConfig
+from .hunter_contacts import (
+    HunterContactComposition,
+    build_hunter_contact_tools,
+)
 from .main import (
     OutboxDrainer,
     SchedulerConfig,
@@ -379,15 +383,16 @@ class ReplyQualificationComposition:
 
 @dataclass(frozen=True)
 class AccountDiscoveryComposition:
-    """账户发现完整窄端口集合；任一依赖缺失都不注册工作流。"""
+    """账户发现端口；联系人能力只能显式选择自定义实现或 Hunter。"""
 
     task_reader: AccountDiscoveryTaskReader
     capability: AccountDiscoveryCapability
     prospecting: ProspectingService
-    enricher: ContactEnricher
-    verifier: ContactVerifier
     employees: EmployeeService
     actor_resolver: AccountDiscoveryActorResolver
+    enricher: ContactEnricher | None = None
+    verifier: ContactVerifier | None = None
+    hunter: HunterContactComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -395,13 +400,23 @@ class AccountDiscoveryComposition:
             (self.capability, "run"),
             (self.prospecting, "resolve_account"),
             (self.prospecting, "record_discovered_contact"),
-            (self.enricher, "find_contacts"),
-            (self.verifier, "verify"),
             (self.employees, "resolve_owner"),
             (self.actor_resolver, "resolve"),
         )
         if any(not callable(getattr(value, name, None)) for value, name in required):
             raise ValidationError("scheduler account_discovery 依赖未完整配置")
+        custom_contacts = self.enricher is not None or self.verifier is not None
+        if custom_contacts:
+            if (
+                self.enricher is None
+                or self.verifier is None
+                or self.hunter is not None
+                or not callable(getattr(self.enricher, "find_contacts", None))
+                or not callable(getattr(self.verifier, "verify", None))
+            ):
+                raise ValidationError("scheduler 联系人发现实现配置冲突")
+        elif not isinstance(self.hunter, HunterContactComposition):
+            raise ValidationError("scheduler 联系人发现实现未配置")
 
 
 @dataclass(frozen=True)
@@ -801,12 +816,31 @@ class SchedulerRuntimeFactory:
                         "account_discovery 必须配置 Campaign 发送链"
                     )
                 account = self._dependencies.account_discovery
+                if account.hunter is not None:
+                    contact_tools = build_hunter_contact_tools(
+                        factory=factory,
+                        tenant_id=config.tenant_id,
+                        tool_user=tool_user,
+                        fingerprints=fingerprints,
+                        outreach=campaign_outreach,
+                        prospecting=account.prospecting,
+                        composition=account.hunter,
+                        lease_duration=timedelta(seconds=config.tool_lease_seconds),
+                        now=self._now,
+                    )
+                    enricher = contact_tools.enricher
+                    verifier = contact_tools.verifier
+                else:
+                    if account.enricher is None or account.verifier is None:
+                        raise ValidationError("scheduler 联系人发现实现未配置")
+                    enricher = account.enricher
+                    verifier = account.verifier
                 account_handlers = build_account_discovery_handlers(
                     task_reader=account.task_reader,
                     capability=account.capability,
                     prospecting=account.prospecting,
-                    enricher=account.enricher,
-                    verifier=account.verifier,
+                    enricher=enricher,
+                    verifier=verifier,
                     employees=account.employees,
                     outreach=campaign_outreach,
                     actor_resolver=account.actor_resolver,

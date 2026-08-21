@@ -9,8 +9,20 @@ from domains.employees.service import EmployeeService
 from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.permissions import OutreachScope
 from domains.outreach.permissions import ScopeLevel as OutreachScopeLevel
-from shared.errors import PermissionDenied, ValidationError
-from shared.schemas.identifiers import EmployeeId, NeedHypothesisId, TenantId, UserId
+from domains.prospecting.service import ProspectingService
+from shared.errors import (
+    PermissionDenied,
+    TenantIsolationViolation,
+    ValidationError,
+)
+from shared.schemas.identifiers import (
+    EmployeeId,
+    NeedHypothesisId,
+    ProspectAccountId,
+    TenantId,
+    UserId,
+)
+from tool_gateway.checks.contact_provider import ContactDiscoveryPreflight
 from workflows.account_discovery.ports import (
     AccountDiscoveryActors,
     AccountDiscoveryTaskInput,
@@ -115,7 +127,77 @@ class BossAccountDiscoveryActorResolver:
         )
 
 
+class DemandProspectingContactDiscoveryPolicy:
+    """把需求假设与已消歧企业绑定成 contact.enrich 的可信 preflight。"""
+
+    def __init__(self, demand: DemandService, prospecting: ProspectingService) -> None:
+        if not callable(
+            getattr(demand, "get_hypothesis_for_discovery", None)
+        ) or not callable(getattr(prospecting, "get_account_detail", None)):
+            raise ValidationError("联系人发现 Playbook 依赖无效")
+        self._demand = demand
+        self._prospecting = prospecting
+
+    async def preflight(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+        account_id: ProspectAccountId,
+    ) -> ContactDiscoveryPreflight:
+        hypothesis = await self._demand.get_hypothesis_for_discovery(
+            tenant_id, hypothesis_id
+        )
+        if hypothesis.account_id != str(account_id):
+            raise ValidationError("需求假设与目标企业不匹配")
+        detail = await self._prospecting.get_account_detail(tenant_id, account_id)
+        account = detail.account
+        if account.tenant_id != tenant_id or account.account_id != account_id:
+            raise TenantIsolationViolation("联系人发现企业租户绑定无效")
+        if account.website_domain is None:
+            raise ValidationError("联系人发现企业缺少官网域名")
+        return ContactDiscoveryPreflight(
+            tenant_id=tenant_id,
+            hypothesis_id=hypothesis_id,
+            account_id=account_id,
+            category=hypothesis.category,
+            country=account.country,
+            website_domain=account.website_domain,
+        )
+
+
+class ConfiguredContactCountryPolicy:
+    """部署层显式允许的国家集合；没有配置的国家固定拒绝。"""
+
+    def __init__(self, tenant_id: TenantId, allowed_countries: tuple[str, ...]) -> None:
+        countries = frozenset(allowed_countries)
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or not countries
+            or len(countries) > 100
+            or any(
+                not isinstance(country, str)
+                or not country
+                or country != country.strip()
+                or len(country) > 64
+                for country in countries
+            )
+        ):
+            raise ValidationError("联系人国家政策配置无效")
+        self._tenant_id = tenant_id
+        self._allowed_countries = countries
+
+    async def allows_contact_enrichment(
+        self, tenant_id: TenantId, country: str
+    ) -> bool:
+        if tenant_id != self._tenant_id:
+            raise TenantIsolationViolation("联系人国家政策租户不匹配")
+        return country in self._allowed_countries
+
+
 __all__ = (
     "BossAccountDiscoveryActorResolver",
+    "ConfiguredContactCountryPolicy",
     "DemandAccountDiscoveryTaskReader",
+    "DemandProspectingContactDiscoveryPolicy",
 )
