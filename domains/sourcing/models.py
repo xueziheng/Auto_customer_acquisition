@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from urllib.parse import urlsplit
 
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -88,11 +89,11 @@ class MatchExplanation:
 
     @property
     def has_unknowns(self) -> bool:
-        raise NotImplementedError
+        return any(item.level is SpecMatchLevel.UNKNOWN for item in self.comparisons)
 
     @property
     def requires_customer_confirmation(self) -> bool:
-        raise NotImplementedError
+        return any(item.needs_customer_confirmation for item in self.comparisons)
 
 
 class CaseState(str, Enum):
@@ -185,7 +186,49 @@ class SupplierCandidate:
 
         返回 ``(通过, 未通过项)``。检查全部项后一次返回，不短路。
         """
-        raise NotImplementedError
+        missing: list[str] = []
+        comparisons = {item.spec_name.strip().casefold(): item for item in self.verified_specs}
+        for name in ("product_type", "material", "size", "model"):
+            item = comparisons.get(name)
+            if (
+                item is None
+                or item.level is SpecMatchLevel.UNKNOWN
+                or item.offered is None
+                or not item.offered.strip()
+            ):
+                missing.append(name)
+
+        tiers_valid = bool(self.quoted_prices) and all(
+            not isinstance(quantity, bool)
+            and isinstance(quantity, int)
+            and quantity > 0
+            and price.amount > 0
+            for quantity, price in self.quoted_prices.items()
+        )
+        if not tiers_valid:
+            missing.append("quantity_tier")
+        if isinstance(self.moq, bool) or not isinstance(self.moq, int) or self.moq < 1:
+            missing.append("moq")
+        if self.price_unit is None or not self.price_unit.strip():
+            missing.append("price_unit")
+        currencies = {str(price.currency) for price in self.quoted_prices.values()}
+        if (
+            self.currency is None
+            or len(self.currency) != 3
+            or not self.currency.isascii()
+            or not self.currency.isalpha()
+            or not self.currency.isupper()
+            or currencies != {self.currency}
+        ):
+            missing.append("currency")
+        if not _valid_evidence_snapshot(self.evidence):
+            missing.append("evidence_snapshot")
+        if self.match is None or self.match.has_unknowns:
+            missing.append("match_explanation")
+        missing.extend(
+            f"price_rejection:{reason.value}" for reason in self.rejection_reasons
+        )
+        return not missing, missing
 
 
 MAX_QUALIFIED_CANDIDATES = 3
@@ -223,4 +266,35 @@ class SourcingCase:
 
     def qualified_candidates(self) -> list[SupplierCandidate]:
         """通过核验且未被拒的候选，上限 ``MAX_QUALIFIED_CANDIDATES``。"""
-        raise NotImplementedError
+        qualified = [
+            candidate
+            for candidate in self.candidates
+            if not candidate.rejected and candidate.passes_verification()[0]
+        ]
+        qualified.sort(key=lambda item: (item.created_at, str(item.candidate_id)))
+        return qualified[:MAX_QUALIFIED_CANDIDATES]
+
+
+def _valid_evidence_snapshot(snapshot: EvidenceSnapshot | None) -> bool:
+    """核对可追溯快照的最小确定性字段，不在域内执行网络请求。"""
+
+    if snapshot is None:
+        return False
+    try:
+        parsed = urlsplit(snapshot.url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and (port is None or 1 <= port <= 65_535)
+        and snapshot.observed_at.tzinfo is not None
+        and snapshot.observed_at.utcoffset() is not None
+        and len(snapshot.content_hash) == 64
+        and all(character in "0123456789abcdef" for character in snapshot.content_hash)
+        and snapshot.artifact_ref.startswith("art_")
+        and snapshot.artifact_ref == snapshot.artifact_ref.strip()
+    )
