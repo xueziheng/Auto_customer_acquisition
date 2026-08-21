@@ -389,7 +389,10 @@ async def _prepare_real_scenario(stack: E2EStack) -> E2EScenario:
         stack.factory,
         now=clock.now,
         secret_resolver=EnvironmentSecretResolver(
-            {"UNSUBSCRIBE_HMAC_2026": "u" * 32}
+            {
+                "UNSUBSCRIBE_HMAC_2026": "u" * 32,
+                "TOOL_FINGERPRINT_KEY": "f" * 32,
+            }
         ),
     )
     boss_scope = OpportunityScope(level=ScopeLevel.TENANT)
