@@ -26,6 +26,8 @@ from connectors.gmail.client import (
 )
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.openai import OpenAIJsonModelClient
+from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
+from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
 from domains.directives.service_impl import DirectiveServiceImpl
@@ -72,7 +74,11 @@ from domains.outreach.permissions import (
 from domains.outreach.permissions import (
     StandardAuditLogger as OutreachStandardAuditLogger,
 )
-from domains.outreach.schemas import MessageSendPreflight
+from domains.outreach.schemas import (
+    CampaignApprovalSnapshot,
+    CampaignApprovalState,
+    MessageSendPreflight,
+)
 from domains.outreach.service import (
     CampaignApprovalProvider,
     ContactEligibilityProvider,
@@ -102,6 +108,7 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
@@ -146,6 +153,7 @@ from shared.errors import (
     ValidationError,
 )
 from shared.schemas.identifiers import (
+    ApprovalId,
     CampaignId,
     ContactPointId,
     EmployeeId,
@@ -385,6 +393,59 @@ class _UnavailableManualSendSources:
         raise TransientError("退订链接未配置")
 
 
+class _ServiceBackedCampaignApprovalProvider:
+    """把审批域公共视图适配为触达域所需的版本审批事实。"""
+
+    def __init__(
+        self,
+        approvals: ApprovalService,
+        fallback: CampaignApprovalProvider,
+    ) -> None:
+        self._approvals = approvals
+        self._fallback = fallback
+
+    async def get_campaign_approval(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        version: int,
+    ) -> CampaignApprovalSnapshot | None:
+        change_set_ref = f"campaign:{campaign_id}:v{version}"
+        view = await self._approvals.get_by_change_set(tenant_id, change_set_ref)
+        if view is None:
+            fallback = await self._fallback.get_campaign_approval(
+                tenant_id, campaign_id, version
+            )
+            return cast(CampaignApprovalSnapshot | None, fallback)
+        if view.approval_type != ApprovalType.CAMPAIGN_BOUNDARY_CHANGE.value:
+            raise ValidationError("Campaign 审批类型不匹配")
+        states = {
+            ApprovalState.PENDING.value: CampaignApprovalState.PENDING,
+            ApprovalState.APPROVED.value: CampaignApprovalState.APPROVED,
+            ApprovalState.APPLIED.value: CampaignApprovalState.APPROVED,
+            ApprovalState.REJECTED.value: CampaignApprovalState.REJECTED,
+            ApprovalState.EXPIRED.value: CampaignApprovalState.EXPIRED,
+            ApprovalState.APPLY_FAILED.value: CampaignApprovalState.REJECTED,
+        }
+        state = states.get(view.state)
+        if state is None:
+            raise ValidationError("Campaign 审批状态无效")
+        approved = state is CampaignApprovalState.APPROVED
+        return CampaignApprovalSnapshot(
+            tenant_id=tenant_id,
+            campaign_id=campaign_id,
+            version=version,
+            approval_id=ApprovalId(view.approval_id),
+            state=state,
+            approved_by=(
+                EmployeeId(view.decided_by_name)
+                if approved and view.decided_by_name is not None
+                else None
+            ),
+            approved_at=view.decided_at if approved else None,
+        )
+
+
 class _UnavailableToolGateway:
     """不构造空 registry；只返回固定 provider-auth 不可用结果。"""
 
@@ -535,17 +596,13 @@ class ResolvedManualSendGateway:
         )
 
     async def _binding(self, attempt_id: str) -> _ResolvedBinding | None:
-        async with SqlAlchemyOutreachUnitOfWork(
-            self._factory, self._tenant_id
-        ) as uow:
+        async with SqlAlchemyOutreachUnitOfWork(self._factory, self._tenant_id) as uow:
             attempt = await uow.attempts.get_for_update(
                 self._tenant_id, MessageAttemptId(attempt_id)
             )
             if attempt is None:
                 return None
-            campaign = await uow.campaigns.get(
-                self._tenant_id, attempt.campaign_id
-            )
+            campaign = await uow.campaigns.get(self._tenant_id, attempt.campaign_id)
         if campaign is None:
             return None
         return _ResolvedBinding(
@@ -586,9 +643,7 @@ class ResolvedManualSendGateway:
         except (PermissionDenied, ValidationError, TransientError):
             return False
 
-    async def authorize(
-        self, ctx: ToolCallContext, _state: object
-    ) -> bool:
+    async def authorize(self, ctx: ToolCallContext, _state: object) -> bool:
         attempt_id = ctx.params.get("attempt_id")
         if not isinstance(attempt_id, str):
             return False
@@ -760,6 +815,12 @@ def build_phase1_dependencies(
         audit=opportunity_audit,
         now=now,
     )
+    approvals = ApprovalServiceImpl(
+        lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        now=now,
+    )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
         manual_send.contact_eligibility
@@ -771,10 +832,14 @@ def build_phase1_dependencies(
         if manual_send is not None
         else unavailable_send_sources
     )
-    campaign_approvals = (
+    fallback_campaign_approvals = (
         manual_send.campaign_approvals
         if manual_send is not None
         else unavailable_send_sources
+    )
+    campaign_approvals = _ServiceBackedCampaignApprovalProvider(
+        approvals,
+        fallback_campaign_approvals,  # type: ignore[arg-type]
     )
     reply_status = (
         manual_send.reply_status
@@ -973,9 +1038,7 @@ def build_phase1_dependencies(
             {
                 "tenant": TenantCheck(),
                 "permission": PermissionCheck(resolved_gateway.authorize),
-                "suppression": SuppressionCheck(
-                    outreach, _outreach_system_actor
-                ),
+                "suppression": SuppressionCheck(outreach, _outreach_system_actor),
                 "approval": ApprovalCheck(),
                 "idempotency": IdempotencyCheck(),
                 "rate_limit": rate_limit,
@@ -1056,4 +1119,5 @@ def build_phase1_dependencies(
         demand_radar=demand_radar,
         directives=directives,
         trade_manager=trade_manager,
+        approvals=approvals,
     )

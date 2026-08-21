@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/approvals/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Pending Approvals */
+        get: operations["list_pending_approvals_approvals_pending_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Approval */
+        get: operations["get_approval_approvals__approval_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{approval_id}/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Approval */
+        post: operations["decide_approval_approvals__approval_id__decide_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/commands/discovery-proposals": {
         parameters: {
             query?: never;
@@ -86,6 +137,143 @@ export interface paths {
         get: operations["loss_reason_breakdown_crm_analytics_loss_reasons_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Campaigns */
+        get: operations["list_campaigns_crm_campaigns_get"];
+        put?: never;
+        /** Create Campaign */
+        post: operations["create_campaign_crm_campaigns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Campaign */
+        get: operations["get_campaign_crm_campaigns__campaign_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Campaign */
+        post: operations["activate_campaign_crm_campaigns__campaign_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Campaign */
+        post: operations["cancel_campaign_crm_campaigns__campaign_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/enrollments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Campaign Enrollments */
+        get: operations["list_campaign_enrollments_crm_campaigns__campaign_id__enrollments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause Campaign */
+        post: operations["pause_campaign_crm_campaigns__campaign_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/revise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revise Campaign */
+        post: operations["revise_campaign_crm_campaigns__campaign_id__revise_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/campaigns/{campaign_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Campaign */
+        post: operations["submit_campaign_crm_campaigns__campaign_id__submit_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -618,6 +806,81 @@ export interface components {
             message: string;
         };
         /**
+         * ApprovalDecisionBody
+         * @description 审批决定只有批准或拒绝；不存在 force/override。
+         */
+        ApprovalDecisionBody: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ApprovalView
+         * @description 审批视图 —— 审批人看到的全部内容。
+         *
+         *     设计目标：打开 → 看完 → 决定，一分钟内。字段齐全到不需要
+         *     跳转任何其他页面。
+         */
+        ApprovalView: {
+            /** Affected Entities */
+            affected_entities: string[];
+            /** Approval Id */
+            approval_id: string;
+            /** Approval Type */
+            approval_type: string;
+            /**
+             * Can Current User Decide
+             * @default false
+             */
+            can_current_user_decide: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By Name */
+            decided_by_name?: string | null;
+            /** Decision Note */
+            decision_note?: string | null;
+            /** Evidence Links */
+            evidence_links?: string[];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** If Approved */
+            if_approved: string;
+            /** If Rejected */
+            if_rejected: string;
+            /** Owner Name */
+            owner_name?: string | null;
+            /** Proposed By */
+            proposed_by?: string | null;
+            /** Proposed Change Display */
+            proposed_change_display: {
+                [key: string]: string;
+            };
+            /** Reason */
+            reason: string;
+            /** Reversible */
+            reversible: boolean;
+            /** Seconds Until Expiry */
+            seconds_until_expiry?: number | null;
+            /** State */
+            state: string;
+            /** Title */
+            title: string;
+            /** Type Label */
+            type_label: string;
+        };
+        /**
          * AuthCheck
          * @enum {string}
          */
@@ -696,6 +959,122 @@ export interface components {
          * @enum {string}
          */
         AuthenticationFixInstruction: "configure_spf" | "configure_dkim" | "configure_dmarc" | "fix_alignment" | "strengthen_policy" | "retry_lookup";
+        /**
+         * CampaignBoundaryBody
+         * @description 完整 Campaign 边界；修改必须提交全量新版本。
+         */
+        CampaignBoundaryBody: {
+            /** Allowed Categories */
+            allowed_categories: string[];
+            /** Daily New Contact Limit */
+            daily_new_contact_limit: number;
+            /** Daily Total Message Limit */
+            daily_total_message_limit: number;
+            /** Handoff Triggers */
+            handoff_triggers: string[];
+            /** Markets */
+            markets: string[];
+            /** Name */
+            name: string;
+            /** Sender Identity Ids */
+            sender_identity_ids: string[];
+            /** Steps */
+            steps: components["schemas"]["CampaignSequenceStepBody"][];
+            /**
+             * Stop On Reply
+             * @default true
+             */
+            stop_on_reply: boolean;
+            /** Target Entity Types */
+            target_entity_types: string[];
+        };
+        /** CampaignBoundaryView */
+        CampaignBoundaryView: {
+            /** Allowed Categories */
+            allowed_categories: string[];
+            /** Daily New Contact Limit */
+            daily_new_contact_limit: number;
+            /** Daily Total Message Limit */
+            daily_total_message_limit: number;
+            /** Handoff Triggers */
+            handoff_triggers: string[];
+            /** Markets */
+            markets: string[];
+            /** Sender Identity Ids */
+            sender_identity_ids: string[];
+            /** Steps */
+            steps: components["schemas"]["SequenceStepRequest"][];
+            /** Stop On Reply */
+            stop_on_reply: boolean;
+            /** Target Entity Types */
+            target_entity_types: string[];
+        };
+        /** CampaignPauseBody */
+        CampaignPauseBody: {
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * CampaignSequenceStepBody
+         * @description Campaign 的单个邮件步骤；第一步 discovery 由域边界校验。
+         */
+        CampaignSequenceStepBody: {
+            /**
+             * Intent
+             * @enum {string}
+             */
+            intent: "discovery" | "presentation";
+            /** Step Number */
+            step_number: number;
+            /** Wait Days */
+            wait_days: number;
+        };
+        /**
+         * CampaignState
+         * @enum {string}
+         */
+        CampaignState: "draft" | "pending_approval" | "active" | "paused" | "completed" | "cancelled";
+        /**
+         * CampaignSubmitResponse
+         * @description 提交审批后的 Campaign 与不可变审批包引用。
+         */
+        CampaignSubmitResponse: {
+            /** Approval Id */
+            approval_id: string;
+            campaign: components["schemas"]["CampaignView"];
+        };
+        /** CampaignView */
+        CampaignView: {
+            /** Approval Id */
+            approval_id: string | null;
+            /** Approved At */
+            approved_at: string | null;
+            /** Approved By */
+            approved_by: string | null;
+            boundary: components["schemas"]["CampaignBoundaryView"];
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Name */
+            name: string;
+            /** Paused Reason */
+            paused_reason: string | null;
+            state: components["schemas"]["CampaignState"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Today Messages Reserved */
+            today_messages_reserved: number;
+            /** Today New Contacts Reserved */
+            today_new_contacts_reserved: number;
+            /** Version */
+            version: number;
+        };
         /**
          * ContactPointDetailView
          * @description 联系方式详情；法律依据与验证观察均来自同一租户事务快照。
@@ -1792,6 +2171,14 @@ export interface components {
          * @enum {string}
          */
         SendFailureCategory: "rate_limited" | "provider_transient" | "provider_auth_required" | "provider_permanent" | "identity_unavailable";
+        /** SequenceStepRequest */
+        SequenceStepRequest: {
+            intent: components["schemas"]["StepIntent"];
+            /** Step Number */
+            step_number: number;
+            /** Wait Days */
+            wait_days: number;
+        };
         /**
          * SortKey
          * @description 打分排序键：09 文档「字典序、证据主导」的落地。
@@ -1814,6 +2201,11 @@ export interface components {
          * @enum {string}
          */
         SourceType: "conversation" | "web_page" | "upload" | "employee_input" | "agent_inference" | "external_api";
+        /**
+         * StepIntent
+         * @enum {string}
+         */
+        StepIntent: "discovery" | "presentation" | "follow_up";
         /**
          * SubjectType
          * @description 收件主体类型。欧洲和英国的规则按这个分叉：法人、独资经营者、
@@ -1917,6 +2309,130 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_pending_approvals_approvals_pending_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_approval_approvals__approval_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    decide_approval_approvals__approval_id__decide_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     create_discovery_proposal_commands_discovery_proposals_post: {
         parameters: {
             query?: never;
@@ -2069,6 +2585,378 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_campaigns_crm_campaigns_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_campaign_crm_campaigns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignBoundaryBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_campaign_crm_campaigns__campaign_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    activate_campaign_crm_campaigns__campaign_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_campaign_crm_campaigns__campaign_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_campaign_enrollments_crm_campaigns__campaign_id__enrollments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrollmentView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    pause_campaign_crm_campaigns__campaign_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignPauseBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    revise_campaign_crm_campaigns__campaign_id__revise_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignBoundaryBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignSubmitResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    submit_campaign_crm_campaigns__campaign_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignSubmitResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

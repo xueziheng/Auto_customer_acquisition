@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.approvals.models import ApprovalType, BlastRadius
+from domains.approvals.models import ApprovalState, ApprovalType, BlastRadius
 from domains.approvals.schemas import ApprovalView
 from shared.schemas.identifiers import ApprovalId, EmployeeId, RunId, TenantId
 
@@ -118,3 +118,12 @@ class ApprovalService(Protocol):
         """某人的待审批队列（按 ABAC 过滤到其权限范围）。
         按 ``expires_at`` 升序——最先过期的排最前。"""
         ...
+
+
+__all__ = (
+    "ApprovalService",
+    "ApprovalState",
+    "ApprovalType",
+    "BlastRadius",
+    "requires_approval",
+)

@@ -57,11 +57,22 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/approvals/pending",
+    "/approvals/{approval_id}",
+    "/approvals/{approval_id}/decide",
     "/commands/discovery-proposals",
     "/commands/discovery-proposals/{proposal_id}",
     "/commands/discovery-proposals/{proposal_id}/confirm",
     "/commands/discovery-proposals/{proposal_id}/reject",
     "/crm/analytics/loss-reasons",
+    "/crm/campaigns",
+    "/crm/campaigns/{campaign_id}",
+    "/crm/campaigns/{campaign_id}/activate",
+    "/crm/campaigns/{campaign_id}/cancel",
+    "/crm/campaigns/{campaign_id}/enrollments",
+    "/crm/campaigns/{campaign_id}/pause",
+    "/crm/campaigns/{campaign_id}/revise",
+    "/crm/campaigns/{campaign_id}/submit",
     "/crm/enrollments",
     "/crm/enrollments/{enrollment_id}/attempts/prepare",
     "/crm/handoffs",

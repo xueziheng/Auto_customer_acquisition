@@ -13,12 +13,13 @@ GET  /sending-identities         发件身份状态（认证/预热/信誉/熔�
 from __future__ import annotations
 
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from domains.approvals.service import ApprovalType, BlastRadius
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -29,9 +30,22 @@ from domains.outreach.permissions import (
 from domains.outreach.permissions import (
     ScopeLevel as OutreachScopeLevel,
 )
-from domains.outreach.schemas import EnrollmentView, MessageAttemptView
+from domains.outreach.schemas import (
+    CampaignCreateRequest,
+    CampaignView,
+    EnrollmentView,
+    MessageAttemptView,
+    SequenceStepRequest,
+    StepIntent,
+)
 from shared.errors import ValidationError
-from shared.schemas.identifiers import EnrollmentId, TenantId, UserId
+from shared.schemas.identifiers import (
+    ApprovalId,
+    CampaignId,
+    EnrollmentId,
+    TenantId,
+    UserId,
+)
 from tool_gateway.errors import ToolCallStatus, ToolErrorCategory
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 
@@ -50,6 +64,347 @@ router = APIRouter()
 _ATTEMPT_ID_RE = re.compile(r"mat_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _ENROLLMENT_ID_RE = re.compile(r"enr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _OUTREACH_ROLES = frozenset({"boss", "manager", "sales"})
+_CAMPAIGN_WRITER_ROLES = frozenset({"boss", "manager"})
+_BOSS_ROLES = frozenset({"boss"})
+
+
+class CampaignSequenceStepBody(BaseModel):
+    """Campaign 的单个邮件步骤；第一步 discovery 由域边界校验。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    step_number: int = Field(ge=1, le=5)
+    intent: Literal["discovery", "presentation"]
+    wait_days: int = Field(ge=0, le=90)
+
+
+class CampaignBoundaryBody(BaseModel):
+    """完整 Campaign 边界；修改必须提交全量新版本。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    name: str
+    markets: list[str]
+    target_entity_types: list[str]
+    allowed_categories: list[str]
+    sender_identity_ids: list[str]
+    steps: list[CampaignSequenceStepBody]
+    daily_new_contact_limit: int = Field(ge=1)
+    daily_total_message_limit: int = Field(ge=1)
+    handoff_triggers: list[str]
+    stop_on_reply: bool = True
+
+
+class CampaignPauseBody(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    reason: str
+
+
+class CampaignSubmitResponse(BaseModel):
+    """提交审批后的 Campaign 与不可变审批包引用。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    campaign: CampaignView
+    approval_id: str
+
+
+def _campaign_id(value: str) -> CampaignId:
+    if re.fullmatch(r"cmp_[0-7][0-9A-HJKMNP-TV-Z]{25}", value) is None:
+        raise ValidationError("campaign id 无效")
+    return CampaignId(value)
+
+
+def _campaign_request(body: CampaignBoundaryBody) -> CampaignCreateRequest:
+    return CampaignCreateRequest(
+        name=body.name,
+        markets=tuple(body.markets),
+        target_entity_types=tuple(body.target_entity_types),
+        allowed_categories=tuple(body.allowed_categories),
+        sender_identity_ids=tuple(body.sender_identity_ids),  # type: ignore[arg-type]
+        steps=tuple(
+            SequenceStepRequest(
+                step_number=item.step_number,
+                intent=StepIntent(item.intent),
+                wait_days=item.wait_days,
+            )
+            for item in body.steps
+        ),
+        daily_new_contact_limit=body.daily_new_contact_limit,
+        daily_total_message_limit=body.daily_total_message_limit,
+        handoff_triggers=tuple(body.handoff_triggers),
+        stop_on_reply=body.stop_on_reply,
+    )
+
+
+def _approval_change(campaign: CampaignView) -> dict[str, object]:
+    boundary = campaign.boundary
+    return {
+        "campaign_id": str(campaign.campaign_id),
+        "version": campaign.version,
+        "name": campaign.name,
+        "markets": list(boundary.markets),
+        "target_entity_types": list(boundary.target_entity_types),
+        "allowed_categories": list(boundary.allowed_categories),
+        "sender_identity_ids": [str(value) for value in boundary.sender_identity_ids],
+        "sequence": [
+            {
+                "step_number": item.step_number,
+                "intent": item.intent.value,
+                "wait_days": item.wait_days,
+            }
+            for item in boundary.steps
+        ],
+        "daily_new_contact_limit": boundary.daily_new_contact_limit,
+        "daily_total_message_limit": boundary.daily_total_message_limit,
+        "handoff_triggers": list(boundary.handoff_triggers),
+        "stop_on_reply": boundary.stop_on_reply,
+    }
+
+
+async def _submit_boundary_approval(
+    campaign: CampaignView,
+    identity: RequestIdentity,
+    dependencies: ConfiguredApiDependencies,
+) -> ApprovalId:
+    if dependencies.approvals is None:
+        raise ValidationError("审批服务未配置")
+    return await dependencies.approvals.submit(
+        identity.tenant_id,
+        ApprovalType.CAMPAIGN_BOUNDARY_CHANGE,
+        f"批准 Campaign：{campaign.name}（版本 {campaign.version}）",
+        _approval_change(campaign),
+        "Campaign 边界创建或修订后必须由人工确认，批准仅对该精确版本有效。",
+        BlastRadius(
+            affected_entities=[
+                f"Campaign {campaign.campaign_id} 版本 {campaign.version}"
+            ],
+            if_approved="允许老板激活该精确版本，并在列明的市场、品类、序列和每日上限内运行。",
+            if_rejected="Campaign 保持待审批，不会产生新的自动发送。",
+            reversible=True,
+        ),
+        proposed_by_employee=identity.employee.employee_id,
+        change_set_ref=f"campaign:{campaign.campaign_id}:v{campaign.version}",
+        owner_employee=campaign.created_by,
+    )
+
+
+@router.get(
+    "/campaigns",
+    response_model=list[CampaignView],
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def list_campaigns(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[CampaignView]:
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_LIST,
+        allowed_roles=_OUTREACH_ROLES,
+    )
+    return await dependencies.outreach.list_campaigns(
+        identity.tenant_id, actor.scope, limit=limit, actor=actor
+    )
+
+
+@router.get(
+    "/campaigns/{campaign_id}",
+    response_model=CampaignView,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def get_campaign(
+    campaign_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignView:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_READ,
+        allowed_roles=_OUTREACH_ROLES,
+    )
+    return await dependencies.outreach.get_campaign(
+        identity.tenant_id, typed_id, actor=actor
+    )
+
+
+@router.post(
+    "/campaigns",
+    response_model=CampaignView,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def create_campaign(
+    body: CampaignBoundaryBody,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignView:
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_CREATE,
+        allowed_roles=_BOSS_ROLES,
+    )
+    return await dependencies.outreach.create_campaign(
+        identity.tenant_id, _campaign_request(body), actor=actor
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/submit",
+    response_model=CampaignSubmitResponse,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def submit_campaign(
+    campaign_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignSubmitResponse:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_SUBMIT,
+        allowed_roles=_CAMPAIGN_WRITER_ROLES,
+    )
+    campaign = await dependencies.outreach.submit_campaign(
+        identity.tenant_id, typed_id, actor=actor
+    )
+    approval_id = await _submit_boundary_approval(campaign, identity, dependencies)
+    return CampaignSubmitResponse(campaign=campaign, approval_id=str(approval_id))
+
+
+@router.post(
+    "/campaigns/{campaign_id}/revise",
+    response_model=CampaignSubmitResponse,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def revise_campaign(
+    campaign_id: str,
+    body: CampaignBoundaryBody,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignSubmitResponse:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_REVISE,
+        allowed_roles=_CAMPAIGN_WRITER_ROLES,
+    )
+    campaign = await dependencies.outreach.revise_campaign(
+        identity.tenant_id, typed_id, _campaign_request(body), actor=actor
+    )
+    approval_id = await _submit_boundary_approval(campaign, identity, dependencies)
+    return CampaignSubmitResponse(campaign=campaign, approval_id=str(approval_id))
+
+
+@router.post(
+    "/campaigns/{campaign_id}/activate",
+    response_model=CampaignView,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def activate_campaign(
+    campaign_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignView:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_ACTIVATE,
+        allowed_roles=_BOSS_ROLES,
+    )
+    campaign = await dependencies.outreach.activate_campaign(
+        identity.tenant_id, typed_id, actor=actor
+    )
+    if campaign.approval_id is not None and dependencies.approvals is not None:
+        change_set_ref = f"campaign:{campaign.campaign_id}:v{campaign.version}"
+        approval = await dependencies.approvals.get_by_change_set(
+            identity.tenant_id, change_set_ref
+        )
+        if approval is not None and approval.approval_id == campaign.approval_id:
+            await dependencies.approvals.mark_applied(
+                identity.tenant_id,
+                campaign.approval_id,
+                f"campaign-activate:{campaign.campaign_id}:v{campaign.version}",
+            )
+    return campaign
+
+
+@router.post(
+    "/campaigns/{campaign_id}/pause",
+    response_model=CampaignView,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def pause_campaign(
+    campaign_id: str,
+    body: CampaignPauseBody,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignView:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_PAUSE,
+        allowed_roles=_CAMPAIGN_WRITER_ROLES,
+    )
+    return await dependencies.outreach.pause_campaign(
+        identity.tenant_id, typed_id, body.reason, actor=actor
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/cancel",
+    response_model=CampaignView,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def cancel_campaign(
+    campaign_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> CampaignView:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.CAMPAIGN_CANCEL,
+        allowed_roles=_CAMPAIGN_WRITER_ROLES,
+    )
+    return await dependencies.outreach.cancel_campaign(
+        identity.tenant_id, typed_id, actor=actor
+    )
+
+
+@router.get(
+    "/campaigns/{campaign_id}/enrollments",
+    response_model=list[EnrollmentView],
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def list_campaign_enrollments(
+    campaign_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> list[EnrollmentView]:
+    typed_id = _campaign_id(campaign_id)
+    actor = await resolve_outreach_access(
+        identity,
+        dependencies,
+        OutreachAction.ENROLLMENT_LIST,
+        allowed_roles=_OUTREACH_ROLES,
+    )
+    await dependencies.outreach.get_campaign(identity.tenant_id, typed_id, actor=actor)
+    rows = await dependencies.outreach.list_enrollments(
+        identity.tenant_id, actor.scope, limit=limit, actor=actor
+    )
+    return [row for row in rows if row.campaign_id == typed_id]
 
 
 class ManualEmailSendBody(BaseModel):
@@ -156,9 +511,7 @@ async def send_manual_email(
     attempt_id: str,
     body: ManualEmailSendBody,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
 ) -> ManualEmailSendResponse | JSONResponse:
     """以当前租户与员工身份发起唯一的受保护 Gmail Gateway 调用。"""
@@ -202,9 +555,7 @@ async def send_manual_email(
 )
 async def list_enrollments(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[EnrollmentView]:
     """按员工作用域列出可见 Enrollment；scope 由身份与 Campaign 归属推导。"""
@@ -233,9 +584,7 @@ async def list_enrollments(
 async def prepare_message_attempt(
     enrollment_id: str,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> MessageAttemptView:
     """先以员工 scope 验证 Enrollment 归属，再用精确 SYSTEM scope 准备 Attempt。
 

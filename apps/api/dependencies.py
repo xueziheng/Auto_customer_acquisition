@@ -9,6 +9,7 @@ from typing import Annotated, Protocol, runtime_checkable
 from fastapi import Depends, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
+from domains.approvals.service import ApprovalService
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
@@ -191,6 +192,7 @@ class ConfiguredApiDependencies:
     demand_radar: DemandRadarService | None = None
     directives: DirectiveService | None = None
     trade_manager: TradeManagerAgent | None = None
+    approvals: ApprovalService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:
@@ -245,9 +247,7 @@ from .identity import RequestIdentity, resolve_request_identity
 async def get_request_identity(
     request: Request,
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> RequestIdentity:
     """经 dev assertion 和 public EmployeeService DTO 解析请求身份。"""
     return await resolve_request_identity(request, settings, dependencies)

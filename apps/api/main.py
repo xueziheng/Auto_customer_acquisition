@@ -38,6 +38,7 @@ from .middleware import (
     TenantAssertionMiddleware,
     install_error_handlers,
 )
+from .routers.approvals import router as approvals_router
 from .routers.campaigns import router as campaigns_router
 from .routers.command_center import router as command_center_router
 from .routers.crm import OpportunityIntakeBody
@@ -60,6 +61,7 @@ _DEFAULT_RETRY_AFTER_SECONDS = 30
 
 def _install_openapi_contract(app: FastAPI) -> None:
     """把运行时统一 validation 400 显式写入并移除未实现的默认 422。"""
+
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is not None:
             return app.openapi_schema
@@ -114,9 +116,8 @@ def create_app(
     )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
     resolved_unsubscribe_service = unsubscribe_service
-    if (
-        resolved_unsubscribe_service is None
-        and isinstance(resolved_dependencies, ConfiguredApiDependencies)
+    if resolved_unsubscribe_service is None and isinstance(
+        resolved_dependencies, ConfiguredApiDependencies
     ):
         resolved_unsubscribe_service = resolved_dependencies.unsubscribe_service
 
@@ -146,6 +147,7 @@ def create_app(
     app.include_router(customer_discovery_router, prefix="/prospects")
     app.include_router(demand_radar_router, prefix="/demand")
     app.include_router(command_center_router, prefix="/commands")
+    app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(unsubscribe_router)
     if readiness_probe is not None:

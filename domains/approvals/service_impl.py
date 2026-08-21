@@ -272,8 +272,6 @@ class ApprovalServiceImpl:
                     return
                 raise ConflictingDecisionError("审批已有不同结果")
             if package.is_expired_at(now):
-                package.state = ApprovalState.EXPIRED
-                await uow.approvals.update(package)
                 raise ApprovalExpiredError("审批已过期，必须重新提交")
             if not package.can_be_decided_by(decided_by):
                 raise SelfApprovalError("提议人或业务负责人不能审批自己的变更")
