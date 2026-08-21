@@ -1,17 +1,9 @@
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from domains.sourcing.models import (
-    EvidenceSnapshot,
-    MatchExplanation,
-    MatchLadderRung,
-    SourcingCase,
-    SpecComparison,
-    SpecMatchLevel,
-    SupplierCandidate,
-)
 from shared.schemas.identifiers import (
     EmployeeId,
     SourcingCaseId,
@@ -20,6 +12,15 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+
+_models = importlib.import_module("domains.sourcing.models")
+EvidenceSnapshot = _models.EvidenceSnapshot
+MatchExplanation = _models.MatchExplanation
+MatchLadderRung = _models.MatchLadderRung
+SourcingCase = _models.SourcingCase
+SpecComparison = _models.SpecComparison
+SpecMatchLevel = _models.SpecMatchLevel
+SupplierCandidate = _models.SupplierCandidate
 
 NOW = datetime(2026, 8, 21, 10, tzinfo=UTC)
 
@@ -144,4 +145,3 @@ def test_case_returns_only_first_three_deterministically_qualified_candidates() 
         "cand-two",
         "cand-three",
     ]
-
