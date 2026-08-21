@@ -63,6 +63,55 @@ const router = createRouter({
       name: "notifications",
       component: () => import("./views/NotificationCenter.vue"),
     },
+    {
+      path: "/products",
+      name: "products",
+      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      meta: { phase: "phase1-manual", operation: "products" },
+    },
+    {
+      path: "/sourcing",
+      name: "sourcing",
+      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      meta: { phase: "phase1-manual", operation: "sourcing" },
+    },
+    {
+      path: "/costing-quotes",
+      name: "costing-quotes",
+      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      meta: { phase: "phase1-manual", operation: "costing-quotes" },
+    },
+    {
+      path: "/team",
+      name: "team",
+      component: () => import("./views/team/TeamCenter.vue"),
+    },
+    {
+      path: "/work-uploads",
+      name: "work-uploads",
+      component: () => import("./views/work-uploads/WorkUploads.vue"),
+    },
+    {
+      path: "/commitments",
+      name: "commitments",
+      component: () => import("./views/commitments/CommitmentCenter.vue"),
+    },
+    {
+      path: "/runs",
+      name: "runs",
+      component: () => import("./views/runs/RunCenter.vue"),
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("./views/settings/SettingsCenter.vue"),
+    },
+    {
+      path: "/billing",
+      name: "billing",
+      component: () => import("./views/billing/BillingUnavailable.vue"),
+      meta: { phase: "phase3-disabled" },
+    },
   ],
 });
 

@@ -1,8 +1,15 @@
 <script setup lang="ts">
+/* global HTMLDetailsElement */
+import { ref } from "vue";
 import { RouterLink, RouterView } from "vue-router";
 import NotificationBadge from "./components/NotificationBadge.vue";
 
 const appName: string = "TradeOS";
+const navMore = ref<HTMLDetailsElement | null>(null);
+
+function closeMore(): void {
+  navMore.value?.removeAttribute("open");
+}
 </script>
 
 <template>
@@ -31,14 +38,24 @@ const appName: string = "TradeOS";
         <RouterLink to="/crm/opportunities">
           CRM
         </RouterLink>
-        <RouterLink to="/crm/outreach">
-          触达工作台
-        </RouterLink>
-        <RouterLink to="/crm/sending-identities">
-          发件身份
+        <RouterLink to="/products">
+          人工运营
         </RouterLink>
       </nav>
       <span class="spacer" />
+      <details ref="navMore" class="nav-more">
+        <summary>更多</summary>
+        <div class="nav-more-panel">
+          <RouterLink to="/crm/outreach" @click="closeMore">触达工作台</RouterLink>
+          <RouterLink to="/crm/sending-identities" @click="closeMore">发件身份</RouterLink>
+          <RouterLink to="/team" @click="closeMore">团队与归属</RouterLink>
+          <RouterLink to="/work-uploads" @click="closeMore">工作上传</RouterLink>
+          <RouterLink to="/commitments" @click="closeMore">承诺中心</RouterLink>
+          <RouterLink to="/runs" @click="closeMore">Run 全景</RouterLink>
+          <RouterLink to="/settings" @click="closeMore">系统设置</RouterLink>
+          <RouterLink to="/billing" @click="closeMore">订阅与计费</RouterLink>
+        </div>
+      </details>
       <NotificationBadge />
     </header>
     <RouterView />
@@ -154,6 +171,44 @@ nav a.router-link-active {
   background: rgba(255, 255, 255, 0.14);
   font-weight: 600;
 }
+.nav-more {
+  position: relative;
+  flex-shrink: 0;
+}
+.nav-more summary {
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+}
+.nav-more summary::-webkit-details-marker {
+  display: none;
+}
+.nav-more-panel {
+  position: absolute;
+  z-index: 20;
+  top: 38px;
+  right: 0;
+  width: 180px;
+  padding: var(--space2);
+  display: grid;
+  gap: 2px;
+  background: var(--topbar);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(8, 36, 34, 0.24);
+}
+.nav-more-panel a {
+  color: var(--topbar-text);
+  text-decoration: none;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+}
+.nav-more-panel a:hover,
+.nav-more-panel a.router-link-active {
+  background: rgba(255, 255, 255, 0.14);
+}
 .spacer {
   flex: 1;
 }
@@ -209,6 +264,85 @@ nav a.router-link-active {
   border-radius: 999px;
   border: 1px solid;
 }
+.phase-center-shell {
+  overflow-y: auto;
+}
+.phase-eyebrow,
+.card-kicker {
+  color: var(--fact);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.manual-status {
+  border-color: var(--inference);
+  color: var(--inference);
+  background: var(--inference-soft);
+}
+.disabled-status {
+  border-color: var(--text-secondary);
+  color: var(--text-secondary);
+  background: var(--canvas);
+}
+.section-tabs {
+  display: flex;
+  gap: var(--space2);
+  overflow-x: auto;
+}
+.section-tabs a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 6px 12px;
+}
+.section-tabs a.router-link-active {
+  color: var(--action);
+  border-color: var(--action);
+}
+.center-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space4);
+}
+.center-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space5);
+  display: grid;
+  align-content: start;
+  gap: var(--space3);
+  min-height: 150px;
+}
+.center-card p,
+.center-card li {
+  color: var(--text-secondary);
+}
+.center-card ol {
+  padding-left: 20px;
+  display: grid;
+  gap: var(--space2);
+}
+.boundary-card {
+  border-left: 4px solid var(--danger);
+}
+.muted-card {
+  background: var(--canvas);
+}
+.file-picker {
+  display: inline-flex;
+  width: max-content;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  color: var(--text-secondary);
+}
+.file-picker input {
+  display: none;
+}
 @media (max-width: 1240px) {
   :root {
     --gutter: 20px;
@@ -228,6 +362,9 @@ nav a.router-link-active {
   }
   .shell {
     height: calc(100vh - 104px);
+  }
+  .center-grid {
+    grid-template-columns: 1fr;
   }
 }
 @media (prefers-reduced-motion: reduce) {
