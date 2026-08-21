@@ -4,6 +4,16 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: "/commands",
+      name: "command-center",
+      component: () => import("./views/command-center/CommandCenter.vue"),
+    },
+    {
+      path: "/demand",
+      name: "demand-radar",
+      component: () => import("./views/demand-radar/DemandRadar.vue"),
+    },
+    {
       path: "/prospects/accounts",
       name: "customer-discovery",
       component: () => import("./views/customer-discovery/CustomerDiscovery.vue"),

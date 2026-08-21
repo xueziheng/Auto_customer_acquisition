@@ -10,6 +10,12 @@ const appName: string = "TradeOS";
     <header class="topbar">
       <span class="brand">TradeOS 内部运营台</span>
       <nav aria-label="主导航">
+        <RouterLink to="/commands">
+          指挥中心
+        </RouterLink>
+        <RouterLink to="/demand">
+          需求雷达
+        </RouterLink>
         <RouterLink to="/prospects/accounts">
           客户发现
         </RouterLink>
@@ -124,6 +130,8 @@ button:disabled {
 nav {
   display: flex;
   gap: var(--space4);
+  overflow-x: auto;
+  white-space: nowrap;
 }
 nav a {
   color: var(--topbar-text);
