@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.sourcing.models import SupplierCandidate
+from domains.sourcing.models import (
+    PriceRejectionReason,
+    SpecMatchLevel,
+    SupplierCandidate,
+)
 from domains.sourcing.schemas import CaseView, CandidateSubmission
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -12,6 +16,16 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+
+
+def spec_match_level_values() -> tuple[str, ...]:
+    """返回寻源规格匹配等级词表，供上层做确定性边界校验。"""
+    return tuple(level.value for level in SpecMatchLevel)
+
+
+def price_rejection_reason_values() -> tuple[str, ...]:
+    """返回参考价拒绝原因词表，避免上层复制域内枚举。"""
+    return tuple(reason.value for reason in PriceRejectionReason)
 
 
 @runtime_checkable
