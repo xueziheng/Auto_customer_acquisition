@@ -8,3 +8,11 @@ POST /settings/directives/{version}/rollback   仅 boss
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="settings",
+    mode="configuration",
+    reason_code="SETTINGS_QUERY_API_NOT_CONFIGURED",
+)

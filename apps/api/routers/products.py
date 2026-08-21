@@ -11,3 +11,11 @@ GET /capabilities                供应能力池
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="products",
+    mode="manual",
+    reason_code="PRODUCT_PERSISTENCE_NOT_CONFIGURED",
+)

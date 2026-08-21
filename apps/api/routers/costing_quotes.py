@@ -11,3 +11,11 @@ GET  /quotes/{id}                          含版本历史
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="costing_quotes",
+    mode="manual",
+    reason_code="COSTING_QUOTATION_PERSISTENCE_NOT_CONFIGURED",
+)

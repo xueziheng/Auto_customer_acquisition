@@ -9,3 +9,11 @@ POST /sourcing/cases/{id}/fail            必须带原因
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="sourcing",
+    mode="manual",
+    reason_code="SOURCING_PERSISTENCE_NOT_CONFIGURED",
+)

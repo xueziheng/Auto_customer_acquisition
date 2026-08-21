@@ -10,3 +10,11 @@ POST /team/ownership/{account_id}/transfer   转移归属（留原因）
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="team",
+    mode="manual",
+    reason_code="TEAM_QUERY_API_NOT_CONFIGURED",
+)

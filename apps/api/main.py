@@ -41,6 +41,8 @@ from .middleware import (
 from .routers.approvals import router as approvals_router
 from .routers.campaigns import router as campaigns_router
 from .routers.command_center import router as command_center_router
+from .routers.commitments import router as commitments_router
+from .routers.costing_quotes import router as costing_quotes_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
@@ -48,13 +50,19 @@ from .routers.demand_radar import router as demand_radar_router
 from .routers.health import ReadinessProbe, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
+from .routers.products import router as products_router
+from .routers.runs import router as runs_router
 from .routers.sending_identities import router as sending_identities_router
+from .routers.settings import router as settings_router
+from .routers.sourcing import router as sourcing_router
+from .routers.team import router as team_router
 from .routers.unsubscribe import (
     is_anonymous_unsubscribe_route,
 )
 from .routers.unsubscribe import (
     router as unsubscribe_router,
 )
+from .routers.work_uploads import router as work_uploads_router
 
 _UNCONFIGURED_TENANT = "__tradeos_unconfigured__"
 _DEFAULT_RETRY_AFTER_SECONDS = 30
@@ -151,6 +159,14 @@ def create_app(
     app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(inbox_router)
+    app.include_router(products_router, prefix="/products")
+    app.include_router(sourcing_router, prefix="/sourcing")
+    app.include_router(costing_quotes_router, prefix="/costing-quotes")
+    app.include_router(team_router, prefix="/team")
+    app.include_router(work_uploads_router, prefix="/work-uploads")
+    app.include_router(commitments_router, prefix="/commitments")
+    app.include_router(runs_router, prefix="/runs")
+    app.include_router(settings_router, prefix="/settings")
     app.include_router(unsubscribe_router)
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))

@@ -7,3 +7,11 @@ GET  /commitments/overdue        逾期看板（老板问"谁的承诺明天到�
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="commitments",
+    mode="manual",
+    reason_code="COMMITMENT_PERSISTENCE_NOT_CONFIGURED",
+)

@@ -8,3 +8,11 @@ GET /tool-calls                  工具调用流水（含被拒的，带拒绝�
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="runs",
+    mode="audit",
+    reason_code="TRADE_RUN_READ_MODEL_NOT_CONFIGURED",
+)

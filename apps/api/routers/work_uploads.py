@@ -6,3 +6,11 @@ POST /uploads/{id}/confirm       员工确认（可修改后确认；确认才�
 """
 
 from __future__ import annotations
+
+from .module_status import build_status_router
+
+router = build_status_router(
+    module="work_uploads",
+    mode="manual",
+    reason_code="WORK_UPLOAD_PIPELINE_NOT_CONFIGURED",
+)

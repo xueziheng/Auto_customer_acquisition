@@ -64,6 +64,8 @@ _EXPECTED_API_PATHS = {
     "/commands/discovery-proposals/{proposal_id}",
     "/commands/discovery-proposals/{proposal_id}/confirm",
     "/commands/discovery-proposals/{proposal_id}/reject",
+    "/commitments/status",
+    "/costing-quotes/status",
     "/crm/analytics/loss-reasons",
     "/crm/campaigns",
     "/crm/campaigns/{campaign_id}",
@@ -98,10 +100,16 @@ _EXPECTED_API_PATHS = {
     "/inbox/messages/{message_id}/correct-classification",
     "/notifications",
     "/notifications/{notification_id}/read",
+    "/products/status",
     "/prospects/accounts",
     "/prospects/accounts/{account_id}",
     "/prospects/accounts/{account_id}/contacts",
     "/prospects/discoveries",
+    "/runs/status",
+    "/settings/status",
+    "/sourcing/status",
+    "/team/status",
+    "/work-uploads/status",
 }
 
 
