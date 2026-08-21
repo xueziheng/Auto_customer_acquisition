@@ -165,9 +165,9 @@ class Quote:
     customer_feedback: str | None = None
 
     def can_transition_to(self, target: QuoteState) -> bool:
-        raise NotImplementedError
+        return target in ALLOWED_TRANSITIONS[self.state]
 
     def is_expired_at(self, now: datetime) -> bool:
         """是否已过有效期。``scheduler_worker`` 定期扫描调用，
         过期自动转 EXPIRED 并通知负责人。"""
-        raise NotImplementedError
+        return now >= self.valid_until
