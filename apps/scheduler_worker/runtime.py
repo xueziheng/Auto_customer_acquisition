@@ -31,6 +31,7 @@ from connectors.gmail.client import (
 )
 from connectors.gmail.transport import GmailHttpTransport
 from domains.conversations.service import ConversationService
+from domains.demand.service import DemandService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.employees.service import EmployeeService
@@ -104,6 +105,8 @@ from shared.events.catalog import (
 from shared.schemas.identifiers import (
     ContactPointId,
     MessageAttemptId,
+    NeedHypothesisId,
+    RunId,
     TenantId,
     UserId,
     new_id,
@@ -157,6 +160,15 @@ from workflows.account_discovery.ports import (
     AccountDiscoveryTaskReader,
     ContactEnricher,
     ContactVerifier,
+)
+from workflows.demand_discovery.flow import (
+    build_demand_discovery_handlers,
+    register_demand_discovery,
+)
+from workflows.demand_discovery.ports import (
+    AccountDiscoveryQueue,
+    DemandDiscoveryTaskReader,
+    DemandIntelligenceCapability,
 )
 from workflows.email_feedback.unsubscribe import (
     FeedbackPageUnitOfWorkFactory,
@@ -213,6 +225,10 @@ from .notification_projection import (
     NotificationProjectionHandler,
 )
 from .reply_events import ReplyQualificationEventHandlers
+from .web_discovery import (
+    WebDiscoveryToolComposition,
+    build_web_discovery_tools,
+)
 
 
 class CompleteOutboxRegistry(Protocol):
@@ -420,6 +436,32 @@ class AccountDiscoveryComposition:
 
 
 @dataclass(frozen=True)
+class DemandDiscoveryComposition:
+    """需求探索端口；Provider 工具必须走显式 Web Tool Gateway 组合。"""
+
+    task_reader: DemandDiscoveryTaskReader
+    capability: DemandIntelligenceCapability
+    demand: DemandService
+    prospecting: ProspectingService
+    web_tools: WebDiscoveryToolComposition
+
+    def __post_init__(self) -> None:
+        required = (
+            (self.task_reader, "load_confirmed"),
+            (self.capability, "run"),
+            (self.demand, "capture_signal"),
+            (self.demand, "create_hypothesis"),
+            (self.demand, "get_confidence"),
+            (self.prospecting, "resolve_account"),
+        )
+        if (
+            any(not callable(getattr(value, name, None)) for value, name in required)
+            or not isinstance(self.web_tools, WebDiscoveryToolComposition)
+        ):
+            raise ValidationError("scheduler demand_discovery 依赖未完整配置")
+
+
+@dataclass(frozen=True)
 class SchedulerDomainDependencies:
     """尚未标准化为配置的 typed 业务依赖；禁止传 repository/raw payload。"""
 
@@ -429,6 +471,7 @@ class SchedulerDomainDependencies:
     campaign_messaging: CampaignMessagingComposition | None = None
     reply_qualification: ReplyQualificationComposition | None = None
     account_discovery: AccountDiscoveryComposition | None = None
+    demand_discovery: DemandDiscoveryComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -450,6 +493,51 @@ class SchedulerDomainDependencies:
             self.account_discovery, AccountDiscoveryComposition
         ):
             raise ValidationError("scheduler account_discovery 依赖未完整配置")
+        if self.demand_discovery is not None and (
+            not isinstance(self.demand_discovery, DemandDiscoveryComposition)
+            or self.account_discovery is None
+            or self.demand_discovery.prospecting
+            is not self.account_discovery.prospecting
+        ):
+            raise ValidationError("scheduler demand_discovery 依赖未完整配置")
+
+
+class _AccountDiscoveryWorkflowQueue(AccountDiscoveryQueue):
+    """延迟绑定同一 composition root 创建的 workflow engine。"""
+
+    def __init__(self) -> None:
+        self._engine: WorkflowEngine | None = None
+
+    def bind(self, engine: WorkflowEngine) -> None:
+        if self._engine is not None:
+            raise ValidationError("账户发现 workflow queue 重复绑定")
+        self._engine = engine
+
+    async def start(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+        *,
+        campaign_id: str,
+        acting_user: UserId,
+        role_hints: tuple[str, ...],
+        assessment_ref: str,
+    ) -> RunId:
+        if self._engine is None:
+            raise ValidationError("账户发现 workflow queue 尚未绑定")
+        return await self._engine.start(
+            tenant_id,
+            "account_discovery",
+            str(hypothesis_id),
+            {
+                "hypothesis_id": str(hypothesis_id),
+                "campaign_id": campaign_id,
+                "acting_user_id": str(acting_user),
+                "role_hints": list(role_hints),
+                "assessment_ref": assessment_ref,
+            },
+            f"demand-discovery:{hypothesis_id}:{campaign_id}",
+        )
 
 
 class _DnsTenantCheck:
@@ -846,6 +934,31 @@ class SchedulerRuntimeFactory:
                     actor_resolver=account.actor_resolver,
                     now=self._now,
                 )
+            demand_handlers: dict[str, StepHandler] = {}
+            account_queue: _AccountDiscoveryWorkflowQueue | None = None
+            if self._dependencies.demand_discovery is not None:
+                demand_discovery = self._dependencies.demand_discovery
+                web_tools = build_web_discovery_tools(
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                    tool_user=tool_user,
+                    fingerprints=fingerprints,
+                    composition=demand_discovery.web_tools,
+                    lease_duration=timedelta(
+                        seconds=config.tool_lease_seconds
+                    ),
+                    now=self._now,
+                )
+                account_queue = _AccountDiscoveryWorkflowQueue()
+                demand_handlers = build_demand_discovery_handlers(
+                    task_reader=demand_discovery.task_reader,
+                    searcher=web_tools.searcher,
+                    page_reader=web_tools.page_reader,
+                    capability=demand_discovery.capability,
+                    demand=demand_discovery.demand,
+                    prospecting=demand_discovery.prospecting,
+                    account_queue=account_queue,
+                )
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
@@ -854,9 +967,12 @@ class SchedulerRuntimeFactory:
                     **campaign_handlers,
                     **reply_handlers,
                     **account_handlers,
+                    **demand_handlers,
                 },
                 now=self._now,
             )
+            if account_queue is not None:
+                account_queue.bind(workflow)
             outbox = OutboxDeliverer(
                 factory,
                 config.tenant_id,
@@ -917,6 +1033,9 @@ class SchedulerRuntimeFactory:
 
             if self._dependencies.account_discovery is not None:
                 register_account_discovery(workflow)
+
+            if self._dependencies.demand_discovery is not None:
+                register_demand_discovery(workflow)
 
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
                 DNS_AUTH_MANIFEST.tool_id,
