@@ -374,6 +374,67 @@ class NoModelMoneyRail:
         )
 
 
+class LanguageCheckRail:
+    """核对客户内容与目标市场语言。"""
+
+    name = "language_check"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            if (
+                not isinstance(change, Mapping)
+                or change.get("domain") != "outreach"
+                or change.get("operation") != "create_draft"
+            ):
+                continue
+            payload = change.get("payload")
+            base = f"changes[{index}].payload"
+            if not isinstance(payload, Mapping):
+                violations.append(self._violation(base, "客户草稿缺少语言元数据"))
+                continue
+            target = self._primary_language(payload.get("target_language"))
+            content = self._primary_language(payload.get("content_language"))
+            if target is None:
+                violations.append(
+                    self._violation(
+                        f"{base}.target_language", "目标市场语言无效或缺失"
+                    )
+                )
+                continue
+            if content is None or content != target:
+                violations.append(
+                    self._violation(
+                        f"{base}.content_language", "客户内容语言与目标语言不一致"
+                    )
+                )
+                continue
+            if target == "en":
+                for field_name in ("subject", "body"):
+                    text = payload.get(field_name)
+                    if isinstance(text, str) and _CJK_TEXT.search(text) is not None:
+                        violations.append(
+                            self._violation(
+                                f"{base}.{field_name}", "英文客户内容包含中文正文"
+                            )
+                        )
+        return violations
+
+    @staticmethod
+    def _primary_language(value: object) -> str | None:
+        if not isinstance(value, str) or _LANGUAGE_TAG.fullmatch(value) is None:
+            return None
+        return value.split("-", maxsplit=1)[0].lower()
+
+    def _violation(self, location: str, detail: str) -> RailViolation:
+        return RailViolation(
+            rail=self.name,
+            location=location,
+            detail=detail,
+            how_to_fix="按目标市场语言重写客户可见 subject/body 并声明语言标签",
+        )
+
+
 class TenantConsistencyRail:
     """拒绝 Change Set 中任何越出顶层租户边界的嵌套数据。"""
 
@@ -427,6 +488,8 @@ _PROBABILITY_TEXT = re.compile(
     r"\s*(?:(?:约|为|is|of)\s*|[:=]\s*)?"
     r"(?:\d+(?:\.\d+)?|\.\d+)\s*%?",
 )
+_LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
+_CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class NoProbabilityOutputRail:

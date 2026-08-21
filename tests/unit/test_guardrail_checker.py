@@ -10,6 +10,7 @@ from agent_runtime.guardrails.rails import (
     EvidenceRequiredRail,
     FactInferenceSeparationRail,
     GuardrailChecker,
+    LanguageCheckRail,
     NoForbiddenCommitmentRail,
     NoModelMoneyRail,
     NoProbabilityOutputRail,
@@ -477,3 +478,54 @@ def test_model_money_rail_allows_pending_suggestions_and_customer_facts() -> Non
     ]
 
     assert NoModelMoneyRail().check(change_set) == []
+
+
+def test_language_rail_rejects_mismatched_or_non_english_customer_content() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Quick sourcing question",
+                "body": "请问你们目前最难采购哪些零部件？",
+                "target_language": "en-US",
+                "content_language": "en",
+            },
+        },
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Question rapide",
+                "body": "Quels composants sont difficiles à sourcer ?",
+                "target_language": "fr",
+                "content_language": "de",
+            },
+        },
+    ]
+
+    violations = LanguageCheckRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.body",
+        "changes[1].payload.content_language",
+    ]
+
+
+def test_language_rail_accepts_matching_customer_language_metadata() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Quick sourcing question",
+                "body": "Which components are currently hardest to source?",
+                "target_language": "en-US",
+                "content_language": "en-GB",
+            },
+        }
+    ]
+
+    assert LanguageCheckRail().check(change_set) == []
