@@ -31,6 +31,7 @@ __all__ = (
     "ProspectAccountView",
     "ProspectContactView",
     "SubjectType",
+    "VerificationRecordRequest",
     "VerificationStatus",
 )
 
@@ -75,6 +76,15 @@ class ContactPointCreateRequest:
 
 
 @dataclass(frozen=True)
+class VerificationRecordRequest:
+    contact_point_id: ContactPointId
+    result: VerificationStatus
+    provider: str
+    checked_at: datetime
+    cost_note: str
+
+
+@dataclass(frozen=True)
 class ProspectAccountView:
     account_id: ProspectAccountId
     tenant_id: TenantId
@@ -111,4 +121,6 @@ class ContactPointView:
     created_at: datetime
     verified_at: datetime | None = None
     verification_provider: str | None = None
+    verification_checked_at: datetime | None = None
+    verification_cost_note: str | None = None
     enrichment_cost_note: str | None = None

@@ -168,6 +168,8 @@ class ContactPoint:
         verification:    验证状态
         verified_at
         verification_provider
+        verification_checked_at
+        verification_cost_note
         legal_basis:     处理依据（**必填**，没有依据的联系方式
                          不允许入库——入库即处理）
         enrichment_cost_note: 获取成本记录
@@ -184,6 +186,8 @@ class ContactPoint:
     verification: VerificationStatus = VerificationStatus.UNVERIFIED
     verified_at: datetime | None = None
     verification_provider: str | None = None
+    verification_checked_at: datetime | None = None
+    verification_cost_note: str | None = None
     enrichment_cost_note: str | None = None
 
     def may_enter_sequence(self) -> bool:
@@ -204,10 +208,30 @@ class ContactPoint:
         _require_optional_text(
             self.verification_provider, "联系方式验证状态无效"
         )
+        _require_optional_text(
+            self.verification_cost_note, "联系方式验证观察无效"
+        )
         _require_optional_text(self.enrichment_cost_note, "联系方式字段无效")
+        observed = self.verification_checked_at is not None
+        complete_observation = (
+            self.verification_provider is not None
+            and self.verification_cost_note is not None
+        )
+        if observed != complete_observation or (
+            not observed and self.verification_cost_note is not None
+        ):
+            raise ValidationError("联系方式验证观察无效")
+        if self.verification_checked_at is not None:
+            _require_utc(
+                self.verification_checked_at, "联系方式验证观察无效"
+            )
         if self.verification is VerificationStatus.UNVERIFIED:
             valid_shape = (
-                self.verified_at is None and self.verification_provider is None
+                self.verified_at is None
+                and (
+                    self.verification_provider is None
+                    or self.verification_checked_at is not None
+                )
             )
         elif self.verification is VerificationStatus.VERIFIED:
             valid_shape = (

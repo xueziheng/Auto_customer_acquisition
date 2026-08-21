@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,6 +23,12 @@ SubjectType = _models.SubjectType
 VerificationStatus = _models.VerificationStatus
 
 NOW = datetime(2026, 8, 20, tzinfo=UTC)
+CHECKED_AT = datetime(2026, 8, 21, tzinfo=UTC)
+
+
+def _assert_observation_fields_exist() -> None:
+    field_names = {item.name for item in fields(ContactPoint)}
+    assert {"verification_checked_at", "verification_cost_note"} <= field_names
 
 
 def _basis(**overrides: object) -> Any:
@@ -104,6 +110,83 @@ def test_verification_shape_is_fail_closed() -> None:
             verification=VerificationStatus.RISKY,
             verified_at=NOW,
             verification_provider="provider-v1",
+        )
+
+
+def test_contact_point_accepts_complete_unverified_observation() -> None:
+    _assert_observation_fields_exist()
+    point = _point(
+        verification=VerificationStatus.UNVERIFIED,
+        verification_provider="hunter",
+        verification_checked_at=CHECKED_AT,
+        verification_cost_note="hunter.email_verifier.unknown",
+    )
+    assert point.verification_checked_at == CHECKED_AT
+
+
+@pytest.mark.parametrize(
+    ("provider", "checked_at", "cost_note"),
+    [
+        ("hunter", None, "hunter.email_verifier.unknown"),
+        (None, CHECKED_AT, "hunter.email_verifier.unknown"),
+        ("hunter", CHECKED_AT, None),
+        (None, None, "hunter.email_verifier.unknown"),
+    ],
+)
+def test_contact_point_rejects_partial_observation(
+    provider: str | None,
+    checked_at: datetime | None,
+    cost_note: str | None,
+) -> None:
+    _assert_observation_fields_exist()
+    with pytest.raises(ValidationError, match="联系方式验证观察无效"):
+        replace(
+            _point(),
+            verification_provider=provider,
+            verification_checked_at=checked_at,
+            verification_cost_note=cost_note,
+        )
+
+
+def test_contact_point_rejects_non_utc_verification_checked_at() -> None:
+    _assert_observation_fields_exist()
+    with pytest.raises(ValidationError, match="联系方式验证观察无效"):
+        _point(
+            verification_provider="hunter",
+            verification_checked_at=CHECKED_AT.replace(tzinfo=None),
+            verification_cost_note="hunter.email_verifier.unknown",
+        )
+
+
+@pytest.mark.parametrize(
+    "status", [VerificationStatus.INVALID, VerificationStatus.RISKY]
+)
+def test_contact_point_accepts_legacy_terminal_verification_without_observation(
+    status: object,
+) -> None:
+    _assert_observation_fields_exist()
+    point = _point(verification=status, verification_provider="hunter")
+    assert point.verification_checked_at is None
+    assert point.verification_cost_note is None
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        VerificationStatus.UNVERIFIED,
+        VerificationStatus.INVALID,
+        VerificationStatus.RISKY,
+    ],
+)
+def test_verified_at_is_rejected_outside_verified_status(status: object) -> None:
+    _assert_observation_fields_exist()
+    with pytest.raises(ValidationError, match="联系方式验证状态无效"):
+        _point(
+            verification=status,
+            verified_at=CHECKED_AT,
+            verification_provider="hunter",
+            verification_checked_at=CHECKED_AT,
+            verification_cost_note="hunter.email_verifier.counted",
         )
 
 

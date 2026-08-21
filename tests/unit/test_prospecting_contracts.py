@@ -2,22 +2,35 @@
 
 from __future__ import annotations
 
+import importlib
+from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime
 from typing import get_type_hints
+
+import pytest
 
 from domains.prospecting.schemas import (
     AccountResolveRequest,
     ContactCreateRequest,
     ContactPointCreateRequest,
     ContactPointKind,
+    ContactPointView,
     ContactType,
     LegalBasisInput,
     LegalBasisType,
     ProspectAccountView,
     SubjectType,
+    VerificationStatus,
 )
 from domains.prospecting.service import ProspectingService
-from shared.schemas.identifiers import ProspectAccountId, ProspectContactId
+from shared.schemas.identifiers import (
+    ContactPointId,
+    ProspectAccountId,
+    ProspectContactId,
+)
+
+_schemas = importlib.import_module("domains.prospecting.schemas")
+CHECKED_AT = datetime(2026, 8, 21, tzinfo=UTC)
 
 
 def test_public_requests_are_constructible_without_internal_models() -> None:
@@ -64,6 +77,25 @@ def test_public_request_collections_are_immutable() -> None:
         source_signal_refs=("sig-1", "sig-2"),
     )
     assert request.source_signal_refs == ("sig-1", "sig-2")
+
+
+def test_verification_record_request_is_frozen() -> None:
+    request_type = getattr(_schemas, "VerificationRecordRequest", None)
+    assert request_type is not None
+    request = request_type(
+        ContactPointId("cp_01J00000000000000000000000"),
+        VerificationStatus.VERIFIED,
+        "hunter",
+        CHECKED_AT,
+        "hunter.email_verifier.counted",
+    )
+    with pytest.raises(FrozenInstanceError):
+        request.provider = "changed"
+
+
+def test_contact_point_view_exposes_complete_verification_observation() -> None:
+    field_names = {item.name for item in fields(ContactPointView)}
+    assert {"verification_checked_at", "verification_cost_note"} <= field_names
 
 
 def test_contact_point_verified_is_registered_for_transactional_outbox() -> None:
