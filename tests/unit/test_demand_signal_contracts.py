@@ -25,6 +25,7 @@ _repository = importlib.import_module("domains.demand.repository")
 DemandSignalRepository = _repository.DemandSignalRepository
 NeedHypothesisRepository = _repository.NeedHypothesisRepository
 ValidatedNeedRepository = _repository.ValidatedNeedRepository
+NeedClusterRepository = _repository.NeedClusterRepository
 DemandUnitOfWork = _repository.DemandUnitOfWork
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -143,9 +144,31 @@ def test_hypothesis_and_need_repositories_gain_get_for_update() -> None:
     )
 
 
-def test_demand_uow_protocol_gains_hypotheses_and_needs() -> None:
-    """UoW 协议成员（spec D12）：signals/hypotheses/needs/bus，无 clusters。"""
+def test_demand_uow_protocol_includes_need_clusters() -> None:
+    """需求簇进入 Phase 1 后，仓储签名与 UoW 成员必须显式锁定。"""
+    expected_cluster = {
+        "add": ["self", "cluster"],
+        "get": ["self", "tenant_id", "cluster_id"],
+        "update": ["self", "cluster"],
+        "find_candidate_cluster": [
+            "self",
+            "tenant_id",
+            "category",
+            "keywords",
+        ],
+        "list_for_radar": ["self", "tenant_id", "limit"],
+    }
+    for method, params in expected_cluster.items():
+        signature = inspect.signature(getattr(NeedClusterRepository, method))
+        assert list(signature.parameters) == params, method
+
     attrs = set(getattr(DemandUnitOfWork, "__protocol_attrs__", ()))
-    assert {"signals", "hypotheses", "needs", "bus", "__aenter__", "__aexit__"} <= attrs
-    # spec D12 / Phase 1：UoW 不得有 clusters 成员（NeedCluster 整体非本片范围）
-    assert "clusters" not in attrs
+    assert {
+        "signals",
+        "hypotheses",
+        "needs",
+        "clusters",
+        "bus",
+        "__aenter__",
+        "__aexit__",
+    } <= attrs
