@@ -14,6 +14,10 @@ from domains.conversations.models import (
 from domains.conversations.repository import (
     ConversationsUnitOfWork as _ConversationsUnitOfWork,
 )
+from domains.conversations.schemas import (
+    ConversationInboxDetail,
+    ConversationInboxItem,
+)
 
 #: 域公共 API 复出口（outreach/sending_identity 同款先例）：apps 侧
 #: 组合只能经 service 引用事务边界类型，不得直接 import repository。
@@ -120,3 +124,19 @@ class ConversationService(Protocol):
     async def list_messages(
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> list[Message]: ...
+
+    async def list_inbox(
+        self,
+        tenant_id: TenantId,
+        *,
+        category: ReplyCategory | None,
+        limit: int,
+    ) -> list[ConversationInboxItem]:
+        """列出最近会话，可按人工纠正后的有效分类过滤。"""
+        ...
+
+    async def get_inbox_detail(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> ConversationInboxDetail:
+        """读取会话消息、模型原判、人工纠正与 artifact 公共引用。"""
+        ...

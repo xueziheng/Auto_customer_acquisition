@@ -10,6 +10,7 @@ from fastapi import Depends, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
 from domains.approvals.service import ApprovalService
+from domains.conversations.service import ConversationService
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
@@ -193,6 +194,7 @@ class ConfiguredApiDependencies:
     directives: DirectiveService | None = None
     trade_manager: TradeManagerAgent | None = None
     approvals: ApprovalService | None = None
+    conversations: ConversationService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

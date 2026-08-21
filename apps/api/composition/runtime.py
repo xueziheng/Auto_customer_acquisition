@@ -28,6 +28,7 @@ from connectors.gmail.transport import GmailHttpTransport
 from connectors.openai import OpenAIJsonModelClient
 from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
 from domains.approvals.service_impl import ApprovalServiceImpl
+from domains.conversations.service_impl import ConversationServiceImpl
 from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
 from domains.directives.service_impl import DirectiveServiceImpl
@@ -109,6 +110,7 @@ from domains.sending_identity.service import (
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
+from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
@@ -969,6 +971,12 @@ def build_phase1_dependencies(
         demand,
         employee_authorizer,
     )
+    conversations = ConversationServiceImpl(
+        lambda requested_tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        now=now,
+    )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -1119,4 +1127,5 @@ def build_phase1_dependencies(
         directives=directives,
         trade_manager=trade_manager,
         approvals=approvals,
+        conversations=conversations,
     )

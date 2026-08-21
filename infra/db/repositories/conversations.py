@@ -285,6 +285,28 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
         self._require_tenant(TenantId(row.tenant_id), "conversation.find")
         return _row_to_conversation(row)
 
+    async def list_recent(
+        self, tenant_id: TenantId, *, limit: int
+    ) -> list[Conversation]:
+        """tenant-bound 最近活动列表；稳定次序便于分页前的 Phase 1 展示。"""
+        self._require_tenant(tenant_id, "conversation.list_recent")
+        rows = (
+            await self._session.execute(
+                select(ConversationRow)
+                .where(ConversationRow.tenant_id == str(tenant_id))
+                .order_by(
+                    func.greatest(
+                        ConversationRow.last_inbound_at,
+                        ConversationRow.last_outbound_at,
+                        ConversationRow.created_at,
+                    ).desc(),
+                    ConversationRow.conversation_id,
+                )
+                .limit(limit)
+            )
+        ).scalars().all()
+        return [_row_to_conversation(row) for row in rows]
+
 
 def _require_valid_external_id(message: Message) -> str:
     """仓储边界显式 fail-closed（固定摘要，不回显值）：None/空白若以 "" 落库

@@ -50,6 +50,12 @@ class ConversationRepository(Protocol):
         self, tenant_id: TenantId, account_id: ProspectAccountId, channel: str
     ) -> Conversation | None: ...
 
+    async def list_recent(
+        self, tenant_id: TenantId, *, limit: int
+    ) -> list[Conversation]:
+        """按最近活动倒序列出本租户会话。"""
+        ...
+
 
 @runtime_checkable
 class ClassificationRepository(Protocol):

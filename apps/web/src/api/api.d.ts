@@ -660,6 +660,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Inbox Conversations */
+        get: operations["list_inbox_conversations_inbox_conversations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Inbox Conversation */
+        get: operations["get_inbox_conversation_inbox_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/messages/{message_id}/correct-classification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct Inbox Classification */
+        post: operations["correct_inbox_classification_inbox_messages__message_id__correct_classification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notifications": {
         parameters: {
             query?: never;
@@ -1076,6 +1127,38 @@ export interface components {
             version: number;
         };
         /**
+         * ClassificationCorrectionAccepted
+         * @description 纠正写入确认；详情刷新后可见完整 append-only 证据链。
+         */
+        ClassificationCorrectionAccepted: {
+            category: components["schemas"]["ReplyCategory"];
+            /** Corrected By */
+            corrected_by: string;
+            /** Message Id */
+            message_id: string;
+        };
+        /**
+         * ClassificationCorrectionBody
+         * @description 人工纠正只接受 14 类枚举；原模型判定由域服务保留。
+         */
+        ClassificationCorrectionBody: {
+            category: components["schemas"]["ReplyCategory"];
+        };
+        /**
+         * ClassificationCorrectionView
+         * @description 人工纠正视图；原判不覆盖，纠正按时间顺序追加。
+         */
+        ClassificationCorrectionView: {
+            /**
+             * Corrected At
+             * Format: date-time
+             */
+            corrected_at: string;
+            /** Corrected By */
+            corrected_by: string;
+            corrected_category: components["schemas"]["ReplyCategory"];
+        };
+        /**
          * ContactPointDetailView
          * @description 联系方式详情；法律依据与验证观察均来自同一租户事务快照。
          */
@@ -1137,6 +1220,62 @@ export interface components {
          * @enum {string}
          */
         ContactType: "role_based" | "personal_business";
+        /**
+         * ConversationInboxDetail
+         * @description Smart Inbox 会话详情；消息证据逐条保留原件引用。
+         */
+        ConversationInboxDetail: {
+            /** Account Id */
+            account_id: string;
+            /** Channel */
+            channel: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Inbound At */
+            last_inbound_at: string | null;
+            /** Last Outbound At */
+            last_outbound_at: string | null;
+            /** Messages */
+            messages: components["schemas"]["InboxMessageView"][];
+        };
+        /**
+         * ConversationInboxItem
+         * @description Smart Inbox 列表项；动作是规则要求，不表示动作已经执行成功。
+         */
+        ConversationInboxItem: {
+            /** Account Id */
+            account_id: string;
+            /** Channel */
+            channel: string;
+            /** Classified At */
+            classified_at: string | null;
+            /** Classified By */
+            classified_by: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Correction Count */
+            correction_count: number;
+            effective_category: components["schemas"]["ReplyCategory"] | null;
+            /**
+             * Last Activity At
+             * Format: date-time
+             */
+            last_activity_at: string;
+            /** Latest Message At */
+            latest_message_at: string | null;
+            /** Latest Message Id */
+            latest_message_id: string | null;
+            original_category: components["schemas"]["ReplyCategory"] | null;
+            /** Raw Artifact Ref */
+            raw_artifact_ref: string | null;
+            /** Required Actions */
+            required_actions: string[];
+        };
         /**
          * DemandSignalView
          * @description 需求雷达信号视图；事实观察与可能需求保持结构分离。
@@ -1502,6 +1641,36 @@ export interface components {
             tenant_id: string;
             /** Title */
             title: string;
+        };
+        /**
+         * InboxMessageView
+         * @description Inbox 消息审计视图。
+         *
+         *     只返回元数据与 artifact 公共引用，不复制邮件主题或正文。分类原判与
+         *     当前有效分类分离，避免人工纠正破坏模型版本评估样本。
+         */
+        InboxMessageView: {
+            /** Classified At */
+            classified_at: string | null;
+            /** Classified By */
+            classified_by: string | null;
+            /** Corrections */
+            corrections: components["schemas"]["ClassificationCorrectionView"][];
+            /** Direction */
+            direction: string;
+            effective_category: components["schemas"]["ReplyCategory"] | null;
+            /** Message Id */
+            message_id: string;
+            original_category: components["schemas"]["ReplyCategory"] | null;
+            /** Raw Artifact Ref */
+            raw_artifact_ref: string;
+            /** Required Actions */
+            required_actions: string[];
+            /**
+             * Sent At
+             * Format: date-time
+             */
+            sent_at: string;
         };
         /**
          * LegalBasisType
@@ -2092,6 +2261,18 @@ export interface components {
             /** Source Url */
             source_url: string | null;
         };
+        /**
+         * ReplyCategory
+         * @description 回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
+         *
+         *     分类由 ``agent_runtime/qualification_agent`` 做，**动作映射是
+         *     确定性代码**（``REPLY_ACTIONS``）——模型判断类别，代码决定做什么。
+         *     分类错误的代价按类别不对称：把退订误判成拒绝还会再发邮件，
+         *     那是投诉；把兴趣误判成拒绝只是少跟一单。所以退订/投诉类的判定
+         *     要偏保守（宁可误判为退订）。
+         * @enum {string}
+         */
+        ReplyCategory: "clear_interest" | "willing_to_continue" | "requests_materials" | "requests_quote" | "requests_sample" | "provides_specification" | "no_current_need" | "future_need_possible" | "refers_other_contact" | "rejection" | "unsubscribe" | "bounce" | "auto_reply" | "complaint";
         /**
          * ReputationView
          * @description 信誉视图，全部比率/阈值使用 Decimal。
@@ -3726,6 +3907,131 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_inbox_conversations_inbox_conversations_get: {
+        parameters: {
+            query?: {
+                category?: components["schemas"]["ReplyCategory"] | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationInboxItem"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_inbox_conversation_inbox_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationInboxDetail"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    correct_inbox_classification_inbox_messages__message_id__correct_classification_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClassificationCorrectionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClassificationCorrectionAccepted"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

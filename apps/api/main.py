@@ -46,6 +46,7 @@ from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
 from .routers.demand_radar import router as demand_radar_router
 from .routers.health import ReadinessProbe, build_health_router
+from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.sending_identities import router as sending_identities_router
 from .routers.unsubscribe import (
@@ -149,6 +150,7 @@ def create_app(
     app.include_router(command_center_router, prefix="/commands")
     app.include_router(approvals_router)
     app.include_router(notifications_router)
+    app.include_router(inbox_router)
     app.include_router(unsubscribe_router)
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))

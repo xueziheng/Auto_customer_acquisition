@@ -27,6 +27,12 @@ from domains.conversations.repository import (
     ClassificationRepository,
     ConversationsUnitOfWork,
 )
+from domains.conversations.schemas import (
+    ClassificationCorrectionView,
+    ConversationInboxDetail,
+    ConversationInboxItem,
+    InboxMessageView,
+)
 from shared.errors import ValidationError
 from shared.events.catalog import InboundMessageStored, ReplyReceived
 from shared.schemas.identifiers import (
@@ -425,3 +431,209 @@ class ConversationServiceImpl:
                     corrected_at=now,
                 )
             )
+
+    async def get_conversation(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> Conversation:
+        """按租户读取会话；不存在与跨租户不可见统一 fail-closed。"""
+        self._validate_inbox_identity(tenant_id, conversation_id)
+        async with self._uow_factory(tenant_id) as uow:
+            conversation = await uow.conversations.get(tenant_id, conversation_id)
+        if conversation is None:
+            raise ValidationError("会话不存在")
+        return conversation
+
+    async def list_messages(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> list[Message]:
+        """按租户读取会话消息；先验证会话可见性，禁止存在性侧信道。"""
+        self._validate_inbox_identity(tenant_id, conversation_id)
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.conversations.get(tenant_id, conversation_id) is None:
+                raise ValidationError("会话不存在")
+            return await uow.messages.list_for_conversation(
+                tenant_id, conversation_id
+            )
+
+    async def list_inbox(
+        self,
+        tenant_id: TenantId,
+        *,
+        category: ReplyCategory | None,
+        limit: int,
+    ) -> list[ConversationInboxItem]:
+        """构造 Smart Inbox 最近会话投影（正文不进入数据平面）。"""
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("会话租户无效")
+        if category is not None and not isinstance(category, ReplyCategory):
+            raise ValidationError("分类类别无效")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValidationError("Inbox 条数必须在 1–200")
+        async with self._uow_factory(tenant_id) as uow:
+            # 分类目前是 append-only 纠正后的域投影，不是 conversations 表字段；
+            # Phase 1 最多扫描最近 200 条，再对有效分类过滤并应用调用方 limit。
+            scan_limit = 200 if category is not None else limit
+            conversations = await uow.conversations.list_recent(
+                tenant_id, limit=scan_limit
+            )
+            items: list[ConversationInboxItem] = []
+            for conversation in conversations:
+                messages = await uow.messages.list_for_conversation(
+                    tenant_id, conversation.conversation_id
+                )
+                inbound = [
+                    message
+                    for message in messages
+                    if message.direction is MessageDirection.INBOUND
+                ]
+                latest = inbound[-1] if inbound else (messages[-1] if messages else None)
+                message_view = (
+                    await self._build_message_view(uow, tenant_id, latest)
+                    if latest is not None
+                    else None
+                )
+                if category is not None and (
+                    message_view is None
+                    or message_view.effective_category is not category
+                ):
+                    continue
+                activity_candidates = [
+                    value
+                    for value in (
+                        conversation.created_at,
+                        conversation.last_inbound_at,
+                        conversation.last_outbound_at,
+                    )
+                    if value is not None
+                ]
+                items.append(
+                    ConversationInboxItem(
+                        conversation_id=conversation.conversation_id,
+                        account_id=conversation.account_id,
+                        channel=conversation.channel,
+                        last_activity_at=max(activity_candidates),
+                        latest_message_id=(
+                            message_view.message_id if message_view is not None else None
+                        ),
+                        latest_message_at=(
+                            message_view.sent_at if message_view is not None else None
+                        ),
+                        raw_artifact_ref=(
+                            message_view.raw_artifact_ref
+                            if message_view is not None
+                            else None
+                        ),
+                        original_category=(
+                            message_view.original_category
+                            if message_view is not None
+                            else None
+                        ),
+                        effective_category=(
+                            message_view.effective_category
+                            if message_view is not None
+                            else None
+                        ),
+                        classified_by=(
+                            message_view.classified_by
+                            if message_view is not None
+                            else None
+                        ),
+                        classified_at=(
+                            message_view.classified_at
+                            if message_view is not None
+                            else None
+                        ),
+                        correction_count=(
+                            len(message_view.corrections)
+                            if message_view is not None
+                            else 0
+                        ),
+                        required_actions=(
+                            message_view.required_actions
+                            if message_view is not None
+                            else ()
+                        ),
+                    )
+                )
+                if len(items) == limit:
+                    break
+        return items
+
+    async def get_inbox_detail(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> ConversationInboxDetail:
+        """构造可审计 Inbox 详情；不返回主题、正文或模型概率。"""
+        self._validate_inbox_identity(tenant_id, conversation_id)
+        async with self._uow_factory(tenant_id) as uow:
+            conversation = await uow.conversations.get(tenant_id, conversation_id)
+            if conversation is None:
+                raise ValidationError("会话不存在")
+            messages = await uow.messages.list_for_conversation(
+                tenant_id, conversation_id
+            )
+            views = tuple(
+                [
+                    await self._build_message_view(uow, tenant_id, message)
+                    for message in messages
+                ]
+            )
+        return ConversationInboxDetail(
+            conversation_id=conversation.conversation_id,
+            account_id=conversation.account_id,
+            channel=conversation.channel,
+            created_at=conversation.created_at,
+            last_inbound_at=conversation.last_inbound_at,
+            last_outbound_at=conversation.last_outbound_at,
+            messages=views,
+        )
+
+    @staticmethod
+    def _validate_inbox_identity(
+        tenant_id: TenantId, conversation_id: ConversationId
+    ) -> None:
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("会话租户无效")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValidationError("会话标识无效")
+
+    @staticmethod
+    async def _build_message_view(
+        uow: ConversationsUnitOfWork,
+        tenant_id: TenantId,
+        message: Message,
+    ) -> InboxMessageView:
+        classification = None
+        corrections: list[ClassificationCorrection] = []
+        if message.direction is MessageDirection.INBOUND:
+            classification = await uow.classifications.get(
+                tenant_id, message.message_id
+            )
+            if classification is not None:
+                corrections = await uow.classifications.list_corrections(
+                    tenant_id, message.message_id
+                )
+        original = classification.category if classification is not None else None
+        effective = corrections[-1].corrected_category if corrections else original
+        return InboxMessageView(
+            message_id=message.message_id,
+            direction=message.direction.value,
+            sent_at=message.sent_at,
+            raw_artifact_ref=message.raw_artifact_ref,
+            original_category=original,
+            effective_category=effective,
+            classified_by=(
+                classification.classified_by if classification is not None else None
+            ),
+            classified_at=(
+                classification.classified_at if classification is not None else None
+            ),
+            corrections=tuple(
+                ClassificationCorrectionView(
+                    corrected_category=item.corrected_category,
+                    corrected_by=item.corrected_by,
+                    corrected_at=item.corrected_at,
+                )
+                for item in corrections
+            ),
+            required_actions=REPLY_ACTIONS[effective] if effective is not None else (),
+        )
