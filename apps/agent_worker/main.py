@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agent_runtime.base import AgentTask, ChangeSet
+from agent_runtime.guardrails.rails import guard_phase1_change_set
 from shared.errors import TradeOSError, ValidationError
 from shared.schemas.identifiers import ChangeSetId
 
@@ -226,7 +227,9 @@ async def run_agent_worker(
                         or change_set.run_id != job.task.run_id
                     ):
                         raise ValidationError("ChangeSet 身份与 Agent job 不一致")
-                    await runtime.gate.accept(change_set)
+                    # 进程级最后一道闸：安全性不能依赖每个 Agent 自觉调用护栏。
+                    guarded_change_set = guard_phase1_change_set(change_set)
+                    await runtime.gate.accept(guarded_change_set)
                     await runtime.jobs.complete(
                         job_id=job.job_id,
                         change_set_id=change_set.change_set_id,

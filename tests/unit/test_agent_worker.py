@@ -67,8 +67,13 @@ class Gate:
 class Agent:
     name = "demand_intelligence"
 
-    def __init__(self, stop: asyncio.Event | None = None) -> None:
+    def __init__(
+        self,
+        stop: asyncio.Event | None = None,
+        changes: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.stop = stop
+        self.changes = changes or []
         self.calls: list[AgentTask] = []
 
     async def run(self, task: AgentTask, context: Any) -> ChangeSet:
@@ -80,8 +85,55 @@ class Agent:
             ChangeSetId("chg_01K39P9M5D6K4A91YEQ80EJZ0X"),
             task.tenant_id,
             task.run_id,
+            changes=self.changes,
             summary="安全摘要",
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_replaces_unsafe_changes_with_structured_rejection() -> None:
+    stop = asyncio.Event()
+    gate = Gate()
+    unsafe_agent = Agent(
+        stop,
+        changes=[
+            {
+                "domain": "outreach",
+                "operation": "create_draft",
+                "payload": {
+                    "subject": "Quotation update",
+                    "body": "The price is USD 2.50.",
+                    "target_language": "en",
+                    "content_language": "en",
+                },
+            }
+        ],
+    )
+    runtime = AgentWorkerRuntime(
+        jobs=Jobs(queued=[job("guarded")]),
+        agents={"demand_intelligence": unsafe_agent},
+        contexts=Contexts(),
+        gate=gate,
+        config=AgentWorkerConfig(batch_limit=1, idle_seconds=1),
+    )
+
+    result = await run_agent_worker(
+        runtime,
+        stop_event=stop,
+        install_signal_handlers=False,
+    )
+
+    assert result.jobs_completed == 1
+    assert len(gate.accepted) == 1
+    guarded = gate.accepted[0]
+    assert guarded.change_set_id == ChangeSetId(
+        "chg_01K39P9M5D6K4A91YEQ80EJZ0X"
+    )
+    assert guarded.changes == []
+    assert guarded.summary == "模型输出被 Phase 1 护栏拦截"
+    assert {item["rail"] for item in guarded.guardrail_violations} == {
+        "no_forbidden_commitment"
+    }
 
 
 def job(suffix: str) -> AgentJob:
@@ -159,4 +211,3 @@ async def test_sigterm_boundary_finishes_current_job_and_stops_before_next() -> 
     assert [item.job_id for item in jobs.queued] == []
     assert len(agent.calls) == 1
     assert gate.accepted[0].summary == "安全摘要"
-
