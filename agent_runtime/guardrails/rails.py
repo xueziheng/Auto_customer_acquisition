@@ -51,6 +51,99 @@ class Rail(Protocol):
     def check(self, change_set: ChangeSet) -> list[RailViolation]: ...
 
 
+class EvidenceRequiredRail:
+    """检查 Phase 1 模型变更携带可回溯证据。"""
+
+    name = "evidence_required"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            if not isinstance(change, Mapping):
+                continue
+            domain = change.get("domain")
+            operation = change.get("operation")
+            payload = change.get("payload")
+            base = f"changes[{index}].payload"
+            if not isinstance(payload, Mapping):
+                continue
+            if domain == "demand" and operation == "capture_signal":
+                violations.extend(self._check_signal(payload, base))
+            elif domain == "demand" and operation == "create_hypothesis":
+                violations.extend(self._check_hypothesis(payload, base))
+            elif domain == "demand" and operation == "update_need_fields":
+                violations.extend(self._check_need_fields(payload, base))
+            elif (
+                domain == "prospecting"
+                and operation == "resolve_account"
+                and not self._nonempty_sequence(payload.get("source_signal_refs"))
+            ):
+                violations.append(self._missing(f"{base}.source_signal_refs"))
+        return violations
+
+    def _check_signal(
+        self, payload: Mapping[object, object], base: str
+    ) -> list[RailViolation]:
+        required = ("source_type", "source_id", "observed_at", "extracted_by")
+        if payload.get("source_type") == "web_page":
+            required += ("source_url", "page_hash", "snapshot_artifact_ref")
+        return [
+            self._missing(f"{base}.{field_name}")
+            for field_name in required
+            if not self._nonblank(payload.get(field_name))
+        ]
+
+    def _check_hypothesis(
+        self, payload: Mapping[object, object], base: str
+    ) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        signal_indexes = payload.get("signal_indexes")
+        evidence_levels = payload.get("evidence_levels")
+        has_indexes = self._nonempty_sequence(signal_indexes)
+        has_levels = self._nonempty_sequence(evidence_levels)
+        if not has_indexes:
+            violations.append(self._missing(f"{base}.signal_indexes"))
+        if not has_levels or (
+            has_indexes and len(evidence_levels) != len(signal_indexes)
+        ):
+            violations.append(self._missing(f"{base}.evidence_levels"))
+        if not self._nonblank(payload.get("inferred_by")):
+            violations.append(self._missing(f"{base}.inferred_by"))
+        return violations
+
+    def _check_need_fields(
+        self, payload: Mapping[object, object], base: str
+    ) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        if not self._nonblank(payload.get("message_id")):
+            violations.append(self._missing(f"{base}.message_id"))
+        fields = payload.get("fields")
+        if not self._nonempty_sequence(fields):
+            violations.append(self._missing(f"{base}.fields"))
+            return violations
+        for index, item in enumerate(fields):
+            quote = item.get("quote") if isinstance(item, Mapping) else None
+            if not self._nonblank(quote):
+                violations.append(self._missing(f"{base}.fields[{index}].quote"))
+        return violations
+
+    @staticmethod
+    def _nonblank(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    @staticmethod
+    def _nonempty_sequence(value: object) -> bool:
+        return isinstance(value, (list, tuple)) and bool(value)
+
+    def _missing(self, location: str) -> RailViolation:
+        return RailViolation(
+            rail=self.name,
+            location=location,
+            detail="模型变更缺少可回溯证据",
+            how_to_fix="补充原始来源引用或客户原话后重新生成变更",
+        )
+
+
 class TenantConsistencyRail:
     """拒绝 Change Set 中任何越出顶层租户边界的嵌套数据。"""
 

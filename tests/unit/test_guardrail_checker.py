@@ -6,6 +6,7 @@ import pytest
 
 from agent_runtime.base import ChangeSet
 from agent_runtime.guardrails.rails import (
+    EvidenceRequiredRail,
     GuardrailChecker,
     NoProbabilityOutputRail,
     RailViolation,
@@ -169,3 +170,103 @@ def test_probability_rail_allows_discrete_evidence_labels() -> None:
     ]
 
     assert NoProbabilityOutputRail().check(change_set) == []
+
+
+def test_evidence_rail_reports_missing_phase1_provenance_at_exact_paths() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "demand",
+            "operation": "capture_signal",
+            "payload": {
+                "source_type": "web_page",
+                "source_id": "",
+                "source_url": "https://buyer.example/news",
+                "page_hash": "a" * 64,
+                "snapshot_artifact_ref": "artifact-one",
+                "observed_at": "2026-08-21T10:00:00+00:00",
+                "extracted_by": "model-v1",
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "create_hypothesis",
+            "payload": {
+                "signal_indexes": [],
+                "evidence_levels": [],
+                "inferred_by": "model-v1",
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "update_need_fields",
+            "payload": {
+                "message_id": "message-one",
+                "fields": [{"field": "quantity", "value": "5000", "quote": " "}],
+            },
+        },
+        {
+            "domain": "prospecting",
+            "operation": "resolve_account",
+            "payload": {"source_signal_refs": []},
+        },
+    ]
+
+    violations = EvidenceRequiredRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.source_id",
+        "changes[1].payload.signal_indexes",
+        "changes[1].payload.evidence_levels",
+        "changes[2].payload.fields[0].quote",
+        "changes[3].payload.source_signal_refs",
+    ]
+
+
+def test_evidence_rail_accepts_complete_phase1_evidence_contracts() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "demand",
+            "operation": "capture_signal",
+            "payload": {
+                "source_type": "web_page",
+                "source_id": "a" * 64,
+                "source_url": "https://buyer.example/news",
+                "page_hash": "a" * 64,
+                "snapshot_artifact_ref": "artifact-one",
+                "observed_at": "2026-08-21T10:00:00+00:00",
+                "extracted_by": "model-v1",
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "create_hypothesis",
+            "payload": {
+                "signal_indexes": [0],
+                "evidence_levels": ["public_company_event"],
+                "inferred_by": "model-v1",
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "update_need_fields",
+            "payload": {
+                "message_id": "message-one",
+                "fields": [
+                    {
+                        "field": "quantity",
+                        "value": "5000",
+                        "quote": "We need 5000 units.",
+                    }
+                ],
+            },
+        },
+        {
+            "domain": "prospecting",
+            "operation": "resolve_account",
+            "payload": {"source_signal_refs": ["signal-one"]},
+        },
+    ]
+
+    assert EvidenceRequiredRail().check(change_set) == []
