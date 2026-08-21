@@ -381,9 +381,13 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
         "/crm/sending-identities",
         "/crm/sending-identities/{identity_id}",
         "/crm/sending-identities/{identity_id}/authentication-checks",
-        "/notifications",
-        "/notifications/{notification_id}/read",
-    }
+            "/notifications",
+            "/notifications/{notification_id}/read",
+            "/prospects/accounts",
+            "/prospects/accounts/{account_id}",
+            "/prospects/accounts/{account_id}/contacts",
+            "/prospects/discoveries",
+        }
     assert app.state.dependencies.configured is False
 
 
@@ -446,9 +450,13 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "/crm/sending-identities",
         "/crm/sending-identities/{identity_id}",
         "/crm/sending-identities/{identity_id}/authentication-checks",
-        "/notifications",
-        "/notifications/{notification_id}/read",
-    }
+            "/notifications",
+            "/notifications/{notification_id}/read",
+            "/prospects/accounts",
+            "/prospects/accounts/{account_id}",
+            "/prospects/accounts/{account_id}/contacts",
+            "/prospects/discoveries",
+        }
     create_responses = schema["paths"]["/crm/opportunities"]["post"]["responses"]
     assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
     assert "201" in create_responses

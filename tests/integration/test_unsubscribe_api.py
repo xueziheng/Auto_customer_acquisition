@@ -39,8 +39,11 @@ NOW = datetime(2026, 8, 13, 14, 0, tzinfo=UTC)
 
 class _Secrets:
     def resolve(self, secret_ref: str) -> str:
-        assert secret_ref == "UNSUBSCRIBE_HMAC_CURRENT"
-        return "u" * 32
+        values = {
+            "UNSUBSCRIBE_HMAC_CURRENT": "u" * 32,
+            "TOOL_FINGERPRINT_KEY": "f" * 32,
+        }
+        return values[secret_ref]
 
 
 def _settings(tenant: TenantId) -> Phase1RuntimeSettings:
