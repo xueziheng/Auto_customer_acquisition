@@ -101,6 +101,7 @@ class WebProviderQuotaGuard(Protocol):
     async def reserve(
         self,
         tenant_id: TenantId,
+        run_id: RunId,
         capability: str,
         now: datetime,
     ) -> int | None: ...
@@ -253,9 +254,19 @@ class WebProviderRateLimitCheck:
     ) -> CheckRejection | None:
         del state
         now = self._now()
-        if not isinstance(now, datetime) or now.tzinfo is not UTC:
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() != UTC.utcoffset(now)
+            or ctx.run_id is None
+        ):
             raise ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT)
-        retry_after = await self._quota.reserve(ctx.tenant_id, ctx.tool_id, now)
+        retry_after = await self._quota.reserve(
+            ctx.tenant_id,
+            ctx.run_id,
+            ctx.tool_id,
+            now,
+        )
         if retry_after is None:
             return None
         if type(retry_after) is not int or not 1 <= retry_after <= 86_400:
