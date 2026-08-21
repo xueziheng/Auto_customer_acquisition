@@ -285,6 +285,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/demand/hypotheses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Hypotheses */
+        get: operations["list_hypotheses_demand_hypotheses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demand/hypotheses/{hypothesis_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Hypothesis */
+        get: operations["get_hypothesis_demand_hypotheses__hypothesis_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demand/needs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Needs */
+        get: operations["list_needs_demand_needs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demand/needs/{need_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Need */
+        get: operations["get_need_demand_needs__need_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demand/signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Signals */
+        get: operations["list_signals_demand_signals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notifications": {
         parameters: {
             query?: never;
@@ -572,6 +657,40 @@ export interface components {
          */
         ContactType: "role_based" | "personal_business";
         /**
+         * DemandSignalView
+         * @description 需求雷达信号视图；事实观察与可能需求保持结构分离。
+         */
+        DemandSignalView: {
+            /** Entity Name */
+            entity_name: string;
+            /**
+             * Is Inference
+             * @default false
+             */
+            is_inference: boolean;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Possible Need */
+            possible_need: string | null;
+            /** Raw Observation */
+            raw_observation: string;
+            /** Signal Id */
+            signal_id: string;
+            /** Signal Type */
+            signal_type: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Source Type */
+            source_type: string;
+            /** Source Url */
+            source_url: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
          * DomainRole
          * @description 域名角色；只有 ``COLD_OUTREACH`` 可承载冷开发。
          * @enum {string}
@@ -626,6 +745,32 @@ export interface components {
          * @enum {string}
          */
         EvidenceLevel: "agent_industry_inference" | "public_company_event" | "employee_guess" | "customer_interest_reply" | "customer_specification" | "customer_quantity_and_timing" | "customer_sample_or_quote_request";
+        /**
+         * EvidenceSummary
+         * @description 证据摘要，供界面展示"为什么这么判断"。
+         *
+         *     字段：
+         *         level:        证据等级
+         *         summary:      一句话说明
+         *         source_url:   可点击的来源
+         *         source_ref:   消息/上传的引用标识
+         *         observed_at
+         */
+        EvidenceSummary: {
+            /** Level */
+            level: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Source Ref */
+            source_ref?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Summary */
+            summary: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -733,6 +878,53 @@ export interface components {
             wait_seconds: number;
             /** Why Valuable */
             why_valuable: string;
+        };
+        /**
+         * HypothesisView
+         * @description 需求假设视图。
+         *
+         *     界面必须把 ``reasoning`` 明确标注为**推断**，并可展开
+         *     ``evidence`` 看依据。不能显示成和已验证需求一样的样式——
+         *     那会让老板误以为这是事实。
+         *
+         *     字段：
+         *         hypothesis_id, account_id, account_name, category
+         *         reasoning:        推断理由
+         *         confidence_tier:  档位（离散值，不是小数）
+         *         confidence_explanation: 为什么是这一档，人类可读
+         *         evidence:         证据列表
+         *         status, created_at
+         *         is_inference:     恒为 True，提醒前端渲染成推断样式
+         */
+        HypothesisView: {
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Category */
+            category: string;
+            /** Confidence Explanation */
+            confidence_explanation: string;
+            /** Confidence Tier */
+            confidence_tier: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Evidence */
+            evidence: components["schemas"]["EvidenceSummary"][];
+            /** Hypothesis Id */
+            hypothesis_id: string;
+            /**
+             * Is Inference
+             * @default true
+             */
+            is_inference: boolean;
+            /** Reasoning */
+            reasoning: string;
+            /** Status */
+            status: string;
         };
         /**
          * IdentityState
@@ -930,6 +1122,30 @@ export interface components {
             distance: string;
             /** Name */
             name: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * NeedFieldView
+         * @description 需求的单个字段 + 来源。
+         *
+         *     字段：
+         *         name:          字段名
+         *         value:         显示值
+         *         source_ref:    来源引用（消息 ID / 上传 ID）
+         *         source_quote:  客户原话摘录——**最有说服力的展示**，
+         *                        员工看到原话就知道该怎么接
+         *         confirmed_by:  确认人，None 表示仅模型提取未经人工确认
+         */
+        NeedFieldView: {
+            /** Confirmed By */
+            confirmed_by?: string | null;
+            /** Name */
+            name: string;
+            /** Source Quote */
+            source_quote?: string | null;
+            /** Source Ref */
+            source_ref: string;
             /** Value */
             value: string;
         };
@@ -1436,6 +1652,50 @@ export interface components {
         ValidatedNeedEvidence: {
             level: components["schemas"]["EvidenceLevel"];
             provenance: components["schemas"]["Provenance"];
+        };
+        /**
+         * ValidatedNeedView
+         * @description 已验证需求视图。
+         *
+         *     字段：
+         *         need_id, account_id, account_name
+         *         product_category
+         *         fields:              全部字段 + 来源
+         *         completeness:        0–5
+         *         missing_for_sourcing: 还缺什么才能寻源
+         *         status, created_at
+         *         quantity, destination, required_by, target_price
+         *             —— 常用字段的便捷访问，值本身在 ``fields`` 里有完整来源
+         */
+        ValidatedNeedView: {
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Completeness */
+            completeness: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Destination */
+            destination?: string | null;
+            /** Fields */
+            fields: components["schemas"]["NeedFieldView"][];
+            /** Missing For Sourcing */
+            missing_for_sourcing: string[];
+            /** Need Id */
+            need_id: string;
+            /** Product Category */
+            product_category: string;
+            /** Quantity */
+            quantity?: number | null;
+            /** Required By */
+            required_by?: string | null;
+            /** Status */
+            status: string;
+            target_price?: components["schemas"]["Money"] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -2039,6 +2299,165 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_hypotheses_demand_hypotheses_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HypothesisView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_hypothesis_demand_hypotheses__hypothesis_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                hypothesis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HypothesisView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_needs_demand_needs_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidatedNeedView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_need_demand_needs__need_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                need_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidatedNeedView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_signals_demand_signals_get: {
+        parameters: {
+            query?: {
+                signal_type?: string | null;
+                status?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DemandSignalView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
