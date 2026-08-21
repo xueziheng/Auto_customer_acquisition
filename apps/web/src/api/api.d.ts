@@ -1023,7 +1023,7 @@ export interface components {
              * Intent
              * @enum {string}
              */
-            intent: "discovery" | "presentation";
+            intent: "discovery" | "presentation" | "follow_up";
             /** Step Number */
             step_number: number;
             /** Wait Days */

@@ -19,6 +19,16 @@ const router = createRouter({
       component: () => import("./views/customer-discovery/CustomerDiscovery.vue"),
     },
     {
+      path: "/campaigns",
+      name: "campaign-center",
+      component: () => import("./views/campaigns/CampaignCenter.vue"),
+    },
+    {
+      path: "/approvals",
+      name: "approval-center",
+      component: () => import("./views/approvals/ApprovalCenter.vue"),
+    },
+    {
       path: "/crm/opportunities",
       name: "crm-opportunities",
       component: () => import("./views/crm/OpportunityList.vue"),

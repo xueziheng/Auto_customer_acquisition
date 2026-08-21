@@ -19,6 +19,12 @@ const appName: string = "TradeOS";
         <RouterLink to="/prospects/accounts">
           客户发现
         </RouterLink>
+        <RouterLink to="/campaigns">
+          Campaign
+        </RouterLink>
+        <RouterLink to="/approvals">
+          审批
+        </RouterLink>
         <RouterLink to="/crm/opportunities">
           CRM
         </RouterLink>

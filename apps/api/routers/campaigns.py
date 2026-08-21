@@ -74,7 +74,7 @@ class CampaignSequenceStepBody(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     step_number: int = Field(ge=1, le=5)
-    intent: Literal["discovery", "presentation"]
+    intent: Literal["discovery", "presentation", "follow_up"]
     wait_days: int = Field(ge=0, le=90)
 
 
