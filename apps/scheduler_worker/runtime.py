@@ -33,6 +33,7 @@ from connectors.gmail.transport import GmailHttpTransport
 from domains.conversations.service import ConversationService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
+from domains.employees.service import EmployeeService
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
 from domains.opportunities.permissions import ScopeLevel as OpportunityScopeLevel
@@ -59,6 +60,7 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
+from domains.prospecting.service import ProspectingService
 from domains.sending_identity.permissions import (
     Phase1SendingIdentityAuthorizer,
     StandardAuditLogger,
@@ -144,6 +146,17 @@ from tool_gateway.pipeline import (
 from tool_gateway.repository import (
     ToolGatewayUnitOfWork,
     ToolGatewayUnitOfWorkFactory,
+)
+from workflows.account_discovery.flow import (
+    build_account_discovery_handlers,
+    register_account_discovery,
+)
+from workflows.account_discovery.ports import (
+    AccountDiscoveryActorResolver,
+    AccountDiscoveryCapability,
+    AccountDiscoveryTaskReader,
+    ContactEnricher,
+    ContactVerifier,
 )
 from workflows.email_feedback.unsubscribe import (
     FeedbackPageUnitOfWorkFactory,
@@ -365,6 +378,33 @@ class ReplyQualificationComposition:
 
 
 @dataclass(frozen=True)
+class AccountDiscoveryComposition:
+    """账户发现完整窄端口集合；任一依赖缺失都不注册工作流。"""
+
+    task_reader: AccountDiscoveryTaskReader
+    capability: AccountDiscoveryCapability
+    prospecting: ProspectingService
+    enricher: ContactEnricher
+    verifier: ContactVerifier
+    employees: EmployeeService
+    actor_resolver: AccountDiscoveryActorResolver
+
+    def __post_init__(self) -> None:
+        required = (
+            (self.task_reader, "load"),
+            (self.capability, "run"),
+            (self.prospecting, "resolve_account"),
+            (self.prospecting, "record_discovered_contact"),
+            (self.enricher, "find_contacts"),
+            (self.verifier, "verify"),
+            (self.employees, "resolve_owner"),
+            (self.actor_resolver, "resolve"),
+        )
+        if any(not callable(getattr(value, name, None)) for value, name in required):
+            raise ValidationError("scheduler account_discovery 依赖未完整配置")
+
+
+@dataclass(frozen=True)
 class SchedulerDomainDependencies:
     """尚未标准化为配置的 typed 业务依赖；禁止传 repository/raw payload。"""
 
@@ -373,6 +413,7 @@ class SchedulerDomainDependencies:
     notification_audience: NotificationAudienceResolver
     campaign_messaging: CampaignMessagingComposition | None = None
     reply_qualification: ReplyQualificationComposition | None = None
+    account_discovery: AccountDiscoveryComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -390,6 +431,10 @@ class SchedulerDomainDependencies:
             self.reply_qualification, ReplyQualificationComposition
         ):
             raise ValidationError("scheduler reply_qualification 依赖未完整配置")
+        if self.account_discovery is not None and not isinstance(
+            self.account_discovery, AccountDiscoveryComposition
+        ):
+            raise ValidationError("scheduler account_discovery 依赖未完整配置")
 
 
 class _DnsTenantCheck:
@@ -749,6 +794,24 @@ class SchedulerRuntimeFactory:
                     tenant_id=config.tenant_id,
                     now=self._now,
                 )
+            account_handlers: dict[str, StepHandler] = {}
+            if self._dependencies.account_discovery is not None:
+                if campaign_outreach is None:
+                    raise ValidationError(
+                        "account_discovery 必须配置 Campaign 发送链"
+                    )
+                account = self._dependencies.account_discovery
+                account_handlers = build_account_discovery_handlers(
+                    task_reader=account.task_reader,
+                    capability=account.capability,
+                    prospecting=account.prospecting,
+                    enricher=account.enricher,
+                    verifier=account.verifier,
+                    employees=account.employees,
+                    outreach=campaign_outreach,
+                    actor_resolver=account.actor_resolver,
+                    now=self._now,
+                )
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
@@ -756,6 +819,7 @@ class SchedulerRuntimeFactory:
                     "sending_identity_auth.check": auth_step,
                     **campaign_handlers,
                     **reply_handlers,
+                    **account_handlers,
                 },
                 now=self._now,
             )
@@ -816,6 +880,9 @@ class SchedulerRuntimeFactory:
                     "reply_qualification.inbound_stored",
                     reply_events,
                 )
+
+            if self._dependencies.account_discovery is not None:
+                register_account_discovery(workflow)
 
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
                 DNS_AUTH_MANIFEST.tool_id,
