@@ -262,6 +262,63 @@ class NoForbiddenCommitmentRail:
         )
 
 
+class PriceBasisRail:
+    """禁止客户可见变更携带参考价。"""
+
+    name = "price_basis"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        customer_visible_operations = {
+            ("outreach", "create_draft"),
+            ("quotations", "create_draft"),
+        }
+        for index, change in enumerate(change_set.changes):
+            if not isinstance(change, Mapping) or (
+                change.get("domain"),
+                change.get("operation"),
+            ) not in customer_visible_operations:
+                continue
+            payload = change.get("payload")
+            risk_ref = change.get(
+                "risk_acceptance_ref",
+                payload.get("risk_acceptance_ref")
+                if isinstance(payload, Mapping)
+                else None,
+            )
+            if isinstance(risk_ref, str) and risk_ref.strip():
+                continue
+            violations.extend(self._walk(payload, f"changes[{index}].payload"))
+        return violations
+
+    def _walk(self, value: object, location: str) -> list[RailViolation]:
+        if isinstance(value, Mapping):
+            violations: list[RailViolation] = []
+            for key, child in value.items():
+                child_location = f"{location}.{key}"
+                basis = getattr(child, "value", child)
+                if key == "price_basis" and basis == "indicative":
+                    violations.append(
+                        RailViolation(
+                            rail=self.name,
+                            location=child_location,
+                            detail="客户可见内容引用了 indicative 参考价",
+                            how_to_fix=(
+                                "改用供应商 quoted 价格，或附人工风险接受记录"
+                            ),
+                        )
+                    )
+                else:
+                    violations.extend(self._walk(child, child_location))
+            return violations
+        if isinstance(value, (list, tuple)):
+            violations = []
+            for index, child in enumerate(value):
+                violations.extend(self._walk(child, f"{location}[{index}]"))
+            return violations
+        return []
+
+
 class TenantConsistencyRail:
     """拒绝 Change Set 中任何越出顶层租户边界的嵌套数据。"""
 

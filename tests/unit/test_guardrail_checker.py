@@ -11,6 +11,7 @@ from agent_runtime.guardrails.rails import (
     GuardrailChecker,
     NoForbiddenCommitmentRail,
     NoProbabilityOutputRail,
+    PriceBasisRail,
     RailViolation,
     TenantConsistencyRail,
 )
@@ -379,3 +380,42 @@ def test_forbidden_commitment_rail_allows_safe_or_explicitly_approved_drafts() -
 
     assert NoForbiddenCommitmentRail().check(safe) == []
     assert NoForbiddenCommitmentRail().check(approved) == []
+
+
+def test_price_basis_rail_blocks_indicative_customer_visible_price() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Price update",
+                "body": "Please review the attached draft.",
+                "pricing": {"amount": "2.50", "currency": "USD", "price_basis": "indicative"},
+            },
+        }
+    ]
+
+    violations = PriceBasisRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.pricing.price_basis"
+    ]
+
+
+def test_price_basis_rail_allows_internal_estimates_and_quoted_customer_prices() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "costing",
+            "operation": "create_estimate",
+            "payload": {"price_basis": "indicative"},
+        },
+        {
+            "domain": "quotations",
+            "operation": "create_draft",
+            "payload": {"lines": [{"price_basis": "quoted"}]},
+        },
+    ]
+
+    assert PriceBasisRail().check(change_set) == []
