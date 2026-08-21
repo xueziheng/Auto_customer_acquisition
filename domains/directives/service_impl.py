@@ -1,0 +1,523 @@
+"""老板指令的两阶段确认、只增版本与回滚实现。"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
+from domains.directives.models import (
+    Directive,
+    DirectiveContent,
+    DirectiveObjective,
+    DirectiveProposal,
+    DiscoveryConfig,
+    HandoffRules,
+    MarketAssignment,
+    OutreachBounds,
+    ProposalState,
+)
+from domains.directives.repository import DirectiveUnitOfWorkFactory
+from domains.directives.schemas import DirectiveView, ProposalView
+from domains.directives.service import DirectiveEmployeeReader
+from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
+from shared.events.catalog import DirectiveActivated
+from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId, new_id
+
+_PROPOSAL_TTL = timedelta(days=7)
+
+
+def _text(value: object, message: str, *, maximum: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError(message)
+    return value
+
+
+def _strings(
+    values: object,
+    message: str,
+    *,
+    maximum_items: int,
+    maximum_length: int,
+    allow_empty: bool = True,
+) -> list[str]:
+    if not isinstance(values, list) or len(values) > maximum_items:
+        raise ValidationError(message)
+    normalized = [
+        _text(value, message, maximum=maximum_length) for value in values
+    ]
+    if not allow_empty and not normalized:
+        raise ValidationError(message)
+    if len(set(normalized)) != len(normalized):
+        raise ValidationError(message)
+    return normalized
+
+
+def _validate_content(content: DirectiveContent) -> DirectiveContent:
+    if not isinstance(content, DirectiveContent) or not isinstance(
+        content.objective, DirectiveObjective
+    ):
+        raise ValidationError("指令结构无效")
+    if not isinstance(content.market_assignments, list) or len(
+        content.market_assignments
+    ) > 100:
+        raise ValidationError("市场分配无效")
+    countries: set[str] = set()
+    for assignment in content.market_assignments:
+        if not isinstance(assignment, MarketAssignment):
+            raise ValidationError("市场分配无效")
+        country = _text(assignment.country, "市场分配国家无效", maximum=100)
+        _text(str(assignment.owner), "市场分配负责人无效", maximum=64)
+        if country in countries:
+            raise ValidationError("同一市场不能重复分配")
+        countries.add(country)
+    discovery = content.discovery
+    if discovery is not None:
+        if not isinstance(discovery, DiscoveryConfig):
+            raise ValidationError("探索配置无效")
+        if (
+            type(discovery.need_first_ratio) is not int
+            or type(discovery.catalog_assisted_ratio) is not int
+            or not 0 <= discovery.need_first_ratio <= 100
+            or not 0 <= discovery.catalog_assisted_ratio <= 100
+            or discovery.need_first_ratio + discovery.catalog_assisted_ratio != 100
+        ):
+            raise ValidationError("探索配比必须为非负整数且合计 100")
+        _strings(
+            discovery.focus_categories,
+            "重点品类无效",
+            maximum_items=100,
+            maximum_length=200,
+        )
+        _strings(
+            discovery.excluded_buyer_types,
+            "排除客户类型无效",
+            maximum_items=100,
+            maximum_length=100,
+        )
+    outreach = content.outreach
+    if outreach is not None and (
+        not isinstance(outreach, OutreachBounds)
+        or outreach.primary_channel != "email"
+        or type(outreach.max_sequence_messages) is not int
+        or not 1 <= outreach.max_sequence_messages <= 5
+        or outreach.stop_on_reply is not True
+    ):
+        raise ValidationError("Phase 1 触达边界无效")
+    handoff = content.handoff
+    if handoff is not None:
+        if not isinstance(handoff, HandoffRules):
+            raise ValidationError("接管规则无效")
+        _text(str(handoff.manager), "接管经理无效", maximum=64)
+        _strings(
+            handoff.triggers,
+            "接管触发条件无效",
+            maximum_items=20,
+            maximum_length=100,
+            allow_empty=False,
+        )
+    paused = _strings(
+        content.paused_markets,
+        "暂停市场无效",
+        maximum_items=100,
+        maximum_length=100,
+    )
+    if countries.intersection(paused):
+        raise ValidationError("同一指令不能同时分配并暂停市场")
+    if content.monthly_budget_credits is not None and (
+        type(content.monthly_budget_credits) is not int
+        or content.monthly_budget_credits <= 0
+    ):
+        raise ValidationError("月度预算积分无效")
+    if content.notes is not None:
+        _text(content.notes, "指令备注无效", maximum=2_000)
+    return content
+
+
+def _utc(value: datetime) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != timedelta(0)
+    ):
+        raise ValidationError("指令时间必须是 UTC")
+    return value
+
+
+def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
+    fields: dict[str, str] = {"objective": content.objective.value}
+    if content.market_assignments:
+        fields["market_assignments"] = json.dumps(
+            {
+                assignment.country: str(assignment.owner)
+                for assignment in content.market_assignments
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    if content.discovery is not None:
+        fields["need_first_ratio"] = str(content.discovery.need_first_ratio)
+        fields["catalog_assisted_ratio"] = str(
+            content.discovery.catalog_assisted_ratio
+        )
+        fields["focus_categories"] = ", ".join(
+            content.discovery.focus_categories
+        )
+    if content.outreach is not None:
+        fields["max_sequence_messages"] = str(
+            content.outreach.max_sequence_messages
+        )
+        fields["stop_on_reply"] = "true"
+    if content.handoff is not None:
+        fields["handoff_manager"] = str(content.handoff.manager)
+        fields["handoff_triggers"] = ", ".join(content.handoff.triggers)
+    if content.paused_markets:
+        fields["paused_markets"] = ", ".join(content.paused_markets)
+    if content.monthly_budget_credits is not None:
+        fields["monthly_budget_credits"] = str(content.monthly_budget_credits)
+    return fields
+
+
+class DirectiveServiceImpl:
+    def __init__(
+        self,
+        uow_factory: DirectiveUnitOfWorkFactory,
+        employees: DirectiveEmployeeReader,
+        *,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not isinstance(uow_factory, DirectiveUnitOfWorkFactory):
+            raise ValidationError("指令事务依赖无效")
+        if not isinstance(employees, DirectiveEmployeeReader):
+            raise ValidationError("指令员工依赖无效")
+        self._uow_factory = uow_factory
+        self._employees = employees
+        self._now = now or (lambda: datetime.now(UTC))
+
+    async def submit_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        parsed: DirectiveContent,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+    ) -> str:
+        self._validate_tenant(tenant_id)
+        _text(raw_text, "老板指令原话无效", maximum=10_000)
+        _validate_content(parsed)
+        _text(interpretation_summary, "指令理解摘要无效", maximum=4_000)
+        changes = _strings(
+            expected_behavior_changes,
+            "指令预计行为变化不能为空",
+            maximum_items=50,
+            maximum_length=1_000,
+            allow_empty=False,
+        )
+        _text(parsed_by, "指令解析器版本无效", maximum=128)
+        now = _utc(self._now())
+        proposal = DirectiveProposal(
+            proposal_id=new_id("dpr"),
+            tenant_id=tenant_id,
+            raw_text=raw_text,
+            parsed=parsed,
+            interpretation_summary=interpretation_summary,
+            expected_behavior_changes=changes,
+            parsed_by=parsed_by,
+            created_at=now,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            await uow.proposals.add(proposal)
+        return proposal.proposal_id
+
+    async def confirm_proposal(
+        self,
+        tenant_id: TenantId,
+        proposal_id: str,
+        confirmed_by: EmployeeId,
+    ) -> DirectiveId:
+        await self._require_boss(tenant_id, confirmed_by)
+        _text(proposal_id, "指令提案标识无效", maximum=40)
+        now = _utc(self._now())
+        expired = False
+        activated: Directive | None = None
+        async with self._uow_factory(tenant_id) as uow:
+            proposal = await uow.proposals.get_for_update(tenant_id, proposal_id)
+            if proposal is None:
+                raise ValidationError("指令提案不存在")
+            if proposal.state is not ProposalState.PENDING_CONFIRMATION:
+                raise InvalidStateTransition("指令提案已决策，不能再次确认")
+            if now >= proposal.created_at + _PROPOSAL_TTL:
+                await uow.proposals.update(
+                    replace(
+                        proposal,
+                        state=ProposalState.EXPIRED,
+                        decided_at=now,
+                    )
+                )
+                expired = True
+            else:
+                version = await uow.directives.next_version(tenant_id)
+                active = await uow.directives.get_active_for_update(tenant_id)
+                if active is not None:
+                    await uow.directives.mark_superseded(
+                        tenant_id, active.directive_id
+                    )
+                activated = Directive(
+                    directive_id=DirectiveId(new_id("dir")),
+                    tenant_id=tenant_id,
+                    version=version,
+                    content=proposal.parsed,
+                    source_proposal_id=proposal.proposal_id,
+                    activated_at=now,
+                    activated_by=confirmed_by,
+                )
+                await uow.directives.add(activated)
+                await uow.directives.set_active(activated)
+                await uow.proposals.update(
+                    replace(
+                        proposal,
+                        state=ProposalState.CONFIRMED,
+                        decided_at=now,
+                        decided_by=confirmed_by,
+                    )
+                )
+                await uow.bus.publish(
+                    DirectiveActivated(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        directive_id=str(activated.directive_id),
+                        version=version,
+                    )
+                )
+        if expired:
+            raise InvalidStateTransition("指令提案已过期，必须重新解析")
+        if activated is None:
+            raise InvalidStateTransition("指令提案未能生效")
+        return activated.directive_id
+
+    async def reject_proposal(
+        self,
+        tenant_id: TenantId,
+        proposal_id: str,
+        rejected_by: EmployeeId,
+    ) -> None:
+        await self._require_boss(tenant_id, rejected_by)
+        _text(proposal_id, "指令提案标识无效", maximum=40)
+        now = _utc(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            proposal = await uow.proposals.get_for_update(tenant_id, proposal_id)
+            if proposal is None:
+                raise ValidationError("指令提案不存在")
+            if proposal.state is not ProposalState.PENDING_CONFIRMATION:
+                raise InvalidStateTransition("指令提案已决策，不能再次否决")
+            state = (
+                ProposalState.EXPIRED
+                if now >= proposal.created_at + _PROPOSAL_TTL
+                else ProposalState.REJECTED
+            )
+            await uow.proposals.update(
+                replace(
+                    proposal,
+                    state=state,
+                    decided_at=now,
+                    decided_by=(
+                        None if state is ProposalState.EXPIRED else rejected_by
+                    ),
+                )
+            )
+        if state is ProposalState.EXPIRED:
+            raise InvalidStateTransition("指令提案已过期，不能否决")
+
+    async def rollback_to_version(
+        self,
+        tenant_id: TenantId,
+        version: int,
+        requested_by: EmployeeId,
+    ) -> DirectiveId:
+        await self._require_boss(tenant_id, requested_by)
+        if type(version) is not int or version < 1:
+            raise ValidationError("指令版本无效")
+        now = _utc(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            next_version = await uow.directives.next_version(tenant_id)
+            target = await uow.directives.get_version(tenant_id, version)
+            if target is None:
+                raise ValidationError("指令历史版本不存在")
+            active = await uow.directives.get_active_for_update(tenant_id)
+            if active is not None:
+                await uow.directives.mark_superseded(
+                    tenant_id, active.directive_id
+                )
+            directive = Directive(
+                directive_id=DirectiveId(new_id("dir")),
+                tenant_id=tenant_id,
+                version=next_version,
+                content=target.content,
+                source_proposal_id=target.source_proposal_id,
+                activated_at=now,
+                activated_by=requested_by,
+                rollback_of=target.version,
+            )
+            await uow.directives.add(directive)
+            await uow.directives.set_active(directive)
+            await uow.bus.publish(
+                DirectiveActivated(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    run_id=None,
+                    directive_id=str(directive.directive_id),
+                    version=directive.version,
+                )
+            )
+        return directive.directive_id
+
+    async def get_active(self, tenant_id: TenantId) -> DirectiveView | None:
+        self._validate_tenant(tenant_id)
+        async with self._uow_factory(tenant_id) as uow:
+            directive = await uow.directives.get_active(tenant_id)
+        if directive is None:
+            return None
+        names = await self._employee_names(tenant_id, directive)
+        return self._directive_view(directive, names)
+
+    async def get_proposal(
+        self, tenant_id: TenantId, proposal_id: str
+    ) -> ProposalView:
+        self._validate_tenant(tenant_id)
+        _text(proposal_id, "指令提案标识无效", maximum=40)
+        async with self._uow_factory(tenant_id) as uow:
+            proposal = await uow.proposals.get(tenant_id, proposal_id)
+        if proposal is None:
+            raise ValidationError("指令提案不存在")
+        names: dict[EmployeeId, str] = {}
+        if proposal.decided_by is not None:
+            names = await self._employees.names_for(
+                tenant_id, (proposal.decided_by,)
+            )
+            if set(names) != {proposal.decided_by}:
+                raise ValidationError("指令员工展示名结果无效")
+        return ProposalView(
+            proposal_id=proposal.proposal_id,
+            raw_text=proposal.raw_text,
+            interpretation_summary=proposal.interpretation_summary,
+            expected_behavior_changes=list(proposal.expected_behavior_changes),
+            parsed_fields=_parsed_fields(proposal.parsed),
+            state=proposal.state.value,
+            created_at=proposal.created_at,
+            decided_at=proposal.decided_at,
+            decided_by_name=(
+                None
+                if proposal.decided_by is None
+                else names[proposal.decided_by]
+            ),
+        )
+
+    async def list_versions(
+        self, tenant_id: TenantId, limit: int = 20
+    ) -> list[DirectiveView]:
+        self._validate_tenant(tenant_id)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValidationError("指令版本读取上限无效")
+        async with self._uow_factory(tenant_id) as uow:
+            directives = await uow.directives.list_versions(tenant_id, limit)
+        employee_ids = tuple(
+            dict.fromkeys(
+                employee_id
+                for directive in directives
+                for employee_id in self._directive_employee_ids(directive)
+            )
+        )
+        names = await self._employees.names_for(tenant_id, employee_ids)
+        if set(names) != set(employee_ids):
+            raise ValidationError("指令员工展示名结果无效")
+        return [self._directive_view(directive, names) for directive in directives]
+
+    @staticmethod
+    def _validate_tenant(tenant_id: TenantId) -> None:
+        _text(str(tenant_id), "指令租户无效", maximum=64)
+
+    async def _require_boss(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> None:
+        self._validate_tenant(tenant_id)
+        _text(str(employee_id), "指令决策员工无效", maximum=64)
+        if not await self._employees.is_active_boss(tenant_id, employee_id):
+            raise PermissionDenied("只有在职老板可以确认指令")
+
+    @staticmethod
+    def _directive_employee_ids(
+        directive: Directive,
+    ) -> tuple[EmployeeId, ...]:
+        content = directive.content
+        values = [
+            directive.activated_by,
+            *(assignment.owner for assignment in content.market_assignments),
+        ]
+        if content.handoff is not None:
+            values.append(content.handoff.manager)
+        return tuple(dict.fromkeys(values))
+
+    async def _employee_names(
+        self, tenant_id: TenantId, directive: Directive
+    ) -> dict[EmployeeId, str]:
+        employee_ids = self._directive_employee_ids(directive)
+        names = await self._employees.names_for(tenant_id, employee_ids)
+        if set(names) != set(employee_ids):
+            raise ValidationError("指令员工展示名结果无效")
+        return names
+
+    @staticmethod
+    def _directive_view(
+        directive: Directive,
+        names: dict[EmployeeId, str],
+    ) -> DirectiveView:
+        content = directive.content
+        discovery = content.discovery
+        outreach = content.outreach
+        handoff = content.handoff
+        return DirectiveView(
+            directive_id=str(directive.directive_id),
+            version=directive.version,
+            objective=content.objective.value,
+            activated_at=directive.activated_at,
+            activated_by_name=names[directive.activated_by],
+            market_assignments={
+                assignment.country: names[assignment.owner]
+                for assignment in content.market_assignments
+            },
+            need_first_ratio=(
+                None if discovery is None else discovery.need_first_ratio
+            ),
+            catalog_assisted_ratio=(
+                None if discovery is None else discovery.catalog_assisted_ratio
+            ),
+            focus_categories=(
+                [] if discovery is None else list(discovery.focus_categories)
+            ),
+            paused_markets=list(content.paused_markets),
+            max_sequence_messages=(
+                None if outreach is None else outreach.max_sequence_messages
+            ),
+            handoff_manager_name=(
+                None if handoff is None else names[handoff.manager]
+            ),
+            handoff_triggers=(
+                [] if handoff is None else list(handoff.triggers)
+            ),
+            monthly_budget_credits=content.monthly_budget_credits,
+            is_rollback=directive.rollback_of is not None,
+            rollback_of_version=directive.rollback_of,
+            superseded_at=directive.superseded_at,
+        )
+
+
+__all__ = ("DirectiveServiceImpl",)

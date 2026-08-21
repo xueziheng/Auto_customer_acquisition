@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.directives.models import Directive, DirectiveProposal
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import DirectiveId, TenantId
 
 
@@ -16,6 +17,10 @@ class ProposalRepository(Protocol):
     async def add(self, proposal: DirectiveProposal) -> None: ...
 
     async def get(
+        self, tenant_id: TenantId, proposal_id: str
+    ) -> DirectiveProposal | None: ...
+
+    async def get_for_update(
         self, tenant_id: TenantId, proposal_id: str
     ) -> DirectiveProposal | None: ...
 
@@ -51,6 +56,10 @@ class DirectiveRepository(Protocol):
         """
         ...
 
+    async def get_active_for_update(
+        self, tenant_id: TenantId
+    ) -> Directive | None: ...
+
     async def get_version(
         self, tenant_id: TenantId, version: int
     ) -> Directive | None: ...
@@ -61,6 +70,29 @@ class DirectiveRepository(Protocol):
         self, tenant_id: TenantId, directive_id: DirectiveId
     ) -> None: ...
 
+    async def set_active(self, directive: Directive) -> None: ...
+
     async def list_versions(
         self, tenant_id: TenantId, limit: int
     ) -> list[Directive]: ...
+
+
+@runtime_checkable
+class DirectiveUnitOfWork(Protocol):
+    proposals: ProposalRepository
+    directives: DirectiveRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+
+@runtime_checkable
+class DirectiveUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> DirectiveUnitOfWork: ...

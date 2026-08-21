@@ -38,6 +38,7 @@ from shared.events.catalog import (
     ComplaintReceived,
     ContactPointVerified,
     DemandSignalCaptured,
+    DirectiveActivated,
     DomainEvent,
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -83,6 +84,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     # demand 信号捕获即发布（切片 7 producer）：metadata-only（signal_id/
     # entity_name/signal_type/source_url），不含 raw_observation/possible_need
     "DemandSignalCaptured": DemandSignalCaptured,
+    "DirectiveActivated": DirectiveActivated,
     "NeedHypothesisCreated": NeedHypothesisCreated,
     "NeedHypothesisRejected": NeedHypothesisRejected,
     "NeedValidated": NeedValidated,

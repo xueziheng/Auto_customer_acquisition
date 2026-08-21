@@ -666,6 +666,19 @@ def test_orm_metadata_parity_with_head() -> None:
     metadata = Base.metadata
 
     expected_columns = {
+        "directive_proposals": {
+            "tenant_id", "proposal_id", "raw_text", "parsed_content",
+            "interpretation_summary", "expected_behavior_changes", "parsed_by",
+            "state", "created_at", "decided_at", "decided_by",
+        },
+        "directive_versions": {
+            "tenant_id", "directive_id", "version", "content",
+            "source_proposal_id", "activated_at", "activated_by",
+            "superseded_at", "rollback_of",
+        },
+        "boss_directives": {
+            "tenant_id", "directive_id", "version", "activated_at",
+        },
         "opportunities": {
             "opportunity_id", "tenant_id", "account_id", "account_name", "country",
             "need_id", "product_category", "state", "created_at", "quantity",
@@ -862,6 +875,10 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        "ix_directive_proposals_tenant_state_created": (
+            "tenant_id", "state", "created_at", "proposal_id",
+        ),
+        "ix_directive_versions_tenant_version": ("tenant_id", "version"),
         "ix_opportunities_tenant_state": ("tenant_id", "state"),
         "ix_opportunities_tenant_owner_state": ("tenant_id", "owner", "state"),
         "ix_score_snapshots_tenant_opp_scored": (
@@ -953,6 +970,22 @@ def test_orm_metadata_parity_with_head() -> None:
     assert actual_indexes == expected_indexes, f"索引不一致：{actual_indexes}"
 
     expected_constraints = {
+        "directive_proposals": {
+            "pk_directive_proposals", "ck_directive_proposals_state",
+            "ck_directive_proposals_jsonb", "ck_directive_proposals_core_nonblank",
+            "ck_directive_proposals_decision",
+        },
+        "directive_versions": {
+            "pk_directive_versions", "uq_directive_versions_tenant_version",
+            "uq_directive_versions_pointer", "fk_directive_versions_proposal",
+            "ck_directive_versions_version", "ck_directive_versions_content_jsonb",
+            "ck_directive_versions_core_nonblank",
+            "ck_directive_versions_superseded_at", "ck_directive_versions_rollback",
+        },
+        "boss_directives": {
+            "pk_boss_directives", "fk_boss_directives_version",
+            "ck_boss_directives_core",
+        },
         "opportunities": {
             "uq_opportunities_tenant_need",
             "uq_opportunities_tenant_opp",

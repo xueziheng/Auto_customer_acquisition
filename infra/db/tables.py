@@ -38,6 +38,149 @@ class Base(DeclarativeBase):
     """声明式基类（schema 归迁移管理）。"""
 
 
+class DirectiveProposalRow(Base):
+    """老板自然语言解析后的待确认提案。"""
+
+    __tablename__ = "directive_proposals"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "proposal_id", name="pk_directive_proposals"
+        ),
+        CheckConstraint(
+            "state IN ('pending_confirmation','confirmed','rejected','expired')",
+            name="ck_directive_proposals_state",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(parsed_content) = 'object' AND "
+            "jsonb_typeof(expected_behavior_changes) = 'array' AND "
+            "jsonb_array_length(expected_behavior_changes) > 0",
+            name="ck_directive_proposals_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(proposal_id) <> '' AND "
+            "btrim(raw_text) <> '' AND btrim(interpretation_summary) <> '' AND "
+            "btrim(parsed_by) <> ''",
+            name="ck_directive_proposals_core_nonblank",
+        ),
+        CheckConstraint(
+            "(state = 'pending_confirmation' AND decided_at IS NULL AND "
+            "decided_by IS NULL) OR "
+            "(state = 'expired' AND decided_at IS NOT NULL) OR "
+            "(state IN ('confirmed','rejected') AND decided_at IS NOT NULL AND "
+            "decided_by IS NOT NULL)",
+            name="ck_directive_proposals_decision",
+        ),
+        Index(
+            "ix_directive_proposals_tenant_state_created",
+            "tenant_id",
+            "state",
+            "created_at",
+            "proposal_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    raw_text: Mapped[str] = mapped_column(Text)
+    parsed_content: Mapped[dict] = mapped_column(postgresql.JSONB)
+    interpretation_summary: Mapped[str] = mapped_column(Text)
+    expected_behavior_changes: Mapped[list] = mapped_column(postgresql.JSONB)
+    parsed_by: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(
+        String(32), server_default=text("'pending_confirmation'")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(40))
+
+
+class DirectiveVersionRow(Base):
+    """不可原地改写内容的老板指令历史版本。"""
+
+    __tablename__ = "directive_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "directive_id", name="pk_directive_versions"
+        ),
+        UniqueConstraint(
+            "tenant_id", "version", name="uq_directive_versions_tenant_version"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "directive_id",
+            "version",
+            name="uq_directive_versions_pointer",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_proposal_id"],
+            ["directive_proposals.tenant_id", "directive_proposals.proposal_id"],
+            ondelete="RESTRICT",
+            name="fk_directive_versions_proposal",
+        ),
+        CheckConstraint("version >= 1", name="ck_directive_versions_version"),
+        CheckConstraint(
+            "jsonb_typeof(content) = 'object'",
+            name="ck_directive_versions_content_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(directive_id) <> '' AND "
+            "btrim(source_proposal_id) <> '' AND btrim(activated_by) <> ''",
+            name="ck_directive_versions_core_nonblank",
+        ),
+        CheckConstraint(
+            "superseded_at IS NULL OR superseded_at >= activated_at",
+            name="ck_directive_versions_superseded_at",
+        ),
+        CheckConstraint(
+            "rollback_of IS NULL OR (rollback_of >= 1 AND rollback_of < version)",
+            name="ck_directive_versions_rollback",
+        ),
+        Index(
+            "ix_directive_versions_tenant_version",
+            "tenant_id",
+            "version",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    directive_id: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer)
+    content: Mapped[dict] = mapped_column(postgresql.JSONB)
+    source_proposal_id: Mapped[str] = mapped_column(String(40))
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    activated_by: Mapped[str] = mapped_column(String(40))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rollback_of: Mapped[int | None] = mapped_column(Integer)
+
+
+class BossDirectiveRow(Base):
+    """每租户唯一的当前生效指令指针。"""
+
+    __tablename__ = "boss_directives"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", name="pk_boss_directives"),
+        ForeignKeyConstraint(
+            ["tenant_id", "directive_id", "version"],
+            [
+                "directive_versions.tenant_id",
+                "directive_versions.directive_id",
+                "directive_versions.version",
+            ],
+            ondelete="RESTRICT",
+            name="fk_boss_directives_version",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(directive_id) <> '' AND version >= 1",
+            name="ck_boss_directives_core",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    directive_id: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer)
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ToolCallRow(Base):
     """``tool_calls`` durable invocation 与 canonical claim 行。"""
 

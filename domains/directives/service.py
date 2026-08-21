@@ -86,3 +86,16 @@ class DirectiveService(Protocol):
     async def list_versions(
         self, tenant_id: TenantId, limit: int = 20
     ) -> list[DirectiveView]: ...
+
+
+@runtime_checkable
+class DirectiveEmployeeReader(Protocol):
+    """指令域所需的最窄员工能力；实现位于应用装配层。"""
+
+    async def is_active_boss(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> bool: ...
+
+    async def names_for(
+        self, tenant_id: TenantId, employee_ids: tuple[EmployeeId, ...]
+    ) -> dict[EmployeeId, str]: ...
