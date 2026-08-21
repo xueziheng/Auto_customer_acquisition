@@ -29,6 +29,7 @@ class HypothesisDiscoveryView:
     """账户发现模型安全投影；推断与支撑信号仍在结构上分离。"""
 
     hypothesis_id: str
+    account_id: str
     category: str
     reasoning: str
     evidence: tuple[HypothesisDiscoveryEvidenceView, ...]

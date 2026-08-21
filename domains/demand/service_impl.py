@@ -887,6 +887,7 @@ class DemandServiceImpl:
             refs = tuple(item.signal_id for item in evidence)
             return HypothesisDiscoveryView(
                 hypothesis_id=str(hypothesis.hypothesis_id),
+                account_id=str(hypothesis.account_id),
                 category=hypothesis.category,
                 reasoning=hypothesis.reasoning.value,
                 evidence=tuple(evidence),
