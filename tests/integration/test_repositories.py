@@ -657,7 +657,7 @@ async def test_assign_owner_records_actor(repo_session: AsyncSession) -> None:
 
 
 def test_orm_metadata_parity_with_head() -> None:
-    """ORM metadata 与迁移 head（0005）一致：13 表列集合、13 索引名+列序、关键约束名。
+    """ORM metadata 与当前迁移 head 一致：列集合、索引名/列序、关键约束名。
 
     schema 仍由 Alembic 迁移管理（不用 create_all）；本断言防 ORM 与迁移漂移。
     """
@@ -830,7 +830,8 @@ def test_orm_metadata_parity_with_head() -> None:
         "contact_points": {
             "tenant_id", "contact_point_id", "contact_id", "kind", "value",
             "value_hash", "verification_status", "verified_at",
-            "verification_provider", "enrichment_cost_note", "created_at",
+            "verification_provider", "verification_checked_at",
+            "verification_cost_note", "enrichment_cost_note", "created_at",
         },
         "contact_legal_basis": {
             "tenant_id", "contact_point_id", "basis", "subject_type", "contact_type",
@@ -1082,7 +1083,8 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_contact_points", "fk_contact_points_contact",
             "uq_contact_points_value_hash", "ck_contact_points_kind",
             "ck_contact_points_verification_status", "ck_contact_points_value_hash",
-            "ck_contact_points_verified_pair", "ck_contact_points_provider_state",
+            "ck_contact_points_verified_pair",
+            "ck_contact_points_verification_observation",
             "ck_contact_points_core_nonblank", "ck_contact_points_optional_nonblank",
         },
         "contact_legal_basis": {
