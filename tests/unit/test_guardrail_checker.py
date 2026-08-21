@@ -7,6 +7,7 @@ import pytest
 from agent_runtime.base import ChangeSet
 from agent_runtime.guardrails.rails import (
     EvidenceRequiredRail,
+    FactInferenceSeparationRail,
     GuardrailChecker,
     NoProbabilityOutputRail,
     RailViolation,
@@ -270,3 +271,59 @@ def test_evidence_rail_accepts_complete_phase1_evidence_contracts() -> None:
     ]
 
     assert EvidenceRequiredRail().check(change_set) == []
+
+
+def test_fact_inference_rail_rejects_inference_in_serialized_fact_fields() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "payload": {
+                "quantity": {
+                    "value": 5000,
+                    "provenance": {
+                        "source_type": "agent_inference",
+                        "source_id": "signal-one",
+                    },
+                },
+                "possible_need": {
+                    "value": "可能需要耐腐蚀五金",
+                    "provenance": {
+                        "source_type": "web_page",
+                        "source_id": "page-one",
+                    },
+                    "based_on": [{"source_id": "page-one"}],
+                },
+            }
+        }
+    ]
+
+    violations = FactInferenceSeparationRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.quantity.provenance.source_type",
+        "changes[0].payload.possible_need",
+    ]
+
+
+def test_fact_inference_rail_accepts_separate_fact_and_inference_shapes() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "payload": {
+                "quantity": {
+                    "value": 5000,
+                    "provenance": {
+                        "source_type": "conversation",
+                        "source_id": "message-one",
+                    },
+                },
+                "possible_need": {
+                    "value": "可能需要耐腐蚀五金",
+                    "based_on": [{"source_id": "page-one"}],
+                    "inferred_by": "model-v1",
+                },
+            }
+        }
+    ]
+
+    assert FactInferenceSeparationRail().check(change_set) == []

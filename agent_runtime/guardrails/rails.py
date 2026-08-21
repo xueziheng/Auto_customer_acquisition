@@ -144,6 +144,64 @@ class EvidenceRequiredRail:
         )
 
 
+class FactInferenceSeparationRail:
+    """防止事实与推断共用同一个持久化字段形状。"""
+
+    name = "fact_inference_separation"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            violations.extend(self._walk(change, f"changes[{index}]"))
+        return violations
+
+    def _walk(self, value: object, location: str) -> list[RailViolation]:
+        if isinstance(value, Mapping):
+            has_value = "value" in value
+            has_provenance = "provenance" in value
+            has_basis = "based_on" in value
+            if has_value and has_provenance and has_basis:
+                return [
+                    self._violation(
+                        location,
+                        "同一字段同时声明事实来源和推断依据",
+                        "把直接观察值和推断结论拆成两个字段",
+                    )
+                ]
+            if has_value and has_provenance:
+                provenance = value.get("provenance")
+                source_type = (
+                    provenance.get("source_type")
+                    if isinstance(provenance, Mapping)
+                    else None
+                )
+                source_value = getattr(source_type, "value", source_type)
+                if source_value == "agent_inference":
+                    return [
+                        self._violation(
+                            f"{location}.provenance.source_type",
+                            "事实字段使用了 Agent 推断来源",
+                            "改为 InferredField，并通过 based_on 引用证据",
+                        )
+                    ]
+                return []
+            violations: list[RailViolation] = []
+            for key, child in value.items():
+                violations.extend(self._walk(child, f"{location}.{key}"))
+            return violations
+        if isinstance(value, (list, tuple)):
+            violations = []
+            for index, child in enumerate(value):
+                violations.extend(self._walk(child, f"{location}[{index}]"))
+            return violations
+        return []
+
+    def _violation(
+        self, location: str, detail: str, how_to_fix: str
+    ) -> RailViolation:
+        return RailViolation(self.name, location, detail, how_to_fix)
+
+
 class TenantConsistencyRail:
     """拒绝 Change Set 中任何越出顶层租户边界的嵌套数据。"""
 
