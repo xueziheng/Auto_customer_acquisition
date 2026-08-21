@@ -50,6 +50,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_ALEMBIC_HEAD = "0025"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -72,6 +73,8 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "need_hypotheses",
     "validated_needs",
     "validated_need_field_history",
+    "need_clusters",
+    "need_cluster_members",
     "prospect_accounts",
     "prospect_contacts",
     "contact_points",
@@ -2478,7 +2481,7 @@ async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> Non
                     )
                 }
             )
-        assert revision == "0024"
+        assert revision == _ALEMBIC_HEAD
         assert "item_fingerprint" in await _columns(engine, "email_feedback_receipts")
         assert columns["item_fingerprint"]["nullable"] is False
         assert columns["item_fingerprint"]["default"] is None
@@ -2631,7 +2634,7 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
                     for table in ARTIFACT_TABLES
                 }
             )
-        assert revision == "0024"
+        assert revision == _ALEMBIC_HEAD
         assert contract == {
             "raw_artifacts": {
                 "columns": {
@@ -2777,7 +2780,7 @@ async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
                     for table in ("notification_jobs", "in_app_notifications")
                 }
             names, contract = await conn.run_sync(inspect_contract)
-        assert revision == "0024"
+        assert revision == _ALEMBIC_HEAD
         assert {"notification_jobs", "in_app_notifications"} <= names
         assert {"status", "available_at", "lease_token", "last_error"} <= contract["notification_jobs"]["columns"]
         assert {"ck_notification_jobs_status", "ck_notification_jobs_priority", "ck_notification_jobs_attempt_count"} <= contract["notification_jobs"]["checks"]
@@ -2965,7 +2968,7 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
 
             def inspect_contract(sync):
                 inspector = inspect(sync)
@@ -3103,7 +3106,7 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
             for constraint_name in (
                 "ck_email_feedback_receipt_kind",
                 "ck_email_feedback_receipt_target",
@@ -3355,7 +3358,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3433,8 +3436,8 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
 async def test_0024_contact_verification_observation_revision_present(
     db_url: str,
 ) -> None:
-    """已完成态契约：0024 迁移存在且为 alembic head。
-    校验 upgrade head 后 revision 为 "0024"；失败来源必须是缺失/错误版本的
+    """已完成态契约：0024 迁移存在，数据库已升级到当前 head。
+    校验 upgrade head 后 revision 为当前版本；失败来源必须是缺失/错误版本的
     迁移文件，而非语法/fixture/ImportError/环境错误。"""
     from sqlalchemy import text
 
@@ -3444,7 +3447,7 @@ async def test_0024_contact_verification_observation_revision_present(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0024", "当前 Alembic head 未升级到 0024"
+        assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
     finally:
         await engine.dispose()
 
@@ -3468,7 +3471,7 @@ async def test_0020_classification_corrections_contract_matches_orm(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
             db_contract = await conn.run_sync(
                 lambda sync: {
                     "columns": {
@@ -3573,7 +3576,7 @@ async def test_0020_classification_corrections_downgrade_roundtrip(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
             assert "conversation_classification_corrections" in await _table_names(engine)
         _run_alembic(db_url, "downgrade", "0019")
         async with engine.connect() as conn:
@@ -3583,7 +3586,7 @@ async def test_0020_classification_corrections_downgrade_roundtrip(
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
         assert "conversation_classification_corrections" in await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
@@ -3603,7 +3606,7 @@ async def test_0019_conversations_messages_roundtrip_and_guards(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
 
             def inspect_contract(sync) -> dict[str, object]:
                 inspector = inspect(sync)
@@ -3706,7 +3709,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
             db_contract = await conn.run_sync(
                 lambda sync: {
                     "columns": {
@@ -3907,7 +3910,7 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
             assert "demand_signals" in await _table_names(engine)
         _run_alembic(db_url, "downgrade", "0020")
         async with engine.connect() as conn:
@@ -3917,7 +3920,7 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
         assert "demand_signals" in await _table_names(engine)
     finally:
         _run_alembic(db_url, "upgrade", "head")
@@ -4037,7 +4040,7 @@ async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "当前 Alembic head 未升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "当前 Alembic head 未升级到最新版本"
             db_contract = await conn.run_sync(
                 lambda sync: {
                     table: {
@@ -4191,7 +4194,7 @@ async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
 
 
 async def test_0022_downgrade_roundtrip(db_url: str) -> None:
-    """head(0024)→0021→head(0024)：验证 0022 三表可删除并恢复。"""
+    """head→0021→head：验证 0022 三表可删除并恢复。"""
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -4205,7 +4208,7 @@ async def test_0022_downgrade_roundtrip(db_url: str) -> None:
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "roundtrip 前置：head 应已升级到 0024"
+            assert revision == _ALEMBIC_HEAD, "roundtrip 前置：head 应已升级到最新版本"
         for table in tables:
             assert table in await _table_names(engine), f"head 应含 {table}"
         _run_alembic(db_url, "downgrade", "0021")
@@ -4217,7 +4220,7 @@ async def test_0022_downgrade_roundtrip(db_url: str) -> None:
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024", "upgrade head 后 revision 应为 0024"
+            assert revision == _ALEMBIC_HEAD, "upgrade head 后 revision 应为最新版本"
         for table in tables:
             assert table in await _table_names(engine), f"upgrade 后应恢复 {table}"
     finally:
@@ -4247,7 +4250,7 @@ async def test_0024_prospecting_contract_matches_orm(db_url: str) -> None:
     engine = create_engine_from(db_url)
     try:
         async with engine.connect() as conn:
-            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "0024"
+            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == _ALEMBIC_HEAD
             db = await conn.run_sync(
                 lambda sync: {
                     table: {
@@ -4360,7 +4363,7 @@ async def test_0024_prospecting_contract_matches_orm(db_url: str) -> None:
 async def test_0024_verification_observation_downgrade_roundtrip(
     db_url: str,
 ) -> None:
-    """0024→0023→0024：观察列和 CHECK 可逆，且 head 最终恢复。"""
+    """head→0023→head：观察列和 CHECK 可逆，且 head 最终恢复。"""
     from sqlalchemy import inspect, text
 
     from infra.db.session import create_engine_from
@@ -4369,7 +4372,7 @@ async def test_0024_verification_observation_downgrade_roundtrip(
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0024"
+            assert revision == _ALEMBIC_HEAD
         _run_alembic(db_url, "downgrade", "0023")
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
@@ -4392,14 +4395,14 @@ async def test_0024_verification_observation_downgrade_roundtrip(
         assert "ck_contact_points_verification_observation" not in contract["checks"]
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
-            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "0024"
+            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == _ALEMBIC_HEAD
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()
 
 
 async def test_0023_downgrade_roundtrip(db_url: str) -> None:
-    """0023→0022→head(0024)：只移除并恢复 prospecting 五表。"""
+    """head→0022→head：只移除并恢复 prospecting 五表。"""
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -4421,7 +4424,7 @@ async def test_0023_downgrade_roundtrip(db_url: str) -> None:
         _run_alembic(db_url, "upgrade", "head")
         assert tables <= await _table_names(engine)
         async with engine.connect() as conn:
-            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "0024"
+            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == _ALEMBIC_HEAD
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

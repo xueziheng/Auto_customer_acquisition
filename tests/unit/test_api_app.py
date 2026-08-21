@@ -56,6 +56,35 @@ _SALES_READ_GATE = Depends(
         allowed_roles=frozenset({"sales"}),
     )
 )
+_EXPECTED_API_PATHS = {
+    "/crm/analytics/loss-reasons",
+    "/crm/enrollments",
+    "/crm/enrollments/{enrollment_id}/attempts/prepare",
+    "/crm/handoffs",
+    "/crm/handoffs/{handoff_id}",
+    "/crm/handoffs/{handoff_id}/accept",
+    "/crm/message-attempts/{attempt_id}/send",
+    "/crm/opportunities",
+    "/crm/opportunities/{opportunity_id}",
+    "/crm/opportunities/{opportunity_id}/transition",
+    "/crm/opportunities/{opportunity_id}/mark-lost",
+    "/crm/sending-identities",
+    "/crm/sending-identities/{identity_id}",
+    "/crm/sending-identities/{identity_id}/authentication-checks",
+    "/demand/clusters",
+    "/demand/clusters/{cluster_id}",
+    "/demand/hypotheses",
+    "/demand/hypotheses/{hypothesis_id}",
+    "/demand/needs",
+    "/demand/needs/{need_id}",
+    "/demand/signals",
+    "/notifications",
+    "/notifications/{notification_id}/read",
+    "/prospects/accounts",
+    "/prospects/accounts/{account_id}",
+    "/prospects/accounts/{account_id}/contacts",
+    "/prospects/discoveries",
+}
 
 
 class _ApiClient:
@@ -366,28 +395,7 @@ def test_import_and_zero_arg_factory_do_not_create_database_resources(
     reloaded = importlib.reload(main_module)
 
     app = reloaded.create_app()
-    assert set(app.openapi()["paths"]) == {
-        "/crm/analytics/loss-reasons",
-        "/crm/enrollments",
-        "/crm/enrollments/{enrollment_id}/attempts/prepare",
-        "/crm/handoffs",
-        "/crm/handoffs/{handoff_id}",
-        "/crm/handoffs/{handoff_id}/accept",
-        "/crm/message-attempts/{attempt_id}/send",
-        "/crm/opportunities",
-        "/crm/opportunities/{opportunity_id}",
-        "/crm/opportunities/{opportunity_id}/transition",
-        "/crm/opportunities/{opportunity_id}/mark-lost",
-        "/crm/sending-identities",
-        "/crm/sending-identities/{identity_id}",
-        "/crm/sending-identities/{identity_id}/authentication-checks",
-            "/notifications",
-            "/notifications/{notification_id}/read",
-            "/prospects/accounts",
-            "/prospects/accounts/{account_id}",
-            "/prospects/accounts/{account_id}/contacts",
-            "/prospects/discoveries",
-        }
+    assert set(app.openapi()["paths"]) == _EXPECTED_API_PATHS
     assert app.state.dependencies.configured is False
 
 
@@ -435,28 +443,7 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "/opportunities/{opportunity_id}/transition",
         "/opportunities/{opportunity_id}/mark-lost",
     }
-    assert set(schema["paths"]) == {
-        "/crm/analytics/loss-reasons",
-        "/crm/enrollments",
-        "/crm/enrollments/{enrollment_id}/attempts/prepare",
-        "/crm/handoffs",
-        "/crm/handoffs/{handoff_id}",
-        "/crm/handoffs/{handoff_id}/accept",
-        "/crm/message-attempts/{attempt_id}/send",
-        "/crm/opportunities",
-        "/crm/opportunities/{opportunity_id}",
-        "/crm/opportunities/{opportunity_id}/transition",
-        "/crm/opportunities/{opportunity_id}/mark-lost",
-        "/crm/sending-identities",
-        "/crm/sending-identities/{identity_id}",
-        "/crm/sending-identities/{identity_id}/authentication-checks",
-            "/notifications",
-            "/notifications/{notification_id}/read",
-            "/prospects/accounts",
-            "/prospects/accounts/{account_id}",
-            "/prospects/accounts/{account_id}/contacts",
-            "/prospects/discoveries",
-        }
+    assert set(schema["paths"]) == _EXPECTED_API_PATHS
     create_responses = schema["paths"]["/crm/opportunities"]["post"]["responses"]
     assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
     assert "201" in create_responses

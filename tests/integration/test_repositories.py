@@ -819,6 +819,21 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "notification_jobs": {"tenant_id", "notification_job_id", "source_event_fingerprint", "source_event", "recipient_employee_id", "priority", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "dedup_key", "status", "available_at", "lease_owner", "lease_token", "lease_expires_at", "attempt_count", "last_error", "created_at", "completed_at"},
         "in_app_notifications": {"tenant_id", "notification_id", "recipient_employee_id", "priority", "title", "context_kind", "primary_id", "secondary_id", "reason_code", "level", "relative_link", "source_job_id", "created_at", "read_at"},
+        "need_clusters": {
+            "tenant_id", "cluster_id", "category", "keywords", "countries",
+            "total_potential_quantity", "recurring_demand", "created_at",
+            "updated_at",
+        },
+        "need_cluster_members": {
+            "tenant_id", "cluster_id", "need_id", "assigned_at",
+        },
+        "validated_needs": {
+            "tenant_id", "need_id", "account_id", "product_category",
+            "source_message_id", "source_conversation_id", "status", "created_at",
+            "application", "material", "size_spec", "quantity", "packaging",
+            "destination", "required_by", "target_price", "current_supply_issue",
+            "certification_required", "confirmed_by", "cluster_id",
+        },
         "prospect_accounts": {
             "tenant_id", "account_id", "name", "country", "website_domain",
             "entity_type", "industry", "size_hint", "source_signal_refs", "created_at",
@@ -917,6 +932,10 @@ def test_orm_metadata_parity_with_head() -> None:
         "uq_need_hypotheses_active_account_category": (
             "tenant_id", "account_id", "category",
         ),
+        "ix_need_clusters_tenant_category": (
+            "tenant_id", "category", "created_at", "cluster_id",
+        ),
+        "uq_need_cluster_members_need": ("tenant_id", "need_id"),
         "ix_validated_need_field_history_need": (
             "tenant_id", "need_id", "changed_at",
         ),
@@ -1069,6 +1088,15 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_in_app_notifications", "uq_in_app_notifications_source_job",
             "fk_in_app_notifications_job", "ck_in_app_notifications_priority",
         },
+        "need_clusters": {
+            "pk_need_clusters", "ck_need_clusters_core_nonblank",
+            "ck_need_clusters_arrays_jsonb", "ck_need_clusters_quantity_nonnegative",
+        },
+        "need_cluster_members": {
+            "pk_need_cluster_members", "fk_need_cluster_members_cluster",
+            "fk_need_cluster_members_need",
+        },
+        "validated_needs": {"fk_validated_needs_cluster"},
         "prospect_accounts": {
             "pk_prospect_accounts", "ck_prospect_accounts_core_nonblank",
             "ck_prospect_accounts_optional_nonblank",
