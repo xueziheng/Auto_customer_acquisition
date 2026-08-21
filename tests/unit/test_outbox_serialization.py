@@ -95,6 +95,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "ReplyReceived",
         "InboundMessageStored",
         "DemandSignalCaptured",
+        "DirectiveActivated",
         "NeedHypothesisCreated",
         "NeedHypothesisRejected",
         "NeedValidated",
