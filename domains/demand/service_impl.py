@@ -44,7 +44,11 @@ from domains.demand.schemas import (
     SignalCaptureRequest,
     ValidatedNeedView,
 )
-from domains.demand.service import DemandAccountNameReader
+from domains.demand.service import (
+    DemandAccountNameReader,
+    mutable_need_field_names,
+    promotable_need_field_names,
+)
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
@@ -86,28 +90,14 @@ _PROMOTABLE_SOURCE_TYPES = frozenset(
         SourceType.EMPLOYEE_INPUT.value,
     }
 )
-_PROMOTE_FIELD_WHITELIST = frozenset(
-    {
-        "product_category",
-        "application",
-        "material",
-        "size_spec",
-        "quantity",
-        "packaging",
-        "destination",
-        "required_by",
-        "target_price",
-        "current_supply_issue",
-        "certification_required",
-    }
-)
+_PROMOTE_FIELD_WHITELIST = frozenset(promotable_need_field_names())
 _TEXT_PROMOTE_FIELDS = _PROMOTE_FIELD_WHITELIST - {
     "quantity",
     "required_by",
     "target_price",
 }
 _CLUSTER_TOKEN = re.compile(r"[^\W_]{2,64}", re.UNICODE)
-_UPDATE_FIELD_WHITELIST = _PROMOTE_FIELD_WHITELIST - {"product_category"}
+_UPDATE_FIELD_WHITELIST = frozenset(mutable_need_field_names())
 
 
 def _merge_evidence(

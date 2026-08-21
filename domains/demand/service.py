@@ -29,6 +29,30 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 
+_PROMOTABLE_NEED_FIELDS = (
+    "product_category",
+    "application",
+    "material",
+    "size_spec",
+    "quantity",
+    "packaging",
+    "destination",
+    "required_by",
+    "target_price",
+    "current_supply_issue",
+    "certification_required",
+)
+
+
+def promotable_need_field_names() -> tuple[str, ...]:
+    """返回客户原话可验证的需求字段词表。"""
+    return _PROMOTABLE_NEED_FIELDS
+
+
+def mutable_need_field_names() -> tuple[str, ...]:
+    """返回已验证需求可追加历史的字段词表，不含不可变产品类别。"""
+    return _PROMOTABLE_NEED_FIELDS[1:]
+
 
 @runtime_checkable
 class DemandAccountNameReader(Protocol):
