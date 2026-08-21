@@ -24,6 +24,10 @@ from .contact_enrichment import (
     ContactEnrichmentHandler,
     ToolGatewayContactEnricher,
 )
+from .contact_verification import (
+    ContactVerificationHandler,
+    ToolGatewayContactVerifier,
+)
 from .dns_auth import (
     DnsAuthenticationCheckHandler,
     ToolGatewayDnsAuthenticationChecker,
@@ -43,6 +47,7 @@ from .email_send import (
 
 __all__ = [
     "ContactEnrichmentHandler",
+    "ContactVerificationHandler",
     "DeliveryMaterial",
     "DeliveryMaterialProvider",
     "DnsAuthenticationCheckHandler",
@@ -51,6 +56,7 @@ __all__ = [
     "FeedbackPageSlot",
     "ToolEmailFeedbackReader",
     "ToolGatewayContactEnricher",
+    "ToolGatewayContactVerifier",
     "ToolGatewayDnsAuthenticationChecker",
     "ToolGatewayEmailFeedbackReader",
     "UnsubscribeLinkProvider",

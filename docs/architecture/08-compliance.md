@@ -55,6 +55,19 @@ contact_legal_basis:
 
 同时必须支持数据主体请求：查询、更正、删除、反对处理。删除请求要能跨表清理，但保留最小必要的抑制记录（否则删了之后又会再次联系他）。
 
+### 联系人 Provider 的最小化边界
+
+Hunter 联系人补全只能处理已经通过租户绑定、国家政策、Playbook 与抑制检查的数据；邮箱
+验证只接受已经租户绑定、授权且未抑制的现有联系点。API Key 由 Connector 内部按
+`HUNTER_API_KEY_REF` 解析，只能放在固定 Hunter host 的 `X-API-KEY` header；不得进入
+URL、日志、异常、数据库或模型上下文。邮箱、姓名、职位和 source URI 通过 repr-disabled
+typed DTO 与 task-local 一次性槽交接，durable ledger 只保存安全 handle。
+
+Provider 返回的 `score` / `confidence` 不是校准证据，必须丢弃。邮箱验证的四种结果都
+记录 UTC 检查时间和固定成本备注，严格缓存 30 天；451 隐私声明保留为 typed 事实，由
+业务 workflow 执行删除/抑制，Gateway 不得擅自写业务状态。任何抑制、政策或读取依赖失败
+都 fail closed；不确定的付费调用进入人工对账，禁止自动重复调用。
+
 ---
 
 ## 三、抑制名单

@@ -77,6 +77,13 @@ consent_records          同意记录（WhatsApp opt-in、表单同意）
 
 `contact_points` 的可达性验证状态是发送前置条件（硬边界 6）。未验证的联系方式不得进入 `outreach_enrollments`。
 
+迁移 0024 为 `contact_points` 增加完整验证观察：`verification_provider`、
+`verification_checked_at` 与 `verification_cost_note` 必须成组出现，检查时间必须是 UTC。
+四种验证结果都可保存观察；只有 `verified` 能通过发送门禁。Provider 缓存不是独立表，
+由服务读取该组字段并按严格 `now < checked_at + 30 days` 判定。Hunter 原始响应、邮箱验证
+score/confidence、API Key 与 task-local `EmailVerificationResult` 均不得落库；Tool Gateway
+ledger 只保存一次性 `veb_` handle 和固定成本等级。
+
 迁移 0023 已落地上述四张 prospecting 业务表及
 `prospecting_erasure_suppressions`：所有主键、外键、唯一键和查询均包含
 `tenant_id`。同租户 canonical domain 用于企业消歧；联系方式按

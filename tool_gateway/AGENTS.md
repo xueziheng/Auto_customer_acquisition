@@ -26,7 +26,9 @@ tool_gateway/
 │   └── rate_limit.py    频率与配额
 └── handlers/             工具执行器注册处（实现调 connectors/）
     ├── email_send.py     Gmail 单封发送参数组装与恢复搜索
-    └── email_feedback.py Gmail typed 反馈页的一次性进程内交接
+    ├── email_feedback.py Gmail typed 反馈页的一次性进程内交接
+    ├── contact_enrichment.py  联系人候选 typed 补全
+    └── contact_verification.py 邮箱可达性缓存与 typed 验证
 ```
 
 ## 加新工具 = manifest + handler，不改管线
@@ -97,6 +99,16 @@ handle；`take()` 后立即删除，失败或 cancellation 必须清空。
 原始 MIME、header、地址、provider cursor 与 typed page 都不进入 ledger；Connector 返回的
 page 只能在同一调用栈内由受信 worker 消费。
 
+`contact.enrich` 与 `contact.verify` 使用各自容量一、async-task-local、领取即删除的 typed
+结果槽；ledger 只保存不可恢复的 `ceb_` / `veb_` handle。邮箱、姓名、职位、source URI、
+Hunter 原始响应和 API Key 不得进入 ledger、outbox、日志或模型上下文。Provider 的
+`score` / `confidence` 在 connector 边界直接丢弃，绝不能当作业务置信度。
+
+`contact.verify` 对四种结果都保存检查时间和固定成本备注，并仅在
+`now < checked_at + 30 days` 时命中缓存；缓存命中不解析凭证、不调用 Hunter、也不预留
+Provider 配额。付费调用出现结果不确定时固定进入 `reconciliation_required`，禁止自动重试。
+隐私声明只作为 typed 事实交给后续 workflow，handler 不写 Prospecting，也不自行执行删除。
+
 每次调用（含拒绝与重复）都追加结构化 event。进入 Connector 前必须先提交
 `EXECUTING` 和对应事件；这笔写入失败时不得调用 Gmail。完成 Attempt 或 canonical
 ledger 失败时也不得伪造成功。**审计写入失败必须阻断动作本身**——审计不完整时
@@ -123,6 +135,8 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 
 manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
 ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部
-固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、租约恢复与人工对账
-边界。成本钱包仍是 Phase 3 挂载点；不在本阶段实现自动对账扫描器、对账 UI、回复正文
-worker 或自动重发。
+固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、Hunter 联系人插件的
+离线实现、租约恢复与人工对账边界。Hunter 测试不使用真实 Key 或网络；生产
+`contact.enrich` 尚未注册，必须先配置真实国家政策包与 Playbook composition。账户发现
+持久化/workflow、Campaign 接线和 UI 仍未完成。成本钱包仍是 Phase 3 挂载点；不在本阶段
+实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。

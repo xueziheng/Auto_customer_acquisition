@@ -300,6 +300,18 @@ async def test_verification_suppression_stores_cache_aware_typed_preflight() -> 
     assert point_reader.calls == [(TENANT, POINT)]
     assert suppression.targets == [SuppressionTarget(contact_point_id=POINT)]
 
+    future_state = _state("contact.verify")
+    future_check = ContactProviderSuppressionCheck(
+        _PointReader(_point(checked_at=NOW + timedelta(seconds=1))),
+        _SuppressionReader(False),
+        now=lambda: NOW,
+    )
+    assert await future_check.check(
+        _ctx("contact.verify", {"contact_point_id": str(POINT)}), future_state
+    ) is None
+    assert isinstance(future_state.preflight, ContactVerificationPreflight)
+    assert future_state.preflight.cache_valid is False
+
 
 @pytest.mark.asyncio
 async def test_exact_cache_expiry_reserves_quota_but_fresh_cache_skips() -> None:

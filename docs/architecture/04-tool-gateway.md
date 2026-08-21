@@ -5,8 +5,9 @@ Token、浏览器 Cookie 或其他凭证（硬边界 1）。Gateway 不是一个
 Connector 之间最后一道独立、可恢复、可审计的闸门。
 
 本页只描述当前已经实现并由测试锁定的 Phase 1 Gmail 客户单封发送、内部员工固定模板
-事务通知与 typed DSN 反馈读取。自动对账扫描器、人工对账 UI、回复正文/投诉 worker 与
-其他工具仍是后续能力，不能按已实现能力对外承诺。
+事务通知、typed DSN 反馈读取，以及 Hunter 联系人补全/邮箱验证插件。Hunter 部分只有
+无真实 Key、无真实网络的协议与边界测试，尚未接入生产 composition。自动对账扫描器、
+人工对账 UI、回复正文/投诉 worker 与其他工具仍是后续能力，不能按已实现能力对外承诺。
 
 ---
 
@@ -200,6 +201,23 @@ typed page、原始 MIME/header/address、OAuth token 和 provider cursor 都不
 transaction lock 内做整页 fingerprint preflight、Outreach/Sending Identity 业务效果、
 receipt/quarantine/action/outbox 与 cursor 提交；任一步失败整页回滚。
 
+### Hunter 联系人补全与邮箱验证
+
+`contact.enrich` 运行
+`tenant → permission → playbook → country_policy → suppression → rate_limit`；
+`contact.verify` 运行 `tenant → permission → suppression → rate_limit`。两者都是
+`idempotency=NONE` 的付费读取，每次调用仍由 technical claim 留下 durable 状态证据。
+
+PII 只存在于 repr-disabled typed DTO、prepared payload 和 async-task-local 容量一 slot；
+成功 ledger 只保存领取一次即失效的 `ceb_` / `veb_` handle。Hunter `score`、`confidence`
+与原始 JSON 在 connector 边界丢弃。所有邮箱验证结果（verified / invalid / risky /
+unverified）都带 UTC 检查时间和固定成本备注，并在严格小于 30 天时复用；缓存命中不创建
+connector、不解析 Key、不调用 Hunter，也不占 Provider 配额。
+
+不确定的付费结果映射为 `reconciliation_required`，不得自动重试。451 隐私声明保留为
+typed `privacy_claimed` 事实，由后续账户发现 workflow 决定持久化或删除；Gateway handler
+不直接写业务域。当前测试全部使用受控 transport，没有真实 Hunter Key/网络。
+
 ---
 
 ## 五、崩溃与人工对账
@@ -275,6 +293,7 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Outreach Attempt claim/completion；
 - Gmail 单封发送、确定性 header、只读恢复搜索；
 - Gmail RFC 3464 typed 反馈读取、一次性 page handle 与真实 feedback worker；
+- Hunter 单 Provider connector、联系人补全/邮箱验证 handler 与一次性 typed handle；
 - API 手工发送入口、离线 controlled-transport 演示与真实 PostgreSQL 恢复测试。
 
 当前明确不做：
@@ -285,6 +304,8 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Browser Agent 发送邮件；
 - 接受任意旧 approval 或绕过 Campaign current-facts；
 - 自动重发任何交付结果不确定的邮件；
+- 生产注册 `contact.enrich`（真实国家政策包与 Playbook composition 尚未配置）；
+- account-discovery 持久化/workflow、Campaign 接线、联系人 UI 与多 Provider 路由；
 - Phase 3 成本钱包。
 
 浏览器工具未来仍必须遵守“官方 API → 公开 HTTP → 确定性 Playwright Adapter → 受限

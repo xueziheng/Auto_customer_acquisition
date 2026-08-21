@@ -304,7 +304,7 @@ class ContactProviderSuppressionCheck:
             cache_valid = (
                 checked_at is not None
                 and _utc(checked_at)
-                and now < checked_at + timedelta(days=30)
+                and checked_at <= now < checked_at + timedelta(days=30)
             )
             state.preflight = ContactVerificationPreflight(
                 ctx.tenant_id,
