@@ -832,14 +832,13 @@ def build_phase1_dependencies(
         if manual_send is not None
         else unavailable_send_sources
     )
-    fallback_campaign_approvals = (
+    campaign_approvals = (
         manual_send.campaign_approvals
         if manual_send is not None
-        else unavailable_send_sources
-    )
-    campaign_approvals = _ServiceBackedCampaignApprovalProvider(
-        approvals,
-        fallback_campaign_approvals,  # type: ignore[arg-type]
+        else _ServiceBackedCampaignApprovalProvider(
+            approvals,
+            unavailable_send_sources,  # type: ignore[arg-type]
+        )
     )
     reply_status = (
         manual_send.reply_status
