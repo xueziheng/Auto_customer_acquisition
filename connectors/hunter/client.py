@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Protocol, TypeGuard, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -18,6 +21,12 @@ from connectors.contact_enrichment.client import (
     ContactSource,
     EnrichmentCostNote,
 )
+from connectors.email_verification.client import (
+    EmailVerificationConnector,
+    EmailVerificationOutcome,
+    EmailVerificationResult,
+    VerificationCostNote,
+)
 from connectors.hunter.transport import (
     HunterHttpStatusError,
     HunterHttpTransport,
@@ -27,9 +36,9 @@ from shared.errors import ValidationError
 
 MANIFEST = ConnectorManifest(
     connector_id="hunter",
-    capabilities=("contact.enrich",),
+    capabilities=("contact.enrich", "contact.verify"),
     secret_refs=("HUNTER_API_KEY_REF",),
-    rate_limit_note="Domain Search 15/s 500/min",
+    rate_limit_note="Domain Search 15/s 500/min; Email Verifier 10/s 300/min",
     compliance_note="PII 仅 typed 临时交接；Provider score 不进入业务数据",
 )
 
@@ -86,16 +95,28 @@ class _SecretValue:
     value: str = field(repr=False)
 
 
-class HunterConnector(ContactEnrichmentConnector):
+class HunterConnector(ContactEnrichmentConnector, EmailVerificationConnector):
     """把 Hunter Domain Search 转成 Provider-neutral typed 联系人结果。"""
 
     manifest = MANIFEST
 
-    def __init__(self, transport: HunterHttpTransport) -> None:
+    def __init__(
+        self,
+        transport: HunterHttpTransport,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         if not isinstance(transport, HunterHttpTransport):
             raise ValidationError("Hunter transport 无效")
+        if not all(callable(value) for value in (now, monotonic, sleeper)):
+            raise ValidationError("Hunter runtime 依赖无效")
         self._transport = transport
         self._api_key: _SecretValue | None = None
+        self._now = now
+        self._monotonic = monotonic
+        self._sleeper = sleeper
 
     def __repr__(self) -> str:
         return "HunterConnector()"
@@ -151,6 +172,96 @@ class HunterConnector(ContactEnrichmentConnector):
         if response is None or response.status_code != 200:
             raise HunterPermanentError()
         return _parse_domain_search(response.payload, domain, canonical_hints)
+
+    async def verify(self, email: str) -> EmailVerificationResult:
+        try:
+            canonical_email = _canonical_email(email)
+        except (TypeError, ValueError, UnicodeError):
+            raise ValidationError("Hunter Email Verifier 输入无效") from None
+        if self._api_key is None:
+            raise HunterAuthRequiredError()
+
+        started_at = self._monotonic()
+        attempts = 0
+        while attempts < 3:
+            if attempts > 0 and self._monotonic() - started_at >= 30:
+                return self._unknown_verification()
+            safe_error: HunterConnectorError | None = None
+            response = None
+            try:
+                response = await self._transport.get(
+                    "/email-verifier",
+                    (("email", canonical_email),),
+                    api_key=self._api_key.value,
+                )
+            except HunterHttpStatusError as error:
+                if (
+                    error.status_code == 451
+                    and error.error_code.value == "claimed_email"
+                ):
+                    return EmailVerificationResult(
+                        EmailVerificationOutcome.UNVERIFIED,
+                        "hunter",
+                        self._now(),
+                        VerificationCostNote.PRIVACY_REFUSED,
+                        privacy_claimed=True,
+                    )
+                safe_error = _classify_transport_error(error)
+            except HunterNetworkError as error:
+                safe_error = _classify_transport_error(error)
+            if safe_error is not None:
+                raise safe_error
+            if response is None:
+                raise HunterPermanentError()
+
+            attempts += 1
+            if response.status_code == 222:
+                return self._unknown_verification()
+            if response.status_code == 202:
+                if attempts >= 3:
+                    return self._unknown_verification()
+                remaining = 30 - (self._monotonic() - started_at)
+                if remaining <= 0:
+                    return self._unknown_verification()
+                delay = min(float(response.retry_after_seconds or 1), remaining)
+                await self._sleeper(delay)
+                if self._monotonic() - started_at >= 30:
+                    return self._unknown_verification()
+                continue
+            if response.status_code != 200:
+                raise HunterPermanentError()
+            return self._parse_verification(response.payload)
+        return self._unknown_verification()
+
+    def _parse_verification(self, payload: object) -> EmailVerificationResult:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            raise HunterPermanentError()
+        status = payload["data"].get("status")
+        outcomes = {
+            "valid": EmailVerificationOutcome.VERIFIED,
+            "invalid": EmailVerificationOutcome.INVALID,
+            "accept_all": EmailVerificationOutcome.RISKY,
+            "webmail": EmailVerificationOutcome.RISKY,
+            "disposable": EmailVerificationOutcome.RISKY,
+            "unknown": EmailVerificationOutcome.UNVERIFIED,
+        }
+        outcome = outcomes.get(status) if isinstance(status, str) else None
+        if outcome is None:
+            raise HunterPermanentError()
+        return EmailVerificationResult(
+            outcome,
+            "hunter",
+            self._now(),
+            VerificationCostNote.COUNTED,
+        )
+
+    def _unknown_verification(self) -> EmailVerificationResult:
+        return EmailVerificationResult(
+            EmailVerificationOutcome.UNVERIFIED,
+            "hunter",
+            self._now(),
+            VerificationCostNote.UNKNOWN,
+        )
 
 
 def _validate_search_input(

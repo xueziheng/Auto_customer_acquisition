@@ -170,9 +170,11 @@ def _object_graph(value: object) -> tuple[set[str], list[object]]:
 
 def test_manifest_advertises_only_implemented_enrichment_and_one_secret() -> None:
     assert MANIFEST.connector_id == "hunter"
-    assert MANIFEST.capabilities == ("contact.enrich",)
+    assert MANIFEST.capabilities == ("contact.enrich", "contact.verify")
     assert MANIFEST.secret_refs == ("HUNTER_API_KEY_REF",)
-    assert MANIFEST.rate_limit_note == "Domain Search 15/s 500/min"
+    assert MANIFEST.rate_limit_note == (
+        "Domain Search 15/s 500/min; Email Verifier 10/s 300/min"
+    )
     assert "score" in MANIFEST.compliance_note.casefold()
 
 
