@@ -29,6 +29,8 @@ from domains.prospecting.schemas import (
     ContactPointCreateRequest,
     ContactPointDetailView,
     ContactPointView,
+    DiscoveredContactRequest,
+    DiscoveredContactResult,
     ProspectAccountDetailView,
     ProspectAccountView,
     ProspectContactDetailView,
@@ -36,7 +38,7 @@ from domains.prospecting.schemas import (
     VerificationRecordRequest,
 )
 from domains.prospecting.service import ContactValueHasher
-from shared.errors import InvalidStateTransition, ValidationError
+from shared.errors import InvalidStateTransition, TransientError, ValidationError
 from shared.events.catalog import ContactPointVerified
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -313,6 +315,81 @@ class ProspectingServiceImpl:
             ):
                 return existing.contact_point_id
             raise ProspectingConflictError("联系方式唯一身份冲突")
+
+    async def record_discovered_contact(
+        self, tenant_id: TenantId, request: DiscoveredContactRequest
+    ) -> DiscoveredContactResult:
+        """原子录入 Provider 候选；联系方式指纹是幂等身份。"""
+        canonical = _canonical_contact_value(request.kind, request.value)
+        _optional_text(request.full_name, "潜在联系人字段无效")
+        _optional_text(request.role_title, "潜在联系人字段无效")
+        _optional_text(request.language, "潜在联系人字段无效")
+        _optional_text(request.enrichment_cost_note, "联系方式字段无效")
+        basis_input = request.legal_basis
+        basis = LegalBasisRecord(
+            basis=basis_input.basis,
+            subject_type=basis_input.subject_type,
+            contact_type=basis_input.contact_type,
+            source=basis_input.source,
+            source_url=basis_input.source_url,
+            collected_at=basis_input.collected_at,
+            assessment_ref=basis_input.assessment_ref,
+        )
+        value_hash = _fingerprint_contact_value(self._hasher, canonical)
+        now = _utc_now(self._now)
+        contact = ProspectContact(
+            contact_id=ProspectContactId(new_id("pc")),
+            tenant_id=tenant_id,
+            account_id=request.account_id,
+            created_at=now,
+            full_name=request.full_name,
+            role_title=request.role_title,
+            language=request.language,
+        )
+        point = ContactPoint(
+            contact_point_id=ContactPointId(new_id("cp")),
+            tenant_id=tenant_id,
+            contact_id=contact.contact_id,
+            kind=request.kind,
+            value=canonical,
+            value_hash=value_hash,
+            legal_basis=basis,
+            created_at=now,
+            enrichment_cost_note=request.enrichment_cost_note,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.contacts.is_erasure_suppressed(tenant_id, value_hash):
+                raise ErasedContactPointError("联系方式已被删除或反对处理")
+            if await uow.accounts.get(tenant_id, request.account_id) is None:
+                raise ProspectAccountNotFoundError("潜在企业不存在")
+            existing = await uow.contacts.find_by_value_hash(
+                tenant_id, request.kind, value_hash
+            )
+            if existing is not None:
+                existing_contact = await uow.contacts.get_contact(
+                    tenant_id, existing.contact_id
+                )
+                if (
+                    existing_contact is None
+                    or existing_contact.account_id != request.account_id
+                ):
+                    raise ProspectingConflictError("联系方式已归属于其他潜在企业")
+                return DiscoveredContactResult(
+                    account_id=request.account_id,
+                    contact_id=existing.contact_id,
+                    contact_point_id=existing.contact_point_id,
+                    created=False,
+                )
+            await uow.contacts.add_contact(contact)
+            if not await uow.contacts.add_contact_point(point):
+                # 抛错使 UoW 回滚刚插入的联系人；scheduler 重试后会读取胜者。
+                raise TransientError("联系方式并发录入冲突")
+            return DiscoveredContactResult(
+                account_id=request.account_id,
+                contact_id=contact.contact_id,
+                contact_point_id=point.contact_point_id,
+                created=True,
+            )
 
     async def get_account(
         self, tenant_id: TenantId, account_id: ProspectAccountId

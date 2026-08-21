@@ -27,6 +27,8 @@ __all__ = (
     "ContactPointKind",
     "ContactPointView",
     "ContactType",
+    "DiscoveredContactRequest",
+    "DiscoveredContactResult",
     "LegalBasisInput",
     "LegalBasisType",
     "ProspectAccountDetailView",
@@ -76,6 +78,30 @@ class ContactPointCreateRequest:
     value: str
     legal_basis: LegalBasisInput
     enrichment_cost_note: str | None = None
+
+
+@dataclass(frozen=True)
+class DiscoveredContactRequest:
+    """Provider 候选的原子录入请求；同一联系方式重跑不得重复建联系人。"""
+
+    account_id: ProspectAccountId
+    kind: ContactPointKind
+    value: str
+    legal_basis: LegalBasisInput
+    full_name: str | None = None
+    role_title: str | None = None
+    language: str | None = None
+    enrichment_cost_note: str | None = None
+
+
+@dataclass(frozen=True)
+class DiscoveredContactResult:
+    """原子录入结果；不携带联系方式原值。"""
+
+    account_id: ProspectAccountId
+    contact_id: ProspectContactId
+    contact_point_id: ContactPointId
+    created: bool
 
 
 @dataclass(frozen=True)

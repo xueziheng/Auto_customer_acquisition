@@ -12,6 +12,8 @@ from domains.prospecting.schemas import (
     ContactCreateRequest,
     ContactPointCreateRequest,
     ContactPointView,
+    DiscoveredContactRequest,
+    DiscoveredContactResult,
     ProspectAccountDetailView,
     ProspectAccountView,
     ProspectContactDetailView,
@@ -77,6 +79,17 @@ class ProspectingService(Protocol):
     ) -> ContactPointId:
         """录入联系方式。``legal_basis`` 缺失直接拒绝——
         入库即处理，处理必须有依据。"""
+        ...
+
+    async def record_discovered_contact(
+        self, tenant_id: TenantId, request: DiscoveredContactRequest
+    ) -> DiscoveredContactResult:
+        """在一个事务中幂等录入 Provider 发现的联系人和联系方式。
+
+        联系方式指纹已存在且属于同一企业时复用首次记录；属于其他企业时
+        固定冲突，禁止模型或 workflow 猜测合并。并发竞争必须回滚本次新联系人，
+        由 scheduler 安全重试后读取胜者。
+        """
         ...
 
     async def record_verification(
