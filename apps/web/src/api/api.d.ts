@@ -285,6 +285,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/demand/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Clusters */
+        get: operations["list_clusters_demand_clusters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/demand/clusters/{cluster_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Cluster */
+        get: operations["get_cluster_demand_clusters__cluster_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/demand/hypotheses": {
         parameters: {
             query?: never;
@@ -1124,6 +1158,39 @@ export interface components {
             name: string;
             /** Value */
             value: string;
+        };
+        /**
+         * NeedClusterView
+         * @description 需求簇视图。
+         *
+         *     字段：
+         *         cluster_id, category
+         *         member_count, countries
+         *         total_potential_quantity
+         *         recurring_demand
+         *         member_needs:  成员需求摘要
+         *         suggests_catalog_product: 是否达到提议入正式目录的规模
+         */
+        NeedClusterView: {
+            /** Category */
+            category: string;
+            /** Cluster Id */
+            cluster_id: string;
+            /** Countries */
+            countries: string[];
+            /** Member Count */
+            member_count: number;
+            /** Member Needs */
+            member_needs: components["schemas"]["ValidatedNeedView"][];
+            /** Recurring Demand */
+            recurring_demand?: boolean | null;
+            /**
+             * Suggests Catalog Product
+             * @default false
+             */
+            suggests_catalog_product: boolean;
+            /** Total Potential Quantity */
+            total_potential_quantity?: number | null;
         };
         /**
          * NeedFieldView
@@ -2299,6 +2366,68 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_clusters_demand_clusters_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedClusterView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_cluster_demand_clusters__cluster_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedClusterView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

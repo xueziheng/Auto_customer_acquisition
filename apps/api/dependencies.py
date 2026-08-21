@@ -11,6 +11,7 @@ from fastapi import Depends, Request
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
+    NeedClusterView,
     ValidatedNeedView,
 )
 from domains.employees.permissions import (
@@ -58,6 +59,7 @@ from notification_gateway.router import NotificationRouter
 from shared.errors import PermissionDenied, TransientError, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
+    NeedClusterId,
     NeedHypothesisId,
     TenantId,
     ValidatedNeedId,
@@ -139,6 +141,21 @@ class DemandRadarService(Protocol):
         actor: EmployeeActor,
         need_id: ValidatedNeedId,
     ) -> ValidatedNeedView: ...
+
+    async def list_clusters(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        *,
+        limit: int,
+    ) -> list[NeedClusterView]: ...
+
+    async def get_cluster(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterView: ...
 
 
 @dataclass(frozen=True)

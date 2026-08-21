@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from domains.demand.schemas import DemandSignalView, HypothesisView, ValidatedNeedView
+from domains.demand.schemas import (
+    DemandSignalView,
+    HypothesisView,
+    NeedClusterView,
+    ValidatedNeedView,
+)
 from domains.demand.service import DemandAccountNameReader, DemandService
 from domains.employees.permissions import (
     Actor as EmployeeActor,
@@ -11,6 +16,7 @@ from domains.employees.permissions import EmployeeAction, EmployeeAuthorizer
 from domains.prospecting.service import ProspectingService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    NeedClusterId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -63,6 +69,8 @@ class AuthorizedDemandRadarService:
             or not callable(getattr(demand, "get_hypothesis", None))
             or not callable(getattr(demand, "list_needs", None))
             or not callable(getattr(demand, "get_need", None))
+            or not callable(getattr(demand, "list_clusters", None))
+            or not callable(getattr(demand, "get_cluster", None))
             or not isinstance(authorizer, EmployeeAuthorizer)
         ):
             raise ValidationError("Demand Radar 服务依赖无效")
@@ -141,6 +149,25 @@ class AuthorizedDemandRadarService:
     ) -> ValidatedNeedView:
         self._require(tenant_id, actor)
         return await self._demand.get_need(tenant_id, need_id)
+
+    async def list_clusters(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        *,
+        limit: int,
+    ) -> list[NeedClusterView]:
+        self._require(tenant_id, actor)
+        return await self._demand.list_clusters(tenant_id, limit=limit)
+
+    async def get_cluster(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterView:
+        self._require(tenant_id, actor)
+        return await self._demand.get_cluster(tenant_id, cluster_id)
 
 
 __all__ = (

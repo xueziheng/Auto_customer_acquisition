@@ -1071,7 +1071,7 @@ class DemandServiceImpl:
     async def get_cluster(
         self,
         tenant_id: TenantId,
-        cluster_id: str,
+        cluster_id: NeedClusterId,
     ) -> NeedClusterView:
         self._validate_radar_query(tenant_id, 1)
         if (
@@ -1082,10 +1082,7 @@ class DemandServiceImpl:
         ):
             raise ValidationError("需求簇标识无效")
         async with self._uow_factory(tenant_id) as uow:
-            cluster = await uow.clusters.get(
-                tenant_id,
-                NeedClusterId(cluster_id),
-            )
+            cluster = await uow.clusters.get(tenant_id, cluster_id)
             if cluster is None:
                 raise ValidationError("需求簇不存在")
             needs = await self._load_cluster_needs(uow, tenant_id, cluster)

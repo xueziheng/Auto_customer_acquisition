@@ -22,6 +22,7 @@ from shared.schemas.evidence import ConfidenceResult
 from shared.schemas.identifiers import (
     EmployeeId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -263,7 +264,7 @@ class DemandService(Protocol):
         ...
 
     async def get_cluster(
-        self, tenant_id: TenantId, cluster_id: str
+        self, tenant_id: TenantId, cluster_id: NeedClusterId
     ) -> NeedClusterView:
         """读取需求簇。"""
         ...
