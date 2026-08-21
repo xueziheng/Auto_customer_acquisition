@@ -17,6 +17,7 @@ from agent_runtime.guardrails.rails import (
     PriceBasisRail,
     RailViolation,
     TenantConsistencyRail,
+    build_phase1_guardrail_checker,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, RunId, TenantId
@@ -529,3 +530,60 @@ def test_language_rail_accepts_matching_customer_language_metadata() -> None:
     ]
 
     assert LanguageCheckRail().check(change_set) == []
+
+
+def test_phase1_default_checker_enforces_all_eight_required_rails() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {"payload": {"tenant_id": "tenant-two", "confidence": 67}},
+        {
+            "domain": "outreach",
+            "operation": "create_draft",
+            "payload": {
+                "subject": "Price update",
+                "body": "The price is USD 2.50. 请确认。",
+                "target_language": "en",
+                "content_language": "en",
+                "pricing": {"price_basis": "indicative"},
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "create_hypothesis",
+            "payload": {"signal_indexes": [], "evidence_levels": []},
+        },
+        {
+            "payload": {
+                "quantity": {
+                    "value": 5000,
+                    "provenance": {"source_type": "agent_inference"},
+                }
+            }
+        },
+        {
+            "domain": "costing",
+            "operation": "add_item",
+            "payload": {"amount": Money(Decimal("1.00"), CurrencyCode("USD"))},
+        },
+    ]
+
+    result = build_phase1_guardrail_checker().check_all(change_set)
+
+    assert result.passed is False
+    assert {violation.rail for violation in result.violations} == {
+        "fact_inference_separation",
+        "evidence_required",
+        "no_probability_output",
+        "no_forbidden_commitment",
+        "no_model_money",
+        "price_basis",
+        "tenant_consistency",
+        "language_check",
+    }
+
+
+def test_phase1_default_checker_allows_empty_change_set() -> None:
+    result = build_phase1_guardrail_checker().check_all(_change_set())
+
+    assert result.passed is True
+    assert result.violations == []

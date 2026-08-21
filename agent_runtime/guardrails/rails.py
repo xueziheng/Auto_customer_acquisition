@@ -627,3 +627,20 @@ class GuardrailChecker:
                     )
                 )
         return RailResult(passed=not violations, violations=violations)
+
+
+def build_phase1_guardrail_checker() -> GuardrailChecker:
+    """构造 Phase 1 默认输出护栏组合。"""
+    checker = GuardrailChecker()
+    for rail in (
+        FactInferenceSeparationRail(),
+        EvidenceRequiredRail(),
+        NoProbabilityOutputRail(),
+        NoForbiddenCommitmentRail(),
+        NoModelMoneyRail(),
+        PriceBasisRail(),
+        TenantConsistencyRail(),
+        LanguageCheckRail(),
+    ):
+        checker.register(rail)
+    return checker
