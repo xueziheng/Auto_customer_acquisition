@@ -18,6 +18,7 @@ from agent_runtime.guardrails.rails import (
     RailViolation,
     TenantConsistencyRail,
     build_phase1_guardrail_checker,
+    guard_phase1_change_set,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, RunId, TenantId
@@ -587,3 +588,31 @@ def test_phase1_default_checker_allows_empty_change_set() -> None:
 
     assert result.passed is True
     assert result.violations == []
+
+
+def test_guard_phase1_change_set_returns_structured_rejection_without_mutating_input() -> None:
+    change_set = _change_set()
+    change_set.changes = [{"payload": {"tenant_id": "tenant-two"}}]
+
+    guarded = guard_phase1_change_set(change_set)
+
+    assert guarded is not change_set
+    assert guarded.change_set_id == change_set.change_set_id
+    assert guarded.tenant_id == change_set.tenant_id
+    assert guarded.run_id == change_set.run_id
+    assert guarded.changes == []
+    assert guarded.guardrail_violations == [
+        {
+            "rail": "tenant_consistency",
+            "location": "changes[0].payload.tenant_id",
+            "detail": "变更数据的租户与 Change Set 租户不一致",
+            "how_to_fix": "移除跨租户数据，并用当前租户重新读取业务对象",
+        }
+    ]
+    assert change_set.changes == [{"payload": {"tenant_id": "tenant-two"}}]
+
+
+def test_guard_phase1_change_set_preserves_passing_change_set() -> None:
+    change_set = _change_set()
+
+    assert guard_phase1_change_set(change_set) is change_set

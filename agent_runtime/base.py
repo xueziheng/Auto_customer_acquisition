@@ -48,6 +48,8 @@ class ChangeSet:
     run_id: RunId
     changes: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
+    guardrail_violations: list[dict[str, str]] = field(default_factory=list)
+    """输出护栏结构化拒绝；非空时 ``changes`` 必须为空。"""
 
 
 class CapabilityAgent:

@@ -644,3 +644,27 @@ def build_phase1_guardrail_checker() -> GuardrailChecker:
     ):
         checker.register(rail)
     return checker
+
+
+def guard_phase1_change_set(change_set: ChangeSet) -> ChangeSet:
+    """对 Agent 输出执行 Phase 1 默认护栏。"""
+    result = build_phase1_guardrail_checker().check_all(change_set)
+    if result.passed:
+        return change_set
+    records = [
+        {
+            "rail": violation.rail,
+            "location": violation.location,
+            "detail": violation.detail,
+            "how_to_fix": violation.how_to_fix,
+        }
+        for violation in result.violations
+    ]
+    return ChangeSet(
+        change_set_id=change_set.change_set_id,
+        tenant_id=change_set.tenant_id,
+        run_id=change_set.run_id,
+        changes=[],
+        summary="模型输出被 Phase 1 护栏拦截",
+        guardrail_violations=records,
+    )
