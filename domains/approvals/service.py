@@ -17,7 +17,7 @@ def requires_approval(action_type: str) -> bool:
     未知的 action_type **返回 True**（默认需要审批）——宁可多问一次
     人，不要让新加的动作类型静默绕过审批。
     """
-    raise NotImplementedError
+    return True
 
 
 @runtime_checkable
@@ -99,8 +99,18 @@ class ApprovalService(Protocol):
         ...
 
     async def get(
-        self, tenant_id: TenantId, approval_id: ApprovalId
+        self,
+        tenant_id: TenantId,
+        approval_id: ApprovalId,
+        *,
+        current_employee: EmployeeId | None = None,
     ) -> ApprovalView: ...
+
+    async def get_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalView | None:
+        """按不可变变更集读取最新审批事实，供上层安全适配。"""
+        ...
 
     async def list_pending_for(
         self, tenant_id: TenantId, employee_id: EmployeeId, limit: int = 50

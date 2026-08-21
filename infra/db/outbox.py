@@ -34,6 +34,7 @@ from infra.db.tables import OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
+    ApprovalDecided,
     AuthenticationCheckRequested,
     ComplaintReceived,
     ContactPointVerified,
@@ -62,6 +63,7 @@ from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
 
 EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
+    "ApprovalDecided": ApprovalDecided,
     "AuthenticationCheckRequested": AuthenticationCheckRequested,
     "OpportunityQualified": OpportunityQualified,
     "OpportunityLost": OpportunityLost,

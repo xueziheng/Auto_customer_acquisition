@@ -77,6 +77,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
     """EVENT_REGISTRY 只含经契约评审、当前实际需要发布的事件。"""
     EVENT_REGISTRY = _load("EVENT_REGISTRY")
     assert set(EVENT_REGISTRY) == {
+        "ApprovalDecided",
         "OpportunityQualified",
         "OpportunityLost",
         "OpportunityWon",

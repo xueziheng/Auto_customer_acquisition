@@ -666,6 +666,16 @@ def test_orm_metadata_parity_with_head() -> None:
     metadata = Base.metadata
 
     expected_columns = {
+        "approval_packages": {
+            "tenant_id", "approval_id", "approval_type", "title",
+            "proposed_change", "reason", "blast_radius", "created_at",
+            "expires_at", "state", "proposed_by_run", "proposed_by_employee",
+            "evidence_refs", "change_set_ref", "owner_employee", "decided_at",
+            "decided_by", "decision_note", "applied_at", "apply_error",
+        },
+        "approval_applications": {
+            "tenant_id", "approval_id", "idempotency_key", "created_at",
+        },
         "directive_proposals": {
             "tenant_id", "proposal_id", "raw_text", "parsed_content",
             "interpretation_summary", "expected_behavior_changes", "parsed_by",
@@ -875,6 +885,15 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        "ix_approval_packages_tenant_state_expiry": (
+            "tenant_id", "state", "expires_at", "approval_id",
+        ),
+        "ix_approval_packages_tenant_change_set": (
+            "tenant_id", "change_set_ref", "created_at",
+        ),
+        "uq_approval_packages_pending_change_set": (
+            "tenant_id", "change_set_ref",
+        ),
         "ix_directive_proposals_tenant_state_created": (
             "tenant_id", "state", "created_at", "proposal_id",
         ),
@@ -970,6 +989,17 @@ def test_orm_metadata_parity_with_head() -> None:
     assert actual_indexes == expected_indexes, f"索引不一致：{actual_indexes}"
 
     expected_constraints = {
+        "approval_packages": {
+            "pk_approval_packages", "ck_approval_packages_state",
+            "ck_approval_packages_jsonb", "ck_approval_packages_core_nonblank",
+            "ck_approval_packages_expiry", "ck_approval_packages_decision",
+            "ck_approval_packages_application",
+        },
+        "approval_applications": {
+            "pk_approval_applications", "uq_approval_applications_key",
+            "fk_approval_applications_package",
+            "ck_approval_applications_nonblank",
+        },
         "directive_proposals": {
             "pk_directive_proposals", "ck_directive_proposals_state",
             "ck_directive_proposals_jsonb", "ck_directive_proposals_core_nonblank",

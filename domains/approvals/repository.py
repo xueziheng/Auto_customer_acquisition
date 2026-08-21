@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.approvals.models import ApprovalPackage, ApprovalState
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId
 
 
@@ -17,6 +18,10 @@ class ApprovalRepository(Protocol):
     async def add(self, package: ApprovalPackage) -> None: ...
 
     async def get(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> ApprovalPackage | None: ...
+
+    async def get_for_update(
         self, tenant_id: TenantId, approval_id: ApprovalId
     ) -> ApprovalPackage | None: ...
 
@@ -33,6 +38,12 @@ class ApprovalRepository(Protocol):
         self, tenant_id: TenantId, change_set_ref: str
     ) -> ApprovalPackage | None:
         """按变更集查 pending 审批（提交幂等用）。"""
+        ...
+
+    async def find_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalPackage | None:
+        """读取变更集最新审批事实，供上层适配 Campaign 版本审批。"""
         ...
 
     async def list_pending_for_employee(
@@ -57,3 +68,23 @@ class ApprovalRepository(Protocol):
     async def count_by_state(
         self, tenant_id: TenantId, state: ApprovalState
     ) -> int: ...
+
+
+@runtime_checkable
+class ApprovalUnitOfWork(Protocol):
+    approvals: ApprovalRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+
+@runtime_checkable
+class ApprovalUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> ApprovalUnitOfWork: ...

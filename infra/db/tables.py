@@ -181,6 +181,115 @@ class BossDirectiveRow(Base):
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class ApprovalPackageRow(Base):
+    """不可改写内容、只推进状态的人工审批包。"""
+
+    __tablename__ = "approval_packages"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "approval_id", name="pk_approval_packages"),
+        CheckConstraint(
+            "state IN ('pending','approved','applied','apply_failed','rejected','expired')",
+            name="ck_approval_packages_state",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(proposed_change) = 'object' AND "
+            "jsonb_typeof(blast_radius) = 'object' AND "
+            "jsonb_typeof(evidence_refs) = 'array'",
+            name="ck_approval_packages_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(approval_id) <> '' AND "
+            "btrim(approval_type) <> '' AND btrim(title) <> '' AND btrim(reason) <> ''",
+            name="ck_approval_packages_core_nonblank",
+        ),
+        CheckConstraint("expires_at > created_at", name="ck_approval_packages_expiry"),
+        CheckConstraint(
+            "(state = 'pending' AND decided_at IS NULL AND decided_by IS NULL) OR "
+            "(state = 'expired' AND decided_at IS NULL AND decided_by IS NULL) OR "
+            "(state IN ('approved','applied','apply_failed','rejected') AND "
+            "decided_at IS NOT NULL AND decided_by IS NOT NULL)",
+            name="ck_approval_packages_decision",
+        ),
+        CheckConstraint(
+            "(state = 'applied' AND applied_at IS NOT NULL AND apply_error IS NULL) OR "
+            "(state = 'apply_failed' AND applied_at IS NULL AND apply_error IS NOT NULL) OR "
+            "(state NOT IN ('applied','apply_failed') AND applied_at IS NULL AND apply_error IS NULL)",
+            name="ck_approval_packages_application",
+        ),
+        Index(
+            "ix_approval_packages_tenant_state_expiry",
+            "tenant_id",
+            "state",
+            "expires_at",
+            "approval_id",
+        ),
+        Index(
+            "ix_approval_packages_tenant_change_set",
+            "tenant_id",
+            "change_set_ref",
+            "created_at",
+        ),
+        Index(
+            "uq_approval_packages_pending_change_set",
+            "tenant_id",
+            "change_set_ref",
+            unique=True,
+            postgresql_where=text("state = 'pending' AND change_set_ref IS NOT NULL"),
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    approval_type: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(Text)
+    proposed_change: Mapped[dict] = mapped_column(postgresql.JSONB)
+    reason: Mapped[str] = mapped_column(Text)
+    blast_radius: Mapped[dict] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(32), server_default=text("'pending'"))
+    proposed_by_run: Mapped[str | None] = mapped_column(String(40))
+    proposed_by_employee: Mapped[str | None] = mapped_column(String(40))
+    evidence_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+    change_set_ref: Mapped[str | None] = mapped_column(String(200))
+    owner_employee: Mapped[str | None] = mapped_column(String(40))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(40))
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    apply_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ApprovalApplicationRow(Base):
+    """每个审批最多一次的幂等应用事实。"""
+
+    __tablename__ = "approval_applications"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "approval_id", name="pk_approval_applications"
+        ),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_approval_applications_key"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "approval_id"],
+            ["approval_packages.tenant_id", "approval_packages.approval_id"],
+            ondelete="RESTRICT",
+            name="fk_approval_applications_package",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(approval_id) <> '' AND "
+            "btrim(idempotency_key) <> ''",
+            name="ck_approval_applications_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ToolCallRow(Base):
     """``tool_calls`` durable invocation 与 canonical claim 行。"""
 

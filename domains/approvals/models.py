@@ -145,7 +145,7 @@ class ApprovalPackage:
         ``owner_employee`` 时返回 False。**没有豁免参数。**
         这不是不信任，是消除「赶指标时给自己开绿灯」的结构性诱惑。
         """
-        raise NotImplementedError
+        return employee not in {self.proposed_by_employee, self.owner_employee}
 
     def is_expired_at(self, now: datetime) -> bool:
-        raise NotImplementedError
+        return now >= self.expires_at
