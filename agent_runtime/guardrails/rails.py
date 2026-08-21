@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import ChangeSet
+from shared.errors import ValidationError
 
 
 @dataclass(frozen=True)
@@ -82,8 +83,41 @@ class GuardrailChecker:
         客户可见内容语言与目标市场不符 → 拦。
     """
 
+    def __init__(self) -> None:
+        self._rails: list[Rail] = []
+        self._rail_names: set[str] = set()
+
     def register(self, rail: Rail) -> None:
-        raise NotImplementedError
+        try:
+            valid = isinstance(rail, Rail)
+        except TypeError:
+            valid = False
+        if not valid or not isinstance(rail.name, str) or not rail.name.strip():
+            raise ValidationError("护栏实现无效")
+        if rail.name in self._rail_names:
+            raise ValidationError("护栏名称重复")
+        self._rails.append(rail)
+        self._rail_names.add(rail.name)
 
     def check_all(self, change_set: ChangeSet) -> RailResult:
-        raise NotImplementedError
+        if not isinstance(change_set, ChangeSet):
+            raise ValidationError("变更集无效")
+        violations: list[RailViolation] = []
+        for rail in self._rails:
+            try:
+                result = rail.check(change_set)
+                if not isinstance(result, list) or any(
+                    not isinstance(item, RailViolation) for item in result
+                ):
+                    raise TypeError
+                violations.extend(result)
+            except Exception:  # noqa: BLE001 -- 护栏异常必须失败关闭且不得泄露详情
+                violations.append(
+                    RailViolation(
+                        rail=rail.name,
+                        location="change_set",
+                        detail="护栏执行失败，变更集已拒绝",
+                        how_to_fix="修复护栏后重新检查",
+                    )
+                )
+        return RailResult(passed=not violations, violations=violations)
