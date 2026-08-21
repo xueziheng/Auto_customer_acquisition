@@ -32,6 +32,7 @@ connectors/<name>/
 | `contact_enrichment/` | 联系人补全（单 Provider） | 1 |
 | `web_search/` | 公开搜索 | 1 |
 | `playwright/` | 浏览器操作（合规边界见 docs/architecture/08） | 1（受限） |
+| `openai/` | 结构化模型调用（统一封装、惰性取密钥） | 1 |
 | `fx/` | 汇率快照 | 1 |
 | `files/` | 本地/上传文件接入 | 1 |
 | `dns_auth/`（在 gmail 内或独立） | SPF/DKIM/DMARC 校验 | 1 |
