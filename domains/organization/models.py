@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -63,7 +64,36 @@ class CompanyPlaybook:
     def is_category_allowed(self, category: str) -> bool:
         """品类是否允许。模糊匹配要保守：**疑似命中按命中处理**——
         排除清单存在的意义就是宁可错杀。"""
-        raise NotImplementedError
+        normalized = _normalize_phrase(category)
+        if not normalized:
+            return False
+        padded = f" {normalized} "
+        for excluded in self.excluded_categories:
+            normalized_excluded = _normalize_phrase(excluded)
+            if not normalized_excluded:
+                continue
+            padded_excluded = f" {normalized_excluded} "
+            if padded_excluded in padded or padded in padded_excluded:
+                return False
+        return True
 
     def is_country_allowed(self, country: str) -> bool:
-        raise NotImplementedError
+        normalized = _normalize_phrase(country)
+        if not normalized:
+            return False
+        return all(
+            normalized != normalized_excluded
+            for excluded in self.excluded_countries
+            if (normalized_excluded := _normalize_phrase(excluded))
+        )
+
+
+def _normalize_phrase(value: str) -> str:
+    """归一化 Playbook 文本，不引入不可审计的模糊分数阈值。"""
+    if not isinstance(value, str):
+        return ""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return " ".join(
+        "".join(character if character.isalnum() else " " for character in normalized)
+        .split()
+    )
