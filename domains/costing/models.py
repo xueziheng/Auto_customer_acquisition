@@ -17,7 +17,7 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
-from shared.schemas.money import Money
+from shared.schemas.money import Money, PriceBasis
 
 
 class CostItemType(str, Enum):
@@ -135,7 +135,11 @@ class CostSheet:
         True 且无 ``risk_acceptance`` 时，这张表不能支撑客户可见报价
         （硬边界 7）。
         """
-        raise NotImplementedError
+        return any(
+            item.entered_by is not None
+            and item.price_basis == PriceBasis.INDICATIVE
+            for item in self.items
+        )
 
     def missing_item_types(self, expected: list[CostItemType]) -> list[CostItemType]:
         """对照期望清单找漏项。
@@ -145,7 +149,16 @@ class CostSheet:
         建立在这个确定性检查之上——模型提出「可能漏了什么」，
         这个方法验证「确实没有」。
         """
-        raise NotImplementedError
+        confirmed = {
+            item.item_type for item in self.items if item.entered_by is not None
+        }
+        missing: list[CostItemType] = []
+        seen: set[CostItemType] = set()
+        for item_type in expected:
+            if item_type not in confirmed and item_type not in seen:
+                missing.append(item_type)
+                seen.add(item_type)
+        return missing
 
 
 @dataclass(frozen=True)
