@@ -10,8 +10,8 @@ Phase 1 需要的 handler 清单（实现时逐个补）：
     email.fetch_replies   拉取回复
     contact.verify        经 connectors/email_verification 验证可达性
     contact.enrich        经 connectors/contact_enrichment 补全
-    web.search            经 connectors/web_search 搜索
-    web.read_page         读公开页面（带快照与哈希）
+    web.search            固定 Brave host，经 task-local 批次交接结果
+    web.read_page         只读已批准批次 URL，产出不可变快照与哈希
     dns.check_auth        SPF/DKIM/DMARC 校验
     artifact.store        存原始资料
     notify.send           经 notification_gateway 发通知

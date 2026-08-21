@@ -15,7 +15,11 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, UserId
 
 from .manifest import MANIFEST
-from .transport import BraveSearchTransport, PublicPageTransport
+from .transport import (
+    BraveSearchTransport,
+    PublicPageTransport,
+    WebSearchAuthRequiredError,
+)
 
 _COUNTRY = re.compile(r"[A-Z]{2}")
 _ARTIFACT = re.compile(r"art_[0-7][0-9A-HJKMNP-TV-Z]{25}")
@@ -138,7 +142,7 @@ class WebSearchConnector:
             or value != value.strip()
             or any(ord(character) < 33 or ord(character) == 127 for character in value)
         ):
-            raise ValidationError("公开搜索凭证配置无效")
+            raise WebSearchAuthRequiredError()
         self._api_key = value
 
     async def health_check(self) -> bool:
