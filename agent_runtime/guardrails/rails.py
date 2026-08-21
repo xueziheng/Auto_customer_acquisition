@@ -86,7 +86,12 @@ class EvidenceRequiredRail:
     def _check_signal(
         self, payload: Mapping[object, object], base: str
     ) -> list[RailViolation]:
-        required = ("source_type", "source_id", "observed_at", "extracted_by")
+        required: tuple[str, ...] = (
+            "source_type",
+            "source_id",
+            "observed_at",
+            "extracted_by",
+        )
         if payload.get("source_type") == "web_page":
             required += ("source_url", "page_hash", "snapshot_artifact_ref")
         return [
@@ -101,12 +106,20 @@ class EvidenceRequiredRail:
         violations: list[RailViolation] = []
         signal_indexes = payload.get("signal_indexes")
         evidence_levels = payload.get("evidence_levels")
-        has_indexes = self._nonempty_sequence(signal_indexes)
-        has_levels = self._nonempty_sequence(evidence_levels)
-        if not has_indexes:
+        indexes = (
+            signal_indexes
+            if isinstance(signal_indexes, (list, tuple)) and signal_indexes
+            else None
+        )
+        levels = (
+            evidence_levels
+            if isinstance(evidence_levels, (list, tuple)) and evidence_levels
+            else None
+        )
+        if indexes is None:
             violations.append(self._missing(f"{base}.signal_indexes"))
-        if not has_levels or (
-            has_indexes and len(evidence_levels) != len(signal_indexes)
+        if levels is None or (
+            indexes is not None and len(levels) != len(indexes)
         ):
             violations.append(self._missing(f"{base}.evidence_levels"))
         if not self._nonblank(payload.get("inferred_by")):
@@ -120,7 +133,7 @@ class EvidenceRequiredRail:
         if not self._nonblank(payload.get("message_id")):
             violations.append(self._missing(f"{base}.message_id"))
         fields = payload.get("fields")
-        if not self._nonempty_sequence(fields):
+        if not isinstance(fields, (list, tuple)) or not fields:
             violations.append(self._missing(f"{base}.fields"))
             return violations
         for index, item in enumerate(fields):
