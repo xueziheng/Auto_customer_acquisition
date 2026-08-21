@@ -8,6 +8,8 @@ from typing import Protocol, runtime_checkable
 from agent_runtime.base import AgentTask, ChangeSet
 from connectors.contact_enrichment.client import ContactEnrichmentResult
 from connectors.email_verification.client import EmailVerificationResult
+from domains.employees.permissions import Actor as EmployeeActor
+from domains.outreach.permissions import Actor as OutreachActor
 from shared.schemas.identifiers import (
     ContactPointId,
     NeedHypothesisId,
@@ -59,7 +61,24 @@ class ContactVerifier(Protocol):
     ) -> EmailVerificationResult: ...
 
 
+@dataclass(frozen=True)
+class AccountDiscoveryActors:
+    """从持久员工身份推导的两域最小 actor；不得由 workflow context 自报。"""
+
+    employee: EmployeeActor
+    outreach: OutreachActor
+
+
+@runtime_checkable
+class AccountDiscoveryActorResolver(Protocol):
+    async def resolve(
+        self, tenant_id: TenantId, acting_user: UserId
+    ) -> AccountDiscoveryActors: ...
+
+
 __all__ = (
+    "AccountDiscoveryActorResolver",
+    "AccountDiscoveryActors",
     "AccountDiscoveryCapability",
     "AccountDiscoveryTaskInput",
     "AccountDiscoveryTaskReader",

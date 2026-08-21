@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.service import EmployeeService
-from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.service import OutreachService
 from domains.prospecting.service import ProspectingService
 from workflows.account_discovery.ports import (
+    AccountDiscoveryActorResolver,
     AccountDiscoveryCapability,
     AccountDiscoveryTaskReader,
     ContactEnricher,
@@ -80,9 +79,8 @@ def build_account_discovery_handlers(
     enricher: ContactEnricher,
     verifier: ContactVerifier,
     employees: EmployeeService,
-    employee_actor: EmployeeActor,
     outreach: OutreachService,
-    outreach_actor: OutreachActor,
+    actor_resolver: AccountDiscoveryActorResolver,
     now: Callable[[], datetime],
 ) -> dict[str, StepHandler]:
     return {
@@ -97,10 +95,10 @@ def build_account_discovery_handlers(
             prospecting, verifier
         ),
         "account_discovery.assign_owner": AssignOwnerStep(
-            employees, employee_actor
+            employees, actor_resolver
         ),
         "account_discovery.enroll_campaign": EnrollCampaignStep(
-            outreach, outreach_actor
+            outreach, actor_resolver
         ),
     }
 

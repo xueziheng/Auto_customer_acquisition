@@ -13,9 +13,7 @@ from typing import Any
 from agent_runtime.base import AgentTask
 from connectors.contact_enrichment.client import ContactEmailKind
 from connectors.email_verification.client import EmailVerificationOutcome
-from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.service import EmployeeService
-from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.schemas import EnrollmentCreateRequest
 from domains.outreach.service import OutreachService
 from domains.prospecting.schemas import (
@@ -40,6 +38,7 @@ from shared.schemas.identifiers import (
     UserId,
 )
 from workflows.account_discovery.ports import (
+    AccountDiscoveryActorResolver,
     AccountDiscoveryCapability,
     AccountDiscoveryTaskReader,
     ContactEnricher,
@@ -331,13 +330,13 @@ class AssignOwnerStep:
     def __init__(
         self,
         employees: EmployeeService,
-        actor: EmployeeActor,
+        actor_resolver: AccountDiscoveryActorResolver,
     ) -> None:
         self._employees = employees
-        self._actor = actor
+        self._actor_resolver = actor_resolver
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
-        _base_context(run)
+        _hypothesis, _campaign, acting_user, _hints, _assessment = _base_context(run)
         account_id = _account_id(run)
         category = _exact_text(run.context.get("need_category"), "账户发现需求类别无效")
         # country 是企业事实；Prospecting 已在上一步校验并持久化。
@@ -349,10 +348,11 @@ class AssignOwnerStep:
             "账户发现国家无效",
             max_len=64,
         )
+        actors = await self._actor_resolver.resolve(run.tenant_id, acting_user)
         owner = await self._employees.resolve_owner(
             run.tenant_id,
             account_id,
-            actor=self._actor,
+            actor=actors.employee,
             country=country,
             need_category=category,
         )
@@ -360,16 +360,21 @@ class AssignOwnerStep:
 
 
 class EnrollCampaignStep:
-    def __init__(self, outreach: OutreachService, actor: OutreachActor) -> None:
+    def __init__(
+        self,
+        outreach: OutreachService,
+        actor_resolver: AccountDiscoveryActorResolver,
+    ) -> None:
         self._outreach = outreach
-        self._actor = actor
+        self._actor_resolver = actor_resolver
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
-        _hypothesis_id, campaign_id, _acting, _hints, _assessment = _base_context(run)
+        _hypothesis_id, campaign_id, acting_user, _hints, _assessment = _base_context(run)
         account_id = _account_id(run)
         raw_ids = run.context.get("verified_contact_point_ids")
         if not isinstance(raw_ids, list):
             raise ValidationError("账户发现已验证联系方式集合无效")
+        actors = await self._actor_resolver.resolve(run.tenant_id, acting_user)
         enrollment_ids: list[str] = []
         for raw_id in dict.fromkeys(raw_ids):
             contact_point_id = ContactPointId(
@@ -385,7 +390,7 @@ class EnrollCampaignStep:
                         f"account-discovery:{run.run_id}:{contact_point_id}"
                     ),
                 ),
-                actor=self._actor,
+                actor=actors.outreach,
             )
             enrollment_ids.append(str(enrollment.enrollment_id))
         return (
