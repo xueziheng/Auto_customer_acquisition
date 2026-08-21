@@ -41,15 +41,6 @@ const verifiedCount = computed(
     ) ?? 0,
 );
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function retryNotice(response: Response): string {
   const value = response.headers.get("retry-after");
   return value && /^\d+$/.test(value)
@@ -63,7 +54,6 @@ async function loadAccounts(): Promise<void> {
   error.value = null;
   const { data, response } = await client.GET("/prospects/accounts", {
     params: { query: { limit: 200 } },
-    headers: requestHeaders(),
   });
   if (version !== listVersion) return;
   loading.value = false;
@@ -94,7 +84,6 @@ async function selectAccount(accountId: string): Promise<void> {
   const version = ++detailVersion;
   const { data, response } = await client.GET("/prospects/accounts/{account_id}", {
     params: { path: { account_id: accountId } },
-    headers: requestHeaders(),
   });
   if (version !== detailVersion || selectedId.value !== accountId) return;
   detailLoading.value = false;
@@ -136,7 +125,6 @@ async function startDiscovery(): Promise<void> {
       role_hints: hints,
       assessment_ref: assessmentRef.value.trim(),
     },
-    headers: requestHeaders(),
   });
   actionBusy.value = false;
   if (response.status === 200 && data) {

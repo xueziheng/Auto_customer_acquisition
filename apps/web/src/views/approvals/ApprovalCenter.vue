@@ -26,15 +26,6 @@ const expiryLabel = computed(() => {
   return `${Math.ceil(seconds / 86400)} 天后过期`;
 });
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function safeSourceUrl(value: string): string | null {
   try {
     const url = new URL(value, window.location.origin);
@@ -63,7 +54,6 @@ async function loadApprovals(): Promise<void> {
   try {
     const result = await client.GET("/approvals/pending", {
       params: { query: { limit: 100 } },
-      headers: requestHeaders(),
     });
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
@@ -89,7 +79,6 @@ async function loadDetail(approvalId: string): Promise<void> {
   try {
     const result = await client.GET("/approvals/{approval_id}", {
       params: { path: { approval_id: approvalId } },
-      headers: requestHeaders(),
     });
     if (result.response.status === 200 && result.data) selected.value = result.data;
     else error.value = safeError(result.response.status);
@@ -115,7 +104,6 @@ async function decide(decision: "approve" | "reject"): Promise<void> {
         decision,
         reason: decision === "reject" ? rejectionReason.value.trim() : undefined,
       },
-      headers: requestHeaders(),
     });
     if (result.response.status !== 200) {
       error.value = safeError(result.response.status);

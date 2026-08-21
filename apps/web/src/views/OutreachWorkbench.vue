@@ -36,15 +36,6 @@ const stateLabels: Record<string, string> = {
   stopped_identity_unavailable: "已停止（身份不可用）",
 };
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function manualRetryNotice(response: Response): string | null {
   const value = response.headers.get("retry-after");
   if (!value) return null;
@@ -57,7 +48,6 @@ async function loadEnrollments(): Promise<void> {
   listError.value = null;
   const { data, response } = await client.GET("/crm/enrollments", {
     params: { query: { limit: 200 } },
-    headers: requestHeaders(),
   });
   if (version !== listVersion) return;
   listLoading.value = false;
@@ -120,7 +110,6 @@ async function prepareAttempt(): Promise<void> {
     "/crm/enrollments/{enrollment_id}/attempts/prepare",
     {
       params: { path: { enrollment_id: selectedEnrollment.value.enrollment_id } },
-      headers: requestHeaders(),
     },
   );
   if (version !== prepareVersion) return; // stale response 忽略
@@ -169,7 +158,6 @@ async function sendAttempt(): Promise<void> {
     {
       params: { path: { attempt_id: selectedAttemptId.value } },
       body: { subject: subject.value, body: body.value },
-      headers: requestHeaders(),
     },
   );
   if (version !== sendVersion) return; // stale response 忽略

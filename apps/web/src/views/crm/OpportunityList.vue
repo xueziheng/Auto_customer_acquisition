@@ -47,15 +47,6 @@ const stateLabels: Record<OpportunityState, string> = {
   lost: "已流失",
 };
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function safeError(status: number): string {
   if (status === 400) return "请求参数无效";
   if (status === 403) return "没有权限";
@@ -103,7 +94,6 @@ async function loadDetail(opportunityId: string): Promise<boolean> {
   try {
     const result = await client.GET("/crm/opportunities/{opportunity_id}", {
       params: { path: { opportunity_id: opportunityId } },
-      headers: requestHeaders(),
     });
     if (requestVersion !== detailRequestVersion || selectedId.value !== opportunityId) return false;
     if (result.response.status === 200 && result.data) {
@@ -143,7 +133,6 @@ async function loadList(loadSelectedDetail = true): Promise<boolean> {
           limit: pageLimit.value,
         },
       },
-      headers: requestHeaders(),
     });
     if (requestVersion !== listRequestVersion) return false;
     if (result.response.status === 200 && result.data) {
@@ -235,7 +224,6 @@ async function transition(target: OpportunityState): Promise<void> {
     const result = await client.POST("/crm/opportunities/{opportunity_id}/transition", {
       params: { path: { opportunity_id: opportunityId } },
       body: { target },
-      headers: requestHeaders(),
     });
     if (result.response.status === 200) {
       actionStatus.value = "状态推进请求成功；正在按后端响应刷新详情与列表。";
@@ -273,7 +261,6 @@ async function markLost(payload: OpportunityMarkLostBody): Promise<void> {
     const result = await client.POST("/crm/opportunities/{opportunity_id}/mark-lost", {
       params: { path: { opportunity_id: opportunityId } },
       body: payload,
-      headers: requestHeaders(),
     });
     if (result.response.status === 200) {
       actionStatus.value = "流失结果已提交；正在按后端响应刷新详情与列表。";

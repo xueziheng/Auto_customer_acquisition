@@ -45,15 +45,6 @@ const hasSelectedCombination = computed(() =>
 );
 const canAccept = computed(() => canSelect.value && !packetLoading.value && hasSelectedCombination.value);
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function safeError(status: number): string {
   if (status === 400) return "请求参数无效";
   if (status === 403) return "没有权限";
@@ -269,7 +260,6 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
   try {
     const packetResult = await client.GET("/crm/handoffs/{handoff_id}", {
       params: { path: { handoff_id: handoffId } },
-      headers: requestHeaders(),
     });
     if (
       requestGeneration !== packetGeneration
@@ -291,7 +281,6 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
     const packetData = packetResult.data;
     const opportunityResult = await client.GET("/crm/opportunities/{opportunity_id}", {
       params: { path: { opportunity_id: packetData.opportunity_id } },
-      headers: requestHeaders(),
     });
     if (
       requestGeneration !== packetGeneration
@@ -340,7 +329,6 @@ async function loadQueue(options: {
   try {
     const result = await client.GET("/crm/handoffs", {
       params: { query: { limit: 50 } },
-      headers: requestHeaders(),
     });
     if (requestGeneration !== queueGeneration) return false;
     if (
@@ -411,7 +399,6 @@ async function acceptHandoff(): Promise<void> {
   try {
     const result = await client.POST("/crm/handoffs/{handoff_id}/accept", {
       params: { path: { handoff_id: handoffId } },
-      headers: requestHeaders(),
     });
     if (result.response.status === 204 || result.response.status === 409) {
       const concurrent = result.response.status === 409;

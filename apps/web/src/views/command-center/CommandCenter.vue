@@ -71,15 +71,6 @@ const scopeRows = computed(() => {
     .map(([key, value]) => ({ key, label: fieldLabels[key] ?? key, value: displayValue(key, value) }));
 });
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function retryNotice(response: Response): string {
   const value = response.headers.get("retry-after");
   return value && /^\d+$/.test(value)
@@ -115,7 +106,6 @@ function resetDraft(): void {
 async function loadProposal(proposalId: string): Promise<void> {
   const result = await client.GET("/commands/discovery-proposals/{proposal_id}", {
     params: { path: { proposal_id: proposalId } },
-    headers: requestHeaders(),
   });
   if (result.response.status === 200 && result.data) proposal.value = result.data;
 }
@@ -131,7 +121,6 @@ async function createProposal(): Promise<void> {
   try {
     const result = await client.POST("/commands/discovery-proposals", {
       body: { message: raw },
-      headers: requestHeaders(),
     });
     if (result.response.status === 200 && result.data) {
       proposal.value = result.data;
@@ -160,7 +149,6 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         "/commands/discovery-proposals/{proposal_id}/confirm",
         {
           params: { path: { proposal_id: current.proposal_id } },
-          headers: requestHeaders(),
         },
       );
       if (result.response.status === 200 && result.data) {
@@ -175,7 +163,6 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         "/commands/discovery-proposals/{proposal_id}/reject",
         {
           params: { path: { proposal_id: current.proposal_id } },
-          headers: requestHeaders(),
         },
       );
       if (result.response.status === 200) {

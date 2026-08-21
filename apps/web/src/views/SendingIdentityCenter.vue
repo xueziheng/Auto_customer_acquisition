@@ -30,22 +30,12 @@ const stateLabels: Record<string, string> = {
   retired: "已退役",
 };
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 async function loadIdentities(): Promise<void> {
   const version = ++listVersion;
   listLoading.value = true;
   listError.value = null;
   const { data, response } = await client.GET("/crm/sending-identities", {
     params: { query: { limit: 200 } },
-    headers: requestHeaders(),
   });
   if (version !== listVersion) return;
   listLoading.value = false;
@@ -102,7 +92,6 @@ async function requestCheck(identityId: string): Promise<void> {
     {
       params: { path: { identity_id: identityId } },
       body: { request_key: key },
-      headers: requestHeaders(),
     },
   );
   if (version !== checkVersion) return; // stale response 忽略

@@ -35,15 +35,6 @@ const kindLabels: Record<string, string> = {
   approval_decided: "审批已决定",
 };
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function isValidRelativeLink(value: string | null): boolean {
   if (!value) return false;
   if (!value.startsWith("/") || value.startsWith("//")) return false;
@@ -70,7 +61,6 @@ async function loadNotifications(): Promise<void> {
   listError.value = null;
   const { data, response } = await client.GET("/notifications", {
     params: { query: { limit: 100 } },
-    headers: requestHeaders(),
   });
   if (version !== listVersion) return;
   listLoading.value = false;
@@ -104,7 +94,6 @@ async function markRead(): Promise<void> {
     "/notifications/{notification_id}/read",
     {
       params: { path: { notification_id: target.notification_id } },
-      headers: requestHeaders(),
     },
   );
   writeLock.value = false;

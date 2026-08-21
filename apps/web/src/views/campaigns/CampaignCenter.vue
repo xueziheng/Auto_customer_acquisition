@@ -63,15 +63,6 @@ const enrollmentSummary = computed(() => {
   return result;
 });
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function safeError(status: number): string {
   if (status === 403) return "当前身份没有执行此操作的权限";
   if (status === 409) return "Campaign 状态已变化，请刷新后重试";
@@ -146,7 +137,6 @@ async function loadCampaigns(): Promise<void> {
   try {
     const result = await client.GET("/crm/campaigns", {
       params: { query: { limit: 100 } },
-      headers: requestHeaders(),
     });
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
@@ -170,7 +160,6 @@ async function loadIdentities(): Promise<void> {
   try {
     const result = await client.GET("/crm/sending-identities", {
       params: { query: { limit: 100 } },
-      headers: requestHeaders(),
     });
     if (result.response.status === 200 && result.data) identities.value = result.data;
   } catch {
@@ -184,7 +173,6 @@ async function loadEnrollments(campaignId: string): Promise<void> {
   try {
     const result = await client.GET("/crm/campaigns/{campaign_id}/enrollments", {
       params: { path: { campaign_id: campaignId }, query: { limit: 200 } },
-      headers: requestHeaders(),
     });
     enrollments.value = result.response.status === 200 && result.data ? result.data : [];
   } finally {
@@ -206,7 +194,6 @@ async function saveBoundary(): Promise<void> {
       const result = await client.POST("/crm/campaigns/{campaign_id}/revise", {
         params: { path: { campaign_id: editingCampaignId.value } },
         body: { ...form },
-        headers: requestHeaders(),
       });
       if (result.response.status === 200 && result.data) {
         actionMessage.value = `新版本已提交审批：${result.data.approval_id}`;
@@ -218,7 +205,6 @@ async function saveBoundary(): Promise<void> {
     } else {
       const result = await client.POST("/crm/campaigns", {
         body: { ...form },
-        headers: requestHeaders(),
       });
       if (result.response.status === 200 && result.data) {
         actionMessage.value = "Campaign 草稿已创建；提交审批前不会发送。";
@@ -248,28 +234,24 @@ async function transition(action: "submit" | "activate" | "pause" | "cancel"): P
       const result = await client.POST("/crm/campaigns/{campaign_id}/pause", {
         params: { path: { campaign_id: campaignId } },
         body: { reason: reason.trim() },
-        headers: requestHeaders(),
       });
       if (result.response.status !== 200) throw new Error(safeError(result.response.status));
       actionMessage.value = "Campaign 已暂停新发送；入站回复处理保持运行。";
     } else if (action === "submit") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/submit", {
         params: { path: { campaign_id: campaignId } },
-        headers: requestHeaders(),
       });
       if (result.response.status !== 200 || !result.data) throw new Error(safeError(result.response.status));
       actionMessage.value = `已提交审批：${result.data.approval_id}`;
     } else if (action === "activate") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/activate", {
         params: { path: { campaign_id: campaignId } },
-        headers: requestHeaders(),
       });
       if (result.response.status !== 200) throw new Error(safeError(result.response.status));
       actionMessage.value = "Campaign 精确版本已激活。";
     } else {
       const result = await client.POST("/crm/campaigns/{campaign_id}/cancel", {
         params: { path: { campaign_id: campaignId } },
-        headers: requestHeaders(),
       });
       if (result.response.status !== 200) throw new Error(safeError(result.response.status));
       actionMessage.value = "Campaign 已取消，不能恢复。";

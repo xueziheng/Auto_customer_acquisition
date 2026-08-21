@@ -66,15 +66,6 @@ const actionLabels: Record<string, string> = {
   record_complaint: "记录投诉",
 };
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function categoryLabel(value: ReplyCategory | null): string {
   return value ? categoryLabels[value] : "尚未分类";
 }
@@ -130,7 +121,6 @@ async function loadItems(): Promise<void> {
   try {
     const result = await client.GET("/inbox/conversations", {
       params: { query: { limit: 100 } },
-      headers: requestHeaders(),
     });
     if (version !== listVersion) return;
     if (result.response.status !== 200 || !result.data) {
@@ -160,7 +150,6 @@ async function loadDetail(conversationId: string): Promise<void> {
   try {
     const result = await client.GET("/inbox/conversations/{conversation_id}", {
       params: { path: { conversation_id: conversationId } },
-      headers: requestHeaders(),
     });
     if (version !== detailVersion) return;
     if (result.response.status === 200 && result.data) {
@@ -188,7 +177,6 @@ async function submitCorrection(): Promise<void> {
       {
         params: { path: { message_id: message.message_id } },
         body: { category: correctionCategory.value },
-        headers: requestHeaders(),
       },
     );
     if (result.response.status !== 200) {

@@ -14,22 +14,12 @@ let requestVersion = 0;
 
 const NOTIFICATIONS_CHANGED = "tradeos:notifications-changed";
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 async function refresh(): Promise<void> {
   const version = ++requestVersion;
   const previous = unreadCount.value;
   try {
     const { data, response } = await client.GET("/notifications", {
       params: { query: { limit: 100 } },
-      headers: requestHeaders(),
     });
     if (version !== requestVersion) return; // stale response 忽略
     if (response.status !== 200) {

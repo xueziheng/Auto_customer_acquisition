@@ -14,15 +14,6 @@ const need = ref<ValidatedNeed | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function fieldLabel(value: string): string {
   return (
     {
@@ -58,7 +49,6 @@ async function loadNeed(): Promise<void> {
   try {
     const result = await client.GET("/demand/needs/{need_id}", {
       params: { path: { need_id: needId } },
-      headers: requestHeaders(),
     });
     if (result.response.status === 200 && result.data) {
       need.value = result.data;

@@ -29,15 +29,6 @@ const tabs = computed(() => [
   { id: "clusters" as const, label: "需求簇", count: clusters.value.length, kind: "聚合" },
 ]);
 
-function requestHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const tenantId = import.meta.env.VITE_TENANT_ID;
-  const employeeId = import.meta.env.VITE_EMPLOYEE_ID;
-  if (tenantId) headers["X-Tenant-Id"] = tenantId;
-  if (employeeId) headers["X-Employee-Id"] = employeeId;
-  return headers;
-}
-
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
@@ -74,12 +65,11 @@ async function loadRadar(): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
-    const headers = requestHeaders();
     const [signalResult, hypothesisResult, needResult, clusterResult] = await Promise.all([
-      client.GET("/demand/signals", { params: { query: { limit: 200 } }, headers }),
-      client.GET("/demand/hypotheses", { params: { query: { limit: 200 } }, headers }),
-      client.GET("/demand/needs", { params: { query: { limit: 200 } }, headers }),
-      client.GET("/demand/clusters", { params: { query: { limit: 200 } }, headers }),
+      client.GET("/demand/signals", { params: { query: { limit: 200 } } }),
+      client.GET("/demand/hypotheses", { params: { query: { limit: 200 } } }),
+      client.GET("/demand/needs", { params: { query: { limit: 200 } } }),
+      client.GET("/demand/clusters", { params: { query: { limit: 200 } } }),
     ]);
     const results = [signalResult, hypothesisResult, needResult, clusterResult];
     if (results.some((result) => result.response.status !== 200)) {
