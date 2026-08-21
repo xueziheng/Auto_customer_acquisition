@@ -21,6 +21,7 @@ CostItem = _models.CostItem
 CostItemType = _models.CostItemType
 CostSheet = _models.CostSheet
 CostSheetVersion = _models.CostSheetVersion
+MarginRule = _models.MarginRule
 RiskAcceptance = _models.RiskAcceptance
 
 
@@ -132,3 +133,37 @@ def test_risk_acceptance_requires_auditable_human_justification() -> None:
             accepted_at=datetime(2026, 8, 21, 10, tzinfo=UTC),
             justification=" ",
         )
+
+
+@pytest.mark.parametrize(
+    ("minimum", "target"),
+    [
+        (Decimal("-0.01"), Decimal("0.20")),
+        (Decimal("0.30"), Decimal("0.20")),
+        (Decimal("0.20"), Decimal(1)),
+    ],
+)
+def test_margin_rule_rejects_invalid_human_supplied_rates(
+    minimum: Decimal,
+    target: Decimal,
+) -> None:
+    with pytest.raises(ValidationError, match="利润率"):
+        MarginRule(
+            tenant_id=TenantId("tenant-one"),
+            minimum_margin_rate=minimum,
+            target_margin_rate=target,
+            effective_from=datetime(2026, 8, 21, 10, tzinfo=UTC),
+        )
+
+
+def test_margin_rule_accepts_explicit_decimal_policy_without_defaults() -> None:
+    rule = MarginRule(
+        tenant_id=TenantId("tenant-one"),
+        minimum_margin_rate=Decimal("0.15"),
+        target_margin_rate=Decimal("0.25"),
+        effective_from=datetime(2026, 8, 21, 10, tzinfo=UTC),
+        category="hardware",
+    )
+
+    assert rule.minimum_margin_rate == Decimal("0.15")
+    assert rule.target_margin_rate == Decimal("0.25")

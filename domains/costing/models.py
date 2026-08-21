@@ -301,3 +301,25 @@ class MarginRule:
     target_margin_rate: Decimal
     effective_from: datetime
     category: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant_id, str) or not self.tenant_id.strip():
+            raise ValidationError("利润规则租户无效")
+        rates = (self.minimum_margin_rate, self.target_margin_rate)
+        if any(
+            not isinstance(rate, Decimal) or not rate.is_finite() for rate in rates
+        ):
+            raise ValidationError("利润率必须是有限 Decimal")
+        if not (
+            Decimal(0)
+            <= self.minimum_margin_rate
+            <= self.target_margin_rate
+            < Decimal(1)
+        ):
+            raise ValidationError("利润率必须满足 0 ≤ 底线 ≤ 目标 < 1")
+        if self.effective_from.utcoffset() is None:
+            raise ValidationError("利润规则生效时间必须含时区")
+        if self.category is not None and (
+            not isinstance(self.category, str) or not self.category.strip()
+        ):
+            raise ValidationError("利润规则品类无效")
