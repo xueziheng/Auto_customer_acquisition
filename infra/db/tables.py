@@ -1519,12 +1519,94 @@ class NeedHypothesisRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class NeedClusterRow(Base):
+    """Phase 1 需求簇；只记录归簇，不参与寻源排序。"""
+
+    __tablename__ = "need_clusters"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "cluster_id", name="pk_need_clusters"),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(cluster_id) <> '' AND "
+            "btrim(category) <> ''",
+            name="ck_need_clusters_core_nonblank",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(keywords) = 'array' AND "
+            "jsonb_typeof(countries) = 'array'",
+            name="ck_need_clusters_arrays_jsonb",
+        ),
+        CheckConstraint(
+            "total_potential_quantity IS NULL OR total_potential_quantity >= 0",
+            name="ck_need_clusters_quantity_nonnegative",
+        ),
+        Index(
+            "ix_need_clusters_tenant_category",
+            "tenant_id",
+            "category",
+            "created_at",
+            "cluster_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str] = mapped_column(String(200))
+    keywords: Mapped[list] = mapped_column(postgresql.JSONB)
+    countries: Mapped[list] = mapped_column(postgresql.JSONB)
+    total_potential_quantity: Mapped[int | None] = mapped_column(Integer)
+    recurring_demand: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class NeedClusterMemberRow(Base):
+    """需求簇成员关系；租户复合外键同时约束簇与已验证需求。"""
+
+    __tablename__ = "need_cluster_members"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "cluster_id",
+            "need_id",
+            name="pk_need_cluster_members",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "cluster_id"],
+            ["need_clusters.tenant_id", "need_clusters.cluster_id"],
+            ondelete="CASCADE",
+            name="fk_need_cluster_members_cluster",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            ondelete="CASCADE",
+            name="fk_need_cluster_members_need",
+        ),
+        Index(
+            "uq_need_cluster_members_need",
+            "tenant_id",
+            "need_id",
+            unique=True,
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ValidatedNeedRow(Base):
-    """``validated_needs`` 行（spec 2026-08-17 §4.2；无 cluster_id 列）。"""
+    """``validated_needs`` 行（spec 2026-08-17 §4.2）。"""
 
     __tablename__ = "validated_needs"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "need_id", name="pk_validated_needs"),
+        ForeignKeyConstraint(
+            ["tenant_id", "cluster_id"],
+            ["need_clusters.tenant_id", "need_clusters.cluster_id"],
+            name="fk_validated_needs_cluster",
+        ),
         CheckConstraint(
             f"status IN ({_NEED_STATUSES})", name="ck_validated_needs_status"
         ),
@@ -1624,6 +1706,7 @@ class ValidatedNeedRow(Base):
         postgresql.JSONB(none_as_null=True)
     )
     confirmed_by: Mapped[str | None] = mapped_column(String(40))
+    cluster_id: Mapped[str | None] = mapped_column(String(40))
 
 
 class ValidatedNeedFieldHistoryRow(Base):
