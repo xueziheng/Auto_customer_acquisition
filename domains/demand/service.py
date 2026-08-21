@@ -39,6 +39,12 @@ class DemandAccountNameReader(Protocol):
         account_ids: tuple[ProspectAccountId, ...],
     ) -> dict[ProspectAccountId, str]: ...
 
+    async def countries_for(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]: ...
+
 
 @runtime_checkable
 class DemandService(Protocol):
@@ -261,6 +267,10 @@ class DemandService(Protocol):
     ) -> NeedClusterView:
         """读取需求簇。"""
         ...
+
+    async def list_clusters(
+        self, tenant_id: TenantId, *, limit: int = 50
+    ) -> list[NeedClusterView]: ...
 
     async def try_assign_cluster(
         self, tenant_id: TenantId, need_id: ValidatedNeedId

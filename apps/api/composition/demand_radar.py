@@ -37,6 +37,17 @@ class ProspectingDemandAccountNames(DemandAccountNameReader):
             names[account_id] = account.name
         return names
 
+    async def countries_for(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]:
+        countries: dict[ProspectAccountId, str] = {}
+        for account_id in dict.fromkeys(account_ids):
+            account = await self._prospecting.get_account(tenant_id, account_id)
+            countries[account_id] = account.country
+        return countries
+
 
 class AuthorizedDemandRadarService:
     """router gate 之外再次按持久员工身份的 typed scope 判权。"""

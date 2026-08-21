@@ -9,6 +9,7 @@ page_hash）；去重 key 全非空 5 列；重复返回既有 ID 不重复发�
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -24,6 +25,7 @@ from domains.demand.errors import (
 from domains.demand.models import (
     DemandSignal,
     HypothesisStatus,
+    NeedCluster,
     NeedHypothesis,
     NeedStatus,
     SignalStatus,
@@ -37,6 +39,7 @@ from domains.demand.schemas import (
     HypothesisDiscoveryEvidenceView,
     HypothesisDiscoveryView,
     HypothesisView,
+    NeedClusterView,
     NeedFieldView,
     SignalCaptureRequest,
     ValidatedNeedView,
@@ -45,6 +48,7 @@ from domains.demand.service import DemandAccountNameReader
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
+    NeedClusterFormed,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
@@ -59,6 +63,7 @@ from shared.schemas.identifiers import (
     DemandSignalId,
     EmployeeId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -101,6 +106,7 @@ _TEXT_PROMOTE_FIELDS = _PROMOTE_FIELD_WHITELIST - {
     "required_by",
     "target_price",
 }
+_CLUSTER_TOKEN = re.compile(r"[^\W_]{2,64}", re.UNICODE)
 _UPDATE_FIELD_WHITELIST = _PROMOTE_FIELD_WHITELIST - {"product_category"}
 
 
@@ -132,6 +138,13 @@ def _merge_ids(
             seen.add(str(signal_id))
             merged.append(signal_id)
     return merged
+
+
+def _merge_need_ids(
+    existing: list[ValidatedNeedId], incoming: list[ValidatedNeedId]
+) -> list[ValidatedNeedId]:
+    """需求簇成员 ID 幂等并集，保持首次出现顺序。"""
+    return list(dict.fromkeys([*existing, *incoming]))
 
 
 def _coerce_field_value(name: str, value: object) -> object:
@@ -1055,6 +1068,140 @@ class DemandServiceImpl:
         names = await self._load_account_names(tenant_id, (need.account_id,))
         return self._validated_need_view(need, names[need.account_id])
 
+    async def get_cluster(
+        self,
+        tenant_id: TenantId,
+        cluster_id: str,
+    ) -> NeedClusterView:
+        self._validate_radar_query(tenant_id, 1)
+        if (
+            not isinstance(cluster_id, str)
+            or not cluster_id
+            or cluster_id != cluster_id.strip()
+            or len(cluster_id) > 40
+        ):
+            raise ValidationError("需求簇标识无效")
+        async with self._uow_factory(tenant_id) as uow:
+            cluster = await uow.clusters.get(
+                tenant_id,
+                NeedClusterId(cluster_id),
+            )
+            if cluster is None:
+                raise ValidationError("需求簇不存在")
+            needs = await self._load_cluster_needs(uow, tenant_id, cluster)
+        names = await self._load_account_names(
+            tenant_id,
+            tuple(need.account_id for need in needs),
+        )
+        return self._cluster_view(cluster, needs, names)
+
+    async def list_clusters(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+    ) -> list[NeedClusterView]:
+        self._validate_radar_query(tenant_id, limit)
+        async with self._uow_factory(tenant_id) as uow:
+            clusters = await uow.clusters.list_for_radar(tenant_id, limit=limit)
+            needs_by_cluster = [
+                await self._load_cluster_needs(uow, tenant_id, cluster)
+                for cluster in clusters
+            ]
+        account_ids = tuple(
+            need.account_id
+            for needs in needs_by_cluster
+            for need in needs
+        )
+        names = await self._load_account_names(tenant_id, account_ids)
+        return [
+            self._cluster_view(cluster, needs, names)
+            for cluster, needs in zip(
+                clusters,
+                needs_by_cluster,
+                strict=True,
+            )
+        ]
+
+    async def try_assign_cluster(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+    ) -> str | None:
+        """按精确类别与材质/规格关键词原子归簇；不影响寻源排序。"""
+        self._validate_radar_query(tenant_id, 1)
+        async with self._uow_factory(tenant_id) as uow:
+            snapshot = await uow.needs.get(tenant_id, need_id)
+        if snapshot is None:
+            raise ValidationError("已验证需求不存在")
+        countries = await self._load_account_countries(
+            tenant_id,
+            (snapshot.account_id,),
+        )
+        country = countries[snapshot.account_id]
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            need = await uow.needs.get_for_update(tenant_id, need_id)
+            if need is None:
+                raise ValidationError("已验证需求不存在")
+            if need.cluster_id is not None:
+                return str(need.cluster_id)
+            keywords = self._cluster_keywords(need)
+            cluster = await uow.clusters.find_candidate_cluster(
+                tenant_id,
+                need.product_category.value,
+                keywords,
+            )
+            quantity = need.quantity.value if need.quantity is not None else None
+            if quantity is not None and quantity < 0:
+                raise ValidationError("需求数量不可用于归簇")
+            if cluster is None:
+                cluster = NeedCluster(
+                    cluster_id=NeedClusterId(new_id("ncl")),
+                    tenant_id=tenant_id,
+                    category=need.product_category.value,
+                    member_need_ids=[need.need_id],
+                    keywords=keywords,
+                    countries=[country],
+                    total_potential_quantity=quantity,
+                    recurring_demand=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                await uow.clusters.add(cluster)
+            else:
+                existing_total = cluster.total_potential_quantity
+                cluster.member_need_ids = _merge_need_ids(
+                    cluster.member_need_ids,
+                    [need.need_id],
+                )
+                cluster.keywords = list(
+                    dict.fromkeys([*cluster.keywords, *keywords])
+                )
+                cluster.countries = list(
+                    dict.fromkeys([*cluster.countries, country])
+                )
+                cluster.total_potential_quantity = (
+                    None
+                    if existing_total is None and quantity is None
+                    else (existing_total or 0) + (quantity or 0)
+                )
+                cluster.updated_at = now
+                await uow.clusters.update(cluster)
+                if len(cluster.member_need_ids) == 2:
+                    await uow.bus.publish(
+                        NeedClusterFormed(
+                            tenant_id=tenant_id,
+                            occurred_at=now,
+                            run_id=None,
+                            cluster_id=str(cluster.cluster_id),
+                            category=cluster.category,
+                            member_count=2,
+                        )
+                    )
+            await uow.needs.update(replace(need, cluster_id=cluster.cluster_id))
+            return str(cluster.cluster_id)
+
     @staticmethod
     def _validate_radar_query(tenant_id: TenantId, limit: int) -> None:
         if (
@@ -1106,6 +1253,80 @@ class DemandServiceImpl:
         ):
             raise ValidationError("需求账户展示名结果无效")
         return names
+
+    async def _load_account_countries(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]:
+        unique_ids = tuple(dict.fromkeys(account_ids))
+        if self._account_names is None:
+            raise ValidationError("需求账户国家依赖未配置")
+        countries = await self._account_names.countries_for(tenant_id, unique_ids)
+        if (
+            not isinstance(countries, dict)
+            or set(countries) != set(unique_ids)
+            or any(
+                not isinstance(country, str)
+                or not country
+                or country != country.strip()
+                or len(country) > 64
+                for country in countries.values()
+            )
+        ):
+            raise ValidationError("需求账户国家结果无效")
+        return countries
+
+    @staticmethod
+    async def _load_cluster_needs(
+        uow: DemandUnitOfWork,
+        tenant_id: TenantId,
+        cluster: NeedCluster,
+    ) -> list[ValidatedNeed]:
+        needs: list[ValidatedNeed] = []
+        for need_id in cluster.member_need_ids:
+            need = await uow.needs.get(tenant_id, need_id)
+            if need is None or need.cluster_id != cluster.cluster_id:
+                raise ValidationError("需求簇成员链不完整")
+            needs.append(need)
+        if not needs:
+            raise ValidationError("需求簇成员链不完整")
+        return needs
+
+    @staticmethod
+    def _cluster_keywords(need: ValidatedNeed) -> list[str]:
+        values = (
+            need.material.value if need.material is not None else "",
+            need.size_spec.value if need.size_spec is not None else "",
+        )
+        return list(
+            dict.fromkeys(
+                token
+                for value in values
+                for token in _CLUSTER_TOKEN.findall(value.casefold())
+            )
+        )[:20]
+
+    @classmethod
+    def _cluster_view(
+        cls,
+        cluster: NeedCluster,
+        needs: list[ValidatedNeed],
+        names: dict[ProspectAccountId, str],
+    ) -> NeedClusterView:
+        return NeedClusterView(
+            cluster_id=str(cluster.cluster_id),
+            category=cluster.category,
+            member_count=len(needs),
+            countries=list(cluster.countries),
+            member_needs=[
+                cls._validated_need_view(need, names[need.account_id])
+                for need in needs
+            ],
+            total_potential_quantity=cluster.total_potential_quantity,
+            recurring_demand=cluster.recurring_demand,
+            suggests_catalog_product=cluster.suggests_catalog_product(),
+        )
 
     @staticmethod
     def _hypothesis_view(
