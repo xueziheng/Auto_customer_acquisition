@@ -20,6 +20,8 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from domains.demand.service import DemandService
+from domains.demand.service_impl import DemandServiceImpl
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
@@ -93,6 +95,7 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
 )
@@ -191,6 +194,10 @@ from ..dependencies import (
     ToolGatewayInvoker,
 )
 from ..runtime_config import Phase1RuntimeSettings
+from .demand_radar import (
+    AuthorizedDemandRadarService,
+    ProspectingDemandAccountNames,
+)
 
 
 @asynccontextmanager
@@ -839,6 +846,22 @@ def build_phase1_dependencies(
         _DomainSeparatedContactValueHasher(fingerprint_provider),
         now=now,
     )
+    demand = cast(
+        DemandService,
+        DemandServiceImpl(
+            lambda requested_tenant: SqlAlchemyDemandUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory,
+                requested_tenant,
+                now=now,
+            ),
+            now=now,
+            account_names=ProspectingDemandAccountNames(prospecting),
+        ),
+    )
+    demand_radar = AuthorizedDemandRadarService(
+        demand,
+        employee_authorizer,
+    )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -960,4 +983,5 @@ def build_phase1_dependencies(
         in_app_notifications=in_app_notifications,
         employee_lookup_actor=employee_system_actor,
         prospecting=prospecting,
+        demand_radar=demand_radar,
     )

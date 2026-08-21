@@ -8,6 +8,11 @@ from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import Depends, Request
 
+from domains.demand.schemas import (
+    DemandSignalView,
+    HypothesisView,
+    ValidatedNeedView,
+)
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
@@ -51,7 +56,12 @@ from notification_gateway.dedup import NotificationDedupStore
 from notification_gateway.inbox import InAppNotificationService, InboxActor
 from notification_gateway.router import NotificationRouter
 from shared.errors import PermissionDenied, TransientError, ValidationError
-from shared.schemas.identifiers import CampaignId, TenantId
+from shared.schemas.identifiers import (
+    CampaignId,
+    NeedHypothesisId,
+    TenantId,
+    ValidatedNeedId,
+)
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     UnsubscribeLinkProvider,
@@ -84,6 +94,53 @@ class ToolGatewayInvoker(Protocol):
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult: ...
 
 
+@runtime_checkable
+class DemandRadarService(Protocol):
+    """已执行第二道员工授权的 Demand Radar 查询边界。"""
+
+    async def list_signals(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        *,
+        signal_type: str | None,
+        status: str | None,
+        limit: int,
+    ) -> list[DemandSignalView]: ...
+
+    async def list_hypotheses(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[HypothesisView]: ...
+
+    async def get_hypothesis(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        hypothesis_id: NeedHypothesisId,
+    ) -> HypothesisView: ...
+
+    async def list_needs(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        *,
+        status: str | None,
+        limit: int,
+    ) -> list[ValidatedNeedView]: ...
+
+    async def get_need(
+        self,
+        tenant_id: TenantId,
+        actor: EmployeeActor,
+        need_id: ValidatedNeedId,
+    ) -> ValidatedNeedView: ...
+
+
 @dataclass(frozen=True)
 class ConfiguredApiDependencies:
     """完整且已配置的 API runtime 依赖。
@@ -112,6 +169,7 @@ class ConfiguredApiDependencies:
     in_app_notifications: InAppNotificationService
     employee_lookup_actor: EmployeeActor
     prospecting: ProspectingService | None = None
+    demand_radar: DemandRadarService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:
