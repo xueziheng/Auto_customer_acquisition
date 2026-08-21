@@ -18,7 +18,14 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from shared.errors import ValidationError
-from shared.schemas.identifiers import MessageId, TenantId
+from shared.schemas.identifiers import (
+    ContactPointId,
+    EnrollmentId,
+    MessageId,
+    OutboundMessageId,
+    ProspectAccountId,
+    TenantId,
+)
 
 
 @dataclass(frozen=True)
@@ -66,3 +73,51 @@ class InputContentGuard(Protocol):
     """
 
     def check(self, *, subject: str | None, body: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class ReplyActionContext:
+    """回复动作只需的关联 ID；禁止携带原文、地址或 artifact 对象键。"""
+
+    message_id: MessageId
+    outbound_message_id: OutboundMessageId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+
+
+@runtime_checkable
+class ReplyActionPorts(Protocol):
+    """非基础回复动作的窄编排出口；每个方法必须自行保持幂等。"""
+
+    async def route_bounce(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def record_complaint(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def request_handoff(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def start_qualification(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def extract_need_fields(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def mark_future_restart(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def create_follow_up(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
+
+    async def intake_new_contact(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...

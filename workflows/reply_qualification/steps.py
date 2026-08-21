@@ -53,12 +53,15 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     MessageId,
     OutboundMessageId,
+    ProspectAccountId,
     TenantId,
 )
 from workflows.engine.runner import WorkflowRun
 from workflows.reply_qualification.ports import (
     InputContentGuard,
     MessageContentReader,
+    ReplyActionContext,
+    ReplyActionPorts,
 )
 
 _SYSTEM_ACTOR_ID = "system:reply-qualification"
@@ -173,10 +176,12 @@ class ApplyActionsStep:
         outreach: OutreachService,
         tenant_id: TenantId,
         now: Callable[[], datetime],
+        action_ports: ReplyActionPorts | None = None,
     ) -> None:
         self._outreach = outreach
         self._tenant_id = tenant_id
         self._now = now
+        self._action_ports = action_ports
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         if run.tenant_id != self._tenant_id:
@@ -199,10 +204,61 @@ class ApplyActionsStep:
         if action == "suppress":
             await self._suppress(run, category)
             return
-        # 其余动作（route_bounce/record_complaint/handoff/start_qualification/
-        # extract_need_fields/mark_future_restart/create_follow_up/
-        # intake_new_contact）尚无域服务接线：显式失败，不静默跳过
-        raise ReplyActionNotWiredError(f"回复动作未接线：{action}")
+        methods = {
+            "route_bounce": "route_bounce",
+            "record_complaint": "record_complaint",
+            "handoff": "request_handoff",
+            "start_qualification": "start_qualification",
+            "extract_need_fields": "extract_need_fields",
+            "mark_future_restart": "mark_future_restart",
+            "create_follow_up": "create_follow_up",
+            "intake_new_contact": "intake_new_contact",
+        }
+        method_name = methods.get(action)
+        if method_name is None or self._action_ports is None:
+            raise ReplyActionNotWiredError(f"回复动作未接线：{action}")
+        method = getattr(self._action_ports, method_name, None)
+        if not callable(method):
+            raise ReplyActionNotWiredError(f"回复动作未接线：{action}")
+        context = self._action_context(run)
+        await method(
+            run.tenant_id,
+            context,
+            f"reply:{action}:{context.message_id}",
+        )
+
+    @staticmethod
+    def _action_context(run: WorkflowRun) -> ReplyActionContext:
+        values = {
+            "message_id": run.context.get("message_id"),
+            "outbound_message_id": run.context.get("outbound_message_id"),
+            "enrollment_id": run.context.get("enrollment_id"),
+            "account_id": run.context.get("account_id"),
+            "contact_point_id": run.context.get("contact_point_id"),
+        }
+        prefixes = {
+            "message_id": "msg_",
+            "enrollment_id": "enr_",
+            "account_id": "acc_",
+            "contact_point_id": "cp_",
+        }
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in values.values()
+        ) or any(
+            not str(values[name]).startswith(prefix)
+            for name, prefix in prefixes.items()
+        ):
+            raise ValidationError("回复动作关联上下文无效")
+        return ReplyActionContext(
+            message_id=MessageId(str(values["message_id"])),
+            outbound_message_id=OutboundMessageId(
+                str(values["outbound_message_id"])
+            ),
+            enrollment_id=EnrollmentId(str(values["enrollment_id"])),
+            account_id=ProspectAccountId(str(values["account_id"])),
+            contact_point_id=ContactPointId(str(values["contact_point_id"])),
+        )
 
     async def _stop_sequence(self, run: WorkflowRun) -> None:
         raw_enrollment = run.context.get("enrollment_id")

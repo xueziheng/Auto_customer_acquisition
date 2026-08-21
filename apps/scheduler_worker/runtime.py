@@ -193,6 +193,7 @@ from workflows.reply_qualification.flow import (
 from workflows.reply_qualification.ports import (
     InputContentGuard,
     MessageContentReader,
+    ReplyActionPorts,
 )
 from workflows.sending_identity_auth.flow import (
     DnsAuthenticationStep,
@@ -370,6 +371,7 @@ class ReplyQualificationComposition:
     input_guard: InputContentGuard
     conversations: ConversationService
     outreach: OutreachService
+    action_ports: ReplyActionPorts | None = None
 
     def __post_init__(self) -> None:
         # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
@@ -395,6 +397,10 @@ class ReplyQualificationComposition:
         model_value = getattr(self.classifier, "model", None)
         if not isinstance(model_value, str) or not model_value.strip():
             raise ValidationError("scheduler reply_qualification 依赖未完整配置")
+        if self.action_ports is not None and not isinstance(
+            self.action_ports, ReplyActionPorts
+        ):
+            raise ValidationError("scheduler reply_qualification 动作依赖未完整配置")
 
 
 @dataclass(frozen=True)
@@ -896,6 +902,7 @@ class SchedulerRuntimeFactory:
                     outreach=reply_composition.outreach,
                     tenant_id=config.tenant_id,
                     now=self._now,
+                    action_ports=reply_composition.action_ports,
                 )
             account_handlers: dict[str, StepHandler] = {}
             if self._dependencies.account_discovery is not None:
