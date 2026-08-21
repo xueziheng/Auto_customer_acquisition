@@ -18,6 +18,7 @@ from typing import Any, Protocol, runtime_checkable
 from agent_runtime.base import ChangeSet
 from domains.quotations.service import contains_forbidden_commitment
 from shared.errors import ValidationError
+from shared.schemas.money import Money
 
 
 @dataclass(frozen=True)
@@ -317,6 +318,60 @@ class PriceBasisRail:
                 violations.extend(self._walk(child, f"{location}[{index}]"))
             return violations
         return []
+
+
+class NoModelMoneyRail:
+    """禁止模型金额直接进入成本计算。"""
+
+    name = "no_model_money"
+
+    def check(self, change_set: ChangeSet) -> list[RailViolation]:
+        violations: list[RailViolation] = []
+        for index, change in enumerate(change_set.changes):
+            if not isinstance(change, Mapping) or change.get("domain") != "costing":
+                continue
+            payload = change.get("payload")
+            is_pending_suggestion = (
+                change.get("operation") == "suggest_cost_item"
+                and isinstance(payload, Mapping)
+                and payload.get("is_pending_confirmation") is True
+                and payload.get("entered_by") is None
+            )
+            if is_pending_suggestion:
+                continue
+            violations.extend(self._walk(payload, f"changes[{index}].payload"))
+        return violations
+
+    def _walk(self, value: object, location: str) -> list[RailViolation]:
+        if isinstance(value, Money) or self._is_serialized_money(value):
+            return [
+                RailViolation(
+                    rail=self.name,
+                    location=location,
+                    detail="模型金额可能直接进入成本计算",
+                    how_to_fix="改为待人工确认的成本建议，或移除模型生成金额",
+                )
+            ]
+        if isinstance(value, Mapping):
+            violations: list[RailViolation] = []
+            for key, child in value.items():
+                violations.extend(self._walk(child, f"{location}.{key}"))
+            return violations
+        if isinstance(value, (list, tuple)):
+            violations = []
+            for index, child in enumerate(value):
+                violations.extend(self._walk(child, f"{location}[{index}]"))
+            return violations
+        return []
+
+    @staticmethod
+    def _is_serialized_money(value: object) -> bool:
+        return (
+            isinstance(value, Mapping)
+            and set(value) == {"amount", "currency"}
+            and isinstance(value.get("currency"), str)
+            and isinstance(value.get("amount"), (str, Decimal))
+        )
 
 
 class TenantConsistencyRail:

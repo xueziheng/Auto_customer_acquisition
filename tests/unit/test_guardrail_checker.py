@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from agent_runtime.guardrails.rails import (
     FactInferenceSeparationRail,
     GuardrailChecker,
     NoForbiddenCommitmentRail,
+    NoModelMoneyRail,
     NoProbabilityOutputRail,
     PriceBasisRail,
     RailViolation,
@@ -17,6 +19,7 @@ from agent_runtime.guardrails.rails import (
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, RunId, TenantId
+from shared.schemas.money import CurrencyCode, Money
 
 
 def _change_set() -> ChangeSet:
@@ -419,3 +422,58 @@ def test_price_basis_rail_allows_internal_estimates_and_quoted_customer_prices()
     ]
 
     assert PriceBasisRail().check(change_set) == []
+
+
+def test_model_money_rail_blocks_cost_amounts_that_can_enter_calculation() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "costing",
+            "operation": "add_item",
+            "payload": {
+                "amount": Money(Decimal("12.50"), CurrencyCode("USD")),
+                "entered_by": None,
+            },
+        },
+        {
+            "domain": "costing",
+            "operation": "suggest_cost_item",
+            "payload": {
+                "amount": {"amount": "3.20", "currency": "USD"},
+                "entered_by": None,
+                "is_pending_confirmation": False,
+            },
+        },
+    ]
+
+    violations = NoModelMoneyRail().check(change_set)
+
+    assert [violation.location for violation in violations] == [
+        "changes[0].payload.amount",
+        "changes[1].payload.amount",
+    ]
+
+
+def test_model_money_rail_allows_pending_suggestions_and_customer_facts() -> None:
+    change_set = _change_set()
+    change_set.changes = [
+        {
+            "domain": "costing",
+            "operation": "suggest_cost_item",
+            "payload": {
+                "amount": Money(Decimal("3.20"), CurrencyCode("USD")),
+                "entered_by": None,
+                "is_pending_confirmation": True,
+            },
+        },
+        {
+            "domain": "demand",
+            "operation": "update_need_fields",
+            "payload": {
+                "target_price": Money(Decimal("2.50"), CurrencyCode("USD")),
+                "quote": "Our target is USD 2.50.",
+            },
+        },
+    ]
+
+    assert NoModelMoneyRail().check(change_set) == []
