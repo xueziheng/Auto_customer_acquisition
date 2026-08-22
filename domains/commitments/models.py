@@ -83,7 +83,7 @@ class Commitment:
 
     @property
     def is_confirmed(self) -> bool:
-        return self.confirmed_by is not None
+        return self.confirmed_by is not None and self.confirmed_at is not None
 
     def is_overdue_at(self, now: datetime) -> bool:
         """是否逾期。``due_at_uncertain`` 的承诺不判逾期——

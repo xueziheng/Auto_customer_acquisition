@@ -37,12 +37,17 @@ def _commitment(
         status=status,
         due_at_uncertain=uncertain,
         confirmed_by=EmployeeId("manager-one") if confirmed else None,
+        confirmed_at=NOW if confirmed else None,
     )
 
 
 def test_commitment_confirmation_depends_on_human_confirmation() -> None:
     assert _commitment(confirmed=False).is_confirmed is False
     assert _commitment(confirmed=True).is_confirmed is True
+
+    incomplete = _commitment(confirmed=False)
+    incomplete.confirmed_by = EmployeeId("manager-one")
+    assert incomplete.is_confirmed is False
 
 
 def test_only_confirmed_certain_open_commitments_become_overdue() -> None:

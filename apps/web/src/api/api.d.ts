@@ -123,17 +123,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/commitments/status": {
+    "/commitments": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["commitments_phase1_status"];
+        /** List Commitments */
+        get: operations["list_commitments_commitments_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commitments/overdue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Overdue Commitments */
+        get: operations["list_overdue_commitments_commitments_overdue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commitments/{commitment_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Commitment */
+        post: operations["confirm_commitment_commitments__commitment_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commitments/{commitment_id}/fulfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fulfill Commitment */
+        post: operations["fulfill_commitment_commitments__commitment_id__fulfill_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1293,6 +1344,66 @@ export interface components {
             /** Corrected By */
             corrected_by: string;
             corrected_category: components["schemas"]["ReplyCategory"];
+        };
+        /**
+         * CommitmentConfirmBody
+         * @description 员工可确认原提取，或提供带时区的绝对到期时间修正。
+         */
+        CommitmentConfirmBody: {
+            /** Corrected Due At */
+            corrected_due_at?: string | null;
+        };
+        /**
+         * CommitmentView
+         * @description 承诺中心读取模型；保留原话、提取与人工确认留痕。
+         */
+        CommitmentView: {
+            /** Account Id */
+            account_id: string | null;
+            /** Action */
+            action: string;
+            /** Commitment Id */
+            commitment_id: string;
+            /**
+             * Commitment Type
+             * @enum {string}
+             */
+            commitment_type: "employee" | "customer";
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Due At
+             * Format: date-time
+             */
+            due_at: string;
+            /** Due At Uncertain */
+            due_at_uncertain: boolean;
+            /** Escalated At */
+            escalated_at: string | null;
+            /** Extracted By */
+            extracted_by: string | null;
+            /** Fulfilled At */
+            fulfilled_at: string | null;
+            /** Opportunity Id */
+            opportunity_id: string | null;
+            /** Owner */
+            owner: string;
+            /** Source Message Id */
+            source_message_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "waiting_customer" | "fulfilled" | "overdue" | "cancelled";
+            /** Verbatim */
+            verbatim: string;
         };
         /**
          * ContactPointDetailView
@@ -2903,7 +3014,47 @@ export interface operations {
             };
         };
     };
-    commitments_phase1_status: {
+    list_commitments_commitments_get: {
+        parameters: {
+            query?: {
+                include_fulfilled?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitmentView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_overdue_commitments_commitments_overdue_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -2918,8 +3069,88 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["CommitmentView"][];
                 };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_commitment_commitments__commitment_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commitment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitmentConfirmBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    fulfill_commitment_commitments__commitment_id__fulfill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commitment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description 请求参数无效 */
             400: {

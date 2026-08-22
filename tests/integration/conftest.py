@@ -100,9 +100,13 @@ def db_url(request: pytest.FixtureRequest) -> RedactedUrl:
     return _build_db_url(request)
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def integration_engine(db_url: RedactedUrl) -> AsyncIterator[AsyncEngine]:
-    """会话级异步引擎（经 infra.db.session.create_engine_from 构建），结束后 dispose。"""
+    """函数级异步引擎（经 infra.db.session.create_engine_from 构建），结束后 dispose。
+
+    pytest-asyncio 默认让每个测试使用独立事件循环；AsyncEngine 的连接池不能跨
+    事件循环复用 asyncpg 连接，因此引擎必须与测试保持相同的函数级生命周期。
+    """
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)

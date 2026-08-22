@@ -10,7 +10,7 @@ from typing import Any, Self
 import pytest
 
 from domains.commitments.errors import RelativeDueTimeError
-from shared.errors import InvalidStateTransition, ValidationError
+from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import CommitmentCreated, CommitmentOverdue
 from shared.schemas.identifiers import (
     CommitmentId,
@@ -200,17 +200,17 @@ async def test_confirm_can_replace_uncertain_due_time_then_fulfill() -> None:
     await service.confirm(
         TENANT,
         item.commitment_id,
-        EmployeeId("employee-reviewer"),
+        EmployeeId("employee-one"),
         "2026-08-25T09:30:00+08:00",
     )
     confirmed = await factory.repository.get(TENANT, item.commitment_id)
     assert confirmed is not None
-    assert confirmed.confirmed_by == "employee-reviewer"
+    assert confirmed.confirmed_by == "employee-one"
     assert confirmed.confirmed_at == NOW
     assert confirmed.due_at.isoformat() == "2026-08-25T09:30:00+08:00"
     assert confirmed.due_at_uncertain is False
 
-    await service.fulfill(TENANT, item.commitment_id)
+    await service.fulfill(TENANT, item.commitment_id, EmployeeId("employee-one"))
     fulfilled = await factory.repository.get(TENANT, item.commitment_id)
     assert fulfilled is not None
     assert fulfilled.status is CommitmentStatus.FULFILLED
@@ -232,12 +232,12 @@ async def test_confirm_rejects_relative_due_time_and_terminal_transition() -> No
             "tomorrow",
         )
     await service.confirm(
-        TENANT, item.commitment_id, EmployeeId("employee-reviewer")
+        TENANT, item.commitment_id, EmployeeId("employee-one")
     )
-    await service.fulfill(TENANT, item.commitment_id)
+    await service.fulfill(TENANT, item.commitment_id, EmployeeId("employee-one"))
     with pytest.raises(InvalidStateTransition):
         await service.confirm(
-            TENANT, item.commitment_id, EmployeeId("employee-reviewer")
+            TENANT, item.commitment_id, EmployeeId("employee-one")
         )
 
 
@@ -247,6 +247,7 @@ async def test_scan_overdue_notifies_once_then_escalates_employee_once() -> None
     service = _service(factory)
     item = _commitment(due_at=NOW - timedelta(hours=2))
     item.confirmed_by = EmployeeId("employee-reviewer")
+    item.confirmed_at = NOW - timedelta(days=1)
     await factory.repository.add(item)
 
     assert await service.scan_overdue(TENANT) == 1
@@ -271,6 +272,7 @@ async def test_customer_commitment_does_not_repeat_manager_escalation() -> None:
         due_at=NOW - timedelta(hours=1),
     )
     item.confirmed_by = EmployeeId("employee-reviewer")
+    item.confirmed_at = NOW - timedelta(days=1)
     await factory.repository.add(item)
 
     assert await service.scan_overdue(TENANT) == 1
@@ -287,7 +289,27 @@ async def test_service_rejects_cross_tenant_and_unconfirmed_fulfillment() -> Non
         await service.record_extracted(TenantId("tenant-other"), item)
     await service.record_extracted(TENANT, item)
     with pytest.raises(InvalidStateTransition, match="未确认"):
-        await service.fulfill(TENANT, item.commitment_id)
+        await service.fulfill(
+            TENANT, item.commitment_id, EmployeeId("employee-one")
+        )
+
+
+@pytest.mark.asyncio
+async def test_only_owner_can_confirm_or_fulfill_commitment() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    item = _commitment()
+    await service.record_extracted(TENANT, item)
+
+    with pytest.raises(PermissionDenied):
+        await service.confirm(
+            TENANT, item.commitment_id, EmployeeId("employee-other")
+        )
+    await service.confirm(TENANT, item.commitment_id, EmployeeId("employee-one"))
+    with pytest.raises(PermissionDenied):
+        await service.fulfill(
+            TENANT, item.commitment_id, EmployeeId("employee-other")
+        )
 
 
 @pytest.mark.asyncio

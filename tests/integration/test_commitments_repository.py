@@ -70,14 +70,14 @@ async def test_commitment_uow_persists_confirmation_and_outbox_atomically(
 
     persisted_id = await service.record_extracted(TENANT, commitment)
     duplicate_id = await service.record_extracted(TENANT, _commitment(TENANT))
-    await service.confirm(TENANT, persisted_id, EmployeeId("employee-reviewer"))
+    await service.confirm(TENANT, persisted_id, EmployeeId("employee-owner"))
 
     async with SqlAlchemyCommitmentUnitOfWork(factory, TENANT) as uow:
         persisted = await uow.commitments.get(TENANT, persisted_id)
 
     assert duplicate_id == persisted_id
     assert persisted is not None
-    assert persisted.confirmed_by == EmployeeId("employee-reviewer")
+    assert persisted.confirmed_by == EmployeeId("employee-owner")
     assert persisted.confirmed_at == NOW
 
 

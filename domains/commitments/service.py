@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from domains.commitments.models import Commitment
+from domains.commitments.schemas import CommitmentView
 from shared.schemas.identifiers import CommitmentId, EmployeeId, TenantId
 
 
@@ -33,7 +34,10 @@ class CommitmentService(Protocol):
         ...
 
     async def fulfill(
-        self, tenant_id: TenantId, commitment_id: CommitmentId
+        self,
+        tenant_id: TenantId,
+        commitment_id: CommitmentId,
+        fulfilled_by: EmployeeId,
     ) -> None: ...
 
     async def scan_overdue(self, tenant_id: TenantId) -> int:
@@ -48,7 +52,13 @@ class CommitmentService(Protocol):
 
     async def list_for_employee(
         self, tenant_id: TenantId, employee_id: EmployeeId, include_fulfilled: bool
-    ) -> list[Commitment]:
+    ) -> list[CommitmentView]:
         """某员工相关的承诺（他承诺的 + 他负责跟进的客户承诺）。
         老板问「李四有哪些承诺明天到期」走这里。"""
+        ...
+
+    async def list_overdue_for_employee(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> list[CommitmentView]:
+        """列出负责人当前仍逾期的承诺，按到期时间排序。"""
         ...

@@ -980,6 +980,9 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_prospect_contacts_account": (
             "tenant_id", "account_id", "created_at", "contact_id",
         ),
+        "ix_commitments_tenant_owner_status_due": (
+            "tenant_id", "owner", "status", "due_at", "commitment_id",
+        ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():

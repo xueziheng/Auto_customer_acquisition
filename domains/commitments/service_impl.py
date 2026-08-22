@@ -13,7 +13,8 @@ from domains.commitments.models import (
     CommitmentType,
 )
 from domains.commitments.repository import CommitmentUnitOfWorkFactory
-from shared.errors import InvalidStateTransition, ValidationError
+from domains.commitments.schemas import CommitmentView
+from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import CommitmentCreated, CommitmentOverdue, DomainEvent
 from shared.schemas.identifiers import CommitmentId, EmployeeId, TenantId
 
@@ -47,6 +48,32 @@ def _parse_due_at(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise RelativeDueTimeError("承诺到期时间必须是带时区的绝对时间")
     return parsed
+
+
+def _view(commitment: Commitment) -> CommitmentView:
+    return CommitmentView(
+        commitment_id=str(commitment.commitment_id),
+        commitment_type=commitment.commitment_type.value,
+        owner=str(commitment.owner),
+        action=commitment.action,
+        due_at=commitment.due_at,
+        due_at_uncertain=commitment.due_at_uncertain,
+        source_message_id=str(commitment.source_message_id),
+        verbatim=commitment.verbatim,
+        status=commitment.status.value,
+        account_id=str(commitment.account_id) if commitment.account_id else None,
+        opportunity_id=(
+            str(commitment.opportunity_id) if commitment.opportunity_id else None
+        ),
+        extracted_by=commitment.extracted_by,
+        confirmed_by=(
+            str(commitment.confirmed_by) if commitment.confirmed_by else None
+        ),
+        confirmed_at=commitment.confirmed_at,
+        created_at=commitment.created_at,
+        fulfilled_at=commitment.fulfilled_at,
+        escalated_at=commitment.escalated_at,
+    )
 
 
 class CommitmentServiceImpl:
@@ -155,6 +182,8 @@ class CommitmentServiceImpl:
                 CommitmentStatus.CANCELLED,
             }:
                 raise InvalidStateTransition("终态承诺不可确认")
+            if commitment.owner != confirmed_by:
+                raise PermissionDenied("只能确认本人负责的承诺")
             if commitment.confirmed_by is not None:
                 if commitment.confirmed_by == confirmed_by and corrected is None:
                     return
@@ -167,11 +196,15 @@ class CommitmentServiceImpl:
             await uow.commitments.update(commitment)
 
     async def fulfill(
-        self, tenant_id: TenantId, commitment_id: CommitmentId
+        self,
+        tenant_id: TenantId,
+        commitment_id: CommitmentId,
+        fulfilled_by: EmployeeId,
     ) -> None:
         """把已确认的开放承诺标记完成；重复完成为幂等 no-op。"""
         self._tenant(tenant_id)
         _text(str(commitment_id), "承诺标识", 64)
+        _text(str(fulfilled_by), "承诺履约人", 64)
         now = self._clock()
         async with self._uow_factory(tenant_id) as uow:
             commitment = await uow.commitments.get_for_update(
@@ -183,6 +216,8 @@ class CommitmentServiceImpl:
                 return
             if commitment.status is CommitmentStatus.CANCELLED:
                 raise InvalidStateTransition("已取消承诺不可完成")
+            if commitment.owner != fulfilled_by:
+                raise PermissionDenied("只能完成本人负责的承诺")
             if not commitment.is_confirmed:
                 raise InvalidStateTransition("未确认承诺不可完成")
             commitment.status = CommitmentStatus.FULFILLED
@@ -233,7 +268,7 @@ class CommitmentServiceImpl:
         tenant_id: TenantId,
         employee_id: EmployeeId,
         include_fulfilled: bool,
-    ) -> list[Commitment]:
+    ) -> list[CommitmentView]:
         """按负责人列出承诺，默认只返回仍需处理的状态。"""
         self._tenant(tenant_id)
         _text(str(employee_id), "员工标识", 64)
@@ -249,9 +284,22 @@ class CommitmentServiceImpl:
             ]
         )
         async with self._uow_factory(tenant_id) as uow:
-            return await uow.commitments.list_for_employee(
+            commitments = await uow.commitments.list_for_employee(
                 tenant_id, employee_id, statuses
             )
+        return [_view(commitment) for commitment in commitments]
+
+    async def list_overdue_for_employee(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> list[CommitmentView]:
+        """只读取负责人自己的逾期记录。"""
+        self._tenant(tenant_id)
+        _text(str(employee_id), "员工标识", 64)
+        async with self._uow_factory(tenant_id) as uow:
+            commitments = await uow.commitments.list_for_employee(
+                tenant_id, employee_id, [CommitmentStatus.OVERDUE]
+            )
+        return [_view(commitment) for commitment in commitments]
 
 
 __all__ = ("CommitmentServiceImpl",)
