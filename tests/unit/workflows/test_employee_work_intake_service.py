@@ -178,3 +178,30 @@ async def test_confirm_is_single_final_transition() -> None:
 
     with pytest.raises(InvalidStateTransition):
         await service.confirm(TENANT, upload.upload_id, OWNER, _payload("Changed again"))
+
+
+@pytest.mark.asyncio
+async def test_owner_can_read_upload_and_extraction_but_other_employee_cannot() -> None:
+    repository = _Repository()
+    service = _service(repository)
+    upload = await service.register_upload(
+        TENANT,
+        ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+        OWNER,
+        WorkSourceKind.PDF_TEXT,
+        occurred_at=NOW,
+        customer_timezone="Asia/Shanghai",
+    )
+    extraction = await service.record_extraction(
+        TENANT, upload.upload_id, _payload(), extracted_by="team-operations-v1"
+    )
+
+    assert await service.get_upload(TENANT, upload.upload_id, OWNER) == upload.model_copy(
+        update={"status": WorkUploadStatus.AWAITING_CONFIRMATION}
+    )
+    assert await service.get_extraction(TENANT, upload.upload_id, OWNER) == extraction
+
+    with pytest.raises(PermissionDenied):
+        await service.get_upload(TENANT, upload.upload_id, OTHER)
+    with pytest.raises(PermissionDenied):
+        await service.get_extraction(TENANT, upload.upload_id, OTHER)

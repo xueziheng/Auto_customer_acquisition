@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Protocol, runtime_checkable
 
 from fastapi import Depends, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
+from artifact_store.store import RawArtifactKind
 from domains.approvals.service import ApprovalService
 from domains.commitments.service import CommitmentService
 from domains.conversations.service import ConversationService
@@ -64,10 +66,13 @@ from notification_gateway.router import NotificationRouter
 from shared.errors import PermissionDenied, TransientError, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
+    EmployeeId,
     NeedClusterId,
     NeedHypothesisId,
     TenantId,
+    UserId,
     ValidatedNeedId,
+    WorkUploadId,
 )
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
@@ -75,6 +80,12 @@ from tool_gateway.handlers.email_send import (
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 from workflows.email_feedback.unsubscribe import UnsubscribeService
+from workflows.employee_work_intake.schemas import (
+    ExtractionPayload,
+    WorkExtractionView,
+    WorkSourceKind,
+    WorkUploadView,
+)
 from workflows.engine.runner import WorkflowEngine
 
 from .middleware import ApiSettings
@@ -163,6 +174,47 @@ class DemandRadarService(Protocol):
     ) -> NeedClusterView: ...
 
 
+@runtime_checkable
+class WorkUploadApplicationService(Protocol):
+    """API 所需的 Artifact Store + 员工工作版本链窄编排。"""
+
+    @property
+    def maximum_upload_bytes(self) -> int: ...
+
+    async def create_upload(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        *,
+        uploaded_by: UserId | None,
+        artifact_kind: RawArtifactKind,
+        source_kind: WorkSourceKind,
+        content: bytes,
+        mime_type: str,
+        occurred_at: datetime,
+        customer_timezone: str,
+    ) -> WorkUploadView: ...
+
+    async def list_for_employee(
+        self, tenant_id: TenantId, employee_id: EmployeeId, limit: int
+    ) -> list[WorkUploadView]: ...
+
+    async def get_extraction(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> WorkExtractionView | None: ...
+
+    async def confirm(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+        payload: ExtractionPayload,
+    ) -> WorkExtractionView: ...
+
+
 @dataclass(frozen=True)
 class ConfiguredApiDependencies:
     """完整且已配置的 API runtime 依赖。
@@ -197,6 +249,7 @@ class ConfiguredApiDependencies:
     approvals: ApprovalService | None = None
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
+    work_uploads: WorkUploadApplicationService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

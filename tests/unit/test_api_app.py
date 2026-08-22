@@ -112,7 +112,9 @@ _EXPECTED_API_PATHS = {
     "/settings/status",
     "/sourcing/status",
     "/team/status",
-    "/work-uploads/status",
+    "/work-uploads",
+    "/work-uploads/{upload_id}/extraction",
+    "/work-uploads/{upload_id}/confirm",
 }
 
 

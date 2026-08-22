@@ -18,6 +18,7 @@ from agent_runtime.trade_manager import (
     StructuredTradeManagerModelPort,
     TradeManagerAgent,
 )
+from artifact_store.service_impl import RawArtifactStoreImpl
 from connectors.gmail.client import (
     GmailConnector,
     GmailSendRequest,
@@ -25,6 +26,8 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from connectors.object_store.config import S3ObjectStoreSettings
+from connectors.object_store.s3 import S3ObjectBlobTransport
 from connectors.openai import OpenAIJsonModelClient
 from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
 from domains.approvals.service_impl import ApprovalServiceImpl
@@ -111,6 +114,7 @@ from domains.sending_identity.service import (
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
+from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
@@ -137,6 +141,7 @@ from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.tables import OutreachCampaignRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
+from infra.db.work_intake_uow import SqlAlchemyWorkIntakeUnitOfWork
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from notification_gateway.channels.structured_log import StructuredLogChannel
 from notification_gateway.inbox import (
@@ -201,6 +206,7 @@ from workflows.email_feedback.unsubscribe import (
     UnsubscribeService,
     UnsubscribeServiceImpl,
 )
+from workflows.employee_work_intake.service_impl import WorkIntakeServiceImpl
 from workflows.engine.runner import WorkflowRun
 from workflows.human_handoff.flow import (
     HandoffEscalationNotice,
@@ -219,6 +225,7 @@ from .demand_radar import (
     AuthorizedDemandRadarService,
     ProspectingDemandAccountNames,
 )
+from .work_uploads import WorkUploadApplicationServiceImpl
 
 
 @asynccontextmanager
@@ -794,6 +801,7 @@ def build_phase1_dependencies(
     now: Callable[[], datetime],
     manual_send: ManualSendComposition | None = None,
     secret_resolver: SecretResolver | None = None,
+    object_store_settings: S3ObjectStoreSettings | None = None,
 ) -> ConfiguredApiDependencies:
     """装配真实 Postgres、领域服务、workflow、outbox 与通知出口。"""
     tenant = TenantId(settings.tenant_id)
@@ -987,6 +995,35 @@ def build_phase1_dependencies(
         ),
         now=now,
     )
+    work_uploads = None
+    if object_store_settings is not None:
+        object_transport = S3ObjectBlobTransport(
+            object_store_settings,
+            resolved_secret_resolver,
+        )
+        raw_artifacts = RawArtifactStoreImpl(
+            lambda requested_tenant: SqlAlchemyArtifactUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory,
+                requested_tenant,
+            ),
+            object_transport,
+            object_store_settings.raw_max_bytes,
+            now,
+            new_id,
+        )
+        work_intake = WorkIntakeServiceImpl(
+            lambda requested_tenant: SqlAlchemyWorkIntakeUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory,
+                requested_tenant,
+            ),
+            now=now,
+            id_generator=new_id,
+        )
+        work_uploads = WorkUploadApplicationServiceImpl(
+            raw_artifacts,
+            work_intake,
+            object_store_settings.raw_max_bytes,
+        )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -1139,4 +1176,5 @@ def build_phase1_dependencies(
         approvals=approvals,
         conversations=conversations,
         commitments=commitments,
+        work_uploads=work_uploads,
     )

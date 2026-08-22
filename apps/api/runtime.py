@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.schema import (
     DatabaseSchemaError,
 )
@@ -78,11 +79,13 @@ def create_runtime_app() -> FastAPI:
     try:
         engine = create_engine_from(settings.database_url.get_secret_value())
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        object_store_settings = S3ObjectStoreSettings.from_environ(os.environ)
         dependencies = build_phase1_dependencies(
             settings,
             factory,
             now=lambda: datetime.now(UTC),
             secret_resolver=EnvironmentSecretResolver(os.environ),
+            object_store_settings=object_store_settings,
         )
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
         logger.error(

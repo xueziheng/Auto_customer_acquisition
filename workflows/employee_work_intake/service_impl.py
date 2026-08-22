@@ -147,5 +147,33 @@ class WorkIntakeServiceImpl:
                 tenant_id, employee_id, limit
             )
 
+    async def get_upload(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> WorkUploadView:
+        async with self._uow_factory(tenant_id) as uow:
+            upload = await uow.work_intake.get_upload(tenant_id, upload_id)
+            if upload is None:
+                raise ValidationError("员工工作上传不存在")
+            if upload.employee_id != employee_id:
+                raise PermissionDenied("只能查看本人上传的工作资料")
+            return upload
+
+    async def get_extraction(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> WorkExtractionView | None:
+        async with self._uow_factory(tenant_id) as uow:
+            upload = await uow.work_intake.get_upload(tenant_id, upload_id)
+            if upload is None:
+                raise ValidationError("员工工作上传不存在")
+            if upload.employee_id != employee_id:
+                raise PermissionDenied("只能查看本人上传的工作资料")
+            return await uow.work_intake.get_latest_extraction(tenant_id, upload_id)
+
 
 __all__ = ("WorkIntakeServiceImpl",)

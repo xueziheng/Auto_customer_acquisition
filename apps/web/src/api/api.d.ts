@@ -989,15 +989,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/work-uploads/status": {
+    "/work-uploads": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["work_uploads_phase1_status"];
+        /** List Work Uploads */
+        get: operations["list_work_uploads_work_uploads_get"];
+        put?: never;
+        /** Create Work Upload */
+        post: operations["create_work_upload_work_uploads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/work-uploads/{upload_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Work Extraction */
+        post: operations["confirm_work_extraction_work_uploads__upload_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/work-uploads/{upload_id}/extraction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Work Extraction */
+        get: operations["get_work_extraction_work_uploads__upload_id__extraction_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1587,6 +1622,24 @@ export interface components {
          */
         DomainRole: "cold_outreach" | "primary_business" | "transactional";
         /**
+         * EmployeeConfirmationView
+         * @description 追加式人工版本；payload 不覆盖 Agent 原始提取。
+         */
+        EmployeeConfirmationView: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            payload: components["schemas"]["ExtractionPayload"];
+            /** Revision */
+            revision: number;
+        };
+        /**
          * EnrollmentState
          * @enum {string}
          */
@@ -1660,6 +1713,78 @@ export interface components {
             source_url?: string | null;
             /** Summary */
             summary: string;
+        };
+        /** ExtractedCommitment */
+        ExtractedCommitment: {
+            /** Action */
+            action: string;
+            /**
+             * Commitment Type
+             * @enum {string}
+             */
+            commitment_type: "employee" | "customer";
+            /**
+             * Due At
+             * Format: date-time
+             */
+            due_at: string;
+            /** Due At Uncertain */
+            due_at_uncertain: boolean;
+            /** Verbatim */
+            verbatim: string;
+        };
+        /** ExtractedFact */
+        ExtractedFact: {
+            /** Evidence Quote */
+            evidence_quote: string;
+            /**
+             * Fact Type
+             * @enum {string}
+             */
+            fact_type: "customer_statement" | "employee_statement" | "customer_reaction" | "activity";
+            /** Value */
+            value: string;
+        };
+        /**
+         * ExtractedMoneyValue
+         * @description 模型识别到的客户原话金额；仍不是系统计算的最终金额。
+         */
+        ExtractedMoneyValue: {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+        };
+        /** ExtractedNeedField */
+        ExtractedNeedField: {
+            /** Evidence Quote */
+            evidence_quote: string;
+            /** Field Name */
+            field_name: string;
+            /** Value */
+            value: string | components["schemas"]["ExtractedMoneyValue"];
+        };
+        /**
+         * ExtractionPayload
+         * @description Agent 原始提取或员工修订后的完整、版本化结构。
+         */
+        ExtractionPayload: {
+            /**
+             * Commitments
+             * @default []
+             */
+            commitments: components["schemas"]["ExtractedCommitment"][];
+            /**
+             * Facts
+             * @default []
+             */
+            facts: components["schemas"]["ExtractedFact"][];
+            /**
+             * Need Field Updates
+             * @default []
+             */
+            need_field_updates: components["schemas"]["ExtractedNeedField"][];
+            progress_note?: components["schemas"]["ProgressNote"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2352,6 +2477,13 @@ export interface components {
              */
             state: "contract_only";
         };
+        /** ProgressNote */
+        ProgressNote: {
+            /** Evidence Quotes */
+            evidence_quotes: string[];
+            /** Summary */
+            summary: string;
+        };
         /**
          * ProposalView
          * @description 提案视图 —— 老板确认界面的数据源。
@@ -2535,6 +2667,12 @@ export interface components {
             /** Source Url */
             source_url: string | null;
         };
+        /**
+         * RawArtifactKind
+         * @description 只代表外部取得的原始证据。
+         * @enum {string}
+         */
+        RawArtifactKind: "email_raw" | "chat_screenshot" | "pdf" | "word" | "excel" | "web_snapshot" | "image" | "audio";
         /**
          * ReplyCategory
          * @description 回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
@@ -2755,6 +2893,68 @@ export interface components {
          * @enum {string}
          */
         VerificationStatus: "unverified" | "verified" | "risky" | "invalid";
+        /** WorkExtractionView */
+        WorkExtractionView: {
+            confirmation: components["schemas"]["EmployeeConfirmationView"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Extracted By */
+            extracted_by: string;
+            /** Extraction Id */
+            extraction_id: string;
+            payload: components["schemas"]["ExtractionPayload"];
+            /** Upload Id */
+            upload_id: string;
+        };
+        /**
+         * WorkSourceKind
+         * @description 预处理后交给提取能力的受限来源类型。
+         * @enum {string}
+         */
+        WorkSourceKind: "chat_transcript" | "email_text" | "pdf_text" | "spreadsheet_text" | "audio_transcript" | "image_ocr";
+        /**
+         * WorkUploadStatus
+         * @description 上传批次状态；只有 confirmed 能进入后续业务应用。
+         * @enum {string}
+         */
+        WorkUploadStatus: "uploaded" | "extracting" | "awaiting_confirmation" | "confirmed" | "failed";
+        /**
+         * WorkUploadView
+         * @description 上传批次的安全读取模型；不暴露 bytes、对象键或凭证。
+         */
+        WorkUploadView: {
+            /** Account Id */
+            account_id?: string | null;
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Customer Timezone */
+            customer_timezone: string;
+            /** Employee Id */
+            employee_id: string;
+            /** Need Id */
+            need_id?: string | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Opportunity Id */
+            opportunity_id?: string | null;
+            source_kind: components["schemas"]["WorkSourceKind"];
+            status: components["schemas"]["WorkUploadStatus"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Upload Id */
+            upload_id: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -4907,9 +5107,11 @@ export interface operations {
             };
         };
     };
-    work_uploads_phase1_status: {
+    list_work_uploads_work_uploads_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4922,7 +5124,136 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["WorkUploadView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_work_upload_work_uploads_post: {
+        parameters: {
+            query: {
+                artifact_kind: components["schemas"]["RawArtifactKind"];
+                source_kind: components["schemas"]["WorkSourceKind"];
+                occurred_at: string;
+                customer_timezone: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkUploadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_work_extraction_work_uploads__upload_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkExtractionView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_work_extraction_work_uploads__upload_id__extraction_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkExtractionView"] | null;
                 };
             };
             /** @description 请求参数无效 */

@@ -48,5 +48,19 @@ class WorkIntakeService(Protocol):
         self, tenant_id: TenantId, employee_id: EmployeeId, limit: int
     ) -> list[WorkUploadView]: ...
 
+    async def get_upload(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> WorkUploadView: ...
+
+    async def get_extraction(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> WorkExtractionView | None: ...
+
 
 __all__ = ("WorkIntakeService",)
