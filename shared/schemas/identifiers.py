@@ -77,6 +77,9 @@ FxSnapshotId = NewType("FxSnapshotId", str)
 # --- 协作 ---------------------------------------------------------------
 
 CommitmentId = NewType("CommitmentId", str)
+WorkUploadId = NewType("WorkUploadId", str)
+WorkExtractionId = NewType("WorkExtractionId", str)
+EmployeeConfirmationId = NewType("EmployeeConfirmationId", str)
 TaskId = NewType("TaskId", str)
 HandoffId = NewType("HandoffId", str)
 DirectiveId = NewType("DirectiveId", str)
