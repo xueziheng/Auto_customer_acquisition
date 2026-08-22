@@ -3042,3 +3042,128 @@ class CommitmentRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkUploadRow(Base):
+    """员工上传批次；原始 bytes 只存在 Artifact Store。"""
+
+    __tablename__ = "work_uploads"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "upload_id", name="pk_work_uploads"),
+        UniqueConstraint(
+            "tenant_id", "artifact_id", name="uq_work_uploads_artifact"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_work_uploads_artifact",
+        ),
+        CheckConstraint(
+            "source_kind IN ('chat_transcript','email_text','pdf_text',"
+            "'spreadsheet_text','audio_transcript','image_ocr')",
+            name="ck_work_uploads_source_kind",
+        ),
+        CheckConstraint(
+            "status IN ('uploaded','extracting','awaiting_confirmation',"
+            "'confirmed','failed')",
+            name="ck_work_uploads_status",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(upload_id) <> '' AND "
+            "btrim(artifact_id) <> '' AND btrim(employee_id) <> '' AND "
+            "btrim(customer_timezone) <> ''",
+            name="ck_work_uploads_core_nonblank",
+        ),
+        Index(
+            "ix_work_uploads_tenant_employee_created",
+            "tenant_id",
+            "employee_id",
+            "created_at",
+            "upload_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    upload_id: Mapped[str] = mapped_column(String(40))
+    artifact_id: Mapped[str] = mapped_column(String(40))
+    employee_id: Mapped[str] = mapped_column(String(40))
+    source_kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    customer_timezone: Mapped[str] = mapped_column(String(100))
+    account_id: Mapped[str | None] = mapped_column(String(40))
+    opportunity_id: Mapped[str | None] = mapped_column(String(40))
+    need_id: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ExtractedFactRow(Base):
+    """Agent 对某次上传的原始结构化提取；只增不改。"""
+
+    __tablename__ = "extracted_facts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "extraction_id", name="pk_extracted_facts"
+        ),
+        UniqueConstraint(
+            "tenant_id", "upload_id", name="uq_extracted_facts_upload"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "upload_id"],
+            ["work_uploads.tenant_id", "work_uploads.upload_id"],
+            name="fk_extracted_facts_upload",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="ck_extracted_facts_payload_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(extraction_id) <> '' AND "
+            "btrim(upload_id) <> '' AND btrim(extracted_by) <> ''",
+            name="ck_extracted_facts_core_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    extraction_id: Mapped[str] = mapped_column(String(40))
+    upload_id: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
+    extracted_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmployeeConfirmationRow(Base):
+    """员工最终确认版本；与 Agent 原始提取分表且只增不改。"""
+
+    __tablename__ = "employee_confirmations"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "confirmation_id", name="pk_employee_confirmations"
+        ),
+        UniqueConstraint(
+            "tenant_id", "extraction_id", name="uq_employee_confirmations_extraction"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "extraction_id"],
+            ["extracted_facts.tenant_id", "extracted_facts.extraction_id"],
+            name="fk_employee_confirmations_extraction",
+        ),
+        CheckConstraint("revision > 0", name="ck_employee_confirmations_revision"),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="ck_employee_confirmations_payload_jsonb",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(confirmation_id) <> '' AND "
+            "btrim(extraction_id) <> '' AND btrim(confirmed_by) <> ''",
+            name="ck_employee_confirmations_core_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    confirmation_id: Mapped[str] = mapped_column(String(40))
+    extraction_id: Mapped[str] = mapped_column(String(40))
+    revision: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

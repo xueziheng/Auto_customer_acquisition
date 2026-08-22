@@ -50,7 +50,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0028"
+_ALEMBIC_HEAD = "0029"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -85,6 +85,9 @@ EXPECTED_TABLES: tuple[str, ...] = (
     "contact_points",
     "contact_legal_basis",
     "prospecting_erasure_suppressions",
+    "work_uploads",
+    "extracted_facts",
+    "employee_confirmations",
 )
 
 SENDING_IDENTITY_TABLES: tuple[str, ...] = (

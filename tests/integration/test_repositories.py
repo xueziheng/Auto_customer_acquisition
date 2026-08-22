@@ -878,6 +878,19 @@ def test_orm_metadata_parity_with_head() -> None:
         "prospecting_erasure_suppressions": {
             "tenant_id", "value_hash", "erased_at",
         },
+        "work_uploads": {
+            "tenant_id", "upload_id", "artifact_id", "employee_id",
+            "source_kind", "status", "occurred_at", "customer_timezone",
+            "account_id", "opportunity_id", "need_id", "created_at",
+        },
+        "extracted_facts": {
+            "tenant_id", "extraction_id", "upload_id", "payload",
+            "extracted_by", "created_at",
+        },
+        "employee_confirmations": {
+            "tenant_id", "confirmation_id", "extraction_id", "revision",
+            "payload", "confirmed_by", "confirmed_at",
+        },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -982,6 +995,9 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_commitments_tenant_owner_status_due": (
             "tenant_id", "owner", "status", "due_at", "commitment_id",
+        ),
+        "ix_work_uploads_tenant_employee_created": (
+            "tenant_id", "employee_id", "created_at", "upload_id",
         ),
     }
     actual_indexes: dict[str, tuple[str, ...]] = {}
@@ -1193,6 +1209,23 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_prospecting_erasure_suppressions",
             "ck_prospecting_erasure_tenant_nonblank",
             "ck_prospecting_erasure_value_hash",
+        },
+        "work_uploads": {
+            "pk_work_uploads", "uq_work_uploads_artifact",
+            "fk_work_uploads_artifact", "ck_work_uploads_source_kind",
+            "ck_work_uploads_status", "ck_work_uploads_core_nonblank",
+        },
+        "extracted_facts": {
+            "pk_extracted_facts", "uq_extracted_facts_upload",
+            "fk_extracted_facts_upload", "ck_extracted_facts_payload_jsonb",
+            "ck_extracted_facts_core_nonblank",
+        },
+        "employee_confirmations": {
+            "pk_employee_confirmations", "uq_employee_confirmations_extraction",
+            "fk_employee_confirmations_extraction",
+            "ck_employee_confirmations_revision",
+            "ck_employee_confirmations_payload_jsonb",
+            "ck_employee_confirmations_core_nonblank",
         },
     }
     for table, names in expected_constraints.items():
