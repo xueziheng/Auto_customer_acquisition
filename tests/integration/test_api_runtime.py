@@ -97,6 +97,15 @@ def _runtime_env(database_url: str) -> dict[str, str]:
         ),
         "UNSUBSCRIBE_HMAC_2026": "u" * 32,
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "S3_ENDPOINT": "http://127.0.0.1:19000",
+        "S3_BUCKET_ARTIFACTS": "tradeos-test-artifacts",
+        "S3_ACCESS_KEY_REF": "TEST_S3_ACCESS_KEY",
+        "S3_SECRET_KEY_REF": "TEST_S3_SECRET_KEY",
+        "S3_REGION": "us-east-1",
+        "RAW_ARTIFACT_MAX_BYTES": "10485760",
+        "GENERATED_ARTIFACT_MAX_BYTES": "1048576",
+        "TEST_S3_ACCESS_KEY": "test-access-key",
+        "TEST_S3_SECRET_KEY": "test-secret-key",
     }
 
 
@@ -202,6 +211,9 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         assert isinstance(
             dependencies.notification_dedup_store,
             PostgresNotificationDedupStore,
+        )
+        assert type(dependencies.work_uploads).__name__ == (
+            "WorkUploadApplicationServiceImpl"
         )
         assert await app.state.readiness_probe.is_ready() is True
 
