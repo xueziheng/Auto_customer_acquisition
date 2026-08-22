@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import cast
 
@@ -42,7 +41,7 @@ _tenant_logger = logging.getLogger("security.tenant_isolation")
 
 
 def _payload(value: dict[str, object]) -> ExtractionPayload:
-    return ExtractionPayload.model_validate_json(json.dumps(value))
+    return ExtractionPayload.model_validate(value, strict=False)
 
 
 def _upload_view(row: WorkUploadRow) -> WorkUploadView:
