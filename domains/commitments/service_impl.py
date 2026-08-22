@@ -101,6 +101,7 @@ class CommitmentServiceImpl:
             _text(commitment.extracted_by, "承诺提取者", 128)
         if (
             commitment.confirmed_by is not None
+            or commitment.confirmed_at is not None
             or commitment.fulfilled_at is not None
             or commitment.escalated_at is not None
         ):
@@ -159,6 +160,7 @@ class CommitmentServiceImpl:
                     return
                 raise InvalidStateTransition("承诺已确认，不可覆盖确认记录")
             commitment.confirmed_by = confirmed_by
+            commitment.confirmed_at = self._clock()
             if corrected is not None:
                 commitment.due_at = corrected
                 commitment.due_at_uncertain = False

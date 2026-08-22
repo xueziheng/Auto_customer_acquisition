@@ -36,6 +36,8 @@ from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
     ApprovalDecided,
     AuthenticationCheckRequested,
+    CommitmentCreated,
+    CommitmentOverdue,
     ComplaintReceived,
     ContactPointVerified,
     DemandSignalCaptured,
@@ -81,6 +83,8 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "InboundMessageStored": InboundMessageStored,
     "SuppressionAdded": SuppressionAdded,
     "ComplaintReceived": ComplaintReceived,
+    "CommitmentCreated": CommitmentCreated,
+    "CommitmentOverdue": CommitmentOverdue,
     # prospecting 验证状态首次进入 VERIFIED 的 metadata-only 事件。
     "ContactPointVerified": ContactPointVerified,
     # demand 信号捕获即发布（切片 7 producer）：metadata-only（signal_id/

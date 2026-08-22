@@ -206,6 +206,7 @@ async def test_confirm_can_replace_uncertain_due_time_then_fulfill() -> None:
     confirmed = await factory.repository.get(TENANT, item.commitment_id)
     assert confirmed is not None
     assert confirmed.confirmed_by == "employee-reviewer"
+    assert confirmed.confirmed_at == NOW
     assert confirmed.due_at.isoformat() == "2026-08-25T09:30:00+08:00"
     assert confirmed.due_at_uncertain is False
 

@@ -92,6 +92,8 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "SuppressionAdded",
         "AuthenticationCheckRequested",
         "ComplaintReceived",
+        "CommitmentCreated",
+        "CommitmentOverdue",
         "ContactPointVerified",
         "ReplyReceived",
         "InboundMessageStored",

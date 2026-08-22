@@ -2967,3 +2967,78 @@ class ProspectingErasureSuppressionRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(40))
     value_hash: Mapped[str] = mapped_column(String(64))
     erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CommitmentRow(Base):
+    """员工和客户承诺；确认前不进入到期扫描。"""
+
+    __tablename__ = "commitments"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "commitment_id", name="pk_commitments"),
+        UniqueConstraint(
+            "tenant_id",
+            "source_message_id",
+            "action",
+            name="uq_commitments_source_action",
+        ),
+        CheckConstraint(
+            "commitment_type IN ('employee','customer')",
+            name="ck_commitments_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','waiting_customer','fulfilled','overdue','cancelled')",
+            name="ck_commitments_status",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(commitment_id) <> '' AND "
+            "btrim(owner) <> '' AND btrim(action) <> '' AND "
+            "btrim(source_message_id) <> '' AND btrim(verbatim) <> ''",
+            name="ck_commitments_core_nonblank",
+        ),
+        CheckConstraint(
+            "(extracted_by IS NULL OR btrim(extracted_by) <> '') AND "
+            "char_length(action) <= 4000 AND char_length(verbatim) <= 8000",
+            name="ck_commitments_optional_nonblank",
+        ),
+        CheckConstraint(
+            "(confirmed_by IS NULL AND confirmed_at IS NULL) OR "
+            "(confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)",
+            name="ck_commitments_confirmation_pair",
+        ),
+        CheckConstraint(
+            "(status = 'fulfilled' AND fulfilled_at IS NOT NULL) OR "
+            "(status <> 'fulfilled' AND fulfilled_at IS NULL)",
+            name="ck_commitments_fulfilled_pair",
+        ),
+        Index(
+            "ix_commitments_tenant_owner_status_due",
+            "tenant_id",
+            "owner",
+            "status",
+            "due_at",
+            "commitment_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    commitment_id: Mapped[str] = mapped_column(String(40))
+    commitment_type: Mapped[str] = mapped_column(String(16))
+    owner: Mapped[str] = mapped_column(String(40))
+    action: Mapped[str] = mapped_column(Text)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    due_at_uncertain: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false")
+    )
+    source_message_id: Mapped[str] = mapped_column(String(200))
+    verbatim: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(32), server_default=text("'pending'")
+    )
+    account_id: Mapped[str | None] = mapped_column(String(40))
+    opportunity_id: Mapped[str | None] = mapped_column(String(40))
+    extracted_by: Mapped[str | None] = mapped_column(String(128))
+    confirmed_by: Mapped[str | None] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

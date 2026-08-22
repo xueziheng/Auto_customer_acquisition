@@ -58,6 +58,7 @@ class Commitment:
         extracted_by:     提取的模型版本
         confirmed_by:     确认的员工。**未确认不进提醒管道**——
                           模型会把客套话当承诺
+        confirmed_at:     员工首次确认时间，与确认人一起构成修改留痕
         created_at, fulfilled_at, escalated_at
     """
 
@@ -76,6 +77,7 @@ class Commitment:
     opportunity_id: OpportunityId | None = None
     extracted_by: str | None = None
     confirmed_by: EmployeeId | None = None
+    confirmed_at: datetime | None = None
     fulfilled_at: datetime | None = None
     escalated_at: datetime | None = None
 
