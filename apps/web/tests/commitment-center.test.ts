@@ -157,12 +157,14 @@ describe("CommitmentCenter", () => {
     (button as HTMLButtonElement).click();
 
     await eventually(() => {
-      expect(confirmations).toEqual([
-        {
-          id: pending.commitment_id,
-          correctedDueAt: "2026-08-25T09:30:00+08:00",
-        },
-      ]);
+      expect(confirmations).toHaveLength(1);
+      expect(confirmations[0]?.id).toBe(pending.commitment_id);
+      expect(confirmations[0]?.correctedDueAt).toMatch(
+        /^2026-08-25T09:30:00[+-]\d{2}:\d{2}$/,
+      );
+      expect(new Date(confirmations[0]?.correctedDueAt ?? "").getTime()).toBe(
+        new Date("2026-08-25T09:30").getTime(),
+      );
     });
   });
 
