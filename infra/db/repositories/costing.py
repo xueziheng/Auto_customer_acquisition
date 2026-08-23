@@ -188,14 +188,29 @@ class CostSheetRepositoryImpl(_TenantBoundRepository, CostSheetRepository):
     async def get(
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId
     ) -> CostSheet | None:
+        return await self._get(tenant_id, cost_sheet_id, for_update=False)
+
+    async def get_for_update(
+        self, tenant_id: TenantId, cost_sheet_id: CostSheetId
+    ) -> CostSheet | None:
+        return await self._get(tenant_id, cost_sheet_id, for_update=True)
+
+    async def _get(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        *,
+        for_update: bool,
+    ) -> CostSheet | None:
         self._require_tenant(tenant_id, "cost_sheet_get")
+        statement = select(CostSheetRow).where(
+            CostSheetRow.tenant_id == str(self._tenant_id),
+            CostSheetRow.cost_sheet_id == str(cost_sheet_id),
+        )
+        if for_update:
+            statement = statement.with_for_update()
         row = (
-            await self._session.execute(
-                select(CostSheetRow).where(
-                    CostSheetRow.tenant_id == str(self._tenant_id),
-                    CostSheetRow.cost_sheet_id == str(cost_sheet_id),
-                )
-            )
+            await self._session.execute(statement)
         ).scalar_one_or_none()
         if row is None:
             return None

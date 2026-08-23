@@ -9,7 +9,10 @@ def test_all_phase1_shallow_module_routers_are_mounted() -> None:
     assert {
         "/products/status",
         "/sourcing/status",
-        "/costing-quotes/status",
+        "/costing-quotes/opportunities/{opportunity_id}/cost-sheets",
+        "/costing-quotes/cost-sheets/{cost_sheet_id}",
+        "/costing-quotes/cost-sheets/{cost_sheet_id}/items",
+        "/costing-quotes/cost-sheets/{cost_sheet_id}/readiness",
         "/team/employees",
         "/team/territory",
         "/work-uploads",

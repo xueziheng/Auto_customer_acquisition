@@ -8,16 +8,20 @@ from typing import Protocol, runtime_checkable
 from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
 from domains.costing.models import (
     CostBreakdown,
-    CostItem,
     CostItemType,
     CostSheet,
     CostSheetVersion,
     MarginRule,
 )
-from domains.costing.schemas import CostSheetView, QuoteReadiness
+from domains.costing.permissions import CostingActor
+from domains.costing.schemas import (
+    CostItemCreate,
+    CostSheetCreate,
+    CostSheetView,
+    QuoteReadiness,
+)
 from shared.schemas.identifiers import (
     CostSheetId,
-    EmployeeId,
     OpportunityId,
     TenantId,
 )
@@ -153,10 +157,9 @@ class CostingService(Protocol):
         self,
         tenant_id: TenantId,
         opportunity_id: OpportunityId,
-        version_type: str,
-        quantity: int,
-        quote_currency: str,
-        created_by: EmployeeId | None = None,
+        command: CostSheetCreate,
+        *,
+        actor: CostingActor,
     ) -> CostSheetId:
         """创建成本表。
 
@@ -166,7 +169,12 @@ class CostingService(Protocol):
         ...
 
     async def add_item(
-        self, tenant_id: TenantId, cost_sheet_id: CostSheetId, item: CostItem
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        command: CostItemCreate,
+        *,
+        actor: CostingActor,
     ) -> None:
         """添加成本项。
 
@@ -177,59 +185,35 @@ class CostingService(Protocol):
         """
         ...
 
-    async def lock_for_quote(
-        self, tenant_id: TenantId, cost_sheet_id: CostSheetId
-    ) -> QuoteReadiness:
-        """锁定成本表供报价使用，返回可报价性检查结果。
-
-        **硬边界 7 的门禁执行点：**
-        - ``has_indicative_items()`` 为 True 且无 ``risk_acceptance``
-          → 拒绝锁定，抛 ``IndicativePriceInQuoteError``
-        - 版本类型不是 QUOTED → 拒绝
-        - 无汇率快照 → 拒绝
-
-        通过后 ``locked_at`` 置位，此后**不可变**。供应商改价就开
-        新版本——历史报价的依据必须永远可查。
-        """
-        ...
-
-    async def accept_indicative_risk(
+    async def assess_for_quote(
         self,
         tenant_id: TenantId,
         cost_sheet_id: CostSheetId,
-        accepted_by: EmployeeId,
-        justification: str,
-    ) -> None:
-        """人工接受 INDICATIVE 风险。硬边界 7 的唯一例外通道。
+        expected_item_types: tuple[str, ...],
+        *,
+        actor: CostingActor,
+    ) -> QuoteReadiness:
+        """只读检查可报价性，不执行锁定或风险接受。
 
-        ``justification`` 必填非空。这个操作本身要走 ``domains/approvals``
-        （调用方负责），这里只落记录。
-        """
-        ...
-
-    async def get_breakdown(
-        self, tenant_id: TenantId, cost_sheet_id: CostSheetId
-    ) -> CostBreakdown:
-        """取计算结果。内部调 ``compute_breakdown``。"""
-        ...
-
-    async def check_margin(
-        self, tenant_id: TenantId, cost_sheet_id: CostSheetId, proposed_price: str
-    ) -> tuple[bool, Decimal]:
-        """检查拟议价格是否满足利润底线，返回 ``(通过, 实际利润率)``。
-
-        不通过时调用方必须走审批，且审批人不能是机会负责人。
-        ``proposed_price`` 传字符串由本方法解析为 Decimal——
-        避免调用方传 float 的可能性。
+        锁定与参考价风险接受必须接入审批事实后才能公开，不能把只读检查
+        伪装成已获准报价。
         """
         ...
 
     async def get_sheet(
-        self, tenant_id: TenantId, cost_sheet_id: CostSheetId
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        *,
+        actor: CostingActor,
     ) -> CostSheetView: ...
 
     async def list_versions(
-        self, tenant_id: TenantId, opportunity_id: OpportunityId
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: CostingActor,
     ) -> list[CostSheetView]:
         """一个机会的全部成本表版本，按类型和版本号排序。"""
         ...

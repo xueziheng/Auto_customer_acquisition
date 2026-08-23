@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from domains.costing.models import CostSheet, MarginRule
 from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId
@@ -18,6 +18,12 @@ class CostSheetRepository(Protocol):
     async def get(
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId
     ) -> CostSheet | None: ...
+
+    async def get_for_update(
+        self, tenant_id: TenantId, cost_sheet_id: CostSheetId
+    ) -> CostSheet | None:
+        """锁行后读取，供追加成本项等读改写操作避免并发丢更新。"""
+        ...
 
     async def update(self, sheet: CostSheet) -> None:
         """更新成本表。
@@ -50,3 +56,23 @@ class MarginRuleRepository(Protocol):
         ...
 
     async def set_rule(self, rule: MarginRule) -> None: ...
+
+
+@runtime_checkable
+class CostingUnitOfWork(Protocol):
+    sheets: CostSheetRepository
+    margin_rules: MarginRuleRepository
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+
+@runtime_checkable
+class CostingUnitOfWorkFactory(Protocol):
+    def __call__(self, tenant_id: TenantId) -> CostingUnitOfWork: ...

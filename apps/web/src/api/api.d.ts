@@ -191,17 +191,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/costing-quotes/status": {
+    "/costing-quotes/cost-sheets/{cost_sheet_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["costing_quotes_phase1_status"];
+        /** Get Cost Sheet */
+        get: operations["get_cost_sheet_costing_quotes_cost_sheets__cost_sheet_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/cost-sheets/{cost_sheet_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Cost Item */
+        post: operations["add_cost_item_costing_quotes_cost_sheets__cost_sheet_id__items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/cost-sheets/{cost_sheet_id}/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Assess Quote Readiness */
+        post: operations["assess_quote_readiness_costing_quotes_cost_sheets__cost_sheet_id__readiness_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/opportunities/{opportunity_id}/cost-sheets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cost Sheets */
+        get: operations["list_cost_sheets_costing_quotes_opportunities__opportunity_id__cost_sheets_get"];
+        put?: never;
+        /** Create Cost Sheet */
+        post: operations["create_cost_sheet_costing_quotes_opportunities__opportunity_id__cost_sheets_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1610,6 +1662,125 @@ export interface components {
             required_actions: string[];
         };
         /**
+         * CostItemCreate
+         * @description 人工确认成本项；金额在 JSON 边界必须是十进制字符串。
+         */
+        CostItemCreate: {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+            /** Is Per Unit */
+            is_per_unit: boolean;
+            /** Item Type */
+            item_type: string;
+            /** Note */
+            note?: string | null;
+            /** Price Basis */
+            price_basis: string;
+            /** Source Ref */
+            source_ref: string;
+        };
+        /** CostItemView */
+        CostItemView: {
+            amount: components["schemas"]["Money"];
+            /** Entered By Id */
+            entered_by_id?: string | null;
+            /** Entered By Name */
+            entered_by_name?: string | null;
+            /**
+             * Is Pending Confirmation
+             * @default false
+             */
+            is_pending_confirmation: boolean;
+            /** Is Per Unit */
+            is_per_unit: boolean;
+            /** Item Label */
+            item_label: string;
+            /** Item Type */
+            item_type: string;
+            /** Note */
+            note?: string | null;
+            /** Price Basis */
+            price_basis: string;
+            /** Source Ref */
+            source_ref?: string | null;
+        };
+        /**
+         * CostSheetCreate
+         * @description 创建成本表的公共命令；租户与录入人由服务端身份绑定。
+         */
+        CostSheetCreate: {
+            /** Base Currency */
+            base_currency: string;
+            /** Fx Rates */
+            fx_rates?: components["schemas"]["FxRateCreate"][];
+            /** Fx Snapshot Id */
+            fx_snapshot_id?: string | null;
+            /** Quantity */
+            quantity: number;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Version Type */
+            version_type: string;
+        };
+        /**
+         * CostSheetCreated
+         * @description 成本表创建结果。
+         */
+        CostSheetCreated: {
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+        };
+        /**
+         * CostSheetView
+         * @description 成本表视图。
+         *
+         *     ``breakdown`` 为 None 表示还算不了（成本项为空或未锁定汇率）。
+         */
+        CostSheetView: {
+            /** Base Currency */
+            base_currency: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Fx Rate Display */
+            fx_rate_display?: string | null;
+            /**
+             * Fx Rates
+             * @default []
+             */
+            fx_rates: components["schemas"]["FxRateView"][];
+            /** Fx Snapshot Id */
+            fx_snapshot_id?: string | null;
+            /** Has Indicative Items */
+            has_indicative_items: boolean;
+            /** Is Locked */
+            is_locked: boolean;
+            /** Items */
+            items: components["schemas"]["CostItemView"][];
+            /** Margin Rate */
+            margin_rate?: string | null;
+            minimum_sellable_price?: components["schemas"]["Money"] | null;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quantity */
+            quantity: number;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Risk Accepted By */
+            risk_accepted_by?: string | null;
+            unit_full_cost?: components["schemas"]["Money"] | null;
+            /** Version Number */
+            version_number: number;
+            /** Version Type */
+            version_type: string;
+        };
+        /**
          * DemandSignalView
          * @description 需求雷达信号视图；事实观察与可能需求保持结构分离。
          */
@@ -1867,6 +2038,41 @@ export interface components {
              */
             need_field_updates: components["schemas"]["ExtractedNeedField"][];
             progress_note?: components["schemas"]["ProgressNote"] | null;
+        };
+        /**
+         * FxRateCreate
+         * @description 人工录入的不可变汇率快照明细。
+         */
+        FxRateCreate: {
+            /** Base Currency */
+            base_currency: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Rate */
+            rate: string;
+            /** Source */
+            source: string;
+        };
+        /** FxRateView */
+        FxRateView: {
+            /** Base Currency */
+            base_currency: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Rate */
+            rate: string;
+            /** Source */
+            source: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2748,6 +2954,34 @@ export interface components {
             source_type: string;
             /** Source Url */
             source_url: string | null;
+        };
+        /**
+         * QuoteReadiness
+         * @description 只读可报价性检查结果，不代表成本表已锁定或报价已获审批。
+         *
+         *     字段：
+         *         ready
+         *         blockers:   不能报价的原因清单（人类可读）
+         *         indicative_items:  仍是参考价的成本项
+         *         missing_items:     对照期望清单的漏项
+         */
+        QuoteReadiness: {
+            /** Blockers */
+            blockers?: string[];
+            /** Indicative Items */
+            indicative_items?: string[];
+            /** Missing Items */
+            missing_items?: string[];
+            /** Ready */
+            ready: boolean;
+        };
+        /**
+         * QuoteReadinessCheck
+         * @description 人工确认的业务场景成本项清单；检查本身不锁定成本表。
+         */
+        QuoteReadinessCheck: {
+            /** Expected Item Types */
+            expected_item_types: string[];
         };
         /**
          * RawArtifactKind
@@ -3641,11 +3875,13 @@ export interface operations {
             };
         };
     };
-    costing_quotes_phase1_status: {
+    get_cost_sheet_costing_quotes_cost_sheets__cost_sheet_id__get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                cost_sheet_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -3656,7 +3892,177 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["CostSheetView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    add_cost_item_costing_quotes_cost_sheets__cost_sheet_id__items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cost_sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostItemCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    assess_quote_readiness_costing_quotes_cost_sheets__cost_sheet_id__readiness_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cost_sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteReadinessCheck"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteReadiness"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_cost_sheets_costing_quotes_opportunities__opportunity_id__cost_sheets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostSheetView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_cost_sheet_costing_quotes_opportunities__opportunity_id__cost_sheets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostSheetCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostSheetCreated"];
                 };
             };
             /** @description 请求参数无效 */

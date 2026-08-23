@@ -33,6 +33,8 @@ from domains.approvals.service import ApprovalService, ApprovalState, ApprovalTy
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.commitments.service_impl import CommitmentServiceImpl
 from domains.conversations.service_impl import ConversationServiceImpl
+from domains.costing.permissions import Phase1CostingAuthorizer
+from domains.costing.service_impl import CostingServiceImpl
 from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
 from domains.directives.service_impl import DirectiveServiceImpl
@@ -117,6 +119,7 @@ from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
@@ -1146,6 +1149,13 @@ def build_phase1_dependencies(
         PostgresRunAuditRepository(factory),
         Phase1RunAuditAuthorizer(tenant),
     )
+    costing = CostingServiceImpl(
+        lambda requested_tenant: SqlAlchemyCostingUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        Phase1CostingAuthorizer(tenant),
+        now=now,
+    )
     outbox = OutboxDeliverer(
         factory,
         tenant,
@@ -1182,6 +1192,7 @@ def build_phase1_dependencies(
         approvals=approvals,
         conversations=conversations,
         commitments=commitments,
+        costing=costing,
         work_uploads=work_uploads,
         run_audit=run_audit,
     )

@@ -78,7 +78,7 @@ const router = createRouter({
     {
       path: "/costing-quotes",
       name: "costing-quotes",
-      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      component: () => import("./views/costing-quotes/CostingQuotes.vue"),
       meta: { phase: "phase1-manual", operation: "costing-quotes" },
     },
     {

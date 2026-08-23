@@ -14,6 +14,7 @@ from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
 from domains.commitments.service import CommitmentService
 from domains.conversations.service import ConversationService
+from domains.costing.service import CostingService
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
@@ -257,6 +258,7 @@ class ConfiguredApiDependencies:
     approvals: ApprovalService | None = None
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
+    costing: CostingService | None = None
     work_uploads: WorkUploadApplicationService | None = None
     run_audit: RunAuditService | None = None
     configured: bool = True

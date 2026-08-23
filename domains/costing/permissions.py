@@ -1,0 +1,86 @@
+"""成本域权限契约与 Phase 1 默认拒绝矩阵。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Protocol, runtime_checkable
+
+from shared.errors import PermissionDenied, ValidationError
+from shared.schemas.identifiers import TenantId
+
+
+class CostingAction(str, Enum):
+    """成本域当前开放的安全动作。"""
+
+    SHEET_READ = "cost_sheet:read"
+    SHEET_CREATE = "cost_sheet:create"
+    ITEM_ADD = "cost_item:add"
+    QUOTE_READINESS_ASSESS = "quote_readiness:assess"
+
+
+class CostingScope(str, Enum):
+    """Phase 1 成本数据只开放显式租户级后台角色。"""
+
+    UNPRIVILEGED = "unprivileged"
+    TENANT = "tenant"
+
+
+@dataclass(frozen=True)
+class CostingActor:
+    """由员工公共身份确定性派生，绝不从请求体读取。"""
+
+    actor_id: str
+    role: str
+    scope: CostingScope
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor_id, str) or not self.actor_id.strip():
+            raise ValidationError("成本操作身份无效")
+        if not isinstance(self.role, str) or not self.role.strip():
+            raise ValidationError("成本操作角色无效")
+        if not isinstance(self.scope, CostingScope):
+            raise ValidationError("成本操作范围无效")
+
+
+@runtime_checkable
+class CostingAuthorizer(Protocol):
+    def require(
+        self,
+        actor: CostingActor,
+        action: CostingAction,
+        tenant_id: TenantId,
+    ) -> str: ...
+
+
+class Phase1CostingAuthorizer:
+    """按 Product 内部视图已有角色边界开放人工成本操作。"""
+
+    _ALLOWED_ROLES = frozenset({"boss", "product", "sourcing", "finance"})
+
+    def __init__(self, tenant_id: TenantId) -> None:
+        self._tenant_id = tenant_id
+
+    def require(
+        self,
+        actor: CostingActor,
+        action: CostingAction,
+        tenant_id: TenantId,
+    ) -> str:
+        if (
+            tenant_id != self._tenant_id
+            or not isinstance(action, CostingAction)
+            or actor.scope is not CostingScope.TENANT
+            or actor.role not in self._ALLOWED_ROLES
+        ):
+            raise PermissionDenied("Phase 1 成本授权拒绝")
+        return f"phase1:{actor.role}:{actor.scope.value}:{action.value}"
+
+
+__all__ = (
+    "CostingAction",
+    "CostingActor",
+    "CostingAuthorizer",
+    "CostingScope",
+    "Phase1CostingAuthorizer",
+)
