@@ -103,3 +103,9 @@ class EmployeeService(Protocol):
     async def list_assignments(
         self, tenant_id: TenantId, employee_id: EmployeeId, *, actor: Actor
     ) -> list[TerritoryAssignmentView]: ...
+
+    async def list_territory_matrix(
+        self, tenant_id: TenantId, *, actor: Actor
+    ) -> list[TerritoryAssignmentView]:
+        """列出当前活跃员工的完整分配矩阵，过滤停用员工遗留规则并稳定排序。"""
+        ...

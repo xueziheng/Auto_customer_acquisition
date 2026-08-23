@@ -972,15 +972,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/team/status": {
+    "/team/employees": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["team_phase1_status"];
+        /** List Team Employees */
+        get: operations["list_team_employees_team_employees_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team/territory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Team Territory */
+        get: operations["list_team_territory_team_territory_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1655,6 +1672,37 @@ export interface components {
             payload: components["schemas"]["ExtractionPayload"];
             /** Revision */
             revision: number;
+        };
+        /**
+         * EmployeeView
+         * @description 员工公共视图。``role`` 用字符串（不引内部 ``Role`` 枚举）。
+         */
+        EmployeeView: {
+            /** Employee Id */
+            employee_id: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /** Languages */
+            languages?: string[];
+            /** Manager Id */
+            manager_id?: string | null;
+            /** Max Active Accounts */
+            max_active_accounts?: number | null;
+            /** Name */
+            name: string;
+            /** Role */
+            role: string;
+            /** Team Id */
+            team_id?: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Timezone */
+            timezone?: string | null;
+            /** User Id */
+            user_id?: string | null;
         };
         /**
          * EnrollmentState
@@ -2823,6 +2871,39 @@ export interface components {
          * @enum {string}
          */
         SubjectType: "legal_entity" | "sole_trader" | "natural_person";
+        /**
+         * TerritoryAssignmentView
+         * @description Territory Matrix 规则公共视图。
+         */
+        TerritoryAssignmentView: {
+            /** Backup Employee Id */
+            backup_employee_id?: string | null;
+            /** Buyer Types */
+            buyer_types?: string[];
+            /** Countries */
+            countries?: string[];
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /** Effective Until */
+            effective_until?: string | null;
+            /** Employee Id */
+            employee_id: string;
+            /** Languages */
+            languages?: string[];
+            /** Manager Id */
+            manager_id?: string | null;
+            /** Need Categories */
+            need_categories?: string[];
+            /** Priority */
+            priority: number;
+            /** Product Categories */
+            product_categories?: string[];
+            /** Tenant Id */
+            tenant_id: string;
+        };
         /**
          * ValidatedNeedEvidence
          * @description 已验证需求的证据契约（S3-6 R5/F6）。
@@ -5086,7 +5167,7 @@ export interface operations {
             };
         };
     };
-    team_phase1_status: {
+    list_team_employees_team_employees_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -5101,7 +5182,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["EmployeeView"][];
                 };
             };
             /** @description 请求参数无效 */
@@ -5113,8 +5194,28 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
-            /** @description Forbidden */
-            403: {
+        };
+    };
+    list_team_territory_team_territory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerritoryAssignmentView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

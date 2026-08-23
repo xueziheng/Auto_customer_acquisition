@@ -492,3 +492,30 @@ class EmployeeServiceImpl:
         self._authorize(actor, EmployeeAction.ASSIGNMENT_LIST, tenant_id)
         rules = await self._territories.list_by_employee(tenant_id, employee_id)
         return [self._to_assignment_view(r) for r in rules]
+
+    async def list_territory_matrix(
+        self, tenant_id: TenantId, *, actor: Actor
+    ) -> list[TerritoryAssignmentView]:
+        self._authorize(actor, EmployeeAction.ASSIGNMENT_LIST, tenant_id)
+        active = sorted(
+            await self._employees.list_active(tenant_id),
+            key=lambda employee: str(employee.employee_id),
+        )
+        rules = [
+            rule
+            for employee in active
+            for rule in await self._territories.list_by_employee(
+                tenant_id, employee.employee_id
+            )
+        ]
+        return [
+            self._to_assignment_view(rule)
+            for rule in sorted(
+                rules,
+                key=lambda item: (
+                    item.priority,
+                    str(item.employee_id),
+                    item.effective_from,
+                ),
+            )
+        ]

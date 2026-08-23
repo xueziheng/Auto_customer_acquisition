@@ -738,6 +738,27 @@ async def test_service_returns_public_views_not_models() -> None:
     assert emp_view.role == "sales"  # 字符串，不引内部 Role 枚举
 
 
+async def test_list_territory_matrix_is_tenant_bound_and_stably_ordered() -> None:
+    service, _er, _tr, _own, auth, _audit = _make_service(
+        employees=[_emp("e-2"), _emp("e-1"), _emp("inactive", active=False)],
+        rules=[
+            _rule("e-1", priority=2, need="hinges"),
+            _rule("inactive", priority=0, need="ignored"),
+            _rule("e-2", priority=1, buyer="wholesaler"),
+            _rule("e-1", priority=1, buyer="retailer"),
+        ],
+    )
+
+    matrix = await service.list_territory_matrix(TENANT, actor=ACTOR)
+
+    assert [(item.priority, item.employee_id) for item in matrix] == [
+        (1, EmployeeId("e-1")),
+        (1, EmployeeId("e-2")),
+        (2, EmployeeId("e-1")),
+    ]
+    assert auth.calls[-1][1] is EmployeeAction.ASSIGNMENT_LIST
+
+
 # --- 服务层授权：所有公开读写判权、未知 action 默认拒绝、审计仅白名单字段 --------------
 
 
@@ -762,6 +783,8 @@ async def test_all_public_reads_and_writes_authorize() -> None:
     await service.list_active(TENANT, actor=ACTOR)
     actions.append(EmployeeAction.EMPLOYEE_LIST)
     await service.list_assignments(TENANT, EmployeeId("e-1"), actor=ACTOR)
+    actions.append(EmployeeAction.ASSIGNMENT_LIST)
+    await service.list_territory_matrix(TENANT, actor=ACTOR)
     actions.append(EmployeeAction.ASSIGNMENT_LIST)
 
     called = [a for _actor, a, _scope, _t in auth.calls]
