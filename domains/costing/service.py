@@ -11,6 +11,7 @@ from domains.costing.models import (
     CostItem,
     CostItemType,
     CostSheet,
+    CostSheetVersion,
     MarginRule,
 )
 from domains.costing.schemas import CostSheetView, QuoteReadiness
@@ -20,12 +21,80 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
-from shared.schemas.money import CurrencyCode, Money, convert
+from shared.schemas.money import CurrencyCode, Money, PriceBasis, convert
 
 
 def cost_item_type_values() -> tuple[str, ...]:
     """返回成本项公共词表，供上层校验建议而不导入域内部模型。"""
     return tuple(item_type.value for item_type in CostItemType)
+
+
+def assess_quote_readiness(
+    sheet: CostSheet,
+    expected_item_types: list[CostItemType] | None = None,
+) -> QuoteReadiness:
+    """在锁定前一次返回全部可确定的报价阻断原因。
+
+    本函数只检查结构化事实，不执行锁定，也不推断业务场景应有哪些成本
+    项。调用方必须显式传入场景清单；参考价风险只有已留痕的人工接受记录
+    才能解除阻断。
+    """
+    confirmed_items = [item for item in sheet.items if item.entered_by is not None]
+    blockers: list[str] = []
+    if sheet.version_type is not CostSheetVersion.QUOTED:
+        blockers.append("只有 QUOTED 版本可以锁定用于客户报价")
+    if not confirmed_items:
+        blockers.append("成本表没有已确认成本项")
+    if not isinstance(sheet.fx_snapshot_id, str) or not sheet.fx_snapshot_id.strip():
+        blockers.append("QUOTED 成本表必须绑定汇率快照")
+
+    indicative_items = list(
+        dict.fromkeys(
+            item.item_type.value
+            for item in confirmed_items
+            if item.price_basis == PriceBasis.INDICATIVE
+        )
+    )
+    if indicative_items and sheet.risk_acceptance is None:
+        blockers.append("含参考价成本项，必须取得供应商实报价或完成人工风险接受")
+    unsupported_bases = sorted(
+        {
+            item.price_basis
+            for item in confirmed_items
+            if item.price_basis not in {PriceBasis.QUOTED, PriceBasis.INDICATIVE}
+        }
+    )
+    blockers.extend(
+        f"含 {basis} 成本基准；客户报价只允许 quoted，indicative 仅可经人工风险接受"
+        for basis in unsupported_bases
+    )
+
+    available_rates = {rate.base for rate in sheet.fx_rates}
+    missing_currencies = sorted(
+        {
+            item.amount.currency
+            for item in confirmed_items
+            if item.amount.currency != sheet.base_currency
+            and item.amount.currency not in available_rates
+        }
+    )
+    blockers.extend(
+        f"汇率快照缺少 {currency} 到 {sheet.base_currency} 的直连汇率"
+        for currency in missing_currencies
+    )
+
+    missing_items = [
+        item_type.value
+        for item_type in sheet.missing_item_types(expected_item_types or [])
+    ]
+    if missing_items:
+        blockers.append("成本表缺少业务场景要求的成本项")
+    return QuoteReadiness(
+        ready=not blockers,
+        blockers=blockers,
+        indicative_items=indicative_items,
+        missing_items=missing_items,
+    )
 
 
 def compute_unit_full_cost(sheet: CostSheet) -> Money:
