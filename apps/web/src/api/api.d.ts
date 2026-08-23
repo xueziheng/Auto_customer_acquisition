@@ -5159,7 +5159,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {

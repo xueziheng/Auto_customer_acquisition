@@ -3,7 +3,24 @@ import createClient, {
   type Middleware,
 } from "openapi-fetch";
 
-import type { paths } from "./api";
+import type { components, paths } from "./api";
+
+type RawArtifactKind = components["schemas"]["RawArtifactKind"];
+type WorkSourceKind = components["schemas"]["WorkSourceKind"];
+type WorkUploadView = components["schemas"]["WorkUploadView"];
+
+export interface WorkArtifactUpload {
+  artifactKind: RawArtifactKind;
+  body: Blob;
+  customerTimezone: string;
+  occurredAt: string;
+  sourceKind: WorkSourceKind;
+}
+
+export interface WorkArtifactUploadResult {
+  data?: WorkUploadView;
+  response: Response;
+}
 
 export class WebIdentityError extends Error {}
 
@@ -66,17 +83,21 @@ const runtimeIdentityProvider: WebIdentityProvider = {
 function identityMiddleware(provider: WebIdentityProvider): Middleware {
   return {
     onRequest({ request }): Request {
-      const identity = provider.current();
-      const headers = new Headers(request.headers);
-      headers.delete("X-Tenant-Id");
-      headers.delete("X-Employee-Id");
-      if (identity) {
-        headers.set("X-Tenant-Id", identity.tenantId);
-        headers.set("X-Employee-Id", identity.employeeId);
-      }
-      return new Request(request, { headers });
+      return bindIdentity(request, provider);
     },
   };
+}
+
+function bindIdentity(request: Request, provider: WebIdentityProvider): Request {
+  const identity = provider.current();
+  const headers = new Headers(request.headers);
+  headers.delete("X-Tenant-Id");
+  headers.delete("X-Employee-Id");
+  if (identity) {
+    headers.set("X-Tenant-Id", identity.tenantId);
+    headers.set("X-Employee-Id", identity.employeeId);
+  }
+  return new Request(request, { headers });
 }
 
 export function createApiClient(
@@ -88,7 +109,40 @@ export function createApiClient(
     ...options,
   });
   client.use(identityMiddleware(identityProvider));
-  return client;
+  const baseUrl = options.baseUrl ?? import.meta.env.VITE_API_BASE_URL ?? globalThis.location.origin;
+  const transport = options.fetch ?? globalThis.fetch;
+  const RequestConstructor = options.Request ?? Request;
+
+  async function uploadWorkArtifact(
+    upload: WorkArtifactUpload,
+  ): Promise<WorkArtifactUploadResult> {
+    const query = new URLSearchParams({
+      artifact_kind: upload.artifactKind,
+      customer_timezone: upload.customerTimezone,
+      occurred_at: upload.occurredAt,
+      source_kind: upload.sourceKind,
+    });
+    const request = bindIdentity(
+      new RequestConstructor(
+        `${baseUrl.replace(/\/$/, "")}/work-uploads?${query.toString()}`,
+        {
+          body: upload.body,
+          headers: {
+            "Content-Type": upload.body.type || "application/octet-stream",
+          },
+          method: "POST",
+        },
+      ),
+      identityProvider,
+    );
+    const response = await transport(request);
+    const data = response.status === 201
+      ? await response.json() as WorkUploadView
+      : undefined;
+    return { data, response };
+  }
+
+  return Object.assign(client, { uploadWorkArtifact });
 }
 
 export const apiClient = createApiClient();

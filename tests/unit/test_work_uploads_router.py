@@ -166,6 +166,21 @@ def test_upload_binds_tenant_and_employee_without_accepting_them_in_body() -> No
     assert str(EMPLOYEE) not in response.request.url.query.decode()
 
 
+def test_upload_openapi_declares_required_binary_body() -> None:
+    schema = _app(_WorkUploads()).openapi()
+
+    request_body = schema["paths"]["/work-uploads"]["post"]["requestBody"]
+
+    assert request_body == {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            }
+        },
+    }
+
+
 def test_upload_rejects_oversize_before_calling_artifact_store() -> None:
     service = _WorkUploads()
     response = _request(

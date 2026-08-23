@@ -79,6 +79,16 @@ async def list_work_uploads(
     status_code=201,
     response_model=WorkUploadView,
     responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        }
+    },
 )
 async def create_work_upload(
     request: Request,
