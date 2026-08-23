@@ -18,7 +18,7 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
-from shared.schemas.money import Money, PriceBasis
+from shared.schemas.money import FxRate, Money, PriceBasis
 
 
 class CostItemType(str, Enum):
@@ -126,6 +126,7 @@ class CostSheet:
         quantity:       计算基准数量（阶梯价场景一档一张表）
         items
         fx_snapshot_id: 汇率快照（QUOTED 版本必填）
+        fx_rates:       快照内到 base_currency 的显式直连汇率；不可变元组
         base_currency:  内部核算币种
         quote_currency: 客户报价币种
         created_at, created_by
@@ -144,6 +145,7 @@ class CostSheet:
     created_at: datetime
     items: list[CostItem] = field(default_factory=list)
     fx_snapshot_id: FxSnapshotId | None = None
+    fx_rates: tuple[FxRate, ...] = ()
     created_by: EmployeeId | None = None
     locked_at: datetime | None = None
     risk_acceptance: RiskAcceptance | None = None
@@ -182,6 +184,19 @@ class CostSheet:
             not isinstance(self.fx_snapshot_id, str) or not self.fx_snapshot_id.strip()
         ):
             raise ValidationError("QUOTED 成本表必须绑定汇率快照")
+        if not isinstance(self.fx_rates, tuple) or any(
+            not isinstance(rate, FxRate) for rate in self.fx_rates
+        ):
+            raise ValidationError("成本表汇率快照无效")
+        rate_bases: set[str] = set()
+        for rate in self.fx_rates:
+            if rate.quote != self.base_currency:
+                raise ValidationError("汇率快照目标币种必须是成本表核算币种")
+            if rate.base in rate_bases:
+                raise ValidationError("成本表汇率快照不能包含重复币种")
+            if rate.observed_at.utcoffset() is None:
+                raise ValidationError("成本表汇率快照时间必须含时区")
+            rate_bases.add(rate.base)
         if self.locked_at is not None and (
             self.locked_at.utcoffset() is None or self.locked_at < self.created_at
         ):

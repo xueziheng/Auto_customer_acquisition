@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
 from domains.costing.models import (
     CostBreakdown,
     CostItem,
@@ -19,11 +20,40 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
+from shared.schemas.money import CurrencyCode, Money, convert
 
 
 def cost_item_type_values() -> tuple[str, ...]:
     """返回成本项公共词表，供上层校验建议而不导入域内部模型。"""
     return tuple(item_type.value for item_type in CostItemType)
+
+
+def compute_unit_full_cost(sheet: CostSheet) -> Money:
+    """把已确认成本项按锁定汇率快照归一为单位完整成本。
+
+    未经人工确认的模型建议不参与任何金额计算；整单成本按成本表数量
+    分摊。跨币种只接受快照中的显式直连汇率，不自动取倒数或拼接汇率，
+    以免隐藏历史报价实际使用的换算路径。
+    """
+    confirmed_items = [item for item in sheet.items if item.entered_by is not None]
+    if not confirmed_items:
+        raise EmptyCostSheetError("成本表没有已确认成本项，不能计算单位成本")
+
+    rates = {rate.base: rate for rate in sheet.fx_rates}
+    total = Money(Decimal(0), CurrencyCode(sheet.base_currency))
+    for item in confirmed_items:
+        amount = item.amount
+        if amount.currency != sheet.base_currency:
+            rate = rates.get(amount.currency)
+            if rate is None:
+                raise MissingFxSnapshotError(
+                    f"汇率快照缺少 {amount.currency} 到 {sheet.base_currency} 的直连汇率"
+                )
+            amount = convert(amount, CurrencyCode(sheet.base_currency), rate)
+        if not item.is_per_unit:
+            amount = amount.multiply(Decimal(1) / Decimal(sheet.quantity))
+        total = total.add(amount)
+    return total
 
 
 def compute_breakdown(
