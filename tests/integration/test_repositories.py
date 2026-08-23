@@ -887,10 +887,29 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "extraction_id", "upload_id", "payload",
             "extracted_by", "created_at",
         },
-        "employee_confirmations": {
-            "tenant_id", "confirmation_id", "extraction_id", "revision",
-            "payload", "confirmed_by", "confirmed_at",
-        },
+            "employee_confirmations": {
+                "tenant_id", "confirmation_id", "extraction_id", "revision",
+                "payload", "confirmed_by", "confirmed_at",
+            },
+            "cost_sheets": {
+                "tenant_id", "cost_sheet_id", "opportunity_id", "version_type",
+                "version_number", "quantity", "base_currency", "quote_currency",
+                "fx_snapshot_id", "created_by", "created_at", "locked_at",
+                "risk_accepted_by", "risk_accepted_at", "risk_justification",
+            },
+            "cost_items": {
+                "tenant_id", "cost_sheet_id", "item_sequence", "item_type",
+                "amount", "currency", "price_basis", "is_per_unit", "note",
+                "source_ref", "entered_by",
+            },
+            "cost_sheet_fx_rates": {
+                "tenant_id", "cost_sheet_id", "base_currency", "quote_currency",
+                "rate", "observed_at", "source",
+            },
+            "margin_rules": {
+                "tenant_id", "margin_rule_id", "category", "minimum_margin_rate",
+                "target_margin_rate", "effective_from",
+            },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -996,10 +1015,16 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_commitments_tenant_owner_status_due": (
             "tenant_id", "owner", "status", "due_at", "commitment_id",
         ),
-        "ix_work_uploads_tenant_employee_created": (
-            "tenant_id", "employee_id", "created_at", "upload_id",
-        ),
-    }
+            "ix_work_uploads_tenant_employee_created": (
+                "tenant_id", "employee_id", "created_at", "upload_id",
+            ),
+            "ix_cost_sheets_tenant_opportunity_version": (
+                "tenant_id", "opportunity_id", "version_type", "version_number",
+            ),
+            "ix_margin_rules_tenant_category_effective": (
+                "tenant_id", "category", "effective_from", "margin_rule_id",
+            ),
+        }
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
         for idx in tbl.indexes:

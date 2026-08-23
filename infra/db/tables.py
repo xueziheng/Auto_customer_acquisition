@@ -3167,3 +3167,219 @@ class EmployeeConfirmationRow(Base):
     payload: Mapped[dict] = mapped_column(postgresql.JSONB)
     confirmed_by: Mapped[str] = mapped_column(String(40))
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CostSheetRow(Base):
+    """人工成本表版本；锁定后的不可变性由数据库触发器兜底。"""
+
+    __tablename__ = "cost_sheets"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "cost_sheet_id", name="pk_cost_sheets"),
+        UniqueConstraint(
+            "tenant_id",
+            "opportunity_id",
+            "version_type",
+            "version_number",
+            name="uq_cost_sheets_version",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "opportunity_id"],
+            ["opportunities.tenant_id", "opportunities.opportunity_id"],
+            ondelete="RESTRICT",
+            name="fk_cost_sheets_opportunity",
+        ),
+        CheckConstraint(
+            "version_type IN ('estimated','quoted','actual')",
+            name="ck_cost_sheets_version_type",
+        ),
+        CheckConstraint(
+            "version_number > 0 AND quantity > 0",
+            name="ck_cost_sheets_positive_dimensions",
+        ),
+        CheckConstraint(
+            "base_currency ~ '^[A-Z]{3}$' AND quote_currency ~ '^[A-Z]{3}$'",
+            name="ck_cost_sheets_currencies",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(cost_sheet_id) <> '' AND "
+            "btrim(opportunity_id) <> '' AND "
+            "(created_by IS NULL OR btrim(created_by) <> '') AND "
+            "(fx_snapshot_id IS NULL OR btrim(fx_snapshot_id) <> '')",
+            name="ck_cost_sheets_core_nonblank",
+        ),
+        CheckConstraint(
+            "version_type <> 'quoted' OR fx_snapshot_id IS NOT NULL",
+            name="ck_cost_sheets_quoted_fx_snapshot",
+        ),
+        CheckConstraint(
+            "locked_at IS NULL OR locked_at >= created_at",
+            name="ck_cost_sheets_locked_at",
+        ),
+        CheckConstraint(
+            "(risk_accepted_by IS NULL AND risk_accepted_at IS NULL AND "
+            "risk_justification IS NULL) OR "
+            "(risk_accepted_by IS NOT NULL AND risk_accepted_at IS NOT NULL AND "
+            "risk_justification IS NOT NULL AND "
+            "btrim(risk_accepted_by) <> '' AND btrim(risk_justification) <> '')",
+            name="ck_cost_sheets_risk_acceptance",
+        ),
+        Index(
+            "ix_cost_sheets_tenant_opportunity_version",
+            "tenant_id",
+            "opportunity_id",
+            "version_type",
+            "version_number",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    opportunity_id: Mapped[str] = mapped_column(String(40))
+    version_type: Mapped[str] = mapped_column(String(16))
+    version_number: Mapped[int] = mapped_column(Integer)
+    quantity: Mapped[int] = mapped_column(Integer)
+    base_currency: Mapped[str] = mapped_column(CHAR(3))
+    quote_currency: Mapped[str] = mapped_column(CHAR(3))
+    fx_snapshot_id: Mapped[str | None] = mapped_column(String(40))
+    created_by: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    risk_accepted_by: Mapped[str | None] = mapped_column(String(40))
+    risk_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    risk_justification: Mapped[str | None] = mapped_column(Text)
+
+
+class CostItemRow(Base):
+    """成本项；序号只标识成本表内的稳定显示顺序。"""
+
+    __tablename__ = "cost_items"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "cost_sheet_id", "item_sequence", name="pk_cost_items"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "cost_sheet_id"],
+            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
+            ondelete="CASCADE",
+            name="fk_cost_items_sheet",
+        ),
+        CheckConstraint("item_sequence > 0", name="ck_cost_items_sequence"),
+        CheckConstraint("amount >= 0", name="ck_cost_items_amount"),
+        CheckConstraint(
+            "item_type IN ("
+            "'product_purchase','sample_fee','mold_fee','customization_fee',"
+            "'logo_printing','packaging','quality_inspection','wastage',"
+            "'domestic_freight','international_freight','insurance',"
+            "'customs_clearance','duties_and_taxes','destination_freight',"
+            "'warehousing','payment_fees','sales_commission',"
+            "'customer_acquisition','contact_data_cost','ad_allocation',"
+            "'agent_api_allocation','returns_reserve')",
+            name="ck_cost_items_item_type",
+        ),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_cost_items_currency"),
+        CheckConstraint(
+            "price_basis IN ('indicative','quoted','actual')",
+            name="ck_cost_items_price_basis",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(cost_sheet_id) <> '' AND "
+            "btrim(item_type) <> '' AND "
+            "(source_ref IS NULL OR btrim(source_ref) <> '') AND "
+            "(entered_by IS NULL OR btrim(entered_by) <> '')",
+            name="ck_cost_items_core_nonblank",
+        ),
+        CheckConstraint(
+            "entered_by IS NULL OR source_ref IS NOT NULL",
+            name="ck_cost_items_confirmed_source",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    item_sequence: Mapped[int] = mapped_column(Integer)
+    item_type: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    currency: Mapped[str] = mapped_column(CHAR(3))
+    price_basis: Mapped[str] = mapped_column(String(16))
+    is_per_unit: Mapped[bool] = mapped_column(Boolean)
+    note: Mapped[str | None] = mapped_column(Text)
+    source_ref: Mapped[str | None] = mapped_column(String(200))
+    entered_by: Mapped[str | None] = mapped_column(String(40))
+
+
+class CostSheetFxRateRow(Base):
+    """成本表绑定的显式直连汇率快照行。"""
+
+    __tablename__ = "cost_sheet_fx_rates"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "cost_sheet_id",
+            "base_currency",
+            name="pk_cost_sheet_fx_rates",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "cost_sheet_id"],
+            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
+            ondelete="CASCADE",
+            name="fk_cost_sheet_fx_rates_sheet",
+        ),
+        CheckConstraint("rate > 0", name="ck_cost_sheet_fx_rates_rate"),
+        CheckConstraint(
+            "base_currency ~ '^[A-Z]{3}$' AND quote_currency ~ '^[A-Z]{3}$'",
+            name="ck_cost_sheet_fx_rates_currencies",
+        ),
+        CheckConstraint(
+            "base_currency <> quote_currency OR rate = 1",
+            name="ck_cost_sheet_fx_rates_identity",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(cost_sheet_id) <> '' AND "
+            "btrim(source) <> ''",
+            name="ck_cost_sheet_fx_rates_core_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    base_currency: Mapped[str] = mapped_column(CHAR(3))
+    quote_currency: Mapped[str] = mapped_column(CHAR(3))
+    rate: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(200))
+
+
+class MarginRuleRow(Base):
+    """显式利润规则历史；没有记录时业务层必须 fail closed。"""
+
+    __tablename__ = "margin_rules"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "margin_rule_id", name="pk_margin_rules"
+        ),
+        CheckConstraint(
+            "minimum_margin_rate >= 0 AND "
+            "minimum_margin_rate <= target_margin_rate AND "
+            "target_margin_rate < 1",
+            name="ck_margin_rules_rates",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(margin_rule_id) <> '' AND "
+            "(category IS NULL OR btrim(category) <> '')",
+            name="ck_margin_rules_core_nonblank",
+        ),
+        Index(
+            "ix_margin_rules_tenant_category_effective",
+            "tenant_id",
+            "category",
+            "effective_from",
+            "margin_rule_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    margin_rule_id: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str | None] = mapped_column(String(200))
+    minimum_margin_rate: Mapped[Decimal] = mapped_column(Numeric(18, 12))
+    target_margin_rate: Mapped[Decimal] = mapped_column(Numeric(18, 12))
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
