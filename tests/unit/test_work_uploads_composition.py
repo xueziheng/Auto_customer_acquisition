@@ -8,13 +8,18 @@ import pytest
 
 from apps.api.composition.work_uploads import WorkUploadApplicationServiceImpl
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
-from shared.schemas.identifiers import ArtifactId, EmployeeId, TenantId
-from workflows.employee_work_intake.schemas import WorkSourceKind
+from shared.schemas.identifiers import ArtifactId, EmployeeId, TenantId, WorkUploadId
+from workflows.employee_work_intake.schemas import (
+    WorkSourceKind,
+    WorkUploadStatus,
+    WorkUploadView,
+)
 
 NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
 EMPLOYEE = EmployeeId("emp_01K39P9M5D6K4A91YEQ80EJZ0X")
 ARTIFACT = ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X")
+UPLOAD = WorkUploadId("upl_01K39P9M5D6K4A91YEQ80EJZ0X")
 
 
 class _Artifacts:
@@ -34,6 +39,24 @@ class _Artifacts:
             NOW,
         )
 
+    async def get(self, tenant_id, artifact_id):
+        self._order.append("artifact-read")
+        assert tenant_id == TENANT
+        assert artifact_id == ARTIFACT
+        return (
+            RawArtifactMeta(
+                TENANT,
+                ARTIFACT,
+                RawArtifactKind.PDF,
+                "a" * 64,
+                3,
+                "application/pdf",
+                None,
+                NOW,
+            ),
+            b"pdf",
+        )
+
 
 class _WorkIntake:
     def __init__(self, order: list[str]) -> None:
@@ -44,6 +67,21 @@ class _WorkIntake:
         self._order.append("register")
         self.registered = (*args, kwargs)
         return object()
+
+    async def get_upload(self, tenant_id, upload_id, employee_id):
+        self._order.append("authorize-upload")
+        assert (tenant_id, upload_id, employee_id) == (TENANT, UPLOAD, EMPLOYEE)
+        return WorkUploadView(
+            upload_id=UPLOAD,
+            tenant_id=TENANT,
+            artifact_id=ARTIFACT,
+            employee_id=EMPLOYEE,
+            source_kind=WorkSourceKind.PDF_TEXT,
+            status=WorkUploadStatus.UPLOADED,
+            occurred_at=NOW,
+            customer_timezone="Asia/Shanghai",
+            created_at=NOW,
+        )
 
 
 @pytest.mark.asyncio
@@ -71,3 +109,19 @@ async def test_original_artifact_is_persisted_before_upload_registration() -> No
     assert order == ["artifact", "register"]
     assert intake.registered is not None
     assert intake.registered[:3] == (TENANT, ARTIFACT, EMPLOYEE)
+
+
+@pytest.mark.asyncio
+async def test_artifact_read_authorizes_upload_owner_before_store_access() -> None:
+    order: list[str] = []
+    service = WorkUploadApplicationServiceImpl(
+        _Artifacts(order),  # type: ignore[arg-type]
+        _WorkIntake(order),  # type: ignore[arg-type]
+        1024,
+    )
+
+    metadata, content = await service.get_artifact(TENANT, UPLOAD, EMPLOYEE)
+
+    assert order == ["authorize-upload", "artifact-read"]
+    assert metadata.artifact_id == ARTIFACT
+    assert content == b"pdf"

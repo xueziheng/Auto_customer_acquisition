@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from artifact_store.store import RawArtifactKind, RawArtifactStore
+from artifact_store.store import RawArtifactKind, RawArtifactMeta, RawArtifactStore
 from shared.schemas.identifiers import EmployeeId, TenantId, UserId, WorkUploadId
 from workflows.employee_work_intake.schemas import (
     ExtractionPayload,
@@ -73,6 +73,17 @@ class WorkUploadApplicationServiceImpl:
         return await self._work_intake.list_for_employee(
             tenant_id, employee_id, limit
         )
+
+    async def get_artifact(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> tuple[RawArtifactMeta, bytes]:
+        upload = await self._work_intake.get_upload(
+            tenant_id, upload_id, employee_id
+        )
+        return await self._artifacts.get(tenant_id, upload.artifact_id)
 
     async def get_extraction(
         self,

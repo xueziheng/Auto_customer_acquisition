@@ -12,6 +12,7 @@ def test_all_phase1_shallow_module_routers_are_mounted() -> None:
         "/costing-quotes/status",
         "/team/status",
         "/work-uploads",
+        "/work-uploads/{upload_id}/artifact",
         "/work-uploads/{upload_id}/extraction",
         "/work-uploads/{upload_id}/confirm",
         "/commitments",

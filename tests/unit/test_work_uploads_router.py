@@ -12,6 +12,7 @@ from apps.api.dependencies import get_api_dependencies, get_request_identity
 from apps.api.identity import RequestIdentity
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
+from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
@@ -79,6 +80,22 @@ class _WorkUploads:
             extracted_by="team-operations-v1",
             created_at=NOW,
             confirmation=None,
+        )
+
+    async def get_artifact(self, *args: object) -> tuple[RawArtifactMeta, bytes]:
+        assert args == (TENANT, UPLOAD, EMPLOYEE)
+        return (
+            RawArtifactMeta(
+                tenant_id=TENANT,
+                artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+                kind=RawArtifactKind.PDF,
+                content_hash="a" * 64,
+                size_bytes=3,
+                mime_type="application/pdf",
+                uploaded_by=None,
+                uploaded_at=NOW,
+            ),
+            b"pdf",
         )
 
     async def confirm(self, *args: object) -> WorkExtractionView:
@@ -193,6 +210,22 @@ def test_upload_rejects_oversize_before_calling_artifact_store() -> None:
 
     assert response.status_code == 400
     assert service.upload_calls == []
+
+
+def test_artifact_preview_is_owner_bound_and_disables_sniffing_and_caching() -> None:
+    response = _request(
+        _app(_WorkUploads()),
+        "GET",
+        f"/work-uploads/{UPLOAD}/artifact",
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"pdf"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox"
+    assert response.headers["content-disposition"] == "inline"
 
 
 def test_extraction_and_confirmation_are_bound_to_request_employee() -> None:

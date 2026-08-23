@@ -10,7 +10,7 @@ from typing import Annotated, Protocol, runtime_checkable
 from fastapi import Depends, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
-from artifact_store.store import RawArtifactKind
+from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
 from domains.commitments.service import CommitmentService
 from domains.conversations.service import ConversationService
@@ -198,6 +198,13 @@ class WorkUploadApplicationService(Protocol):
     async def list_for_employee(
         self, tenant_id: TenantId, employee_id: EmployeeId, limit: int
     ) -> list[WorkUploadView]: ...
+
+    async def get_artifact(
+        self,
+        tenant_id: TenantId,
+        upload_id: WorkUploadId,
+        employee_id: EmployeeId,
+    ) -> tuple[RawArtifactMeta, bytes]: ...
 
     async def get_extraction(
         self,

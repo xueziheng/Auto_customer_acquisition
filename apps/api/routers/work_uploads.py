@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from artifact_store.store import RawArtifactKind
 from shared.errors import TransientError, ValidationError
@@ -30,6 +30,14 @@ from ..middleware import ApiErrorResponse
 router = APIRouter()
 
 _UPLOAD_ID = re.compile(r"upl_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_INLINE_ARTIFACT_KINDS = frozenset(
+    {
+        RawArtifactKind.AUDIO,
+        RawArtifactKind.CHAT_SCREENSHOT,
+        RawArtifactKind.IMAGE,
+        RawArtifactKind.PDF,
+    }
+)
 
 
 def _service(
@@ -114,6 +122,44 @@ async def create_work_upload(
         mime_type=content_types[0],
         occurred_at=occurred_at,
         customer_timezone=customer_timezone,
+    )
+
+
+@router.get(
+    "/{upload_id}/artifact",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        },
+        400: {"model": ApiErrorResponse},
+        403: {"model": ApiErrorResponse},
+    },
+)
+async def get_work_artifact(
+    upload_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> Response:
+    metadata, content = await _service(dependencies).get_artifact(
+        identity.tenant_id,
+        _upload_id(upload_id),
+        identity.employee.employee_id,
+    )
+    disposition = "inline" if metadata.kind in _INLINE_ARTIFACT_KINDS else "attachment"
+    return Response(
+        content=content,
+        media_type=metadata.mime_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": disposition,
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
