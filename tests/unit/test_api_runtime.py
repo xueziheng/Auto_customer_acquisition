@@ -148,6 +148,7 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     assert type(dependencies.unsubscribe_links).__name__ == "_UnsubscribeLinkAdapter"
     assert type(dependencies.unsubscribe_service).__name__ == "UnsubscribeServiceImpl"
     assert type(dependencies.tool_gateway).__name__ == "ResolvedManualSendGateway"
+    assert type(dependencies.run_audit).__name__ == "RunAuditService"
     assert vars(dependencies.outreach)["_approvals"] is facts
     assert secrets.refs == [
         "UNSUBSCRIBE_HMAC_2025",

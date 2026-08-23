@@ -86,6 +86,7 @@ from workflows.employee_work_intake.schemas import (
     WorkSourceKind,
     WorkUploadView,
 )
+from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
 
 from .middleware import ApiSettings
@@ -257,6 +258,7 @@ class ConfiguredApiDependencies:
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
     work_uploads: WorkUploadApplicationService | None = None
+    run_audit: RunAuditService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

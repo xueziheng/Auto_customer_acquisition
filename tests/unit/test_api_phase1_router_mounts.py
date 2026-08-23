@@ -18,7 +18,8 @@ def test_all_phase1_shallow_module_routers_are_mounted() -> None:
         "/work-uploads/{upload_id}/confirm",
         "/commitments",
         "/commitments/overdue",
-        "/runs/status",
+        "/runs",
+        "/runs/{run_id}",
         "/settings/status",
     }.issubset(paths)
 

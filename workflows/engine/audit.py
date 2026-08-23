@@ -1,0 +1,207 @@
+"""Run Center 的安全只读契约与服务层授权。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict
+
+from shared.errors import PermissionDenied
+from shared.schemas.identifiers import (
+    ApprovalId,
+    ArtifactId,
+    RunId,
+    StepId,
+    TenantId,
+    ToolCallId,
+)
+
+
+class RunSummaryView(BaseModel):
+    """Run 列表的安全摘要；不含 workflow context、步骤 data 或业务正文。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    run_id: RunId
+    workflow_type: str
+    workflow_version: int
+    subject_ref: str
+    current_step: str
+    status: str
+    created_at: datetime
+    last_activity_at: datetime
+    next_poll_at: datetime | None
+    retry_count: int
+    last_error: str | None
+
+
+class RunStepView(BaseModel):
+    """步骤状态投影；明确排除可能包含业务正文的 ``data``。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    step_id: StepId
+    step_name: str
+    status: str
+    attempt: int
+    due_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    error: str | None
+
+
+class RunToolCallView(BaseModel):
+    """工具调用安全元数据；不含输入、结果正文或 provider 凭证。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    tool_call_id: ToolCallId
+    tool_id: str
+    tool_version: str
+    risk_level: str
+    cost_class: str
+    status: str
+    attempt_count: int
+    error_category: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class RunArtifactView(BaseModel):
+    """系统产物引用；只返回索引元数据，不返回对象键或内容。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    artifact_id: ArtifactId
+    kind: str
+    mime_type: str
+    subject_ref: str
+    generated_by: str
+    generated_at: datetime
+
+
+class RunApprovalView(BaseModel):
+    """由 Run 发起的审批状态；不返回提案正文、理由或决定备注。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    approval_id: ApprovalId
+    approval_type: str
+    state: str
+    created_at: datetime
+    expires_at: datetime
+    decided_at: datetime | None
+
+
+class RunDetailView(BaseModel):
+    """Run 全景安全投影；所有集合都来自同租户的持久化审计元数据。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    summary: RunSummaryView
+    steps: tuple[RunStepView, ...]
+    tool_calls: tuple[RunToolCallView, ...]
+    artifacts: tuple[RunArtifactView, ...]
+    approvals: tuple[RunApprovalView, ...]
+
+
+@dataclass(frozen=True)
+class RunAuditActor:
+    """Run 审计调用者；角色必须来自员工身份解析，不信任请求头。"""
+
+    actor_id: str
+    role: str
+
+
+@runtime_checkable
+class RunAuditRepository(Protocol):
+    """按租户读取已经脱敏的 Run 审计投影。"""
+
+    async def list_runs(
+        self,
+        tenant_id: TenantId,
+        *,
+        workflow_type: str | None,
+        status: str | None,
+        limit: int,
+    ) -> list[RunSummaryView]: ...
+
+    async def get_run(
+        self, tenant_id: TenantId, run_id: RunId
+    ) -> RunDetailView | None: ...
+
+
+class Phase1RunAuditAuthorizer:
+    """Phase 1 仅允许老板读取租户级 Run 审计。"""
+
+    def __init__(self, tenant_id: TenantId) -> None:
+        self._tenant_id = tenant_id
+
+    def require_list(self, tenant_id: TenantId, actor: RunAuditActor) -> None:
+        if (
+            tenant_id != self._tenant_id
+            or actor.role != "boss"
+            or not actor.actor_id
+            or actor.actor_id != actor.actor_id.strip()
+        ):
+            raise PermissionDenied("Phase 1 Run 审计授权拒绝")
+
+    def require_read(self, tenant_id: TenantId, actor: RunAuditActor) -> None:
+        self.require_list(tenant_id, actor)
+
+
+class RunAuditService:
+    """执行服务层二次判权后调用 tenant-bound 安全读仓储。"""
+
+    def __init__(
+        self,
+        repository: RunAuditRepository,
+        authorizer: Phase1RunAuditAuthorizer,
+    ) -> None:
+        self._repository = repository
+        self._authorizer = authorizer
+
+    async def list_runs(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: RunAuditActor,
+        workflow_type: str | None,
+        status: str | None,
+        limit: int,
+    ) -> list[RunSummaryView]:
+        """列出 Run 摘要；仓储不得返回 context、步骤 data 或业务正文。"""
+        self._authorizer.require_list(tenant_id, actor)
+        return await self._repository.list_runs(
+            tenant_id,
+            workflow_type=workflow_type,
+            status=status,
+            limit=limit,
+        )
+
+    async def get_run(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        *,
+        actor: RunAuditActor,
+    ) -> RunDetailView | None:
+        """读取同租户 Run 全景；跨租户与不存在都由仓储统一返回不可见。"""
+        self._authorizer.require_read(tenant_id, actor)
+        return await self._repository.get_run(tenant_id, run_id)
+
+
+__all__ = (
+    "Phase1RunAuditAuthorizer",
+    "RunApprovalView",
+    "RunArtifactView",
+    "RunAuditActor",
+    "RunAuditRepository",
+    "RunAuditService",
+    "RunDetailView",
+    "RunStepView",
+    "RunSummaryView",
+    "RunToolCallView",
+)

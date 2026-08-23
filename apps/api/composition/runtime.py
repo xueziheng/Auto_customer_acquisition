@@ -137,6 +137,7 @@ from infra.db.repositories.employees import (
 )
 from infra.db.repositories.in_app_notifications import PostgresInAppNotificationStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
+from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.tables import OutreachCampaignRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
@@ -207,6 +208,7 @@ from workflows.email_feedback.unsubscribe import (
     UnsubscribeServiceImpl,
 )
 from workflows.employee_work_intake.service_impl import WorkIntakeServiceImpl
+from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 from workflows.engine.runner import WorkflowRun
 from workflows.human_handoff.flow import (
     HandoffEscalationNotice,
@@ -1140,6 +1142,10 @@ def build_phase1_dependencies(
     for step in (*account_definition.steps, *demand_definition.steps):
         handlers[step.handler_ref] = start_only_handler
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
+    run_audit = RunAuditService(
+        PostgresRunAuditRepository(factory),
+        Phase1RunAuditAuthorizer(tenant),
+    )
     outbox = OutboxDeliverer(
         factory,
         tenant,
@@ -1177,4 +1183,5 @@ def build_phase1_dependencies(
         conversations=conversations,
         commitments=commitments,
         work_uploads=work_uploads,
+        run_audit=run_audit,
     )
