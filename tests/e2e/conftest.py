@@ -271,6 +271,7 @@ async def _shutdown_scheduler(
     stop: asyncio.Event,
     *,
     timeout_seconds: float = 10,
+    cancel_grace_seconds: float = 1,
 ) -> None:
     """请求优雅停止；超时则取消，并验证 worker 确实取得过单副本锁。"""
     stop.set()
@@ -282,14 +283,33 @@ async def _shutdown_scheduler(
     except TimeoutError:
         task.cancel()
         try:
-            await task
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=cancel_grace_seconds,
+            )
         except asyncio.CancelledError:
-            pass
-        raise AssertionError("scheduler worker 收尾超时，已取消任务") from None
+            raise AssertionError("scheduler worker 收尾超时，任务已取消") from None
+        except TimeoutError:
+            task.cancel()
+            task.add_done_callback(_consume_scheduler_task_result)
+            raise AssertionError(
+                "scheduler worker 取消等待超时，继续分层清理"
+            ) from None
+        raise AssertionError("scheduler worker 收尾超时，任务已退出") from None
     if result.status is not WorkerStartStatus.STARTED:
         raise AssertionError(
             f"scheduler worker 退出状态无效：{result.status.value}"
         )
+
+
+def _consume_scheduler_task_result(task: asyncio.Task[WorkerRunResult]) -> None:
+    """收取消宽限期之后的延迟结果，避免未读取异常警告。"""
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
 
 
 async def _seed_employees_and_territories(
