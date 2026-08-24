@@ -60,6 +60,7 @@ const countryOverview = ref<CountryPolicyOverview | null>(null);
 const countryVersions = ref<CountryPolicyVersionStatus[]>([]);
 const countryLoading = ref(true);
 const countryHistoryLoading = ref(false);
+const countryHistoryError = ref<string | null>(null);
 const countryLoadError = ref<string | null>(null);
 const countrySubmitError = ref<string | null>(null);
 const countryAccepted = ref<CountryPolicyProposalAccepted | null>(null);
@@ -69,6 +70,7 @@ const countryAttemptBody = ref<CountryPolicyProposal | null>(null);
 const revisionBase = ref<CountryPolicyVersion | null>(null);
 const selectedCountry = ref<string | null>(null);
 const countryHistoryQuery = ref("");
+let countryHistoryGeneration = 0;
 
 const countryPolicyFields = Object.freeze([
   { key: "public_research_allowed", label: "public_research_allowed" },
@@ -354,16 +356,30 @@ function newCountryIdempotencyKey(): string {
 }
 
 async function loadCountryHistory(country: string): Promise<void> {
+  const generation = ++countryHistoryGeneration;
   countryHistoryLoading.value = true;
+  countryHistoryError.value = null;
   try {
     const result = await client.GET("/settings/country-policies/versions", {
       params: { query: { country, limit: 50 } },
     });
-    countryVersions.value = result.response.status === 200 && result.data ? result.data : [];
-  } catch {
+    if (generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
+    if (result.response.status === 200 && result.data) {
+      countryVersions.value = result.data;
+      return;
+    }
     countryVersions.value = [];
+    countryHistoryError.value = result.response.status === 403
+      ? "国家政策历史暂不可用"
+      : "国家政策历史读取失败，请稍后重试";
+  } catch {
+    if (generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
+    countryVersions.value = [];
+    countryHistoryError.value = "国家政策历史读取失败，请稍后重试";
   } finally {
-    countryHistoryLoading.value = false;
+    if (generation === countryHistoryGeneration && selectedCountry.value === country) {
+      countryHistoryLoading.value = false;
+    }
   }
 }
 
@@ -379,7 +395,10 @@ async function queryCountryHistory(): Promise<void> {
   await selectCountry(countryHistoryQuery.value);
 }
 
-async function loadCountryPolicies(preferredCountry?: string): Promise<void> {
+async function loadCountryPolicies(
+  preferredCountry?: string,
+  refreshHistory = true,
+): Promise<void> {
   countryLoading.value = true;
   countryLoadError.value = null;
   try {
@@ -391,6 +410,7 @@ async function loadCountryPolicies(preferredCountry?: string): Promise<void> {
       return;
     }
     countryOverview.value = result.data;
+    if (!refreshHistory) return;
     const exactPreferred = preferredCountry?.trim() || selectedCountry.value?.trim();
     const first = result.data.active_policies[0];
     if (exactPreferred) await selectCountry(exactPreferred);
@@ -453,7 +473,10 @@ async function submitCountryProposal(): Promise<void> {
     countryAttemptBody.value = null;
     if (result.response.status === 202 && result.data) {
       countryAccepted.value = result.data;
-      await loadCountryPolicies(body.country);
+      await Promise.allSettled([
+        loadCountryPolicies(undefined, false),
+        selectCountry(body.country),
+      ]);
       return;
     }
     countrySubmitError.value = result.response.status === 422
@@ -1283,6 +1306,13 @@ onMounted(() => void refreshSettings());
           class="empty compact-empty"
         >
           正在读取版本历史…
+        </div>
+        <div
+          v-else-if="countryHistoryError"
+          class="form-message error"
+          role="alert"
+        >
+          {{ countryHistoryError }}
         </div>
         <div
           v-else-if="!countryVersions.length"

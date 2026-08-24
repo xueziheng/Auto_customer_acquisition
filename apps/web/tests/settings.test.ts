@@ -193,6 +193,8 @@ interface CountryFetchOptions {
   activePolicies?: unknown[];
   allowedCount?: number;
   historyQueries?: string[];
+  onHistory?: (country: string) => Promise<Response>;
+  onOverview?: () => Promise<Response>;
   reason?: ReadinessReason;
   versions?: unknown[];
   onPost?: (request: Request) => Promise<Response>;
@@ -202,6 +204,8 @@ function countryPolicyFetch({
   activePolicies = [activeCountryPolicy],
   allowedCount = 1,
   historyQueries,
+  onHistory,
+  onOverview,
   reason = "CONTACT_ENRICHMENT_NOT_COMPOSED",
   versions = [],
   onPost,
@@ -220,6 +224,7 @@ function countryPolicyFetch({
       return jsonResponse([]);
     }
     if (input.method === "GET" && url.pathname === "/settings/country-policies") {
+      if (onOverview) return onOverview();
       return jsonResponse({
         active_policies: activePolicies,
         contact_enrichment: { reason_code: reason, state: "blocked" },
@@ -230,7 +235,9 @@ function countryPolicyFetch({
       });
     }
     if (input.method === "GET" && url.pathname === "/settings/country-policies/versions") {
-      historyQueries?.push(url.searchParams.get("country") ?? "");
+      const country = url.searchParams.get("country") ?? "";
+      historyQueries?.push(country);
+      if (onHistory) return onHistory(country);
       return jsonResponse(versions);
     }
     if (input.method === "POST" && url.pathname === "/settings/country-policies/proposals" && onPost) {
@@ -855,6 +862,161 @@ describe("SettingsCenter country policy workspace", () => {
 
     expect(root.textContent).toContain("public_research_allowed：未配置 → 允许");
     expect(root.textContent).toContain("contact_enrichment_allowed：未配置 → 禁止");
+  });
+
+  it.each(["http-500", "network"] as const)(
+    "refreshes submitted-country history after 202 even when the overview has a %s failure",
+    async (failure) => {
+      let overviewCalls = 0;
+      const historyQueries: string[] = [];
+      const pending = {
+        application_error_code: null,
+        approval_decided_at: null,
+        approval_decided_by: null,
+        approval_id: `apr_overview_${failure}`,
+        approval_state: "pending",
+        version: candidateCountryPolicyVersion,
+      };
+      const { root } = await mountSettings(countryPolicyFetch({
+        activePolicies: [],
+        allowedCount: 0,
+        historyQueries,
+        onOverview: async () => {
+          overviewCalls += 1;
+          if (overviewCalls === 1) {
+            return jsonResponse({
+              active_policies: [],
+              contact_enrichment: {
+                reason_code: "COUNTRY_POLICY_NOT_CONFIGURED",
+                state: "blocked",
+              },
+              coverage: {
+                active_policy_count: 0,
+                contact_enrichment_allowed_count: 0,
+              },
+            });
+          }
+          if (failure === "network") throw new TypeError("overview unavailable");
+          return jsonResponse({ code: "temporarily_unavailable", message: "safe" }, 500);
+        },
+        onPost: async () => jsonResponse({
+          change_set_ref: candidateCountryPolicyVersion.change_set_ref,
+          country_policy_version_id: candidateCountryPolicyVersion.country_policy_version_id,
+          run_id: `run_overview_${failure}`,
+        }, 202),
+        reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+        versions: [pending],
+      }));
+      await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+      fillCountryPolicy(root);
+      countryPolicyForm(root).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+      await eventually(() => expect(root.textContent).toContain(`apr_overview_${failure}`));
+      expect(historyQueries).toEqual(["Synthetic Market"]);
+      expect(root.textContent).toContain(failure === "network"
+        ? "无法连接国家政策包服务"
+        : "国家政策包读取失败，请稍后重试");
+    },
+  );
+
+  it.each(["late-success", "late-error"] as const)(
+    "keeps country B history when country A finishes with %s",
+    async (lateOutcome) => {
+      let resolveA!: (response: Response) => void;
+      let rejectA!: (error: Error) => void;
+      const delayedA = new Promise<Response>((resolve, reject) => {
+        resolveA = resolve;
+        rejectA = reject;
+      });
+      const versionB: CountryPolicyVersionFixture = {
+        ...activeCountryPolicyVersion,
+        change_set_ref: `country_policy:cpp_01J00000000000000000000020:${"5".repeat(64)}`,
+        content_hash: "5".repeat(64),
+        country: "Synthetic B Market",
+        country_key: "synthetic b market",
+        country_policy_version_id: "cpp_01J00000000000000000000020",
+      };
+      const status = (version: CountryPolicyVersionFixture, approvalId: string) => ({
+        application_error_code: null,
+        approval_decided_at: null,
+        approval_decided_by: null,
+        approval_id: approvalId,
+        approval_state: "pending",
+        version,
+      });
+      const { root } = await mountSettings(countryPolicyFetch({
+        onHistory: async (country) => country === "Synthetic Market"
+          ? delayedA
+          : jsonResponse([status(versionB, "apr_country_b")]),
+      }));
+      await eventually(() => expect(
+        root.querySelector<HTMLInputElement>('[name="country_history_query"]'),
+      ).not.toBeNull());
+      const query = root.querySelector<HTMLInputElement>('[name="country_history_query"]');
+      if (!query) return;
+      query.value = "Synthetic B Market";
+      query.dispatchEvent(new Event("input", { bubbles: true }));
+      clickButton(root, "查询国家历史");
+      await eventually(() => expect(root.textContent).toContain("apr_country_b"));
+
+      if (lateOutcome === "late-success") {
+        resolveA(jsonResponse([status(activeCountryPolicyVersion, "apr_country_a")]));
+      } else {
+        rejectA(new TypeError("stale A failed"));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await nextTick();
+
+      const history = root.querySelector<HTMLElement>('[aria-label="国家政策版本历史"]');
+      expect(history?.textContent).toContain("Synthetic B Market");
+      expect(history?.textContent).toContain("apr_country_b");
+      expect(history?.textContent).not.toContain("apr_country_a");
+      expect(history?.textContent).not.toContain("国家政策历史读取失败");
+    },
+  );
+
+  it.each([
+    ["forbidden", "国家政策历史暂不可用"],
+    ["server", "国家政策历史读取失败，请稍后重试"],
+    ["network", "国家政策历史读取失败，请稍后重试"],
+  ] as const)("distinguishes %s history failure from empty and recovers on retry", async (failure, message) => {
+    let historyCalls = 0;
+    const recovered = {
+      application_error_code: null,
+      approval_decided_at: null,
+      approval_decided_by: null,
+      approval_id: `apr_recovered_${failure}`,
+      approval_state: "pending",
+      version: candidateCountryPolicyVersion,
+    };
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      onHistory: async () => {
+        historyCalls += 1;
+        if (historyCalls > 1) return jsonResponse([recovered]);
+        if (failure === "network") throw new TypeError("history network failed");
+        return jsonResponse(
+          { code: "history_unavailable", message: "safe" },
+          failure === "forbidden" ? 403 : 500,
+        );
+      },
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+    }));
+    await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+    const query = root.querySelector<HTMLInputElement>('[name="country_history_query"]');
+    if (!query) throw new Error("missing country history query");
+    query.value = "Synthetic Market";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    clickButton(root, "查询国家历史");
+
+    await eventually(() => expect(root.textContent).toContain(message));
+    const history = root.querySelector<HTMLElement>('[aria-label="国家政策版本历史"]');
+    expect(history?.textContent).not.toContain("尚无可显示的国家政策历史");
+
+    clickButton(root, "查询国家历史");
+    await eventually(() => expect(root.textContent).toContain(`apr_recovered_${failure}`));
+    expect(root.textContent).not.toContain(message);
   });
 
   it("maps missing policy readiness to its dedicated explanation", async () => {
