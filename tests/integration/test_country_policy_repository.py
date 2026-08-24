@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, inspect, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from domains.compliance.schemas import (
@@ -321,6 +321,46 @@ async def test_activation_current_is_country_scoped(
         )
 
     assert current == activation_a
+
+
+@pytest.mark.parametrize("mismatch", ["country_key", "content_hash"])
+@pytest.mark.asyncio
+async def test_activation_rejects_country_or_hash_mismatch_with_version(
+    compliance_uow_factory,
+    mismatch: str,
+) -> None:
+    factory, _ = compliance_uow_factory
+    case = {"country_key": "country", "content_hash": "hash"}[mismatch]
+    tenant = TenantId(f"tenant-activation-integrity-{case}")
+    version = _version(tenant, f"activation-integrity-{case}", 1)
+    await _persist_version(factory, version)
+    content_hash = "b" * 64 if mismatch == "content_hash" else version.content_hash
+    activation = CountryPolicyActivation(
+        tenant_id=tenant,
+        activation_id=CountryPolicyActivationId(
+            f"cpa_activation-integrity-{case}"
+        ),
+        activation_sequence=1,
+        country_key=(
+            "synthetic republic"
+            if mismatch == "country_key"
+            else version.country_key
+        ),
+        country_policy_version_id=version.country_policy_version_id,
+        content_hash=content_hash,
+        approval_id=ApprovalId(f"apr_activation-integrity-{case}"),
+        change_set_ref=(
+            f"country_policy:{version.country_policy_version_id}:{content_hash}"
+        ),
+        approved_by=EmployeeId("emp_activation-integrity-approver"),
+        approved_at=NOW + timedelta(minutes=1),
+        activated_by="system:country-policy-workflow",
+        activated_at=NOW + timedelta(minutes=2),
+    )
+
+    with pytest.raises(IntegrityError):
+        async with factory(tenant) as uow:
+            await uow.activations.add(tenant, activation)
 
 
 @pytest.mark.parametrize(

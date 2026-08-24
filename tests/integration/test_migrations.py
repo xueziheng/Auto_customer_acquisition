@@ -4647,7 +4647,26 @@ async def test_0032_country_policy_contract_matches_orm(db_url: str) -> None:
         await engine.dispose()
 
     for table, row in rows.items():
-        assert database[table]["columns"] == set(row.__table__.columns.keys())
+        orm_table = row.__table__
+        assert database[table]["columns"] == set(orm_table.columns.keys())
+        assert database[table]["uniques"] == {
+            tuple(column.name for column in constraint.columns)
+            for constraint in orm_table.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert database[table]["fks"] == {
+            (
+                tuple(column.name for column in constraint.columns),
+                constraint.elements[0].target_fullname.rsplit(".", 1)[0],
+                tuple(
+                    element.target_fullname.rsplit(".", 1)[1]
+                    for element in constraint.elements
+                ),
+                constraint.ondelete,
+            )
+            for constraint in orm_table.constraints
+            if isinstance(constraint, ForeignKeyConstraint)
+        }
     assert database["country_policy_versions"]["pk"] == (
         "tenant_id",
         "country_policy_version_id",
@@ -4655,6 +4674,12 @@ async def test_0032_country_policy_contract_matches_orm(db_url: str) -> None:
     assert database["country_policy_versions"]["uniques"] == {
         ("tenant_id", "country_key", "version_number"),
         ("tenant_id", "idempotency_key"),
+        (
+            "tenant_id",
+            "country_policy_version_id",
+            "country_key",
+            "content_hash",
+        ),
     }
     assert database["country_policy_field_provenance"]["pk"] == (
         "tenant_id",
@@ -4680,9 +4705,19 @@ async def test_0032_country_policy_contract_matches_orm(db_url: str) -> None:
     }
     assert database["country_policy_activations"]["fks"] == {
         (
-            ("tenant_id", "country_policy_version_id"),
+            (
+                "tenant_id",
+                "country_policy_version_id",
+                "country_key",
+                "content_hash",
+            ),
             "country_policy_versions",
-            ("tenant_id", "country_policy_version_id"),
+            (
+                "tenant_id",
+                "country_policy_version_id",
+                "country_key",
+                "content_hash",
+            ),
             "RESTRICT",
         )
     }

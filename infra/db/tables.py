@@ -3572,6 +3572,13 @@ class CountryPolicyVersionRow(Base):
             "idempotency_key",
             name="uq_country_policy_versions_idempotency",
         ),
+        UniqueConstraint(
+            "tenant_id",
+            "country_policy_version_id",
+            "country_key",
+            "content_hash",
+            name="uq_country_policy_versions_activation_target",
+        ),
         CheckConstraint(
             "version_number > 0 AND "
             "(opt_out_deadline_days IS NULL OR "
@@ -3703,10 +3710,17 @@ class CountryPolicyActivationRow(Base):
             name="pk_country_policy_activations",
         ),
         ForeignKeyConstraint(
-            ["tenant_id", "country_policy_version_id"],
+            [
+                "tenant_id",
+                "country_policy_version_id",
+                "country_key",
+                "content_hash",
+            ],
             [
                 "country_policy_versions.tenant_id",
                 "country_policy_versions.country_policy_version_id",
+                "country_policy_versions.country_key",
+                "country_policy_versions.content_hash",
             ],
             ondelete="RESTRICT",
             name="fk_country_policy_activations_version",
