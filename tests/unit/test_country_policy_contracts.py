@@ -6,7 +6,7 @@ import hashlib
 import importlib
 import inspect
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
 from typing import get_type_hints
 
@@ -14,12 +14,6 @@ import pytest
 from pydantic import ValidationError as PydanticValidationError
 
 from domains.approvals.service import ApprovalType
-from domains.compliance.permissions import (
-    ComplianceAction,
-    ComplianceActor,
-    ComplianceScope,
-    Phase1ComplianceAuthorizer,
-)
 from domains.compliance.schemas import (
     CountryPolicyAction,
     CountryPolicyActivationView,
@@ -29,10 +23,18 @@ from domains.compliance.schemas import (
     CountryPolicyField,
     CountryPolicyFieldSourceInput,
     CountryPolicyProposalCreate,
+    CountryPolicyVersionView,
     normalize_country_key,
 )
+from domains.compliance.service import (
+    ComplianceAction,
+    ComplianceActor,
+    ComplianceAuthorizer,
+    ComplianceScope,
+    Phase1ComplianceAuthorizer,
+)
 from infra.db.outbox import EVENT_REGISTRY
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.events.catalog import CountryPolicyVersionProposed, DomainEvent
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -42,7 +44,7 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     TenantId,
 )
-from shared.schemas.provenance import SourceType
+from shared.schemas.provenance import Provenance, SourceType
 
 _models = importlib.import_module("domains.compliance.models")
 _repository = importlib.import_module("domains.compliance.repository")
@@ -120,7 +122,9 @@ def _version(**overrides: object) -> CountryPolicyVersion:
 
 def test_country_key_is_exact_deterministic_normalization() -> None:
     assert normalize_country_key("  SYNTHETIC\u3000Market  ") == "synthetic market"
-    assert normalize_country_key("DE") != normalize_country_key("Germany")
+    assert normalize_country_key("Synthetic Alpha") != normalize_country_key(
+        "Synthetic Beta"
+    )
 
 
 @pytest.mark.parametrize("country", ["", "   ", "Synthetic\nMarket", "x" * 65])
@@ -357,6 +361,43 @@ def test_version_binds_every_field_source_to_human_confirmed_provenance() -> Non
         version.version_number = 2
 
 
+def _agent_inference_provenance() -> Provenance:
+    return Provenance(
+        source_type=SourceType.AGENT_INFERENCE,
+        source_id="inference:synthetic:1",
+        extracted_by=f"human:{PROPOSER}",
+        extracted_at=NOW,
+        confirmed_by=PROPOSER,
+        confirmed_at=NOW,
+    )
+
+
+def test_rehydrated_version_rejects_human_confirmed_agent_inference() -> None:
+    version = _version()
+    provenance = dict(version.field_provenance)
+    provenance[CountryPolicyField.PUBLIC_RESEARCH_ALLOWED] = (
+        _agent_inference_provenance()
+    )
+
+    with pytest.raises(ValidationError):
+        replace(version, field_provenance=provenance)
+
+
+def test_version_view_rejects_human_confirmed_agent_inference() -> None:
+    view = _version().to_view()
+    values = {
+        name: getattr(view, name) for name in CountryPolicyVersionView.model_fields
+    }
+    provenance = dict(view.field_provenance)
+    provenance[CountryPolicyField.CONTACT_ENRICHMENT_ALLOWED] = (
+        _agent_inference_provenance()
+    )
+    values["field_provenance"] = provenance
+
+    with pytest.raises(PydanticValidationError):
+        CountryPolicyVersionView(**values)
+
+
 def test_activation_is_an_append_only_exact_fact_and_maps_to_public_view() -> None:
     version = _version()
     activation = CountryPolicyActivation(
@@ -515,7 +556,7 @@ def test_repository_and_service_protocols_expose_tenant_scoped_contracts() -> No
     ):
         protocol = getattr(_repository, protocol_name)
         for name, member in inspect.getmembers(protocol, inspect.isfunction):
-            if name.startswith("_") or name == "add":
+            if name.startswith("_"):
                 continue
             assert "tenant_id" in inspect.signature(member).parameters, (protocol_name, name)
 
@@ -534,6 +575,21 @@ def test_repository_and_service_protocols_expose_tenant_scoped_contracts() -> No
     assert methods <= set(getattr(service, "__protocol_attrs__", ()))
     approval_hint = get_type_hints(service.activate_country_policy)["approval"]
     assert approval_hint is CountryPolicyApprovalFact
+
+
+def test_service_module_reexports_the_permission_contracts_for_consumers() -> None:
+    service_module = importlib.import_module("domains.compliance.service")
+    expected = {
+        "ComplianceAction": ComplianceAction,
+        "ComplianceActor": ComplianceActor,
+        "ComplianceAuthorizer": ComplianceAuthorizer,
+        "ComplianceScope": ComplianceScope,
+        "Phase1ComplianceAuthorizer": Phase1ComplianceAuthorizer,
+    }
+
+    assert set(expected) <= set(service_module.__all__)
+    for name, contract in expected.items():
+        assert getattr(service_module, name) is contract
 
 
 def test_country_policy_version_proposed_is_a_registered_metadata_event() -> None:

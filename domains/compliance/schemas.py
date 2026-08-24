@@ -217,10 +217,11 @@ class CountryPolicyVersionView(_FrozenModel):
         if set(self.field_provenance) != DECISION_FIELDS:
             raise ValueError("字段 Provenance 必须完整")
         if any(
-            not provenance.is_human_confirmed
+            provenance.source_type not in _TRUSTED_SOURCE_TYPES
+            or not provenance.is_human_confirmed
             for provenance in self.field_provenance.values()
         ):
-            raise ValueError("字段 Provenance 必须经过人工确认")
+            raise ValueError("字段 Provenance 必须来自可信来源并经过人工确认")
         _aware_utc(self.proposed_at, field_name="proposed_at")
         expected_ref = (
             f"country_policy:{self.country_policy_version_id}:{self.content_hash}"

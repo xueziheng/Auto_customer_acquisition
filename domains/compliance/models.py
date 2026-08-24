@@ -27,7 +27,7 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     TenantId,
 )
-from shared.schemas.provenance import Provenance
+from shared.schemas.provenance import Provenance, SourceType
 
 _LOWER_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -143,7 +143,13 @@ class CountryPolicyVersion:
             raise ValidationError("国家政策字段 Provenance 不完整")
         for provenance in self.field_provenance.values():
             if (
-                provenance.extracted_by != f"human:{self.proposed_by}"
+                provenance.source_type
+                not in {
+                    SourceType.WEB_PAGE,
+                    SourceType.UPLOAD,
+                    SourceType.EMPLOYEE_INPUT,
+                }
+                or provenance.extracted_by != f"human:{self.proposed_by}"
                 or provenance.extracted_at != self.proposed_at
                 or provenance.confirmed_by != self.proposed_by
                 or provenance.confirmed_at != self.proposed_at

@@ -22,7 +22,9 @@ from shared.schemas.provenance import Provenance
 class CountryPolicyVersionRepository(Protocol):
     async def lock_country(self, tenant_id: TenantId, country_key: str) -> None: ...
 
-    async def add(self, version: CountryPolicyVersion) -> None: ...
+    async def add(
+        self, tenant_id: TenantId, version: CountryPolicyVersion
+    ) -> None: ...
 
     async def get(
         self, tenant_id: TenantId, version_id: CountryPolicyVersionId
@@ -77,7 +79,9 @@ class CountryPolicyActivationRepository(Protocol):
         self, tenant_id: TenantId, country_key: str
     ) -> int: ...
 
-    async def add(self, activation: CountryPolicyActivation) -> None: ...
+    async def add(
+        self, tenant_id: TenantId, activation: CountryPolicyActivation
+    ) -> None: ...
 
 
 @runtime_checkable

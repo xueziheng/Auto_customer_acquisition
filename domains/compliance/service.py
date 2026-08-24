@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.compliance.permissions import ComplianceActor
+from domains.compliance.permissions import (
+    ComplianceAction,
+    ComplianceActor,
+    ComplianceAuthorizer,
+    ComplianceScope,
+    Phase1ComplianceAuthorizer,
+)
 from domains.compliance.schemas import (
     CountryPolicyAction,
     CountryPolicyActivationView,
@@ -96,4 +102,11 @@ class ComplianceService(Protocol):
         ...
 
 
-__all__ = ("ComplianceService",)
+__all__ = (
+    "ComplianceAction",
+    "ComplianceActor",
+    "ComplianceAuthorizer",
+    "ComplianceScope",
+    "ComplianceService",
+    "Phase1ComplianceAuthorizer",
+)
