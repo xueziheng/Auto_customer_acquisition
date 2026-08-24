@@ -215,7 +215,7 @@ unverified）都带 UTC 检查时间和固定成本备注，并在严格小于 3
 connector、不解析 Key、不调用 Hunter，也不占 Provider 配额。
 
 不确定的付费结果映射为 `reconciliation_required`，不得自动重试。451 隐私声明保留为
-typed `privacy_claimed` 事实，由后续账户发现 workflow 决定持久化或删除；Gateway handler
+typed `privacy_claimed` 事实，由账户发现 workflow 决定持久化或删除；Gateway handler
 不直接写业务域。当前测试全部使用受控 transport，没有真实 Hunter Key/网络。
 
 ---
@@ -294,6 +294,7 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Gmail 单封发送、确定性 header、只读恢复搜索；
 - Gmail RFC 3464 typed 反馈读取、一次性 page handle 与真实 feedback worker；
 - Hunter 单 Provider connector、联系人补全/邮箱验证 handler 与一次性 typed handle；
+- 账户发现持久化 workflow、Campaign 入组接线及对应 API/UI；
 - API 手工发送入口、离线 controlled-transport 演示与真实 PostgreSQL 恢复测试。
 
 当前明确不做：
@@ -304,8 +305,9 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Browser Agent 发送邮件；
 - 接受任意旧 approval 或绕过 Campaign current-facts；
 - 自动重发任何交付结果不确定的邮件；
-- 生产注册 `contact.enrich`（真实国家政策包与 Playbook composition 尚未配置）；
-- account-discovery 持久化/workflow、Campaign 接线、联系人 UI 与多 Provider 路由；
+- 生产注册 `contact.enrich`（Playbook 版本化审批已实现，但真实国家政策包及其生产
+  composition 尚未实现）；
+- 多 Provider 联系人瀑布路由；
 - Phase 3 成本钱包。
 
 浏览器工具未来仍必须遵守“官方 API → 公开 HTTP → 确定性 Playwright Adapter → 受限

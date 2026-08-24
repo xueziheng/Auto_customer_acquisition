@@ -255,17 +255,17 @@ domains/demand                       四层完整落地
 
 **陷阱**：每轮探索要有信号数和页面读取数上限。没有上限的探索循环会在一夜之间烧掉预算，且产出的大多是噪音。
 
-**当前实现进度（2026-08-21）**：`domains/prospecting` 的持久化子切片已完成——
-企业/联系人/联系方式/法律依据、租户隔离、可达性验证门禁、原子 outbox 和删除后
-hash suppression 已落地并通过 PostgreSQL 并发与回滚测试。Hunter 单 Provider 的固定
-host transport、typed 联系人补全/邮箱验证 connector、Tool Gateway checks/handler、
-30 天验证缓存与一次性 PII 槽也已离线测试；测试没有使用真实 Key 或真实网络，Provider
-score/confidence 会被丢弃，不确定付费结果不会自动重试。
+**当前实现进度（2026-08-24）**：`domains/prospecting` 已具备企业、联系人、联系方式、
+法律依据、租户隔离、可达性验证门禁、原子 outbox 与删除后 hash suppression；Hunter 单
+Provider 的固定 host transport、typed 联系人补全/邮箱验证 connector、Tool Gateway
+checks/handler、30 天验证缓存与一次性 PII 槽也已通过受控 transport 测试。测试没有使用
+真实 Key 或真实网络，Provider score/confidence 会被丢弃，不确定付费结果不会自动重试。
 
-这不等于切片 7 或 Phase 1 完成：生产 `contact.enrich` 在真实国家政策包与 Playbook
-composition 配好前保持未注册；`account_discovery` 的持久化/workflow、Campaign 入组接线
-和 Demand Radar/联系人 UI 仍未实现。下一步应先完成账户发现工作流，不应把当前插件误报
-为已上线的 Hunter 连通能力。
+账户发现的持久化 workflow、Hunter Gateway、Campaign 入组接线、API 与 UI 已存在；
+Company Playbook 的不可变版本、独立审批、批准后自动激活、运行时装配与 Settings 页面也
+已实现。这仍不等于切片 7 或 Phase 1 完成：国家政策包及其生产 composition 尚未实现，
+因此生产 `contact.enrich` 必须保持未注册；它们是下一个独立切片。Phase 1 的真实运营验收
+尚未完成，不得把当前受控测试误报为已上线的 Hunter 连通能力或完整需求验证闭环。
 
 ---
 
