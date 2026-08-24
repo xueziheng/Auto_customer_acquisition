@@ -111,6 +111,24 @@ def _proposal_result(version: CountryPolicyVersion) -> CountryPolicyProposalResu
     )
 
 
+def _idempotency_hit(
+    value: object,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    requested_hash: str,
+) -> CountryPolicyProposalResult:
+    version = _version_fact(
+        value,
+        tenant_id,
+        message="国家政策幂等查询返回类型无效",
+    )
+    if version.idempotency_key != idempotency_key:
+        raise TransientError("国家政策幂等查询返回的幂等键不匹配")
+    if version.content_hash != requested_hash:
+        raise CountryPolicyIdempotencyConflictError("国家政策幂等键对应不同内容")
+    return _proposal_result(version)
+
+
 class ComplianceServiceImpl:
     """在 tenant-bound UoW 中组合不可变政策事实，不生成法律默认值。"""
 
@@ -212,11 +230,14 @@ class ComplianceServiceImpl:
             raw_version = await uow.versions.get(tenant_id, version_id)
             if raw_version is None:
                 raise ValidationError("国家政策版本不存在")
-            return _version_fact(
+            version = _version_fact(
                 raw_version,
                 tenant_id,
                 message="国家政策版本仓储返回类型无效",
-            ).to_view()
+            )
+            if version.country_policy_version_id != version_id:
+                raise TransientError("国家政策版本 ID 不匹配")
+            return version.to_view()
 
     async def list_active_policies(
         self,
@@ -414,6 +435,8 @@ class ComplianceServiceImpl:
                 tenant_id,
                 message="国家政策候选仓储返回类型无效",
             )
+            if candidate.country_policy_version_id != version_id:
+                raise TransientError("国家政策候选版本 ID 不匹配")
             base: CountryPolicyVersion | None = None
             if candidate.base_version_id is not None:
                 raw_base = await uow.versions.get(tenant_id, candidate.base_version_id)
@@ -424,6 +447,8 @@ class ComplianceServiceImpl:
                     tenant_id,
                     message="国家政策基准仓储返回类型无效",
                 )
+                if base.country_policy_version_id != candidate.base_version_id:
+                    raise TransientError("国家政策基准版本 ID 不匹配")
                 if (
                     base.country_key != candidate.country_key
                     or base.content_hash != candidate.base_content_hash
@@ -486,32 +511,35 @@ class ComplianceServiceImpl:
                 tenant_id, idempotency_key
             )
             if existing is not None:
-                checked = _version_fact(
+                return _idempotency_hit(
                     existing,
                     tenant_id,
-                    message="国家政策幂等查询返回类型无效",
+                    idempotency_key,
+                    requested_hash,
                 )
-                if checked.content_hash != requested_hash:
-                    raise CountryPolicyIdempotencyConflictError(
-                        "国家政策幂等键对应不同内容"
-                    )
-                return _proposal_result(checked)
 
+            await uow.versions.lock_idempotency_key(tenant_id, idempotency_key)
+            existing = await uow.versions.find_by_idempotency_key(
+                tenant_id, idempotency_key
+            )
+            if existing is not None:
+                return _idempotency_hit(
+                    existing,
+                    tenant_id,
+                    idempotency_key,
+                    requested_hash,
+                )
             await uow.versions.lock_country(tenant_id, country_key)
             existing = await uow.versions.find_by_idempotency_key(
                 tenant_id, idempotency_key
             )
             if existing is not None:
-                checked = _version_fact(
+                return _idempotency_hit(
                     existing,
                     tenant_id,
-                    message="国家政策幂等查询返回类型无效",
+                    idempotency_key,
+                    requested_hash,
                 )
-                if checked.content_hash != requested_hash:
-                    raise CountryPolicyIdempotencyConflictError(
-                        "国家政策幂等键对应不同内容"
-                    )
-                return _proposal_result(checked)
 
             raw_current = await uow.activations.get_current(tenant_id, country_key)
             current: CountryPolicyActivation | None = None

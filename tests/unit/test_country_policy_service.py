@@ -102,6 +102,9 @@ class _Store:
         self.activations: list[CountryPolicyActivation] = []
         self.events: list[CountryPolicyVersionProposed] = []
         self.country_lock = asyncio.Lock()
+        self.idempotency_locks: dict[IdempotencyKey, asyncio.Lock] = {}
+        self.get_overrides: dict[CountryPolicyVersionId, CountryPolicyVersion] = {}
+        self.idempotency_overrides: dict[IdempotencyKey, CountryPolicyVersion] = {}
         self.version_add_count = 0
         self.provenance_add_count = 0
         self.publish_count = 0
@@ -116,7 +119,15 @@ class _Versions:
     async def lock_country(self, tenant_id: TenantId, country_key: str) -> None:
         del tenant_id, country_key
         await self._store.country_lock.acquire()
-        self._uow.locked = True
+        self._uow.locks.append(self._store.country_lock)
+
+    async def lock_idempotency_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> None:
+        del tenant_id
+        lock = self._store.idempotency_locks.setdefault(idempotency_key, asyncio.Lock())
+        await lock.acquire()
+        self._uow.locks.append(lock)
 
     async def add(self, tenant_id: TenantId, version: CountryPolicyVersion) -> None:
         assert version.tenant_id == tenant_id
@@ -126,6 +137,8 @@ class _Versions:
     async def get(
         self, tenant_id: TenantId, version_id: CountryPolicyVersionId
     ) -> CountryPolicyVersion | None:
+        if version_id in self._store.get_overrides:
+            return self._store.get_overrides[version_id]
         version = self._store.versions.get(version_id)
         if version is None or version.tenant_id != tenant_id:
             return None
@@ -134,6 +147,8 @@ class _Versions:
     async def find_by_idempotency_key(
         self, tenant_id: TenantId, idempotency_key: IdempotencyKey
     ) -> CountryPolicyVersion | None:
+        if idempotency_key in self._store.idempotency_overrides:
+            return self._store.idempotency_overrides[idempotency_key]
         return next(
             (
                 version
@@ -292,7 +307,7 @@ class _Bus:
 class _Uow:
     def __init__(self, store: _Store) -> None:
         self._store = store
-        self.locked = False
+        self.locks: list[asyncio.Lock] = []
         self.versions = _Versions(store, self)
         self.provenance = _Provenance(store)
         self.activations = _Activations(store)
@@ -308,8 +323,8 @@ class _Uow:
         traceback: TracebackType | None,
     ) -> None:
         del exc_type, exc, traceback
-        if self.locked:
-            self._store.country_lock.release()
+        for lock in reversed(self.locks):
+            lock.release()
 
 
 class _UowFactory:
@@ -762,4 +777,67 @@ async def test_mismatched_method_tenant_is_denied_before_storage() -> None:
             "Synthetic Market",
             CountryPolicyAction.PUBLIC_RESEARCH,
             actor=_system(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_version_rejects_repository_fact_with_different_id() -> None:
+    store = _Store()
+    requested = _seed_version(store, "requested-version", _command())
+    wrong = _seed_version(store, "wrong-version", _command())
+    store.get_overrides[requested.country_policy_version_id] = wrong
+
+    with pytest.raises(TransientError, match="版本 ID 不匹配"):
+        await _service(store).get_version(
+            TENANT, requested.country_policy_version_id, actor=_boss()
+        )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_rejects_candidate_fact_with_different_id() -> None:
+    store = _Store()
+    requested = _seed_version(store, "requested-candidate", _command())
+    wrong = _seed_version(store, "wrong-candidate", _command())
+    store.get_overrides[requested.country_policy_version_id] = wrong
+
+    with pytest.raises(TransientError, match="候选版本 ID 不匹配"):
+        await _service(store).get_change_snapshot(
+            TENANT, requested.country_policy_version_id, actor=_system()
+        )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_rejects_base_fact_with_different_id() -> None:
+    store = _Store()
+    expected_base = _seed_version(store, "expected-base", _command())
+    wrong_base = _seed_version(store, "wrong-base", _command())
+    candidate = _seed_version(
+        store,
+        "candidate-with-base",
+        _command(contact_enrichment_allowed=True),
+        version_number=2,
+        base_version_id=expected_base.country_policy_version_id,
+        base_content_hash=expected_base.content_hash,
+    )
+    store.get_overrides[expected_base.country_policy_version_id] = wrong_base
+
+    with pytest.raises(TransientError, match="基准版本 ID 不匹配"):
+        await _service(store).get_change_snapshot(
+            TENANT, candidate.country_policy_version_id, actor=_system()
+        )
+
+
+@pytest.mark.asyncio
+async def test_idempotency_hit_rejects_fact_with_different_key() -> None:
+    store = _Store()
+    wrong = _seed_version(store, "wrong-idempotency-key", _command())
+    requested_key = IdempotencyKey("requested-idempotency-key")
+    store.idempotency_overrides[requested_key] = wrong
+
+    with pytest.raises(TransientError, match="幂等键不匹配"):
+        await _service(store).propose_country_policy(
+            TENANT,
+            _command(),
+            actor=_boss(),
+            idempotency_key=requested_key,
         )

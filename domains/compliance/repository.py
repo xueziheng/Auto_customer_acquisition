@@ -20,6 +20,10 @@ from shared.schemas.provenance import Provenance
 
 @runtime_checkable
 class CountryPolicyVersionRepository(Protocol):
+    async def lock_idempotency_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> None: ...
+
     async def lock_country(self, tenant_id: TenantId, country_key: str) -> None: ...
 
     async def add(

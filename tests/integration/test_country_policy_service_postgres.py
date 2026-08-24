@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -11,14 +12,20 @@ from typing import Self
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from domains.compliance.errors import CountryPolicyIdempotencyConflictError
 from domains.compliance.permissions import (
     ComplianceActor,
     ComplianceScope,
     Phase1ComplianceAuthorizer,
 )
-from domains.compliance.schemas import DECISION_FIELDS, CountryPolicyProposalCreate
+from domains.compliance.schemas import (
+    DECISION_FIELDS,
+    CountryPolicyProposalCreate,
+    CountryPolicyProposalResult,
+)
 from domains.compliance.service_impl import ComplianceServiceImpl
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.session import create_engine_from
@@ -92,9 +99,11 @@ class _Factory:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         fail_publish: bool = False,
+        first_lookup_barrier: _FirstLookupBarrier | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._fail_publish = fail_publish
+        self._first_lookup_barrier = first_lookup_barrier
 
     def __call__(self, tenant_id: TenantId) -> _ServiceUow:
         return _ServiceUow(
@@ -102,7 +111,44 @@ class _Factory:
                 self._session_factory, tenant_id, now=lambda: NOW
             ),
             fail_publish=self._fail_publish,
+            first_lookup_barrier=self._first_lookup_barrier,
         )
+
+
+class _FirstLookupBarrier:
+    def __init__(self, parties: int) -> None:
+        self._parties = parties
+        self._arrived = 0
+        self._lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+
+    async def wait(self) -> None:
+        async with self._lock:
+            self._arrived += 1
+            if self._arrived == self._parties:
+                self._ready.set()
+        await self._ready.wait()
+
+
+class _FirstLookupBarrierVersions:
+    def __init__(self, delegate: object, barrier: _FirstLookupBarrier) -> None:
+        self._delegate = delegate
+        self._barrier = barrier
+        self._first_lookup = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._delegate, name)
+
+    async def find_by_idempotency_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> object:
+        result = await self._delegate.find_by_idempotency_key(
+            tenant_id, idempotency_key
+        )
+        if self._first_lookup:
+            self._first_lookup = False
+            await self._barrier.wait()
+        return result
 
 
 class _FailingPublishBus:
@@ -127,13 +173,19 @@ class _ServiceUow:
         delegate: SqlAlchemyComplianceUnitOfWork,
         *,
         fail_publish: bool,
+        first_lookup_barrier: _FirstLookupBarrier | None,
     ) -> None:
         self._delegate = delegate
         self._fail_publish = fail_publish
+        self._first_lookup_barrier = first_lookup_barrier
 
     async def __aenter__(self) -> Self:
         entered = await self._delegate.__aenter__()
-        self.versions = entered.versions
+        self.versions = (
+            _FirstLookupBarrierVersions(entered.versions, self._first_lookup_barrier)
+            if self._first_lookup_barrier is not None
+            else entered.versions
+        )
         self.provenance = entered.provenance
         self.activations = entered.activations
         self.bus = (
@@ -306,3 +358,59 @@ async def test_change_snapshot_restores_persisted_revision_base(
         == first_view.country_policy_version_id
     )
     assert snapshot.base_is_current is True
+
+
+@pytest.mark.asyncio
+async def test_same_tenant_idempotency_key_is_serialized_across_countries(
+    postgres_service_factory,
+) -> None:
+    _, session_factory, engine = postgres_service_factory
+    tenant = TenantId("tenant-policy-svc-idem-race")
+    barrier = _FirstLookupBarrier(2)
+    service = ComplianceServiceImpl(
+        _Factory(session_factory, first_lookup_barrier=barrier),
+        Phase1ComplianceAuthorizer(tenant),
+        now=lambda: NOW,
+    )
+    shared_key = IdempotencyKey("same-tenant-cross-country")
+
+    outcomes = await asyncio.gather(
+        service.propose_country_policy(
+            tenant,
+            _command(country="Synthetic Market"),
+            actor=_boss(tenant),
+            idempotency_key=shared_key,
+        ),
+        service.propose_country_policy(
+            tenant,
+            _command(country="Synthetic Republic"),
+            actor=_boss(tenant),
+            idempotency_key=shared_key,
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(item, CountryPolicyProposalResult) for item in outcomes) == 1
+    assert (
+        sum(
+            isinstance(item, CountryPolicyIdempotencyConflictError) for item in outcomes
+        )
+        == 1
+    ), repr(outcomes)
+    assert not any(isinstance(item, IntegrityError) for item in outcomes)
+    async with engine.connect() as connection:
+        counts = (
+            await connection.execute(
+                text(
+                    "SELECT "
+                    "(SELECT count(*) FROM country_policy_versions "
+                    "WHERE tenant_id=:tenant), "
+                    "(SELECT count(*) FROM country_policy_field_provenance "
+                    "WHERE tenant_id=:tenant), "
+                    "(SELECT count(*) FROM outbox_events WHERE tenant_id=:tenant "
+                    "AND event_type='CountryPolicyVersionProposed')"
+                ),
+                {"tenant": str(tenant)},
+            )
+        ).one()
+    assert tuple(counts) == (1, 9, 1)

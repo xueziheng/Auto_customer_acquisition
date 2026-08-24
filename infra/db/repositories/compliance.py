@@ -224,6 +224,25 @@ class CountryPolicyVersionRepositoryImpl(
             session, tenant_id
         )
 
+    async def lock_idempotency_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> None:
+        self._require_tenant(
+            tenant_id, "country_policy_version.lock_idempotency_key"
+        )
+        await self._session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(:lock_name, 0))"
+            ),
+            {
+                "lock_name": (
+                    "compliance-country-policy-idempotency:"
+                    f"{tenant_id}:{idempotency_key}"
+                )
+            },
+        )
+
     async def lock_country(self, tenant_id: TenantId, country_key: str) -> None:
         await self._lock_country(
             tenant_id, country_key, "country_policy_version.lock_country"
