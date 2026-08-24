@@ -30,6 +30,8 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from domains.approvals.service import ApprovalService
+from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.conversations.service import ConversationService
 from domains.demand.service import DemandService
 from domains.employees.permissions import Actor as EmployeeActor
@@ -39,6 +41,14 @@ from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
 from domains.opportunities.permissions import ScopeLevel as OpportunityScopeLevel
 from domains.opportunities.service import OpportunityService
+from domains.organization.permissions import (
+    OrganizationActor,
+    OrganizationScope,
+    OrganizationScopeLevel,
+    Phase1OrganizationAuthorizer,
+)
+from domains.organization.service import OrganizationService
+from domains.organization.service_impl import OrganizationServiceImpl
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -71,6 +81,7 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
 )
@@ -79,6 +90,7 @@ from infra.db.email_feedback_uow import (
     SendingIdentityServiceBuilder,
     SqlAlchemyFeedbackPageUnitOfWork,
 )
+from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
@@ -185,6 +197,10 @@ from workflows.human_handoff.flow import (
 from workflows.outreach_campaign.flow import (
     build_outreach_campaign_handlers,
     register_outreach_campaign,
+)
+from workflows.playbook_change import (
+    build_playbook_change_handlers,
+    register_playbook_change,
 )
 from workflows.reply_qualification.flow import (
     build_reply_qualification_handlers,
@@ -465,6 +481,33 @@ class DemandDiscoveryComposition:
             or not isinstance(self.web_tools, WebDiscoveryToolComposition)
         ):
             raise ValidationError("scheduler demand_discovery 依赖未完整配置")
+
+
+@dataclass(frozen=True)
+class PlaybookChangeComposition:
+    """生产 scheduler 的 Playbook 变更服务与最小 SYSTEM actor。"""
+
+    organization: OrganizationService
+    approvals: ApprovalService
+    system_actor: OrganizationActor
+
+    def __post_init__(self) -> None:
+        required = (
+            getattr(self.organization, "get_change_snapshot", None),
+            getattr(self.organization, "activate_playbook", None),
+            getattr(self.approvals, "submit", None),
+            getattr(self.approvals, "get", None),
+            getattr(self.approvals, "expire_overdue", None),
+            getattr(self.approvals, "mark_applied", None),
+            getattr(self.approvals, "mark_apply_failed", None),
+        )
+        if (
+            any(not callable(value) for value in required)
+            or not isinstance(self.system_actor, OrganizationActor)
+            or self.system_actor.role != "system"
+            or self.system_actor.scope.level is not OrganizationScopeLevel.SYSTEM
+        ):
+            raise ValidationError("scheduler Playbook 变更依赖未完整配置")
 
 
 @dataclass(frozen=True)
@@ -813,6 +856,36 @@ class SchedulerRuntimeFactory:
                 t2=timedelta(seconds=config.handoff_t2_seconds),
                 now=self._now,
             )
+            playbook_approvals = ApprovalServiceImpl(
+                lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
+                    factory, requested_tenant, now=self._now
+                ),
+                now=self._now,
+            )
+            playbook_organization = OrganizationServiceImpl(
+                lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
+                    factory, requested_tenant
+                ),
+                Phase1OrganizationAuthorizer(config.tenant_id),
+                now=self._now,
+            )
+            playbook_change = PlaybookChangeComposition(
+                organization=playbook_organization,
+                approvals=playbook_approvals,
+                system_actor=OrganizationActor(
+                    "system:playbook-change",
+                    OrganizationScope(
+                        level=OrganizationScopeLevel.SYSTEM,
+                        tenant_id=config.tenant_id,
+                    ),
+                    "system",
+                ),
+            )
+            playbook_handlers = build_playbook_change_handlers(
+                playbook_change.organization,
+                playbook_change.approvals,
+                playbook_change.system_actor,
+            )
             sending_uow_factory = cast(
                 SendingIdentityUnitOfWorkFactory,
                 lambda tenant: SqlAlchemySendingIdentityUnitOfWork(
@@ -975,6 +1048,7 @@ class SchedulerRuntimeFactory:
                     **reply_handlers,
                     **account_handlers,
                     **demand_handlers,
+                    **playbook_handlers,
                 },
                 now=self._now,
             )
@@ -993,6 +1067,7 @@ class SchedulerRuntimeFactory:
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
             )
+            register_playbook_change(workflow, outbox, playbook_approvals)
             campaign_driver: CampaignSendDriver | None = None
             if campaign_outreach is not None:
                 register_outreach_campaign(

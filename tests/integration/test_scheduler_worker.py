@@ -889,6 +889,43 @@ def test_complete_registry_has_handoff_all_notification_and_auth_handlers() -> N
         ("ApprovalDecided", "notification.approval_decided"),
         ("AuthenticationCheckRequested", "sending_identity_auth.requested"),
     }
+    assert all(
+        name != "playbook_change.approval_decided" for _, name in registry.handlers
+    )
+
+
+def test_scheduler_rejects_partial_playbook_change_composition() -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    organization = importlib.import_module("domains.organization.permissions")
+
+    class Approvals:
+        async def submit(self, *args, **kwargs):
+            del args, kwargs
+
+        async def get(self, *args, **kwargs):
+            del args, kwargs
+
+        async def expire_overdue(self, *args, **kwargs):
+            del args, kwargs
+
+        async def mark_applied(self, *args, **kwargs):
+            del args, kwargs
+
+        async def mark_apply_failed(self, *args, **kwargs):
+            del args, kwargs
+
+    actor = organization.OrganizationActor(
+        "system:playbook-change",
+        organization.OrganizationScope(
+            organization.OrganizationScopeLevel.SYSTEM,
+            TenantId("tenant-playbook-composition"),
+        ),
+        "system",
+    )
+    with pytest.raises(ValidationError, match="Playbook 变更依赖未完整配置"):
+        runtime_module.PlaybookChangeComposition(
+            organization=object(), approvals=Approvals(), system_actor=actor
+        )
 
 
 def test_scheduler_exports_concrete_production_composition_and_health() -> None:
@@ -1002,6 +1039,20 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "human_handoff.escalate_boss",
             "human_handoff.remind_boss",
             "sending_identity_auth.check",
+            "playbook_change.assemble",
+            "playbook_change.submit",
+            "playbook_change.wait",
+            "playbook_change.expire",
+            "playbook_change.apply",
+            "playbook_change.mark_applied",
+        }
+        assert {
+            definition.workflow_type
+            for definition in runtime.workflow._definitions.values()
+        } >= {
+            "human_handoff",
+            "sending_identity_authentication",
+            "playbook_change",
         }
         assert set(runtime.outbox._handlers) == {
             "HandoffRequested",
@@ -1013,7 +1064,15 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "ApprovalDecided",
             "AuthenticationCheckRequested",
         }
-        assert runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
+        assert {
+            name for name, _handler in runtime.outbox._handlers["ApprovalDecided"]
+        } == {
+            "notification.approval_decided",
+            "playbook_change.approval_decided",
+        }
+        assert (
+            runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
+        )
         assert servers[0].state.is_ready is True
     assert servers[0].closed.is_set()
     assert disposed == 1

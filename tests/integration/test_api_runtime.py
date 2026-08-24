@@ -24,6 +24,7 @@ from domains.employees.permissions import (
     Phase1EmployeeAuthorizer,
     StandardAuditLogger,
 )
+from domains.organization.service import OrganizationService
 from infra.db.outbox import PostgresEventBus
 from infra.db.session import create_engine_from
 from infra.db.tables import WorkflowRunRow
@@ -206,6 +207,7 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         from infra.db.workflow_engine import PostgresWorkflowEngine
 
         dependencies = get_api_dependencies(_request_for(app))
+        assert isinstance(dependencies.organization, OrganizationService)
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
         assert isinstance(

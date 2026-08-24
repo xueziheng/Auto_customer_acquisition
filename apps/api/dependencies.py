@@ -36,6 +36,7 @@ from domains.opportunities.permissions import (
     OpportunityAuthorizer,
 )
 from domains.opportunities.service import OpportunityService
+from domains.organization.service import OrganizationService
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -256,6 +257,7 @@ class ConfiguredApiDependencies:
     directives: DirectiveService | None = None
     trade_manager: TradeManagerAgent | None = None
     approvals: ApprovalService | None = None
+    organization: OrganizationService | None = None
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None

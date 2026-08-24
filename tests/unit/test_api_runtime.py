@@ -15,6 +15,10 @@ from apps.api.dependencies import UnconfiguredApiDependencies
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
 from apps.api.runtime_config import Phase1RuntimeSettings
+from domains.organization.service import OrganizationService
+from shared.errors import TransientError
+from shared.schemas.identifiers import RunId, TenantId
+from workflows.engine.runner import StepStatus, WorkflowRun
 
 
 class _ManualFacts:
@@ -149,6 +153,23 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     assert type(dependencies.unsubscribe_service).__name__ == "UnsubscribeServiceImpl"
     assert type(dependencies.tool_gateway).__name__ == "ResolvedManualSendGateway"
     assert type(dependencies.run_audit).__name__ == "RunAuditService"
+    assert isinstance(dependencies.organization, OrganizationService)
+    playbook_definition = dependencies.workflow_engine._definitions[
+        ("playbook_change", 1)
+    ]
+    assert {step.handler_ref for step in playbook_definition.steps} == {
+        "playbook_change.assemble",
+        "playbook_change.submit",
+        "playbook_change.wait",
+        "playbook_change.expire",
+        "playbook_change.apply",
+        "playbook_change.mark_applied",
+    }
+    assert all(
+        type(dependencies.workflow_engine._handlers[step.handler_ref]).__name__
+        == "_StartOnlyWorkflowHandler"
+        for step in playbook_definition.steps
+    )
     assert vars(dependencies.outreach)["_approvals"] is facts
     assert secrets.refs == [
         "UNSUBSCRIBE_HMAC_2025",
@@ -163,6 +184,24 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
             now=lambda: datetime.now(UTC),
             manual_send=replace(manual, delivery_materials=object()),
         )
+
+
+@pytest.mark.asyncio
+async def test_api_start_only_handler_has_generic_scheduler_error() -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    run = WorkflowRun(
+        run_id=RunId("run_01K00000000000000000000000"),
+        tenant_id=TenantId("tenant-runtime"),
+        workflow_type="playbook_change",
+        workflow_version=1,
+        subject_ref="pbv_01K00000000000000000000000",
+        current_step="assemble_package",
+        status=StepStatus.RUNNING,
+        created_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(TransientError, match="workflow 步骤只能由 scheduler 执行"):
+        await module._StartOnlyWorkflowHandler().execute(run)
 
 
 @pytest.fixture

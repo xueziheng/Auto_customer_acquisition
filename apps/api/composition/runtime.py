@@ -68,6 +68,8 @@ from domains.opportunities.permissions import (
 )
 from domains.opportunities.scorer import OpportunityScorerImpl
 from domains.opportunities.service_impl import OpportunityServiceImpl
+from domains.organization.permissions import Phase1OrganizationAuthorizer
+from domains.organization.service_impl import OrganizationServiceImpl
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -130,6 +132,7 @@ from infra.db.email_feedback_uow import (
     SendingIdentityServiceBuilder,
     SqlAlchemyFeedbackPageUnitOfWork,
 )
+from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
@@ -218,6 +221,7 @@ from workflows.human_handoff.flow import (
     build_human_handoff_step_handlers,
     register_human_handoff,
 )
+from workflows.playbook_change import build_playbook_change_definition
 
 from ..dependencies import (
     CampaignScopeResolver,
@@ -335,7 +339,7 @@ class _StartOnlyWorkflowHandler:
         self, run: WorkflowRun
     ) -> tuple[str, str | None, dict[str, object]]:
         del run
-        raise TransientError("账户发现步骤只能由 scheduler 执行")
+        raise TransientError("workflow 步骤只能由 scheduler 执行")
 
 
 class StructuredLogOnlyPolicy:
@@ -838,6 +842,13 @@ def build_phase1_dependencies(
         ),
         now=now,
     )
+    organization = OrganizationServiceImpl(
+        lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant
+        ),
+        Phase1OrganizationAuthorizer(tenant),
+        now=now,
+    )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
         manual_send.contact_eligibility
@@ -1141,8 +1152,13 @@ def build_phase1_dependencies(
     )
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
+    playbook_definition = build_playbook_change_definition()
     start_only_handler = _StartOnlyWorkflowHandler()
-    for step in (*account_definition.steps, *demand_definition.steps):
+    for step in (
+        *account_definition.steps,
+        *demand_definition.steps,
+        *playbook_definition.steps,
+    ):
         handlers[step.handler_ref] = start_only_handler
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
     run_audit = RunAuditService(
@@ -1165,6 +1181,7 @@ def build_phase1_dependencies(
     register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
     workflow.register(account_definition)
     workflow.register(demand_definition)
+    workflow.register(playbook_definition)
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -1190,6 +1207,7 @@ def build_phase1_dependencies(
         directives=directives,
         trade_manager=trade_manager,
         approvals=approvals,
+        organization=organization,
         conversations=conversations,
         commitments=commitments,
         costing=costing,
