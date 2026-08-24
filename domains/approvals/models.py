@@ -55,6 +55,7 @@ class ApprovalType(str, Enum):
     SENDING_IDENTITY_CHANGE = "sending_identity_change"
     INDICATIVE_RISK_ACCEPTANCE = "indicative_risk_acceptance"
     MARGIN_FLOOR_OVERRIDE = "margin_floor_override"
+    PLAYBOOK_CHANGE = "playbook_change"
 
 
 DEFAULT_VALIDITY: dict[ApprovalType, timedelta] = {
@@ -65,6 +66,7 @@ DEFAULT_VALIDITY: dict[ApprovalType, timedelta] = {
     ApprovalType.CAMPAIGN_BOUNDARY_CHANGE: timedelta(days=7),
     ApprovalType.SENDING_IDENTITY_CHANGE: timedelta(days=7),
     ApprovalType.SUPPRESSION_REMOVAL: timedelta(days=1),
+    ApprovalType.PLAYBOOK_CHANGE: timedelta(days=7),
 }
 """审批有效期，按类型。价格类短（市场变得快），配置类长。
 未列出的类型用 3 天。

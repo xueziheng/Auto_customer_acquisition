@@ -44,7 +44,8 @@ class StepDefinition:
                           ``wait`` 截止/进入等待时从上下文读取，支持按 run 差异化等待）
         max_retries:      TransientError 的重试上限
         retry_backoff:    重试间隔基数（指数退避）
-        on_timeout:       超时后转到哪一步（None = 整个流程失败）
+        on_timeout:       超时后转到哪一步（None = 整个流程失败）。这是独立的
+                          超时边，不必重复列入普通成功 transitions
         wait_event_type:  WAITING_EVENT 步骤等的事件类型
         reminder_interval: WAITING_EVENT 周期提醒间隔；成功后按绝对计划重排自身
         reminder_handler_ref: 周期提醒 handler 的注册名

@@ -39,7 +39,12 @@ _TYPE_LABELS: dict[ApprovalType, str] = {
     ApprovalType.SENDING_IDENTITY_CHANGE: "发件身份配置",
     ApprovalType.INDICATIVE_RISK_ACCEPTANCE: "指示价风险接受",
     ApprovalType.MARGIN_FLOOR_OVERRIDE: "最低利润覆盖",
+    ApprovalType.PLAYBOOK_CHANGE: "Company Playbook 变更",
 }
+
+_SAFE_APPLICATION_ERROR_CODES = frozenset(
+    {"PLAYBOOK_BASE_VERSION_CONFLICT", "PLAYBOOK_APPROVAL_FACT_INVALID"}
+)
 
 
 def _utc(value: datetime) -> datetime:
@@ -169,6 +174,14 @@ class ApprovalServiceImpl:
             decision_note=package.decision_note,
             seconds_until_expiry=seconds,
             can_current_user_decide=can_decide,
+            change_set_ref=package.change_set_ref,
+            decided_by_employee=package.decided_by,
+            applied_at=package.applied_at,
+            application_error_code=(
+                package.apply_error
+                if package.apply_error in _SAFE_APPLICATION_ERROR_CODES
+                else None
+            ),
         )
 
     async def submit(

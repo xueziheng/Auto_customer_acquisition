@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from shared.schemas.identifiers import EmployeeId
+
 
 @dataclass(frozen=True)
 class ApprovalView:
@@ -37,3 +39,7 @@ class ApprovalView:
     can_current_user_decide: bool = False
     """当前用户能否决定（含自批禁止判断）。由服务层算好传给前端，
     不让前端自己判断——前端判断会漏。"""
+    change_set_ref: str | None = None
+    decided_by_employee: EmployeeId | None = None
+    applied_at: datetime | None = None
+    application_error_code: str | None = None

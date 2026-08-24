@@ -201,15 +201,10 @@ class PostgresWorkflowEngine:
             if unknown:
                 raise ValueError(f"transition 目标步骤未定义：{unknown}")
         for step in definition.steps:
-            if step.on_timeout is not None:
-                if step.on_timeout not in known:
-                    raise ValueError(
-                        f"step {step.step_name} on_timeout 目标未定义：{step.on_timeout}"
-                    )
-                if step.on_timeout not in definition.transitions.get(step.step_name, ()):
-                    raise ValueError(
-                        f"step {step.step_name} on_timeout 必须是显式 transition"
-                    )
+            if step.on_timeout is not None and step.on_timeout not in known:
+                raise ValueError(
+                    f"step {step.step_name} on_timeout 目标未定义：{step.on_timeout}"
+                )
             if (
                 step.wait_event_type is not None
                 and (step.timeout is not None or step.timeout_context_key is not None)
