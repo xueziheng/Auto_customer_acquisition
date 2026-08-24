@@ -18,6 +18,7 @@ type CountryPolicyProposalAccepted = components["schemas"]["CountryPolicyProposa
 type CountryPolicySource = components["schemas"]["CountryPolicyFieldSourceInput"];
 type CountryPolicyVersion = components["schemas"]["CountryPolicyVersionView"];
 type CountryPolicyVersionStatus = components["schemas"]["CountryPolicyVersionStatusView"];
+type ContactEnrichmentReadiness = components["schemas"]["ContactEnrichmentReadiness"];
 
 type CountryPolicyBooleanField = Exclude<
   CountryPolicyField,
@@ -64,8 +65,10 @@ const countrySubmitError = ref<string | null>(null);
 const countryAccepted = ref<CountryPolicyProposalAccepted | null>(null);
 const countrySubmitting = ref(false);
 const countryIdempotencyKey = ref<string | null>(null);
+const countryAttemptBody = ref<CountryPolicyProposal | null>(null);
 const revisionBase = ref<CountryPolicyVersion | null>(null);
 const selectedCountry = ref<string | null>(null);
+const countryHistoryQuery = ref("");
 
 const countryPolicyFields = Object.freeze([
   { key: "public_research_allowed", label: "public_research_allowed" },
@@ -177,8 +180,11 @@ const countryFormValid = computed(() =>
   )
   && missingCountrySources.value.length === 0,
 );
-const countryReadinessMessage = computed(() => {
-  switch (countryOverview.value?.contact_enrichment.reason_code) {
+const countryFormFrozen = computed(() =>
+  countrySubmitting.value || countryAttemptBody.value !== null,
+);
+function readinessMessage(readiness: ContactEnrichmentReadiness | undefined): string {
+  switch (readiness?.reason_code) {
     case "COUNTRY_POLICY_NOT_CONFIGURED":
       return "尚无任何已激活国家政策，联系人补全保持阻断。";
     case "CONTACT_ENRICHMENT_NOT_ALLOWED":
@@ -186,15 +192,28 @@ const countryReadinessMessage = computed(() => {
     case "CONTACT_ENRICHMENT_NOT_COMPOSED":
       return "Hunter / Provider 生产组合尚未完成；即使已有允许政策，联系人补全仍保持阻断。";
     default:
-      return countryOverview.value?.contact_enrichment.state === "ready"
+      return readiness?.state === "ready"
         ? "联系人补全已就绪。"
         : "正在核对联系人补全就绪状态。";
   }
-});
+}
 
-const countryLiveDiff = computed(() => revisionBase.value
-  ? policyDifferences(revisionBase.value, countryForm)
-  : []);
+const countryReadinessMessage = computed(() => readinessMessage(
+  countryOverview.value?.contact_enrichment,
+));
+const playbookReadinessMessage = computed(() => readinessMessage(
+  overview.value?.contact_enrichment,
+));
+
+const countryLiveDiff = computed(() => {
+  if (revisionBase.value) return policyDifferences(revisionBase.value, countryForm);
+  return countryPolicyFields.flatMap(({ key }) => {
+    const candidate = policyValue(countryForm, key);
+    return candidate === "未设置" || candidate === "无"
+      ? []
+      : [`${key}：未配置 → ${candidate}`];
+  });
+});
 
 const liveDiff = computed(() => {
   const active = activeVersion.value;
@@ -254,11 +273,18 @@ function policyDifferences(
 }
 
 function historyDifferences(version: CountryPolicyVersion): string[] {
-  const active = activeCountryPolicies.value.find(
-    (item) => item.version.country_key === version.country_key,
-  )?.version;
-  if (!active || active.country_policy_version_id === version.country_policy_version_id) return [];
-  return policyDifferences(active, version);
+  if (!version.base_version_id || !version.base_content_hash) return [];
+  const base = countryVersions.value.find((item) =>
+    item.version.country_policy_version_id === version.base_version_id
+    && item.version.content_hash === version.base_content_hash)?.version;
+  return base ? policyDifferences(base, version) : [];
+}
+
+function historyBaseMissing(version: CountryPolicyVersion): boolean {
+  if (!version.base_version_id || !version.base_content_hash) return false;
+  return !countryVersions.value.some((item) =>
+    item.version.country_policy_version_id === version.base_version_id
+    && item.version.content_hash === version.base_content_hash);
 }
 
 function exactCountrySource(
@@ -287,6 +313,7 @@ function normalizeCountrySource(field: CountryPolicyField): void {
 }
 
 function resetCountryForm(): void {
+  if (countryFormFrozen.value) return;
   revisionBase.value = null;
   countryAccepted.value = null;
   countrySubmitError.value = null;
@@ -305,6 +332,7 @@ function resetCountryForm(): void {
 }
 
 function beginCountryRevision(active: CountryPolicyActive): void {
+  if (countryFormFrozen.value) return;
   const version = active.version;
   revisionBase.value = version;
   countryAccepted.value = null;
@@ -340,11 +368,18 @@ async function loadCountryHistory(country: string): Promise<void> {
 }
 
 async function selectCountry(country: string): Promise<void> {
-  selectedCountry.value = country;
-  await loadCountryHistory(country);
+  const exactCountry = country.trim();
+  if (!exactCountry) return;
+  selectedCountry.value = exactCountry;
+  countryHistoryQuery.value = exactCountry;
+  await loadCountryHistory(exactCountry);
 }
 
-async function loadCountryPolicies(): Promise<void> {
+async function queryCountryHistory(): Promise<void> {
+  await selectCountry(countryHistoryQuery.value);
+}
+
+async function loadCountryPolicies(preferredCountry?: string): Promise<void> {
   countryLoading.value = true;
   countryLoadError.value = null;
   try {
@@ -356,8 +391,10 @@ async function loadCountryPolicies(): Promise<void> {
       return;
     }
     countryOverview.value = result.data;
+    const exactPreferred = preferredCountry?.trim() || selectedCountry.value?.trim();
     const first = result.data.active_policies[0];
-    if (first) await selectCountry(first.version.country);
+    if (exactPreferred) await selectCountry(exactPreferred);
+    else if (first) await selectCountry(first.version.country);
     else {
       selectedCountry.value = null;
       countryVersions.value = [];
@@ -401,10 +438,11 @@ function countryProposalBody(): CountryPolicyProposal | null {
 async function submitCountryProposal(): Promise<void> {
   if (countrySubmitting.value) return;
   countrySubmitError.value = null;
-  const body = countryProposalBody();
+  const body = countryAttemptBody.value ?? countryProposalBody();
   if (!body) return;
   const key = countryIdempotencyKey.value ?? newCountryIdempotencyKey();
   countryIdempotencyKey.value = key;
+  countryAttemptBody.value = body;
   countrySubmitting.value = true;
   try {
     const result = await client.POST("/settings/country-policies/proposals", {
@@ -412,9 +450,10 @@ async function submitCountryProposal(): Promise<void> {
       params: { header: { "Idempotency-Key": key } },
     });
     countryIdempotencyKey.value = null;
+    countryAttemptBody.value = null;
     if (result.response.status === 202 && result.data) {
       countryAccepted.value = result.data;
-      await loadCountryPolicies();
+      await loadCountryPolicies(body.country);
       return;
     }
     countrySubmitError.value = result.response.status === 422
@@ -598,12 +637,16 @@ onMounted(() => void refreshSettings());
     </div>
 
     <div
-      v-if="overview?.contact_enrichment.reason_code === 'COUNTRY_POLICY_NOT_CONFIGURED'"
+      v-if="overview"
       class="safe-banner"
       role="status"
+      aria-label="Playbook 联系人补全就绪状态"
     >
       <span aria-hidden="true">i</span>
-      <div><strong>国家政策未配置，联系人补全保持阻断。</strong>先提交含目标/排除国家的 Playbook 候选，审批生效后才能解除。</div>
+      <div>
+        <strong>{{ playbookReadinessMessage }}</strong>
+        国家政策需在下方国家政策包工作区单独录入、审批并激活；Company Playbook 候选不能替代国家政策。
+      </div>
     </div>
 
     <section class="settings-grid">
@@ -860,9 +903,10 @@ onMounted(() => void refreshSettings());
         </div>
         <button
           type="button"
+          :disabled="countryFormFrozen"
           @click="resetCountryForm"
         >
-          新建国家政策
+          {{ revisionBase ? "取消修订并新建" : "新建国家政策" }}
         </button>
       </header>
 
@@ -957,6 +1001,7 @@ onMounted(() => void refreshSettings());
                 </button>
                 <button
                   type="button"
+                  :disabled="countryFormFrozen"
                   @click="beginCountryRevision(active)"
                 >
                   修订此政策
@@ -972,6 +1017,21 @@ onMounted(() => void refreshSettings());
                     <code>{{ field.key }}</code>
                     {{ active.version.field_provenance[field.key].source_type }} /
                     {{ active.version.field_provenance[field.key].source_id }}
+                    <span>
+                      提取 {{ active.version.field_provenance[field.key].extracted_by }} ·
+                      <time :datetime="active.version.field_provenance[field.key].extracted_at">
+                        {{ displayTime(active.version.field_provenance[field.key].extracted_at) }}
+                      </time>
+                    </span>
+                    <span>
+                      确认 {{ active.version.field_provenance[field.key].confirmed_by ?? "尚未确认" }} ·
+                      <time
+                        v-if="active.version.field_provenance[field.key].confirmed_at"
+                        :datetime="active.version.field_provenance[field.key].confirmed_at ?? undefined"
+                      >
+                        {{ displayTime(active.version.field_provenance[field.key].confirmed_at) }}
+                      </time>
+                    </span>
                   </li>
                 </ul>
               </details>
@@ -1004,6 +1064,7 @@ onMounted(() => void refreshSettings());
                 name="country"
                 maxlength="64"
                 autocomplete="off"
+                :disabled="Boolean(revisionBase) || countryFormFrozen"
                 required
               >
             </label>
@@ -1018,6 +1079,7 @@ onMounted(() => void refreshSettings());
                   :id="`policy-${field.key}`"
                   v-model="countryForm[field.key]"
                   :name="field.key"
+                  :disabled="countryFormFrozen"
                   required
                 >
                   <option
@@ -1045,6 +1107,7 @@ onMounted(() => void refreshSettings());
                 min="1"
                 max="365"
                 inputmode="numeric"
+                :disabled="countryFormFrozen"
               >
             </label>
             <label for="policy-requirements">附加要求代码 <code>requirements</code>
@@ -1054,6 +1117,7 @@ onMounted(() => void refreshSettings());
                 name="requirements"
                 rows="2"
                 placeholder="用逗号或换行分隔固定 action code"
+                :disabled="countryFormFrozen"
               />
             </label>
             <label for="policy-notes">核验说明
@@ -1063,11 +1127,15 @@ onMounted(() => void refreshSettings());
                 name="notes"
                 rows="3"
                 maxlength="4000"
+                :disabled="countryFormFrozen"
                 required
               />
             </label>
 
-            <fieldset class="source-fieldset">
+            <fieldset
+              class="source-fieldset"
+              :disabled="countryFormFrozen"
+            >
               <legend>九项决策字段安全来源</legend>
               <p>这里只展示并提交安全 source ID/type，不展示原始网页正文。</p>
               <div
@@ -1168,9 +1236,13 @@ onMounted(() => void refreshSettings());
             <button
               class="btn-primary submit-button"
               type="submit"
-              :disabled="countryLoading || countrySubmitting || !countryFormValid"
+              :disabled="countryLoading || countrySubmitting || (!countryAttemptBody && !countryFormValid)"
             >
-              {{ countrySubmitting ? "正在提交候选…" : "提交国家政策审批候选" }}
+              {{ countrySubmitting
+                ? "正在提交候选…"
+                : countryAttemptBody
+                  ? "以同一内容与幂等键重试"
+                  : "提交国家政策审批候选" }}
             </button>
           </form>
         </article>
@@ -1187,6 +1259,25 @@ onMounted(() => void refreshSettings());
           </div>
           <span>{{ countryVersions.length }} 个版本</span>
         </header>
+        <form
+          class="history-query"
+          aria-label="按国家查询政策历史"
+          @submit.prevent="queryCountryHistory"
+        >
+          <label for="country-history-query">国家显示名或精确国家键
+            <input
+              id="country-history-query"
+              v-model="countryHistoryQuery"
+              name="country_history_query"
+              maxlength="64"
+              autocomplete="off"
+              required
+            >
+          </label>
+          <button type="submit">
+            查询国家历史
+          </button>
+        </form>
         <div
           v-if="countryHistoryLoading"
           class="empty compact-empty"
@@ -1237,6 +1328,12 @@ onMounted(() => void refreshSettings());
                 {{ difference }}
               </li>
             </ul>
+            <p
+              v-else-if="historyBaseMissing(item.version)"
+              class="history-base-missing"
+            >
+              基准版本未在当前历史中；不展示推测的 before 值。
+            </p>
             <details>
               <summary>字段来源（安全引用）</summary>
               <ul class="source-list">
@@ -1247,6 +1344,21 @@ onMounted(() => void refreshSettings());
                   <code>{{ field.key }}</code>
                   {{ item.version.field_provenance[field.key].source_type }} /
                   {{ item.version.field_provenance[field.key].source_id }}
+                  <span>
+                    提取 {{ item.version.field_provenance[field.key].extracted_by }} ·
+                    <time :datetime="item.version.field_provenance[field.key].extracted_at">
+                      {{ displayTime(item.version.field_provenance[field.key].extracted_at) }}
+                    </time>
+                  </span>
+                  <span>
+                    确认 {{ item.version.field_provenance[field.key].confirmed_by ?? "尚未确认" }} ·
+                    <time
+                      v-if="item.version.field_provenance[field.key].confirmed_at"
+                      :datetime="item.version.field_provenance[field.key].confirmed_at ?? undefined"
+                    >
+                      {{ displayTime(item.version.field_provenance[field.key].confirmed_at) }}
+                    </time>
+                  </span>
                 </li>
               </ul>
             </details>
@@ -1326,7 +1438,8 @@ textarea { resize: vertical; min-height: 52px; }
 .country-list p, .country-history-list p { margin-top: var(--space1); color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
 .country-actions { display: flex; flex-wrap: wrap; gap: var(--space2); margin-top: var(--space3); }
 .country-list details, .country-history-list details { margin-top: var(--space3); }
-.source-list { display: grid; gap: var(--space1); margin: var(--space2) 0 0; padding: 0; list-style: none; color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
+.source-list { display: grid; gap: var(--space2); margin: var(--space2) 0 0; padding: 0; list-style: none; color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
+.source-list li { display: grid; gap: 2px; }
 .boolean-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space3); }
 .boolean-grid code { font-size: 9px; overflow-wrap: anywhere; }
 select { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 8px 10px; color: var(--text-primary); }
@@ -1337,10 +1450,13 @@ select { width: 100%; border: 1px solid var(--border); border-radius: var(--radi
 .source-warning { color: var(--danger); }
 .country-history-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .history-diff { display: grid; gap: var(--space1); margin: var(--space2) 0 0 18px; color: var(--text-secondary); font-size: 11px; }
+.history-query { grid-template-columns: minmax(180px, 1fr) auto; align-items: end; }
+.history-query button { min-height: 34px; }
+.history-base-missing { color: var(--warning); font-weight: 700; }
 @media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .country-policy-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
-  .field-row, .version-list, .boolean-grid, .country-history-list, .coverage-grid, .source-row { grid-template-columns: 1fr; }
+  .field-row, .version-list, .boolean-grid, .country-history-list, .coverage-grid, .source-row, .history-query { grid-template-columns: 1fr; }
   .settings-card { padding: var(--space3); }
   .coverage-grid > div { align-items: flex-start; }
 }

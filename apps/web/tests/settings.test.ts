@@ -1,9 +1,13 @@
 import { createApp, nextTick, type App as VueApp } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
+import type { components } from "../src/api/api";
 import { createApiClient } from "../src/api/client";
 import App from "../src/App.vue";
 import router from "../src/router";
+
+type CountryPolicyVersionFixture = components["schemas"]["CountryPolicyVersionView"];
+type ProvenanceFixture = components["schemas"]["Provenance"];
 
 const versionId = "pbv_01K00000000000000000000000";
 const activeVersion = {
@@ -109,7 +113,7 @@ const countryPolicyVersionId = "cpp_01J00000000000000000000000";
 const countryPolicyHash = "b".repeat(64);
 const countryPolicyBaseHash = "a".repeat(64);
 
-function fieldProvenance(sourceId: string) {
+function fieldProvenance(sourceId: string): ProvenanceFixture {
   return {
     confirmed_at: "2026-08-24T09:30:00Z",
     confirmed_by: "emp_policy_approver",
@@ -122,7 +126,7 @@ function fieldProvenance(sourceId: string) {
   };
 }
 
-const activeCountryPolicyVersion = {
+const activeCountryPolicyVersion: CountryPolicyVersionFixture = {
   base_content_hash: null,
   base_version_id: null,
   change_set_ref: `country_policy:${countryPolicyVersionId}:${countryPolicyHash}`,
@@ -188,6 +192,7 @@ type ReadinessReason =
 interface CountryFetchOptions {
   activePolicies?: unknown[];
   allowedCount?: number;
+  historyQueries?: string[];
   reason?: ReadinessReason;
   versions?: unknown[];
   onPost?: (request: Request) => Promise<Response>;
@@ -196,6 +201,7 @@ interface CountryFetchOptions {
 function countryPolicyFetch({
   activePolicies = [activeCountryPolicy],
   allowedCount = 1,
+  historyQueries,
   reason = "CONTACT_ENRICHMENT_NOT_COMPOSED",
   versions = [],
   onPost,
@@ -224,6 +230,7 @@ function countryPolicyFetch({
       });
     }
     if (input.method === "GET" && url.pathname === "/settings/country-policies/versions") {
+      historyQueries?.push(url.searchParams.get("country") ?? "");
       return jsonResponse(versions);
     }
     if (input.method === "POST" && url.pathname === "/settings/country-policies/proposals" && onPost) {
@@ -316,7 +323,8 @@ describe("SettingsCenter", () => {
 
     await eventually(() => {
       expect(root.textContent).toContain("尚未配置 Company Playbook");
-      expect(root.textContent).toContain("国家政策未配置，联系人补全保持阻断");
+      expect(root.textContent).toContain("尚无任何已激活国家政策，联系人补全保持阻断");
+      expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
       expect(root.textContent).toContain("待审批");
       expect(root.textContent).toContain("已拒绝");
       expect(root.textContent).toContain("已生效");
@@ -444,6 +452,26 @@ describe("SettingsCenter", () => {
 });
 
 describe("SettingsCenter country policy workspace", () => {
+  it.each([
+    ["COUNTRY_POLICY_NOT_CONFIGURED", "尚无任何已激活国家政策，联系人补全保持阻断"],
+    ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全"],
+    ["CONTACT_ENRICHMENT_NOT_COMPOSED", "Hunter / Provider 生产组合尚未完成"],
+  ] as const)("maps %s inside the Playbook section without claiming Playbook can fix it", async (reason, expected) => {
+    const { app, root } = await mountSettings(countryPolicyFetch({
+      activePolicies: reason === "COUNTRY_POLICY_NOT_CONFIGURED" ? [] : [activeCountryPolicy],
+      allowedCount: reason === "CONTACT_ENRICHMENT_NOT_COMPOSED" ? 1 : 0,
+      reason,
+    }));
+
+    await eventually(() => {
+      const banner = root.querySelector<HTMLElement>('[aria-label="Playbook 联系人补全就绪状态"]');
+      expect(banner?.textContent).toContain(expected);
+      expect(banner?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
+    });
+    expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
+    app.unmount();
+  });
+
   it("states that no legal defaults exist and requires authorized verified entry", async () => {
     const { root } = await mountSettings(countryPolicyFetch({
       activePolicies: [],
@@ -453,6 +481,65 @@ describe("SettingsCenter country policy workspace", () => {
 
     await eventually(() => expect(root.textContent).toContain("系统不提供国家法律默认值"));
     expect(root.textContent).toContain("由授权人员录入并确认已核验的政策事实");
+  });
+
+  it("shows server-bound extraction and confirmation actors and times for every source", async () => {
+    const versions = [{
+      application_error_code: null,
+      approval_decided_at: "2026-08-24T09:30:00Z",
+      approval_decided_by: "emp_policy_approver",
+      approval_id: "apr_country_active",
+      approval_state: "applied",
+      version: activeCountryPolicyVersion,
+    }];
+    const { root } = await mountSettings(countryPolicyFetch({ versions }));
+
+    await eventually(() => expect(root.textContent).toContain("已应用"));
+    const active = root.querySelector<HTMLElement>('[aria-label="生效国家政策"]');
+    const history = root.querySelector<HTMLElement>('[aria-label="国家政策版本历史"]');
+    for (const scope of [active, history]) {
+      expect(scope?.textContent).toContain("提取 human:emp_policy_owner");
+      expect(scope?.textContent).toContain("确认 emp_policy_approver");
+      expect(scope?.querySelector('time[datetime="2026-08-24T09:00:00Z"]')).not.toBeNull();
+      expect(scope?.querySelector('time[datetime="2026-08-24T09:30:00Z"]')).not.toBeNull();
+      expect(scope?.textContent).not.toContain("https://");
+    }
+  });
+
+  it("queries country-scoped pending history even when no policy is active", async () => {
+    const historyQueries: string[] = [];
+    const pendingVersion = {
+      ...candidateCountryPolicyVersion,
+      country: "Synthetic Pending Market",
+      country_key: "synthetic pending market",
+    };
+    const versions = [{
+      application_error_code: null,
+      approval_decided_at: null,
+      approval_decided_by: null,
+      approval_id: "apr_pending_only",
+      approval_state: "pending",
+      version: pendingVersion,
+    }];
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      historyQueries,
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+      versions,
+    }));
+    await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+
+    const query = root.querySelector<HTMLInputElement>('[name="country_history_query"]');
+    expect(query).not.toBeNull();
+    if (!query) return;
+    query.value = "Synthetic Pending Market";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    clickButton(root, "查询国家历史");
+
+    await eventually(() => expect(root.textContent).toContain("apr_pending_only"));
+    expect(root.textContent).toContain("待审批");
+    expect(historyQueries).toEqual(["Synthetic Pending Market"]);
   });
 
   it("renders configured and enrichment-allowed counts separately with active action facts", async () => {
@@ -568,7 +655,75 @@ describe("SettingsCenter country policy workspace", () => {
     );
   });
 
-  it("copies the selected active policy into a revision and displays its exact base", async () => {
+  it("freezes an unknown network attempt and retries its exact body with the same key", async () => {
+    const keys: string[] = [];
+    const bodies: unknown[] = [];
+    let attempts = 0;
+    const { root } = await mountSettings(countryPolicyFetch({
+      onPost: async (request) => {
+        attempts += 1;
+        keys.push(request.headers.get("Idempotency-Key") ?? "");
+        bodies.push(await request.clone().json());
+        if (attempts === 1) throw new TypeError("network result unknown");
+        return jsonResponse({
+          change_set_ref: candidateCountryPolicyVersion.change_set_ref,
+          country_policy_version_id: candidateCountryPolicyVersion.country_policy_version_id,
+          run_id: "run_unknown_retry",
+        }, 202);
+      },
+    }));
+    await eventually(() => expect(root.textContent).toContain("国家政策包"));
+    fillCountryPolicy(root);
+    const form = countryPolicyForm(root);
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await eventually(() => expect(root.textContent).toContain("网络结果未知"));
+
+    const country = form.querySelector<HTMLInputElement>('[name="country"]');
+    expect(country?.disabled).toBe(true);
+    setCountryField(root, "country", "Changed Market Must Not Ship");
+    await nextTick();
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await eventually(() => expect(root.textContent).toContain("run_unknown_retry"));
+    expect(attempts).toBe(2);
+    expect(keys[1]).toBe(keys[0]);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).toMatchObject({ country: "Synthetic Market" });
+    expect(form.querySelector<HTMLInputElement>('[name="country"]')?.disabled).toBe(false);
+  });
+
+  it("switches to the submitted country and refreshes its pending history after terminal acceptance", async () => {
+    const historyQueries: string[] = [];
+    const pending = {
+      application_error_code: null,
+      approval_decided_at: null,
+      approval_decided_by: null,
+      approval_id: "apr_after_submit",
+      approval_state: "pending",
+      version: candidateCountryPolicyVersion,
+    };
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      historyQueries,
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+      versions: [pending],
+      onPost: async () => jsonResponse({
+        change_set_ref: candidateCountryPolicyVersion.change_set_ref,
+        country_policy_version_id: candidateCountryPolicyVersion.country_policy_version_id,
+        run_id: "run_pending_after_submit",
+      }, 202),
+    }));
+    await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+    fillCountryPolicy(root);
+    countryPolicyForm(root).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await eventually(() => expect(root.textContent).toContain("apr_after_submit"));
+    expect(root.textContent).toContain("run_pending_after_submit");
+    expect(historyQueries).toEqual(["Synthetic Market"]);
+  });
+
+  it("locks the country throughout a revision and only unlocks it after explicit exit", async () => {
     const { root } = await mountSettings(countryPolicyFetch());
     await eventually(() => expect(root.textContent).toContain("Synthetic Market"));
     expect(countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]')?.value).toBe("");
@@ -576,10 +731,17 @@ describe("SettingsCenter country policy workspace", () => {
     clickButton(root, "修订此政策");
     await nextTick();
 
-    expect(countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]')?.value).toBe("Synthetic Market");
+    const country = countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]');
+    expect(country?.value).toBe("Synthetic Market");
+    expect(country?.disabled).toBe(true);
     expect(countryPolicyForm(root).querySelector<HTMLSelectElement>('[name="cold_b2b_email_allowed"]')?.value).toBe("false");
     expect(root.textContent).toContain(`基准版本 ${countryPolicyVersionId}`);
     expect(root.textContent).toContain(`基准哈希 ${countryPolicyHash}`);
+
+    clickButton(root, "取消修订并新建");
+    await nextTick();
+    expect(countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]')?.disabled).toBe(false);
+    expect(root.textContent).not.toContain(`基准版本 ${countryPolicyVersionId}`);
   });
 
   it("shows literal before and after values with pending and applied decision facts", async () => {
@@ -610,6 +772,89 @@ describe("SettingsCenter country policy workspace", () => {
     expect(root.textContent).toContain("提案人 emp_policy_reviser");
     expect(root.textContent).toContain("决定人 emp_policy_approver");
     expect(root.querySelector('time[datetime="2026-08-24T09:30:00Z"]')).not.toBeNull();
+  });
+
+  it("derives each historical diff from its exact base and names a missing base", async () => {
+    const version1: CountryPolicyVersionFixture = {
+      ...activeCountryPolicyVersion,
+      content_hash: "1".repeat(64),
+      change_set_ref: `country_policy:cpp_01J00000000000000000000010:${"1".repeat(64)}`,
+      country_policy_version_id: "cpp_01J00000000000000000000010",
+      version_number: 1,
+    };
+    const version2 = {
+      ...version1,
+      base_content_hash: version1.content_hash,
+      base_version_id: version1.country_policy_version_id,
+      change_set_ref: `country_policy:cpp_01J00000000000000000000011:${"2".repeat(64)}`,
+      cold_b2b_email_allowed: true,
+      content_hash: "2".repeat(64),
+      country_policy_version_id: "cpp_01J00000000000000000000011",
+      version_number: 2,
+    };
+    const version3 = {
+      ...version2,
+      base_content_hash: version2.content_hash,
+      base_version_id: version2.country_policy_version_id,
+      change_set_ref: `country_policy:cpp_01J00000000000000000000012:${"3".repeat(64)}`,
+      cold_b2b_email_allowed: false,
+      content_hash: "3".repeat(64),
+      country_policy_version_id: "cpp_01J00000000000000000000012",
+      version_number: 3,
+    };
+    const missingBase = {
+      ...version3,
+      base_content_hash: "9".repeat(64),
+      base_version_id: "cpp_01J00000000000000000000019",
+      change_set_ref: `country_policy:cpp_01J00000000000000000000013:${"4".repeat(64)}`,
+      content_hash: "4".repeat(64),
+      country_policy_version_id: "cpp_01J00000000000000000000013",
+      version_number: 4,
+    };
+    const activeV3 = {
+      activation: {
+        ...activeCountryPolicy.activation,
+        change_set_ref: version3.change_set_ref,
+        content_hash: version3.content_hash,
+        country_policy_version_id: version3.country_policy_version_id,
+      },
+      version: version3,
+    };
+    const status = (version: CountryPolicyVersionFixture, suffix: string) => ({
+      application_error_code: null,
+      approval_decided_at: "2026-08-25T12:00:00Z",
+      approval_decided_by: "emp_policy_approver",
+      approval_id: `apr_${suffix}`,
+      approval_state: "applied",
+      version,
+    });
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [activeV3],
+      versions: [status(missingBase, "v4"), status(version3, "v3"), status(version2, "v2"), status(version1, "v1")],
+    }));
+
+    await eventually(() => expect(root.textContent).toContain("apr_v4"));
+    const entries = [...root.querySelectorAll<HTMLElement>(".country-history-list > li")];
+    const v2 = entries.find((entry) => entry.textContent?.includes(version2.country_policy_version_id));
+    const v4 = entries.find((entry) => entry.textContent?.includes(missingBase.country_policy_version_id));
+    expect(v2?.textContent).toContain("cold_b2b_email_allowed：禁止 → 允许");
+    expect(v2?.textContent).not.toContain("cold_b2b_email_allowed：允许 → 禁止");
+    expect(v4?.textContent).toContain("基准版本未在当前历史中");
+    expect(v4?.textContent).not.toContain("cold_b2b_email_allowed：");
+  });
+
+  it("previews a first proposal as unconfigured to candidate before submission", async () => {
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+    }));
+    await eventually(() => expect(root.textContent).toContain("国家政策包"));
+    fillCountryPolicy(root);
+    await nextTick();
+
+    expect(root.textContent).toContain("public_research_allowed：未配置 → 允许");
+    expect(root.textContent).toContain("contact_enrichment_allowed：未配置 → 禁止");
   });
 
   it("maps missing policy readiness to its dedicated explanation", async () => {
