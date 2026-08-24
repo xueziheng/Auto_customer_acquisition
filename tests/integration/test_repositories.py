@@ -910,6 +910,21 @@ def test_orm_metadata_parity_with_head() -> None:
                 "tenant_id", "margin_rule_id", "category", "minimum_margin_rate",
                 "target_margin_rate", "effective_from",
             },
+            "company_playbook_versions": {
+                "tenant_id", "playbook_version_id", "version_number",
+                "content_hash", "base_version_id", "base_content_hash",
+                "company_type", "minimum_deal_amount", "minimum_deal_currency",
+                "excluded_categories", "sourcing_regions", "excluded_countries",
+                "monthly_budget_credits", "approval_requirements",
+                "supply_capabilities_note", "proposed_by", "proposed_at",
+                "idempotency_key", "source_type", "source_id", "extracted_by",
+                "extracted_at",
+            },
+            "company_playbook_activations": {
+                "tenant_id", "activation_id", "playbook_version_id",
+                "content_hash", "approval_id", "change_set_ref", "approved_by",
+                "approved_at", "activated_by", "activated_at",
+            },
     }
     for table, cols in expected_columns.items():
         assert table in metadata.tables, f"缺表 {table}"
@@ -1023,6 +1038,12 @@ def test_orm_metadata_parity_with_head() -> None:
             ),
             "ix_margin_rules_tenant_category_effective": (
                 "tenant_id", "category", "effective_from", "margin_rule_id",
+            ),
+            "ix_company_playbook_versions_tenant_number": (
+                "tenant_id", "version_number", "playbook_version_id",
+            ),
+            "ix_company_playbook_activations_tenant_current": (
+                "tenant_id", "activated_at", "activation_id",
             ),
         }
     actual_indexes: dict[str, tuple[str, ...]] = {}
@@ -1251,6 +1272,28 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_employee_confirmations_revision",
             "ck_employee_confirmations_payload_jsonb",
             "ck_employee_confirmations_core_nonblank",
+        },
+        "company_playbook_versions": {
+            "pk_company_playbook_versions",
+            "uq_company_playbook_versions_number",
+            "uq_company_playbook_versions_idempotency",
+            "ck_company_playbook_versions_nonnegative",
+            "ck_company_playbook_versions_currency",
+            "ck_company_playbook_versions_hashes",
+            "ck_company_playbook_versions_base_pair",
+            "ck_company_playbook_versions_json_arrays",
+            "ck_company_playbook_versions_core_nonblank",
+            "ck_company_playbook_versions_provenance",
+        },
+        "company_playbook_activations": {
+            "pk_company_playbook_activations",
+            "fk_company_playbook_activations_version",
+            "uq_company_playbook_activations_version",
+            "uq_company_playbook_activations_approval",
+            "ck_company_playbook_activations_hash",
+            "ck_company_playbook_activations_change_set",
+            "ck_company_playbook_activations_times",
+            "ck_company_playbook_activations_core_nonblank",
         },
     }
     for table, names in expected_constraints.items():

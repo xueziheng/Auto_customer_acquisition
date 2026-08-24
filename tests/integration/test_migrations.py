@@ -50,7 +50,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0030"
+_ALEMBIC_HEAD = "0031"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -60,6 +60,8 @@ def _type_key(value: str) -> str:
 
 
 EXPECTED_TABLES: tuple[str, ...] = (
+    "company_playbook_versions",
+    "company_playbook_activations",
     "approval_packages",
     "approval_applications",
     "directive_proposals",
@@ -4433,6 +4435,148 @@ async def test_0023_downgrade_roundtrip(db_url: str) -> None:
         assert tables <= await _table_names(engine)
         async with engine.connect() as conn:
             assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == _ALEMBIC_HEAD
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0031_company_playbook_contract_matches_orm(db_url: str) -> None:
+    """0031 两表列、约束、FK、索引和 append-only trigger 与 ORM 一致。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import (
+        CompanyPlaybookActivationRow,
+        CompanyPlaybookVersionRow,
+    )
+
+    rows = {
+        "company_playbook_versions": CompanyPlaybookVersionRow,
+        "company_playbook_activations": CompanyPlaybookActivationRow,
+    }
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == _ALEMBIC_HEAD
+            )
+            database = await connection.run_sync(
+                lambda sync: {
+                    table: {
+                        "columns": {
+                            item["name"] for item in inspect(sync).get_columns(table)
+                        },
+                        "pk": tuple(
+                            inspect(sync).get_pk_constraint(table)[
+                                "constrained_columns"
+                            ]
+                        ),
+                        "checks": {
+                            item["name"]
+                            for item in inspect(sync).get_check_constraints(table)
+                        },
+                        "uniques": {
+                            item["name"]
+                            for item in inspect(sync).get_unique_constraints(table)
+                        },
+                        "fks": {
+                            (
+                                item["name"],
+                                tuple(item["constrained_columns"]),
+                                item["referred_table"],
+                                tuple(item["referred_columns"]),
+                            )
+                            for item in inspect(sync).get_foreign_keys(table)
+                        },
+                        "indexes": {
+                            item["name"]: tuple(item["column_names"])
+                            for item in inspect(sync).get_indexes(table)
+                            if not item.get("duplicates_constraint")
+                        },
+                    }
+                    for table in rows
+                }
+            )
+            trigger_rows = await connection.execute(
+                text(
+                    "SELECT c.relname, t.tgname FROM pg_trigger t "
+                    "JOIN pg_class c ON c.oid=t.tgrelid "
+                    "WHERE NOT t.tgisinternal AND "
+                    "c.relname = ANY(:tables)"
+                ),
+                {"tables": list(rows)},
+            )
+            triggers = {(str(table), str(trigger)) for table, trigger in trigger_rows}
+            function_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_proc "
+                    "WHERE proname='guard_company_playbook_append_only'"
+                )
+            )
+    finally:
+        await engine.dispose()
+
+    for table, row in rows.items():
+        orm = row.__table__
+        assert database[table]["columns"] == set(orm.columns.keys())
+        assert database[table]["pk"] == tuple(
+            column.name for column in orm.primary_key.columns
+        )
+        assert database[table]["checks"] == {
+            constraint.name
+            for constraint in orm.constraints
+            if isinstance(constraint, CheckConstraint)
+        }
+        assert database[table]["uniques"] == {
+            constraint.name
+            for constraint in orm.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert database[table]["indexes"] == {
+            index.name: tuple(index.columns.keys()) for index in orm.indexes
+        }
+    assert database["company_playbook_activations"]["fks"] == {
+        (
+            "fk_company_playbook_activations_version",
+            ("tenant_id", "playbook_version_id"),
+            "company_playbook_versions",
+            ("tenant_id", "playbook_version_id"),
+        )
+    }
+    assert triggers == {
+        (
+            "company_playbook_versions",
+            "trg_company_playbook_versions_append_only",
+        ),
+        (
+            "company_playbook_activations",
+            "trg_company_playbook_activations_append_only",
+        ),
+    }
+    assert function_count == 1
+
+
+async def test_0031_company_playbook_downgrade_roundtrip(db_url: str) -> None:
+    """head→0030→head 只移除并恢复 Playbook 两表和迁移版本。"""
+    from infra.db.session import create_engine_from
+
+    tables = {"company_playbook_versions", "company_playbook_activations"}
+    engine = create_engine_from(db_url)
+    try:
+        assert tables <= await _table_names(engine)
+        _run_alembic(db_url, "downgrade", "0030")
+        assert not tables & await _table_names(engine)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0030"
+            )
+        _run_alembic(db_url, "upgrade", "head")
+        assert tables <= await _table_names(engine)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == _ALEMBIC_HEAD
+            )
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

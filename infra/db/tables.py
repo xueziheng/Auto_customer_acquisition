@@ -3383,3 +3383,169 @@ class MarginRuleRow(Base):
     minimum_margin_rate: Mapped[Decimal] = mapped_column(Numeric(18, 12))
     target_margin_rate: Mapped[Decimal] = mapped_column(Numeric(18, 12))
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CompanyPlaybookVersionRow(Base):
+    """不可变 Company Playbook 候选版本。"""
+
+    __tablename__ = "company_playbook_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "playbook_version_id",
+            name="pk_company_playbook_versions",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "version_number",
+            name="uq_company_playbook_versions_number",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_company_playbook_versions_idempotency",
+        ),
+        CheckConstraint(
+            "version_number > 0 AND minimum_deal_amount >= 0 AND "
+            "(monthly_budget_credits IS NULL OR monthly_budget_credits >= 0)",
+            name="ck_company_playbook_versions_nonnegative",
+        ),
+        CheckConstraint(
+            "minimum_deal_currency ~ '^[A-Z]{3}$'",
+            name="ck_company_playbook_versions_currency",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$' AND "
+            "(base_content_hash IS NULL OR base_content_hash ~ '^[0-9a-f]{64}$')",
+            name="ck_company_playbook_versions_hashes",
+        ),
+        CheckConstraint(
+            "(base_version_id IS NULL AND base_content_hash IS NULL) OR "
+            "(base_version_id IS NOT NULL AND base_content_hash IS NOT NULL)",
+            name="ck_company_playbook_versions_base_pair",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(excluded_categories) = 'array' AND "
+            "jsonb_array_length(excluded_categories) <= 200 AND "
+            "jsonb_typeof(sourcing_regions) = 'array' AND "
+            "jsonb_array_length(sourcing_regions) <= 200 AND "
+            "jsonb_typeof(excluded_countries) = 'array' AND "
+            "jsonb_array_length(excluded_countries) <= 200 AND "
+            "jsonb_typeof(approval_requirements) = 'array' AND "
+            "jsonb_array_length(approval_requirements) <= 200",
+            name="ck_company_playbook_versions_json_arrays",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(playbook_version_id) <> '' AND "
+            "btrim(company_type) <> '' AND btrim(proposed_by) <> '' AND "
+            "btrim(idempotency_key) <> '' AND "
+            "(supply_capabilities_note IS NULL OR "
+            "btrim(supply_capabilities_note) <> '')",
+            name="ck_company_playbook_versions_core_nonblank",
+        ),
+        CheckConstraint(
+            "source_type = 'employee_input' AND "
+            "source_id = playbook_version_id AND "
+            "extracted_by = 'human:' || proposed_by AND "
+            "extracted_at = proposed_at",
+            name="ck_company_playbook_versions_provenance",
+        ),
+        Index(
+            "ix_company_playbook_versions_tenant_number",
+            "tenant_id",
+            "version_number",
+            "playbook_version_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    playbook_version_id: Mapped[str] = mapped_column(String(40))
+    version_number: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(CHAR(64))
+    base_version_id: Mapped[str | None] = mapped_column(String(40))
+    base_content_hash: Mapped[str | None] = mapped_column(CHAR(64))
+    company_type: Mapped[str] = mapped_column(String(200))
+    minimum_deal_amount: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    minimum_deal_currency: Mapped[str] = mapped_column(CHAR(3))
+    excluded_categories: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    sourcing_regions: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    excluded_countries: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    monthly_budget_credits: Mapped[int | None] = mapped_column(BigInteger)
+    approval_requirements: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    supply_capabilities_note: Mapped[str | None] = mapped_column(Text)
+    proposed_by: Mapped[str] = mapped_column(String(40))
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(40))
+    extracted_by: Mapped[str] = mapped_column(String(200))
+    extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CompanyPlaybookActivationRow(Base):
+    """人工批准与系统生效时间分离的 append-only 激活事实。"""
+
+    __tablename__ = "company_playbook_activations"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "activation_id",
+            name="pk_company_playbook_activations",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "playbook_version_id"],
+            [
+                "company_playbook_versions.tenant_id",
+                "company_playbook_versions.playbook_version_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_company_playbook_activations_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "playbook_version_id",
+            name="uq_company_playbook_activations_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "approval_id",
+            name="uq_company_playbook_activations_approval",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_company_playbook_activations_hash",
+        ),
+        CheckConstraint(
+            "change_set_ref = 'playbook:' || playbook_version_id || ':' || "
+            "content_hash",
+            name="ck_company_playbook_activations_change_set",
+        ),
+        CheckConstraint(
+            "approved_at <= activated_at",
+            name="ck_company_playbook_activations_times",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(activation_id) <> '' AND "
+            "btrim(playbook_version_id) <> '' AND btrim(approval_id) <> '' AND "
+            "btrim(change_set_ref) <> '' AND btrim(approved_by) <> '' AND "
+            "btrim(activated_by) <> ''",
+            name="ck_company_playbook_activations_core_nonblank",
+        ),
+        Index(
+            "ix_company_playbook_activations_tenant_current",
+            "tenant_id",
+            "activated_at",
+            "activation_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    activation_id: Mapped[str] = mapped_column(String(40))
+    playbook_version_id: Mapped[str] = mapped_column(String(40))
+    content_hash: Mapped[str] = mapped_column(CHAR(64))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    change_set_ref: Mapped[str] = mapped_column(String(160))
+    approved_by: Mapped[str] = mapped_column(String(40))
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    activated_by: Mapped[str] = mapped_column(String(200))
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
