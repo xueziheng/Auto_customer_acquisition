@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -191,8 +193,14 @@ class FakeCompliance:
 
 
 class FakeApprovals:
-    def __init__(self, view: ApprovalView | None = None) -> None:
+    def __init__(
+        self,
+        view: ApprovalView | None = None,
+        *,
+        existing: ApprovalView | None = None,
+    ) -> None:
         self.view = view or _view()
+        self.existing = existing
         self.submissions: list[dict[str, Any]] = []
         self.failed: list[tuple[ApprovalId, str]] = []
         self.applied: list[tuple[ApprovalId, str]] = []
@@ -223,6 +231,9 @@ class FakeApprovals:
     async def get(self, tenant_id, approval_id, *, current_employee=None):
         return self.view
 
+    async def get_by_change_set(self, tenant_id, change_set_ref):
+        return self.existing
+
     async def expire_overdue(self, tenant_id):
         return 1
 
@@ -232,6 +243,39 @@ class FakeApprovals:
     async def mark_applied(self, tenant_id, approval_id, idempotency_key):
         self.applied.append((approval_id, idempotency_key))
         return len(self.applied) == 1
+
+
+def _submitted_view(submitted: dict[str, Any]) -> ApprovalView:
+    blast_radius = submitted["blast_radius"]
+    proposed_change = submitted["proposed_change"]
+    return ApprovalView(
+        approval_id=str(APPROVAL_ID),
+        approval_type=submitted["approval_type"].value,
+        type_label="国家政策包变更",
+        title=submitted["title"],
+        reason=submitted["reason"],
+        proposed_change_display={
+            key: (
+                value
+                if isinstance(value, str)
+                else json.dumps(value, ensure_ascii=False, sort_keys=True)
+            )
+            for key, value in proposed_change.items()
+        },
+        affected_entities=list(blast_radius.affected_entities),
+        if_approved=blast_radius.if_approved,
+        if_rejected=blast_radius.if_rejected,
+        reversible=blast_radius.reversible,
+        state="approved",
+        created_at=NOW,
+        expires_at=NOW + timedelta(days=7),
+        proposed_by=str(submitted["proposed_by_employee"]),
+        evidence_links=list(submitted["evidence_refs"]),
+        owner_name=str(submitted["owner_employee"]),
+        change_set_ref=submitted["change_set_ref"],
+        decided_by_employee=APPROVER,
+        decided_at=NOW + timedelta(minutes=1),
+    )
 
 
 class FakeEngine:
@@ -293,7 +337,7 @@ def test_country_policy_change_definition_has_exact_approval_paths() -> None:
     assert definition.transitions == {
         "assemble_package": ("submit_approval",),
         "submit_approval": ("wait_decision",),
-        "wait_decision": ("apply_policy",),
+        "wait_decision": ("apply_policy", "expire_approval"),
         "expire_approval": ("apply_policy",),
         "apply_policy": ("mark_applied",),
         "mark_applied": (),
@@ -340,6 +384,65 @@ async def test_submit_uses_country_policy_change_and_proposer_as_owner() -> None
     assert submitted["owner_employee"] == PROPOSER
     assert submitted["change_set_ref"] == CHANGE_SET_REF
     assert result[2]["approval_timeout_seconds"] == 604800
+
+
+@pytest.mark.asyncio
+async def test_submit_reuses_exact_decided_approval_by_change_set() -> None:
+    first_approvals = FakeApprovals(_view("pending"))
+    first_handlers = build_country_policy_change_handlers(
+        FakeCompliance(), first_approvals, _system_actor()
+    )
+    await first_handlers["country_policy_change.submit"].execute(
+        _run("submit_approval")
+    )
+    existing = _submitted_view(first_approvals.submissions[0])
+    replay_approvals = FakeApprovals(existing=existing)
+    replay_handlers = build_country_policy_change_handlers(
+        FakeCompliance(), replay_approvals, _system_actor()
+    )
+
+    result = await replay_handlers["country_policy_change.submit"].execute(
+        _run("submit_approval")
+    )
+
+    assert result[2]["approval_id"] == str(APPROVAL_ID)
+    assert replay_approvals.submissions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        {"change_set_ref": "country_policy:cpp_wrong:" + "b" * 64},
+        {"approval_type": "playbook_change"},
+        {"proposed_by": "emp_wrong"},
+        {"owner_name": "emp_wrong"},
+        {"title": "已被篡改的公开审批事实"},
+    ],
+    ids=["change-set", "type", "proposer", "owner", "public-fact"],
+)
+async def test_submit_fails_closed_when_existing_approval_facts_mismatch(
+    mismatch: dict[str, Any],
+) -> None:
+    first_approvals = FakeApprovals(_view("pending"))
+    first_handlers = build_country_policy_change_handlers(
+        FakeCompliance(), first_approvals, _system_actor()
+    )
+    await first_handlers["country_policy_change.submit"].execute(
+        _run("submit_approval")
+    )
+    existing = replace(_submitted_view(first_approvals.submissions[0]), **mismatch)
+    replay_approvals = FakeApprovals(existing=existing)
+    replay_handlers = build_country_policy_change_handlers(
+        FakeCompliance(), replay_approvals, _system_actor()
+    )
+
+    with pytest.raises(ValidationError, match="国家政策既有审批事实与候选版本不匹配"):
+        await replay_handlers["country_policy_change.submit"].execute(
+            _run("submit_approval")
+        )
+
+    assert replay_approvals.submissions == []
 
 
 @pytest.mark.asyncio

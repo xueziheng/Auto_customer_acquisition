@@ -21,6 +21,7 @@ from infra.db.repositories.compliance import (
     CountryPolicyFieldProvenanceRepositoryImpl,
     CountryPolicyVersionRepositoryImpl,
 )
+from infra.db.retryable_errors import raise_transient_database_error
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import TenantId
 
@@ -49,9 +50,7 @@ class SqlAlchemyComplianceUnitOfWork:
     async def __aenter__(self) -> Self:
         session = self._factory()
         self._session = session
-        self.versions = CountryPolicyVersionRepositoryImpl(
-            session, self._tenant_id
-        )
+        self.versions = CountryPolicyVersionRepositoryImpl(session, self._tenant_id)
         self.provenance = CountryPolicyFieldProvenanceRepositoryImpl(
             session, self._tenant_id
         )
@@ -67,18 +66,17 @@ class SqlAlchemyComplianceUnitOfWork:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        preserve_primary = exc_type is not None
+        primary = exc
         try:
             if exc_type is None:
                 try:
                     await self._session.commit()
-                except BaseException:
-                    preserve_primary = True
+                except BaseException as commit_error:  # noqa: BLE001 - cleanup 后原样分类
+                    primary = commit_error
                     try:
                         await self._session.rollback()
                     except BaseException:  # noqa: BLE001 - cleanup 不覆盖 primary
                         _cleanup_logger.error("合规域事务回滚失败")
-                    raise
             else:
                 try:
                     await self._session.rollback()
@@ -87,10 +85,15 @@ class SqlAlchemyComplianceUnitOfWork:
         finally:
             try:
                 await self._session.close()
-            except BaseException:
-                if not preserve_primary:
-                    raise
-                _cleanup_logger.error("合规域事务关闭失败")
+            except BaseException as close_error:  # noqa: BLE001 - cleanup 后原样分类
+                if primary is None:
+                    primary = close_error
+                else:
+                    _cleanup_logger.error("合规域事务关闭失败")
+        if primary is not None:
+            raise_transient_database_error(primary)
+            if exc is None:
+                raise primary
 
 
 __all__ = ("SqlAlchemyComplianceUnitOfWork",)

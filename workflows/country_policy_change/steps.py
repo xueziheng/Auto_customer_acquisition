@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from domains.approvals.schemas import ApprovalView
@@ -112,6 +113,49 @@ def _require_view(run: WorkflowRun, view: ApprovalView) -> None:
         raise ValidationError("国家政策审批事实与工作流不匹配")
 
 
+def _approval_display(proposed_change: dict[str, object]) -> dict[str, str]:
+    return {
+        key: (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        )
+        for key, value in proposed_change.items()
+    }
+
+
+def _require_reusable_approval(
+    view: ApprovalView,
+    *,
+    change_set_ref: str,
+    proposed_by: str,
+    title: str,
+    proposed_change: dict[str, object],
+    reason: str,
+    blast_radius: BlastRadius,
+    evidence_refs: list[str],
+) -> ApprovalId:
+    valid_states = {state.value for state in ApprovalState}
+    if (
+        not view.approval_id.startswith("apr_")
+        or view.approval_type != ApprovalType.COUNTRY_POLICY_CHANGE.value
+        or view.change_set_ref != change_set_ref
+        or view.proposed_by != proposed_by
+        or view.owner_name != proposed_by
+        or view.state not in valid_states
+        or view.title != title
+        or view.proposed_change_display != _approval_display(proposed_change)
+        or view.reason != reason
+        or view.affected_entities != blast_radius.affected_entities
+        or view.if_approved != blast_radius.if_approved
+        or view.if_rejected != blast_radius.if_rejected
+        or view.reversible is not blast_radius.reversible
+        or view.evidence_links != evidence_refs
+    ):
+        raise ValidationError("国家政策既有审批事实与候选版本不匹配")
+    return ApprovalId(view.approval_id)
+
+
 class AssemblePackageStep:
     def __init__(self, compliance: ComplianceService, actor: ComplianceActor) -> None:
         self._compliance = compliance
@@ -153,6 +197,9 @@ class SubmitApprovalStep:
             run.tenant_id, version_id, actor=self._actor
         )
         candidate = _require_snapshot(run, snapshot)
+        proposed_by = _text(run.context.get("proposed_by"), "proposed_by")
+        if proposed_by != str(candidate.proposed_by):
+            raise ValidationError("国家政策提交人与候选版本不匹配")
         base_display: str | dict[str, object] = (
             "未配置" if snapshot.base is None else _display(snapshot.base)
         )
@@ -162,32 +209,50 @@ class SubmitApprovalStep:
         reason = "已提交逐字段人工核验来源的国家政策候选。"
         if not snapshot.base_is_current:
             reason = f"{reason}{_STALE_WARNING}"
-        approval_id = await self._approvals.submit(
-            run.tenant_id,
-            ApprovalType.COUNTRY_POLICY_CHANGE,
-            f"激活 {candidate.country} 国家政策包 v{candidate.version_number}",
-            {
-                "base": base_display,
-                "current": current_display,
-                "base_is_current": snapshot.base_is_current,
-                "before": current_display,
-                "after": _display(candidate),
-                "field_sources": _safe_sources(candidate),
-            },
-            reason,
-            BlastRadius(
-                affected_entities=[f"国家政策包 {candidate.country_key}"],
-                if_approved="自动激活该精确候选版本；相关 Gateway 随后读取新政策。",
-                if_rejected="当前生效政策保持不变；无生效政策时继续默认拒绝。",
-                reversible=True,
-            ),
-            proposed_by_employee=candidate.proposed_by,
-            owner_employee=candidate.proposed_by,
-            evidence_refs=[
-                source["source_id"] for source in _safe_sources(candidate).values()
-            ],
-            change_set_ref=change_set_ref,
+        sources = _safe_sources(candidate)
+        proposed_change: dict[str, object] = {
+            "base": base_display,
+            "current": current_display,
+            "base_is_current": snapshot.base_is_current,
+            "before": current_display,
+            "after": _display(candidate),
+            "field_sources": sources,
+        }
+        title = f"激活 {candidate.country} 国家政策包 v{candidate.version_number}"
+        blast_radius = BlastRadius(
+            affected_entities=[f"国家政策包 {candidate.country_key}"],
+            if_approved="自动激活该精确候选版本；相关 Gateway 随后读取新政策。",
+            if_rejected="当前生效政策保持不变；无生效政策时继续默认拒绝。",
+            reversible=True,
         )
+        evidence_refs = [source["source_id"] for source in sources.values()]
+        existing = await self._approvals.get_by_change_set(
+            run.tenant_id, change_set_ref
+        )
+        if existing is None:
+            approval_id = await self._approvals.submit(
+                run.tenant_id,
+                ApprovalType.COUNTRY_POLICY_CHANGE,
+                title,
+                proposed_change,
+                reason,
+                blast_radius,
+                proposed_by_employee=candidate.proposed_by,
+                owner_employee=candidate.proposed_by,
+                evidence_refs=evidence_refs,
+                change_set_ref=change_set_ref,
+            )
+        else:
+            approval_id = _require_reusable_approval(
+                existing,
+                change_set_ref=change_set_ref,
+                proposed_by=proposed_by,
+                title=title,
+                proposed_change=proposed_change,
+                reason=reason,
+                blast_radius=blast_radius,
+                evidence_refs=evidence_refs,
+            )
         return (
             "advance",
             "wait_decision",

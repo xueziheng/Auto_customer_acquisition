@@ -83,7 +83,7 @@ def build_country_policy_change_definition() -> WorkflowDefinition:
         transitions={
             "assemble_package": ("submit_approval",),
             "submit_approval": ("wait_decision",),
-            "wait_decision": ("apply_policy",),
+            "wait_decision": ("apply_policy", "expire_approval"),
             "expire_approval": ("apply_policy",),
             "apply_policy": ("mark_applied",),
             "mark_applied": (),
