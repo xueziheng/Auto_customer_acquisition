@@ -32,6 +32,8 @@ from connectors.openai import OpenAIJsonModelClient
 from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.commitments.service_impl import CommitmentServiceImpl
+from domains.compliance.permissions import Phase1ComplianceAuthorizer
+from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.conversations.service_impl import ConversationServiceImpl
 from domains.costing.permissions import Phase1CostingAuthorizer
 from domains.costing.service_impl import CostingServiceImpl
@@ -120,6 +122,7 @@ from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
+from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
@@ -850,6 +853,13 @@ def build_phase1_dependencies(
         Phase1OrganizationAuthorizer(tenant),
         now=now,
     )
+    compliance = ComplianceServiceImpl(
+        lambda requested_tenant: SqlAlchemyComplianceUnitOfWork(
+            factory, requested_tenant, now=now
+        ),
+        Phase1ComplianceAuthorizer(tenant),
+        now=now,
+    )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
         manual_send.contact_eligibility
@@ -1212,6 +1222,8 @@ def build_phase1_dependencies(
         trade_manager=trade_manager,
         approvals=approvals,
         organization=organization,
+        compliance=compliance,
+        contact_enrichment_composed=False,
         conversations=conversations,
         commitments=commitments,
         costing=costing,

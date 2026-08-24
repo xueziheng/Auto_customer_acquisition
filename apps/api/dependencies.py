@@ -13,6 +13,7 @@ from agent_runtime.trade_manager import TradeManagerAgent
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
 from domains.commitments.service import CommitmentService
+from domains.compliance.service import ComplianceService
 from domains.conversations.service import ConversationService
 from domains.costing.service import CostingService
 from domains.demand.schemas import (
@@ -258,6 +259,8 @@ class ConfiguredApiDependencies:
     trade_manager: TradeManagerAgent | None = None
     approvals: ApprovalService | None = None
     organization: OrganizationService | None = None
+    compliance: ComplianceService | None = None
+    contact_enrichment_composed: bool = False
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
@@ -266,6 +269,8 @@ class ConfiguredApiDependencies:
     configured: bool = True
 
     def __post_init__(self) -> None:
+        if type(self.contact_enrichment_composed) is not bool:
+            raise TypeError("contact enrichment composition 必须是显式 bool")
         if (
             not isinstance(self.tool_gateway, ToolGatewayInvoker)
             or not isinstance(self.delivery_materials, DeliveryMaterialProvider)

@@ -15,6 +15,7 @@ from apps.api.dependencies import UnconfiguredApiDependencies
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
 from apps.api.runtime_config import Phase1RuntimeSettings
+from domains.compliance.service import ComplianceService
 from domains.organization.service import OrganizationService
 from shared.errors import TransientError
 from shared.schemas.identifiers import RunId, TenantId
@@ -154,6 +155,8 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     assert type(dependencies.tool_gateway).__name__ == "ResolvedManualSendGateway"
     assert type(dependencies.run_audit).__name__ == "RunAuditService"
     assert isinstance(dependencies.organization, OrganizationService)
+    assert isinstance(dependencies.compliance, ComplianceService)
+    assert dependencies.contact_enrichment_composed is False
     playbook_definition = dependencies.workflow_engine._definitions[
         ("playbook_change", 1)
     ]
@@ -169,6 +172,14 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
         type(dependencies.workflow_engine._handlers[step.handler_ref]).__name__
         == "_StartOnlyWorkflowHandler"
         for step in playbook_definition.steps
+    )
+    country_policy_definition = dependencies.workflow_engine._definitions[
+        ("country_policy_change", 1)
+    ]
+    assert all(
+        type(dependencies.workflow_engine._handlers[step.handler_ref]).__name__
+        == "_StartOnlyWorkflowHandler"
+        for step in country_policy_definition.steps
     )
     assert vars(dependencies.outreach)["_approvals"] is facts
     assert secrets.refs == [

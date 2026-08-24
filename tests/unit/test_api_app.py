@@ -7,7 +7,7 @@ import importlib
 import subprocess
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from typing import Annotated, Any
 
 import pytest
@@ -116,6 +116,9 @@ _EXPECTED_API_PATHS = {
     "/settings/playbook",
     "/settings/playbook/versions",
     "/settings/playbook/proposals",
+    "/settings/country-policies",
+    "/settings/country-policies/versions",
+    "/settings/country-policies/proposals",
     "/sourcing/status",
     "/team/employees",
     "/team/territory",
@@ -600,6 +603,8 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
     assert dependencies.employee_lookup_actor.scope is EmployeeScope.SYSTEM
     with pytest.raises(FrozenInstanceError):
         dependencies.opportunities = object()  # type: ignore[misc]
+    with pytest.raises(TypeError, match="显式 bool"):
+        replace(dependencies, contact_enrichment_composed=1)  # type: ignore[arg-type]
 
 
 def test_dependency_container_rejects_non_system_lookup_actor() -> None:

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from apps.api.dependencies import get_api_dependencies
+from domains.compliance.service import ComplianceService
 from domains.employees.permissions import (
     Phase1EmployeeAuthorizer,
     StandardAuditLogger,
@@ -208,6 +209,8 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
 
         dependencies = get_api_dependencies(_request_for(app))
         assert isinstance(dependencies.organization, OrganizationService)
+        assert isinstance(dependencies.compliance, ComplianceService)
+        assert dependencies.contact_enrichment_composed is False
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
         assert "country_policy_change.assemble" in dependencies.workflow_engine._handlers
