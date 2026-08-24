@@ -210,6 +210,11 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         assert isinstance(dependencies.organization, OrganizationService)
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
+        assert "country_policy_change.assemble" in dependencies.workflow_engine._handlers
+        assert {
+            definition.workflow_type
+            for definition in dependencies.workflow_engine._definitions.values()
+        } >= {"country_policy_change"}
         assert isinstance(
             dependencies.notification_dedup_store,
             PostgresNotificationDedupStore,

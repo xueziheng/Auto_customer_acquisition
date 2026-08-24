@@ -205,6 +205,7 @@ from tool_gateway.manifest import (
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult, ToolGateway
 from workflows.account_discovery.flow import build_account_discovery_definition
+from workflows.country_policy_change import build_country_policy_change_definition
 from workflows.demand_discovery.flow import build_demand_discovery_definition
 from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 from workflows.email_feedback.unsubscribe import (
@@ -1153,11 +1154,13 @@ def build_phase1_dependencies(
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
     playbook_definition = build_playbook_change_definition()
+    country_policy_definition = build_country_policy_change_definition()
     start_only_handler = _StartOnlyWorkflowHandler()
     for step in (
         *account_definition.steps,
         *demand_definition.steps,
         *playbook_definition.steps,
+        *country_policy_definition.steps,
     ):
         handlers[step.handler_ref] = start_only_handler
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
@@ -1182,6 +1185,7 @@ def build_phase1_dependencies(
     workflow.register(account_definition)
     workflow.register(demand_definition)
     workflow.register(playbook_definition)
+    workflow.register(country_policy_definition)
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,

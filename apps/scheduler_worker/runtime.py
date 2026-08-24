@@ -32,6 +32,12 @@ from connectors.gmail.client import (
 from connectors.gmail.transport import GmailHttpTransport
 from domains.approvals.service import ApprovalService
 from domains.approvals.service_impl import ApprovalServiceImpl
+from domains.compliance.permissions import (
+    ComplianceActor,
+    ComplianceScope,
+    Phase1ComplianceAuthorizer,
+)
+from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.conversations.service import ConversationService
 from domains.demand.service import DemandService
 from domains.employees.permissions import Actor as EmployeeActor
@@ -82,6 +88,7 @@ from domains.sending_identity.service import (
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
+from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
 )
@@ -172,6 +179,10 @@ from workflows.account_discovery.ports import (
     AccountDiscoveryTaskReader,
     ContactEnricher,
     ContactVerifier,
+)
+from workflows.country_policy_change import (
+    build_country_policy_change_handlers,
+    register_country_policy_change,
 )
 from workflows.demand_discovery.flow import (
     build_demand_discovery_handlers,
@@ -856,7 +867,7 @@ class SchedulerRuntimeFactory:
                 t2=timedelta(seconds=config.handoff_t2_seconds),
                 now=self._now,
             )
-            playbook_approvals = ApprovalServiceImpl(
+            change_approvals = ApprovalServiceImpl(
                 lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
                     factory, requested_tenant, now=self._now
                 ),
@@ -871,7 +882,7 @@ class SchedulerRuntimeFactory:
             )
             playbook_change = PlaybookChangeComposition(
                 organization=playbook_organization,
-                approvals=playbook_approvals,
+                approvals=change_approvals,
                 system_actor=OrganizationActor(
                     "system:playbook-change",
                     OrganizationScope(
@@ -885,6 +896,23 @@ class SchedulerRuntimeFactory:
                 playbook_change.organization,
                 playbook_change.approvals,
                 playbook_change.system_actor,
+            )
+            country_policy = ComplianceServiceImpl(
+                lambda requested_tenant: SqlAlchemyComplianceUnitOfWork(
+                    factory, requested_tenant, now=self._now
+                ),
+                Phase1ComplianceAuthorizer(config.tenant_id),
+                now=self._now,
+            )
+            country_policy_handlers = build_country_policy_change_handlers(
+                country_policy,
+                change_approvals,
+                ComplianceActor(
+                    actor_id="system:country-policy-change",
+                    tenant_id=config.tenant_id,
+                    scope=ComplianceScope.SYSTEM,
+                    role="system",
+                ),
             )
             sending_uow_factory = cast(
                 SendingIdentityUnitOfWorkFactory,
@@ -1049,6 +1077,7 @@ class SchedulerRuntimeFactory:
                     **account_handlers,
                     **demand_handlers,
                     **playbook_handlers,
+                    **country_policy_handlers,
                 },
                 now=self._now,
             )
@@ -1067,7 +1096,8 @@ class SchedulerRuntimeFactory:
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
             )
-            register_playbook_change(workflow, outbox, playbook_approvals)
+            register_playbook_change(workflow, outbox, change_approvals)
+            register_country_policy_change(workflow, outbox, change_approvals)
             campaign_driver: CampaignSendDriver | None = None
             if campaign_outreach is not None:
                 register_outreach_campaign(

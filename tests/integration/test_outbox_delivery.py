@@ -49,8 +49,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from infra.db.tables import OutboxEventRow
 from shared.errors import TransientError, ValidationError
-from shared.events.catalog import DomainEvent, OpportunityQualified, OpportunityWon
-from shared.schemas.identifiers import OpportunityId, RunId, TenantId
+from shared.events.catalog import (
+    CountryPolicyVersionProposed,
+    DomainEvent,
+    OpportunityQualified,
+    OpportunityWon,
+)
+from shared.schemas.identifiers import (
+    CountryPolicyVersionId,
+    EmployeeId,
+    OpportunityId,
+    RunId,
+    TenantId,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -840,6 +851,74 @@ async def test_duplicate_handler_name_registration_fails_closed(engine_fx: Async
     # 合法：同类型不同 handler_name；不同类型同名 handler
     deliverer.register_handler(OpportunityQualified, "h2", _RecordingHandler())
     deliverer.register_handler(OpportunityWon, "h1", _RecordingHandler())
+
+
+async def test_crash_after_proposal_commit_is_recovered_by_outbox_start(
+    engine_fx: AsyncEngine,
+) -> None:
+    """API 未直接启动时，已提交 proposal event 仍创建唯一可运行流程。"""
+    from infra.db.outbox import PostgresEventBus
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+    from workflows.country_policy_change import (
+        CountryPolicyVersionProposedHandler,
+        build_country_policy_change_definition,
+    )
+
+    class _StartOnly:
+        async def execute(self, run) -> None:
+            raise AssertionError(f"不应执行 start-only run {run.run_id}")
+
+    tenant = TenantId("tenant-policy-recovery")
+    version = CountryPolicyVersionId("cpp_01K00000000000000000000009")
+    content_hash = "9" * 64
+    factory = async_sessionmaker(bind=engine_fx, expire_on_commit=False)
+    session = factory()
+    try:
+        await PostgresEventBus(session, tenant, now=lambda: _NOW).publish(
+            CountryPolicyVersionProposed(
+                tenant_id=tenant,
+                occurred_at=_NOW,
+                country_policy_version_id=version,
+                country_key="synthetic recovery market",
+                content_hash=content_hash,
+                proposed_by=EmployeeId("emp_country_policy_recovery"),
+            )
+        )
+        await session.commit()
+    finally:
+        await session.close()
+
+    definition = build_country_policy_change_definition()
+    start_only = _StartOnly()
+    workflow = PostgresWorkflowEngine(
+        factory,
+        {step.handler_ref: start_only for step in definition.steps},
+        now=lambda: _NOW,
+    )
+    workflow.register(definition)
+    deliverer = _make_deliverer(factory, str(tenant))
+    deliverer.register_handler(
+        CountryPolicyVersionProposed,
+        "country_policy_change.version_proposed",
+        CountryPolicyVersionProposedHandler(workflow),
+    )
+
+    assert await deliverer.drain() == 1
+    async with engine_fx.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT status, current_step, idempotency_key FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND subject_ref=:version"
+                ),
+                {"tenant": str(tenant), "version": str(version)},
+            )
+        ).one()
+    assert row == (
+        "running",
+        "assemble_package",
+        f"country-policy-change:{tenant}:{version}",
+    )
 
 
 async def test_no_registered_handler_marks_dead_no_payload_no_tight_loop(

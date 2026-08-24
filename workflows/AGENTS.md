@@ -26,7 +26,7 @@
 Sending Identity、Action/outbox 与新 cursor。duplicate 只推进安全计数/游标，不重复业务
 效果；quarantine 只保存固定 reason 与 provider ref digest，不保存 MIME/header/address。
 
-## 九条流程与 Phase
+## 十二条流程与 Phase
 
 | 流程 | 触发 | Phase |
 |---|---|---|
@@ -37,6 +37,9 @@ Sending Identity、Action/outbox 与新 cursor。duplicate 只推进安全计数
 | `human_handoff/` | 接管触发条件 | 1 |
 | `employee_work_intake/` | 员工上传 | 1 |
 | `email_feedback/` | Gmail 投递反馈整页读取 | **1（深）** |
+| `sending_identity_auth/` | 发件身份 DNS 认证请求 | 1 |
+| `playbook_change/` | Company Playbook 独立审批 | 1 |
+| `country_policy_change/` | 国家政策包独立审批与批准后激活 | 1 |
 | `sourcing_case/` | 需求达寻源门槛（Phase 1 人工推进） | 1 骨架 / 2 自动 |
 | `quote_approval/` | 报价提交审批 | 1 骨架 / 2 自动 |
 

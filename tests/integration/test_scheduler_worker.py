@@ -1045,6 +1045,12 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "playbook_change.expire",
             "playbook_change.apply",
             "playbook_change.mark_applied",
+            "country_policy_change.assemble",
+            "country_policy_change.submit",
+            "country_policy_change.wait",
+            "country_policy_change.expire",
+            "country_policy_change.apply",
+            "country_policy_change.mark_applied",
         }
         assert {
             definition.workflow_type
@@ -1053,6 +1059,7 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "human_handoff",
             "sending_identity_authentication",
             "playbook_change",
+            "country_policy_change",
         }
         assert set(runtime.outbox._handlers) == {
             "HandoffRequested",
@@ -1063,13 +1070,21 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "CommitmentOverdue",
             "ApprovalDecided",
             "AuthenticationCheckRequested",
+            "CountryPolicyVersionProposed",
         }
         assert {
             name for name, _handler in runtime.outbox._handlers["ApprovalDecided"]
         } == {
             "notification.approval_decided",
             "playbook_change.approval_decided",
+            "country_policy_change.approval_decided",
         }
+        assert {
+            name
+            for name, _handler in runtime.outbox._handlers[
+                "CountryPolicyVersionProposed"
+            ]
+        } == {"country_policy_change.version_proposed"}
         assert (
             runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
         )
