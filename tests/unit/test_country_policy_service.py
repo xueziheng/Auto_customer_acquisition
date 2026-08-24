@@ -541,7 +541,16 @@ async def test_boss_can_read_and_propose_but_not_decide_or_activate() -> None:
             TENANT, proposal.country_policy_version_id, actor=_boss()
         )
     ).content_hash == proposal.content_hash
-    assert len(await service.list_active_policies(TENANT, actor=_boss())) == 1
+    active_policies = await service.list_active_policies(TENANT, actor=_boss())
+    assert len(active_policies) == 1
+    assert (
+        active_policies[0].version.country_policy_version_id
+        == proposal.country_policy_version_id
+    )
+    assert active_policies[0].activation.approved_by == EmployeeId(
+        "emp_independent_approver"
+    )
+    assert active_policies[0].activation.activated_at == NOW
     assert (
         len(await service.list_versions(TENANT, "Synthetic Market", actor=_boss())) == 1
     )

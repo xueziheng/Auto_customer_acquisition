@@ -348,9 +348,29 @@ class CountryPolicyActivationView(_FrozenModel):
         return self
 
 
+class CountryPolicyActiveView(_FrozenModel):
+    """同一激活指针解析出的版本内容与激活审计事实。"""
+
+    version: CountryPolicyVersionView
+    activation: CountryPolicyActivationView
+
+    @model_validator(mode="after")
+    def validate_active_facts(self) -> CountryPolicyActiveView:
+        if (
+            self.version.country_key != self.activation.country_key
+            or self.version.country_policy_version_id
+            != self.activation.country_policy_version_id
+            or self.version.content_hash != self.activation.content_hash
+            or self.version.change_set_ref != self.activation.change_set_ref
+        ):
+            raise ValueError("激活事实与国家政策版本不一致")
+        return self
+
+
 __all__ = (
     "CountryPolicyAction",
     "CountryPolicyActivationView",
+    "CountryPolicyActiveView",
     "CountryPolicyApprovalFact",
     "CountryPolicyChangeSnapshot",
     "CountryPolicyCoverage",

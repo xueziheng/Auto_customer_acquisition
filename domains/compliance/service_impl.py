@@ -24,6 +24,7 @@ from domains.compliance.repository import ComplianceUnitOfWorkFactory
 from domains.compliance.schemas import (
     CountryPolicyAction,
     CountryPolicyActivationView,
+    CountryPolicyActiveView,
     CountryPolicyApprovalFact,
     CountryPolicyChangeSnapshot,
     CountryPolicyCoverage,
@@ -361,7 +362,7 @@ class ComplianceServiceImpl:
         *,
         actor: ComplianceActor,
         limit: int = 50,
-    ) -> list[CountryPolicyVersionView]:
+    ) -> list[CountryPolicyActiveView]:
         self._require(
             tenant_id,
             actor,
@@ -377,7 +378,7 @@ class ComplianceServiceImpl:
                 raise TransientError("国家政策激活列表仓储返回类型无效")
             if len(raw_activations) > checked_limit:
                 raise TransientError("国家政策激活列表超过请求上限")
-            views: list[CountryPolicyVersionView] = []
+            views: list[CountryPolicyActiveView] = []
             seen: set[str] = set()
             for raw_activation in raw_activations:
                 activation = _activation_fact(
@@ -394,7 +395,12 @@ class ComplianceServiceImpl:
                     activation,
                     uow.versions,
                 )
-                views.append(version.to_view())
+                views.append(
+                    CountryPolicyActiveView(
+                        version=version.to_view(),
+                        activation=activation.to_view(),
+                    )
+                )
             return views
 
     async def list_versions(

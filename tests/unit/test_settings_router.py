@@ -16,10 +16,15 @@ from apps.api.dependencies import get_api_dependencies, get_request_identity
 from apps.api.identity import RequestIdentity
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
-from apps.api.routers.settings import PlaybookOverview
+from apps.api.routers.settings import (
+    CountryPolicyVersionStatusView,
+    PlaybookOverview,
+)
 from domains.approvals.schemas import ApprovalView
 from domains.compliance.schemas import (
     DECISION_FIELDS,
+    CountryPolicyActivationView,
+    CountryPolicyActiveView,
     CountryPolicyCoverage,
     CountryPolicyProposalResult,
     CountryPolicyVersionView,
@@ -36,6 +41,8 @@ from domains.organization.schemas import (
     PlaybookVersionView,
 )
 from shared.schemas.identifiers import (
+    ApprovalId,
+    CountryPolicyActivationId,
     CountryPolicyVersionId,
     EmployeeId,
     PlaybookVersionId,
@@ -128,6 +135,29 @@ def _country_policy_version(
         proposed_by=BOSS,
         proposed_at=NOW,
         change_set_ref=f"country_policy:{version_id}:{content_hash}",
+    )
+
+
+def _country_policy_active(
+    version: CountryPolicyVersionView,
+) -> CountryPolicyActiveView:
+    return CountryPolicyActiveView(
+        version=version,
+        activation=CountryPolicyActivationView(
+            activation_id=CountryPolicyActivationId(
+                "cpa_01K00000000000000000000000"
+            ),
+            activation_sequence=1,
+            country_key=version.country_key,
+            country_policy_version_id=version.country_policy_version_id,
+            content_hash=version.content_hash,
+            approval_id=ApprovalId("apr_01K00000000000000000000000"),
+            change_set_ref=version.change_set_ref,
+            approved_by=EMPLOYEE,
+            approved_at=NOW,
+            activated_by="system:country-policy-change",
+            activated_at=NOW,
+        ),
     )
 
 
@@ -271,16 +301,24 @@ class _Compliance:
     def __init__(
         self,
         *,
-        active_policies: list[CountryPolicyVersionView] | None = None,
+        active_policies: (
+            list[CountryPolicyVersionView | CountryPolicyActiveView] | None
+        ) = None,
         versions: list[CountryPolicyVersionView] | None = None,
         coverage: CountryPolicyCoverage | None = None,
     ) -> None:
-        self.active_policies = list(active_policies or [])
+        self.active_policies = [
+            policy
+            if isinstance(policy, CountryPolicyActiveView)
+            else _country_policy_active(policy)
+            for policy in active_policies or []
+        ]
         self.versions = list(versions or [])
         self.coverage = coverage or CountryPolicyCoverage(
             active_policy_count=len(self.active_policies),
             contact_enrichment_allowed_count=sum(
-                policy.contact_enrichment_allowed for policy in self.active_policies
+                policy.version.contact_enrichment_allowed
+                for policy in self.active_policies
             ),
         )
         self.proposals: list[tuple[Any, ...]] = []
@@ -795,6 +833,16 @@ def test_versions_are_country_scoped_and_join_approval_state() -> None:
                 approval_type="country_policy_change",
                 change_set_ref=version.change_set_ref,
                 state=state,
+                decided_by_employee=(
+                    EMPLOYEE
+                    if state in {"approved", "rejected", "applied", "apply_failed"}
+                    else None
+                ),
+                decided_at=(
+                    NOW + timedelta(minutes=2)
+                    if state in {"approved", "rejected", "applied", "apply_failed"}
+                    else None
+                ),
                 application_error_code=(
                     "COUNTRY_POLICY_BASE_VERSION_CONFLICT"
                     if state == "apply_failed"
@@ -814,6 +862,22 @@ def test_versions_are_country_scoped_and_join_approval_state() -> None:
 
     assert response.status_code == 200
     assert [item["approval_state"] for item in response.json()] == list(states)
+    assert [item.get("approval_decided_by") for item in response.json()] == [
+        None,
+        str(EMPLOYEE),
+        str(EMPLOYEE),
+        None,
+        str(EMPLOYEE),
+        str(EMPLOYEE),
+    ]
+    assert [item.get("approval_decided_at") for item in response.json()] == [
+        None,
+        (NOW + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        (NOW + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        None,
+        (NOW + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        (NOW + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+    ]
     assert {item["version"]["country_key"] for item in response.json()} == {
         "synthetic market"
     }
@@ -867,6 +931,8 @@ def test_country_policy_version_never_exposes_arbitrary_application_error() -> N
                 approval_type="country_policy_change",
                 change_set_ref=version.change_set_ref,
                 state="apply_failed",
+                decided_by_employee=EMPLOYEE,
+                decided_at=NOW,
                 application_error_code="raw database password",
             )
         }
@@ -949,6 +1015,75 @@ def test_readiness_allowed_but_not_composed_is_contact_enrichment_not_composed()
     }
 
 
+def test_active_policy_api_exposes_version_and_activation_audit() -> None:
+    policy = _country_policy_version(enrichment_allowed=True)
+    response = _request(
+        _app(compliance=_Compliance(active_policies=[policy])),
+        "GET",
+        "/settings/country-policies",
+    )
+
+    assert response.status_code == 200
+    active = response.json()["active_policies"][0]
+    assert active["version"]["proposed_by"] == str(BOSS)
+    assert active["activation"]["approved_by"] == str(EMPLOYEE)
+    assert active["activation"]["activated_at"] == NOW.isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def test_country_policy_version_status_accepts_only_consistent_decision_pair() -> None:
+    version = _country_policy_version()
+    valid = CountryPolicyVersionStatusView(
+        version=version,
+        approval_id=ApprovalId("apr_country_policy_valid_pair"),
+        application_error_code=None,
+        approval_state="approved",
+        approval_decided_by=EMPLOYEE,
+        approval_decided_at=NOW,
+    )
+    assert valid.approval_decided_by == EMPLOYEE
+    assert valid.approval_decided_at == NOW
+
+    for values in (
+        {"approval_decided_by": EMPLOYEE, "approval_decided_at": None},
+        {"approval_decided_by": None, "approval_decided_at": NOW},
+        {"approval_decided_by": EMPLOYEE, "approval_decided_at": NOW},
+    ):
+        with pytest.raises(PydanticValidationError):
+            CountryPolicyVersionStatusView(
+                version=version,
+                approval_id=ApprovalId("apr_country_policy_invalid_pair"),
+                application_error_code=None,
+                approval_state="pending",
+                **values,
+            )
+
+
+def test_country_policy_approval_decision_pair_mismatch_is_transient() -> None:
+    version = _country_policy_version()
+    approvals = _Approvals(
+        by_change_set={
+            version.change_set_ref: _approval(
+                approval_type="country_policy_change",
+                change_set_ref=version.change_set_ref,
+                state="approved",
+                decided_by_employee=EMPLOYEE,
+                decided_at=None,
+            )
+        }
+    )
+
+    response = _request(
+        _app(compliance=_Compliance(versions=[version]), approvals=approvals),
+        "GET",
+        "/settings/country-policies/versions?country=Synthetic%20Market",
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "service_unavailable"
+
+
 def test_missing_compliance_is_transient_not_policy_not_configured() -> None:
     response = _request(
         _app(compliance=None),
@@ -982,3 +1117,17 @@ def test_country_policy_openapi_exposes_safe_source_type() -> None:
     assert components["CountryPolicyFieldSourceInput"]["properties"][
         "source_type"
     ].get("enum") == ["web_page", "upload", "employee_input"]
+
+
+def test_country_policy_openapi_exposes_audit_fields() -> None:
+    schema = _app(compliance=_Compliance()).openapi()
+    components = schema["components"]["schemas"]
+
+    assert set(components["CountryPolicyActiveView"]["properties"]) == {
+        "version",
+        "activation",
+    }
+    assert {
+        "approval_decided_by",
+        "approval_decided_at",
+    } <= set(components["CountryPolicyVersionStatusView"]["properties"])

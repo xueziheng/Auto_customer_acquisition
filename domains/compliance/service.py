@@ -14,6 +14,7 @@ from domains.compliance.permissions import (
 from domains.compliance.schemas import (
     CountryPolicyAction,
     CountryPolicyActivationView,
+    CountryPolicyActiveView,
     CountryPolicyApprovalFact,
     CountryPolicyChangeSnapshot,
     CountryPolicyCoverage,
@@ -47,7 +48,7 @@ class ComplianceService(Protocol):
         *,
         actor: ComplianceActor,
         limit: int = 50,
-    ) -> list[CountryPolicyVersionView]: ...
+    ) -> list[CountryPolicyActiveView]: ...
 
     async def list_versions(
         self,

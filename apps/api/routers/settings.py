@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
@@ -16,6 +17,7 @@ from starlette.responses import Response
 from domains.approvals.service import ApprovalService
 from domains.compliance.permissions import ComplianceActor, ComplianceScope
 from domains.compliance.schemas import (
+    CountryPolicyActiveView,
     CountryPolicyCoverage,
     CountryPolicyField,
     CountryPolicyProposalCreate,
@@ -38,6 +40,7 @@ from shared.errors import PermissionDenied, TransientError
 from shared.schemas.identifiers import (
     ApprovalId,
     CountryPolicyVersionId,
+    EmployeeId,
     IdempotencyKey,
     PlaybookVersionId,
 )
@@ -80,6 +83,9 @@ _SAFE_APPLICATION_ERROR_CODES = frozenset(
 )
 _APPROVAL_STATES = frozenset(
     {"pending", "approved", "rejected", "expired", "applied", "apply_failed"}
+)
+_DECIDED_APPROVAL_STATES = frozenset(
+    {"approved", "rejected", "applied", "apply_failed"}
 )
 _COUNTRY_POLICY_SAFE_APPLICATION_ERROR_CODES = frozenset(
     {
@@ -156,7 +162,7 @@ class PlaybookProposalAccepted(_FrozenModel):
 
 
 class CountryPolicyOverview(_FrozenModel):
-    active_policies: list[CountryPolicyVersionView]
+    active_policies: list[CountryPolicyActiveView]
     coverage: CountryPolicyCoverage
     contact_enrichment: ContactEnrichmentReadiness
 
@@ -181,6 +187,29 @@ class CountryPolicyVersionStatusView(_FrozenModel):
     approval_id: ApprovalId | None
     application_error_code: CountryPolicyApplicationErrorCode | None
     approval_state: CountryPolicyApprovalStateValue
+    approval_decided_by: EmployeeId | None = None
+    approval_decided_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_approval_facts(self) -> CountryPolicyVersionStatusView:
+        has_decider = self.approval_decided_by is not None
+        has_decided_at = self.approval_decided_at is not None
+        if has_decider != has_decided_at:
+            raise ValueError("审批决定人与时间必须成对")
+        has_decision = has_decider and has_decided_at
+        if self.approval_state == "proposal_pending_submission":
+            if self.approval_id is not None or has_decision:
+                raise ValueError("未提交审批的版本不得携带审批事实")
+        elif self.approval_id is None:
+            raise ValueError("已提交审批的版本必须携带 approval_id")
+        if (self.approval_state in _DECIDED_APPROVAL_STATES) is not has_decision:
+            raise ValueError("审批状态与决定事实不一致")
+        if (
+            self.application_error_code is not None
+            and self.approval_state != "apply_failed"
+        ):
+            raise ValueError("只有应用失败状态可以携带错误码")
+        return self
 
 
 class CountryPolicyProposalAccepted(_FrozenModel):
@@ -564,6 +593,13 @@ async def list_country_policy_versions(
             in _COUNTRY_POLICY_SAFE_APPLICATION_ERROR_CODES
             else None
         )
+        decided_by = approval.decided_by_employee
+        decided_at = approval.decided_at
+        has_decision = decided_by is not None and decided_at is not None
+        if (decided_by is None) != (decided_at is None) or (
+            approval.state in _DECIDED_APPROVAL_STATES
+        ) is not has_decision:
+            raise TransientError("Settings 国家政策审批决定事实不一致")
         result.append(
             CountryPolicyVersionStatusView(
                 version=version,
@@ -572,6 +608,8 @@ async def list_country_policy_versions(
                     CountryPolicyApplicationErrorCode | None, safe_error
                 ),
                 approval_state=cast(CountryPolicyApprovalStateValue, approval.state),
+                approval_decided_by=decided_by,
+                approval_decided_at=decided_at,
             )
         )
     return result
