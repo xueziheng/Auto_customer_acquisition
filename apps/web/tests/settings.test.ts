@@ -289,6 +289,26 @@ function fillCountryPolicy(root: HTMLElement): void {
 }
 
 describe("SettingsCenter", () => {
+  it("preserves top-level content height inside the vertically scrolling settings shell", async () => {
+    await router.replace("/settings");
+    const { root } = await mountSettings(countryPolicyFetch());
+    await eventually(() => expect(root.textContent).toContain("国家政策包"));
+
+    const shell = root.querySelector<HTMLElement>(".settings-shell");
+    const workspace = root.querySelector<HTMLElement>(".country-policy-workspace");
+    if (!shell || !workspace) throw new Error("missing settings layout");
+
+    expect(shell.style.overflowY).toBe("auto");
+    expect(shell.style.overflowX).toBe("hidden");
+    expect([...shell.children]).not.toHaveLength(0);
+    for (const child of shell.children) {
+      expect((child as HTMLElement).style.flexShrink).toBe("0");
+    }
+
+    expect(workspace.style.overflowX).toBe("clip");
+    expect(workspace.style.overflowY).toBe("visible");
+  });
+
   it("loads the overview and version history in parallel without inventing a first configuration", async () => {
     const pending = { ...activeVersion, playbook_version_id: "pbv_pending", version_number: 2 };
     const rejected = { ...activeVersion, playbook_version_id: "pbv_rejected", version_number: 3 };

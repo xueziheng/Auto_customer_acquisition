@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, reactive, ref } from "vue";
+import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -71,6 +71,19 @@ const revisionBase = ref<CountryPolicyVersion | null>(null);
 const selectedCountry = ref<string | null>(null);
 const countryHistoryQuery = ref("");
 let countryHistoryGeneration = 0;
+
+const settingsShellLayout: CSSProperties = {
+  overflowX: "hidden",
+  overflowY: "auto",
+};
+const settingsFlowItemLayout: CSSProperties = {
+  flexShrink: "0",
+};
+const countryPolicyWorkspaceLayout: CSSProperties = {
+  ...settingsFlowItemLayout,
+  overflowX: "clip",
+  overflowY: "visible",
+};
 
 const countryPolicyFields = Object.freeze([
   { key: "public_research_allowed", label: "public_research_allowed" },
@@ -627,8 +640,14 @@ onMounted(() => void refreshSettings());
 </script>
 
 <template>
-  <div class="shell settings-shell">
-    <div class="page-head settings-head">
+  <div
+    class="shell settings-shell"
+    :style="settingsShellLayout"
+  >
+    <div
+      class="page-head settings-head"
+      :style="settingsFlowItemLayout"
+    >
       <div>
         <p class="phase-eyebrow">
           COMPANY PLAYBOOK
@@ -647,13 +666,17 @@ onMounted(() => void refreshSettings());
       </div>
     </div>
 
-    <div class="safe-banner danger">
+    <div
+      class="safe-banner danger"
+      :style="settingsFlowItemLayout"
+    >
       <span aria-hidden="true">!</span>
       <div>本页只能创建不可变候选版本；审批、激活和审计链路不能在设置页绕过。</div>
     </div>
     <div
       v-if="loadError"
       class="safe-banner danger"
+      :style="settingsFlowItemLayout"
       role="alert"
     >
       {{ loadError }}
@@ -662,6 +685,7 @@ onMounted(() => void refreshSettings());
     <div
       v-if="overview"
       class="safe-banner"
+      :style="settingsFlowItemLayout"
       role="status"
       aria-label="Playbook 联系人补全就绪状态"
     >
@@ -672,7 +696,10 @@ onMounted(() => void refreshSettings());
       </div>
     </div>
 
-    <section class="settings-grid">
+    <section
+      class="settings-grid"
+      :style="settingsFlowItemLayout"
+    >
       <article
         class="settings-card active-card"
         aria-label="当前生效 Playbook"
@@ -856,6 +883,7 @@ onMounted(() => void refreshSettings());
 
     <section
       class="settings-card history-card"
+      :style="settingsFlowItemLayout"
       aria-label="Playbook 版本历史"
     >
       <header>
@@ -913,6 +941,7 @@ onMounted(() => void refreshSettings());
 
     <section
       class="settings-card country-policy-workspace"
+      :style="countryPolicyWorkspaceLayout"
       aria-labelledby="country-policy-title"
     >
       <header>
@@ -1406,7 +1435,7 @@ onMounted(() => void refreshSettings());
 </template>
 
 <style scoped>
-.settings-shell { overflow-y: auto; gap: var(--space4); }
+.settings-shell { gap: var(--space4); }
 .settings-head { justify-content: space-between; padding-top: var(--space2); }
 .head-actions { display: flex; align-items: center; gap: var(--space2); }
 .settings-grid { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(480px, 1.2fr); gap: var(--space4); align-items: start; }
@@ -1448,7 +1477,7 @@ textarea { resize: vertical; min-height: 52px; }
 .state-pending, .state-proposal_pending_submission, .state-approved { border-color: var(--warning); color: var(--warning); background: var(--warning-soft); }
 .state-rejected, .state-expired, .state-apply_failed { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 .state-applied { border-color: var(--fact); color: var(--fact); background: var(--fact-soft); }
-.country-policy-workspace { display: grid; gap: var(--space4); margin-bottom: var(--space4); overflow: hidden; }
+.country-policy-workspace { display: grid; gap: var(--space4); margin-bottom: var(--space4); }
 .policy-principle, .readiness-banner { margin: 0; }
 .coverage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space3); }
 .coverage-grid > div { display: flex; justify-content: space-between; gap: var(--space2); align-items: center; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space3); }
