@@ -141,8 +141,10 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
 ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部
 固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、Hunter 联系人插件的
-离线实现、租约恢复与人工对账边界。Hunter 测试不使用真实 Key 或网络；真实国家政策 reader
-已经接线，但生产 `contact.enrich` 仍未注册，必须另行完成 Playbook、凭证与 Provider
-运维验收后的生产 composition。账户发现
-持久化/workflow、Campaign 接线和 UI 仍未完成。成本钱包仍是 Phase 3 挂载点；不在本阶段
-实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。
+离线实现、租约恢复与人工对账边界。Company Playbook、真实国家政策 reader/persistence/
+readiness，以及账户发现持久化 workflow、Campaign 接线、API 与 UI 已实现；Hunter 测试不
+使用真实 Key 或网络。
+
+这仍不等于 Phase 1 完成：生产 `contact.enrich` 仍未注册，真实 Hunter credential/transport
+composition、Provider 运维验证与 Phase 1 运营验收仍被阻断。成本钱包仍是 Phase 3 挂载点；
+不在本阶段实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。
