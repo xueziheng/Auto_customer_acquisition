@@ -69,7 +69,7 @@ _DEFAULT_RETRY_AFTER_SECONDS = 30
 
 
 def _install_openapi_contract(app: FastAPI) -> None:
-    """把运行时统一 validation 400 显式写入并移除未实现的默认 422。"""
+    """写入统一 400，并只保留显式声明的安全 422 契约。"""
 
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is not None:
@@ -85,18 +85,24 @@ def _install_openapi_contract(app: FastAPI) -> None:
         components["ApiErrorResponse"] = ApiErrorResponse.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
+        api_error_schema = {"$ref": "#/components/schemas/ApiErrorResponse"}
         validation_response = {
             "description": "请求参数无效",
-            "content": {
-                "application/json": {
-                    "schema": {"$ref": "#/components/schemas/ApiErrorResponse"}
-                }
-            },
+            "content": {"application/json": {"schema": api_error_schema}},
         }
         for path_item in schema["paths"].values():
             for operation in path_item.values():
                 responses = operation["responses"]
-                responses.pop("422", None)
+                response_422 = responses.get("422")
+                response_422_schema = (
+                    response_422.get("content", {})
+                    .get("application/json", {})
+                    .get("schema")
+                    if isinstance(response_422, dict)
+                    else None
+                )
+                if response_422_schema != api_error_schema:
+                    responses.pop("422", None)
                 responses["400"] = validation_response
         app.openapi_schema = schema
         return schema

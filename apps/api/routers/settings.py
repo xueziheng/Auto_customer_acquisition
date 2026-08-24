@@ -51,6 +51,7 @@ from ..dependencies import (
     get_request_identity,
 )
 from ..identity import RequestIdentity
+from ..middleware import ApiErrorResponse
 
 
 class _SettingsRoute(APIRoute):
@@ -580,6 +581,12 @@ async def list_country_policy_versions(
     "/country-policies/proposals",
     response_model=CountryPolicyProposalAccepted,
     status_code=202,
+    responses={
+        422: {
+            "model": ApiErrorResponse,
+            "description": "请求参数无效",
+        }
+    },
 )
 async def propose_country_policy(
     body: CountryPolicyProposalBody,

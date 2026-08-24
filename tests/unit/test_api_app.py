@@ -545,9 +545,19 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     )
     assert "ManualEmailSendBody" in schema["components"]["schemas"]
     assert "ManualEmailSendResponse" in schema["components"]["schemas"]
-    for path_item in schema["paths"].values():
-        for operation in path_item.values():
-            assert "422" not in operation["responses"]
+    for path, path_item in schema["paths"].items():
+        for method, operation in path_item.items():
+            if (path, method) == (
+                "/settings/country-policies/proposals",
+                "post",
+            ):
+                assert operation["responses"]["422"]["content"][
+                    "application/json"
+                ]["schema"] == {
+                    "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+            else:
+                assert "422" not in operation["responses"]
             assert operation["responses"]["400"]["content"]["application/json"][
                 "schema"
             ] == {"$ref": "#/components/schemas/ApiErrorResponse"}
