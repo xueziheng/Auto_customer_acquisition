@@ -15,7 +15,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from domains.compliance.errors import CountryPolicyIdempotencyConflictError
+from domains.compliance.errors import (
+    CountryPolicyBaseVersionConflictError,
+    CountryPolicyIdempotencyConflictError,
+)
 from domains.compliance.permissions import (
     ComplianceActor,
     ComplianceScope,
@@ -23,6 +26,8 @@ from domains.compliance.permissions import (
 )
 from domains.compliance.schemas import (
     DECISION_FIELDS,
+    CountryPolicyActivationView,
+    CountryPolicyApprovalFact,
     CountryPolicyProposalCreate,
     CountryPolicyProposalResult,
 )
@@ -90,6 +95,18 @@ def _system(tenant_id: TenantId) -> ComplianceActor:
         tenant_id=tenant_id,
         scope=ComplianceScope.SYSTEM,
         role="system",
+    )
+
+
+def _approval(
+    version: CountryPolicyProposalResult, suffix: str
+) -> CountryPolicyApprovalFact:
+    return CountryPolicyApprovalFact(
+        approval_id=ApprovalId(f"apr_{suffix}"),
+        approval_type="country_policy_change",
+        change_set_ref=version.change_set_ref,
+        decided_by=EmployeeId(f"emp_approver_{suffix}"),
+        decided_at=NOW,
     )
 
 
@@ -414,3 +431,77 @@ async def test_same_tenant_idempotency_key_is_serialized_across_countries(
             )
         ).one()
     assert tuple(counts) == (1, 9, 1)
+
+
+@pytest.mark.asyncio
+async def test_two_approved_revisions_cannot_both_become_current(
+    postgres_service_factory,
+) -> None:
+    build, _, engine = postgres_service_factory
+    tenant = TenantId("tenant-policy-activation-race")
+    service = build(tenant)
+    initial = await service.propose_country_policy(
+        tenant,
+        _command(),
+        actor=_boss(tenant),
+        idempotency_key=IdempotencyKey("activation-race-initial"),
+    )
+    await service.activate_country_policy(
+        tenant,
+        initial.country_policy_version_id,
+        _approval(initial, "activation_race_initial"),
+        actor=_system(tenant),
+    )
+    first = await service.propose_country_policy(
+        tenant,
+        _command(contact_enrichment_allowed=True),
+        actor=_boss(tenant),
+        idempotency_key=IdempotencyKey("activation-race-first"),
+    )
+    second = await service.propose_country_policy(
+        tenant,
+        _command(cold_b2b_email_allowed=True),
+        actor=_boss(tenant),
+        idempotency_key=IdempotencyKey("activation-race-second"),
+    )
+
+    outcomes = await asyncio.gather(
+        service.activate_country_policy(
+            tenant,
+            first.country_policy_version_id,
+            _approval(first, "activation_race_first"),
+            actor=_system(tenant),
+        ),
+        service.activate_country_policy(
+            tenant,
+            second.country_policy_version_id,
+            _approval(second, "activation_race_second"),
+            actor=_system(tenant),
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(item, CountryPolicyActivationView) for item in outcomes) == 1
+    assert (
+        sum(
+            isinstance(item, CountryPolicyBaseVersionConflictError) for item in outcomes
+        )
+        == 1
+    ), repr(outcomes)
+    async with engine.connect() as connection:
+        activations = (
+            await connection.execute(
+                text(
+                    "SELECT activation_sequence, country_policy_version_id "
+                    "FROM country_policy_activations WHERE tenant_id=:tenant "
+                    "ORDER BY activation_sequence"
+                ),
+                {"tenant": str(tenant)},
+            )
+        ).all()
+
+    assert [row.activation_sequence for row in activations] == [1, 2]
+    assert activations[1].country_policy_version_id in {
+        str(first.country_policy_version_id),
+        str(second.country_policy_version_id),
+    }

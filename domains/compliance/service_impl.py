@@ -7,6 +7,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from domains.compliance.errors import (
+    CountryPolicyActivationConflictError,
+    CountryPolicyApprovalFactInvalidError,
+    CountryPolicyBaseVersionConflictError,
     CountryPolicyIdempotencyConflictError,
     CountryPolicyNotConfiguredError,
 )
@@ -33,6 +36,8 @@ from domains.compliance.schemas import (
 from shared.errors import TenantIsolationViolation, TransientError, ValidationError
 from shared.events.catalog import CountryPolicyVersionProposed
 from shared.schemas.identifiers import (
+    ApprovalId,
+    CountryPolicyActivationId,
     CountryPolicyVersionId,
     EmployeeId,
     IdempotencyKey,
@@ -42,6 +47,7 @@ from shared.schemas.identifiers import (
 
 _IDEMPOTENCY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 _MAX_LIST_LIMIT = 200
+_COUNTRY_POLICY_APPROVAL_TYPE = "country_policy_change"
 
 
 def _utc(value: datetime) -> datetime:
@@ -127,6 +133,116 @@ def _idempotency_hit(
     if version.content_hash != requested_hash:
         raise CountryPolicyIdempotencyConflictError("国家政策幂等键对应不同内容")
     return _proposal_result(version)
+
+
+def _approval_time(approval: object) -> tuple[CountryPolicyApprovalFact, datetime]:
+    if not isinstance(approval, CountryPolicyApprovalFact):
+        raise CountryPolicyApprovalFactInvalidError("国家政策审批事实类型无效")
+    try:
+        approved_at = _utc(approval.decided_at)
+    except ValidationError as exc:
+        raise CountryPolicyApprovalFactInvalidError(
+            "国家政策审批时间必须是 UTC"
+        ) from exc
+    if (
+        not isinstance(approval.approval_id, str)
+        or not approval.approval_id.startswith("apr_")
+        or not 4 < len(approval.approval_id) <= 40
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in approval.approval_id
+        )
+        or not isinstance(approval.decided_by, str)
+        or not approval.decided_by.strip()
+        or approval.decided_by != approval.decided_by.strip()
+        or len(approval.decided_by) > 40
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in approval.decided_by
+        )
+    ):
+        raise CountryPolicyApprovalFactInvalidError("国家政策审批身份事实无效")
+    return approval, approved_at
+
+
+def _require_approval_matches(
+    candidate: CountryPolicyVersion,
+    approval: CountryPolicyApprovalFact,
+) -> None:
+    if (
+        approval.approval_type != _COUNTRY_POLICY_APPROVAL_TYPE
+        or approval.change_set_ref != candidate.change_set_ref
+        or approval.decided_by == candidate.proposed_by
+    ):
+        raise CountryPolicyApprovalFactInvalidError(
+            "国家政策审批事实与精确候选版本不匹配"
+        )
+
+
+def _keyed_activation(
+    value: object,
+    tenant_id: TenantId,
+    *,
+    approval_id: ApprovalId | None = None,
+    version_id: CountryPolicyVersionId | None = None,
+) -> CountryPolicyActivation:
+    activation = _activation_fact(
+        value,
+        tenant_id,
+        message="国家政策激活键查询返回类型无效",
+    )
+    if approval_id is not None and activation.approval_id != approval_id:
+        raise TransientError("国家政策激活审批键查询返回不匹配")
+    if version_id is not None and activation.country_policy_version_id != version_id:
+        raise TransientError("国家政策激活版本键查询返回不匹配")
+    return activation
+
+
+def _exact_replay(
+    existing_by_approval: CountryPolicyActivation | None,
+    existing_by_version: CountryPolicyActivation | None,
+    candidate: CountryPolicyVersion,
+    approval: CountryPolicyApprovalFact,
+) -> CountryPolicyActivationView:
+    if (
+        existing_by_approval is None
+        or existing_by_version is None
+        or existing_by_approval != existing_by_version
+    ):
+        raise CountryPolicyActivationConflictError(
+            "国家政策审批或版本已绑定其他激活事实"
+        )
+    existing = existing_by_approval
+    if (
+        existing.country_key != candidate.country_key
+        or existing.country_policy_version_id != candidate.country_policy_version_id
+        or existing.content_hash != candidate.content_hash
+        or existing.approval_id != approval.approval_id
+        or existing.change_set_ref != approval.change_set_ref
+        or existing.approved_by != approval.decided_by
+        or existing.approved_at != approval.decided_at
+    ):
+        raise CountryPolicyActivationConflictError("国家政策激活重放事实不一致")
+    _require_approval_matches(candidate, approval)
+    return existing.to_view()
+
+
+def _require_base_matches(
+    candidate: CountryPolicyVersion,
+    current: CountryPolicyActivation | None,
+) -> None:
+    if candidate.base_version_id is None:
+        matches = current is None
+    else:
+        matches = (
+            current is not None
+            and current.country_policy_version_id == candidate.base_version_id
+            and current.content_hash == candidate.base_content_hash
+        )
+    if not matches:
+        raise CountryPolicyBaseVersionConflictError(
+            "国家政策候选基准已不是该国家当前版本"
+        )
 
 
 class ComplianceServiceImpl:
@@ -608,8 +724,114 @@ class ComplianceServiceImpl:
             ComplianceAction.COUNTRY_POLICY_ACTIVATE,
             ComplianceScope.SYSTEM,
         )
-        del version_id, approval
-        raise NotImplementedError("国家政策激活由 Task 4 实现")
+        checked_approval, approved_at = _approval_time(approval)
+        if not isinstance(version_id, str) or not version_id.startswith("cpp_"):
+            raise CountryPolicyApprovalFactInvalidError("国家政策候选版本 ID 无效")
+        async with self._uow_factory(tenant_id) as uow:
+            raw_candidate = await uow.versions.get(tenant_id, version_id)
+            if raw_candidate is None:
+                raise CountryPolicyApprovalFactInvalidError("国家政策候选版本不存在")
+            discovered = _version_fact(
+                raw_candidate,
+                tenant_id,
+                message="国家政策候选仓储返回类型无效",
+            )
+            if discovered.country_policy_version_id != version_id:
+                raise TransientError("国家政策候选版本 ID 不匹配")
+
+            await uow.versions.lock_country(tenant_id, discovered.country_key)
+            raw_locked_candidate = await uow.versions.get(tenant_id, version_id)
+            if raw_locked_candidate is None:
+                raise TransientError("国家政策候选在国家锁内消失")
+            candidate = _version_fact(
+                raw_locked_candidate,
+                tenant_id,
+                message="国家政策候选仓储返回类型无效",
+            )
+            if candidate != discovered:
+                raise TransientError("国家政策候选在国家锁内返回不一致")
+
+            raw_by_approval = await uow.activations.get_by_approval(
+                tenant_id, checked_approval.approval_id
+            )
+            existing_by_approval = (
+                None
+                if raw_by_approval is None
+                else _keyed_activation(
+                    raw_by_approval,
+                    tenant_id,
+                    approval_id=checked_approval.approval_id,
+                )
+            )
+            raw_by_version = await uow.activations.get_by_version(
+                tenant_id, candidate.country_policy_version_id
+            )
+            existing_by_version = (
+                None
+                if raw_by_version is None
+                else _keyed_activation(
+                    raw_by_version,
+                    tenant_id,
+                    version_id=candidate.country_policy_version_id,
+                )
+            )
+
+            activated_at = self._clock()
+            if approved_at > activated_at:
+                raise CountryPolicyApprovalFactInvalidError(
+                    "国家政策审批时间晚于激活时间"
+                )
+            if existing_by_approval is not None or existing_by_version is not None:
+                return _exact_replay(
+                    existing_by_approval,
+                    existing_by_version,
+                    candidate,
+                    checked_approval,
+                )
+
+            _require_approval_matches(candidate, checked_approval)
+            raw_current = await uow.activations.get_current(
+                tenant_id, candidate.country_key
+            )
+            current: CountryPolicyActivation | None = None
+            if raw_current is not None:
+                current = _activation_fact(
+                    raw_current,
+                    tenant_id,
+                    message="国家政策当前激活仓储返回类型无效",
+                )
+                await self._resolve_activation(
+                    tenant_id,
+                    candidate.country_key,
+                    current,
+                    uow.versions,
+                )
+            _require_base_matches(candidate, current)
+            activation_sequence = await uow.activations.next_activation_sequence(
+                tenant_id, candidate.country_key
+            )
+            if (
+                isinstance(activation_sequence, bool)
+                or not isinstance(activation_sequence, int)
+                or activation_sequence < 1
+            ):
+                raise TransientError("国家政策激活序号仓储返回类型无效")
+            activation = CountryPolicyActivation(
+                tenant_id=tenant_id,
+                activation_id=CountryPolicyActivationId(new_id("cpa")),
+                activation_sequence=activation_sequence,
+                country_key=candidate.country_key,
+                country_policy_version_id=candidate.country_policy_version_id,
+                content_hash=candidate.content_hash,
+                approval_id=checked_approval.approval_id,
+                change_set_ref=checked_approval.change_set_ref,
+                approved_by=checked_approval.decided_by,
+                approved_at=approved_at,
+                activated_by=actor.actor_id,
+                activated_at=activated_at,
+            )
+            await uow.activations.add(tenant_id, activation)
+            return activation.to_view()
 
 
 __all__ = ("ComplianceServiceImpl",)
