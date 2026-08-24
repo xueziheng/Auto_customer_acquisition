@@ -719,10 +719,8 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
             listener.close()
         vite_process = _spawn_process(
             [
-                "npm",
-                "run",
-                "dev",
-                "--",
+                "node",
+                "node_modules/vite/bin/vite.js",
                 "--host",
                 "127.0.0.1",
                 "--port",

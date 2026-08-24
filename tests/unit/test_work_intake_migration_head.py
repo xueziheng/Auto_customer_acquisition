@@ -20,4 +20,4 @@ def test_migration_chain_has_single_head(tmp_path: Path) -> None:
     config.set_main_option("script_location", str(clean_scripts))
     heads = ScriptDirectory.from_config(config).get_heads()
 
-    assert heads == ["0030"]
+    assert heads == ["0031"]

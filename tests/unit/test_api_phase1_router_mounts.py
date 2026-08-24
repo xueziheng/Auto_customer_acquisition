@@ -23,7 +23,9 @@ def test_all_phase1_shallow_module_routers_are_mounted() -> None:
         "/commitments/overdue",
         "/runs",
         "/runs/{run_id}",
-        "/settings/status",
+        "/settings/playbook",
+        "/settings/playbook/proposals",
+        "/settings/playbook/versions",
     }.issubset(paths)
 
 
