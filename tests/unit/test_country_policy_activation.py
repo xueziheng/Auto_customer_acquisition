@@ -99,6 +99,7 @@ class _Store:
         self.versions: dict[CountryPolicyVersionId, CountryPolicyVersion] = {}
         self.activations: list[CountryPolicyActivation] = []
         self.country_locks: dict[str, asyncio.Lock] = {}
+        self.approval_locks: dict[ApprovalId, asyncio.Lock] = {}
         self.version_reads = 0
 
 
@@ -124,8 +125,15 @@ class _Versions:
 
 
 class _Activations:
-    def __init__(self, store: _Store) -> None:
+    def __init__(self, store: _Store, uow: _Uow) -> None:
         self._store = store
+        self._uow = uow
+
+    async def lock_approval(self, tenant_id: TenantId, approval_id: ApprovalId) -> None:
+        del tenant_id
+        lock = self._store.approval_locks.setdefault(approval_id, asyncio.Lock())
+        await lock.acquire()
+        self._uow.locks.append(lock)
 
     async def get_current(
         self, tenant_id: TenantId, country_key: str
@@ -199,7 +207,7 @@ class _Uow:
     def __init__(self, store: _Store) -> None:
         self.locks: list[asyncio.Lock] = []
         self.versions = _Versions(store, self)
-        self.activations = _Activations(store)
+        self.activations = _Activations(store, self)
         self.provenance = _UnusedProvenance()
         self.bus = _UnusedBus()
 

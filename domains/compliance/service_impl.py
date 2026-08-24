@@ -739,6 +739,7 @@ class ComplianceServiceImpl:
             if discovered.country_policy_version_id != version_id:
                 raise TransientError("国家政策候选版本 ID 不匹配")
 
+            await uow.activations.lock_approval(tenant_id, checked_approval.approval_id)
             await uow.versions.lock_country(tenant_id, discovered.country_key)
             raw_locked_candidate = await uow.versions.get(tenant_id, version_id)
             if raw_locked_candidate is None:

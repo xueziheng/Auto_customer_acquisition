@@ -367,6 +367,22 @@ class CountryPolicyVersionRepositoryImpl(
 class CountryPolicyActivationRepositoryImpl(
     _TenantBoundRepository, CountryPolicyActivationRepository
 ):
+    async def lock_approval(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> None:
+        self._require_tenant(tenant_id, "country_policy_activation.lock_approval")
+        await self._session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(:lock_name, 0))"
+            ),
+            {
+                "lock_name": (
+                    f"compliance-country-policy-approval:{tenant_id}:{approval_id}"
+                )
+            },
+        )
+
     async def get_current(
         self, tenant_id: TenantId, country_key: str
     ) -> CountryPolicyActivation | None:

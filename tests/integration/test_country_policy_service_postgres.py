@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.compliance.errors import (
+    CountryPolicyActivationConflictError,
     CountryPolicyBaseVersionConflictError,
     CountryPolicyIdempotencyConflictError,
 )
@@ -117,10 +118,12 @@ class _Factory:
         *,
         fail_publish: bool = False,
         first_lookup_barrier: _FirstLookupBarrier | None = None,
+        approval_race_barrier: _FirstLookupBarrier | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._fail_publish = fail_publish
         self._first_lookup_barrier = first_lookup_barrier
+        self._approval_race_barrier = approval_race_barrier
 
     def __call__(self, tenant_id: TenantId) -> _ServiceUow:
         return _ServiceUow(
@@ -129,6 +132,7 @@ class _Factory:
             ),
             fail_publish=self._fail_publish,
             first_lookup_barrier=self._first_lookup_barrier,
+            approval_race_barrier=self._approval_race_barrier,
         )
 
 
@@ -168,6 +172,31 @@ class _FirstLookupBarrierVersions:
         return result
 
 
+class _ApprovalRaceBarrierActivations:
+    def __init__(self, delegate: object, barrier: _FirstLookupBarrier) -> None:
+        self._delegate = delegate
+        self._barrier = barrier
+        self._first_lookup = True
+        self._approval_lock_used = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._delegate, name)
+
+    async def lock_approval(self, tenant_id: TenantId, approval_id: ApprovalId) -> None:
+        self._approval_lock_used = True
+        await self._barrier.wait()
+        await self._delegate.lock_approval(tenant_id, approval_id)
+
+    async def get_by_approval(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> object:
+        result = await self._delegate.get_by_approval(tenant_id, approval_id)
+        if self._first_lookup and not self._approval_lock_used:
+            self._first_lookup = False
+            await self._barrier.wait()
+        return result
+
+
 class _FailingPublishBus:
     def __init__(self, delegate: EventBus) -> None:
         self._delegate = delegate
@@ -191,10 +220,12 @@ class _ServiceUow:
         *,
         fail_publish: bool,
         first_lookup_barrier: _FirstLookupBarrier | None,
+        approval_race_barrier: _FirstLookupBarrier | None,
     ) -> None:
         self._delegate = delegate
         self._fail_publish = fail_publish
         self._first_lookup_barrier = first_lookup_barrier
+        self._approval_race_barrier = approval_race_barrier
 
     async def __aenter__(self) -> Self:
         entered = await self._delegate.__aenter__()
@@ -204,7 +235,13 @@ class _ServiceUow:
             else entered.versions
         )
         self.provenance = entered.provenance
-        self.activations = entered.activations
+        self.activations = (
+            _ApprovalRaceBarrierActivations(
+                entered.activations, self._approval_race_barrier
+            )
+            if self._approval_race_barrier is not None
+            else entered.activations
+        )
         self.bus = (
             _FailingPublishBus(entered.bus) if self._fail_publish else entered.bus
         )
@@ -505,3 +542,75 @@ async def test_two_approved_revisions_cannot_both_become_current(
         str(first.country_policy_version_id),
         str(second.country_policy_version_id),
     }
+
+
+@pytest.mark.asyncio
+async def test_same_approval_concurrent_cross_country_returns_stable_conflict(
+    postgres_service_factory,
+) -> None:
+    _, session_factory, engine = postgres_service_factory
+    tenant = TenantId("tenant-policy-approval-race")
+    barrier = _FirstLookupBarrier(2)
+    service = ComplianceServiceImpl(
+        _Factory(
+            session_factory,
+            approval_race_barrier=barrier,
+        ),
+        Phase1ComplianceAuthorizer(tenant),
+        now=lambda: NOW,
+    )
+    first = await service.propose_country_policy(
+        tenant,
+        _command(country="Synthetic Market"),
+        actor=_boss(tenant),
+        idempotency_key=IdempotencyKey("approval-race-first"),
+    )
+    second = await service.propose_country_policy(
+        tenant,
+        _command(country="Synthetic Republic"),
+        actor=_boss(tenant),
+        idempotency_key=IdempotencyKey("approval-race-second"),
+    )
+    shared_approval_id = ApprovalId("apr_cross_country_race")
+    first_approval = _approval(first, "cross_country_first").model_copy(
+        update={"approval_id": shared_approval_id}
+    )
+    second_approval = _approval(second, "cross_country_second").model_copy(
+        update={"approval_id": shared_approval_id}
+    )
+
+    outcomes = await asyncio.gather(
+        service.activate_country_policy(
+            tenant,
+            first.country_policy_version_id,
+            first_approval,
+            actor=_system(tenant),
+        ),
+        service.activate_country_policy(
+            tenant,
+            second.country_policy_version_id,
+            second_approval,
+            actor=_system(tenant),
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(item, CountryPolicyActivationView) for item in outcomes) == 1
+    assert (
+        sum(isinstance(item, CountryPolicyActivationConflictError) for item in outcomes)
+        == 1
+    ), repr(outcomes)
+    assert not any(isinstance(item, IntegrityError) for item in outcomes)
+    async with engine.connect() as connection:
+        activation_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM country_policy_activations "
+                "WHERE tenant_id=:tenant AND approval_id=:approval_id"
+            ),
+            {
+                "tenant": str(tenant),
+                "approval_id": str(shared_approval_id),
+            },
+        )
+
+    assert activation_count == 1

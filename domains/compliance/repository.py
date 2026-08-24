@@ -63,6 +63,10 @@ class CountryPolicyFieldProvenanceRepository(Protocol):
 
 @runtime_checkable
 class CountryPolicyActivationRepository(Protocol):
+    async def lock_approval(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> None: ...
+
     async def get_current(
         self, tenant_id: TenantId, country_key: str
     ) -> CountryPolicyActivation | None: ...
