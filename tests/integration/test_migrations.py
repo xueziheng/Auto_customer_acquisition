@@ -50,7 +50,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0031"
+_ALEMBIC_HEAD = "0032"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -60,6 +60,9 @@ def _type_key(value: str) -> str:
 
 
 EXPECTED_TABLES: tuple[str, ...] = (
+    "country_policy_versions",
+    "country_policy_field_provenance",
+    "country_policy_activations",
     "company_playbook_versions",
     "company_playbook_activations",
     "approval_packages",
@@ -4569,6 +4572,143 @@ async def test_0031_company_playbook_downgrade_roundtrip(db_url: str) -> None:
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
                 == "0030"
+            )
+        _run_alembic(db_url, "upgrade", "head")
+        assert tables <= await _table_names(engine)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == _ALEMBIC_HEAD
+            )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0032_country_policy_contract_matches_orm(db_url: str) -> None:
+    """0032 三表逐项匹配 ORM，并以 tenant 复合键闭合所有关系。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import (
+        CountryPolicyActivationRow,
+        CountryPolicyFieldProvenanceRow,
+        CountryPolicyVersionRow,
+    )
+
+    rows = {
+        "country_policy_versions": CountryPolicyVersionRow,
+        "country_policy_field_provenance": CountryPolicyFieldProvenanceRow,
+        "country_policy_activations": CountryPolicyActivationRow,
+    }
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == _ALEMBIC_HEAD
+            )
+            database = await connection.run_sync(
+                lambda sync: {
+                    table: {
+                        "columns": {
+                            item["name"] for item in inspect(sync).get_columns(table)
+                        },
+                        "pk": tuple(
+                            inspect(sync).get_pk_constraint(table)[
+                                "constrained_columns"
+                            ]
+                        ),
+                        "uniques": {
+                            tuple(item["column_names"])
+                            for item in inspect(sync).get_unique_constraints(table)
+                        },
+                        "fks": {
+                            (
+                                tuple(item["constrained_columns"]),
+                                item["referred_table"],
+                                tuple(item["referred_columns"]),
+                                item["options"].get("ondelete"),
+                            )
+                            for item in inspect(sync).get_foreign_keys(table)
+                        },
+                    }
+                    for table in rows
+                }
+            )
+            trigger_rows = await connection.execute(
+                text(
+                    "SELECT c.relname, t.tgname FROM pg_trigger t "
+                    "JOIN pg_class c ON c.oid=t.tgrelid "
+                    "WHERE NOT t.tgisinternal AND c.relname = ANY(:tables)"
+                ),
+                {"tables": list(rows)},
+            )
+            triggers = {(str(table), str(trigger)) for table, trigger in trigger_rows}
+    finally:
+        await engine.dispose()
+
+    for table, row in rows.items():
+        assert database[table]["columns"] == set(row.__table__.columns.keys())
+    assert database["country_policy_versions"]["pk"] == (
+        "tenant_id",
+        "country_policy_version_id",
+    )
+    assert database["country_policy_versions"]["uniques"] == {
+        ("tenant_id", "country_key", "version_number"),
+        ("tenant_id", "idempotency_key"),
+    }
+    assert database["country_policy_field_provenance"]["pk"] == (
+        "tenant_id",
+        "country_policy_version_id",
+        "field_name",
+    )
+    assert database["country_policy_field_provenance"]["fks"] == {
+        (
+            ("tenant_id", "country_policy_version_id"),
+            "country_policy_versions",
+            ("tenant_id", "country_policy_version_id"),
+            "RESTRICT",
+        )
+    }
+    assert database["country_policy_activations"]["pk"] == (
+        "tenant_id",
+        "country_policy_activation_id",
+    )
+    assert database["country_policy_activations"]["uniques"] == {
+        ("tenant_id", "country_key", "activation_sequence"),
+        ("tenant_id", "country_policy_version_id"),
+        ("tenant_id", "approval_id"),
+    }
+    assert database["country_policy_activations"]["fks"] == {
+        (
+            ("tenant_id", "country_policy_version_id"),
+            "country_policy_versions",
+            ("tenant_id", "country_policy_version_id"),
+            "RESTRICT",
+        )
+    }
+    assert triggers == {
+        (table, f"trg_{table}_append_only") for table in rows
+    }
+
+
+async def test_0032_country_policy_downgrade_roundtrip(db_url: str) -> None:
+    """head→0031→head 只移除并恢复国家政策三表。"""
+    from infra.db.session import create_engine_from
+
+    tables = {
+        "country_policy_versions",
+        "country_policy_field_provenance",
+        "country_policy_activations",
+    }
+    engine = create_engine_from(db_url)
+    try:
+        assert tables <= await _table_names(engine)
+        _run_alembic(db_url, "downgrade", "0031")
+        assert not tables & await _table_names(engine)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0031"
             )
         _run_alembic(db_url, "upgrade", "head")
         assert tables <= await _table_names(engine)

@@ -3549,3 +3549,218 @@ class CompanyPlaybookActivationRow(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     activated_by: Mapped[str] = mapped_column(String(200))
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CountryPolicyVersionRow(Base):
+    """不可变国家政策候选版本；字段来源保存在独立关系表。"""
+
+    __tablename__ = "country_policy_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "country_policy_version_id",
+            name="pk_country_policy_versions",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "country_key",
+            "version_number",
+            name="uq_country_policy_versions_country_number",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_country_policy_versions_idempotency",
+        ),
+        CheckConstraint(
+            "version_number > 0 AND "
+            "(opt_out_deadline_days IS NULL OR "
+            "opt_out_deadline_days BETWEEN 1 AND 365)",
+            name="ck_country_policy_versions_bounds",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$' AND "
+            "(base_content_hash IS NULL OR "
+            "base_content_hash ~ '^[0-9a-f]{64}$')",
+            name="ck_country_policy_versions_hashes",
+        ),
+        CheckConstraint(
+            "(base_version_id IS NULL AND base_content_hash IS NULL) OR "
+            "(base_version_id IS NOT NULL AND base_content_hash IS NOT NULL)",
+            name="ck_country_policy_versions_base_pair",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(requirements) = 'array' AND "
+            "jsonb_array_length(requirements) <= 100",
+            name="ck_country_policy_versions_requirements",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND "
+            "btrim(country_policy_version_id) <> '' AND "
+            "btrim(country) <> '' AND btrim(country_key) <> '' AND "
+            "btrim(notes) <> '' AND btrim(proposed_by) <> '' AND "
+            "btrim(idempotency_key) <> ''",
+            name="ck_country_policy_versions_core_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    country_policy_version_id: Mapped[str] = mapped_column(String(40))
+    country: Mapped[str] = mapped_column(String(64))
+    country_key: Mapped[str] = mapped_column(String(64))
+    version_number: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(CHAR(64))
+    base_version_id: Mapped[str | None] = mapped_column(String(40))
+    base_content_hash: Mapped[str | None] = mapped_column(CHAR(64))
+    public_research_allowed: Mapped[bool] = mapped_column(Boolean)
+    contact_enrichment_allowed: Mapped[bool] = mapped_column(Boolean)
+    cold_b2b_email_allowed: Mapped[bool] = mapped_column(Boolean)
+    personal_data_basis_required: Mapped[bool] = mapped_column(Boolean)
+    subject_type_affects_judgment: Mapped[bool] = mapped_column(Boolean)
+    contact_type_affects_judgment: Mapped[bool] = mapped_column(Boolean)
+    opt_out_deadline_days: Mapped[int | None] = mapped_column(Integer)
+    local_representative_required: Mapped[bool] = mapped_column(Boolean)
+    requirements: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    notes: Mapped[str] = mapped_column(Text)
+    proposed_by: Mapped[str] = mapped_column(String(40))
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+
+
+class CountryPolicyFieldProvenanceRow(Base):
+    """国家政策决策字段逐字段、人工确认的关系型 Provenance。"""
+
+    __tablename__ = "country_policy_field_provenance"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "country_policy_version_id",
+            "field_name",
+            name="pk_country_policy_field_provenance",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "country_policy_version_id"],
+            [
+                "country_policy_versions.tenant_id",
+                "country_policy_versions.country_policy_version_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_country_policy_field_provenance_version",
+        ),
+        CheckConstraint(
+            "field_name IN ("
+            "'public_research_allowed','contact_enrichment_allowed',"
+            "'cold_b2b_email_allowed','personal_data_basis_required',"
+            "'subject_type_affects_judgment','contact_type_affects_judgment',"
+            "'opt_out_deadline_days','local_representative_required',"
+            "'requirements')",
+            name="ck_country_policy_field_provenance_field",
+        ),
+        CheckConstraint(
+            "source_type IN ('web_page','upload','employee_input') AND "
+            "source_type <> 'agent_inference'",
+            name="ck_country_policy_field_provenance_source",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND "
+            "btrim(country_policy_version_id) <> '' AND "
+            "btrim(field_name) <> '' AND btrim(source_id) <> '' AND "
+            "btrim(extracted_by) <> '' AND btrim(confirmed_by) <> '' AND "
+            "extracted_by = 'human:' || confirmed_by AND "
+            "confirmed_at = extracted_at",
+            name="ck_country_policy_field_provenance_human_confirmed",
+        ),
+        CheckConstraint(
+            "(source_type = 'web_page' AND source_url IS NOT NULL AND "
+            "btrim(source_url) <> '' AND page_hash ~ '^[0-9a-f]{64}$') OR "
+            "(source_type <> 'web_page' AND source_url IS NULL AND "
+            "page_hash IS NULL)",
+            name="ck_country_policy_field_provenance_web_shape",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    country_policy_version_id: Mapped[str] = mapped_column(String(40))
+    field_name: Mapped[str] = mapped_column(String(64))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[str] = mapped_column(String(200))
+    extracted_by: Mapped[str] = mapped_column(String(200))
+    extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    page_hash: Mapped[str | None] = mapped_column(CHAR(64))
+
+
+class CountryPolicyActivationRow(Base):
+    """人工批准与系统应用分离、按国家单调排序的激活事实。"""
+
+    __tablename__ = "country_policy_activations"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "country_policy_activation_id",
+            name="pk_country_policy_activations",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "country_policy_version_id"],
+            [
+                "country_policy_versions.tenant_id",
+                "country_policy_versions.country_policy_version_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_country_policy_activations_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "country_key",
+            "activation_sequence",
+            name="uq_country_policy_activations_country_sequence",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "country_policy_version_id",
+            name="uq_country_policy_activations_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "approval_id",
+            name="uq_country_policy_activations_approval",
+        ),
+        CheckConstraint(
+            "activation_sequence > 0 AND "
+            "content_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_country_policy_activations_sequence_hash",
+        ),
+        CheckConstraint(
+            "change_set_ref = 'country_policy:' || "
+            "country_policy_version_id || ':' || content_hash",
+            name="ck_country_policy_activations_change_set",
+        ),
+        CheckConstraint(
+            "approved_at <= activated_at",
+            name="ck_country_policy_activations_times",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND "
+            "btrim(country_policy_activation_id) <> '' AND "
+            "btrim(country_key) <> '' AND "
+            "btrim(country_policy_version_id) <> '' AND "
+            "btrim(approval_id) <> '' AND btrim(change_set_ref) <> '' AND "
+            "btrim(approved_by) <> '' AND btrim(activated_by) <> ''",
+            name="ck_country_policy_activations_core_nonblank",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    country_policy_activation_id: Mapped[str] = mapped_column(String(40))
+    country_key: Mapped[str] = mapped_column(String(64))
+    activation_sequence: Mapped[int] = mapped_column(Integer)
+    country_policy_version_id: Mapped[str] = mapped_column(String(40))
+    content_hash: Mapped[str] = mapped_column(CHAR(64))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    change_set_ref: Mapped[str] = mapped_column(String(160))
+    approved_by: Mapped[str] = mapped_column(String(40))
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    activated_by: Mapped[str] = mapped_column(String(200))
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
