@@ -1007,6 +1007,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings/country-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Country Policy Overview */
+        get: operations["get_country_policy_overview_settings_country_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/country-policies/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose Country Policy */
+        post: operations["propose_country_policy_settings_country_policies_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/country-policies/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Country Policy Versions */
+        get: operations["list_country_policy_versions_settings_country_policies_versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings/playbook": {
         parameters: {
             query?: never;
@@ -1585,20 +1636,15 @@ export interface components {
             /** Verbatim */
             verbatim: string;
         };
-        /** ContactEnrichmentBlocker */
-        ContactEnrichmentBlocker: {
-            /**
-             * Reason Code
-             * @default COUNTRY_POLICY_NOT_CONFIGURED
-             * @constant
-             */
-            reason_code: "COUNTRY_POLICY_NOT_CONFIGURED";
+        /** ContactEnrichmentReadiness */
+        ContactEnrichmentReadiness: {
+            /** Reason Code */
+            reason_code: ("COUNTRY_POLICY_NOT_CONFIGURED" | "CONTACT_ENRICHMENT_NOT_ALLOWED" | "CONTACT_ENRICHMENT_NOT_COMPOSED") | null;
             /**
              * State
-             * @default blocked
-             * @constant
+             * @enum {string}
              */
-            state: "blocked";
+            state: "blocked" | "ready";
         };
         /**
          * ContactPointDetailView
@@ -1836,6 +1882,189 @@ export interface components {
             version_number: number;
             /** Version Type */
             version_type: string;
+        };
+        /** CountryPolicyActivationView */
+        CountryPolicyActivationView: {
+            /**
+             * Activated At
+             * Format: date-time
+             */
+            activated_at: string;
+            /** Activated By */
+            activated_by: string;
+            /** Activation Id */
+            activation_id: string;
+            /** Activation Sequence */
+            activation_sequence: number;
+            /** Approval Id */
+            approval_id: string;
+            /**
+             * Approved At
+             * Format: date-time
+             */
+            approved_at: string;
+            /** Approved By */
+            approved_by: string;
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Country Key */
+            country_key: string;
+            /** Country Policy Version Id */
+            country_policy_version_id: string;
+        };
+        /**
+         * CountryPolicyActiveView
+         * @description 同一激活指针解析出的版本内容与激活审计事实。
+         */
+        CountryPolicyActiveView: {
+            activation: components["schemas"]["CountryPolicyActivationView"];
+            version: components["schemas"]["CountryPolicyVersionView"];
+        };
+        /** CountryPolicyCoverage */
+        CountryPolicyCoverage: {
+            /** Active Policy Count */
+            active_policy_count: number;
+            /** Contact Enrichment Allowed Count */
+            contact_enrichment_allowed_count: number;
+        };
+        /**
+         * CountryPolicyField
+         * @enum {string}
+         */
+        CountryPolicyField: "public_research_allowed" | "contact_enrichment_allowed" | "cold_b2b_email_allowed" | "personal_data_basis_required" | "subject_type_affects_judgment" | "contact_type_affects_judgment" | "opt_out_deadline_days" | "local_representative_required" | "requirements";
+        /**
+         * CountryPolicyFieldSourceInput
+         * @description 客户端可提交的最小安全来源；身份与时间均由服务端绑定。
+         */
+        CountryPolicyFieldSourceInput: {
+            /** Page Hash */
+            page_hash?: string | null;
+            /** Source Id */
+            source_id: string;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "web_page" | "upload" | "employee_input";
+            /** Source Url */
+            source_url?: string | null;
+        };
+        /** CountryPolicyOverview */
+        CountryPolicyOverview: {
+            /** Active Policies */
+            active_policies: components["schemas"]["CountryPolicyActiveView"][];
+            contact_enrichment: components["schemas"]["ContactEnrichmentReadiness"];
+            coverage: components["schemas"]["CountryPolicyCoverage"];
+        };
+        /** CountryPolicyProposalAccepted */
+        CountryPolicyProposalAccepted: {
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Country Policy Version Id */
+            country_policy_version_id: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * CountryPolicyProposalCreate
+         * @description 不携带租户、身份、时间或幂等键的国家政策候选内容。
+         */
+        CountryPolicyProposalCreate: {
+            /** Cold B2B Email Allowed */
+            cold_b2b_email_allowed: boolean;
+            /** Contact Enrichment Allowed */
+            contact_enrichment_allowed: boolean;
+            /** Contact Type Affects Judgment */
+            contact_type_affects_judgment: boolean;
+            /** Country */
+            country: string;
+            /** Field Sources */
+            field_sources: {
+                [key: string]: components["schemas"]["CountryPolicyFieldSourceInput"];
+            };
+            /** Local Representative Required */
+            local_representative_required: boolean;
+            /** Notes */
+            notes: string;
+            /** Opt Out Deadline Days */
+            opt_out_deadline_days: number | null;
+            /** Personal Data Basis Required */
+            personal_data_basis_required: boolean;
+            /** Public Research Allowed */
+            public_research_allowed: boolean;
+            /** Requirements */
+            requirements: string[];
+            /** Subject Type Affects Judgment */
+            subject_type_affects_judgment: boolean;
+        };
+        /** CountryPolicyVersionStatusView */
+        CountryPolicyVersionStatusView: {
+            /** Application Error Code */
+            application_error_code: ("COUNTRY_POLICY_BASE_VERSION_CONFLICT" | "COUNTRY_POLICY_APPROVAL_FACT_INVALID") | null;
+            /** Approval Decided At */
+            approval_decided_at?: string | null;
+            /** Approval Decided By */
+            approval_decided_by?: string | null;
+            /** Approval Id */
+            approval_id: string | null;
+            /**
+             * Approval State
+             * @enum {string}
+             */
+            approval_state: "proposal_pending_submission" | "pending" | "approved" | "rejected" | "expired" | "applied" | "apply_failed";
+            version: components["schemas"]["CountryPolicyVersionView"];
+        };
+        /** CountryPolicyVersionView */
+        CountryPolicyVersionView: {
+            /** Base Content Hash */
+            base_content_hash: string | null;
+            /** Base Version Id */
+            base_version_id: string | null;
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Cold B2B Email Allowed */
+            cold_b2b_email_allowed: boolean;
+            /** Contact Enrichment Allowed */
+            contact_enrichment_allowed: boolean;
+            /** Contact Type Affects Judgment */
+            contact_type_affects_judgment: boolean;
+            /** Content Hash */
+            content_hash: string;
+            /** Country */
+            country: string;
+            /** Country Key */
+            country_key: string;
+            /** Country Policy Version Id */
+            country_policy_version_id: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["Provenance"];
+            };
+            /** Local Representative Required */
+            local_representative_required: boolean;
+            /** Notes */
+            notes: string;
+            /** Opt Out Deadline Days */
+            opt_out_deadline_days: number | null;
+            /** Personal Data Basis Required */
+            personal_data_basis_required: boolean;
+            /**
+             * Proposed At
+             * Format: date-time
+             */
+            proposed_at: string;
+            /** Proposed By */
+            proposed_by: string;
+            /** Public Research Allowed */
+            public_research_allowed: boolean;
+            /** Requirements */
+            requirements: string[];
+            /** Subject Type Affects Judgment */
+            subject_type_affects_judgment: boolean;
+            /** Version Number */
+            version_number: number;
         };
         /**
          * DemandSignalView
@@ -2859,13 +3088,7 @@ export interface components {
             active_version: components["schemas"]["PlaybookActiveView"] | null;
             /** Configured */
             configured: boolean;
-            /**
-             * @default {
-             *       "reason_code": "COUNTRY_POLICY_NOT_CONFIGURED",
-             *       "state": "blocked"
-             *     }
-             */
-            contact_enrichment: components["schemas"]["ContactEnrichmentBlocker"];
+            contact_enrichment: components["schemas"]["ContactEnrichmentReadiness"];
         };
         /** PlaybookProposalAccepted */
         PlaybookProposalAccepted: {
@@ -5901,6 +6124,111 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_country_policy_overview_settings_country_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountryPolicyOverview"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    propose_country_policy_settings_country_policies_proposals_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CountryPolicyProposalCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountryPolicyProposalAccepted"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_country_policy_versions_settings_country_policies_versions_get: {
+        parameters: {
+            query: {
+                country: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountryPolicyVersionStatusView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
