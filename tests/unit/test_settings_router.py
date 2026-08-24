@@ -9,16 +9,19 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient, Response
+from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as PydanticValidationError
 
 from apps.api.dependencies import get_api_dependencies, get_request_identity
 from apps.api.identity import RequestIdentity
 from apps.api.main import create_app
-from apps.api.middleware import ApiSettings
+from apps.api.middleware import ApiErrorResponse, ApiSettings
 from apps.api.routers.settings import (
     CountryPolicyVersionStatusView,
     PlaybookOverview,
+    _SettingsRoute,
 )
 from domains.approvals.schemas import ApprovalView
 from domains.compliance.schemas import (
@@ -62,6 +65,12 @@ CHANGE_SET = f"playbook:{VERSION_ID}:{CONTENT_HASH}"
 NOW = datetime(2026, 8, 24, 16, tzinfo=UTC)
 COUNTRY_VERSION_ID = CountryPolicyVersionId("cpp_01K00000000000000000000000")
 _UNSET = object()
+
+
+class _SyntheticValidationBody(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    value: int
 
 
 def _identity(
@@ -410,6 +419,38 @@ def _app(
     return app
 
 
+def _validation_contract_app():
+    app = _app()
+    synthetic_router = APIRouter(route_class=_SettingsRoute)
+
+    @synthetic_router.post(
+        "/explicit-api-error",
+        responses={422: {"model": ApiErrorResponse}},
+    )
+    async def explicit_api_error(
+        body: _SyntheticValidationBody,
+    ) -> _SyntheticValidationBody:
+        return body
+
+    @synthetic_router.post("/default-validation")
+    async def default_validation(
+        body: _SyntheticValidationBody,
+    ) -> _SyntheticValidationBody:
+        return body
+
+    @synthetic_router.post(
+        "/wrong-error-model",
+        responses={422: {"model": _SyntheticValidationBody}},
+    )
+    async def wrong_error_model(
+        body: _SyntheticValidationBody,
+    ) -> _SyntheticValidationBody:
+        return body
+
+    app.include_router(synthetic_router, prefix="/settings/_test")
+    return app
+
+
 def _request(
     app: object,
     method: str,
@@ -434,6 +475,30 @@ def _request(
             return await client.request(method, path, headers=headers, json=json)
 
     return asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_status", "expected_code"),
+    [
+        ("/settings/_test/explicit-api-error", 422, "http_error"),
+        ("/settings/_test/default-validation", 400, "validation_error"),
+        ("/settings/_test/wrong-error-model", 400, "validation_error"),
+    ],
+)
+def test_settings_runtime_validation_follows_explicit_api_error_contract(
+    path: str,
+    expected_status: int,
+    expected_code: str,
+) -> None:
+    response = _request(
+        _validation_contract_app(),
+        "POST",
+        path,
+        json={"value": "not-an-integer"},
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["code"] == expected_code
 
 
 @pytest.fixture

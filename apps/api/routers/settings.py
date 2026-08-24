@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -58,22 +58,26 @@ from ..middleware import ApiErrorResponse
 
 
 class _SettingsRoute(APIRoute):
-    """仅为新增国家政策 POST 保留显式 422 合同，不改全局 400 映射。"""
+    """只让显式声明安全 422 契约的 Settings route 使用运行时 422。"""
 
     def get_route_handler(
         self,
     ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
-        if self.path != "/country-policies/proposals":
+        response_422 = self.responses.get(422)
+        if not (
+            isinstance(response_422, Mapping)
+            and response_422.get("model") is ApiErrorResponse
+        ):
             return handler
 
-        async def task7_validation_handler(request: Request) -> Response:
+        async def explicit_422_validation_handler(request: Request) -> Response:
             try:
                 return await handler(request)
             except RequestValidationError:
                 raise HTTPException(status_code=422) from None
 
-        return task7_validation_handler
+        return explicit_422_validation_handler
 
 
 router = APIRouter(route_class=_SettingsRoute)
