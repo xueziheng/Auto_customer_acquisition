@@ -98,6 +98,7 @@ supply_capabilities_note
 proposed_by
 proposed_at
 idempotency_key
+content_provenance        覆盖本版本全部人工录入业务字段的来源事实
 ```
 
 版本内容规范化后计算哈希：
@@ -107,7 +108,14 @@ idempotency_key
 - 列表项拒绝空白和控制字符，去首尾空格、稳定去重并按规范值排序；
 - 可选文本保留语义内容但拒绝仅空白；
 - canonical JSON 使用固定字段顺序和 UTF-8，再计算 SHA-256；
-- `tenant_id`、版本 ID、版本号、提交人和时间不进入内容哈希。
+- `tenant_id`、版本 ID、版本号、提交人、时间和 `content_provenance` 不进入内容哈希。
+
+`content_provenance` 使用 `shared.schemas.provenance.Provenance`：source type 固定为
+`employee_input`，source ID 指向本 `playbook_version_id`，`extracted_by` 记录具体提交
+员工，`extracted_at` 等于提交时间。候选版本保持未确认；批准后的确认人、确认时间和
+approval ID 由独立 activation 事实提供，读取当前版本时组合展示，不回写不可变版本。
+这份 Provenance 覆盖 company type、金额底线、排除清单、预算、额外审批要求和供应能力
+说明，满足关键商业字段的来源追踪要求。
 
 相同业务内容可以在不同基准上重新提交，因版本 ID 和基准不同仍是不同候选。相同
 `(tenant_id, idempotency_key)` 只能对应一个候选；重试返回既有版本，payload 不同则抛
@@ -124,9 +132,15 @@ playbook_version_id
 content_hash
 approval_id
 change_set_ref
+approved_by
+approved_at
 activated_by
 activated_at
 ```
+
+`approved_by/approved_at` 来自精确审批事实，作为内容 Provenance 的确认人和确认时间；
+`activated_by` 固定记录 system actor，`activated_at` 记录实际写入生效事实的时间。二者
+不得混用，否则延迟应用会把审批时间伪装成生效时间，或丢失真正的人工确认时间。
 
 当前生效版本是租户最新的一条 activation 所引用的版本。某版本是否被替代及替代时间，
 由后续 activation 推导，不更新旧版本或旧 activation。这样候选内容、批准依据和生效
@@ -166,6 +180,8 @@ playbook:<playbook_version_id>:<content_hash>
 
 - `PLAYBOOK_READ`：boss；
 - `PLAYBOOK_PROPOSE`：boss；
+- `PLAYBOOK_CHANGE_SNAPSHOT_READ`：仅 composition root 构造的 system actor，供工作流
+  临时组装审批差异；不进入 API，也不写入 workflow context；
 - `PLAYBOOK_ACTIVATE`：仅 composition root 构造的 system actor。
 
 组织域公共服务提供：
@@ -174,6 +190,8 @@ playbook:<playbook_version_id>:<content_hash>
 get_playbook(tenant_id, *, actor) -> CompanyPlaybook
 get_version(tenant_id, playbook_version_id, *, actor) -> PlaybookVersionView
 list_versions(tenant_id, *, actor, limit) -> list[PlaybookVersionView]
+get_change_snapshot(tenant_id, playbook_version_id, *, actor)
+    -> PlaybookChangeSnapshot
 propose_playbook(tenant_id, command, *, actor, idempotency_key)
     -> PlaybookProposalResult
 activate_playbook(tenant_id, playbook_version_id, approval_fact, *, actor)
@@ -181,6 +199,9 @@ activate_playbook(tenant_id, playbook_version_id, approval_fact, *, actor)
 ```
 
 `get_playbook` 在没有 activation 时抛 `PlaybookNotConfiguredError`，不返回隐含默认值。
+`get_change_snapshot` 一次 tenant-filtered 读取候选提交时捕获的 base、当前生效版本和
+精确候选，并给出 base 是否仍为 current，只授权 system workflow actor；它解决审批包
+组装与陈旧提示需求，但不会放宽 boss-only 的普通读取 API，也不会让工作流冒充提交人。
 原有无审批上下文的 `update_playbook` 从公共契约移除；仓库内当前没有实现或调用者，
 因此迁移不会保留不安全兼容层。
 
@@ -255,6 +276,7 @@ assemble_package
 - 列表用 JSONB array，禁止 null 元素，服务负责规范化；
 - `monthly_budget_credits` 为空或非负整数，不提供默认值；
 - 核心字符串 nonblank，content hash 为 64 位小写十六进制；
+- 来源类型、来源 ID、具体人工录入者和录入时间必填；确认事实由 activation 提供；
 - trigger 拒绝 UPDATE/DELETE。
 
 ### 7.2 `company_playbook_activations`
@@ -262,7 +284,7 @@ assemble_package
 - PK `(tenant_id, activation_id)`；composite FK 到版本；
 - unique `(tenant_id, playbook_version_id)` 与 `(tenant_id, approval_id)`；
 - 索引 `(tenant_id, activated_at, activation_id)`，以稳定顺序读取当前版本；
-- 版本 hash、change set、决定人和 UTC 时间必填；
+- 版本 hash、change set、批准人/批准时间、system activation actor/实际 UTC 生效时间必填；
 - trigger 拒绝 UPDATE/DELETE。
 
 两个表的所有查询显式 tenant predicate，Repository 构造时绑定 tenant。跨租户入参抛
@@ -342,13 +364,14 @@ readiness 事实；密钥仍由部署配置持有，模型、API 和浏览器均
 必须覆盖：
 
 1. canonical hash 对列表顺序、重复项和 Decimal 等价表示稳定；真实内容变化改变 hash；
-2. float/int/bool/非有限金额在 API 边界被拒绝；
-3. 未配置时不返回默认 Playbook；
-4. 相同 idempotency key 的同 payload 返回同一候选，不同 payload 冲突；
-5. approval type、version、hash、change set 任一不匹配都不能激活；
-6. 首次配置要求无 active version；后续配置要求 base ID/hash 精确匹配；
-7. `approval_requirements` 只能叠加，不能表达移除全局条目；
-8. boss 只能 read/propose，system actor 才能 activate。
+2. 每个候选版本带 employee-input Provenance，激活视图能组合审批确认人和确认时间；
+3. float/int/bool/非有限金额在 API 边界被拒绝；
+4. 未配置时不返回默认 Playbook；
+5. 相同 idempotency key 的同 payload 返回同一候选，不同 payload 冲突；
+6. approval type、version、hash、change set 任一不匹配都不能激活；
+7. 首次配置要求无 active version；后续配置要求 base ID/hash 精确匹配；
+8. `approval_requirements` 只能叠加，不能表达移除全局条目；
+9. boss 只能 read/propose，system actor 才能 activate。
 
 ### 11.2 审批和工作流测试
 
