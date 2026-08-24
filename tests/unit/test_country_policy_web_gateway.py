@@ -12,11 +12,19 @@ from shared.schemas.identifiers import (
     TenantId,
     UserId,
 )
+from tests.unit.country_policy_gateway_support import (
+    build_country_policy_gateway,
+    country_policy_manifest,
+)
 from tool_gateway.checks.web_discovery import (
     WebResearchCountryPolicyCheck,
     WebResearchPreflight,
 )
-from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+from tool_gateway.errors import (
+    ToolCallStatus,
+    ToolErrorCategory,
+    ToolGatewayError,
+)
 from tool_gateway.pipeline import ToolCallContext, ToolInvocationState
 
 TENANT = TenantId("ten_01J00000000000000000000000")
@@ -129,6 +137,15 @@ async def test_allowed_decision_with_exact_version_and_hash_continues() -> None:
             content_hash=None,
             requirements=(),
         ),
+        CountryPolicyDecision.model_construct(
+            country_key="xz",
+            action=CountryPolicyAction.PUBLIC_RESEARCH,
+            configured=True,
+            allowed=True,
+            active_version_id="not-a-policy-version",
+            content_hash="b" * 64,
+            requirements=(),
+        ),
         object(),
     ],
 )
@@ -138,6 +155,35 @@ async def test_mismatched_country_or_action_in_decision_is_transient_failure(
     with pytest.raises(ToolGatewayError) as captured:
         await WebResearchCountryPolicyCheck(_Reader(decision)).check(_ctx(), _state())
     assert captured.value.category is ToolErrorCategory.PROVIDER_TRANSIENT
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_active_version_fails_gateway_before_transport() -> None:
+    decision = CountryPolicyDecision.model_construct(
+        country_key="xz",
+        action=CountryPolicyAction.PUBLIC_RESEARCH,
+        configured=True,
+        allowed=True,
+        active_version_id="not-a-policy-version",
+        content_hash="b" * 64,
+        requirements=(),
+    )
+    gateway, handler, transport = build_country_policy_gateway(
+        country_policy_manifest("web.search"),
+        WebResearchPreflight(TENANT, "XZ", "synthetic-category"),
+        WebResearchCountryPolicyCheck(_Reader(decision)),
+    )
+
+    result = await gateway.invoke(_ctx())
+
+    assert handler.prepare_calls == 0
+    assert handler.execute_calls == 0
+    assert transport.calls == 0
+    assert result.status is ToolCallStatus.REJECTED
+    assert result.error_category is ToolErrorCategory.PROVIDER_TRANSIENT
+    assert result.rejected is not None
+    assert result.rejected.stage == "runtime"
+    assert result.rejected.rule == "runtime:provider_transient"
 
 
 @pytest.mark.asyncio
@@ -161,11 +207,21 @@ async def test_reader_exception_is_transient_failure_not_denial() -> None:
 async def test_rejected_path_calls_provider_transport_zero_times(
     decision: CountryPolicyDecision,
 ) -> None:
-    provider_calls = 0
-    rejection = await WebResearchCountryPolicyCheck(_Reader(decision)).check(
-        _ctx(), _state()
+    gateway, handler, transport = build_country_policy_gateway(
+        country_policy_manifest("web.search"),
+        WebResearchPreflight(TENANT, "XZ", "synthetic-category"),
+        WebResearchCountryPolicyCheck(_Reader(decision)),
     )
-    if rejection is None:
-        provider_calls += 1
-    assert rejection is not None
-    assert provider_calls == 0
+    result = await gateway.invoke(_ctx())
+
+    assert handler.prepare_calls == 0
+    assert handler.execute_calls == 0
+    assert transport.calls == 0
+    assert result.status is ToolCallStatus.REJECTED
+    assert result.rejected is not None
+    assert result.rejected.stage == "country_policy"
+    assert result.rejected.rule == (
+        "country_policy:not_configured"
+        if not decision.configured
+        else "country_policy:action_not_allowed"
+    )

@@ -21,6 +21,7 @@ from shared.schemas.provenance import Provenance, SourceType
 _SOURCE_ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9._:-]{0,199}\Z")
 _REQUIREMENT_PATTERN = re.compile(r"[a-z][a-z0-9._:-]{0,127}\Z")
 _LOWER_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_COUNTRY_POLICY_VERSION_ID_PATTERN = re.compile(r"cpp_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
 _TRUSTED_SOURCE_TYPES = frozenset(
     {SourceType.WEB_PAGE, SourceType.UPLOAD, SourceType.EMPLOYEE_INPUT}
 )
@@ -239,6 +240,18 @@ class CountryPolicyDecision(_FrozenModel):
     active_version_id: CountryPolicyVersionId | None
     content_hash: str | None
     requirements: tuple[str, ...]
+
+    @field_validator("active_version_id")
+    @classmethod
+    def validate_active_version_id(
+        cls, value: CountryPolicyVersionId | None
+    ) -> CountryPolicyVersionId | None:
+        if value is not None and (
+            not isinstance(value, str)
+            or _COUNTRY_POLICY_VERSION_ID_PATTERN.fullmatch(value) is None
+        ):
+            raise ValueError("active_version_id 必须是规范的国家政策版本 ID")
+        return value
 
     @model_validator(mode="after")
     def validate_decision_facts(self) -> CountryPolicyDecision:

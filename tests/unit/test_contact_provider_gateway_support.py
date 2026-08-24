@@ -28,6 +28,10 @@ from shared.schemas.identifiers import (
     TenantId,
     UserId,
 )
+from tests.unit.country_policy_gateway_support import (
+    build_country_policy_gateway,
+    country_policy_manifest,
+)
 from tool_gateway.checks.contact_provider import (
     ContactCountryPolicyCheck,
     ContactDiscoveryPreflight,
@@ -38,7 +42,11 @@ from tool_gateway.checks.contact_provider import (
     ContactVerificationPreflight,
     InMemoryHunterQuotaGuard,
 )
-from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+from tool_gateway.errors import (
+    ToolCallStatus,
+    ToolErrorCategory,
+    ToolGatewayError,
+)
 from tool_gateway.handlers.single_result_slot import ContextLocalSingleResultSlot
 from tool_gateway.pipeline import ToolCallContext, ToolInvocationState
 
@@ -366,6 +374,15 @@ async def test_allowed_decision_with_exact_version_and_hash_continues() -> None:
             content_hash=None,
             requirements=(),
         ),
+        CountryPolicyDecision.model_construct(
+            country_key="synthetic market",
+            action=CountryPolicyAction.CONTACT_ENRICHMENT,
+            configured=True,
+            allowed=True,
+            active_version_id="not-a-policy-version",
+            content_hash="a" * 64,
+            requirements=(),
+        ),
         object(),
     ],
 )
@@ -386,6 +403,42 @@ async def test_mismatched_country_or_action_in_decision_is_transient_failure(
             _ctx("contact.enrich", {}), state
         )
     assert captured.value.category is ToolErrorCategory.PROVIDER_TRANSIENT
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_active_version_fails_gateway_before_transport() -> None:
+    decision = CountryPolicyDecision.model_construct(
+        country_key="synthetic market",
+        action=CountryPolicyAction.CONTACT_ENRICHMENT,
+        configured=True,
+        allowed=True,
+        active_version_id="not-a-policy-version",
+        content_hash="a" * 64,
+        requirements=(),
+    )
+    gateway, handler, transport = build_country_policy_gateway(
+        country_policy_manifest("contact.enrich"),
+        ContactDiscoveryPreflight(
+            TENANT,
+            HYPOTHESIS,
+            ACCOUNT,
+            "category",
+            "Synthetic Market",
+            "example.com",
+        ),
+        ContactCountryPolicyCheck(_CountryReader(decision)),
+    )
+
+    result = await gateway.invoke(_ctx("contact.enrich", {}))
+
+    assert handler.prepare_calls == 0
+    assert handler.execute_calls == 0
+    assert transport.calls == 0
+    assert result.status is ToolCallStatus.REJECTED
+    assert result.error_category is ToolErrorCategory.PROVIDER_TRANSIENT
+    assert result.rejected is not None
+    assert result.rejected.stage == "runtime"
+    assert result.rejected.rule == "runtime:provider_transient"
 
 
 @pytest.mark.asyncio
@@ -418,8 +471,7 @@ async def test_reader_exception_is_transient_failure_not_denial() -> None:
 async def test_rejected_path_calls_provider_transport_zero_times(
     decision: CountryPolicyDecision,
 ) -> None:
-    state = _state("contact.enrich")
-    state.preflight = ContactDiscoveryPreflight(
+    preflight = ContactDiscoveryPreflight(
         TENANT,
         HYPOTHESIS,
         ACCOUNT,
@@ -427,14 +479,24 @@ async def test_rejected_path_calls_provider_transport_zero_times(
         "Synthetic Market",
         "example.com",
     )
-    provider_calls = 0
-    rejection = await ContactCountryPolicyCheck(_CountryReader(decision)).check(
-        _ctx("contact.enrich", {}), state
+    gateway, handler, transport = build_country_policy_gateway(
+        country_policy_manifest("contact.enrich"),
+        preflight,
+        ContactCountryPolicyCheck(_CountryReader(decision)),
     )
-    if rejection is None:
-        provider_calls += 1
-    assert rejection is not None
-    assert provider_calls == 0
+    result = await gateway.invoke(_ctx("contact.enrich", {}))
+
+    assert handler.prepare_calls == 0
+    assert handler.execute_calls == 0
+    assert transport.calls == 0
+    assert result.status is ToolCallStatus.REJECTED
+    assert result.rejected is not None
+    assert result.rejected.stage == "country_policy"
+    assert result.rejected.rule == (
+        "country_policy:not_configured"
+        if not decision.configured
+        else "country_policy:action_not_allowed"
+    )
 
 
 @pytest.mark.asyncio

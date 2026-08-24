@@ -457,6 +457,30 @@ def test_decision_rejects_incoherent_configured_and_active_facts() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "active_version_id",
+    [
+        "not-a-policy-version",
+        "cpp_81J00000000000000000000000",
+        "cpp_01I00000000000000000000000",
+        "cpp_01J000000000000000000000000",
+    ],
+)
+def test_decision_rejects_noncanonical_active_version_id(
+    active_version_id: str,
+) -> None:
+    with pytest.raises(PydanticValidationError):
+        CountryPolicyDecision(
+            country_key="synthetic market",
+            action=CountryPolicyAction.CONTACT_ENRICHMENT,
+            configured=True,
+            allowed=True,
+            active_version_id=active_version_id,
+            content_hash="a" * 64,
+            requirements=(),
+        )
+
+
 def test_coverage_is_nonnegative_and_enrichment_is_a_subset() -> None:
     assert CountryPolicyCoverage(
         active_policy_count=2,

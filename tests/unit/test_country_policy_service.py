@@ -355,9 +355,10 @@ def _seed_version(
     base_version_id: CountryPolicyVersionId | None = None,
     base_content_hash: str | None = None,
 ) -> CountryPolicyVersion:
+    version_id = CountryPolicyVersionId(f"cpp_01J{len(store.versions) + 1:023d}")
     version = CountryPolicyVersion.from_command(
         tenant_id=TENANT,
-        version_id=CountryPolicyVersionId(f"cpp_{suffix}"),
+        version_id=version_id,
         version_number=version_number,
         command=command,
         base_version_id=base_version_id,
