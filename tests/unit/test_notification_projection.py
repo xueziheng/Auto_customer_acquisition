@@ -10,8 +10,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from infra.db.outbox import serialize
-from notification_gateway.jobs import NotificationKind
+from notification_gateway.jobs import NotificationJobClaim, NotificationKind
 from notification_gateway.models import NotificationPriority
+from notification_gateway.templates import FixedNotificationTemplateRenderer
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.events.catalog import (
     ApprovalDecided,
@@ -171,7 +172,7 @@ def _events() -> list[tuple[DomainEvent, object, tuple[object, ...]]]:
                 NotificationKind.APPROVAL_DECIDED,
                 str(approval_id),
                 str(decider),
-                "approve",
+                "approved",
                 None,
             ),
         ),
@@ -436,9 +437,15 @@ async def test_approval_projection_accepts_only_stable_decisions_and_typed_ids(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("decision", ["approve", "reject"])
-async def test_approval_projection_preserves_both_stable_decisions(decision: str) -> None:
-    """审批服务发出的 approve/reject 都要投影且保留稳定 reason code。"""
+@pytest.mark.parametrize(
+    ("event_decision", "render_reason"),
+    [("approve", "approved"), ("reject", "rejected")],
+)
+async def test_approval_projection_maps_both_stable_decisions(
+    event_decision: str,
+    render_reason: str,
+) -> None:
+    """审批服务词汇必须显式映射为既有持久通知 reason code。"""
     Member = _load("NotificationAudienceMember")
     Handler = _load("NotificationProjectionHandler")
     jobs = _Jobs()
@@ -456,13 +463,63 @@ async def test_approval_projection_preserves_both_stable_decisions(decision: str
             _NOW,
             None,
             new_id("apr"),
-            decision,
+            event_decision,
             EmployeeId(new_id("emp")),
         )
     )
 
     assert len(jobs.calls) == 1
-    assert jobs.calls[0].context.reason_code == decision
+    assert jobs.calls[0].context.reason_code == render_reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_decision", "render_reason"),
+    [("approve", "approved"), ("reject", "rejected")],
+)
+async def test_approval_projection_maps_producer_wire_to_renderer_contract(
+    event_decision: str,
+    render_reason: str,
+) -> None:
+    """非空受众的生产审批事件必须生成固定模板可渲染的持久任务。"""
+    Member = _load("NotificationAudienceMember")
+    Handler = _load("NotificationProjectionHandler")
+    jobs = _Jobs()
+    handler = Handler(
+        tenant_id=_TENANT,
+        audience=_Audience((Member(_TENANT, _RECIPIENT),)),
+        jobs=jobs,
+        now=lambda: _NOW,
+        id_factory=new_id,
+    )
+
+    await handler.handle(
+        ApprovalDecided(
+            _TENANT,
+            _NOW,
+            None,
+            new_id("apr"),
+            event_decision,
+            EmployeeId(new_id("emp")),
+        )
+    )
+
+    assert len(jobs.calls) == 1
+    job = jobs.calls[0]
+    rendered = FixedNotificationTemplateRenderer().render(
+        NotificationJobClaim(
+            job.job_id,
+            job.tenant_id,
+            job.recipient,
+            job.priority,
+            job.context,
+            job.source_event,
+            job.dedup_key,
+            new_id("njc"),
+            1,
+        )
+    )
+    assert rendered.context.reason_code == render_reason
 
 
 @pytest.mark.asyncio

@@ -44,9 +44,17 @@ async def test_real_playbook_settings_creates_candidate_and_run(
                 wait_until="networkidle",
             )
             await expect(page.get_by_text("尚未配置 Company Playbook")).to_be_visible()
-            await expect(
-                page.get_by_label("Playbook 联系人补全就绪状态")
-            ).to_contain_text("联系人补全")
+            readiness_message = await page.get_by_label(
+                "Playbook 联系人补全就绪状态"
+            ).locator("strong").inner_text()
+            assert readiness_message in {
+                "尚无任何已激活国家政策，联系人补全保持阻断。",
+                "已激活政策均禁止联系人补全，系统不会调用外部 Provider。",
+                (
+                    "Hunter / Provider 生产组合尚未完成；即使已有允许政策，"
+                    "联系人补全仍保持阻断。"
+                ),
+            }
             desktop_metrics = await page.evaluate(
                 """() => ({
                     viewport: window.innerWidth,

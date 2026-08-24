@@ -22,7 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 
 from apps.api.runtime_config import Phase1RuntimeSettings
-from apps.scheduler_worker.main import WorkerRunResult, run_scheduler_worker
+from apps.scheduler_worker.main import (
+    WorkerRunResult,
+    WorkerStartStatus,
+    run_scheduler_worker,
+)
 from apps.scheduler_worker.runtime import (
     SchedulerDomainDependencies,
     SchedulerRuntimeFactory,
@@ -262,6 +266,32 @@ async def _wait_for_http(
     )
 
 
+async def _shutdown_scheduler(
+    task: asyncio.Task[WorkerRunResult],
+    stop: asyncio.Event,
+    *,
+    timeout_seconds: float = 10,
+) -> None:
+    """请求优雅停止；超时则取消，并验证 worker 确实取得过单副本锁。"""
+    stop.set()
+    try:
+        result = await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        raise AssertionError("scheduler worker 收尾超时，已取消任务") from None
+    if result.status is not WorkerStartStatus.STARTED:
+        raise AssertionError(
+            f"scheduler worker 退出状态无效：{result.status.value}"
+        )
+
+
 async def _seed_employees_and_territories(
     factory: async_sessionmaker[AsyncSession],
     tenant_id: TenantId,
@@ -483,22 +513,36 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
             scheduler_task=scheduler_task,
         )
     finally:
-        if scheduler_stop is not None:
-            scheduler_stop.set()
-        if scheduler_task is not None:
-            await asyncio.wait_for(scheduler_task, timeout=10)
-        if scheduler_context is not None:
-            await scheduler_context.__aexit__(None, None, None)
-        if listener is not None:
-            listener.close()
-        if vite_process is not None:
-            await asyncio.to_thread(vite_process.stop)
-        if api_process is not None:
-            await asyncio.to_thread(api_process.stop)
-        if engine is not None:
-            await engine.dispose()
-        for handle in log_handles:
-            handle.close()
-        temporary.cleanup()
-        if container_started:
-            await asyncio.to_thread(container.stop)
+        try:
+            if scheduler_task is not None and scheduler_stop is not None:
+                await _shutdown_scheduler(scheduler_task, scheduler_stop)
+        finally:
+            try:
+                if scheduler_context is not None:
+                    await scheduler_context.__aexit__(None, None, None)
+            finally:
+                try:
+                    if listener is not None:
+                        listener.close()
+                finally:
+                    try:
+                        if vite_process is not None:
+                            await asyncio.to_thread(vite_process.stop)
+                    finally:
+                        try:
+                            if api_process is not None:
+                                await asyncio.to_thread(api_process.stop)
+                        finally:
+                            try:
+                                if engine is not None:
+                                    await engine.dispose()
+                            finally:
+                                try:
+                                    for handle in log_handles:
+                                        handle.close()
+                                finally:
+                                    try:
+                                        temporary.cleanup()
+                                    finally:
+                                        if container_started:
+                                            await asyncio.to_thread(container.stop)

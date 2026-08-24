@@ -53,7 +53,10 @@ _SUPPORTED_EVENTS = (
     ApprovalDecided,
 )
 _HANDOFF_LEVELS = frozenset({"owner", "manager", "boss", "boss_reminder"})
-_APPROVAL_DECISIONS = frozenset({"approve", "reject"})
+_APPROVAL_DECISION_REASONS = {
+    "approve": "approved",
+    "reject": "rejected",
+}
 
 
 @dataclass(frozen=True)
@@ -287,7 +290,7 @@ def _project_context(
         if (
             not isinstance(event.approval_id, str)
             or _APPROVAL_ID.fullmatch(event.approval_id) is None
-            or event.decision not in _APPROVAL_DECISIONS
+            or event.decision not in _APPROVAL_DECISION_REASONS
             or not isinstance(event.decided_by, str)
             or _EMPLOYEE_ID.fullmatch(event.decided_by) is None
         ):
@@ -297,7 +300,7 @@ def _project_context(
                 NotificationKind.APPROVAL_DECIDED,
                 event.approval_id,
                 str(event.decided_by),
-                event.decision,
+                _APPROVAL_DECISION_REASONS[event.decision],
                 None,
             ),
             NotificationPriority.NORMAL,
