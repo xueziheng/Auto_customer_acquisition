@@ -919,6 +919,121 @@ describe("SettingsCenter country policy workspace", () => {
     },
   );
 
+  it("finishes a terminal 202 before its submitted-country history refresh settles", async () => {
+    let resolveHistory!: (response: Response) => void;
+    const deferredHistory = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    let postCount = 0;
+    const pending = {
+      application_error_code: null,
+      approval_decided_at: null,
+      approval_decided_by: null,
+      approval_id: "apr_deferred_history",
+      approval_state: "pending",
+      version: candidateCountryPolicyVersion,
+    };
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      onHistory: async () => deferredHistory,
+      onPost: async () => {
+        postCount += 1;
+        return jsonResponse({
+          change_set_ref: candidateCountryPolicyVersion.change_set_ref,
+          country_policy_version_id: candidateCountryPolicyVersion.country_policy_version_id,
+          run_id: "run_deferred_history",
+        }, 202);
+      },
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+    }));
+    await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+    fillCountryPolicy(root);
+    countryPolicyForm(root).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await eventually(() => expect(root.textContent).toContain("run_deferred_history"));
+    const submitButton = countryPolicyForm(root).querySelector<HTMLButtonElement>('button[type="submit"]');
+    const countryInput = countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]');
+    const modeButton = root.querySelector<HTMLButtonElement>(
+      'section[aria-labelledby="country-policy-title"] > header button',
+    );
+    expect(submitButton?.textContent?.trim()).toBe("提交国家政策审批候选");
+    expect(submitButton?.disabled).toBe(false);
+    expect(countryInput?.disabled).toBe(false);
+    expect(modeButton?.disabled).toBe(false);
+    expect(postCount).toBe(1);
+
+    resolveHistory(jsonResponse([pending]));
+    await eventually(() => expect(root.textContent).toContain("apr_deferred_history"));
+    expect(postCount).toBe(1);
+  });
+
+  it("finishes a terminal 202 before its overview refresh settles", async () => {
+    let resolveOverview!: (response: Response) => void;
+    const deferredOverview = new Promise<Response>((resolve) => {
+      resolveOverview = resolve;
+    });
+    let overviewCalls = 0;
+    let postCount = 0;
+    const pending = {
+      application_error_code: null,
+      approval_decided_at: null,
+      approval_decided_by: null,
+      approval_id: "apr_while_overview_pending",
+      approval_state: "pending",
+      version: candidateCountryPolicyVersion,
+    };
+    const overviewResponse = {
+      active_policies: [],
+      contact_enrichment: {
+        reason_code: "COUNTRY_POLICY_NOT_CONFIGURED",
+        state: "blocked",
+      },
+      coverage: {
+        active_policy_count: 0,
+        contact_enrichment_allowed_count: 0,
+      },
+    };
+    const { root } = await mountSettings(countryPolicyFetch({
+      activePolicies: [],
+      allowedCount: 0,
+      onOverview: async () => {
+        overviewCalls += 1;
+        return overviewCalls === 1 ? jsonResponse(overviewResponse) : deferredOverview;
+      },
+      onPost: async () => {
+        postCount += 1;
+        return jsonResponse({
+          change_set_ref: candidateCountryPolicyVersion.change_set_ref,
+          country_policy_version_id: candidateCountryPolicyVersion.country_policy_version_id,
+          run_id: "run_deferred_overview",
+        }, 202);
+      },
+      reason: "COUNTRY_POLICY_NOT_CONFIGURED",
+      versions: [pending],
+    }));
+    await eventually(() => expect(root.textContent).toContain("尚无已激活国家政策"));
+    fillCountryPolicy(root);
+    countryPolicyForm(root).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await eventually(() => expect(root.textContent).toContain("apr_while_overview_pending"));
+    expect(root.textContent).toContain("run_deferred_overview");
+    const submitButton = countryPolicyForm(root).querySelector<HTMLButtonElement>('button[type="submit"]');
+    const countryInput = countryPolicyForm(root).querySelector<HTMLInputElement>('[name="country"]');
+    const modeButton = root.querySelector<HTMLButtonElement>(
+      'section[aria-labelledby="country-policy-title"] > header button',
+    );
+    expect(submitButton?.textContent?.trim()).toBe("提交国家政策审批候选");
+    expect(submitButton?.disabled).toBe(false);
+    expect(countryInput?.disabled).toBe(false);
+    expect(modeButton?.disabled).toBe(false);
+    expect(postCount).toBe(1);
+
+    resolveOverview(jsonResponse(overviewResponse));
+    await nextTick();
+    expect(postCount).toBe(1);
+  });
+
   it.each(["late-success", "late-error"] as const)(
     "keeps country B history when country A finishes with %s",
     async (lateOutcome) => {

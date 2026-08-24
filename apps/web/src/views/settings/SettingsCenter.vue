@@ -473,7 +473,7 @@ async function submitCountryProposal(): Promise<void> {
     countryAttemptBody.value = null;
     if (result.response.status === 202 && result.data) {
       countryAccepted.value = result.data;
-      await Promise.allSettled([
+      void Promise.allSettled([
         loadCountryPolicies(undefined, false),
         selectCountry(body.country),
       ]);
@@ -1259,7 +1259,7 @@ onMounted(() => void refreshSettings());
             <button
               class="btn-primary submit-button"
               type="submit"
-              :disabled="countryLoading || countrySubmitting || (!countryAttemptBody && !countryFormValid)"
+              :disabled="countrySubmitting || (!countryAttemptBody && !countryFormValid)"
             >
               {{ countrySubmitting
                 ? "正在提交候选…"
