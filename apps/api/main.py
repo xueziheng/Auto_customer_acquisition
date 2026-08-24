@@ -146,7 +146,12 @@ def create_app(
             allow_origins=list(cors_allowed_origins),
             allow_credentials=False,
             allow_methods=["GET", "POST", "OPTIONS"],
-            allow_headers=["Content-Type", "X-Employee-Id", "X-Tenant-Id"],
+            allow_headers=[
+                "Content-Type",
+                "Idempotency-Key",
+                "X-Employee-Id",
+                "X-Tenant-Id",
+            ],
         )
     # Starlette 后加的 user middleware 位于外层：安全边界必须包住其余 user middleware。
     app.add_middleware(SafeUnhandledExceptionMiddleware)

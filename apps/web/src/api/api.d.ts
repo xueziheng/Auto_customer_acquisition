@@ -1007,15 +1007,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/settings/status": {
+    "/settings/playbook": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["settings_phase1_status"];
+        /** Get Playbook Overview */
+        get: operations["get_playbook_overview_settings_playbook_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/playbook/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose Playbook */
+        post: operations["propose_playbook_settings_playbook_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/playbook/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Playbook Versions */
+        get: operations["list_playbook_versions_settings_playbook_versions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1204,6 +1238,10 @@ export interface components {
         ApprovalView: {
             /** Affected Entities */
             affected_entities: string[];
+            /** Application Error Code */
+            application_error_code?: string | null;
+            /** Applied At */
+            applied_at?: string | null;
             /** Approval Id */
             approval_id: string;
             /** Approval Type */
@@ -1213,6 +1251,8 @@ export interface components {
              * @default false
              */
             can_current_user_decide: boolean;
+            /** Change Set Ref */
+            change_set_ref?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1220,6 +1260,8 @@ export interface components {
             created_at: string;
             /** Decided At */
             decided_at?: string | null;
+            /** Decided By Employee */
+            decided_by_employee?: string | null;
             /** Decided By Name */
             decided_by_name?: string | null;
             /** Decision Note */
@@ -1542,6 +1584,21 @@ export interface components {
             status: "pending" | "waiting_customer" | "fulfilled" | "overdue" | "cancelled";
             /** Verbatim */
             verbatim: string;
+        };
+        /** ContactEnrichmentBlocker */
+        ContactEnrichmentBlocker: {
+            /**
+             * Reason Code
+             * @default COUNTRY_POLICY_NOT_CONFIGURED
+             * @constant
+             */
+            reason_code: "COUNTRY_POLICY_NOT_CONFIGURED";
+            /**
+             * State
+             * @default blocked
+             * @constant
+             */
+            state: "blocked";
         };
         /**
          * ContactPointDetailView
@@ -2764,6 +2821,138 @@ export interface components {
              * @constant
              */
             state: "contract_only";
+        };
+        /** PlaybookActivationView */
+        PlaybookActivationView: {
+            /**
+             * Activated At
+             * Format: date-time
+             */
+            activated_at: string;
+            /** Activated By */
+            activated_by: string;
+            /** Activation Id */
+            activation_id: string;
+            /** Approval Id */
+            approval_id: string;
+            /**
+             * Approved At
+             * Format: date-time
+             */
+            approved_at: string;
+            /** Approved By */
+            approved_by: string;
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Playbook Version Id */
+            playbook_version_id: string;
+        };
+        /** PlaybookActiveView */
+        PlaybookActiveView: {
+            activation: components["schemas"]["PlaybookActivationView"];
+            version: components["schemas"]["PlaybookVersionView"];
+        };
+        /** PlaybookOverview */
+        PlaybookOverview: {
+            active_version: components["schemas"]["PlaybookActiveView"] | null;
+            /** Configured */
+            configured: boolean;
+            /**
+             * @default {
+             *       "reason_code": "COUNTRY_POLICY_NOT_CONFIGURED",
+             *       "state": "blocked"
+             *     }
+             */
+            contact_enrichment: components["schemas"]["ContactEnrichmentBlocker"];
+        };
+        /** PlaybookProposalAccepted */
+        PlaybookProposalAccepted: {
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Playbook Version Id */
+            playbook_version_id: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * PlaybookProposalCreate
+         * @description 不携带租户、身份或幂等键的 Playbook 业务内容。
+         */
+        PlaybookProposalCreate: {
+            /** Approval Requirements */
+            approval_requirements?: string[];
+            /** Company Type */
+            company_type: string;
+            /** Excluded Categories */
+            excluded_categories?: string[];
+            /** Excluded Countries */
+            excluded_countries?: string[];
+            /** Minimum Deal Amount */
+            minimum_deal_amount: string;
+            /** Minimum Deal Currency */
+            minimum_deal_currency: string;
+            /** Monthly Budget Credits */
+            monthly_budget_credits?: number | null;
+            /** Sourcing Regions */
+            sourcing_regions?: string[];
+            /** Supply Capabilities Note */
+            supply_capabilities_note?: string | null;
+        };
+        /** PlaybookVersionStatusView */
+        PlaybookVersionStatusView: {
+            /** Application Error Code */
+            application_error_code: ("PLAYBOOK_BASE_VERSION_CONFLICT" | "PLAYBOOK_APPROVAL_FACT_INVALID") | null;
+            /** Approval Id */
+            approval_id: string | null;
+            /**
+             * Approval State
+             * @enum {string}
+             */
+            approval_state: "proposal_pending_submission" | "pending" | "approved" | "rejected" | "expired" | "applied" | "apply_failed";
+            version: components["schemas"]["PlaybookVersionView"];
+        };
+        /** PlaybookVersionView */
+        PlaybookVersionView: {
+            /** Approval Requirements */
+            approval_requirements: string[];
+            /** Base Content Hash */
+            base_content_hash: string | null;
+            /** Base Version Id */
+            base_version_id: string | null;
+            /** Change Set Ref */
+            change_set_ref: string;
+            /** Company Type */
+            company_type: string;
+            /** Content Hash */
+            content_hash: string;
+            content_provenance: components["schemas"]["Provenance"];
+            /** Excluded Categories */
+            excluded_categories: string[];
+            /** Excluded Countries */
+            excluded_countries: string[];
+            /** Minimum Deal Amount */
+            minimum_deal_amount: string;
+            /** Minimum Deal Currency */
+            minimum_deal_currency: string;
+            /** Monthly Budget Credits */
+            monthly_budget_credits: number | null;
+            /** Playbook Version Id */
+            playbook_version_id: string;
+            /**
+             * Proposed At
+             * Format: date-time
+             */
+            proposed_at: string;
+            /** Proposed By */
+            proposed_by: string;
+            /** Sourcing Regions */
+            sourcing_regions: string[];
+            /** Supply Capabilities Note */
+            supply_capabilities_note: string | null;
+            /** Version Number */
+            version_number: number;
         };
         /** ProgressNote */
         ProgressNote: {
@@ -5721,7 +5910,7 @@ export interface operations {
             };
         };
     };
-    settings_phase1_status: {
+    get_playbook_overview_settings_playbook_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -5736,7 +5925,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["PlaybookOverview"];
                 };
             };
             /** @description 请求参数无效 */
@@ -5748,8 +5937,65 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
-            /** @description Forbidden */
-            403: {
+        };
+    };
+    propose_playbook_settings_playbook_proposals_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybookProposalCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookProposalAccepted"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_playbook_versions_settings_playbook_versions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookVersionStatusView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

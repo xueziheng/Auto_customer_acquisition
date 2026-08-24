@@ -365,10 +365,8 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
         listener = None
         vite_process = _start_process(
             [
-                "npm",
-                "run",
-                "dev",
-                "--",
+                "node",
+                "node_modules/vite/bin/vite.js",
                 "--host",
                 "127.0.0.1",
                 "--port",

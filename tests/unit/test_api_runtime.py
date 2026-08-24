@@ -225,7 +225,10 @@ async def test_runtime_cors_allows_only_configured_origin(runtime_app: FastAPI) 
             "/health/live",
             headers={
                 "Origin": "http://127.0.0.1:4173",
-                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "Content-Type, Idempotency-Key, X-Employee-Id, X-Tenant-Id"
+                ),
                 "X-Tenant-Id": "tenant-runtime",
             },
         )
@@ -240,6 +243,9 @@ async def test_runtime_cors_allows_only_configured_origin(runtime_app: FastAPI) 
     assert allowed.headers["access-control-allow-origin"] == (
         "http://127.0.0.1:4173"
     )
+    assert "idempotency-key" in allowed.headers[
+        "access-control-allow-headers"
+    ].lower()
     assert "access-control-allow-origin" not in denied.headers
 
 
