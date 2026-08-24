@@ -18,6 +18,9 @@ TENANT = TenantId("tenant-playbook-approval")
 PROPOSER = EmployeeId("emp_01K00000000000000000000000")
 APPROVER = EmployeeId("emp_01K00000000000000000000001")
 CHANGE_SET = "playbook:pbv_01K00000000000000000000000:" + "a" * 64
+COUNTRY_POLICY_CHANGE_SET = (
+    "country_policy:cpp_01K00000000000000000000000:" + "b" * 64
+)
 
 
 class _Bus:
@@ -138,6 +141,25 @@ async def _submit(
     )
 
 
+async def _submit_country_policy(service: ApprovalServiceImpl) -> ApprovalId:
+    return await service.submit(
+        TENANT,
+        ApprovalType.COUNTRY_POLICY_CHANGE,
+        "激活 Synthetic Market 国家政策包 v1",
+        {"before": "未配置", "after": "候选版本"},
+        "老板提交了新的合成国家政策包。",
+        BlastRadius(
+            affected_entities=["国家政策包 cpp_01K00000000000000000000000"],
+            if_approved="激活候选版本",
+            if_rejected="保持默认拒绝",
+            reversible=True,
+        ),
+        proposed_by_employee=PROPOSER,
+        owner_employee=PROPOSER,
+        change_set_ref=COUNTRY_POLICY_CHANGE_SET,
+    )
+
+
 @pytest.mark.asyncio
 async def test_playbook_change_is_a_seven_day_mandatory_approval() -> None:
     service = _service()
@@ -194,3 +216,32 @@ async def test_playbook_proposer_and_owner_cannot_self_approve() -> None:
         await service.decide(TENANT, approval_id, True, PROPOSER)
     await service.decide(TENANT, approval_id, True, APPROVER)
     assert (await service.get(TENANT, approval_id)).state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_country_policy_change_has_exact_label_and_seven_day_validity() -> None:
+    service = _service()
+    approval_id = await _submit_country_policy(service)
+    view = await service.get(TENANT, approval_id)
+
+    assert view.type_label == "国家政策包变更"
+    assert view.expires_at - view.created_at == timedelta(days=7)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code",
+    [
+        "COUNTRY_POLICY_BASE_VERSION_CONFLICT",
+        "COUNTRY_POLICY_APPROVAL_FACT_INVALID",
+    ],
+)
+async def test_country_policy_public_apply_failure_codes_are_allowlisted(
+    code: str,
+) -> None:
+    service = _service()
+    approval_id = await _submit_country_policy(service)
+    await service.decide(TENANT, approval_id, True, APPROVER)
+    await service.mark_apply_failed(TENANT, approval_id, code)
+
+    assert (await service.get(TENANT, approval_id)).application_error_code == code

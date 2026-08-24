@@ -87,6 +87,10 @@ ApprovalId = NewType("ApprovalId", str)
 ChangeSetId = NewType("ChangeSetId", str)
 PlaybookVersionId = NewType("PlaybookVersionId", str)
 PlaybookActivationId = NewType("PlaybookActivationId", str)
+CountryPolicyVersionId = NewType("CountryPolicyVersionId", str)
+"""不可变国家政策候选版本 ID；值使用 ``cpp_`` 前缀。"""
+CountryPolicyActivationId = NewType("CountryPolicyActivationId", str)
+"""append-only 国家政策激活事实 ID；值使用 ``cpa_`` 前缀。"""
 NotificationJobId = NewType("NotificationJobId", str)
 NotificationId = NewType("NotificationId", str)
 AuthenticationCheckRequestId = NewType("AuthenticationCheckRequestId", str)

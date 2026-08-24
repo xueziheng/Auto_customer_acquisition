@@ -25,6 +25,7 @@ from shared.errors import ValidationError
 from shared.events.catalog import (
     ComplaintReceived,
     ContactPointVerified,
+    CountryPolicyVersionProposed,
     DomainEvent,
     HandoffAccepted,
     HandoffQueueBacklogged,
@@ -95,6 +96,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "CommitmentCreated",
         "CommitmentOverdue",
         "ContactPointVerified",
+        "CountryPolicyVersionProposed",
         "ReplyReceived",
         "InboundMessageStored",
         "DemandSignalCaptured",
@@ -107,6 +109,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
     assert EVENT_REGISTRY["SuppressionAdded"] is SuppressionAdded
     assert EVENT_REGISTRY["ContactPointVerified"] is ContactPointVerified
+    assert EVENT_REGISTRY["CountryPolicyVersionProposed"] is CountryPolicyVersionProposed
     event_type = getattr(
         importlib.import_module("shared.events.catalog"),
         "AuthenticationCheckRequested",

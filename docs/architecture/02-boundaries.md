@@ -101,6 +101,11 @@ bus.publish(NeedValidated(need_id=..., tenant_id=..., evidence_level=...))
 | `events.py` | 本域发布/订阅哪些事件 | 上层装配处 |
 | `errors.py` | 本域错误类型 | 上层与其他域 |
 
+当前登记的深域还包括 `domains/compliance/`：它独立拥有 tenant-scoped 国家政策版本、字段级
+Provenance、append-only activation 与结构化政策判断。它只依赖 `shared.*`；上层及 Tool
+Gateway 只能使用 `domains.compliance.schemas` 和 `domains.compliance.service`，不得读取其
+models 或 repository。国家政策不并入 Company Playbook，也不在 Gateway 复制一份规则。
+
 **`models.py` 和 `repository.py` 是私有的。** 其他域看到的只能是 `schemas.py` 的 DTO 和 `service.py` 的接口。这样换存储实现、改内部实体都不会外溢。
 
 ---

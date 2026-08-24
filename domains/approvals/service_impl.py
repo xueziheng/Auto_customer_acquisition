@@ -40,10 +40,16 @@ _TYPE_LABELS: dict[ApprovalType, str] = {
     ApprovalType.INDICATIVE_RISK_ACCEPTANCE: "指示价风险接受",
     ApprovalType.MARGIN_FLOOR_OVERRIDE: "最低利润覆盖",
     ApprovalType.PLAYBOOK_CHANGE: "Company Playbook 变更",
+    ApprovalType.COUNTRY_POLICY_CHANGE: "国家政策包变更",
 }
 
 _SAFE_APPLICATION_ERROR_CODES = frozenset(
-    {"PLAYBOOK_BASE_VERSION_CONFLICT", "PLAYBOOK_APPROVAL_FACT_INVALID"}
+    {
+        "COUNTRY_POLICY_APPROVAL_FACT_INVALID",
+        "COUNTRY_POLICY_BASE_VERSION_CONFLICT",
+        "PLAYBOOK_APPROVAL_FACT_INVALID",
+        "PLAYBOOK_BASE_VERSION_CONFLICT",
+    }
 )
 
 

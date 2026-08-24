@@ -22,6 +22,7 @@ from shared.schemas.identifiers import (
     CampaignId,
     ContactPointId,
     ConversationId,
+    CountryPolicyVersionId,
     DemandSignalId,
     EmployeeId,
     HandoffId,
@@ -486,3 +487,16 @@ class ApprovalDecided(DomainEvent):
     approval_id: str = ""
     decision: str = ""
     decided_by: EmployeeId | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class CountryPolicyVersionProposed(DomainEvent):
+    """已持久化一个待独立审批的国家政策候选版本。
+
+    事件只携带工作流关联所需的 metadata，不含政策正文或来源内容。
+    """
+
+    country_policy_version_id: CountryPolicyVersionId
+    country_key: str
+    content_hash: str
+    proposed_by: EmployeeId

@@ -40,6 +40,7 @@ from shared.events.catalog import (
     CommitmentOverdue,
     ComplaintReceived,
     ContactPointVerified,
+    CountryPolicyVersionProposed,
     DemandSignalCaptured,
     DirectiveActivated,
     DomainEvent,
@@ -87,6 +88,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "CommitmentOverdue": CommitmentOverdue,
     # prospecting 验证状态首次进入 VERIFIED 的 metadata-only 事件。
     "ContactPointVerified": ContactPointVerified,
+    "CountryPolicyVersionProposed": CountryPolicyVersionProposed,
     # demand 信号捕获即发布（切片 7 producer）：metadata-only（signal_id/
     # entity_name/signal_type/source_url），不含 raw_observation/possible_need
     "DemandSignalCaptured": DemandSignalCaptured,

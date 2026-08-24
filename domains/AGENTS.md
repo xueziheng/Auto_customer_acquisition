@@ -39,7 +39,7 @@ domains/<name>/
 
 `models.py` 和 `repository.py` 是内部实现，**其他域不得 import**。跨域只能碰 `schemas.py` 和 `service.py`。
 
-## 十六个域
+## 十七个域
 
 **深（核心链路与强约束，接口写全）**
 
@@ -54,6 +54,7 @@ domains/<name>/
 | `sending_identity/` | 发件身份隔离、预热、认证门禁、熔断 |
 | `directives/` | 老板指令解析结果、版本化 |
 | `approvals/` | 审批包、必须审批的变更注册表 |
+| `compliance/` | 国家政策包、字段级 Provenance、独立审批与精确 action 判断 |
 
 **浅（接口骨架 + 关键枚举写全）**
 
