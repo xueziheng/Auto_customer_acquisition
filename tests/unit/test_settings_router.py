@@ -973,3 +973,12 @@ def test_router_has_no_country_policy_activate_update_or_delete_route() -> None:
         "/settings/country-policies/versions": {"get"},
         "/settings/country-policies/proposals": {"post"},
     }
+
+
+def test_country_policy_openapi_exposes_safe_source_type() -> None:
+    schema = _app(compliance=_Compliance()).openapi()
+    components = schema["components"]["schemas"]
+
+    assert components["CountryPolicyFieldSourceInput"]["properties"][
+        "source_type"
+    ].get("enum") == ["web_page", "upload", "employee_input"]

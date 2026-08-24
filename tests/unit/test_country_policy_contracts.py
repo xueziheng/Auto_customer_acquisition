@@ -149,6 +149,34 @@ def test_policy_constructs_a_separate_safe_source_for_every_decision_field() -> 
     assert len({source.source_id for source in proposal.field_sources.values()}) == 9
 
 
+def test_country_policy_source_contract_exposes_only_three_safe_json_values() -> None:
+    source_schema = CountryPolicyFieldSourceInput.model_json_schema()["properties"]
+
+    assert source_schema["source_type"].get("enum") == [
+        "web_page",
+        "upload",
+        "employee_input",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type",
+    [
+        SourceType.CONVERSATION,
+        SourceType.AGENT_INFERENCE,
+        SourceType.EXTERNAL_API,
+    ],
+)
+def test_country_policy_source_runtime_rejects_all_other_source_types(
+    source_type: SourceType,
+) -> None:
+    with pytest.raises(PydanticValidationError):
+        CountryPolicyFieldSourceInput(
+            source_type=source_type,
+            source_id="unsafe:source:1",
+        )
+
+
 def test_policy_rejects_untrusted_sources_and_identity_facts() -> None:
     agent_payload = valid_payload()
     sources = agent_payload["field_sources"]

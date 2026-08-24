@@ -6,6 +6,7 @@ import re
 import unicodedata
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -25,6 +26,11 @@ _COUNTRY_POLICY_VERSION_ID_PATTERN = re.compile(r"cpp_[0-7][0-9A-HJKMNP-TV-Z]{25
 _TRUSTED_SOURCE_TYPES = frozenset(
     {SourceType.WEB_PAGE, SourceType.UPLOAD, SourceType.EMPLOYEE_INPUT}
 )
+CountryPolicySourceType = Literal[
+    SourceType.WEB_PAGE,
+    SourceType.UPLOAD,
+    SourceType.EMPLOYEE_INPUT,
+]
 
 
 def _has_control(value: str) -> bool:
@@ -86,7 +92,7 @@ class CountryPolicyFieldSourceInput(BaseModel):
 
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
-    source_type: SourceType
+    source_type: CountryPolicySourceType
     source_id: str
     source_url: str | None = None
     page_hash: str | None = None
@@ -353,6 +359,7 @@ __all__ = (
     "CountryPolicyFieldSourceInput",
     "CountryPolicyProposalCreate",
     "CountryPolicyProposalResult",
+    "CountryPolicySourceType",
     "CountryPolicyVersionView",
     "normalize_country_key",
 )
