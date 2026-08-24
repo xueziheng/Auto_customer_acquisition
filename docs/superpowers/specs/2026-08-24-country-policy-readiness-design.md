@@ -1,9 +1,9 @@
 # 国家政策包持久化与就绪设计
 
-> 日期：2026-08-24  
+> 日期：2026-08-24
 > 输入：`AGENTS.md`、`HANDBOOK.md`、`GLOSSARY.md`、
 > `docs/architecture/02-boundaries.md`、`04-tool-gateway.md`、
-> `08-compliance.md`、Hunter 联系人 Provider 规格、Company Playbook 已交付实现  
+> `08-compliance.md`、Hunter 联系人 Provider 规格、Company Playbook 已交付实现
 > 范围：Phase 1 国家政策包的版本化配置、独立审批、激活、读取、Settings 管理与真实就绪状态
 
 ## 1. 背景与问题
@@ -91,7 +91,7 @@ Company Playbook 已成为不可变、需独立审批后生效的真实配置，
 | `local_representative_required` | strict bool | 是否要求本地代表 |
 | `requirements` | 去重排序的固定 action codes，最多 100 项 | 具体执行要求 |
 | `notes` | 1..4000 字符 | 人工可读说明，不作为放行逻辑 |
-| `field_provenance` | 决策字段到 `Provenance` 的精确映射 | 字段级来源与确认事实 |
+| `field_sources` | 决策字段到安全来源输入的精确映射 | 服务端生成字段级 Provenance |
 
 `requirements` 仅接受 `[a-z][a-z0-9._:-]{0,127}`，不能通过自由文本创建隐含逻辑。需要数值
 的要求必须使用显式字段，例如退订天数不能编码成 `honor_opt_out_within_days:10` 后再解析。
@@ -112,9 +112,20 @@ local_representative_required
 requirements
 ```
 
-Provenance 必须来自人工录入或受信资料提取，带安全 `source_id`、提取者、确认人和 UTC 时间。
-每项都必须 `is_human_confirmed=true`，且 `source_type` 不得为 `AGENT_INFERENCE`；未经人工
-确认的提取结果不能控制合规放行。
+请求只允许为每个字段提交 `source_type`、安全 `source_id`、可选 `source_url` 与
+`page_hash`；不接受 `extracted_by`、`extracted_at`、`confirmed_by` 或 `confirmed_at`。
+`source_type` 只允许 `WEB_PAGE`、`UPLOAD`、`EMPLOYEE_INPUT`，不得为
+`AGENT_INFERENCE` 或 `EXTERNAL_API`。
+
+`source_id` 必须匹配 `[A-Za-z][A-Za-z0-9._:-]{0,199}`。`WEB_PAGE` 必须同时提供不含
+userinfo、长度不超过 2048 的 HTTPS URL 与 64 位小写十六进制 `page_hash`；
+`UPLOAD`、`EMPLOYEE_INPUT` 必须省略这两个网页专用字段。这样“安全来源”是可执行的输入
+边界，而不是依赖调用者自觉的描述。
+
+合规服务使用受信 actor 和服务器 UTC 时间生成 Provenance：`extracted_by` 固定为
+`human:<actor_id>`，`extracted_at`、`confirmed_at` 固定为版本 `proposed_at`，
+`confirmed_by` 固定为提交员工。请求体不能伪造身份或时间。每项因此都满足
+`is_human_confirmed=true`；未经人工确认的提取结果不能控制合规放行。
 `source_id` 只能是内部 artifact/法律评估引用等安全 ID，不在政策表保存网页全文、凭证、PII
 或任意异常文本。`notes` 是解释性内容，不参与 Tool Gateway 放行，也不替代字段来源。
 
@@ -147,8 +158,9 @@ CountryPolicyActivationId   cpa_<ULID>
 
 ### 6.2 内容哈希与变更集
 
-对规范化、稳定排序后的全部政策内容和字段 Provenance 生成 SHA-256。不得包含数据库创建时间
-或随机 ID。change-set reference 固定为：
+对规范化、稳定排序后的全部政策内容和安全字段来源输入生成 SHA-256。服务端派生的
+`extracted_by/at`、`confirmed_by/at`、数据库创建时间和随机 ID 不进入哈希，保证同一
+幂等请求跨时间重试仍得到相同内容哈希。change-set reference 固定为：
 
 ```text
 country_policy:<version_id>:<content_hash>
@@ -257,7 +269,7 @@ change-set reference。API 不提供 activate、update、delete、force、apply-
 
 - 空状态明确说明系统没有法律默认值；
 - 生效政策按国家键列出，显示允许/禁止 action 和 activation 时间；
-- 新建与修订表单要求每个决策字段填写安全来源引用及确认事实；
+- 新建与修订表单要求每个决策字段填写安全来源；确认身份和时间由服务端绑定并回显；
 - 提交前展示 base/current/candidate 差异；
 - 历史记录显示审批状态、提交者、批准者、版本和来源入口；
 - 无删除、直接激活或推荐模板按钮；
@@ -323,7 +335,7 @@ lock 或等价事务锁串行化，防止两个批准版本同时成为当前版
 严格按 RED → GREEN → REFACTOR：
 
 1. **契约单测**：国家规范化、strict bool、全部字段必填、requirement code、退订天数边界、
-   每字段 Provenance、无概率字段和稳定内容哈希。
+   每字段安全来源、拒绝身份/时间输入、服务端 Provenance、无概率字段和稳定内容哈希。
 2. **服务单测**：首次提案、修订、幂等冲突、租户权限、未知国家判定、明确禁止判定、窄审批
    事实、自批边界和陈旧 base 冲突。
 3. **Postgres 集成**：迁移结构、租户复合 FK、不可变 trigger、并发版本号、activation 串行、
