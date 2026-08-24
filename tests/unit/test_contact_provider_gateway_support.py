@@ -8,6 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from domains.compliance.schemas import (
+    CountryPolicyAction,
+    CountryPolicyDecision,
+)
 from domains.outreach.schemas import SuppressionTarget
 from domains.prospecting.schemas import (
     ContactPointKind,
@@ -17,6 +21,7 @@ from domains.prospecting.schemas import (
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
+    CountryPolicyVersionId,
     NeedHypothesisId,
     ProspectAccountId,
     ProspectContactId,
@@ -102,17 +107,42 @@ class _DiscoveryReader:
 
 
 class _CountryReader:
-    def __init__(self, allowed: bool | BaseException) -> None:
-        self.allowed = allowed
+    def __init__(self, decision: CountryPolicyDecision | object | BaseException) -> None:
+        self.result = decision
         self.calls: list[tuple[object, ...]] = []
 
-    async def allows_contact_enrichment(
-        self, tenant_id: TenantId, country: str
-    ) -> bool:
-        self.calls.append((tenant_id, country))
-        if isinstance(self.allowed, BaseException):
-            raise self.allowed
-        return self.allowed
+    async def decision(
+        self,
+        tenant_id: TenantId,
+        country: str,
+        action: CountryPolicyAction,
+    ) -> CountryPolicyDecision:
+        self.calls.append((tenant_id, country, action))
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result  # type: ignore[return-value]
+
+
+def _country_decision(
+    *,
+    country_key: str = "synthetic market",
+    action: CountryPolicyAction = CountryPolicyAction.CONTACT_ENRICHMENT,
+    configured: bool = True,
+    allowed: bool = True,
+) -> CountryPolicyDecision:
+    return CountryPolicyDecision(
+        country_key=country_key,
+        action=action,
+        configured=configured,
+        allowed=allowed,
+        active_version_id=(
+            CountryPolicyVersionId("cpp_01J00000000000000000000000")
+            if configured
+            else None
+        ),
+        content_hash="a" * 64 if configured else None,
+        requirements=("human_review",) if configured else (),
+    )
 
 
 class _PointReader:
@@ -249,22 +279,162 @@ async def test_playbook_rejects_mismatched_returned_binding() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_country_defaults_deny_and_dependency_failure_fails_closed() -> None:
+async def test_unknown_country_rejects_not_configured_before_handler() -> None:
     preflight = ContactDiscoveryPreflight(
-        TENANT, HYPOTHESIS, ACCOUNT, "category", "ZZ", "example.com"
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic Market",
+        "example.com",
     )
     state = _state("contact.enrich")
     state.preflight = preflight
-    denied = ContactCountryPolicyCheck(_CountryReader(False))
-    rejection = await denied.check(_ctx("contact.enrich", {}), state)
+    reader = _CountryReader(
+        _country_decision(configured=False, allowed=False)
+    )
+    rejection = await ContactCountryPolicyCheck(reader).check(
+        _ctx("contact.enrich", {}), state
+    )
     assert rejection is not None
-    assert rejection.rule == "country_policy:contact_enrichment"
+    assert rejection.stage == "country_policy"
+    assert rejection.rule == "country_policy:not_configured"
+    assert reader.calls == [
+        (
+            TENANT,
+            "synthetic market",
+            CountryPolicyAction.CONTACT_ENRICHMENT,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_configured_denial_rejects_action_not_allowed_before_handler() -> None:
+    state = _state("contact.enrich")
+    state.preflight = ContactDiscoveryPreflight(
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic Market",
+        "example.com",
+    )
+    rejection = await ContactCountryPolicyCheck(
+        _CountryReader(_country_decision(allowed=False))
+    ).check(_ctx("contact.enrich", {}), state)
+    assert rejection is not None
+    assert rejection.stage == "country_policy"
+    assert rejection.rule == "country_policy:action_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_allowed_decision_with_exact_version_and_hash_continues() -> None:
+    state = _state("contact.enrich")
+    state.preflight = ContactDiscoveryPreflight(
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic   Market",
+        "example.com",
+    )
+    reader = _CountryReader(_country_decision())
+    assert await ContactCountryPolicyCheck(reader).check(
+        _ctx("contact.enrich", {}), state
+    ) is None
+    assert reader.calls == [
+        (
+            TENANT,
+            "synthetic market",
+            CountryPolicyAction.CONTACT_ENRICHMENT,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision",
+    [
+        _country_decision(country_key="another market"),
+        _country_decision(action=CountryPolicyAction.PUBLIC_RESEARCH),
+        CountryPolicyDecision.model_construct(
+            country_key="synthetic market",
+            action=CountryPolicyAction.CONTACT_ENRICHMENT,
+            configured=True,
+            allowed=True,
+            active_version_id=None,
+            content_hash=None,
+            requirements=(),
+        ),
+        object(),
+    ],
+)
+async def test_mismatched_country_or_action_in_decision_is_transient_failure(
+    decision: object,
+) -> None:
+    state = _state("contact.enrich")
+    state.preflight = ContactDiscoveryPreflight(
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic Market",
+        "example.com",
+    )
+    with pytest.raises(ToolGatewayError) as captured:
+        await ContactCountryPolicyCheck(_CountryReader(decision)).check(
+            _ctx("contact.enrich", {}), state
+        )
+    assert captured.value.category is ToolErrorCategory.PROVIDER_TRANSIENT
+
+
+@pytest.mark.asyncio
+async def test_reader_exception_is_transient_failure_not_denial() -> None:
+    state = _state("contact.enrich")
+    state.preflight = ContactDiscoveryPreflight(
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic Market",
+        "example.com",
+    )
 
     failed = ContactCountryPolicyCheck(_CountryReader(RuntimeError("private")))
     with pytest.raises(ToolGatewayError) as captured:
         await failed.check(_ctx("contact.enrich", {}), state)
     assert captured.value.category is ToolErrorCategory.PROVIDER_TRANSIENT
     assert "private" not in repr(captured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision",
+    [
+        _country_decision(configured=False, allowed=False),
+        _country_decision(allowed=False),
+    ],
+)
+async def test_rejected_path_calls_provider_transport_zero_times(
+    decision: CountryPolicyDecision,
+) -> None:
+    state = _state("contact.enrich")
+    state.preflight = ContactDiscoveryPreflight(
+        TENANT,
+        HYPOTHESIS,
+        ACCOUNT,
+        "category",
+        "Synthetic Market",
+        "example.com",
+    )
+    provider_calls = 0
+    rejection = await ContactCountryPolicyCheck(_CountryReader(decision)).check(
+        _ctx("contact.enrich", {}), state
+    )
+    if rejection is None:
+        provider_calls += 1
+    assert rejection is not None
+    assert provider_calls == 0
 
 
 @pytest.mark.asyncio

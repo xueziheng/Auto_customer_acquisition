@@ -27,23 +27,18 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId, UserId, new_id
 from tool_gateway.checks.contact_provider import (
     ContactCountryPolicyCheck,
-    ContactCountryPolicyReader,
     ContactDiscoveryPolicyReader,
     ContactEnrichmentPlaybookCheck,
     ContactProviderRateLimitCheck,
     ContactProviderSuppressionCheck,
     ContactResourceTenantCheck,
+    CountryPolicyDecisionReader,
     InMemoryHunterQuotaGuard,
     ProviderQuotaGuard,
 )
 from tool_gateway.checks.permission import PermissionCheck
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.contact_enrichment import (
-    MANIFEST as CONTACT_ENRICH_MANIFEST,
-)
-from tool_gateway.handlers.contact_enrichment import (
-    ContactEnrichmentHandler,
-    HunterProviderContactEnricher,
     ToolGatewayContactEnricher,
 )
 from tool_gateway.handlers.contact_verification import (
@@ -114,10 +109,9 @@ class _OutreachContactSuppressionReader:
 
 @dataclass(frozen=True)
 class HunterContactComposition:
-    """启用 Hunter 所需的显式政策、凭证边界与固定主机传输。"""
+    """启用 Hunter 验证所需的凭证边界与固定主机传输。"""
 
     discovery_policy: ContactDiscoveryPolicyReader
-    country_policy: ContactCountryPolicyReader
     secret_resolver: HunterSecretResolver
     secret_ref: str
     transport: HunterHttpTransport
@@ -126,7 +120,6 @@ class HunterContactComposition:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.discovery_policy, ContactDiscoveryPolicyReader)
-            or not isinstance(self.country_policy, ContactCountryPolicyReader)
             or not isinstance(self.secret_resolver, HunterSecretResolver)
             or not isinstance(self.secret_ref, str)
             or not self.secret_ref
@@ -154,11 +147,12 @@ def build_hunter_contact_tools(
     fingerprints: HmacFingerprintProvider,
     outreach: OutreachService,
     prospecting: ProspectingService,
+    country_policy: CountryPolicyDecisionReader,
     composition: HunterContactComposition,
     lease_duration: timedelta,
     now: Callable[[], datetime],
 ) -> HunterContactTools:
-    """注册双工具及完整检查管线，返回 workflow-facing typed adapters。"""
+    """只注册验证工具；补全 adapter 固定走未注册的 fail-closed Gateway。"""
     enrichment_slot = ContextLocalSingleResultSlot[ContactEnrichmentResult](
         "ceb", new_id
     )
@@ -176,14 +170,6 @@ def build_hunter_contact_tools(
 
     registry = ToolRegistry()
     registry.register(
-        CONTACT_ENRICH_MANIFEST,
-        ContactEnrichmentHandler(
-            HunterProviderContactEnricher(connector_factory, bound_secrets),
-            enrichment_slot,
-            fingerprints,
-        ),
-    )
-    registry.register(
         CONTACT_VERIFY_MANIFEST,
         ContactVerificationHandler(
             HunterProviderContactVerifier(connector_factory, bound_secrets),
@@ -198,11 +184,7 @@ def build_hunter_contact_tools(
         return (
             ctx.tenant_id == tenant_id
             and ctx.user_id == tool_user
-            and ctx.tool_id
-            in {
-                CONTACT_ENRICH_MANIFEST.tool_id,
-                CONTACT_VERIFY_MANIFEST.tool_id,
-            }
+            and ctx.tool_id == CONTACT_VERIFY_MANIFEST.tool_id
         )
 
     suppression = _OutreachContactSuppressionReader(outreach)
@@ -211,7 +193,7 @@ def build_hunter_contact_tools(
         "tenant": ContactResourceTenantCheck(),
         "permission": PermissionCheck(authorize),
         "playbook": ContactEnrichmentPlaybookCheck(composition.discovery_policy),
-        "country_policy": ContactCountryPolicyCheck(composition.country_policy),
+        "country_policy": ContactCountryPolicyCheck(country_policy),
         "suppression": ContactProviderSuppressionCheck(
             prospecting,
             suppression,
@@ -235,6 +217,10 @@ def build_hunter_contact_tools(
         now=now,
         id_factory=new_id,
     )
+    if tuple(item.tool_id for item in registry.list_manifests()) != (
+        CONTACT_VERIFY_MANIFEST.tool_id,
+    ):
+        raise ValidationError("scheduler Hunter registry 无效")
     return HunterContactTools(
         enricher=ToolGatewayContactEnricher(gateway, enrichment_slot, tool_user),
         verifier=ToolGatewayContactVerifier(gateway, verification_slot, tool_user),

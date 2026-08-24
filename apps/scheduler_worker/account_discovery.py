@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from domains.compliance.permissions import ComplianceActor, ComplianceScope
+from domains.compliance.schemas import CountryPolicyAction, CountryPolicyDecision
+from domains.compliance.service import ComplianceService
 from domains.demand.service import DemandService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
@@ -165,39 +168,43 @@ class DemandProspectingContactDiscoveryPolicy:
         )
 
 
-class ConfiguredContactCountryPolicy:
-    """部署层显式允许的国家集合；没有配置的国家固定拒绝。"""
+class ComplianceCountryPolicyDecisionReader:
+    """以显式 SYSTEM 身份调用合规域公共决策接口。"""
 
-    def __init__(self, tenant_id: TenantId, allowed_countries: tuple[str, ...]) -> None:
-        countries = frozenset(allowed_countries)
+    def __init__(
+        self,
+        compliance: ComplianceService,
+        actor: ComplianceActor,
+    ) -> None:
         if (
-            not isinstance(tenant_id, str)
-            or not tenant_id
-            or not countries
-            or len(countries) > 100
-            or any(
-                not isinstance(country, str)
-                or not country
-                or country != country.strip()
-                or len(country) > 64
-                for country in countries
-            )
+            not callable(getattr(compliance, "get_country_policy_decision", None))
+            or not isinstance(actor, ComplianceActor)
+            or actor.scope is not ComplianceScope.SYSTEM
+            or actor.role != "system"
         ):
-            raise ValidationError("联系人国家政策配置无效")
-        self._tenant_id = tenant_id
-        self._allowed_countries = countries
+            raise ValidationError("scheduler 国家政策决策依赖无效")
+        self._compliance = compliance
+        self._actor = actor
 
-    async def allows_contact_enrichment(
-        self, tenant_id: TenantId, country: str
-    ) -> bool:
-        if tenant_id != self._tenant_id:
-            raise TenantIsolationViolation("联系人国家政策租户不匹配")
-        return country in self._allowed_countries
+    async def decision(
+        self,
+        tenant_id: TenantId,
+        country: str,
+        action: CountryPolicyAction,
+    ) -> CountryPolicyDecision:
+        if tenant_id != self._actor.tenant_id:
+            raise TenantIsolationViolation("scheduler 国家政策租户不匹配")
+        return await self._compliance.get_country_policy_decision(
+            tenant_id,
+            country,
+            action,
+            actor=self._actor,
+        )
 
 
 __all__ = (
     "BossAccountDiscoveryActorResolver",
-    "ConfiguredContactCountryPolicy",
+    "ComplianceCountryPolicyDecisionReader",
     "DemandAccountDiscoveryTaskReader",
     "DemandProspectingContactDiscoveryPolicy",
 )

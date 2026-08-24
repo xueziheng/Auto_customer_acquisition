@@ -20,12 +20,12 @@ from infra.db.tables import ToolCallRow, WorkflowRunRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.errors import ValidationError
 from shared.schemas.identifiers import RunId, TenantId, UserId, new_id
+from tool_gateway.checks.contact_provider import CountryPolicyDecisionReader
 from tool_gateway.checks.permission import PermissionCheck
 from tool_gateway.checks.web_discovery import (
     WebProviderQuotaGuard,
     WebProviderRateLimitCheck,
     WebResearchCountryPolicyCheck,
-    WebResearchCountryPolicyReader,
     WebResearchPlaybookCheck,
     WebResearchPlaybookReader,
     WebResourceTenantCheck,
@@ -175,10 +175,9 @@ class PostgresWebProviderQuotaGuard:
 
 @dataclass(frozen=True)
 class WebDiscoveryToolComposition:
-    """启用公开搜索所需的显式政策、凭证边界、传输与证据存储。"""
+    """启用公开搜索所需的 Playbook、凭证、传输与证据存储。"""
 
     playbook: WebResearchPlaybookReader
-    country_policy: WebResearchCountryPolicyReader
     secret_resolver: WebSearchSecretResolver
     secret_ref: str
     search_transport: BraveSearchTransport
@@ -188,7 +187,6 @@ class WebDiscoveryToolComposition:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.playbook, WebResearchPlaybookReader)
-            or not isinstance(self.country_policy, WebResearchCountryPolicyReader)
             or not isinstance(self.secret_resolver, WebSearchSecretResolver)
             or not isinstance(self.secret_ref, str)
             or not self.secret_ref
@@ -213,6 +211,7 @@ def build_web_discovery_tools(
     tool_user: UserId,
     fingerprints: HmacFingerprintProvider,
     composition: WebDiscoveryToolComposition,
+    country_policy: CountryPolicyDecisionReader,
     lease_duration: timedelta,
     now: Callable[[], datetime],
 ) -> WebDiscoveryTools:
@@ -268,7 +267,7 @@ def build_web_discovery_tools(
         "permission": PermissionCheck(authorize),
         "playbook": WebResearchPlaybookCheck(composition.playbook, search_slot),
         "country_policy": WebResearchCountryPolicyCheck(
-            composition.country_policy
+            country_policy
         ),
         "rate_limit": WebProviderRateLimitCheck(quota, now=now),
     }

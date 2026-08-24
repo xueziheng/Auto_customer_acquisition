@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
+from domains.compliance.schemas import (
+    CountryPolicyAction,
+    CountryPolicyDecision,
+    normalize_country_key,
+)
 from domains.outreach.schemas import SuppressionTarget
 from domains.prospecting.schemas import ContactPointView
 from shared.errors import ValidationError
@@ -86,12 +91,13 @@ class ContactDiscoveryPolicyReader(Protocol):
 
 
 @runtime_checkable
-class ContactCountryPolicyReader(Protocol):
-    async def allows_contact_enrichment(
+class CountryPolicyDecisionReader(Protocol):
+    async def decision(
         self,
         tenant_id: TenantId,
         country: str,
-    ) -> bool:
+        action: CountryPolicyAction,
+    ) -> CountryPolicyDecision:
         raise NotImplementedError
 
 
@@ -207,8 +213,8 @@ class ContactEnrichmentPlaybookCheck:
 class ContactCountryPolicyCheck:
     name = "country_policy"
 
-    def __init__(self, reader: ContactCountryPolicyReader) -> None:
-        if not isinstance(reader, ContactCountryPolicyReader):
+    def __init__(self, reader: CountryPolicyDecisionReader) -> None:
+        if not isinstance(reader, CountryPolicyDecisionReader):
             raise ValidationError("联系人国家政策读取器无效")
         self._reader = reader
 
@@ -223,22 +229,47 @@ class ContactCountryPolicyCheck:
             or preflight.tenant_id != ctx.tenant_id
         ):
             return _preflight_rejection(self.name)
-        try:
-            allowed = await self._reader.allows_contact_enrichment(
-                ctx.tenant_id,
-                preflight.country,
+        decision = await validated_country_policy_decision(
+            self._reader,
+            ctx.tenant_id,
+            preflight.country,
+            CountryPolicyAction.CONTACT_ENRICHMENT,
+        )
+        if not decision.configured:
+            return CheckRejection(
+                self.name,
+                "country_policy:not_configured",
+                "目标国家没有已生效的政策包",
             )
-        except Exception:  # noqa: BLE001 -- 政策读取失败不得默认放行
-            raise ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT) from None
-        if allowed is True:
+        if decision.allowed:
             return None
-        if allowed is not False:
-            raise ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT)
         return CheckRejection(
             self.name,
-            "country_policy:contact_enrichment",
-            "目标国家未配置允许联系人补全的政策包",
+            "country_policy:action_not_allowed",
+            "目标国家政策不允许联系人补全",
         )
+
+
+async def validated_country_policy_decision(
+    reader: CountryPolicyDecisionReader,
+    tenant_id: TenantId,
+    country: str,
+    action: CountryPolicyAction,
+) -> CountryPolicyDecision:
+    """读取并重新校验公共 DTO；任何依赖或形状异常都按临时故障关闭。"""
+    try:
+        country_key = normalize_country_key(country)
+        result = await reader.decision(tenant_id, country_key, action)
+        if type(result) is not CountryPolicyDecision:
+            raise ValueError("country policy decision model mismatch")
+        decision = CountryPolicyDecision.model_validate(
+            result.model_dump(mode="python")
+        )
+        if decision.country_key != country_key or decision.action is not action:
+            raise ValueError("country policy decision binding mismatch")
+        return decision
+    except Exception:  # noqa: BLE001 -- reader/DTO 细节不得穿透 Gateway
+        raise ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT) from None
 
 
 class ContactProviderSuppressionCheck:
@@ -464,7 +495,6 @@ def _utc(value: object) -> bool:
 
 __all__ = (
     "ContactCountryPolicyCheck",
-    "ContactCountryPolicyReader",
     "ContactDiscoveryPolicyReader",
     "ContactDiscoveryPreflight",
     "ContactEnrichmentPlaybookCheck",
@@ -474,6 +504,8 @@ __all__ = (
     "ContactResourceTenantCheck",
     "ContactSuppressionReader",
     "ContactVerificationPreflight",
+    "CountryPolicyDecisionReader",
     "InMemoryHunterQuotaGuard",
     "ProviderQuotaGuard",
+    "validated_country_policy_decision",
 )

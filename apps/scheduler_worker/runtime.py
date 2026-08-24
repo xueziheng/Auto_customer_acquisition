@@ -227,6 +227,7 @@ from workflows.sending_identity_auth.flow import (
     register_sending_identity_auth,
 )
 
+from .account_discovery import ComplianceCountryPolicyDecisionReader
 from .campaign_driver import (
     CampaignSendDriver,
     SchedulerCampaignPermissionCheck,
@@ -904,6 +905,15 @@ class SchedulerRuntimeFactory:
                 Phase1ComplianceAuthorizer(config.tenant_id),
                 now=self._now,
             )
+            country_policy_reader = ComplianceCountryPolicyDecisionReader(
+                country_policy,
+                ComplianceActor(
+                    actor_id="system:scheduler-country-policy",
+                    tenant_id=config.tenant_id,
+                    scope=ComplianceScope.SYSTEM,
+                    role="system",
+                ),
+            )
             country_policy_handlers = build_country_policy_change_handlers(
                 country_policy,
                 change_approvals,
@@ -1020,6 +1030,7 @@ class SchedulerRuntimeFactory:
                         fingerprints=fingerprints,
                         outreach=campaign_outreach,
                         prospecting=account.prospecting,
+                        country_policy=country_policy_reader,
                         composition=account.hunter,
                         lease_duration=timedelta(seconds=config.tool_lease_seconds),
                         now=self._now,
@@ -1052,6 +1063,7 @@ class SchedulerRuntimeFactory:
                     tool_user=tool_user,
                     fingerprints=fingerprints,
                     composition=demand_discovery.web_tools,
+                    country_policy=country_policy_reader,
                     lease_duration=timedelta(
                         seconds=config.tool_lease_seconds
                     ),

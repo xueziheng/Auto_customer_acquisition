@@ -19,7 +19,8 @@ tool_gateway/
 │   ├── tenant.py        租户一致性
 │   ├── permission.py    RBAC + ABAC
 │   ├── playbook.py      公司规则（排除品类/国家）
-│   ├── country_policy.py 国家政策包
+│   ├── contact_provider.py 联系人能力的结构化国家政策判定
+│   ├── web_discovery.py   公开研究能力的结构化国家政策判定
 │   ├── suppression.py   抑制名单
 │   ├── approval.py      审批状态
 │   ├── idempotency.py   幂等
@@ -104,6 +105,10 @@ page 只能在同一调用栈内由受信 worker 消费。
 Hunter 原始响应和 API Key 不得进入 ledger、outbox、日志或模型上下文。Provider 的
 `score` / `confidence` 在 connector 边界直接丢弃，绝不能当作业务置信度。
 
+联系人补全与公开研究的国家政策检查只消费 `domains.compliance` 的公共
+`CountryPolicyDecision` 契约；Gateway 不读政策仓储、不解释法律字段、不维护部署 allowlist。
+未知国家与明确禁止使用固定拒绝原因，reader 故障或返回绑定不一致必须按临时故障关闭。
+
 `contact.verify` 对四种结果都保存检查时间和固定成本备注，并仅在
 `now < checked_at + 30 days` 时命中缓存；缓存命中不解析凭证、不调用 Hunter、也不预留
 Provider 配额。付费调用出现结果不确定时固定进入 `reconciliation_required`，禁止自动重试。
@@ -136,7 +141,8 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
 ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部
 固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、Hunter 联系人插件的
-离线实现、租约恢复与人工对账边界。Hunter 测试不使用真实 Key 或网络；生产
-`contact.enrich` 尚未注册，必须先配置真实国家政策包与 Playbook composition。账户发现
+离线实现、租约恢复与人工对账边界。Hunter 测试不使用真实 Key 或网络；真实国家政策 reader
+已经接线，但生产 `contact.enrich` 仍未注册，必须另行完成 Playbook、凭证与 Provider
+运维验收后的生产 composition。账户发现
 持久化/workflow、Campaign 接线和 UI 仍未完成。成本钱包仍是 Phase 3 挂载点；不在本阶段
 实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。

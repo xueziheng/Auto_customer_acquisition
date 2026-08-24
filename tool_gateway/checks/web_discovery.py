@@ -8,8 +8,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from domains.compliance.schemas import CountryPolicyAction
 from shared.errors import PolicyViolation, ValidationError
 from shared.schemas.identifiers import RunId, TenantId
+from tool_gateway.checks.contact_provider import (
+    CountryPolicyDecisionReader,
+    validated_country_policy_decision,
+)
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.pipeline import (
     CheckRejection,
@@ -78,15 +83,6 @@ class WebResearchPlaybookReader(Protocol):
         self,
         tenant_id: TenantId,
         category: str,
-        country: str,
-    ) -> bool: ...
-
-
-@runtime_checkable
-class WebResearchCountryPolicyReader(Protocol):
-    async def allows_public_research(
-        self,
-        tenant_id: TenantId,
         country: str,
     ) -> bool: ...
 
@@ -201,8 +197,8 @@ class WebResearchPlaybookCheck:
 class WebResearchCountryPolicyCheck:
     name = "country_policy"
 
-    def __init__(self, reader: WebResearchCountryPolicyReader) -> None:
-        if not isinstance(reader, WebResearchCountryPolicyReader):
+    def __init__(self, reader: CountryPolicyDecisionReader) -> None:
+        if not isinstance(reader, CountryPolicyDecisionReader):
             raise ValidationError("公开搜索国家政策 reader 无效")
         self._reader = reader
 
@@ -219,18 +215,23 @@ class WebResearchCountryPolicyCheck:
                 "country_policy:preflight_missing",
                 "公开搜索国家政策事实缺失",
             )
-        try:
-            allowed = await self._reader.allows_public_research(
-                ctx.tenant_id,
-                preflight.country,
-            )
-        except (PolicyViolation, ValidationError):
-            allowed = False
-        if not allowed:
+        decision = await validated_country_policy_decision(
+            self._reader,
+            ctx.tenant_id,
+            preflight.country,
+            CountryPolicyAction.PUBLIC_RESEARCH,
+        )
+        if not decision.configured:
             return CheckRejection(
                 self.name,
-                "country_policy:research_not_allowed",
-                "目标国家政策不允许本次公开搜索",
+                "country_policy:not_configured",
+                "目标国家没有已生效的政策包",
+            )
+        if not decision.allowed:
+            return CheckRejection(
+                self.name,
+                "country_policy:action_not_allowed",
+                "目标国家政策不允许公开研究",
             )
         return None
 
@@ -293,7 +294,6 @@ __all__ = (
     "WebProviderQuotaGuard",
     "WebProviderRateLimitCheck",
     "WebResearchCountryPolicyCheck",
-    "WebResearchCountryPolicyReader",
     "WebResearchPlaybookCheck",
     "WebResearchPlaybookReader",
     "WebResearchPreflight",
