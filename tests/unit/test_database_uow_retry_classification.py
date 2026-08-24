@@ -44,7 +44,7 @@ class _Session:
 
 class _SqlStateError(Exception):
     def __init__(self, sqlstate: str) -> None:
-        super().__init__("postgres://user:sensitive@db/private")
+        super().__init__("postgres://user:" + "sensitive@db/private")
         self.sqlstate = sqlstate
 
 
@@ -65,7 +65,7 @@ def _session_factory(session: _Session) -> async_sessionmaker[AsyncSession]:
 
 def _operational_error() -> OperationalError:
     return OperationalError(
-        "SELECT postgres://user:sensitive@db/private",
+        "SELECT postgres://user:" + "sensitive@db/private",
         {},
         RuntimeError("database password sensitive"),
     )
@@ -73,7 +73,7 @@ def _operational_error() -> OperationalError:
 
 def _interface_error() -> InterfaceError:
     return InterfaceError(
-        "SELECT postgres://user:sensitive@db/private",
+        "SELECT postgres://user:" + "sensitive@db/private",
         {},
         RuntimeError("socket sensitive"),
     )

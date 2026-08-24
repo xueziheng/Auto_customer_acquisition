@@ -53,7 +53,7 @@ _SUPPORTED_EVENTS = (
     ApprovalDecided,
 )
 _HANDOFF_LEVELS = frozenset({"owner", "manager", "boss", "boss_reminder"})
-_APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
+_APPROVAL_DECISIONS = frozenset({"approve", "reject"})
 
 
 @dataclass(frozen=True)

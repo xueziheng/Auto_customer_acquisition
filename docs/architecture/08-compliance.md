@@ -6,31 +6,37 @@
 
 ## 一、国家政策包
 
-不同市场的规则差异必须数据化，不能写死在代码里——规则会变，也会新增市场。
+不同市场的规则差异必须作为经授权人员核验和批准的数据保存，不能写死在代码、环境变量或
+默认模板里。系统不预置、推断、搜索或推荐任何国家的法律结论；无法精确匹配已激活政策时
+固定拒绝。
 
-每个国家一份政策包，至少包含：
-
-```yaml
-country: US
-cold_b2b_email_allowed: true
-requirements:
-  - truthful_sender_info        # 真实发件人信息
-  - non_deceptive_subject       # 非欺骗性主题
-  - working_opt_out             # 有效退出机制
-  - honor_opt_out_within_days: 10
-personal_data_basis_required: false
-notes: CAN-SPAM 适用于商业邮件
-```
-
-美国 CAN-SPAM 的核心要求是真实发件信息、非欺骗性主题和有效的退出机制。欧洲与英国的 B2B 规则更复杂：会因收件主体是法人、独资经营者还是自然人而不同，也因联系方式是职务邮箱还是个人邮箱而不同。**即使信息来自公开网站，涉及个人数据时仍需要相应的数据保护判断。**
-
-因此政策包要能表达：
+当前已实现独立 `domains/compliance`：
 
 ```text
-是否允许冷 B2B 邮件            是否要求处理依据
-主体类型是否影响判断            联系方式类型是否影响判断
-退订处理时限                    是否要求本地代表
+CountryPolicyVersion（tenant-scoped、不可变候选）
+        ↓ 不同员工独立审批
+CountryPolicyActivation（tenant-scoped、append-only 生效事实）
+        ↓
+CountryPolicyDecision（公开研究 / 联系人补全 / 冷 B2B 邮件）
 ```
+
+国家键只执行 NFKC、首尾清理、空白折叠与 `casefold` 后精确匹配，不做别名、ISO 或地理
+推断。候选必须显式提供公开研究、联系人补全、冷 B2B 邮件、个人数据依据、主体/联系方式
+影响、退订期限、本地代表和 requirement codes；strict boolean 没有业务默认值。
+
+每个决策字段保存独立、人工确认且非 Agent inference 的 Provenance。请求只能提交安全
+`source_type`、`source_id` 以及网页来源所需的 HTTPS URL/page hash；服务端将提交员工与
+UTC 时间绑定为提取/确认事实。政策表不保存网页正文、凭证、PII、模型概率或 confidence。
+
+提案与 `CountryPolicyVersionProposed` outbox 原子提交；API 直接启动与 outbox 崩溃恢复使用
+同一确定性幂等键。工作流只用窄审批事实激活精确版本/内容哈希，陈旧 base 或审批事实不一致
+固定失败，Settings 不提供 update、delete、force、direct activate、apply-now 或法律模板。
+
+Gateway reader 已实现结构化 fail-closed 判断：未知国家、明确禁止、无效返回和存储故障都在
+Provider IO 前阻断。Settings 可区分 `COUNTRY_POLICY_NOT_CONFIGURED`、
+`CONTACT_ENRICHMENT_NOT_ALLOWED` 与 `CONTACT_ENRICHMENT_NOT_COMPOSED`。当前最多到第三种：
+生产 `contact.enrich` 仍未注册；真实 Hunter 凭证/transport composition、Provider 运维验证
+与 Phase 1 运营验收仍被阻断。
 
 ---
 

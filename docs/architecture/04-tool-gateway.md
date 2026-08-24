@@ -5,8 +5,10 @@ Token、浏览器 Cookie 或其他凭证（硬边界 1）。Gateway 不是一个
 Connector 之间最后一道独立、可恢复、可审计的闸门。
 
 本页只描述当前已经实现并由测试锁定的 Phase 1 Gmail 客户单封发送、内部员工固定模板
-事务通知、typed DSN 反馈读取，以及 Hunter 联系人补全/邮箱验证插件。Hunter 部分只有
-无真实 Key、无真实网络的协议与边界测试，尚未接入生产 composition。自动对账扫描器、
+事务通知、typed DSN 反馈读取，以及 Hunter 联系人补全/邮箱验证插件。国家政策的真实
+tenant-scoped reader 已由合规域提供，两个 capability-specific Gateway check 会消费其
+结构化决定并在未配置、禁止、无效或读取故障时于 Provider IO 前失败关闭。Hunter 部分仍
+只有无真实 Key、无真实网络的协议与边界测试，尚未接入生产 composition。自动对账扫描器、
 人工对账 UI、回复正文/投诉 worker 与其他工具仍是后续能力，不能按已实现能力对外承诺。
 
 ---
@@ -203,7 +205,7 @@ receipt/quarantine/action/outbox 与 cursor 提交；任一步失败整页回滚
 
 ### Hunter 联系人补全与邮箱验证
 
-`contact.enrich` 运行
+`contact.enrich` 插件契约在受控测试中运行
 `tenant → permission → playbook → country_policy → suppression → rate_limit`；
 `contact.verify` 运行 `tenant → permission → suppression → rate_limit`。两者都是
 `idempotency=NONE` 的付费读取，每次调用仍由 technical claim 留下 durable 状态证据。
@@ -216,7 +218,11 @@ connector、不解析 Key、不调用 Hunter，也不占 Provider 配额。
 
 不确定的付费结果映射为 `reconciliation_required`，不得自动重试。451 隐私声明保留为
 typed `privacy_claimed` 事实，由账户发现 workflow 决定持久化或删除；Gateway handler
-不直接写业务域。当前测试全部使用受控 transport，没有真实 Hunter Key/网络。
+不直接写业务域。`country_policy` stage 只消费合规域公共 `CountryPolicyDecision`：未知国家
+映射为 `country_policy:not_configured`，明确禁止映射为
+`country_policy:action_not_allowed`，返回类型/国家/action 不匹配或 reader 异常均映射为
+transient failure；这些路径的 Hunter transport 调用固定为零。当前测试全部使用受控
+transport，没有真实 Hunter Key/网络，生产 ToolRegistry 也没有注册 `contact.enrich`。
 
 ---
 
@@ -294,6 +300,7 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Gmail 单封发送、确定性 header、只读恢复搜索；
 - Gmail RFC 3464 typed 反馈读取、一次性 page handle 与真实 feedback worker；
 - Hunter 单 Provider connector、联系人补全/邮箱验证 handler 与一次性 typed handle；
+- 国家政策不可变版本、独立审批与激活后的结构化 fail-closed Gateway reader；
 - 账户发现持久化 workflow、Campaign 入组接线及对应 API/UI；
 - API 手工发送入口、离线 controlled-transport 演示与真实 PostgreSQL 恢复测试。
 
@@ -305,8 +312,8 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Browser Agent 发送邮件；
 - 接受任意旧 approval 或绕过 Campaign current-facts；
 - 自动重发任何交付结果不确定的邮件；
-- 生产注册 `contact.enrich`（Playbook 版本化审批已实现，但真实国家政策包及其生产
-  composition 尚未实现）；
+- 生产注册 `contact.enrich`（Playbook 与国家政策 persistence/readiness 已实现，但真实
+  Hunter 凭证/transport composition 与 Provider 运维验证尚未完成）；
 - 多 Provider 联系人瀑布路由；
 - Phase 3 成本钱包。
 

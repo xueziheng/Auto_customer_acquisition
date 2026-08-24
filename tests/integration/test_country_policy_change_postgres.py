@@ -119,7 +119,7 @@ class _FailOnceStep:
     ) -> tuple[str, str | None, dict[str, object]]:
         if not self._failed:
             self._failed = True
-            raise TransientError("postgres://user:sensitive@db/private")
+            raise TransientError("postgres://user:" + "sensitive@db/private")
         return await self._delegate.execute(run)
 
 

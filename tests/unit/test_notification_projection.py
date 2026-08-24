@@ -164,14 +164,14 @@ def _events() -> list[tuple[DomainEvent, object, tuple[object, ...]]]:
         ),
         (
             ApprovalDecided(
-                _TENANT, _NOW, None, str(approval_id), "approved", decider
+                _TENANT, _NOW, None, str(approval_id), "approve", decider
             ),
             NotificationPriority.NORMAL,
             (
                 NotificationKind.APPROVAL_DECIDED,
                 str(approval_id),
                 str(decider),
-                "approved",
+                "approve",
                 None,
             ),
         ),
@@ -436,9 +436,9 @@ async def test_approval_projection_accepts_only_stable_decisions_and_typed_ids(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("decision", ["approved", "rejected"])
+@pytest.mark.parametrize("decision", ["approve", "reject"])
 async def test_approval_projection_preserves_both_stable_decisions(decision: str) -> None:
-    """真实 approved/rejected 都要投影且保留稳定 reason code。"""
+    """审批服务发出的 approve/reject 都要投影且保留稳定 reason code。"""
     Member = _load("NotificationAudienceMember")
     Handler = _load("NotificationProjectionHandler")
     jobs = _Jobs()

@@ -263,9 +263,13 @@ checks/handler、30 天验证缓存与一次性 PII 槽也已通过受控 transp
 
 账户发现的持久化 workflow、Hunter Gateway、Campaign 入组接线、API 与 UI 已存在；
 Company Playbook 的不可变版本、独立审批、批准后自动激活、运行时装配与 Settings 页面也
-已实现。这仍不等于切片 7 或 Phase 1 完成：国家政策包及其生产 composition 尚未实现，
-因此生产 `contact.enrich` 必须保持未注册；它们是下一个独立切片。Phase 1 的真实运营验收
-尚未完成，不得把当前受控测试误报为已上线的 Hunter 连通能力或完整需求验证闭环。
+已实现。国家政策包现已实现 tenant-scoped 不可变版本、逐字段人工确认 Provenance、独立
+审批、批准后激活、Settings 管理、结构化 fail-closed Gateway reader 与真实就绪原因。
+
+这仍不等于切片 7 或 Phase 1 完成。生产 `contact.enrich` 注册、真实 Hunter 凭证与 transport
+composition、Provider 运维验证和 Phase 1 真实运营验收仍被阻断。下一独立切片只能在这些
+条件齐备后受控组合 Hunter；在此之前不得把当前受控测试误报为已上线的联系人补全能力或
+完整需求验证闭环。
 
 ---
 

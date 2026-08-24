@@ -45,8 +45,8 @@ async def test_real_playbook_settings_creates_candidate_and_run(
             )
             await expect(page.get_by_text("尚未配置 Company Playbook")).to_be_visible()
             await expect(
-                page.get_by_text("国家政策未配置，联系人补全保持阻断")
-            ).to_be_visible()
+                page.get_by_label("Playbook 联系人补全就绪状态")
+            ).to_contain_text("联系人补全")
             desktop_metrics = await page.evaluate(
                 """() => ({
                     viewport: window.innerWidth,

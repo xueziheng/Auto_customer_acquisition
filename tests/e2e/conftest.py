@@ -22,6 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 
 from apps.api.runtime_config import Phase1RuntimeSettings
+from apps.scheduler_worker.main import WorkerRunResult, run_scheduler_worker
+from apps.scheduler_worker.runtime import (
+    SchedulerDomainDependencies,
+    SchedulerRuntimeFactory,
+)
 from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow, TerritoryAssignmentRow
 from shared.schemas.identifiers import EmployeeId, TenantId, new_id
@@ -67,6 +72,23 @@ class E2EStack:
     runtime_settings: Phase1RuntimeSettings
     api_process: ManagedProcess
     vite_process: ManagedProcess
+    scheduler_task: asyncio.Task[WorkerRunResult]
+
+
+class _E2ESchedulerOpportunities:
+    async def record_handoff_escalation(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+
+class _E2ESchedulerEmployees:
+    async def get_employee(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+
+class _E2ESchedulerAudience:
+    async def recipients_for(self, *args: object, **kwargs: object) -> tuple[()]:
+        del args, kwargs
+        return ()
 
 
 def _docker_available() -> bool:
@@ -160,6 +182,38 @@ def _runtime_process_env(
         "GENERATED_ARTIFACT_MAX_BYTES": "1048576",
         "TEST_S3_ACCESS_KEY": "test-access-key",
         "TEST_S3_SECRET_KEY": "test-secret-key",
+    }
+
+
+def _scheduler_runtime_env(
+    database_url: str,
+    tenant_id: TenantId,
+    health_port: int,
+) -> dict[str, str]:
+    return {
+        **_minimal_process_env(),
+        "DATABASE_URL": database_url,
+        "TRADEOS_TENANT_ID": str(tenant_id),
+        "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "1",
+        "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+        "TRADEOS_SCHEDULER_LOCK_KEY": "3110009",
+        "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "3",
+        "TRADEOS_HANDOFF_T1_SECONDS": "2",
+        "TRADEOS_HANDOFF_T2_SECONDS": "2",
+        "TRADEOS_DKIM_SELECTOR": "s1",
+        "TRADEOS_SCHEDULER_HEALTH_PORT": str(health_port),
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "TOOL_FINGERPRINT_KEY",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
+        "GMAIL_OAUTH_TOKEN_REF": "GMAIL_OAUTH_E2E",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+            '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'
+        ),
+        "TOOL_FINGERPRINT_KEY": "f" * 32,
     }
 
 
@@ -304,6 +358,9 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
     engine: AsyncEngine | None = None
     api_process: ManagedProcess | None = None
     vite_process: ManagedProcess | None = None
+    scheduler_context = None
+    scheduler_stop: asyncio.Event | None = None
+    scheduler_task: asyncio.Task[WorkerRunResult] | None = None
     listener: socket.socket | None = None
     try:
         await asyncio.to_thread(container.start)
@@ -321,7 +378,7 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
 
         engine = create_engine_from(database_url)
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
-        tenant_id = TenantId(new_id("ten"))
+        tenant_id = TenantId(new_id("tn"))
         employees = E2EEmployees(
             boss=EmployeeId(new_id("emp")),
             manager=EmployeeId(new_id("emp")),
@@ -392,6 +449,27 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
             f"{web_origin}/crm/opportunities",
             vite_process,
         )
+        scheduler_context = SchedulerRuntimeFactory(
+            _scheduler_runtime_env(database_url, tenant_id, _free_port()),
+            SchedulerDomainDependencies(
+                _E2ESchedulerOpportunities(),
+                _E2ESchedulerEmployees(),
+                _E2ESchedulerAudience(),
+            ),
+        )()
+        scheduler_runtime = await scheduler_context.__aenter__()
+        scheduler_stop = asyncio.Event()
+        scheduler_task = asyncio.create_task(
+            run_scheduler_worker(
+                scheduler_runtime,
+                stop_event=scheduler_stop,
+                install_signal_handlers=False,
+            )
+        )
+        await asyncio.sleep(0)
+        if scheduler_task.done():
+            await scheduler_task
+            raise AssertionError("scheduler worker 未进入运行循环")
         yield E2EStack(
             api_origin=api_origin,
             web_origin=web_origin,
@@ -402,8 +480,15 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
             runtime_settings=runtime_settings,
             api_process=api_process,
             vite_process=vite_process,
+            scheduler_task=scheduler_task,
         )
     finally:
+        if scheduler_stop is not None:
+            scheduler_stop.set()
+        if scheduler_task is not None:
+            await asyncio.wait_for(scheduler_task, timeout=10)
+        if scheduler_context is not None:
+            await scheduler_context.__aexit__(None, None, None)
         if listener is not None:
             listener.close()
         if vite_process is not None:
