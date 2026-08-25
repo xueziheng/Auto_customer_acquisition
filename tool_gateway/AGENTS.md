@@ -122,6 +122,18 @@ ledger 失败时也不得伪造成功。**审计写入失败必须阻断动作�
 HMAC 指纹 key 由运行时密钥解析器提供，只记录 key version。key 轮换时，旧版本在
 ledger 保留期内必须仍可核验；否则相同幂等键只能固定报冲突，不能猜测或重算成新请求。
 
+## Provider readiness
+
+`provider_readiness.py` 只拥有 Hunter 联系人能力的安全配置元数据、append-only 事件契约、
+确定性状态推导与运行时 fail-closed guard。它只能依赖 `shared`，不得读取环境、凭证引用、
+密钥值、密钥哈希、网络、Connector、数据库或模型置信度。
+
+配置哈希与 readiness event 只能包含 provider、固定能力集合、固定 connector/transport profile、
+配置版本和 API key 的非秘密版本；`repr`、错误与事件不得携带 secret ref、secret value 或其 hash。
+新 `configured` 事实使旧配置的一切 validation/runtime 事实失效；只有当前精确配置已有
+`validation_passed` 且后续 `runtime_composed` 时才是 `ready`。任何 hash 不匹配、租户不匹配、
+权限不足或 reader/storage 故障都必须关闭；guard 在解析凭证或创建 Connector 前执行。
+
 ## Gmail 不确定结果恢复
 
 `CLAIMED` 的 lease 过期且尚未提交 `EXECUTING` 时，可以重新跑**当前事实**与六个
