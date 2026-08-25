@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from dataclasses import fields
 from datetime import UTC, datetime
 from typing import Any, get_type_hints
 
@@ -115,6 +116,14 @@ def test_repository_and_uow_protocol_shapes() -> None:
 
 def test_demand_signal_captured_registered_in_event_registry() -> None:
     assert EVENT_REGISTRY["DemandSignalCaptured"] is DemandSignalCaptured
+    assert {field.name for field in fields(DemandSignalCaptured)} == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "signal_id",
+        "entity_name",
+        "signal_type",
+    }
 
 
 def test_hypothesis_and_need_repositories_gain_get_for_update() -> None:

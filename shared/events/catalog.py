@@ -62,12 +62,12 @@ class DemandSignalCaptured(DomainEvent):
     """捕获到一条需求信号。
 
     订阅方：``domains/demand``（尝试生成假设）。
+    完整来源 URL 只保存在 tenant-bound demand provenance；订阅方用 signal_id 回查。
     """
 
     signal_id: DemandSignalId = None  # type: ignore[assignment]
     entity_name: str = ""
     signal_type: str = ""
-    source_url: str | None = None
 
 
 @dataclass(frozen=True)

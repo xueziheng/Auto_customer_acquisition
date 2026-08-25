@@ -42,6 +42,7 @@ OBSERVATION_MARKER = "Acme SECRET-OBSERVATION-42 opened a new plant in Rotterdam
 NEED_MARKER = "stainless steel hinges SECRET-NEED-42"
 SNAPSHOT_ARTIFACT_REF = "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
 PAGE_HASH = "a" * 64
+PRIVATE_PATH_URL = "https://example.com/people/Alice-SMITH?ref=alice"
 
 
 @dataclass
@@ -516,13 +517,38 @@ async def test_capture_outbox_metadata_only_no_marker_leak(
         "signal_id",
         "entity_name",
         "signal_type",
-        "source_url",
     }
     blob = str(payload)
     assert OBSERVATION_MARKER not in blob
     assert NEED_MARKER not in blob
     assert PAGE_HASH not in blob
     assert caplog.records == []
+
+
+async def test_full_source_url_stays_in_provenance_but_not_durable_outbox(
+    demand_db: AsyncEngine,
+) -> None:
+    """完整 URL 只属于 tenant-bound provenance；事件只能携带安全 ID/分类元数据。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _service(factory, tenant, MutableClock(NOW))
+    await _seed_raw_artifact(factory, tenant)
+
+    signal_id = await service.capture_signal(
+        tenant, _request(source_url=PRIVATE_PATH_URL)
+    )
+
+    rows = await _signal_rows(factory, tenant)
+    assert rows[0].source_url == PRIVATE_PATH_URL
+    views = await service.list_signals(tenant)
+    assert views[0].signal_id == signal_id
+    assert views[0].source_url == PRIVATE_PATH_URL
+    events = await _outbox_events(factory, tenant)
+    assert len(events) == 1
+    payload = dict(events[0].event_payload)
+    assert "source_url" not in payload
+    assert "/people/Alice-SMITH" not in str(payload)
+    assert "ref=alice" not in str(payload)
 
 
 async def test_capture_publish_failure_rolls_back_signal(demand_db: AsyncEngine) -> None:

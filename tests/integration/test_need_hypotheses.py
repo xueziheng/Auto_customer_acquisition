@@ -1152,7 +1152,6 @@ async def test_outbox_and_logs_no_marker_leak(
         "signal_id",
         "entity_name",
         "signal_type",
-        "source_url",
         "hypothesis_id",
         "account_id",
         "category",

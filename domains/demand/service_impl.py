@@ -368,7 +368,6 @@ class DemandServiceImpl:
                         signal_id=signal.signal_id,
                         entity_name=signal.entity_name,
                         signal_type=signal.signal_type.value,
-                        source_url=signal.provenance.source_url,
                     )
                 )
                 return str(signal.signal_id)

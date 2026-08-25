@@ -90,7 +90,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "ContactPointVerified": ContactPointVerified,
     "CountryPolicyVersionProposed": CountryPolicyVersionProposed,
     # demand 信号捕获即发布（切片 7 producer）：metadata-only（signal_id/
-    # entity_name/signal_type/source_url），不含 raw_observation/possible_need
+    # entity_name/signal_type）；完整 URL 仅在 tenant-bound demand provenance。
     "DemandSignalCaptured": DemandSignalCaptured,
     "DirectiveActivated": DirectiveActivated,
     "NeedHypothesisCreated": NeedHypothesisCreated,
