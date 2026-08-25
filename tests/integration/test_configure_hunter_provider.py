@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from connectors.hunter.transport import HunterApiHttpTransport
 from infra.db.session import create_engine_from
@@ -25,16 +25,18 @@ def _environ(database_url: str) -> dict[str, str]:
     }
 
 
-async def _event_count(database_url: str) -> int:
+async def _persisted_tenant_ids(database_url: str, tenant_id: str) -> list[str]:
     engine = create_engine_from(database_url)
     try:
         async with engine.connect() as connection:
-            return int(
+            return list(
                 (
                     await connection.execute(
-                        select(func.count()).select_from(ProviderReadinessEventRow)
+                        select(ProviderReadinessEventRow.tenant_id).where(
+                            ProviderReadinessEventRow.tenant_id == tenant_id
+                        )
                     )
-                ).scalar_one()
+                ).scalars()
             )
     finally:
         await engine.dispose()
@@ -64,7 +66,9 @@ def test_configuration_command_is_idempotent_and_does_not_construct_runtime_depe
         "state": "validation_not_run",
     }
     assert replay_output == first_output
-    assert asyncio.run(_event_count(str(db_url))) == 1
+    assert asyncio.run(
+        _persisted_tenant_ids(str(db_url), environ["TRADEOS_TENANT_ID"])
+    ) == [environ["TRADEOS_TENANT_ID"]]
 
 
 def test_configuration_command_rejects_conflict_and_disabled_metadata_without_secret_output(
@@ -89,7 +93,9 @@ def test_configuration_command_rejects_conflict_and_disabled_metadata_without_se
 
     assert conflict_status != 0
     assert disabled_status != 0
-    assert asyncio.run(_event_count(str(db_url))) == 1
+    assert asyncio.run(
+        _persisted_tenant_ids(str(db_url), environ["TRADEOS_TENANT_ID"])
+    ) == [environ["TRADEOS_TENANT_ID"]]
     for output in (conflict_output, disabled_output):
         assert "HUNTER_API_KEY_PROD" not in output.out
         assert "HUNTER_API_KEY_PROD" not in output.err
