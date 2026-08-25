@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest_asyncio
+from _pytest.logging import LogCaptureFixture
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -129,8 +130,13 @@ class MutableClock:
 class _FakeModelPort:
     """受控模型端口：固定返回指定类别（模拟生产 provider 输出）。"""
 
-    def __init__(self, category: str) -> None:
+    def __init__(
+        self,
+        category: str,
+        candidate_fields: list[dict[str, str]] | None = None,
+    ) -> None:
         self._category = category
+        self._candidate_fields = candidate_fields or []
         self.calls = 0
 
     async def classify_reply(
@@ -138,7 +144,12 @@ class _FakeModelPort:
     ) -> str:
         del system_prompt, message
         self.calls += 1
-        return json.dumps({"category": self._category, "candidate_fields": []})
+        return json.dumps(
+            {
+                "category": self._category,
+                "candidate_fields": self._candidate_fields,
+            }
+        )
 
 
 class _FakeContentReader:
@@ -485,6 +496,180 @@ async def test_reply_run_classifies_persists_and_applies_actions(
     assert classification_row.classified_by == "reply-test-model-v1"
     assert enrollment_row.state == "replied"  # stop_sequence
     assert len(suppressions) == 1  # suppress
+
+
+async def test_classification_persists_verbatim_field_evidence_without_workflow_leak(
+    reply_db: AsyncEngine,
+    caplog: LogCaptureFixture,
+) -> None:
+    """字段候选必须随分类耐久保存；workflow 只保留 ID，不复制客户原话。
+
+    这条测试会捕获 ``ClassifyStep`` 丢弃 ``candidate_fields``、仓储未保存
+    quote，或把 quote 塞进 workflow context 的任一回归。动作端口尚未装配时
+    run 可以 fail-closed，但分类证据必须可供崩溃重试后按 message_id 重读。
+    """
+    factory = async_sessionmaker(reply_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant,
+            contact,
+            account,
+            ContactVerificationStatus.VERIFIED,
+            NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST,
+            "basis_reply_evidence",
+            True,
+            "US",
+            "importer",
+            frozenset({"hardware"}),
+            NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(
+            tenant, contact, account, ReplyState.NO_REPLY, None, NOW
+        )
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    outreach = _outreach_service(
+        factory,
+        tenant,
+        campaign_id,
+        approval_id,
+        sender,
+        contacts,
+        replies,
+        clock,
+    )
+    enrollment = await _enroll(outreach, tenant, campaign_id, contact, account)
+    conversations = _conversations_service(factory, tenant, clock)
+    quote = "We need 5000 stainless steel hinges."
+    port = _FakeModelPort(
+        "provides_specification",
+        [
+            {"field": "product_category", "value": "hinges", "quote": quote},
+            {"field": "quantity", "value": "5000", "quote": quote},
+        ],
+    )
+    reader = _FakeContentReader(
+        {
+            "msg_inbound_reply_evidence": ReplyMessageContent(
+                subject="Hinge requirements", body=quote
+            )
+        }
+    )
+    flow = importlib.import_module("workflows.reply_qualification.flow")
+    engine = await _build_engine(
+        flow, factory, tenant, outreach, conversations, port, reader, clock
+    )
+    context = _reply_run_context(
+        "msg_inbound_reply_evidence",
+        "route-v1.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@messages.tradeos.invalid",
+        str(enrollment.enrollment_id),
+        str(account),
+        str(contact),
+    )
+    run_id = await _start_reply_run(engine, tenant, context)
+    await _poll(engine, tenant)
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        run_row = await session.get(rows.WorkflowRunRow, run_id)
+        classification_row = await session.get(
+            rows.ConversationClassificationRow,
+            (str(tenant), "msg_inbound_reply_evidence"),
+        )
+        outbox_payloads = (
+            await session.execute(
+                select(rows.OutboxEventRow.event_payload).where(
+                    rows.OutboxEventRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+    assert classification_row is not None
+    assert getattr(classification_row, "candidate_fields", None) == [
+        {"field": "product_category", "value": "hinges", "quote": quote},
+        {"field": "quantity", "value": "5000", "quote": quote},
+    ]
+    assert quote not in json.dumps(run_row.context)
+    assert quote not in json.dumps(outbox_payloads)
+    assert all(quote not in record.getMessage() for record in caplog.records)
+
+    repeated_run_id = await _start_reply_run(engine, tenant, context)
+    await _poll(engine, tenant)
+    assert repeated_run_id == run_id
+    assert port.calls == 1
+
+
+async def test_production_evidence_reader_reloads_tenant_bound_business_evidence(
+    reply_db: AsyncEngine,
+) -> None:
+    """崩溃后只凭 tenant/message ID 重读分类字段与 artifact 引用。"""
+    from domains.conversations.schemas import ReplyCategory, ReplyFieldEvidence
+    from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+    from shared.schemas.identifiers import OutboundMessageId
+
+    factory = async_sessionmaker(reply_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    account = ProspectAccountId(new_id("acc"))
+    clock = MutableClock(NOW)
+    conversations = _conversations_service(factory, tenant, clock)
+    quote = "We need 5000 stainless steel hinges."
+    outbound_id = OutboundMessageId(
+        f"<reply-route.{'c' * 64}@messages.tradeos.invalid>"
+    )
+    message_id = await conversations.ingest_inbound(
+        tenant,
+        None,
+        account,
+        "art_reply_evidence_reader",
+        "<reply-evidence-reader@example.test>",
+        NOW,
+        outbound_message_id=outbound_id,
+    )
+    await conversations.record_classification(
+        tenant,
+        message_id,
+        ReplyCategory.PROVIDES_SPECIFICATION,
+        "reply-model-v3",
+        outbound_message_id=outbound_id,
+        candidate_fields=(
+            ReplyFieldEvidence("quantity", "5000", quote),
+        ),
+    )
+
+    try:
+        reader_type = importlib.import_module(
+            "apps.scheduler_worker.adapters.reply_evidence_reader"
+        ).ConversationReplyEvidenceReader
+    except ModuleNotFoundError:
+        raise AssertionError("生产 ReplyEvidenceReader 尚未实现") from None
+    reader = reader_type(
+        lambda requested: SqlAlchemyConversationsUnitOfWork(
+            factory, requested, now=clock.now
+        )
+    )
+
+    snapshot = await reader.load(tenant, message_id)
+    assert snapshot is not None
+    assert snapshot.message_id == message_id
+    assert snapshot.category == "provides_specification"
+    assert snapshot.classified_by == "reply-model-v3"
+    assert snapshot.classified_at == NOW
+    assert snapshot.raw_artifact_ref == "art_reply_evidence_reader"
+    assert [(item.field, item.value, item.quote) for item in snapshot.candidate_fields] == [
+        ("quantity", "5000", quote)
+    ]
+    assert await reader.load(other_tenant, message_id) is None
 
 
 async def test_context_category_is_rejected_fail_closed(

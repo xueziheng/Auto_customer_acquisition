@@ -174,6 +174,25 @@ def _coerce_field_value(name: str, value: object) -> object:
     return value
 
 
+def _field_value_and_quote(value: object) -> tuple[object, str | None, str | None]:
+    """拆分回复提取包装；普通业务值（含 Money dict）保持原样。"""
+    if not isinstance(value, dict) or "quote" not in value:
+        return value, None, None
+    if set(value) not in ({"value", "quote"}, {"value", "quote", "extracted_by"}):
+        raise ValidationError("回复字段证据形状无效")
+    quote = value["quote"]
+    if not isinstance(quote, str) or not quote.strip():
+        raise ValidationError("回复字段逐字证据无效")
+    extracted_by = value.get("extracted_by")
+    if extracted_by is not None and (
+        not isinstance(extracted_by, str)
+        or not extracted_by.strip()
+        or len(extracted_by) > 100
+    ):
+        raise ValidationError("回复字段提取者无效")
+    return value["value"], quote, extracted_by
+
+
 def _highest_evidence_level(hypothesis: NeedHypothesis) -> EvidenceLevel:
     """返回假设证据的最高等级，用于可解释的拒绝信息。"""
     return max(
@@ -585,9 +604,13 @@ class DemandServiceImpl:
             raise ValidationError("确认人无效")
         if confirmed_by is not None and len(confirmed_by) > 40:
             raise ValidationError("确认人无效")
+        extracted = {
+            name: _field_value_and_quote(value)
+            for name, value in extracted_fields.items()
+        }
         coerced = {
             name: _coerce_field_value(name, value)
-            for name, value in extracted_fields.items()
+            for name, (value, _quote, _extracted_by) in extracted.items()
         }
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
@@ -618,10 +641,11 @@ class DemandServiceImpl:
                     provenance=Provenance(
                         source_type=SourceType.CONVERSATION,
                         source_id=source_message_id,
-                        extracted_by=confirmed_by or "human",
+                        extracted_by=extracted[name][2] or confirmed_by or "human",
                         extracted_at=now,
                         confirmed_by=confirmer,
                         confirmed_at=now if confirmer else None,
+                        source_quote=extracted[name][1],
                     ),
                 )
 
@@ -774,8 +798,12 @@ class DemandServiceImpl:
             or len(updated_by) > 40
         ):
             raise ValidationError("更新人无效")
+        extracted = {
+            name: _field_value_and_quote(value) for name, value in fields.items()
+        }
         coerced = {
-            name: _coerce_field_value(name, value) for name, value in fields.items()
+            name: _coerce_field_value(name, value)
+            for name, (value, _quote, _extracted_by) in extracted.items()
         }
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
@@ -793,19 +821,32 @@ class DemandServiceImpl:
 
             updater = EmployeeId(updated_by) if updated_by else None
             updated = replace(need)
+            changed = False
             for name, value in coerced.items():
+                current = cast(FactualField[object] | None, getattr(need, name))
+                if current is not None and current.provenance.source_id == source_message_id:
+                    if (
+                        current.value == value
+                        and current.provenance.source_quote == extracted[name][1]
+                        and current.provenance.extracted_by
+                        == (extracted[name][2] or updated_by or "human")
+                        and current.provenance.confirmed_by == updater
+                    ):
+                        continue
+                    raise ValidationError("同一消息字段证据冲突，拒绝覆盖")
                 old_text = _factual_value_to_text(
-                    cast(FactualField[object] | None, getattr(need, name))
+                    current
                 )
                 new_field = FactualField(
                     value=value,
                     provenance=Provenance(
                         source_type=SourceType.CONVERSATION,
                         source_id=source_message_id,
-                        extracted_by=updated_by or "human",
+                        extracted_by=extracted[name][2] or updated_by or "human",
                         extracted_at=now,
                         confirmed_by=updater,
                         confirmed_at=now if updater else None,
+                        source_quote=extracted[name][1],
                     ),
                 )
                 new_text = _factual_value_to_text(new_field)
@@ -820,6 +861,9 @@ class DemandServiceImpl:
                     updated_by,
                 )
                 setattr(updated, name, new_field)
+                changed = True
+            if not changed:
+                return
             if (
                 updated.status is NeedStatus.VALIDATED
                 and updated.completeness >= 3
@@ -1418,6 +1462,7 @@ class DemandServiceImpl:
                         if field.provenance.confirmed_by is not None
                         else None
                     ),
+                    source_quote=field.provenance.source_quote,
                 )
             )
         fields.sort(key=lambda item: item.name)

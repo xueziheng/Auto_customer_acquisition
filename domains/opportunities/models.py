@@ -158,6 +158,7 @@ class HandoffTrigger(str, Enum):
 
     QUANTITY_PROVIDED = "quantity_provided"
     TARGET_PRICE_PROVIDED = "target_price_provided"
+    MATERIALS_REQUESTED = "materials_requested"
     SAMPLE_REQUESTED = "sample_requested"
     QUOTE_REQUESTED = "quote_requested"
     SPECIFICATION_FILE_RECEIVED = "specification_file_received"

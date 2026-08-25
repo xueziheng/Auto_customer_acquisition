@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from agent_runtime.qualification_agent.agent import ReplyClassifier
-from domains.conversations.schemas import ReplyCategory
+from domains.conversations.schemas import ReplyCategory, ReplyFieldEvidence
 from domains.conversations.service import ConversationService
 from domains.outreach.permissions import (
     Actor as OutreachActor,
@@ -157,6 +157,10 @@ class ClassifyStep:
             category,
             classified_by=classified_by,
             outbound_message_id=outbound_message_id,
+            candidate_fields=tuple(
+                ReplyFieldEvidence(item.field, item.value, item.quote)
+                for item in result.candidate_fields
+            ),
         )
         if category is ReplyCategory.AUTO_REPLY:
             # 自动回复不算回复：停序列/动作一律不触发

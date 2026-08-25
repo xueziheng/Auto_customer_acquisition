@@ -102,6 +102,24 @@ REPLY_ACTIONS: dict[ReplyCategory, tuple[str, ...]] = {
 """
 
 
+@dataclass(frozen=True)
+class ReplyFieldEvidence:
+    """模型从单条客户回复提取的候选事实与逐字证据。
+
+    本业务事实随分类记录 tenant-bound 持久化，供后续动作按 message_id
+    重读；不得复制到 workflow context、事件或日志。
+    """
+
+    field: str
+    value: str
+    quote: str
+
+    def __post_init__(self) -> None:
+        for value in (self.field, self.value, self.quote):
+            if not isinstance(value, str) or not value.strip():
+                raise ValidationError("回复字段证据无效")
+
+
 @dataclass
 class MessageClassification:
     """一次回复分类留痕。
@@ -116,6 +134,7 @@ class MessageClassification:
     category: ReplyCategory
     classified_by: str
     classified_at: datetime
+    candidate_fields: tuple[ReplyFieldEvidence, ...] = ()
 
 
 @dataclass

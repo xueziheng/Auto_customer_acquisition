@@ -2596,6 +2596,10 @@ class ConversationClassificationRow(Base):
             "'rejection','unsubscribe','bounce','auto_reply','complaint')",
             name="ck_conversation_classifications_category",
         ),
+        CheckConstraint(
+            "jsonb_typeof(candidate_fields) = 'array'",
+            name="ck_conversation_classifications_candidate_fields",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -2603,6 +2607,9 @@ class ConversationClassificationRow(Base):
     category: Mapped[str] = mapped_column(String(40))
     classified_by: Mapped[str] = mapped_column(String(100))
     classified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    candidate_fields: Mapped[list[dict[str, str]]] = mapped_column(
+        postgresql.JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
 
 
 class ConversationClassificationCorrectionRow(Base):

@@ -64,6 +64,7 @@ class Provenance:
         confirmed_at:  确认时间
         source_url:    来源 URL，网页类必填
         page_hash:     页面内容哈希，网页类必填
+        source_quote:  客户/员工原文逐字摘录；事实提取可选，禁止空串
 
     ``extracted_by`` 要记具体的模型版本标识，不要只写 ``"model"``——
     换模型后需要能分开评估提取质量。
@@ -77,6 +78,7 @@ class Provenance:
     confirmed_at: datetime | None = None
     source_url: str | None = None
     page_hash: str | None = None
+    source_quote: str | None = None
 
     def __post_init__(self) -> None:
         """校验：
@@ -96,6 +98,8 @@ class Provenance:
             raise ValidationError("WEB_PAGE 来源必须同时提供 source_url 与 page_hash")
         if (self.confirmed_by is None) != (self.confirmed_at is None):
             raise ValidationError("confirmed_by 与 confirmed_at 必须同时有或同时无")
+        if self.source_quote is not None and not self.source_quote.strip():
+            raise ValidationError("source_quote 不得为空")
 
     @property
     def is_human_confirmed(self) -> bool:

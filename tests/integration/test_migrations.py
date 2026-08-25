@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0034"
+_ALEMBIC_HEAD = "0035"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -3412,6 +3412,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
             constraint.sqltext
             for constraint in ConversationClassificationRow.__table__.constraints
             if isinstance(constraint, CheckConstraint)
+            and constraint.name == "ck_conversation_classifications_category"
         )
         assert "conversation_classifications" in contract["tables"]
         assert {
@@ -3420,7 +3421,8 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
         } == orm_columns
         assert contract["pk"] == orm_pk == ["tenant_id", "message_id"]
         assert set(contract["checks"]) == {
-            "ck_conversation_classifications_category"
+            "ck_conversation_classifications_category",
+            "ck_conversation_classifications_candidate_fields",
         }
         # CHECK 语义 parity（不比较 raw SQL：Postgres 会把 IN 规范化为 ANY，
         # TextClause 不能直接等于字符串）：从 ReplyCategory 枚举取完整 14 类词表，
@@ -5001,6 +5003,67 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
         assert restored == artifact
         assert revision == _ALEMBIC_HEAD
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0035_reply_field_evidence_roundtrip_matches_orm(
+    db_url: str,
+) -> None:
+    """0035→0034→0035：候选证据列可逆，JSON array 约束与 ORM 精确一致。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import ConversationClassificationRow
+
+    engine = create_engine_from(db_url)
+
+    def inspect_contract(sync: Connection) -> dict[str, object]:
+        inspector = inspect(sync)
+        column = next(
+            item
+            for item in inspector.get_columns("conversation_classifications")
+            if item["name"] == "candidate_fields"
+        )
+        return {
+            "type": str(column["type"]),
+            "nullable": column["nullable"],
+            "default": str(column["default"]),
+            "checks": {
+                str(item["name"]): str(item["sqltext"])
+                for item in inspector.get_check_constraints(
+                    "conversation_classifications"
+                )
+            },
+        }
+
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            contract = await conn.run_sync(inspect_contract)
+        assert revision == _ALEMBIC_HEAD
+        assert contract["type"] == "JSONB"
+        assert contract["nullable"] is False
+        assert "[]" in str(contract["default"])
+        check_name = "ck_conversation_classifications_candidate_fields"
+        assert check_name in contract["checks"]
+        assert "jsonb_typeof(candidate_fields) = 'array'" in str(
+            contract["checks"][check_name]
+        )
+        orm_checks = {
+            str(constraint.name): str(constraint.sqltext)
+            for constraint in ConversationClassificationRow.__table__.constraints
+            if isinstance(constraint, CheckConstraint)
+        }
+        assert orm_checks[check_name] == "jsonb_typeof(candidate_fields) = 'array'"
+
+        _run_alembic(db_url, "downgrade", "0034")
+        assert "candidate_fields" not in await _columns(
+            engine, "conversation_classifications"
+        )
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

@@ -45,6 +45,7 @@ _HANDOFF_TRIGGERS = frozenset(
     {
         "quantity_provided",
         "target_price_provided",
+        "materials_requested",
         "sample_requested",
         "quote_requested",
         "specification_file_received",

@@ -102,6 +102,7 @@ def _provenance_to_json(provenance: Provenance) -> dict[str, object]:
         ),
         "source_url": provenance.source_url,
         "page_hash": provenance.page_hash,
+        "source_quote": provenance.source_quote,
     }
 
 
@@ -157,6 +158,11 @@ def _json_to_factual(
         page_hash=(
             str(provenance_raw["page_hash"])
             if provenance_raw.get("page_hash") is not None
+            else None
+        ),
+        source_quote=(
+            str(provenance_raw["source_quote"])
+            if provenance_raw.get("source_quote") is not None
             else None
         ),
     )

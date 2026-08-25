@@ -20,6 +20,30 @@ class _Outreach:
         del args, kwargs
 
 
+class _Classifier:
+    model = "reply-action-test-v1"
+
+    async def classify(self, **kwargs: object) -> object:
+        del kwargs
+        return object()
+
+
+class _Reader:
+    async def load(self, *args: object) -> None:
+        del args
+
+
+class _Guard:
+    def check(self, **kwargs: object) -> None:
+        del kwargs
+
+
+class _Conversations:
+    async def record_classification(self, *args: object, **kwargs: object) -> tuple[str, ...]:
+        del args, kwargs
+        return ()
+
+
 class _Actions:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str]] = []
@@ -58,6 +82,22 @@ class _Actions:
     async def intake_new_contact(self, tenant_id, context, idempotency_key) -> None:
         del tenant_id
         await self._record("intake_new_contact", context, idempotency_key)
+
+
+def test_reply_production_composition_rejects_missing_action_ports() -> None:
+    """启用回复流程却没有完整动作实现必须在装配期失败，不能等客户回复后才失败。"""
+    from apps.scheduler_worker.runtime import ReplyQualificationComposition
+    from shared.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="动作依赖未完整配置"):
+        ReplyQualificationComposition(
+            classifier=_Classifier(),  # type: ignore[arg-type]
+            content_reader=_Reader(),  # type: ignore[arg-type]
+            input_guard=_Guard(),  # type: ignore[arg-type]
+            conversations=_Conversations(),  # type: ignore[arg-type]
+            outreach=cast(OutreachService, _Outreach()),
+            action_ports=None,  # type: ignore[arg-type]
+        )
 
 
 def _run(tenant_id: TenantId, action: str) -> WorkflowRun:

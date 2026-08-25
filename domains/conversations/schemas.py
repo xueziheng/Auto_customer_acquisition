@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from domains.conversations.models import ReplyCategory
+from domains.conversations.models import ReplyCategory, ReplyFieldEvidence
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -85,4 +85,5 @@ __all__ = (
     "ConversationInboxItem",
     "InboxMessageView",
     "ReplyCategory",
+    "ReplyFieldEvidence",
 )

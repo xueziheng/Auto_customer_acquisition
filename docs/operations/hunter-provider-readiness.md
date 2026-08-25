@@ -10,7 +10,7 @@ Phase 1 operating acceptance 均为 `not_run`。任何外部步骤未实际执�
 
 ## 1. 前置条件与身份
 
-先确认：迁移精确到单一 head `0034`；目标 tenant 已确定；配置声明操作者具备
+先确认：迁移精确到单一 head `0035`；目标 tenant 已确定；配置声明操作者具备
 `provider:configure`，验证操作者具备 `provider:validate`；scheduler 只允许一个取得
 PostgreSQL advisory lock 的副本运行。操作者 ID、tenant ID、配置版本、key 轮换版本和每次
 验证 key 都必须是安全、非秘密标识。
@@ -39,7 +39,7 @@ test -x "$TRADEOS_PYTHON_BIN"
 "$TRADEOS_PYTHON_BIN" scripts/scan_sensitive.py
 ```
 
-预期第一条只输出 `0034 (head)`，后两条零违规。真实环境还必须由部署平台以不出现在命令行
+预期第一条只输出 `0035 (head)`，后两条零违规。真实环境还必须由部署平台以不出现在命令行
 参数、日志或进程列表中的方式注入数据库、Gateway fingerprint 与 Hunter 凭证。
 
 ## 2. 不解析凭证地声明配置

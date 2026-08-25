@@ -17,6 +17,7 @@ from domains.conversations.models import (
     MessageClassification,
     MessageDirection,
     ReplyCategory,
+    ReplyFieldEvidence,
 )
 from domains.conversations.repository import (
     ClassificationRepository,
@@ -69,6 +70,10 @@ def _classification_to_row(
         category=classification.category.value,
         classified_by=classification.classified_by,
         classified_at=classification.classified_at,
+        candidate_fields=[
+            {"field": item.field, "value": item.value, "quote": item.quote}
+            for item in classification.candidate_fields
+        ],
     )
 
 
@@ -81,6 +86,14 @@ def _row_to_classification(
         category=ReplyCategory(row.category),
         classified_by=row.classified_by,
         classified_at=row.classified_at,
+        candidate_fields=tuple(
+            ReplyFieldEvidence(
+                field=str(item["field"]),
+                value=str(item["value"]),
+                quote=str(item["quote"]),
+            )
+            for item in row.candidate_fields
+        ),
     )
 
 

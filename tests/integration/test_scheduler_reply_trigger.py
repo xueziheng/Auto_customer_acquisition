@@ -646,12 +646,39 @@ def _reply_composition(
     classifier = QualificationAgent(
         model="reply-scheduler-test-v1", model_client=port, gateway=None, guardrails=None
     )
+
+    class _ReplyActions:
+        async def route_bounce(self, *args: object) -> None:
+            del args
+
+        async def record_complaint(self, *args: object) -> None:
+            del args
+
+        async def request_handoff(self, *args: object) -> None:
+            del args
+
+        async def start_qualification(self, *args: object) -> None:
+            del args
+
+        async def extract_need_fields(self, *args: object) -> None:
+            del args
+
+        async def mark_future_restart(self, *args: object) -> None:
+            del args
+
+        async def create_follow_up(self, *args: object) -> None:
+            del args
+
+        async def intake_new_contact(self, *args: object) -> None:
+            del args
+
     return ReplyQualificationComposition(
         classifier=classifier,
         content_reader=_content_reader(factory, tenant, store, clock),
         input_guard=CredentialMarkerGuard(),
         conversations=_conversations_service(factory, tenant, clock),
         outreach=outreach,
+        action_ports=_ReplyActions(),
     )
 
 

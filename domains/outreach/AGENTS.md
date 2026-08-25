@@ -22,7 +22,7 @@ campaign:
   daily_limits:
     new_contacts: 50
     total_messages: 100
-  handoff_triggers: [quantity_provided, sample_requested, quote_requested]
+  handoff_triggers: [quantity_provided, materials_requested, sample_requested, quote_requested]
 ```
 
 Agent 在边界内自主工作；越界的动作被 `tool_gateway` 拒绝。**改边界 = 新的 Campaign 版本，需要重新批准。**

@@ -1048,6 +1048,71 @@ async def test_update_need_fields_history_and_auto_advance(
         )
 
 
+async def test_reply_extracted_field_keeps_message_provenance_and_verbatim_quote(
+    demand_db: AsyncEngine,
+) -> None:
+    """回复动作写入事实时，值与客户逐字原话必须一起耐久化并可查询。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _service(factory, tenant, MutableClock(NOW))
+    need_id = await _promote_basic_need(service, tenant)
+    quote = "We need 5000 stainless steel hinges."
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {
+            "quantity": {
+                "value": "5000",
+                "quote": quote,
+                "extracted_by": "reply-model-v3",
+            }
+        },
+        "msg_reply_specification_1",
+        None,
+    )
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {
+            "quantity": {
+                "value": "5000",
+                "quote": quote,
+                "extracted_by": "reply-model-v3",
+            }
+        },
+        "msg_reply_specification_1",
+        None,
+    )
+
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        row = await session.get(tables.ValidatedNeedRow, (str(tenant), str(need_id)))
+        history = (
+            await session.execute(
+                select(tables.ValidatedNeedFieldHistoryRow).where(
+                    tables.ValidatedNeedFieldHistoryRow.tenant_id == str(tenant),
+                    tables.ValidatedNeedFieldHistoryRow.need_id == str(need_id),
+                    tables.ValidatedNeedFieldHistoryRow.field_name == "quantity",
+                )
+            )
+        ).scalars().all()
+    assert len(history) == 1
+    assert row.quantity["provenance"]["extracted_by"] == "reply-model-v3"
+    account_id = _models.ProspectAccountId(row.account_id)
+    query_service = _service(
+        factory,
+        tenant,
+        MutableClock(NOW),
+        account_names=_AccountOrganizationFacts(tenant, account_id, "Acme", "US"),
+    )
+    view = await query_service.get_need(tenant, need_id)
+    quantity = next(field for field in view.fields if field.name == "quantity")
+    assert quantity.value == "5000"
+    assert quantity.source_ref == "msg_reply_specification_1"
+    assert quantity.source_quote == quote
+
+
 async def test_mark_sourcing_ready_gates(demand_db: AsyncEngine) -> None:
     factory = async_sessionmaker(demand_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))

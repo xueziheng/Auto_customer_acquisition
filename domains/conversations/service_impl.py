@@ -22,6 +22,7 @@ from domains.conversations.models import (
     MessageDirection,
     NextQuestionSuggestion,
     ReplyCategory,
+    ReplyFieldEvidence,
 )
 from domains.conversations.repository import (
     ClassificationRepository,
@@ -257,6 +258,7 @@ class ConversationServiceImpl:
         classified_by: str,
         *,
         outbound_message_id: OutboundMessageId | None = None,
+        candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
     ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
@@ -282,6 +284,10 @@ class ConversationServiceImpl:
             not isinstance(outbound_message_id, str) or not outbound_message_id.strip()
         ):
             raise ValidationError("出站消息关联无效")
+        if not isinstance(candidate_fields, tuple) or any(
+            not isinstance(item, ReplyFieldEvidence) for item in candidate_fields
+        ):
+            raise ValidationError("回复字段证据无效")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
@@ -297,6 +303,8 @@ class ConversationServiceImpl:
                     raise ValidationError(
                         "同 message+分类者分类冲突，拒绝覆盖"
                     )
+                if existing.candidate_fields != candidate_fields:
+                    raise ValidationError("同 message+分类者字段证据冲突，拒绝覆盖")
                 return REPLY_ACTIONS[category]
             await classifications.add(
                 MessageClassification(
@@ -305,6 +313,7 @@ class ConversationServiceImpl:
                     category=category,
                     classified_by=classified_by,
                     classified_at=now,
+                    candidate_fields=candidate_fields,
                 )
             )
             if (

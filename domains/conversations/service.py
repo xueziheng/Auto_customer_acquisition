@@ -10,6 +10,7 @@ from domains.conversations.models import (
     Message,
     NextQuestionSuggestion,
     ReplyCategory,
+    ReplyFieldEvidence,
 )
 from domains.conversations.repository import (
     ConversationsUnitOfWork as _ConversationsUnitOfWork,
@@ -72,6 +73,7 @@ class ConversationService(Protocol):
         classified_by: str,
         *,
         outbound_message_id: OutboundMessageId | None = None,
+        candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
     ) -> tuple[str, ...]:
         """落分类结果，返回 ``REPLY_ACTIONS`` 对应的动作序列。
 

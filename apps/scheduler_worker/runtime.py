@@ -413,7 +413,7 @@ class ReplyQualificationComposition:
     input_guard: InputContentGuard
     conversations: ConversationService
     outreach: OutreachService
-    action_ports: ReplyActionPorts | None = None
+    action_ports: ReplyActionPorts
 
     def __post_init__(self) -> None:
         # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
@@ -439,9 +439,7 @@ class ReplyQualificationComposition:
         model_value = getattr(self.classifier, "model", None)
         if not isinstance(model_value, str) or not model_value.strip():
             raise ValidationError("scheduler reply_qualification 依赖未完整配置")
-        if self.action_ports is not None and not isinstance(
-            self.action_ports, ReplyActionPorts
-        ):
+        if not isinstance(self.action_ports, ReplyActionPorts):
             raise ValidationError("scheduler reply_qualification 动作依赖未完整配置")
 
 
