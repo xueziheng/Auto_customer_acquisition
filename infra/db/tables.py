@@ -3778,3 +3778,105 @@ class CountryPolicyActivationRow(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     activated_by: Mapped[str] = mapped_column(String(200))
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProviderReadinessEventRow(Base):
+    """tenant-scoped Provider readiness append-only 事件事实。"""
+
+    __tablename__ = "provider_readiness_events"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "provider_readiness_event_id",
+            name="pk_provider_readiness_events",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "provider",
+            "capability_set",
+            "sequence",
+            name="uq_provider_readiness_events_stream_sequence",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "provider",
+            "capability_set",
+            "idempotency_key",
+            name="uq_provider_readiness_events_stream_idempotency",
+        ),
+        CheckConstraint(
+            "sequence > 0",
+            name="ck_provider_readiness_events_sequence",
+        ),
+        CheckConstraint(
+            "event_type IN ("
+            "'configured','validation_started','validation_passed',"
+            "'validation_failed','runtime_composed')",
+            name="ck_provider_readiness_events_type",
+        ),
+        CheckConstraint(
+            "provider ~ '^[a-z][a-z0-9._-]{0,31}$' AND "
+            "configuration_version ~ '^[a-z0-9][a-z0-9._-]{0,31}$' AND "
+            "connector_profile_version ~ '^[a-z0-9][a-z0-9._-]{0,31}$' AND "
+            "transport_profile ~ '^[a-z0-9][a-z0-9._-]{0,63}$' AND "
+            "api_key_version ~ '^[a-z0-9][a-z0-9._-]{0,31}$'",
+            name="ck_provider_readiness_events_lowercase_labels",
+        ),
+        CheckConstraint(
+            "configuration_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_provider_readiness_events_hash",
+        ),
+        CheckConstraint(
+            "cardinality(capability_set) = 2 AND capability_set = "
+            "ARRAY['contact.enrich','contact.verify']::varchar(64)[]",
+            name="ck_provider_readiness_events_capabilities",
+        ),
+        CheckConstraint(
+            "outcome_code IS NULL OR outcome_code IN ("
+            "'auth_required','rate_limited','provider_transient',"
+            "'provider_permanent','response_invalid',"
+            "'reconciliation_required')",
+            name="ck_provider_readiness_events_outcome",
+        ),
+        CheckConstraint(
+            "(event_type = 'configured' AND validation_key IS NULL AND "
+            "outcome_code IS NULL AND evidence_ref IS NULL) OR "
+            "(event_type = 'validation_started' AND validation_key IS NOT NULL "
+            "AND outcome_code IS NULL AND evidence_ref IS NULL) OR "
+            "(event_type = 'validation_passed' AND validation_key IS NOT NULL "
+            "AND outcome_code IS NULL AND evidence_ref IS NOT NULL) OR "
+            "(event_type = 'validation_failed' AND validation_key IS NOT NULL "
+            "AND outcome_code IS NOT NULL AND evidence_ref IS NULL) OR "
+            "(event_type = 'runtime_composed' AND validation_key IS NULL AND "
+            "outcome_code IS NULL AND evidence_ref IS NULL)",
+            name="ck_provider_readiness_events_event_fields",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND "
+            "provider_readiness_event_id ~ '^pre_[0-7][0-9A-HJKMNP-TV-Z]{25}$' "
+            "AND btrim(actor_id) <> '' AND btrim(idempotency_key) <> '' AND "
+            "(validation_key IS NULL OR btrim(validation_key) <> '') AND "
+            "(evidence_ref IS NULL OR btrim(evidence_ref) <> '')",
+            name="ck_provider_readiness_events_core",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    provider_readiness_event_id: Mapped[str] = mapped_column(String(30))
+    provider: Mapped[str] = mapped_column(String(32))
+    capability_set: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String(64))
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger)
+    event_type: Mapped[str] = mapped_column(String(32))
+    configuration_version: Mapped[str] = mapped_column(String(32))
+    configuration_hash: Mapped[str] = mapped_column(CHAR(64))
+    connector_profile_version: Mapped[str] = mapped_column(String(32))
+    transport_profile: Mapped[str] = mapped_column(String(64))
+    api_key_version: Mapped[str] = mapped_column(String(32))
+    validation_key: Mapped[str | None] = mapped_column(String(200))
+    outcome_code: Mapped[str | None] = mapped_column(String(64))
+    evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    actor_id: Mapped[str] = mapped_column(String(64))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
