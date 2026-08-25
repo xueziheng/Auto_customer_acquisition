@@ -235,3 +235,40 @@ tenant-bound verifier 和账户字段 provenance 数据约束。真实 provider/
 **`not_run`**；仍未获授权使用真实凭证、客户数据、部署、push 或其他外部动作。
 剩余风险与上轮一致：目标环境仍需 0038 备份/演练，并且 6C/6D 仍须分别证明浏览器与
 exact-HEAD 全仓闭环。
+
+## 独立审查修复轮 3（2026-08-26）
+
+本轮只处理 fix round 2 复审返回的 1 个 Important：`get_enrollment` 的返回值在证明是
+真实 `EnrollmentView` 之前就被解引用，恶意或损坏 adapter 可以让公共验证边界泄漏
+`AttributeError`。
+
+**处置：已修复。** verifier 在首次属性访问前必须通过
+`isinstance(enrollment, EnrollmentView)`；然后继续保留 tenant、enrollment、account、
+contact 和 source hypothesis 的全部精确核对。测试中的正常 Outreach fake 也已改为返回
+完整、真实的 frozen `EnrollmentView`，不再依赖结构相似的 `SimpleNamespace`。
+
+### 本轮 TDD 证据
+
+- RED：`pytest tests/unit/test_reply_customer_evidence_adapter.py -q` 为
+  `13 passed, 2 failed in 0.21s`。full-shape `SimpleNamespace` impostor 为
+  `DID NOT RAISE ValidationError`；缺少 `enrollment_id` 的对象直接泄漏
+  `AttributeError`。
+- GREEN：在首次 dereference 前增加真实 DTO 类型守卫后，聚焦测试为
+  `15 passed in 0.19s`；两类无效返回值均以域 `ValidationError` fail closed。
+
+### 本轮最终 GREEN 与门禁
+
+- 受影响 unit 扩大回归：`122 passed in 2.11s`。
+- Reply qualification、Phase 1 closed loop 和 scheduler reply PostgreSQL integration：
+  `18 passed in 10.33s`。
+- Ruff：`All checks passed!`。
+- configured mypy：`Success: no issues found in 358 source files`。
+- boundary 首次门禁正确拒绝测试对 `domains.outreach.models` 的域私有实现导入；
+  改从公共 `schemas.py` 导入后七项全部通过。
+- `scripts/scan_sensitive.py` working tree：exit 0。
+- `git diff --check`：exit 0。
+
+本轮无 schema 或 migration 改动，也没有新增公共契约，因此不重跑 Alembic 全集且不需要新 ADR。
+真实 provider/model/mail/外部网络继续为 **`not_run`**；未使用真实凭证、客户数据、部署、
+push 或其他外部动作。剩余风险仍是目标环境 0038 运维演练、6C 浏览器验收和 6D
+exact-HEAD 全仓门禁。

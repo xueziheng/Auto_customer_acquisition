@@ -11,7 +11,11 @@ from domains.demand.schemas import (
     VerifiedCustomerReplyEvidence,
 )
 from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
-from domains.outreach.schemas import DeliveryCorrelationLookup, DeliveryFeedbackTarget
+from domains.outreach.schemas import (
+    DeliveryCorrelationLookup,
+    DeliveryFeedbackTarget,
+    EnrollmentView,
+)
 from domains.outreach.service import OutreachService
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.evidence import EvidenceLevel
@@ -91,7 +95,8 @@ class TenantBoundCustomerReplyEvidenceVerifier:
             tenant_id, claim.enrollment_id, actor=actor
         )
         if (
-            enrollment.tenant_id != tenant_id
+            not isinstance(enrollment, EnrollmentView)
+            or enrollment.tenant_id != tenant_id
             or enrollment.enrollment_id != claim.enrollment_id
             or enrollment.account_id != claim.account_id
             or enrollment.contact_point_id != claim.contact_point_id

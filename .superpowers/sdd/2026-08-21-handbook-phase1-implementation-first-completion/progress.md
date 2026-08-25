@@ -55,5 +55,7 @@
   精确提交 SHA 见本轮 handoff，独立复审 pending）。
 - Task 6B3: fix round 1/5 scoped re-review fully resolved 5 original findings and substantially closed the Critical public-method backdoor, but returned 2 Important integrity findings (verifier did not revalidate returned enrollment/delivery tenant and identity; migration 0038 JSONB lacked an object-shape CHECK).
 - Task 6B3: fix round 2/5 implementation submitted (2 Important findings addressed, 0 implementation findings open: verifier now revalidates exact Enrollment/Delivery DTO tenant, type and identity; migration 0038 now enforces matching DB/ORM JSON object shape while preserving the `{}` legacy default; affected unit 120、PG integration 50、scheduler reply 6、full migrations 59 均 GREEN；独立复审 pending).
+- Task 6B3: fix round 2/5 scoped re-review resolved both findings but returned 1 Important fail-closed finding (`get_enrollment` result was dereferenced before proving it is a real `EnrollmentView`, so a malformed adapter result could escape as `AttributeError`).
+- Task 6B3: fix round 3/5 implementation submitted (1 Important addressed, 0 implementation findings open: real `EnrollmentView` required before dereference; full-shape impostor and missing-shape results now raise domain `ValidationError`; affected unit 122 and reply PostgreSQL integration 18 GREEN; independent re-review pending).
 - Task 6C: pending.
 - Task 6D: pending.

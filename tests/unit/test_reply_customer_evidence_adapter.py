@@ -9,9 +9,14 @@ from types import SimpleNamespace
 import pytest
 
 from domains.conversations.schemas import ReplyCategory
-from domains.outreach.schemas import DeliveryFeedbackTarget
+from domains.outreach.schemas import (
+    DeliveryFeedbackTarget,
+    EnrollmentState,
+    EnrollmentView,
+)
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
+    CampaignId,
     ContactPointId,
     EnrollmentId,
     MessageAttemptId,
@@ -36,6 +41,7 @@ OUTBOUND = OutboundMessageId(
     f"<reply-evidence.{'c' * 64}@messages.tradeos.invalid>"
 )
 IDENTITY = SendingIdentityId(new_id("sid"))
+CAMPAIGN = CampaignId(new_id("cmp"))
 
 
 class _Repository:
@@ -90,16 +96,27 @@ class _Outreach:
         self.enrollment_tenant_id = TENANT
         self.enrollment_id = ENROLLMENT
         self.delivery_tenant_id = TENANT
+        self.enrollment_override: object | None = None
         self.delivery_override: object | None = None
 
     async def get_enrollment(self, tenant_id, enrollment_id, *, actor):
-        del actor
-        return SimpleNamespace(
+        del tenant_id, enrollment_id, actor
+        if self.enrollment_override is not None:
+            return self.enrollment_override
+        return EnrollmentView(
             tenant_id=self.enrollment_tenant_id,
             enrollment_id=self.enrollment_id,
+            campaign_id=CAMPAIGN,
+            campaign_version=1,
             account_id=self.account_id,
             contact_point_id=CONTACT,
             sending_identity_id=IDENTITY,
+            state=EnrollmentState.IN_SEQUENCE,
+            current_step=1,
+            next_send_at=NOW,
+            enrolled_at=NOW,
+            stopped_at=None,
+            stop_reason=None,
             source_hypothesis_id=self.source_hypothesis_id,
         )
 
@@ -210,6 +227,29 @@ async def test_verifier_rejects_enrollment_returned_for_another_tenant() -> None
 async def test_verifier_rejects_wrong_enrollment_returned_by_service() -> None:
     outreach = _Outreach()
     outreach.enrollment_id = EnrollmentId(new_id("enr"))
+
+    with pytest.raises(ValidationError, match="Enrollment 关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())
+
+
+async def test_verifier_rejects_enrollment_dto_impostor() -> None:
+    outreach = _Outreach()
+    outreach.enrollment_override = SimpleNamespace(
+        tenant_id=TENANT,
+        enrollment_id=ENROLLMENT,
+        account_id=ACCOUNT,
+        contact_point_id=CONTACT,
+        sending_identity_id=IDENTITY,
+        source_hypothesis_id=HYPOTHESIS,
+    )
+
+    with pytest.raises(ValidationError, match="Enrollment 关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())
+
+
+async def test_verifier_rejects_missing_enrollment_shape_as_validation_error() -> None:
+    outreach = _Outreach()
+    outreach.enrollment_override = SimpleNamespace(tenant_id=TENANT)
 
     with pytest.raises(ValidationError, match="Enrollment 关联不匹配"):
         await _verifier(_State(), outreach).verify(TENANT, _claim())
