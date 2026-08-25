@@ -150,6 +150,12 @@ def country_policy_manifest(tool_id: str) -> ToolManifest:
         idempotency=IdempotencyRequirement.NONE,
         required_permissions=("test:country_policy",),
         checks=("playbook", "country_policy"),
+        output_schema={
+            "type": "object",
+            "required": ("provider_ref",),
+            "properties": {"provider_ref": {"type": "string"}},
+            "additionalProperties": False,
+        },
     )
 
 

@@ -96,6 +96,15 @@ def _manifest() -> ToolManifest:
             "idempotency",
             "rate_limit",
         ),
+        output_schema={
+            "type": "object",
+            "required": ("provider_ref", "already_existed"),
+            "properties": {
+                "provider_ref": {"type": "string"},
+                "already_existed": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
     )
 
 
@@ -331,6 +340,12 @@ async def test_non_idempotent_read_uses_unique_technical_claim_without_dedup(
             idempotency=IdempotencyRequirement.NONE,
             required_permissions=("email:feedback_read",),
             checks=("tenant", "permission"),
+            output_schema={
+                "type": "object",
+                "required": ("provider_ref",),
+                "properties": {"provider_ref": {"type": "string"}},
+                "additionalProperties": False,
+            },
         ),
         handler,
     )

@@ -86,7 +86,15 @@ def _manifest(**changes: Any) -> ToolManifest:
         "required_permissions": ("outreach:message_send",),
         "checks": EMAIL_CHECKS,
         "input_schema": {"type": "object", "required": ["attempt_id"]},
-        "output_schema": {"type": "object"},
+        "output_schema": {
+            "type": "object",
+            "required": ("provider_ref", "already_existed"),
+            "properties": {
+                "provider_ref": {"type": "string"},
+                "already_existed": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
         "redact_fields": ("subject", "body"),
     }
     values.update(changes)
@@ -262,6 +270,74 @@ def test_manifest_rejects_output_schema_outside_bounded_object_subset(
 ) -> None:
     with pytest.raises(ValidationError):
         _manifest(output_schema=output_schema)
+
+
+@pytest.mark.parametrize(
+    "output_schema",
+    [
+        {
+            "type": "object",
+            "properties": {"provider_ref": {"type": "string"}},
+        },
+        {
+            "type": "object",
+            "properties": {"provider_ref": {"type": "string"}},
+            "additionalProperties": True,
+        },
+        {
+            "type": "object",
+            "properties": {"provider_ref": {"type": "string"}},
+            "additionalProperties": "false",
+        },
+    ],
+)
+def test_nonempty_output_schema_requires_explicit_closed_properties(
+    output_schema: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _manifest(output_schema=output_schema)
+
+
+def test_empty_output_schema_is_an_explicit_no_output_contract() -> None:
+    manifest = _manifest(output_schema={})
+
+    manifest.validate_output({})
+    with pytest.raises(ValidationError):
+        manifest.validate_output({"provider_ref": "gmail_ref_1"})
+
+
+def test_all_current_production_output_manifests_are_explicitly_closed() -> None:
+    from apps.api.composition.runtime import _email_send_manifest as api_email
+    from apps.scheduler_worker.runtime import (
+        _email_send_manifest as scheduler_email,
+    )
+    from tool_gateway.handlers.contact_enrichment import MANIFEST as enrichment
+    from tool_gateway.handlers.contact_verification import MANIFEST as verification
+    from tool_gateway.handlers.dns_auth import MANIFEST as dns_auth
+    from tool_gateway.handlers.email_feedback import MANIFEST as feedback
+    from tool_gateway.handlers.notification_email import MANIFEST as notification
+    from tool_gateway.handlers.provider_validation import (
+        PROVIDER_VALIDATION_MANIFEST as provider_validation,
+    )
+    from tool_gateway.handlers.web_read_page import MANIFEST as read_page
+    from tool_gateway.handlers.web_search import MANIFEST as web_search
+
+    manifests = (
+        api_email(),
+        scheduler_email(),
+        enrichment,
+        verification,
+        dns_auth,
+        feedback,
+        notification,
+        provider_validation,
+        read_page,
+        web_search,
+    )
+
+    for manifest in manifests:
+        assert manifest.output_schema["additionalProperties"] is False
+        assert manifest.output_schema["properties"]
 
 
 class _ExecuteOnly:

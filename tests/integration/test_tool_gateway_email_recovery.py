@@ -245,6 +245,15 @@ def _manifest() -> ToolManifest:
             "idempotency",
             "rate_limit",
         ),
+        output_schema={
+            "type": "object",
+            "required": ("provider_ref", "already_existed"),
+            "properties": {
+                "provider_ref": {"type": "string"},
+                "already_existed": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
     )
 
 

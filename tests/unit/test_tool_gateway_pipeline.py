@@ -245,6 +245,19 @@ class _Handler:
 def _tool_manifest(
     *, output_schema: Mapping[str, object] | None = None
 ) -> ToolManifest:
+    declared_output = (
+        {
+            "type": "object",
+            "required": ("provider_ref", "already_existed"),
+            "properties": {
+                "provider_ref": {"type": "string"},
+                "already_existed": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        }
+        if output_schema is None
+        else output_schema
+    )
     return ToolManifest(
             tool_id="email.send",
             version="v1",
@@ -255,16 +268,7 @@ def _tool_manifest(
             idempotency=IdempotencyRequirement.REQUIRED,
             required_permissions=("outreach:message_send",),
             checks=("tenant", "permission", "suppression", "approval", "idempotency", "rate_limit"),
-            output_schema=output_schema
-            or {
-                "type": "object",
-                "required": ("provider_ref", "already_existed"),
-                "properties": {
-                    "provider_ref": {"type": "string"},
-                    "already_existed": {"type": "boolean"},
-                },
-                "additionalProperties": False,
-            },
+            output_schema=declared_output,
     )
 
 
@@ -427,6 +431,31 @@ async def test_gateway_does_not_expose_handler_fields_undeclared_by_manifest() -
     assert persisted.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
     assert persisted.provider_ref is None
     assert trace.count("handler.execute") == 1
+    assert trace[-1] == "ledger.failed_transient"
+
+
+async def test_gateway_empty_output_schema_reconciles_every_nonempty_output() -> None:
+    gateway, trace, ledger = _gateway(
+        output_schema={},
+        execute_output={
+            "provider_ref": "hunter-account:pre_01K2C5R6J7ABCDEFGHJKMNPQRS",
+            "configuration_version": "deploy-v1",
+            "status": "validation_passed",
+        },
+    )
+
+    result = await gateway.invoke(_context())
+
+    assert result.status is ToolCallStatus.FAILED_TRANSIENT
+    assert result.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert result.output is None
+    assert result.tool_call_id is not None
+    persisted = ledger.records[result.tool_call_id]
+    assert persisted.status is ToolCallStatus.FAILED_TRANSIENT
+    assert persisted.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert persisted.provider_ref is None
+    assert trace.count("handler.execute") == 1
+    assert "outreach.record_sent" not in trace
     assert trace[-1] == "ledger.failed_transient"
 
 

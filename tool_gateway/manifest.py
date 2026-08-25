@@ -315,8 +315,7 @@ def _validate_bounded_output_schema(schema: object) -> None:
         or len(required) != len(set(required))
     ):
         raise ValidationError("tool output schema 无效")
-    additional = schema.get("additionalProperties", True)
-    if not isinstance(additional, bool):
+    if schema.get("additionalProperties") is not False:
         raise ValidationError("tool output schema 无效")
 
 
@@ -354,6 +353,8 @@ def _validate_bounded_output(schema: Mapping[str, object], output: object) -> No
     if not isinstance(output, Mapping):
         raise ValidationError("tool output 不匹配 manifest")
     if not schema:
+        if output:
+            raise ValidationError("tool output 不匹配 manifest")
         return
     properties = schema.get("properties", {})
     required = schema.get("required", ())
@@ -361,9 +362,7 @@ def _validate_bounded_output(schema: Mapping[str, object], output: object) -> No
         raise ValidationError("tool output schema 无效")
     if any(name not in output for name in required):
         raise ValidationError("tool output 不匹配 manifest")
-    if schema.get("additionalProperties", True) is False and any(
-        name not in properties for name in output
-    ):
+    if any(name not in properties for name in output):
         raise ValidationError("tool output 不匹配 manifest")
     for name, value in output.items():
         property_schema = properties.get(name)
