@@ -25,7 +25,7 @@ _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
 _DATE_LIKE = re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}")
 _PROBABILITY = re.compile(
     r"(?i)(?:confidence|probability|置信度|概率)\s*[:：]?\s*\d|"
-    r"\d{1,3}\s*%\s*(?:likely|chance|probab|可能|置信)"
+    r"\d{1,3}\s*%\s*(?:likely|chance|probab|可能|置信|概率)"
 )
 _MONEY = re.compile(
     r"(?i)(?:[$€£¥₹]\s*\d)|(?:\d\s*(?:usd|eur|gbp|cny|rmb))|"

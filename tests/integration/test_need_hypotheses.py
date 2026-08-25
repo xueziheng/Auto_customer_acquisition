@@ -604,6 +604,7 @@ async def test_promote_rejects_agent_inference_evidence(
         source_id="sha256:pagehash001",
         source_url="https://example.com/acme",
         page_hash="sha256:pagehash001",
+        snapshot_artifact_ref="art_01K3H0T8NBWM3KGT9XQ06YRC5V",
     )
     hypothesis_id = await service.create_hypothesis(
         tenant,

@@ -139,6 +139,7 @@ class DemandSignal:
     possible_need: str | None = None
     account_id: ProspectAccountId | None = None
     discard_reason: str | None = None
+    snapshot_artifact_ref: str | None = None
 
     @property
     def evidence_level(self) -> EvidenceLevel:

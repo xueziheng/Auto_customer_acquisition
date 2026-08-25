@@ -2694,7 +2694,9 @@ class DemandSignalRow(Base):
             "source_type <> 'web_page' OR "
             "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
             "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
-            "source_id = page_hash)",
+            "source_id = page_hash AND "
+            "snapshot_artifact_ref IS NOT NULL AND "
+            "snapshot_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$')",
             name="ck_demand_signals_web_evidence",
         ),
         CheckConstraint(
@@ -2711,7 +2713,8 @@ class DemandSignalRow(Base):
         CheckConstraint(
             "(possible_need IS NULL OR btrim(possible_need) <> '') AND "
             "(source_url IS NULL OR btrim(source_url) <> '') AND "
-            "(page_hash IS NULL OR btrim(page_hash) <> '')",
+            "(page_hash IS NULL OR btrim(page_hash) <> '') AND "
+            "(source_type = 'web_page' OR snapshot_artifact_ref IS NULL)",
             name="ck_demand_signals_optional_nonblank",
         ),
     )
@@ -2734,6 +2737,7 @@ class DemandSignalRow(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_url: Mapped[str | None] = mapped_column(String(2000))
     page_hash: Mapped[str | None] = mapped_column(String(200))
+    snapshot_artifact_ref: Mapped[str | None] = mapped_column(String(40))
 
 
 class ProspectAccountRow(Base):

@@ -1,8 +1,8 @@
 """需求域服务实现（需求信号与需求假设生命周期）。
 
 捕获语义（规格 §5/§7）：输入校验全部在开 UoW 前完成；所有 str 输入
-item == item.strip()；WEB_PAGE 强约束（url+hash 非空且 source_id ==
-page_hash）；去重 key 全非空 5 列；重复返回既有 ID 不重复发事件；
+item == item.strip()；WEB_PAGE 强约束（URL、hash、不可变快照引用非空且
+source_id == page_hash）；去重 key 全非空 5 列；重复返回既有 ID 不重复发事件；
 业务插入 + outbox 同事务。事件只用共享契约 DemandSignalCaptured
 （metadata-only，不含 raw_observation/possible_need/provenance）。
 """
@@ -81,6 +81,8 @@ from shared.schemas.provenance import (
     Provenance,
     SourceType,
 )
+
+_SNAPSHOT_ARTIFACT_REF = re.compile(r"art_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 
 _EVIDENCE_RANK = {level: index for index, level in enumerate(EvidenceLevel)}
 _PROMOTABLE_SOURCE_TYPES = frozenset(
@@ -286,6 +288,12 @@ class DemandServiceImpl:
         page_hash = self._require_text(
             request.page_hash, "信号页面哈希", max_len=200, can_be_none=True
         )
+        snapshot_artifact_ref = self._require_text(
+            request.snapshot_artifact_ref,
+            "信号网页快照引用",
+            max_len=40,
+            can_be_none=True,
+        )
         try:
             signal_type = SignalType(request.signal_type)
         except ValueError:
@@ -302,11 +310,18 @@ class DemandServiceImpl:
         ):
             raise ValidationError("信号观察时间必须为 UTC")
         if source_type is SourceType.WEB_PAGE and (
-            not source_url or not page_hash or source_id != page_hash
+            not source_url
+            or not page_hash
+            or source_id != page_hash
+            or snapshot_artifact_ref is None
+            or _SNAPSHOT_ARTIFACT_REF.fullmatch(snapshot_artifact_ref) is None
         ):
             raise MissingWebEvidenceError(
-                "网页来源信号缺少 URL/page_hash 或 source_id 与 page_hash 不一致"
+                "网页来源信号缺少 URL/page_hash/snapshot artifact，"
+                "或 source_id 与 page_hash 不一致"
             )
+        if source_type is not SourceType.WEB_PAGE and snapshot_artifact_ref is not None:
+            raise ValidationError("非网页信号不得携带网页快照引用")
         now = self._validate_now(self._now())
         signal = DemandSignal(
             signal_id=DemandSignalId(new_id("sig")),
@@ -317,6 +332,7 @@ class DemandServiceImpl:
             observed_at=observed_at,
             status=SignalStatus.CAPTURED,
             possible_need=possible_need,
+            snapshot_artifact_ref=snapshot_artifact_ref,
             provenance=Provenance(
                 source_type=source_type,
                 source_id=source_id,
@@ -948,6 +964,8 @@ class DemandServiceImpl:
                 source_type=signal.provenance.source_type.value,
                 source_ref=signal.provenance.source_id,
                 source_url=signal.provenance.source_url,
+                page_hash=signal.provenance.page_hash,
+                snapshot_artifact_ref=signal.snapshot_artifact_ref,
             )
             for signal in signals
         ]

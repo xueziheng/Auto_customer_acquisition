@@ -301,6 +301,11 @@ class ExecuteSearchStep:
                         page_hash=_text(
                             payload.get("page_hash"), "需求信号页面哈希无效", maximum=64
                         ),
+                        snapshot_artifact_ref=_text(
+                            payload.get("snapshot_artifact_ref"),
+                            "需求信号网页快照引用无效",
+                            maximum=40,
+                        ),
                     ),
                 )
             )

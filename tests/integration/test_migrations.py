@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0033"
+_ALEMBIC_HEAD = "0034"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -3709,7 +3709,7 @@ async def test_0019_conversations_messages_roundtrip_and_guards(
 
 
 async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
-    """0021 契约：18 列/PK/UNIQUE/8 个 CHECK 与 ORM 语义 parity。
+    """当前需求信号契约：19 列/PK/UNIQUE/8 个 CHECK 与 ORM 语义 parity。
 
     enum CHECK 用字面量集合比对（Postgres 会把 IN 规范化为 ANY）；函数型
     CHECK（confirmed_pair/web_evidence/discard_reason/core/optional nonblank）
@@ -3810,6 +3810,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         "confirmed_at": ("TIMESTAMP WITH TIME ZONE", True, None),
         "source_url": ("VARCHAR(2000)", True, None),
         "page_hash": ("VARCHAR(200)", True, None),
+        "snapshot_artifact_ref": ("VARCHAR(40)", True, None),
     }
     db_column_contract = {
         name: (
@@ -3875,7 +3876,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         """稳定语义 token 序列：保留标识符/字符串字面量/运算符(=,<>)/
         IS NULL/IS NOT NULL/AND/OR 及其顺序；仅剥离 PG 无害差异——
         cast 标注（::text/::character varying 等）、括号、空白。"""
-        stripped = re.sub(r"::[a-z_ ]+", "", sql)
+        stripped = re.sub(r"::(?:text|character varying)", "", sql)
         stripped = re.sub(r"[()]", "", stripped)
         return tuple(
             re.findall(r"'[^']*'|[A-Za-z_][A-Za-z0-9_]*|[<>=]+", stripped)
@@ -3890,7 +3891,9 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
             "source_type <> 'web_page' OR "
             "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
             "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
-            "source_id = page_hash)"
+            "source_id = page_hash AND "
+            "snapshot_artifact_ref IS NOT NULL AND "
+            "snapshot_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$')"
         ),
         "ck_demand_signals_discard_reason": (
             "(status = 'discarded') = "
@@ -3904,7 +3907,8 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         "ck_demand_signals_optional_nonblank": (
             "(possible_need IS NULL OR btrim(possible_need) <> '') AND "
             "(source_url IS NULL OR btrim(source_url) <> '') AND "
-            "(page_hash IS NULL OR btrim(page_hash) <> '')"
+            "(page_hash IS NULL OR btrim(page_hash) <> '') AND "
+            "(source_type = 'web_page' OR snapshot_artifact_ref IS NULL)"
         ),
     }
     for name, expected_sql in expected_functional_checks.items():
@@ -3941,18 +3945,15 @@ async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
+async def test_demand_signals_web_evidence_rejects_incomplete_tuple(
     db_url: str,
 ) -> None:
-    """0021 web_evidence CHECK 的 NULL 空窗回归：NULL url/hash 必须被拒绝。
+    """当前 web_evidence CHECK 拒绝不完整 URL/hash/snapshot 四元组。
 
-    当前约束 ``source_type <> 'web_page' OR (btrim(source_url) <> '' AND
-    btrim(page_hash) <> '' AND source_id = page_hash)`` 在 web 行 url/hash 为
-    NULL 时整体求值为 NULL——PostgreSQL CHECK 只拒绝 FALSE，NULL 视为通过，
-    NULL 网页证据可绕过约束。本测试先证明合法 WEB 与非 WEB 行被接受（OR
-    分支语义不回归），再逐一证明 WEB source_url=NULL 与 page_hash=NULL 被
-    拒绝（断言消息指明逃逸的可空字段）。修复前本测试必须 RED（NULL 行被
-    接受），修复后 GREEN。
+    PostgreSQL CHECK 只拒绝 FALSE，NULL 视为通过，因此每个必填证据字段都
+    必须显式包含 ``IS NOT NULL``。本测试先证明合法 WEB 与非 WEB 行被接受，
+    再逐一证明 WEB 的 source_url、page_hash 与 snapshot_artifact_ref 任一为
+    NULL 都被拒绝。
     """
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
@@ -3960,6 +3961,7 @@ async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
+    tenant = "tn_01K3H0T8NBWM3KGT9XQ06YRC5V"
 
     async def _insert(
         signal_id: str,
@@ -3967,35 +3969,62 @@ async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
         source_id: str,
         source_url: str | None,
         page_hash: str | None,
+        snapshot_artifact_ref: str | None = "art_01K3H0T8NBWM3KGT9XQ06YRC5V",
     ) -> None:
         url_lit = "NULL" if source_url is None else f"'{source_url}'"
         hash_lit = "NULL" if page_hash is None else f"'{page_hash}'"
+        artifact_lit = (
+            "NULL"
+            if snapshot_artifact_ref is None
+            else f"'{snapshot_artifact_ref}'"
+        )
         sql = (
             "INSERT INTO demand_signals (tenant_id, signal_id, signal_type, "
             "entity_name, raw_observation, observed_at, status, source_type, "
-            "source_id, extracted_by, extracted_at, source_url, page_hash) "
+            "source_id, extracted_by, extracted_at, source_url, page_hash, "
+            "snapshot_artifact_ref) "
             "VALUES "
-            f"('t1','{signal_id}','product_line_expansion','Acme','obs',"
+            f"('{tenant}','{signal_id}','product_line_expansion','Acme','obs',"
             f"'2026-08-17T09:00:00Z','captured','{source_type}',"
-            f"'{source_id}','m1','2026-08-17T09:00:00Z',{url_lit},{hash_lit})"
+            f"'{source_id}','m1','2026-08-17T09:00:00Z',{url_lit},{hash_lit},"
+            f"{artifact_lit})"
         )
         async with engine.begin() as conn:
             await conn.execute(text(sql))
 
     try:
-        # 合法 WEB 行（url/hash 非空且 source_id == page_hash）必须被接受
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO raw_artifacts "
+                    "(tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,"
+                    "object_key,uploaded_by,uploaded_at) VALUES "
+                    "(:tenant,'art_01K3H0T8NBWM3KGT9XQ06YRC5V','web_snapshot',"
+                    ":hash,20,'text/html',"
+                    ":object_key,NULL,now())"
+                ),
+                {
+                    "tenant": tenant,
+                    "hash": "c" * 64,
+                    "object_key": (
+                        f"raw/{tenant}/art_01K3H0T8NBWM3KGT9XQ06YRC5V"
+                    ),
+                },
+            )
+        # 合法 WEB 行（证据四元组完整）必须被接受
         await _insert(
             "sig_web_ok",
             "web_page",
-            "sha256:pwebok",
+            "c" * 64,
             "https://example.com/a",
-            "sha256:pwebok",
+            "c" * 64,
         )
         # 合法非 WEB 行（url/hash 可为 NULL）必须被接受
         await _insert(
             "sig_conv_ok",
             "conversation",
             "sha256:pconv",
+            None,
             None,
             None,
         )
@@ -4028,6 +4057,21 @@ async def test_0021_demand_signals_web_evidence_rejects_null_url_or_hash(
         else:
             raise AssertionError(
                 "RED：web 行 page_hash=NULL 未被 ck_demand_signals_web_evidence 拒绝"
+            )
+        try:
+            await _insert(
+                "sig_web_null_artifact",
+                "web_page",
+                "sha256:pnullartifact",
+                "https://example.com/a",
+                "sha256:pnullartifact",
+                None,
+            )
+        except IntegrityError:
+            pass
+        else:
+            raise AssertionError(
+                "web 行 snapshot_artifact_ref=NULL 未被证据约束拒绝"
             )
     finally:
         await engine.dispose()
@@ -4754,5 +4798,155 @@ async def test_0032_country_policy_downgrade_roundtrip(db_url: str) -> None:
                 == _ALEMBIC_HEAD
             )
     finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
+    db_url: str,
+) -> None:
+    """0034 降级后从不可变 raw artifact 元数据确定性恢复需求信号引用。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+    from shared.schemas.identifiers import new_id
+
+    tenant = new_id("tn")
+    artifact = new_id("art")
+    duplicate_artifact = new_id("art")
+    signal = new_id("sig")
+    page_hash = "b" * 64
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.begin() as conn:
+            # 迁移往返测试拥有 disposable 集成库；先移除其他测试通过旧公开
+            # service 契约直插、且没有 RawArtifact 对应物的历史信号。真实升级
+            # 对这类不可恢复证据必须 fail-closed，不能合成虚假 artifact 引用。
+            await conn.execute(text("DELETE FROM demand_signals"))
+            await conn.execute(
+                text(
+                    "INSERT INTO raw_artifacts "
+                    "(tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,"
+                    "object_key,uploaded_by,uploaded_at) VALUES "
+                    "(:tenant,:artifact,'web_snapshot',:hash,20,'text/html',"
+                    ":object_key,NULL,:now)"
+                ),
+                {
+                    "tenant": tenant,
+                    "artifact": artifact,
+                    "hash": page_hash,
+                    "object_key": f"raw/{tenant}/{artifact}",
+                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                },
+            )
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO raw_artifacts "
+                        "(tenant_id,artifact_id,kind,content_hash,size_bytes,"
+                        "mime_type,object_key,uploaded_by,uploaded_at) VALUES "
+                        "(:tenant,:artifact,'web_snapshot',:hash,20,'text/html',"
+                        ":object_key,NULL,:now)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "artifact": duplicate_artifact,
+                        "hash": page_hash,
+                        "object_key": f"raw/{tenant}/{duplicate_artifact}",
+                        "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                    },
+                )
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO demand_signals "
+                    "(tenant_id,signal_id,signal_type,entity_name,raw_observation,"
+                    "observed_at,status,source_type,source_id,extracted_by,"
+                    "extracted_at,source_url,page_hash,snapshot_artifact_ref) VALUES "
+                    "(:tenant,:signal,'product_line_expansion','Acme','expanded',"
+                    ":now,'captured','web_page',:hash,'model-v1',:now,"
+                    "'https://example.com/news',:hash,:artifact)"
+                ),
+                {
+                    "tenant": tenant,
+                    "signal": signal,
+                    "hash": page_hash,
+                    "artifact": artifact,
+                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                },
+            )
+        _run_alembic(db_url, "downgrade", "0033")
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(
+                lambda sync: {
+                    item["name"]
+                    for item in inspect(sync).get_columns("demand_signals")
+                }
+            )
+        assert "snapshot_artifact_ref" not in columns
+
+        _run_alembic(db_url, "upgrade", "0034")
+        async with engine.connect() as conn:
+            restored = await conn.scalar(
+                text(
+                    "SELECT snapshot_artifact_ref FROM demand_signals "
+                    "WHERE tenant_id=:tenant AND signal_id=:signal"
+                ),
+                {"tenant": tenant, "signal": signal},
+            )
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        assert restored == artifact
+        assert revision == _ALEMBIC_HEAD
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0034_snapshot_artifact_backfill_missing_match_fails_closed(
+    db_url: str,
+) -> None:
+    """0034 不为无法关联到 RawArtifact 的历史网页信号伪造证据引用。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+    from shared.schemas.identifiers import new_id
+
+    tenant = new_id("tn")
+    signal = new_id("sig")
+    page_hash = "d" * 64
+    engine = create_engine_from(db_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM demand_signals"))
+        _run_alembic(db_url, "downgrade", "0033")
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO demand_signals "
+                    "(tenant_id,signal_id,signal_type,entity_name,raw_observation,"
+                    "observed_at,status,source_type,source_id,extracted_by,"
+                    "extracted_at,source_url,page_hash) VALUES "
+                    "(:tenant,:signal,'product_line_expansion','Acme','expanded',"
+                    ":now,'captured','web_page',:hash,'model-v1',:now,"
+                    "'https://example.com/news',:hash)"
+                ),
+                {
+                    "tenant": tenant,
+                    "signal": signal,
+                    "hash": page_hash,
+                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                },
+            )
+        with pytest.raises(AssertionError, match="alembic upgrade 0034"):
+            _run_alembic(db_url, "upgrade", "0034")
+        async with engine.connect() as conn:
+            revision = await conn.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+        assert revision == "0033"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM demand_signals"))
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

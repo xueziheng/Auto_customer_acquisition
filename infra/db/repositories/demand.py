@@ -66,6 +66,7 @@ def _signal_to_row(signal: DemandSignal) -> DemandSignalRow:
         confirmed_at=signal.provenance.confirmed_at,
         source_url=signal.provenance.source_url,
         page_hash=signal.provenance.page_hash,
+        snapshot_artifact_ref=signal.snapshot_artifact_ref,
     )
 
 
@@ -83,6 +84,7 @@ def _row_to_signal(row: DemandSignalRow) -> DemandSignal:
             ProspectAccountId(row.account_id) if row.account_id is not None else None
         ),
         discard_reason=row.discard_reason,
+        snapshot_artifact_ref=row.snapshot_artifact_ref,
         provenance=Provenance(
             source_type=SourceType(row.source_type),
             source_id=row.source_id,
@@ -128,6 +130,7 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
                 confirmed_at=signal.provenance.confirmed_at,
                 source_url=signal.provenance.source_url,
                 page_hash=signal.provenance.page_hash,
+                snapshot_artifact_ref=signal.snapshot_artifact_ref,
             )
             .on_conflict_do_nothing(constraint="uq_demand_signals_source_identity")
         )

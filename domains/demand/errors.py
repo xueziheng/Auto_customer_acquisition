@@ -20,10 +20,10 @@ class InsufficientEvidenceError(PolicyViolation):
 
 
 class MissingWebEvidenceError(ValidationError):
-    """网页来源的信号缺少 URL 或 page_hash。
+    """网页来源的信号缺少 URL、page_hash 或不可变 snapshot artifact。
 
-    没有哈希的网页证据在页面变更后无法自证当时看到了什么，
-    等于没有证据。
+    哈希只能证明内容值；没有不可变快照引用，页面变更后仍无法取回当时内容，
+    因而证据链不完整。
     """
 
 

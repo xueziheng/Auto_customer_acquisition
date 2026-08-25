@@ -84,7 +84,7 @@ class DemandService(Protocol):
 
         实现要求：
         - 输入（SignalCaptureRequest）由调用方提供 source_id/extracted_by；
-          WEB_PAGE 时 source_id == page_hash 且 source_url/page_hash 必填，
+          WEB_PAGE 时 source_id == page_hash 且 URL/hash/不可变快照引用必填，
           缺失抛 MissingWebEvidenceError
         - 去重 key = (tenant_id, entity_name, signal_type, source_type,
           source_id)（全非空 5 列）：同一来源身份视为同一信号，返回已有

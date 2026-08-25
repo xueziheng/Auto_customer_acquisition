@@ -21,6 +21,9 @@ _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _HYPOTHESIS_RE = re.compile(rf"hyp_{_ULID}")
 _SIGNAL_RE = re.compile(rf"sig_{_ULID}")
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,63}")
+_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
+_DATE_LIKE = re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}")
 _OUTPUT_KEYS = frozenset(
     {
         "entity_name",
@@ -83,6 +86,27 @@ def _canonical_domain(value: object) -> str:
     return canonical
 
 
+def _redact_contacts(value: str) -> str:
+    redacted = _EMAIL.sub("[CONTACT_REDACTED]", value)
+    return _PHONE.sub(
+        lambda match: (
+            match.group(0)
+            if _DATE_LIKE.fullmatch(match.group(0)) is not None
+            else "[CONTACT_REDACTED]"
+        ),
+        redacted,
+    )
+
+
+def _contact_free_source_url(value: object) -> str | None:
+    source_url = _optional_text(value, max_len=2_000)
+    if source_url is None:
+        return None
+    if _EMAIL.search(source_url) is not None or _PHONE.search(source_url) is not None:
+        return None
+    return source_url
+
+
 class AccountDiscoveryAgent(CapabilityAgent):
     """验证企业公开事实输出并生成一个低风险 Prospecting ChangeSet。"""
 
@@ -123,8 +147,10 @@ class AccountDiscoveryAgent(CapabilityAgent):
         hypothesis_id = _exact_text(raw.get("hypothesis_id"), max_len=40)
         if _HYPOTHESIS_RE.fullmatch(hypothesis_id) is None:
             raise ValidationError("account discovery 任务输入无效")
-        category = _exact_text(raw.get("category"), max_len=200)
-        reasoning = _exact_text(raw.get("reasoning"), max_len=4_000)
+        category = _redact_contacts(_exact_text(raw.get("category"), max_len=200))
+        reasoning = _redact_contacts(
+            _exact_text(raw.get("reasoning"), max_len=4_000)
+        )
         countries = tuple(
             sorted({_exact_text(value, max_len=64) for value in allowed_countries})
         )
@@ -153,10 +179,10 @@ class AccountDiscoveryAgent(CapabilityAgent):
             evidence.append(
                 {
                     "signal_id": signal_id,
-                    "summary": _exact_text(item.get("summary"), max_len=4_000),
-                    "source_url": _optional_text(
-                        item.get("source_url"), max_len=2_000
+                    "summary": _redact_contacts(
+                        _exact_text(item.get("summary"), max_len=4_000)
                     ),
+                    "source_url": _contact_free_source_url(item.get("source_url")),
                 }
             )
         return {

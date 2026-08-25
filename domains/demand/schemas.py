@@ -29,6 +29,8 @@ class DemandSignalView:
     source_type: str
     source_ref: str
     source_url: str | None
+    page_hash: str | None
+    snapshot_artifact_ref: str | None
     is_inference: bool = False
 
 
@@ -64,11 +66,12 @@ class SignalCaptureRequest:
         possible_need:  可能的需求方向（参考，不是结论）
         source_url:     网页来源必填
         page_hash:      网页来源必填
+        snapshot_artifact_ref: 网页不可变快照引用，网页来源必填
         observed_at
         source_type:    见 ``SourceType``
 
-    校验：``source_type == WEB_PAGE`` 时 ``source_url`` 与 ``page_hash``
-    必填，且 ``source_id == page_hash``。服务层拒绝不合格入参，不做"友好补全"。
+    校验：``source_type == WEB_PAGE`` 时 URL、hash 与不可变快照引用必填，
+    且 ``source_id == page_hash``。服务层拒绝不合格入参，不做"友好补全"。
     """
 
     signal_type: str
@@ -84,6 +87,7 @@ class SignalCaptureRequest:
     possible_need: str | None = None
     source_url: str | None = None
     page_hash: str | None = None
+    snapshot_artifact_ref: str | None = None
 
 
 @dataclass(frozen=True)

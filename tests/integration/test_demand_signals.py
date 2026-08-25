@@ -40,6 +40,7 @@ NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
 #: 生产内容 marker：outbox/log/error 均不得出现（规格 §5/§7/§9.2）
 OBSERVATION_MARKER = "Acme SECRET-OBSERVATION-42 opened a new plant in Rotterdam."
 NEED_MARKER = "stainless steel hinges SECRET-NEED-42"
+SNAPSHOT_ARTIFACT_REF = "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
 
 
 @dataclass
@@ -87,6 +88,7 @@ def _request(**overrides: object) -> SignalCaptureRequest:
         "extracted_by": "model-v1",
         "source_url": "https://example.com/acme-expansion",
         "page_hash": "sha256:pagehash001",
+        "snapshot_artifact_ref": SNAPSHOT_ARTIFACT_REF,
         "possible_need": NEED_MARKER,
     }
     fields.update(overrides)
@@ -124,7 +126,7 @@ async def _signal_rows(
 
 
 async def test_capture_roundtrip_persists_all_columns(demand_db: AsyncEngine) -> None:
-    """capture 落库：18 列全往返（含 provenance 展开列、confirmed pair None、
+    """capture 落库：19 列全往返（含网页证据四元组、confirmed pair None、
     possible_need/account_id/discard_reason None）。"""
     factory = async_sessionmaker(demand_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
@@ -153,10 +155,11 @@ async def test_capture_roundtrip_persists_all_columns(demand_db: AsyncEngine) ->
     assert row.confirmed_by is None and row.confirmed_at is None
     assert row.source_url == "https://example.com/acme-expansion"
     assert row.page_hash == "sha256:pagehash001"
+    assert row.snapshot_artifact_ref == SNAPSHOT_ARTIFACT_REF
 
 
 async def test_capture_web_evidence_fail_closed(demand_db: AsyncEngine) -> None:
-    """WEB_PAGE 缺 url/hash 或 source_id != page_hash → MissingWebEvidenceError。"""
+    """WEB_PAGE 缺证据四元组或 source_id != page_hash 时拒绝。"""
     factory = async_sessionmaker(demand_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
@@ -165,6 +168,8 @@ async def test_capture_web_evidence_fail_closed(demand_db: AsyncEngine) -> None:
     cases = [
         {"source_url": None},
         {"page_hash": None},
+        {"snapshot_artifact_ref": None},
+        {"snapshot_artifact_ref": "art_invalid"},
         {"source_id": "sha256:other", "page_hash": "sha256:pagehash001"},
     ]
     for overrides in cases:
@@ -189,6 +194,7 @@ async def test_capture_non_web_different_source_ids_are_distinct(
             source_id="msg_conv_001",
             source_url=None,
             page_hash=None,
+            snapshot_artifact_ref=None,
         ),
     )
     second = await service.capture_signal(
@@ -198,6 +204,7 @@ async def test_capture_non_web_different_source_ids_are_distinct(
             source_id="msg_conv_002",
             source_url=None,
             page_hash=None,
+            snapshot_artifact_ref=None,
         ),
     )
     assert first != second
@@ -295,6 +302,7 @@ async def test_demand_signals_db_checks_fail_closed(demand_db: AsyncEngine) -> N
             "extracted_at": NOW,
             "source_url": "https://example.com/acme",
             "page_hash": "sha256:pagehash001",
+            "snapshot_artifact_ref": SNAPSHOT_ARTIFACT_REF,
         }
 
     bad_cases = [
@@ -356,6 +364,7 @@ async def test_capture_repo_tenant_mismatch_raises(demand_db: AsyncEngine) -> No
         raw_observation=OBSERVATION_MARKER,
         observed_at=NOW,
         provenance=_provenance_for(),
+        snapshot_artifact_ref=SNAPSHOT_ARTIFACT_REF,
     )
     async with uow_type(factory, tenant_b, now=clock.now) as uow:
         with pytest.raises(TenantIsolationViolation):
@@ -555,6 +564,7 @@ async def test_discard_linked_rejected(demand_db: AsyncEngine) -> None:
                 extracted_at=NOW,
                 source_url="https://example.com/acme",
                 page_hash="sha256:pagehash001",
+                snapshot_artifact_ref=SNAPSHOT_ARTIFACT_REF,
             )
         )
         await session.commit()
@@ -671,6 +681,7 @@ async def test_discard_snapshot_semantics_and_rollback(demand_db: AsyncEngine) -
         raw_observation=OBSERVATION_MARKER,
         observed_at=NOW,
         provenance=_provenance_for(),
+        snapshot_artifact_ref=SNAPSHOT_ARTIFACT_REF,
     )
     async with uow_type(factory, tenant, now=clock.now) as uow:
         assert await uow.signals.add(signal) is True
@@ -691,6 +702,7 @@ async def test_discard_snapshot_semantics_and_rollback(demand_db: AsyncEngine) -
         raw_observation=OBSERVATION_MARKER,
         observed_at=NOW,
         provenance=_provenance_for(),
+        snapshot_artifact_ref=SNAPSHOT_ARTIFACT_REF,
     )
     async with uow_type(factory, tenant, now=clock.now) as uow:
         assert await uow.signals.add(fresh) is True  # 提交：fresh 为 CAPTURED

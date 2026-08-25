@@ -638,4 +638,4 @@ async def test_migration_upgrade_downgrade_upgrade_round_trip(
     alembic_runner("downgrade", "0032")
     alembic_runner("upgrade", "0033")
     alembic_runner("downgrade", "0032")
-    alembic_runner("upgrade", "0033")
+    alembic_runner("upgrade", "head")

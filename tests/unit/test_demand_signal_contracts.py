@@ -42,10 +42,12 @@ def test_signal_capture_request_requires_source_id_and_extracted_by() -> None:
         extracted_by="model-v1",
         source_url="https://example.com/acme",
         page_hash="sha256:pagehash001",
+        snapshot_artifact_ref="art_01K3H0T8NBWM3KGT9XQ06YRC5V",
         possible_need="stainless steel hinges",
     )
     assert request.source_id == "sha256:pagehash001"
     assert request.extracted_by == "model-v1"
+    assert request.snapshot_artifact_ref == "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
     # 必填性（GREEN 阶段执行）：省略任一必填字段都必须 TypeError——
     # 若实现给了默认值，以下断言即失败
     base: dict[str, Any] = {
