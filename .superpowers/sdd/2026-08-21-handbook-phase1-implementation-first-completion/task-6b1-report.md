@@ -345,3 +345,56 @@ ChangeSet 的操作改为 `bind_account`，payload 身份全部从可信 task pr
   的相应回归仍包含在全库 GREEN 中。
 - 未使用真实网络、Hunter/Gmail key、客户发送、部署或 push，也不据此作运营完成声明。
   预存未跟踪 `apps/web/node_modules` 未提交。
+
+## Code Review Fix Round 4/5
+
+第三次 scoped review 发现 round 3 的生产链测试只证明 URL path/query 不进入模型和
+workflow patch，但 `DemandSignalCaptured.source_url` 仍会把完整 provenance URL 复制到
+durable outbox。本轮修复共享事件契约并增加真实 PostgreSQL outbox 持久化回归。
+
+### 消费者审计与契约决策
+
+全库审计确认 `DemandSignalCaptured` 没有读取 `source_url` 的生产订阅方；现有引用仅是
+producer、EVENT_REGISTRY、序列化/持久化与契约测试。按 `shared/AGENTS.md` 的公共事件
+变更纪律新增 ADR 0011。
+
+事件契约现在只含：
+
+```text
+tenant_id + occurred_at + run_id
+signal_id + entity_name + signal_type
+```
+
+`signal_id` 是 tenant-bound Demand provenance 的安全回查引用。完整 URL、page hash 与
+snapshot artifact ref 继续在同一 Demand signal 行中持久化，`list_signals` 仍为内部 UI
+返回完整 `source_url`；事件类型本身删除 `source_url`，因此后续 producer 也无法再次把
+任意 URL path/query 写入新 outbox。历史 outbox payload 不做破坏性改写。
+
+### Round 4 RED → GREEN
+
+- 新增直接生产持久化测试，以
+  `https://example.com/people/Alice-SMITH?ref=alice` 捕获真实 web signal；首次运行
+  `1 failed`：Demand row 与 `list_signals` 正确保留完整 URL，但 PostgreSQL
+  `outbox_events.event_payload` 同时包含完整 `source_url`。
+- 修复后 focused event-contract/serialization/PostgreSQL outbox：`46 passed in 6.82s`。
+- Demand signal/hypothesis、outbox serialization/transaction/delivery、round-3 agent 与
+  workflow 受影响聚合：`159 passed in 54.86s`。
+- Ruff（全部 round-4 changed Python）：`All checks passed!`。
+- Mypy（shared、demand、outbox）：`21 source files`，无问题。
+- 项目 Python 3.12 运行 `scripts/check_boundaries.py`：七项全部通过。
+- `scripts/scan_sensitive.py`：exit 0、无输出。
+- `scripts/run_alembic.py heads`：唯一 `0034 (head)`。
+- `git diff --check`：exit 0。
+- 生产代码与 ADR 提交：`e44e45dedaec402d97eb8deb94ac6b9c93d577e3`。
+
+### 兼容性与剩余风险
+
+- 这是有 ADR 的共享事件收窄：仍在构造 `DemandSignalCaptured(source_url=...)` 或直接读取
+  该属性的外部代码必须改为以 tenant_id + signal_id 调用 Demand 公共读取接口。本库审计
+  未发现此类生产消费者。
+- 完整来源 URL 没有丢失，仍受 Demand repository 的 tenant filter、网页证据四元组与
+  artifact tenant/kind/hash/FK 约束；只是停止复制到异步分发面。
+- Round 3 的 canonical host/account 绑定、round 1/2 的 probability 与 artifact 修复未
+  改动，并包含在本轮受影响 GREEN 中。
+- 未使用真实网络、外部密钥、客户发送、部署或 push；预存未跟踪
+  `apps/web/node_modules` 未提交。
