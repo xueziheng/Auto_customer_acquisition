@@ -377,11 +377,14 @@ class PostgresWorkflowEngine:
 
         逐 step 独立事务：``FOR UPDATE SKIP LOCKED`` 领取；handler 的
         TransientError 退避/永久失败都在同事务提交，不阻塞本批其他步骤。
+        同租户可由多个只注册部分流程的 worker 共享表；本 engine 只领取自己
+        已注册的 ``(workflow_type, workflow_version)``，不得把其他流程误判失败。
         **commit/flush/DB 级异常也在迭代内隔离**：回滚后用新事务把该 step/run
         标记 FAILED（固定脱敏错误），本批其余步骤不中断；坏 step 记入
         ``tried_step_ids`` 避免同批立即重复领取（无 tight loop）。
         """
-        if limit <= 0:
+        registered_definitions = tuple(self._definitions)
+        if limit <= 0 or not registered_definitions:
             return 0
         now = self._now()
         processed = 0
@@ -420,6 +423,10 @@ class PostgresWorkflowEngine:
                         .where(
                             WorkflowStepRow.tenant_id == tenant_id,
                             WorkflowRunRow.tenant_id == tenant_id,
+                            tuple_(
+                                WorkflowRunRow.workflow_type,
+                                WorkflowRunRow.workflow_version,
+                            ).in_(registered_definitions),
                             WorkflowRunRow.status == StepStatus.RUNNING.value,
                             WorkflowRunRow.current_step
                             == WorkflowStepRow.step_name,

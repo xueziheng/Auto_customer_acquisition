@@ -657,6 +657,58 @@ async def test_poll_due_skip_locked_no_double_claim(db_url: str) -> None:
         await handle_b.dispose()
 
 
+async def test_poll_due_does_not_claim_workflow_types_unregistered_on_this_engine(
+    db_url: str,
+) -> None:
+    """同租户多 worker 可注册互斥流程；各自只能领取自己的 (type, version)。"""
+    calls: list[str] = []
+
+    def _h(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        calls.append(run.workflow_type)
+        return ("complete", None, {})
+
+    engine_a, handle_a = _make_engine(db_url, {"h": _handler(_h)})
+    engine_b, handle_b = _make_engine(db_url, {"h": _handler(_h)})
+    definition_a = WorkflowDefinition(
+        workflow_type="worker-a",
+        version=1,
+        steps=(StepDefinition("first", "h"),),
+        transitions={},
+    )
+    definition_b = WorkflowDefinition(
+        workflow_type="worker-b",
+        version=1,
+        steps=(StepDefinition("first", "h"),),
+        transitions={},
+    )
+    try:
+        engine_a.register(definition_a)
+        engine_b.register(definition_b)
+        tenant = TenantId("tDisjointWorkers")
+        run_id = await engine_a.start(
+            tenant,
+            "worker-a",
+            "owned-by-a",
+            {},
+            "disjoint-worker-a",
+        )
+
+        assert await engine_b.poll_due(tenant, 10) == 0
+        untouched = await _query_run(handle_a, str(tenant), run_id)
+        assert untouched is not None
+        assert untouched["status"] == "running"
+        assert untouched["last_error"] is None
+        assert calls == []
+
+        assert await engine_a.poll_due(tenant, 10) == 1
+        completed = await _query_run(handle_a, str(tenant), run_id)
+        assert completed is not None and completed["status"] == "completed"
+        assert calls == ["worker-a"]
+    finally:
+        await handle_a.dispose()
+        await handle_b.dispose()
+
+
 async def test_poll_due_one_step_failure_does_not_block_batch(db_url: str) -> None:
     """每步独立事务：一个 run 永久失败不阻塞本批其他 run 的推进。"""
     def _h(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
