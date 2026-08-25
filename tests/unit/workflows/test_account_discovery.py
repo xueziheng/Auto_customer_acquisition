@@ -44,6 +44,7 @@ from workflows.account_discovery.steps import (
     EnrollCampaignStep,
     FindCompanyDetailsStep,
     FindContactsStep,
+    ResolveAccountStep,
     VerifyContactsStep,
 )
 from workflows.engine.runner import StepStatus, WorkflowRun
@@ -58,6 +59,7 @@ class _UnsafeFreeTextDemandView:
             account_id=new_id("acc"),
             organization_name="Google",
             country="US",
+            website_domain="google.com",
             category="五金",
             source_signal_refs=(signal_id,),
             reasoning="alice and ALICE SMITH may buy hinges",
@@ -85,6 +87,7 @@ async def test_task_reader_omits_arbitrary_free_text_and_url_paths() -> None:
     assert loaded.hypothesis_id == hypothesis_id
     assert loaded.organization.entity_name == "Google"
     assert loaded.organization.country == "US"
+    assert loaded.organization.website_domain == "google.com"
     assert loaded.category == "五金"
     assert loaded.source_signal_refs
     assert not hasattr(loaded, "hypothesis")
@@ -315,6 +318,7 @@ class _AccountTaskReader:
                 account_id=ProspectAccountId(new_id("acc")),
                 entity_name="Acme Manufacturing",
                 country="US",
+                website_domain="example.com",
             ),
             category="industrial hinges",
             source_signal_refs=(signal_id,),
@@ -335,3 +339,124 @@ async def test_unsafe_model_output_never_enters_persisted_context_patch() -> Non
     assert patch == {"company_resolution": "no_evidence"}
     assert "Alice" not in repr(patch)
     assert "alice@example.com" not in repr(patch)
+
+
+class _MaliciousRedirectModel:
+    async def discover_account(self, *, system_prompt, hypothesis):
+        del system_prompt, hypothesis
+        return (
+            '{"evidence_sufficient":true,"website_domain":"google.com",'
+            '"source_signal_refs":[]}'
+        )
+
+
+class _BoundAppleTaskReader:
+    def __init__(self, account_id: ProspectAccountId, signal_id: str) -> None:
+        self.account_id = account_id
+        self.signal_id = signal_id
+
+    async def load(self, tenant_id, hypothesis_id, acting_user):
+        del tenant_id, acting_user
+        return AccountDiscoveryTaskInput(
+            objective="验证现有企业证据",
+            hypothesis_id=hypothesis_id,
+            organization=AccountDiscoveryOrganizationFact(
+                account_id=self.account_id,
+                entity_name="Apple",
+                country="US",
+                website_domain="apple.com",
+            ),
+            category="五金",
+            source_signal_refs=(self.signal_id,),
+            allowed_countries=("US",),
+        )
+
+
+async def test_malicious_domain_cannot_redirect_existing_account_workflow() -> None:
+    run = _run()
+    account_id = ProspectAccountId(new_id("acc"))
+    signal_id = new_id("sig")
+    agent = AccountDiscoveryAgent(
+        "model-v1", _MaliciousRedirectModel(), object(), CredentialMarkerGuard()
+    )
+
+    action, next_step, patch = await FindCompanyDetailsStep(
+        _BoundAppleTaskReader(account_id, signal_id), agent, _ActorResolver()
+    ).execute(run)
+
+    assert (action, next_step) == ("complete", None)
+    assert patch == {"company_resolution": "no_evidence"}
+    assert "google.com" not in repr(patch)
+
+
+class _SufficientEvidenceModel:
+    async def discover_account(self, *, system_prompt, hypothesis):
+        del system_prompt
+        return (
+            '{"evidence_sufficient":true,"source_signal_refs":["'
+            + hypothesis["source_signal_refs"][0]
+            + '"]}'
+        )
+
+
+class _ExistingAppleProspecting:
+    def __init__(self, tenant_id: TenantId, account_id: ProspectAccountId) -> None:
+        self.account = ProspectAccountView(
+            account_id,
+            tenant_id,
+            "Apple",
+            "US",
+            NOW,
+            website_domain="apple.com",
+        )
+        self.resolve_calls = 0
+
+    async def get_account(self, tenant_id, account_id):
+        assert (tenant_id, account_id) == (
+            self.account.tenant_id,
+            self.account.account_id,
+        )
+        return self.account
+
+    async def resolve_account(self, tenant_id, request):
+        del tenant_id, request
+        self.resolve_calls += 1
+        raise AssertionError("既有 account 绑定不得重新消歧")
+
+
+async def test_existing_account_id_and_domain_survive_model_and_resolve_step() -> None:
+    run = _run()
+    account_id = ProspectAccountId(new_id("acc"))
+    signal_id = new_id("sig")
+    agent = AccountDiscoveryAgent(
+        "model-v1", _SufficientEvidenceModel(), object(), CredentialMarkerGuard()
+    )
+    action, next_step, patch = await FindCompanyDetailsStep(
+        _BoundAppleTaskReader(account_id, signal_id), agent, _ActorResolver()
+    ).execute(run)
+    assert (action, next_step) == ("advance", "resolve_account")
+    assert patch["account_candidate"]["account_id"] == account_id
+    assert patch["account_candidate"]["website_domain"] == "apple.com"
+
+    bound_context = dict(run.context)
+    bound_context.update(patch)
+    bound_run = WorkflowRun(
+        run.run_id,
+        run.tenant_id,
+        run.workflow_type,
+        run.workflow_version,
+        run.subject_ref,
+        "resolve_account",
+        run.status,
+        run.created_at,
+        context=bound_context,
+    )
+    prospecting = _ExistingAppleProspecting(run.tenant_id, account_id)
+
+    action, next_step, resolve_patch = await ResolveAccountStep(prospecting).execute(
+        bound_run
+    )
+
+    assert (action, next_step) == ("advance", "find_contacts")
+    assert resolve_patch == {"account_id": account_id}
+    assert prospecting.resolve_calls == 0

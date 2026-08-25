@@ -77,6 +77,7 @@ class DemandAccountDiscoveryTaskReader:
                 account_id=ProspectAccountId(view.account_id),
                 entity_name=view.organization_name,
                 country=view.country,
+                website_domain=view.website_domain,
             ),
             category=view.category,
             source_signal_refs=view.source_signal_refs,

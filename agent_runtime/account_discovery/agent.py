@@ -1,8 +1,8 @@
-"""AccountDiscoveryAgent：以结构化组织事实解析官网域名。
+"""AccountDiscoveryAgent：验证既有企业绑定的证据充分性。
 
 模型只读取 tenant-bound 企业名/国家、typed category 与 opaque evidence refs；
-推断、观察摘要和 URL 不进入模型。模型只返回官网域名与 evidence refs，ChangeSet
-中的企业身份完全来自可信投影，因此无需猜测自由文本里哪个词是人名。
+推断、观察摘要和 URL 不进入模型。模型只返回证据充分性与 evidence refs，ChangeSet
+中的 account_id、企业名与官网域名全部来自可信投影。
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ _HYPOTHESIS_RE = re.compile(rf"hyp_{_ULID}")
 _ACCOUNT_RE = re.compile(rf"acc_{_ULID}")
 _SIGNAL_RE = re.compile(rf"sig_{_ULID}")
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-_OUTPUT_KEYS = frozenset({"website_domain", "source_signal_refs"})
+_OUTPUT_KEYS = frozenset({"evidence_sufficient", "source_signal_refs"})
 
 _SYSTEM_PROMPT = """你是 TradeOS 的企业发现能力。输入只含可信组织事实、需求类别和证据 ID。
 只输出一个 JSON 对象，禁止 Markdown、解释或额外键。输出字段固定为：
-website_domain, source_signal_refs。website_domain 必须是企业公开官网域名，不含协议或路径。
+evidence_sufficient, source_signal_refs。evidence_sufficient 只能是布尔值。
 source_signal_refs 只能引用输入中的 signal ID。没有足够证据时输出空对象 {}。
-禁止输出企业名、联系人信息、自由文本、凭证、动作、概率或金额。
+禁止输出或改写 account_id、企业名、官网域名、联系人信息、自由文本、凭证、动作、概率或金额。
 """
 
 
@@ -104,7 +104,8 @@ class AccountDiscoveryAgent(CapabilityAgent):
         allowed_countries = task.inputs.get("allowed_countries")
         if (
             not isinstance(organization, dict)
-            or set(organization) != {"account_id", "entity_name", "country"}
+            or set(organization)
+            != {"account_id", "entity_name", "country", "website_domain"}
             or not isinstance(allowed_countries, tuple)
         ):
             raise ValidationError("account discovery 任务输入无效")
@@ -116,6 +117,7 @@ class AccountDiscoveryAgent(CapabilityAgent):
             raise ValidationError("account discovery 任务输入无效")
         entity_name = _exact_text(organization.get("entity_name"), max_len=200)
         country = _exact_text(organization.get("country"), max_len=64)
+        website_domain = _canonical_domain(organization.get("website_domain"))
         category = _exact_text(task.inputs.get("category"), max_len=200)
         countries = tuple(
             sorted({_exact_text(value, max_len=64) for value in allowed_countries})
@@ -131,8 +133,10 @@ class AccountDiscoveryAgent(CapabilityAgent):
         return {
             "hypothesis_id": hypothesis_id,
             "organization": {
+                "account_id": account_id,
                 "entity_name": entity_name,
                 "country": country,
+                "website_domain": website_domain,
             },
             "category": category,
             "source_signal_refs": refs,
@@ -152,7 +156,8 @@ class AccountDiscoveryAgent(CapabilityAgent):
             return None
         if not isinstance(payload, dict) or set(payload) != _OUTPUT_KEYS:
             raise ValidationError("企业发现模型输出含未授权字段")
-        domain = _canonical_domain(payload.get("website_domain"))
+        if payload.get("evidence_sufficient") is not True:
+            raise ValidationError("企业发现模型证据判断无效")
         raw_refs = payload.get("source_signal_refs")
         if not isinstance(raw_refs, list) or not raw_refs:
             raise ValidationError("企业发现模型输出缺少证据引用")
@@ -164,12 +169,10 @@ class AccountDiscoveryAgent(CapabilityAgent):
         if not isinstance(organization, dict):
             raise ValidationError("企业发现安全组织投影无效")
         return {
+            "account_id": organization["account_id"],
             "entity_name": organization["entity_name"],
             "country": organization["country"],
-            "website_domain": domain,
-            "entity_type": None,
-            "industry": None,
-            "size_hint": None,
+            "website_domain": organization["website_domain"],
             "source_signal_refs": refs,
         }
 
@@ -203,12 +206,12 @@ class AccountDiscoveryAgent(CapabilityAgent):
             changes=[
                 {
                     "domain": "prospecting",
-                    "operation": "resolve_account",
+                    "operation": "bind_account",
                     "payload": candidate,
                     "risk_level": "low",
                 }
             ],
-            summary="已生成 1 条企业消歧候选",
+            summary="已确认 1 条既有企业证据绑定",
         )
         return guard_phase1_change_set(candidate_change_set)
 

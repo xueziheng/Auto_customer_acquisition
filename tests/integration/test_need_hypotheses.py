@@ -134,6 +134,11 @@ class _AccountOrganizationFacts:
         assert account_ids == (self._account_id,)
         return {self._account_id: self._country}
 
+    async def domains_for(self, tenant_id, account_ids):
+        assert tenant_id == self._tenant_id
+        assert account_ids == (self._account_id,)
+        return {self._account_id: "apple.com"}
+
 
 async def _hypothesis_rows(
     factory: async_sessionmaker[AsyncSession], tenant: TenantId
@@ -209,6 +214,7 @@ async def test_discovery_view_exposes_only_typed_organization_and_opaque_evidenc
         "account_id": str(account_id),
         "organization_name": "Apple",
         "country": "US",
+        "website_domain": "apple.com",
         "category": "五金",
         "source_signal_refs": (signal_id,),
     }

@@ -30,6 +30,8 @@ def _task(
     *,
     organization_name: str = "Apple",
     category: str = "五金",
+    website_domain: str = "apple.com",
+    account_id: str | None = None,
     signal_id: str | None = None,
 ) -> AgentTask:
     source_ref = signal_id or new_id("sig")
@@ -41,9 +43,10 @@ def _task(
         inputs={
             "hypothesis_id": new_id("hyp"),
             "organization": {
-                "account_id": new_id("acc"),
+                "account_id": account_id or new_id("acc"),
                 "entity_name": organization_name,
                 "country": "US",
+                "website_domain": website_domain,
             },
             "category": category,
             "source_signal_refs": [source_ref],
@@ -69,7 +72,7 @@ async def test_structured_organization_projection_avoids_name_false_positives(
     signal_id = new_id("sig")
     model = _CapturingModel(
         {
-            "website_domain": website_domain,
+            "evidence_sufficient": True,
             "source_signal_refs": [signal_id],
         }
     )
@@ -80,6 +83,7 @@ async def test_structured_organization_projection_avoids_name_false_positives(
     task = _task(
         organization_name=organization_name,
         category=category,
+        website_domain=website_domain,
         signal_id=signal_id,
     )
     result = await agent.run(task, None)
@@ -88,20 +92,20 @@ async def test_structured_organization_projection_avoids_name_false_positives(
     assert model.calls[0]["hypothesis"] == {
         "hypothesis_id": task.inputs["hypothesis_id"],
         "organization": {
+            "account_id": task.inputs["organization"]["account_id"],
             "entity_name": organization_name,
             "country": "US",
+            "website_domain": website_domain,
         },
         "category": category,
         "source_signal_refs": (signal_id,),
     }
     payload = result.changes[0]["payload"]
     assert payload == {
+        "account_id": task.inputs["organization"]["account_id"],
         "entity_name": organization_name,
         "country": "US",
         "website_domain": website_domain,
-        "entity_type": None,
-        "industry": None,
-        "size_hint": None,
         "source_signal_refs": (signal_id,),
     }
 
@@ -126,13 +130,14 @@ async def test_account_output_is_canonical_public_fact_without_model_free_text()
     signal_id = new_id("sig")
     model = _CapturingModel(
         {
-            "website_domain": "EXAMPLE.COM.",
+            "evidence_sufficient": True,
             "source_signal_refs": [signal_id],
         }
     )
     task = _task(
         organization_name="General Electric",
         category="铰链",
+        website_domain="example.com",
         signal_id=signal_id,
     )
     agent = AccountDiscoveryAgent(
@@ -145,8 +150,6 @@ async def test_account_output_is_canonical_public_fact_without_model_free_text()
     payload = result.changes[0]["payload"]
     assert payload["entity_name"] == "General Electric"
     assert payload["website_domain"] == "example.com"
-    assert payload["entity_type"] is None
-    assert payload["industry"] is None
     assert not ({"email", "phone", "full_name", "confidence"} & set(payload))
 
 
@@ -167,7 +170,7 @@ async def test_every_unsafe_model_output_string_is_rejected_before_changeset(
 ) -> None:
     signal_id = new_id("sig")
     response: dict[str, object] = {
-        "website_domain": "example.com",
+        "evidence_sufficient": True,
         "source_signal_refs": [signal_id],
     }
     response.update(unsafe_extra)
@@ -182,3 +185,37 @@ async def test_every_unsafe_model_output_string_is_rejected_before_changeset(
     assert len(model.calls) == 1
     assert result.changes == []
     assert "护栏拦截" in result.summary
+
+
+async def test_model_cannot_redirect_or_merge_trusted_account_identity() -> None:
+    signal_id = new_id("sig")
+    account_id = new_id("acc")
+    model = _CapturingModel(
+        {
+            "evidence_sufficient": True,
+            "website_domain": "google.com",
+            "source_signal_refs": [signal_id],
+        }
+    )
+    agent = AccountDiscoveryAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+
+    result = await agent.run(
+        _task(
+            organization_name="Apple",
+            website_domain="apple.com",
+            account_id=account_id,
+            signal_id=signal_id,
+        ),
+        None,
+    )
+
+    assert model.calls[0]["hypothesis"]["organization"] == {
+        "account_id": account_id,
+        "entity_name": "Apple",
+        "country": "US",
+        "website_domain": "apple.com",
+    }
+    assert result.changes == []
+    assert "未授权字段" in result.summary

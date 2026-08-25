@@ -17,7 +17,6 @@ from domains.employees.service import EmployeeService
 from domains.outreach.schemas import EnrollmentCreateRequest
 from domains.outreach.service import OutreachService
 from domains.prospecting.schemas import (
-    AccountResolveRequest,
     ContactPointKind,
     ContactType,
     DiscoveredContactRequest,
@@ -122,6 +121,7 @@ class FindCompanyDetailsStep:
                         "account_id": str(source.organization.account_id),
                         "entity_name": source.organization.entity_name,
                         "country": source.organization.country,
+                        "website_domain": source.organization.website_domain,
                     },
                     "category": source.category,
                     "source_signal_refs": list(source.source_signal_refs),
@@ -139,7 +139,7 @@ class FindCompanyDetailsStep:
         change = result.changes[0]
         if (
             change.get("domain") != "prospecting"
-            or change.get("operation") != "resolve_account"
+            or change.get("operation") != "bind_account"
             or change.get("risk_level") != "low"
             or not isinstance(change.get("payload"), dict)
         ):
@@ -170,35 +170,23 @@ class ResolveAccountStep:
         refs = payload.get("source_signal_refs")
         if not isinstance(refs, (list, tuple)):
             raise ValidationError("账户发现企业来源无效")
-        account_id = await self._prospecting.resolve_account(
-            run.tenant_id,
-            AccountResolveRequest(
-                entity_name=_exact_text(payload.get("entity_name"), "账户发现企业名无效"),
-                country=_exact_text(payload.get("country"), "账户发现国家无效", max_len=64),
-                website_domain=_exact_text(
-                    payload.get("website_domain"), "账户发现官网无效", max_len=253
-                ),
-                entity_type=(
-                    None
-                    if payload.get("entity_type") is None
-                    else _exact_text(payload.get("entity_type"), "账户发现企业类型无效")
-                ),
-                industry=(
-                    None
-                    if payload.get("industry") is None
-                    else _exact_text(payload.get("industry"), "账户发现行业无效")
-                ),
-                size_hint=(
-                    None
-                    if payload.get("size_hint") is None
-                    else _exact_text(payload.get("size_hint"), "账户发现规模无效")
-                ),
-                source_signal_refs=tuple(
-                    _exact_text(value, "账户发现企业来源无效", max_len=40)
-                    for value in refs
-                ),
-            ),
+        if not refs:
+            raise ValidationError("账户发现企业来源无效")
+        account_id = ProspectAccountId(
+            _exact_text(payload.get("account_id"), "账户发现企业标识无效", max_len=40)
         )
+        account = await self._prospecting.get_account(run.tenant_id, account_id)
+        expected = (
+            _exact_text(payload.get("entity_name"), "账户发现企业名无效"),
+            _exact_text(payload.get("country"), "账户发现国家无效", max_len=64),
+            _exact_text(payload.get("website_domain"), "账户发现官网无效", max_len=253),
+        )
+        if (
+            account.tenant_id != run.tenant_id
+            or account.account_id != account_id
+            or (account.name, account.country, account.website_domain) != expected
+        ):
+            raise TenantIsolationViolation("账户发现企业绑定与持久事实不匹配")
         return ("advance", "find_contacts", {"account_id": str(account_id)})
 
 

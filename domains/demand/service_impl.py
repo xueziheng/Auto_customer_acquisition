@@ -918,11 +918,13 @@ class DemandServiceImpl:
         account_ids = (hypothesis.account_id,)
         names = await self._load_account_names(tenant_id, account_ids)
         countries = await self._load_account_countries(tenant_id, account_ids)
+        domains = await self._load_account_domains(tenant_id, account_ids)
         return HypothesisDiscoveryView(
             hypothesis_id=str(hypothesis.hypothesis_id),
             account_id=str(hypothesis.account_id),
             organization_name=names[hypothesis.account_id],
             country=countries[hypothesis.account_id],
+            website_domain=domains[hypothesis.account_id],
             category=hypothesis.category,
             source_signal_refs=tuple(str(signal.signal_id) for signal in signals),
         )
@@ -1283,6 +1285,29 @@ class DemandServiceImpl:
         ):
             raise ValidationError("需求账户国家结果无效")
         return countries
+
+    async def _load_account_domains(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]:
+        unique_ids = tuple(dict.fromkeys(account_ids))
+        if self._account_names is None:
+            raise ValidationError("需求账户官网依赖未配置")
+        domains = await self._account_names.domains_for(tenant_id, unique_ids)
+        if (
+            not isinstance(domains, dict)
+            or set(domains) != set(unique_ids)
+            or any(
+                not isinstance(domain, str)
+                or not domain
+                or domain != domain.strip()
+                or len(domain) > 253
+                for domain in domains.values()
+            )
+        ):
+            raise ValidationError("需求账户官网结果无效")
+        return domains
 
     @staticmethod
     async def _load_cluster_needs(

@@ -25,7 +25,7 @@ from shared.schemas.identifiers import (
 
 
 class ProspectingDemandAccountNames(DemandAccountNameReader):
-    """通过 Prospecting 公共服务读取展示名，不让 demand 跨域导入。"""
+    """通过 Prospecting 公共服务读取组织事实，不让 demand 跨域导入。"""
 
     def __init__(self, prospecting: ProspectingService) -> None:
         if not callable(getattr(prospecting, "get_account", None)):
@@ -53,6 +53,19 @@ class ProspectingDemandAccountNames(DemandAccountNameReader):
             account = await self._prospecting.get_account(tenant_id, account_id)
             countries[account_id] = account.country
         return countries
+
+    async def domains_for(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]:
+        domains: dict[ProspectAccountId, str] = {}
+        for account_id in dict.fromkeys(account_ids):
+            account = await self._prospecting.get_account(tenant_id, account_id)
+            if account.website_domain is None:
+                raise ValidationError("需求账户缺少官网")
+            domains[account_id] = account.website_domain
+        return domains
 
 
 class AuthorizedDemandRadarService:

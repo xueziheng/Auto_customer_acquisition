@@ -77,7 +77,7 @@ class EvidenceRequiredRail:
                 violations.extend(self._check_need_fields(payload, base))
             elif (
                 domain == "prospecting"
-                and operation == "resolve_account"
+                and operation in {"resolve_account", "bind_account"}
                 and not self._nonempty_sequence(payload.get("source_signal_refs"))
             ):
                 violations.append(self._missing(f"{base}.source_signal_refs"))

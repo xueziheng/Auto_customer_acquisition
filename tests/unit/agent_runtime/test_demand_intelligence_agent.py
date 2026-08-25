@@ -62,7 +62,6 @@ def _response(*, reasoning: str = "企业扩产，可能需要工业铰链，值
         "signals": [
             {
                 "signal_type": "product_line_expansion",
-                "entity_name": "Acme",
                 "source_page_index": 0,
                 "source_excerpt": FACT,
                 "possible_need": "industrial hinges",
@@ -71,9 +70,7 @@ def _response(*, reasoning: str = "企业扩产，可能需要工业铰链，值
         ],
         "hypotheses": [
             {
-                "entity_name": "Acme",
                 "country": "US",
-                "website_domain": "example.com",
                 "category": "industrial hinges",
                 "reasoning": reasoning,
                 "signal_indexes": [0],
@@ -100,9 +97,49 @@ async def test_signal_carries_complete_snapshot_tuple_and_separates_inference() 
     ) == ("https://example.com/news", NOW.isoformat(), HASH, ARTIFACT)
     assert signal["raw_observation"] == FACT
     assert signal["possible_need"] == "industrial hinges"
+    assert signal["entity_name"] == "example.com"
+    assert hypothesis["entity_name"] == "example.com"
+    assert hypothesis["website_domain"] == "example.com"
     assert hypothesis["signal_indexes"] == (0,)
     assert "reasoning" not in signal
     assert "raw_observation" not in hypothesis
+
+
+async def test_page_host_is_the_only_account_identity_and_url_path_never_reaches_model() -> None:
+    model = _CapturingModel(_response())
+    agent = DemandIntelligenceAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+    task = _task()
+    task.inputs["pages"][0]["url"] = (
+        "https://EXAMPLE.com/people/Alice-SMITH?ref=alice"
+    )
+
+    result = await agent.run(task, None)
+
+    model_blob = json.dumps(model.calls[0], ensure_ascii=False)
+    assert "alice" not in model_blob.casefold()
+    assert "/people/" not in model_blob
+    assert "/people/" in result.changes[0]["payload"]["source_url"]
+    assert result.changes[0]["payload"]["entity_name"] == "example.com"
+    assert result.changes[1]["payload"]["entity_name"] == "example.com"
+    assert result.changes[1]["payload"]["website_domain"] == "example.com"
+
+
+async def test_old_model_controlled_identity_schema_fails_closed() -> None:
+    response = _response()
+    response["signals"][0]["entity_name"] = "alice"
+    response["hypotheses"][0]["entity_name"] = "alice"
+    response["hypotheses"][0]["website_domain"] = "google.com"
+    model = _CapturingModel(response)
+    agent = DemandIntelligenceAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+
+    result = await agent.run(_task(), None)
+
+    assert result.changes == []
+    assert "护栏拦截" in result.summary
 
 
 async def test_hypothesis_without_visible_signal_evidence_is_rejected() -> None:

@@ -26,6 +26,7 @@ class AccountDiscoveryOrganizationFact:
     account_id: ProspectAccountId
     entity_name: str
     country: str
+    website_domain: str
 
 
 @dataclass(frozen=True)

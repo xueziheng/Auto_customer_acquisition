@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
 
 from agent_runtime.base import ChangeSet
+from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
+from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from connectors.web_search.client import PageSnapshot, WebSearchResult
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
@@ -113,9 +116,15 @@ class _Searcher:
 
 
 class _PageReader:
-    def __init__(self, *, first_permanent_failure: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        first_permanent_failure: bool = False,
+        url: str | None = None,
+    ) -> None:
         self.calls = 0
         self.first_permanent_failure = first_permanent_failure
+        self.url = url
 
     async def read_page(self, tenant_id, run_id, batch, result_index):
         del tenant_id, run_id, batch
@@ -124,7 +133,7 @@ class _PageReader:
             raise ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT)
         return PageSnapshot(
             "Acme opened a new production line.",
-            f"https://example.com/{result_index}",
+            self.url or f"https://example.com/{result_index}",
             NOW,
             HASH,
             ARTIFACT,
@@ -151,23 +160,102 @@ class _Capability:
 class _Demand:
     def __init__(self) -> None:
         self.requests: list[object] = []
+        self.hypotheses: list[tuple[object, ...]] = []
 
     async def capture_signal(self, tenant_id, request):
         del tenant_id
         self.requests.append(request)
         return new_id("sig")
 
+    async def create_hypothesis(
+        self, tenant_id, account_id, category, refs, reasoning, inferred_by
+    ):
+        self.hypotheses.append(
+            (tenant_id, account_id, category, refs, reasoning, inferred_by)
+        )
+        return new_id("hyp")
+
 
 class _Prospecting:
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+
     async def resolve_account(self, tenant_id, request):
-        del tenant_id, request
+        del tenant_id
+        self.requests.append(request)
         return new_id("acc")
 
 
-def _step(run, reader, searcher, page_reader, capability, demand):
+def _step(run, reader, searcher, page_reader, capability, demand, prospecting=None):
     return ExecuteSearchStep(
-        reader, searcher, page_reader, capability, demand, _Prospecting()
+        reader,
+        searcher,
+        page_reader,
+        capability,
+        demand,
+        prospecting or _Prospecting(),
     )
+
+
+class _DemandModel:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def analyze_pages(self, *, system_prompt, discovery):
+        self.calls.append({"system_prompt": system_prompt, "discovery": discovery})
+        return json.dumps(
+            {
+                "signals": [
+                    {
+                        "signal_type": "product_line_expansion",
+                        "source_page_index": 0,
+                        "source_excerpt": "Acme opened a new production line.",
+                        "possible_need": "hinges",
+                        "evidence_level": "public_company_event",
+                    }
+                ],
+                "hypotheses": [
+                    {
+                        "country": "US",
+                        "category": "hinges",
+                        "reasoning": "企业扩产，可能需要铰链，值得验证",
+                        "signal_indexes": [0],
+                    }
+                ],
+            }
+        )
+
+
+async def test_production_origin_binds_identity_to_host_not_url_name() -> None:
+    run = _run()
+    model = _DemandModel()
+    capability = DemandIntelligenceAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+    demand = _Demand()
+    prospecting = _Prospecting()
+
+    _action, _next, patch = await _step(
+        run,
+        _Reader(_plan(max_pages_read=1)),
+        _Searcher(run),
+        _PageReader(
+            url="https://EXAMPLE.com/people/Alice-SMITH?ref=alice"
+        ),
+        capability,
+        demand,
+        prospecting,
+    ).execute(run)
+
+    model_blob = json.dumps(model.calls, ensure_ascii=False).casefold()
+    patch_blob = json.dumps(patch, ensure_ascii=False).casefold()
+    assert "alice" not in model_blob
+    assert "/people/" not in model_blob
+    assert demand.requests[0].entity_name == "example.com"
+    assert prospecting.requests[0].entity_name == "example.com"
+    assert prospecting.requests[0].website_domain == "example.com"
+    assert "alice" not in patch_blob
+    assert "/people/" not in patch_blob
 
 
 async def test_unconfirmed_or_stale_proposal_has_zero_io_and_zero_domain_write() -> None:

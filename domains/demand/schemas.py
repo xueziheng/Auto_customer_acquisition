@@ -42,6 +42,7 @@ class HypothesisDiscoveryView:
     account_id: str
     organization_name: str
     country: str
+    website_domain: str
     category: str
     source_signal_refs: tuple[str, ...]
 

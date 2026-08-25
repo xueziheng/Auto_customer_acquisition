@@ -56,7 +56,7 @@ def mutable_need_field_names() -> tuple[str, ...]:
 
 @runtime_checkable
 class DemandAccountNameReader(Protocol):
-    """由上层适配 Prospecting 的最小展示名端口；demand 不跨域导入。"""
+    """由上层适配 Prospecting 的最小组织事实端口；demand 不跨域导入。"""
 
     async def names_for(
         self,
@@ -65,6 +65,12 @@ class DemandAccountNameReader(Protocol):
     ) -> dict[ProspectAccountId, str]: ...
 
     async def countries_for(
+        self,
+        tenant_id: TenantId,
+        account_ids: tuple[ProspectAccountId, ...],
+    ) -> dict[ProspectAccountId, str]: ...
+
+    async def domains_for(
         self,
         tenant_id: TenantId,
         account_ids: tuple[ProspectAccountId, ...],

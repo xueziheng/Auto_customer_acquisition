@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
@@ -41,7 +43,6 @@ _OUTPUT_KEYS = frozenset({"signals", "hypotheses"})
 _SIGNAL_KEYS = frozenset(
     {
         "signal_type",
-        "entity_name",
         "source_page_index",
         "source_excerpt",
         "possible_need",
@@ -50,9 +51,7 @@ _SIGNAL_KEYS = frozenset(
 )
 _HYPOTHESIS_KEYS = frozenset(
     {
-        "entity_name",
         "country",
-        "website_domain",
         "category",
         "reasoning",
         "signal_indexes",
@@ -69,15 +68,16 @@ _SYSTEM_PROMPT = """你是 TradeOS 的需求情报能力。输入只包含已批
 目标市场/品类、排除项和本轮硬上限。只输出一个 JSON 对象，顶层键必须精确为
 signals 和 hypotheses，禁止 Markdown、解释或额外键。
 
-signals 每项字段固定为 signal_type, entity_name, source_page_index,
+signals 每项字段固定为 signal_type, source_page_index,
 source_excerpt, possible_need, evidence_level。source_excerpt 必须逐字摘自对应页面；
 它是事实。possible_need 是推断，不能写进 source_excerpt。evidence_level 只能是
 public_company_event 或 agent_industry_inference。
 
-hypotheses 每项字段固定为 entity_name, country, website_domain, category,
+hypotheses 每项字段固定为 country, category,
 reasoning, signal_indexes。signal_indexes 只能引用本次 signals 的数组下标且不得为空；
 reasoning 必须使用“可能……值得验证”的推断措辞。国家和品类只能选输入目标集合。
-website_domain 只能是公开官网域名，不含协议、路径或邮箱。
+
+企业身份与官网域名由系统从获批页面 host 确定，模型不得输出或改写。
 
 禁止输出联系人、邮箱、电话、凭证、动作、概率/置信度数字、价格或任何最终金额。
 没有足够证据时输出 {"signals": [], "hypotheses": []}。
@@ -132,7 +132,7 @@ class DemandIntelligenceAgent(CapabilityAgent):
         try:
             raw = await self._model_port.analyze_pages(
                 system_prompt=_SYSTEM_PROMPT,
-                discovery=projection,
+                discovery=_model_projection(projection),
             )
             signals, hypotheses = self._validate_output(raw, projection)
         except ValidationError as error:
@@ -321,6 +321,7 @@ def _pages(value: object) -> tuple[dict[str, str], ...]:
             {
                 "text": text,
                 "url": url,
+                "identity_domain": _page_identity_domain(url),
                 "observed_at": observed.isoformat(),
                 "content_hash": content_hash,
                 "snapshot_artifact_ref": artifact_ref,
@@ -349,7 +350,7 @@ def _signal(item: object, pages: tuple[dict[str, str], ...]) -> dict[str, object
         _reject_inference_numbers(possible_need)
     return {
         "signal_type": _text(item.get("signal_type"), maximum=100),
-        "entity_name": _text(item.get("entity_name"), maximum=200),
+        "entity_name": pages[page_index]["identity_domain"],
         "source_page_index": page_index,
         "source_excerpt": excerpt,
         "possible_need": possible_need,
@@ -372,10 +373,11 @@ def _hypothesis(
     indexes = tuple(dict.fromkeys(raw_indexes))
     if any(not 0 <= index < len(signals) for index in indexes):
         raise ValidationError("需求假设信号引用越界")
-    entity_name = _text(item.get("entity_name"), maximum=200)
     cited_entities = {signals[index]["entity_name"] for index in indexes}
-    if entity_name not in cited_entities:
-        raise ValidationError("需求假设企业与信号不匹配")
+    if len(cited_entities) != 1:
+        raise ValidationError("需求假设不得跨企业合并证据")
+    entity_name = next(iter(cited_entities))
+    assert isinstance(entity_name, str)
     country = _text(item.get("country"), maximum=2)
     category = _text(item.get("category"), maximum=100)
     target_countries = projection["target_countries"]
@@ -397,7 +399,7 @@ def _hypothesis(
     return {
         "entity_name": entity_name,
         "country": country,
-        "website_domain": _domain(item.get("website_domain")),
+        "website_domain": entity_name,
         "category": category,
         "reasoning": raw_reasoning,
         "signal_indexes": indexes,
@@ -416,6 +418,39 @@ def _domain(value: object) -> str:
     if len(labels) < 2 or any(_DOMAIN_LABEL.fullmatch(label) is None for label in labels):
         raise ValidationError("需求假设企业域名无效")
     return canonical
+
+
+def _page_identity_domain(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not isinstance(hostname, str)
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError
+        try:
+            ip_address(hostname)
+        except ValueError:
+            pass
+        else:
+            raise ValueError
+        return _domain(hostname)
+    except (ValueError, UnicodeError):
+        raise ValidationError("需求情报页面 URL 无法绑定企业身份") from None
+
+
+def _model_projection(projection: dict[str, object]) -> dict[str, object]:
+    pages = projection.get("pages")
+    if not isinstance(pages, tuple):
+        raise ValidationError("需求情报页面输入无效")
+    return {
+        **{key: value for key, value in projection.items() if key != "pages"},
+        "pages": tuple({"text": page["text"]} for page in pages),
+    }
 
 
 def _countries(value: object, *, required: bool) -> tuple[str, ...]:
