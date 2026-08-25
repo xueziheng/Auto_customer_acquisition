@@ -15,6 +15,7 @@ from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from shared.schemas.identifiers import EmployeeId, TenantId, new_id
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 
 NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
 TENANT = TenantId(new_id("tn"))
@@ -155,6 +156,7 @@ def _app() -> tuple[Any, _Commitments]:
         employee_lookup_actor=EmployeeActor(
             "system:api-identity", EmployeeScope.SYSTEM, "system"
         ),
+        **provider_readiness_dependencies(TENANT),
     )
     object.__setattr__(dependencies, "commitments", commitments)
     return (

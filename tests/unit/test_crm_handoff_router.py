@@ -16,6 +16,7 @@ from domains.opportunities.permissions import OpportunityAction
 from domains.opportunities.schemas import HandoffPacketView, HandoffQueueItemView
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, HandoffId
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 from tests.unit.test_crm_router import (
     _HEADERS,
     _TENANT,
@@ -162,6 +163,7 @@ def _app(
         sending_identity_authorizer=object(),
         campaign_scope_resolver=object(),
         in_app_notifications=object(),
+        **provider_readiness_dependencies(_TENANT),
     )
     app = create_app(
         settings=ApiSettings(

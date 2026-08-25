@@ -19,6 +19,10 @@ from domains.compliance.service import ComplianceService
 from domains.organization.service import OrganizationService
 from shared.errors import TransientError
 from shared.schemas.identifiers import RunId, TenantId
+from tool_gateway.provider_readiness import (
+    ProviderReadinessPermission,
+    ProviderReadinessServiceImpl,
+)
 from workflows.engine.runner import StepStatus, WorkflowRun
 
 
@@ -156,7 +160,13 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     assert type(dependencies.run_audit).__name__ == "RunAuditService"
     assert isinstance(dependencies.organization, OrganizationService)
     assert isinstance(dependencies.compliance, ComplianceService)
-    assert dependencies.contact_enrichment_composed is False
+    assert isinstance(dependencies.provider_readiness, ProviderReadinessServiceImpl)
+    assert dependencies.provider_readiness_actor.tenant_id == TenantId(
+        "tenant-runtime"
+    )
+    assert dependencies.provider_readiness_actor.permissions == frozenset(
+        {ProviderReadinessPermission.READ}
+    )
     playbook_definition = dependencies.workflow_engine._definitions[
         ("playbook_change", 1)
     ]

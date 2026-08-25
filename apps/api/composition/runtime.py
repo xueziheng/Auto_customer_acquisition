@@ -139,6 +139,7 @@ from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.repositories.employees import (
     EmployeeRepositoryImpl,
     OwnershipRepositoryImpl,
@@ -207,6 +208,11 @@ from tool_gateway.manifest import (
     ToolRegistry,
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult, ToolGateway
+from tool_gateway.provider_readiness import (
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+    ProviderReadinessServiceImpl,
+)
 from workflows.account_discovery.flow import build_account_discovery_definition
 from workflows.country_policy_change import build_country_policy_change_definition
 from workflows.demand_discovery.flow import build_demand_discovery_definition
@@ -1204,6 +1210,18 @@ def build_phase1_dependencies(
     workflow.register(demand_definition)
     workflow.register(playbook_definition)
     workflow.register(country_policy_definition)
+    provider_readiness_actor = ProviderReadinessActor(
+        actor_id="system:api-provider-readiness",
+        tenant_id=tenant,
+        permissions=frozenset({ProviderReadinessPermission.READ}),
+    )
+    provider_readiness = ProviderReadinessServiceImpl(
+        lambda requested_tenant: SqlAlchemyProviderReadinessUnitOfWork(
+            factory, requested_tenant, now=now
+        ),
+        runtime_actor=provider_readiness_actor,
+        now=now,
+    )
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -1224,6 +1242,8 @@ def build_phase1_dependencies(
         campaign_scope_resolver=campaign_scope_resolver,
         in_app_notifications=in_app_notifications,
         employee_lookup_actor=employee_system_actor,
+        provider_readiness=provider_readiness,
+        provider_readiness_actor=provider_readiness_actor,
         prospecting=prospecting,
         demand_radar=demand_radar,
         directives=directives,
@@ -1231,7 +1251,6 @@ def build_phase1_dependencies(
         approvals=approvals,
         organization=organization,
         compliance=compliance,
-        contact_enrichment_composed=False,
         conversations=conversations,
         commitments=commitments,
         costing=costing,

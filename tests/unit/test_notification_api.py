@@ -24,6 +24,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 
 NOW = datetime(2026, 8, 15, 10, 0, tzinfo=UTC)
 TENANT = TenantId(new_id("tn"))
@@ -148,6 +149,7 @@ def _app(employee: EmployeeView):
         sending_identity_authorizer=object(),
         campaign_scope_resolver=object(),
         in_app_notifications=inbox,
+        **provider_readiness_dependencies(TENANT),
     )
     app = create_app(
         settings=ApiSettings(tenant_id=str(TENANT), dev_mode=True, retry_after_seconds=17),

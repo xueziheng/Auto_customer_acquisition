@@ -82,6 +82,11 @@ from tool_gateway.handlers.email_send import (
     UnsubscribeLinkProvider,
 )
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
+from tool_gateway.provider_readiness import (
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+    ProviderReadinessService,
+)
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 from workflows.employee_work_intake.schemas import (
     ExtractionPayload,
@@ -253,6 +258,8 @@ class ConfiguredApiDependencies:
     campaign_scope_resolver: CampaignScopeResolver
     in_app_notifications: InAppNotificationService
     employee_lookup_actor: EmployeeActor
+    provider_readiness: ProviderReadinessService
+    provider_readiness_actor: ProviderReadinessActor
     prospecting: ProspectingService | None = None
     demand_radar: DemandRadarService | None = None
     directives: DirectiveService | None = None
@@ -260,7 +267,6 @@ class ConfiguredApiDependencies:
     approvals: ApprovalService | None = None
     organization: OrganizationService | None = None
     compliance: ComplianceService | None = None
-    contact_enrichment_composed: bool = False
     conversations: ConversationService | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
@@ -269,8 +275,18 @@ class ConfiguredApiDependencies:
     configured: bool = True
 
     def __post_init__(self) -> None:
-        if type(self.contact_enrichment_composed) is not bool:
-            raise TypeError("contact enrichment composition 必须是显式 bool")
+        readiness_actor = self.provider_readiness_actor
+        if (
+            not callable(getattr(self.provider_readiness, "get_snapshot", None))
+            or not isinstance(readiness_actor, ProviderReadinessActor)
+        ):
+            raise TypeError("provider readiness 读取依赖未完整配置")
+        if (
+            not readiness_actor.actor_id.startswith("system:")
+            or readiness_actor.permissions
+            != frozenset({ProviderReadinessPermission.READ})
+        ):
+            raise ValueError("provider readiness actor 必须是 tenant-bound system READ actor")
         if (
             not isinstance(self.tool_gateway, ToolGatewayInvoker)
             or not isinstance(self.delivery_materials, DeliveryMaterialProvider)

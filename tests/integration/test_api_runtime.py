@@ -37,6 +37,12 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from tool_gateway.provider_readiness import (
+    HUNTER_CONTACT_CAPABILITIES,
+    ProviderReadinessPermission,
+    ProviderReadinessServiceImpl,
+    ProviderReadinessState,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NOW = datetime(2026, 8, 10, 8, 0, tzinfo=UTC)
@@ -210,7 +216,19 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         dependencies = get_api_dependencies(_request_for(app))
         assert isinstance(dependencies.organization, OrganizationService)
         assert isinstance(dependencies.compliance, ComplianceService)
-        assert dependencies.contact_enrichment_composed is False
+        assert isinstance(dependencies.provider_readiness, ProviderReadinessServiceImpl)
+        assert dependencies.provider_readiness_actor.tenant_id == TenantId(
+            env["TRADEOS_TENANT_ID"]
+        )
+        assert dependencies.provider_readiness_actor.permissions == frozenset(
+            {ProviderReadinessPermission.READ}
+        )
+        snapshot = await dependencies.provider_readiness.get_snapshot(
+            TenantId(env["TRADEOS_TENANT_ID"]),
+            HUNTER_CONTACT_CAPABILITIES,
+            actor=dependencies.provider_readiness_actor,
+        )
+        assert snapshot.state is ProviderReadinessState.PROVIDER_NOT_CONFIGURED
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
         assert "country_policy_change.assemble" in dependencies.workflow_engine._handlers

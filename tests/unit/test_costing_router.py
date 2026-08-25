@@ -23,6 +23,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 
 TENANT = TenantId("tenant-costing-api")
 EMPLOYEE = EmployeeId("employee-costing-api")
@@ -166,6 +167,7 @@ def _app(role: str = "finance") -> tuple[Any, _Costing]:
         employee_lookup_actor=EmployeeActor(
             "system:api-identity", EmployeeScope.SYSTEM, "system"
         ),
+        **provider_readiness_dependencies(TENANT),
     )
     object.__setattr__(dependencies, "costing", costing)
     return (

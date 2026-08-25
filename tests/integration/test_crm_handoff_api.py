@@ -53,6 +53,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 from tests.unit.test_crm_router import _ManualRuntime
 
 _NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -293,10 +294,11 @@ async def test_real_handoff_api_queue_packet_accept_and_loss_aggregate(
                     scope=EmployeeScope.SYSTEM,
                     role="system",
                 ),
-        outreach_authorizer=object(),
-        sending_identity_authorizer=object(),
-        campaign_scope_resolver=object(),
-        in_app_notifications=object(),
+                outreach_authorizer=object(),
+                sending_identity_authorizer=object(),
+                campaign_scope_resolver=object(),
+                in_app_notifications=object(),
+                **provider_readiness_dependencies(tenant),
             ),
         )
         transport = ASGITransport(app=app, raise_app_exceptions=False)

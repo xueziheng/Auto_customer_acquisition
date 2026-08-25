@@ -41,6 +41,10 @@ from shared.errors import (
     ValidationError,
 )
 from shared.schemas.identifiers import EmployeeId, TenantId
+from tool_gateway.provider_readiness import (
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+)
 
 _IDENTITY_DEPENDENCY = Depends(get_request_identity)
 _CONFIGURED_DEPENDENCY = Depends(get_api_dependencies)
@@ -255,6 +259,12 @@ class _UnsubscribeService:
         return False
 
 
+class _ProviderReadiness:
+    async def get_snapshot(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return object()
+
+
 def _employee(
     *,
     employee_id: str = "emp-sales",
@@ -300,6 +310,7 @@ def _configured_dependencies(
         "sending_identity_authorizer": object(),
         "campaign_scope_resolver": object(),
         "in_app_notifications": object(),
+        "provider_readiness": _ProviderReadiness(),
     }
     dependencies = ConfiguredApiDependencies(
         opportunities=markers["opportunities"],
@@ -325,6 +336,12 @@ def _configured_dependencies(
         sending_identity_authorizer=markers["sending_identity_authorizer"],
         campaign_scope_resolver=markers["campaign_scope_resolver"],
         in_app_notifications=markers["in_app_notifications"],
+        provider_readiness=markers["provider_readiness"],
+        provider_readiness_actor=ProviderReadinessActor(
+            actor_id="system:api-provider-readiness",
+            tenant_id=TenantId("tenant-a"),
+            permissions=frozenset({ProviderReadinessPermission.READ}),
+        ),
     )
     return dependencies, scope, markers
 
@@ -613,8 +630,19 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
     assert dependencies.employee_lookup_actor.scope is EmployeeScope.SYSTEM
     with pytest.raises(FrozenInstanceError):
         dependencies.opportunities = object()  # type: ignore[misc]
-    with pytest.raises(TypeError, match="显式 bool"):
-        replace(dependencies, contact_enrichment_composed=1)  # type: ignore[arg-type]
+    assert dependencies.provider_readiness is markers["provider_readiness"]
+    assert dependencies.provider_readiness_actor.permissions == frozenset(
+        {ProviderReadinessPermission.READ}
+    )
+    with pytest.raises(ValueError, match="system READ"):
+        replace(
+            dependencies,
+            provider_readiness_actor=ProviderReadinessActor(
+                actor_id="human:api-provider-readiness",
+                tenant_id=TenantId("tenant-a"),
+                permissions=frozenset({ProviderReadinessPermission.READ}),
+            ),
+        )
 
 
 def test_dependency_container_rejects_non_system_lookup_actor() -> None:
@@ -645,6 +673,12 @@ def test_dependency_container_rejects_non_system_lookup_actor() -> None:
             sending_identity_authorizer=object(),
             campaign_scope_resolver=object(),
             in_app_notifications=object(),
+            provider_readiness=_ProviderReadiness(),
+            provider_readiness_actor=ProviderReadinessActor(
+                actor_id="system:api-provider-readiness",
+                tenant_id=TenantId("tenant-a"),
+                permissions=frozenset({ProviderReadinessPermission.READ}),
+            ),
         )
 
 
@@ -682,6 +716,8 @@ def test_dependency_container_rejects_missing_runtime_provider(
         "sending_identity_authorizer": dependencies.sending_identity_authorizer,
         "campaign_scope_resolver": dependencies.campaign_scope_resolver,
         "in_app_notifications": dependencies.in_app_notifications,
+        "provider_readiness": dependencies.provider_readiness,
+        "provider_readiness_actor": dependencies.provider_readiness_actor,
     }
     values[field_name] = invalid
     with pytest.raises(TypeError, match="API 手工发送依赖未完整配置"):

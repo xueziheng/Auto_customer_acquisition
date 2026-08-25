@@ -45,6 +45,14 @@ from shared.schemas.identifiers import (
     PlaybookVersionId,
 )
 from shared.schemas.provenance import SourceType
+from tool_gateway.provider_readiness import (
+    HUNTER_CONTACT_CAPABILITIES,
+    ProviderId,
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+    ProviderReadinessSnapshot,
+    ProviderReadinessState,
+)
 from workflows.country_policy_change import country_policy_change_idempotency_key
 from workflows.country_policy_change.flow import COUNTRY_POLICY_CHANGE_WORKFLOW_TYPE
 
@@ -106,7 +114,11 @@ class _FrozenModel(BaseModel):
 ContactEnrichmentReason = Literal[
     "COUNTRY_POLICY_NOT_CONFIGURED",
     "CONTACT_ENRICHMENT_NOT_ALLOWED",
-    "CONTACT_ENRICHMENT_NOT_COMPOSED",
+    "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED",
+    "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING",
+    "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED",
+    "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE",
+    "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED",
 ]
 
 
@@ -324,26 +336,36 @@ def _compliance_service(
     return service
 
 
-def _contact_enrichment_readiness(
-    coverage: CountryPolicyCoverage,
-    *,
-    composed: bool,
+_PROVIDER_BLOCKED_REASONS: dict[
+    ProviderReadinessState, ContactEnrichmentReason
+] = {
+    ProviderReadinessState.PROVIDER_NOT_CONFIGURED: (
+        "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED"
+    ),
+    ProviderReadinessState.VALIDATION_NOT_RUN: (
+        "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING"
+    ),
+    ProviderReadinessState.VALIDATION_FAILED: (
+        "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED"
+    ),
+    ProviderReadinessState.VALIDATION_INCONCLUSIVE: (
+        "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE"
+    ),
+    ProviderReadinessState.RUNTIME_NOT_COMPOSED: (
+        "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED"
+    ),
+}
+
+
+def _provider_contact_enrichment_readiness(
+    snapshot: ProviderReadinessSnapshot,
 ) -> ContactEnrichmentReadiness:
-    if type(composed) is not bool:
-        raise TransientError("联系人补全组合状态无效")
-    if coverage.active_policy_count == 0:
-        return ContactEnrichmentReadiness(
-            state="blocked", reason_code="COUNTRY_POLICY_NOT_CONFIGURED"
-        )
-    if coverage.contact_enrichment_allowed_count == 0:
-        return ContactEnrichmentReadiness(
-            state="blocked", reason_code="CONTACT_ENRICHMENT_NOT_ALLOWED"
-        )
-    if not composed:
-        return ContactEnrichmentReadiness(
-            state="blocked", reason_code="CONTACT_ENRICHMENT_NOT_COMPOSED"
-        )
-    return ContactEnrichmentReadiness(state="ready", reason_code=None)
+    if snapshot.state is ProviderReadinessState.READY:
+        return ContactEnrichmentReadiness(state="ready", reason_code=None)
+    reason = _PROVIDER_BLOCKED_REASONS.get(snapshot.state)
+    if reason is None:
+        raise TransientError("Settings Provider readiness 事实无效")
+    return ContactEnrichmentReadiness(state="blocked", reason_code=reason)
 
 
 async def _read_contact_enrichment_readiness(
@@ -357,10 +379,39 @@ async def _read_contact_enrichment_readiness(
     )
     if not isinstance(coverage, CountryPolicyCoverage):
         raise TransientError("Settings 国家政策覆盖事实无效")
-    return coverage, _contact_enrichment_readiness(
-        coverage,
-        composed=dependencies.contact_enrichment_composed,
-    )
+    if coverage.active_policy_count == 0:
+        return coverage, ContactEnrichmentReadiness(
+            state="blocked", reason_code="COUNTRY_POLICY_NOT_CONFIGURED"
+        )
+    if coverage.contact_enrichment_allowed_count == 0:
+        return coverage, ContactEnrichmentReadiness(
+            state="blocked", reason_code="CONTACT_ENRICHMENT_NOT_ALLOWED"
+        )
+    actor = dependencies.provider_readiness_actor
+    if (
+        not isinstance(actor, ProviderReadinessActor)
+        or actor.tenant_id != identity.tenant_id
+        or not actor.actor_id.startswith("system:")
+        or actor.permissions
+        != frozenset({ProviderReadinessPermission.READ})
+    ):
+        raise TransientError("Settings Provider readiness 授权无效")
+    try:
+        snapshot = await dependencies.provider_readiness.get_snapshot(
+            identity.tenant_id,
+            HUNTER_CONTACT_CAPABILITIES,
+            actor=actor,
+        )
+    except Exception:  # noqa: BLE001 - reader errors must not expose storage details.
+        raise TransientError("Settings Provider readiness 暂不可用") from None
+    if (
+        not isinstance(snapshot, ProviderReadinessSnapshot)
+        or snapshot.tenant_id != identity.tenant_id
+        or snapshot.provider is not ProviderId.HUNTER
+        or snapshot.capabilities != HUNTER_CONTACT_CAPABILITIES
+    ):
+        raise TransientError("Settings Provider readiness 事实无效")
+    return coverage, _provider_contact_enrichment_readiness(snapshot)
 
 
 def _decimal_string(value: Decimal) -> str:

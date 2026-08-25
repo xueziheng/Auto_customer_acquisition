@@ -54,6 +54,14 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import Provenance, SourceType
+from tool_gateway.provider_readiness import (
+    HUNTER_CONTACT_CAPABILITIES,
+    ProviderId,
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+    ProviderReadinessSnapshot,
+    ProviderReadinessState,
+)
 
 TENANT = TenantId("tenant-settings-router")
 OTHER_TENANT = TenantId("tenant-settings-router-other")
@@ -362,6 +370,46 @@ class _Compliance:
         )
 
 
+class _ProviderReadiness:
+    def __init__(
+        self,
+        state: ProviderReadinessState = ProviderReadinessState.RUNTIME_NOT_COMPOSED,
+        *,
+        result: object = _UNSET,
+        error: Exception | None = None,
+    ) -> None:
+        self.state = state
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[object, object, object]] = []
+
+    async def get_snapshot(self, tenant_id, capabilities, *, actor):
+        self.calls.append((tenant_id, capabilities, actor))
+        if self.error is not None:
+            raise self.error
+        if self.result is not _UNSET:
+            return self.result
+        return ProviderReadinessSnapshot(
+            tenant_id=tenant_id,
+            provider=ProviderId.HUNTER,
+            capabilities=HUNTER_CONTACT_CAPABILITIES,
+            configuration=None,
+            state=self.state,
+            failure_code=None,
+            events=(),
+        )
+
+
+def _provider_readiness_actor(
+    tenant_id: TenantId = TENANT,
+) -> ProviderReadinessActor:
+    return ProviderReadinessActor(
+        actor_id="system:api-provider-readiness",
+        tenant_id=tenant_id,
+        permissions=frozenset({ProviderReadinessPermission.READ}),
+    )
+
+
 class _Workflow:
     def __init__(self) -> None:
         self.starts: list[tuple[Any, ...]] = []
@@ -398,7 +446,8 @@ def _app(
     approvals: object | None = None,
     compliance: object | None = _UNSET,
     workflow: object | None = None,
-    contact_enrichment_composed: object = False,
+    provider_readiness: object | None = None,
+    provider_readiness_actor: ProviderReadinessActor | None = None,
 ):
     app = create_app(
         settings=ApiSettings(
@@ -414,7 +463,10 @@ def _app(
         approvals=approvals,
         compliance=resolved_compliance,
         workflow_engine=workflow or _Workflow(),
-        contact_enrichment_composed=contact_enrichment_composed,
+        provider_readiness=provider_readiness or _ProviderReadiness(),
+        provider_readiness_actor=(
+            provider_readiness_actor or _provider_readiness_actor()
+        ),
     )
     return app
 
@@ -586,7 +638,9 @@ def test_playbook_overview_consumes_truthful_country_policy_readiness() -> None:
                     _country_policy_version(enrichment_allowed=True)
                 ]
             ),
-            contact_enrichment_composed=False,
+            provider_readiness=_ProviderReadiness(
+                ProviderReadinessState.RUNTIME_NOT_COMPOSED
+            ),
         ),
         "GET",
         "/settings/playbook",
@@ -595,7 +649,7 @@ def test_playbook_overview_consumes_truthful_country_policy_readiness() -> None:
     assert response.status_code == 200
     assert response.json()["contact_enrichment"] == {
         "state": "blocked",
-        "reason_code": "CONTACT_ENRICHMENT_NOT_COMPOSED",
+        "reason_code": "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED",
     }
 
 
@@ -1015,8 +1069,9 @@ def test_country_policy_version_never_exposes_arbitrary_application_error() -> N
 
 
 def test_readiness_none_active_is_country_policy_not_configured() -> None:
+    provider = _ProviderReadiness()
     response = _request(
-        _app(compliance=_Compliance()),
+        _app(compliance=_Compliance(), provider_readiness=provider),
         "GET",
         "/settings/country-policies",
     )
@@ -1033,12 +1088,17 @@ def test_readiness_none_active_is_country_policy_not_configured() -> None:
             "reason_code": "COUNTRY_POLICY_NOT_CONFIGURED",
         },
     }
+    assert provider.calls == []
 
 
 def test_readiness_active_but_all_denied_is_contact_enrichment_not_allowed() -> None:
     policy = _country_policy_version(enrichment_allowed=False)
+    provider = _ProviderReadiness()
     response = _request(
-        _app(compliance=_Compliance(active_policies=[policy])),
+        _app(
+            compliance=_Compliance(active_policies=[policy]),
+            provider_readiness=provider,
+        ),
         "GET",
         "/settings/country-policies",
     )
@@ -1053,16 +1113,43 @@ def test_readiness_active_but_all_denied_is_contact_enrichment_not_allowed() -> 
         "state": "blocked",
         "reason_code": "CONTACT_ENRICHMENT_NOT_ALLOWED",
     }
+    assert provider.calls == []
 
 
-def test_readiness_allowed_but_not_composed_is_contact_enrichment_not_composed() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("provider_state", "reason"),
+    [
+        (
+            ProviderReadinessState.PROVIDER_NOT_CONFIGURED,
+            "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED",
+        ),
+        (
+            ProviderReadinessState.VALIDATION_NOT_RUN,
+            "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING",
+        ),
+        (
+            ProviderReadinessState.VALIDATION_FAILED,
+            "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED",
+        ),
+        (
+            ProviderReadinessState.VALIDATION_INCONCLUSIVE,
+            "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE",
+        ),
+        (
+            ProviderReadinessState.RUNTIME_NOT_COMPOSED,
+            "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED",
+        ),
+    ],
+)
+def test_settings_maps_provider_state_to_exact_reason(
+    provider_state: ProviderReadinessState, reason: str
+) -> None:
     policy = _country_policy_version(enrichment_allowed=True)
+    provider = _ProviderReadiness(provider_state)
     response = _request(
         _app(
             compliance=_Compliance(active_policies=[policy]),
-            contact_enrichment_composed=False,
+            provider_readiness=provider,
         ),
         "GET",
         "/settings/country-policies",
@@ -1076,8 +1163,77 @@ def test_readiness_allowed_but_not_composed_is_contact_enrichment_not_composed()
     }
     assert body["contact_enrichment"] == {
         "state": "blocked",
-        "reason_code": "CONTACT_ENRICHMENT_NOT_COMPOSED",
+        "reason_code": reason,
     }
+    assert provider.calls == [
+        (TENANT, HUNTER_CONTACT_CAPABILITIES, _provider_readiness_actor())
+    ]
+
+
+def test_readiness_requires_allowed_policy_and_provider_ready() -> None:
+    policy = _country_policy_version(enrichment_allowed=True)
+    response = _request(
+        _app(
+            compliance=_Compliance(active_policies=[policy]),
+            provider_readiness=_ProviderReadiness(ProviderReadinessState.READY),
+        ),
+        "GET",
+        "/settings/country-policies",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["contact_enrichment"] == {
+        "state": "ready",
+        "reason_code": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        _ProviderReadiness(error=RuntimeError("database password raw canary")),
+        _ProviderReadiness(result=object()),
+    ],
+)
+def test_readiness_provider_reader_failure_is_sanitized(provider: object) -> None:
+    policy = _country_policy_version(enrichment_allowed=True)
+    response = _request(
+        _app(
+            compliance=_Compliance(active_policies=[policy]),
+            provider_readiness=provider,
+        ),
+        "GET",
+        "/settings/country-policies",
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "service_unavailable",
+        "message": "服务暂时不可用",
+    }
+    assert "password" not in response.text
+    assert response.headers["Retry-After"] == "19"
+
+
+def test_readiness_cross_tenant_actor_fails() -> None:
+    policy = _country_policy_version(enrichment_allowed=True)
+    provider = _ProviderReadiness(ProviderReadinessState.READY)
+    response = _request(
+        _app(
+            compliance=_Compliance(active_policies=[policy]),
+            provider_readiness=provider,
+            provider_readiness_actor=_provider_readiness_actor(OTHER_TENANT),
+        ),
+        "GET",
+        "/settings/country-policies",
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "service_unavailable",
+        "message": "服务暂时不可用",
+    }
+    assert provider.calls == []
 
 
 def test_active_policy_api_exposes_version_and_activation_audit() -> None:

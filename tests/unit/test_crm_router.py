@@ -25,6 +25,7 @@ from shared.schemas.identifiers import (
     ProspectAccountId,
     TenantId,
 )
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 
 _NOW = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
 _TENANT = TenantId("tenant-a")
@@ -275,6 +276,7 @@ def _app(
         sending_identity_authorizer=object(),
         campaign_scope_resolver=object(),
         in_app_notifications=object(),
+        **provider_readiness_dependencies(_TENANT),
     )
     app = create_app(
         settings=ApiSettings(tenant_id="tenant-a", dev_mode=True, retry_after_seconds=5),

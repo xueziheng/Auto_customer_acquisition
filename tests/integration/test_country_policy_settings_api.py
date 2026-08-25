@@ -33,6 +33,7 @@ from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.session import create_engine_from
 from shared.schemas.identifiers import ApprovalId, EmployeeId, IdempotencyKey, TenantId
 from shared.schemas.provenance import SourceType
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 
 NOW = datetime(2026, 8, 24, 18, tzinfo=UTC)
 TENANT_A = TenantId("tenant-country-policy-api-a")
@@ -159,7 +160,7 @@ async def test_cross_tenant_version_is_not_visible(db_url: str) -> None:
         compliance=service(TENANT_A),
         approvals=_UnusedApprovals(),
         workflow_engine=object(),
-        contact_enrichment_composed=False,
+        **provider_readiness_dependencies(TENANT_A),
     )
 
     try:

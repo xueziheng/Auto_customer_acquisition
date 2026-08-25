@@ -28,6 +28,7 @@ from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, TenantId
 from shared.schemas.money import CurrencyCode, Money
+from tests.provider_readiness_fakes import provider_readiness_dependencies
 from tests.unit.test_crm_router import (
     _HEADERS,
     _app,
@@ -280,6 +281,7 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
                 sending_identity_authorizer=object(),
                 campaign_scope_resolver=object(),
                 in_app_notifications=object(),
+                **provider_readiness_dependencies(tenant),
             ),
         )
         body = _create_body()
@@ -340,6 +342,7 @@ async def test_create_uses_real_postgres_services_and_both_authorization_layers(
             sending_identity_authorizer=object(),
             campaign_scope_resolver=object(),
             in_app_notifications=object(),
+            **provider_readiness_dependencies(tenant),
         )
         expected_scope = OpportunityScope(level=ScopeLevel.TENANT)
         expected_actor = OpportunityActor(

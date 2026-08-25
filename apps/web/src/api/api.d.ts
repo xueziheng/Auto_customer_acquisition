@@ -1639,7 +1639,7 @@ export interface components {
         /** ContactEnrichmentReadiness */
         ContactEnrichmentReadiness: {
             /** Reason Code */
-            reason_code: ("COUNTRY_POLICY_NOT_CONFIGURED" | "CONTACT_ENRICHMENT_NOT_ALLOWED" | "CONTACT_ENRICHMENT_NOT_COMPOSED") | null;
+            reason_code: ("COUNTRY_POLICY_NOT_CONFIGURED" | "CONTACT_ENRICHMENT_NOT_ALLOWED" | "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED" | "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING" | "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED" | "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE" | "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED") | null;
             /**
              * State
              * @enum {string}
