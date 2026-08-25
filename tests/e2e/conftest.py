@@ -394,8 +394,7 @@ def _start_process(
     )
 
 
-@pytest_asyncio.fixture(scope="session")
-async def e2e_stack() -> AsyncIterator[E2EStack]:
+async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
     if not await asyncio.to_thread(_docker_available):
         if os.environ.get("TRADEOS_REQUIRE_E2E") == "1":
             pytest.fail("Docker 不可用，必需的真实浏览器 E2E 无法启动")
@@ -567,3 +566,10 @@ async def e2e_stack() -> AsyncIterator[E2EStack]:
                                     finally:
                                         if container_started:
                                             await asyncio.to_thread(container.stop)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def e2e_stack() -> AsyncIterator[E2EStack]:
+    """共享真实栈；会写 append-only 事实的测试必须改用独立 lifecycle。"""
+    async for stack in e2e_stack_lifecycle():
+        yield stack

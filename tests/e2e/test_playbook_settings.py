@@ -51,7 +51,6 @@ async def test_real_playbook_settings_creates_candidate_and_run(
                 "尚无任何已激活国家政策，联系人补全保持阻断。",
                 "已激活政策均禁止联系人补全，系统不会调用外部 Provider。",
                 "部署尚未声明 Hunter 安全配置版本。",
-                "Hunter 配置已声明，等待人工 Provider 验证。",
             }
             desktop_metrics = await page.evaluate(
                 """() => ({

@@ -186,6 +186,7 @@ const candidateCountryPolicyVersion = {
 };
 
 type ReadinessReason = NonNullable<ContactEnrichmentReadiness["reason_code"]>;
+const defaultReadinessPayload = Symbol("default readiness payload");
 
 interface CountryFetchOptions {
   activePolicies?: unknown[];
@@ -193,6 +194,7 @@ interface CountryFetchOptions {
   historyQueries?: string[];
   onHistory?: (country: string) => Promise<Response>;
   onOverview?: () => Promise<Response>;
+  readinessPayload?: unknown;
   reason?: ReadinessReason | null;
   versions?: unknown[];
   onPost?: (request: Request) => Promise<Response>;
@@ -204,13 +206,16 @@ function countryPolicyFetch({
   historyQueries,
   onHistory,
   onOverview,
+  readinessPayload = defaultReadinessPayload,
   reason = "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED",
   versions = [],
   onPost,
 }: CountryFetchOptions = {}): typeof globalThis.fetch {
-  const contactEnrichment: ContactEnrichmentReadiness = reason === null
-    ? { reason_code: null, state: "ready" }
-    : { reason_code: reason, state: "blocked" };
+  const contactEnrichment: unknown = readinessPayload === defaultReadinessPayload
+    ? (reason === null
+        ? { reason_code: null, state: "ready" }
+        : { reason_code: reason, state: "blocked" })
+    : readinessPayload;
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     if (!(input instanceof Request)) throw new TypeError("Request required");
     const url = new URL(input.url);
@@ -287,6 +292,25 @@ function fillCountryPolicy(root: HTMLElement): void {
   countryPolicyFields.forEach((field, index) => {
     setCountryField(root, `source_${field}`, `safe.policy.${index + 1}`);
   });
+}
+
+function expectReadinessBanners(root: HTMLElement, expectedMessage: string): void {
+  const playbook = root.querySelector<HTMLElement>(
+    '[aria-label="Playbook 联系人补全就绪状态"]',
+  );
+  const countryPolicy = root.querySelector<HTMLElement>(
+    '[aria-label="国家政策联系人补全就绪状态"]',
+  );
+  if (!playbook || !countryPolicy) throw new Error("missing readiness banners");
+
+  expect(playbook.querySelector("strong")?.textContent?.trim()).toBe(expectedMessage);
+  expect(countryPolicy.textContent?.trim()).toBe(expectedMessage);
+  for (const banner of [playbook, countryPolicy]) {
+    expect(banner.getAttribute("role")).toBe("status");
+    expect(banner.getAttribute("aria-live")).toBe("polite");
+    expect(banner.getAttribute("aria-label")).toBeTruthy();
+    expect(banner.querySelectorAll("input, textarea, button")).toHaveLength(0);
+  }
 }
 
 describe("SettingsCenter", () => {
@@ -481,8 +505,8 @@ describe("SettingsCenter", () => {
 
 describe("SettingsCenter country policy workspace", () => {
   it.each([
-    ["COUNTRY_POLICY_NOT_CONFIGURED", "尚无任何已激活国家政策，联系人补全保持阻断"],
-    ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全"],
+    ["COUNTRY_POLICY_NOT_CONFIGURED", "尚无任何已激活国家政策，联系人补全保持阻断。"],
+    ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全，系统不会调用外部 Provider。"],
   ] as const)("maps %s inside the Playbook section without claiming Playbook can fix it", async (reason, expected) => {
     const { app, root } = await mountSettings(countryPolicyFetch({
       activePolicies: reason === "COUNTRY_POLICY_NOT_CONFIGURED" ? [] : [activeCountryPolicy],
@@ -491,44 +515,28 @@ describe("SettingsCenter country policy workspace", () => {
     }));
 
     await eventually(() => {
-      const playbook = root.querySelector<HTMLElement>(
+      expectReadinessBanners(root, expected);
+      expect(root.querySelector<HTMLElement>(
         '[aria-label="Playbook 联系人补全就绪状态"]',
-      );
-      const countryPolicy = root.querySelector<HTMLElement>(
-        '[aria-label="国家政策联系人补全就绪状态"]',
-      );
-      expect(playbook?.textContent).toContain(expected);
-      expect(countryPolicy?.textContent).toContain(expected);
-      expect(playbook?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
-      expect(playbook?.getAttribute("aria-live")).toBe("polite");
-      expect(countryPolicy?.getAttribute("aria-live")).toBe("polite");
+      )?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
     });
     expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
     app.unmount();
   });
 
   it.each([
-    ["CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", "部署尚未声明 Hunter 安全配置版本"],
-    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING", "Hunter 配置已声明，等待人工 Provider 验证"],
-    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED", "Hunter Provider 验证失败，请按固定分类排查"],
-    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE", "Hunter 验证结果不确定，禁止自动重试"],
-    ["CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED", "验证已通过，等待 scheduler 重启并完成工具注册"],
+    ["CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", "部署尚未声明 Hunter 安全配置版本。"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING", "Hunter 配置已声明，等待人工 Provider 验证。"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED", "Hunter Provider 验证失败，请按固定分类排查。"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE", "Hunter 验证结果不确定，禁止自动重试。"],
+    ["CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED", "验证已通过，等待 scheduler 重启并完成工具注册。"],
   ] satisfies ReadonlyArray<readonly [ReadinessReason, string]>)(
     "renders Provider reason %s in both readiness banners",
     async (reason, expected) => {
       const { app, root } = await mountSettings(countryPolicyFetch({ reason }));
 
       await eventually(() => {
-        const playbook = root.querySelector<HTMLElement>(
-          '[aria-label="Playbook 联系人补全就绪状态"]',
-        );
-        const countryPolicy = root.querySelector<HTMLElement>(
-          '[aria-label="国家政策联系人补全就绪状态"]',
-        );
-        expect(playbook?.textContent).toContain(expected);
-        expect(countryPolicy?.textContent).toContain(expected);
-        expect(playbook?.getAttribute("aria-live")).toBe("polite");
-        expect(countryPolicy?.getAttribute("aria-live")).toBe("polite");
+        expectReadinessBanners(root, expected);
       });
       app.unmount();
     },
@@ -538,15 +546,32 @@ describe("SettingsCenter country policy workspace", () => {
     const { app, root } = await mountSettings(countryPolicyFetch({ reason: null }));
 
     await eventually(() => {
-      const banners = [
-        root.querySelector<HTMLElement>('[aria-label="Playbook 联系人补全就绪状态"]'),
-        root.querySelector<HTMLElement>('[aria-label="国家政策联系人补全就绪状态"]'),
-      ];
-      for (const banner of banners) {
-        expect(banner?.textContent).toContain("联系人补全生产组合已就绪");
-        expect(banner?.textContent).toContain("每个目标国家仍会逐次检查国家政策");
-      }
+      expectReadinessBanners(
+        root,
+        "联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。",
+      );
     });
+    app.unmount();
+  });
+
+  it.each([
+    { reason_code: "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", state: "ready" },
+    { reason_code: null, state: "blocked" },
+    { reason_code: "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", state: "unknown" },
+    { reason_code: "UNKNOWN_REASON", state: "blocked" },
+    { state: "ready" },
+    { state: "blocked" },
+    null,
+    "invalid-readiness",
+    [],
+    42,
+  ])("renders malformed readiness payload %# neutrally", async (readinessPayload) => {
+    const { app, root } = await mountSettings(countryPolicyFetch({ readinessPayload }));
+
+    await eventually(() => {
+      expectReadinessBanners(root, "正在核对联系人补全就绪状态。");
+    });
+    expect(root.textContent).not.toContain("联系人补全生产组合已就绪");
     app.unmount();
   });
 
@@ -556,20 +581,45 @@ describe("SettingsCenter country policy workspace", () => {
 
     const forbiddenInput = [
       'input[type="password"]',
+      'input[name*="hunter" i]',
       'input[name*="api_key" i]',
+      'input[name*="apikey" i]',
       'input[name*="secret" i]',
       'input[name*="password" i]',
+      'input[name*="credential" i]',
+      'input[id*="hunter" i]',
+      'input[aria-label*="hunter" i]',
       'input[aria-label*="api key" i]',
+      'input[aria-label*="apikey" i]',
       'input[aria-label*="secret" i]',
       'input[aria-label*="password" i]',
+      'input[aria-label*="credential" i]',
     ].join(",");
     const accessibleButtonNames = [...root.querySelectorAll<HTMLButtonElement>("button")]
-      .map((button) => button.textContent?.trim().toLocaleLowerCase() ?? "");
+      .map((button) => button.textContent?.trim() ?? "");
+    const controlIdentity = [...root.querySelectorAll<HTMLElement>(
+      "input, textarea, select, button",
+    )].map((control) => [
+      control.getAttribute("name"),
+      control.id,
+      control.getAttribute("aria-label"),
+      control.getAttribute("placeholder"),
+      control.tagName === "BUTTON" ? control.textContent : null,
+    ].filter(Boolean).join(" "));
 
     expect(root.querySelector(forbiddenInput)).toBeNull();
+    expect(controlIdentity).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/api[\s_-]?key|secret|password|hunter.*credential/i),
+    ]));
+    expect(accessibleButtonNames).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/验证成功|标记验证|验证 Hunter|直接激活|立即激活|激活 Hunter|Provider 激活/i),
+    ]));
     expect(accessibleButtonNames).not.toContain("验证成功");
+    expect(accessibleButtonNames).not.toContain("标记验证成功");
+    expect(accessibleButtonNames).not.toContain("验证 Hunter");
     expect(accessibleButtonNames).not.toContain("直接激活");
     expect(accessibleButtonNames).not.toContain("立即激活");
+    expect(accessibleButtonNames).not.toContain("激活 Hunter");
     app.unmount();
   });
 

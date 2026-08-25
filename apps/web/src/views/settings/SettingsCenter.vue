@@ -199,35 +199,47 @@ const countryFormValid = computed(() =>
 const countryFormFrozen = computed(() =>
   countrySubmitting.value || countryAttemptBody.value !== null,
 );
-function unknownReadinessReason(reason: never): string {
-  void reason;
-  return "正在核对联系人补全就绪状态。";
-}
+const contactEnrichmentBlockedMessages: Readonly<Record<ContactEnrichmentReason, string>> =
+  Object.freeze({
+    CONTACT_ENRICHMENT_NOT_ALLOWED:
+      "已激活政策均禁止联系人补全，系统不会调用外部 Provider。",
+    CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED:
+      "部署尚未声明 Hunter 安全配置版本。",
+    CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED:
+      "Hunter Provider 验证失败，请按固定分类排查。",
+    CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE:
+      "Hunter 验证结果不确定，禁止自动重试。",
+    CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING:
+      "Hunter 配置已声明，等待人工 Provider 验证。",
+    CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED:
+      "验证已通过，等待 scheduler 重启并完成工具注册。",
+    COUNTRY_POLICY_NOT_CONFIGURED:
+      "尚无任何已激活国家政策，联系人补全保持阻断。",
+  });
+
+const neutralReadinessMessage = "正在核对联系人补全就绪状态。";
 
 function readinessMessage(readiness: ContactEnrichmentReadiness | undefined): string {
-  if (readiness?.state === "ready") {
-    return "联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。";
+  if (
+    typeof readiness !== "object"
+    || readiness === null
+    || Array.isArray(readiness)
+  ) {
+    return neutralReadinessMessage;
   }
-  const reason: ContactEnrichmentReason | null | undefined = readiness?.reason_code;
-  if (reason === null || reason === undefined) return "正在核对联系人补全就绪状态。";
-  switch (reason) {
-    case "COUNTRY_POLICY_NOT_CONFIGURED":
-      return "尚无任何已激活国家政策，联系人补全保持阻断。";
-    case "CONTACT_ENRICHMENT_NOT_ALLOWED":
-      return "已激活政策均禁止联系人补全，系统不会调用外部 Provider。";
-    case "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED":
-      return "部署尚未声明 Hunter 安全配置版本。";
-    case "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING":
-      return "Hunter 配置已声明，等待人工 Provider 验证。";
-    case "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED":
-      return "Hunter Provider 验证失败，请按固定分类排查。";
-    case "CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE":
-      return "Hunter 验证结果不确定，禁止自动重试。";
-    case "CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED":
-      return "验证已通过，等待 scheduler 重启并完成工具注册。";
-    default:
-      return unknownReadinessReason(reason);
+  const state: unknown = readiness.state;
+  const reason: unknown = readiness.reason_code;
+  if (state === "ready") {
+    return reason === null
+      ? "联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。"
+      : neutralReadinessMessage;
   }
+  if (
+    state !== "blocked"
+    || typeof reason !== "string"
+    || !Object.prototype.hasOwnProperty.call(contactEnrichmentBlockedMessages, reason)
+  ) return neutralReadinessMessage;
+  return contactEnrichmentBlockedMessages[reason as ContactEnrichmentReason];
 }
 
 const countryReadinessMessage = computed(() => readinessMessage(
