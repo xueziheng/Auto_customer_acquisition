@@ -2,7 +2,8 @@
 
 workflow 只传 ``ReplyActionContext`` 的五个 typed ID；本组合按 message_id
 经 tenant-bound reader 重读分类证据与原文，再调用 demand/opportunities 公共
-服务。客户原话只进入业务 Provenance/接管包，不进入 workflow/outbox/log。
+服务。客户原话仅以有界逐字摘录进入业务 Provenance/接管包，完整正文只由
+artifact 引用定位，不进入 workflow/outbox/log。
 """
 
 from __future__ import annotations
@@ -68,6 +69,31 @@ _SYSTEM_ACTOR = OpportunityActor(
     OpportunityScope(level=OpportunityScopeLevel.SYSTEM),
     "system",
 )
+
+_HANDOFF_VERBATIM_MAX_CHARS = 500
+
+
+def _bounded_verbatim_excerpt(
+    body: str,
+    candidate_fields: tuple[ReplyFieldSnapshot, ...],
+) -> str:
+    """返回至多 500 个 Unicode code point 的原文子串。
+
+    字段 quote 已由分类护栏验证；这里仍复核它存在于当前重读正文，避免原件与
+    分类快照漂移。按字段稳定顺序取首个有效 quote，否则从正文首个非空字符起
+    截取。只裁边、不改写内容，因此结果仍是可核对的逐字证据。
+    """
+    if not isinstance(body, str) or not body.strip():
+        raise ValidationError("回复消息正文无效")
+    for field in candidate_fields:
+        quote = field.quote.strip()
+        if quote and quote in body:
+            return quote[:_HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+    start = next(index for index, char in enumerate(body) if not char.isspace())
+    excerpt = body[start : start + _HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+    if not excerpt:
+        raise ValidationError("回复消息摘录无效")
+    return excerpt
 
 
 def _enrollment_actor(enrollment_id: EnrollmentId) -> OutreachActor:
@@ -381,7 +407,9 @@ class ComposedReplyActionPorts:
         content = await self._content.load(tenant_id, context.message_id)
         if content is None:
             raise ValidationError("回复消息原文不可读")
-        verbatim = content.body
+        verbatim = _bounded_verbatim_excerpt(
+            content.body, evidence.candidate_fields
+        )
         trigger = {
             "requests_materials": "materials_requested",
             "requests_quote": "quote_requested",

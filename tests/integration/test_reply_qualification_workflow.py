@@ -371,6 +371,7 @@ async def _build_engine(
     port: _FakeModelPort,
     reader: _FakeContentReader,
     clock: MutableClock,
+    action_ports: object | None = None,
 ) -> object:
     classifier = QualificationAgent(
         model="reply-test-model-v1", model_client=port, gateway=None, guardrails=None
@@ -389,11 +390,163 @@ async def _build_engine(
             outreach=outreach,
             tenant_id=tenant,
             now=clock.now,
+            action_ports=action_ports,
         ),
         now=clock.now,
     )
     engine.register(flow.build_reply_qualification_definition())
     return engine
+
+
+async def test_long_reply_persists_only_bounded_verbatim_and_artifact_link(
+    reply_db: AsyncEngine,
+) -> None:
+    """整段正文/尾部 marker 不得进入 handoff、Provenance、workflow 或 outbox。"""
+    module = importlib.import_module("apps.scheduler_worker.reply_actions")
+    factory = async_sessionmaker(reply_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant, contact, account, ContactVerificationStatus.VERIFIED, NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST, "basis_long_reply", True,
+            "US", "importer", frozenset({"hardware"}), NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(
+            tenant, contact, account, ReplyState.NO_REPLY, None, NOW
+        )
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    outreach = _outreach_service(
+        factory, tenant, campaign_id, approval_id, sender, contacts, replies, clock
+    )
+    enrollment = await _enroll(outreach, tenant, campaign_id, contact, account)
+    conversations = _conversations_service(factory, tenant, clock)
+    expected_excerpt = "E" * 500
+    tail = "FULL-MESSAGE-TAIL-MUST-NOT-PERSIST-8891"
+    body = f"{' ' * 700}{expected_excerpt}{tail}"
+    message_id = "msg_long_reply_excerpt_001"
+    artifact_ref = "art_long_reply_excerpt_001"
+    reader = _FakeContentReader(
+        {message_id: ReplyMessageContent(subject="Long quote request", body=body)}
+    )
+
+    class Evidence:
+        async def load(self, requested_tenant, requested_message):
+            assert requested_tenant == tenant
+            assert requested_message == message_id
+            return module.ReplyEvidenceSnapshot(
+                message_id=requested_message,
+                category="requests_quote",
+                classified_by="reply-test-model-v1",
+                classified_at=NOW,
+                raw_artifact_ref=artifact_ref,
+                candidate_fields=(),
+            )
+
+    class Business:
+        async def load(self, requested_tenant, context):
+            assert requested_tenant == tenant
+            assert context.message_id == message_id
+            return module.ReplyBusinessFacts(
+                need_id=None,
+                hypothesis_id=None,
+                opportunity_id="opp_long_reply_excerpt_001",
+                account_name="Acme Imports",
+                country="US",
+                why_valuable="Customer requested a quote.",
+            )
+
+    class Demand:
+        async def update_need_fields(self, *args, **kwargs):
+            raise AssertionError("报价接管不得更新需求字段")
+
+        async def promote_to_validated(self, *args, **kwargs):
+            raise AssertionError("报价接管不得晋升需求")
+
+    class Opportunities:
+        def __init__(self) -> None:
+            self.packet = None
+
+        async def request_handoff(self, requested_tenant, request, *, actor):
+            del actor
+            assert requested_tenant == tenant
+            self.packet = request
+            return "hand_long_reply_excerpt_001"
+
+    class SendingIdentities:
+        async def record_delivery_event(self, *args, **kwargs):
+            raise AssertionError("报价接管不得写投递反馈")
+
+    opportunities = Opportunities()
+    action_ports = module.ComposedReplyActionPorts(
+        tenant_id=tenant,
+        evidence=Evidence(),
+        business=Business(),
+        content=reader,
+        demand=Demand(),
+        opportunities=opportunities,
+        outreach=outreach,
+        sending_identities=SendingIdentities(),
+        conversations=conversations,
+    )
+    flow = importlib.import_module("workflows.reply_qualification.flow")
+    engine = await _build_engine(
+        flow,
+        factory,
+        tenant,
+        outreach,
+        conversations,
+        _FakeModelPort("requests_quote"),
+        reader,
+        clock,
+        action_ports,
+    )
+    context = _reply_run_context(
+        message_id,
+        "route-v1.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@messages.tradeos.invalid",
+        str(enrollment.enrollment_id),
+        str(account),
+        str(contact),
+    )
+    run_id = await _start_reply_run(engine, tenant, context)
+    await _poll(engine, tenant)
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        run_row = await session.get(rows.WorkflowRunRow, run_id)
+        outbox_payloads = (
+            await session.execute(
+                select(rows.OutboxEventRow.event_payload).where(
+                    rows.OutboxEventRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+    packet = opportunities.packet
+    assert run_row.status == "completed"
+    assert packet is not None
+    assert packet.customer_verbatim == expected_excerpt
+    assert packet.customer_verbatim in body
+    assert packet.customer_verbatim_provenance.source_quote == expected_excerpt
+    assert packet.evidence_links == [artifact_ref]
+    persisted_without_artifact = json.dumps(
+        {
+            "customer_verbatim": packet.customer_verbatim,
+            "source_quote": packet.customer_verbatim_provenance.source_quote,
+            "workflow": run_row.context,
+            "outbox": outbox_payloads,
+        }
+    )
+    assert body not in persisted_without_artifact
+    assert tail not in persisted_without_artifact
 
 
 async def _assert_no_content_leak(

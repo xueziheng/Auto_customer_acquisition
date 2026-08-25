@@ -165,3 +165,23 @@ Phase 1 已可运营。
 1.000、complaint recall 0.700、action contract 0.775、scope 1.000）；Ruff 全绿；configured
 mypy `391 source files` 无问题；七项边界检查全绿。真实 provider acceptance 仍为
 `not_run`，上述 smoke 不作为 provider 验收结果。
+
+## Fix round 2（2026-08-25）
+
+独立审查确认 handoff writer 虽有 artifact 引用，却仍把完整 `content.body` 同时写入
+`customer_verbatim` 与 Provenance `source_quote`，与 ADR 0012 的短摘录决策冲突。
+
+TDD RED 为 `2 failed`：带有效字段 quote 的长消息仍保存整段正文；无字段 quote、正文以
+700 个空白字符开头的长消息也把全文与尾部 marker 写入 handoff。最小生产修复采用固定
+500 Unicode code point 上限：按 candidate_fields 稳定顺序优先选择首个在当前重读正文中
+仍能精确找到的非空 quote；否则从正文首个非空字符开始截取。只允许截取和移除末尾空白，
+所以结果必为非空、连续的原文精确子串。同一 excerpt 同时用于 `customer_verbatim` 与
+`source_quote`；完整消息只通过 `raw_artifact_ref` / `evidence_links` 授权重读。
+
+长消息回归同时断言：handoff 与 Provenance 使用同一有界 excerpt；完整正文和尾部 marker
+不在 handoff/Provenance/workflow/outbox；artifact link 保留。聚焦 GREEN 为 `24 passed`
+（composer + reply workflow）。ADR 0012 已补 500 code point 的精确定义、与业务事实同
+生命周期的保留边界，以及不做启发式内容改写式脱敏（会破坏逐字子串可核验性）的理由。
+本轮最终受影响回归为 `211 passed`（`-W error`）；Ruff、configured mypy（391 source
+files）、七项边界检查、working-tree 敏感信息扫描与 `git diff --check` 均通过。真实
+provider acceptance 仍为 `not_run`。

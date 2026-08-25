@@ -299,6 +299,60 @@ async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> Non
     assert packet.already_sent == ["Discovery email"]
 
 
+async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
+    """生产回归：删除 quote 优先或恢复整段 body 持久化时必须失败。"""
+    module = _module()
+    quote = "We need 2400 food-grade valves by October."
+    tail = "FULL-MESSAGE-TAIL-MUST-NOT-PERSIST"
+    body = f"{'intro ' * 120}{quote}{' details' * 120}{tail}"
+
+    class LongEvidence:
+        async def load(self, tenant_id, message_id):
+            assert tenant_id == TENANT
+            assert message_id == MESSAGE_ID
+            return module.ReplyEvidenceSnapshot(
+                message_id=MESSAGE_ID,
+                category="provides_specification",
+                classified_by="reply-model-v3",
+                classified_at=NOW,
+                raw_artifact_ref="art_long_reply_quote",
+                candidate_fields=(
+                    module.ReplyFieldSnapshot("quantity", "2400", quote),
+                ),
+            )
+
+    class LongContent:
+        async def load(self, tenant_id, message_id):
+            assert tenant_id == TENANT
+            assert message_id == MESSAGE_ID
+            return ReplyMessageContent(subject="Long specification", body=body)
+
+    opportunities = _Opportunities()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=LongEvidence(),
+        business=_Business(),
+        content=LongContent(),
+        demand=_Demand(),
+        opportunities=opportunities,
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+    )
+
+    await actions.request_handoff(
+        TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
+    )
+
+    packet = next(iter(opportunities.requests.values()))
+    assert packet.customer_verbatim == quote
+    assert packet.customer_verbatim in body
+    assert packet.customer_verbatim_provenance.source_quote == quote
+    assert body not in packet.customer_verbatim
+    assert tail not in packet.customer_verbatim
+    assert packet.evidence_links == ["art_long_reply_quote"]
+
+
 async def test_composed_actions_fail_closed_without_business_mapping() -> None:
     module = _module()
     actions = module.ComposedReplyActionPorts(
