@@ -289,6 +289,9 @@ onMounted(() => {
     <div class="principle">
       <strong>Campaign 是授权书，不是发送队列。</strong><span>边界内自主运行；改边界 = 新版本 + 重新审批。包含价格或承诺的内容仍逐次审批。</span>
     </div>
+    <div class="pause-semantics">
+      <strong>暂停语义</strong><span>暂停只阻止新发送；入站回复仍继续处理。</span>
+    </div>
     <div
       v-if="error"
       class="safe-banner danger"
@@ -456,7 +459,17 @@ onMounted(() => {
         class="campaign-detail"
       >
         <header>
-          <div><span class="version">VERSION {{ selected.version }}</span><h2>{{ selected.name }}</h2><p>{{ selected.campaign_id }}</p></div><div class="detail-actions">
+          <div>
+            <span class="version">不可变版本 v{{ selected.version }}</span><h2>{{ selected.name }}</h2><p>{{ selected.campaign_id }}</p><p
+              v-if="selected.approval_id"
+            >
+              审批 {{ selected.approval_id }} · 版本 v{{ selected.version }}
+            </p><p
+              v-if="selected.paused_reason"
+            >
+              暂停原因：{{ selected.paused_reason }}
+            </p>
+          </div><div class="detail-actions">
             <button
               v-if="selected.state === 'draft'"
               type="button"
@@ -547,12 +560,12 @@ onMounted(() => {
               :key="state"
             ><strong>{{ count }}</strong>{{ state }}</span>
           </div><table v-if="enrollments.length">
-            <thead><tr><th>Enrollment</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
+            <thead><tr><th>Enrollment</th><th>Campaign 版本</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
               <tr
                 v-for="item in enrollments"
                 :key="item.enrollment_id"
               >
-                <td>{{ item.enrollment_id }}</td><td>{{ item.state }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
+                <td>{{ item.enrollment_id }}</td><td>Campaign v{{ item.campaign_version }}</td><td>{{ item.state }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
               </tr>
             </tbody>
           </table><div
@@ -580,6 +593,7 @@ onMounted(() => {
 .eyebrow { color: var(--fact); font-size: 11px; font-weight: 800; letter-spacing: .16em; }
 .principle { display: flex; gap: var(--space3); border-left: 4px solid var(--fact); background: var(--fact-soft); padding: var(--space3) var(--space4); }
 .principle span, .action-note { color: var(--text-secondary); }
+.pause-semantics { display: flex; gap: var(--space3); border-left: 4px solid var(--warning); background: var(--warning-soft); color: var(--warning); padding: var(--space3) var(--space4); }
 .action-note { font-size: 12px; }
 .boundary-editor, .campaign-list, .campaign-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .boundary-editor { padding: var(--space5); }

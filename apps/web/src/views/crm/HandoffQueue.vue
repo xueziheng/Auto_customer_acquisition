@@ -684,7 +684,6 @@ onMounted(() => {
 }
 
 :global(body) {
-  min-width: 1080px;
   margin: 0;
   background: #f5f7f7;
   color: #172323;
@@ -1126,6 +1125,47 @@ a:focus-visible {
 
   .identity {
     display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  :global(body) {
+    min-width: 0;
+  }
+
+  .handoff-shell {
+    grid-template-rows: auto auto;
+    height: calc(100vh - 56px);
+    overflow: auto;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .topnav {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .handoff-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .pane,
+  .handoff-list,
+  .status-content {
+    overflow: visible;
+  }
+
+  .summary-grid,
+  .fact-grid,
+  .context-grid,
+  .packet-lists {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

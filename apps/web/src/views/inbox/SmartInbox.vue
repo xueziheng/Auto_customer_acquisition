@@ -142,11 +142,11 @@ async function loadItems(): Promise<void> {
   }
 }
 
-async function loadDetail(conversationId: string): Promise<void> {
+async function loadDetail(conversationId: string, preserveActionMessage = false): Promise<void> {
   const version = ++detailVersion;
   selectedId.value = conversationId;
   detailLoading.value = true;
-  actionMessage.value = null;
+  if (!preserveActionMessage) actionMessage.value = null;
   try {
     const result = await client.GET("/inbox/conversations/{conversation_id}", {
       params: { path: { conversation_id: conversationId } },
@@ -183,6 +183,9 @@ async function submitCorrection(): Promise<void> {
       error.value = safeError(result.response.status);
       return;
     }
+    const conversationId = detail.value?.conversation_id ?? selectedId.value;
+    if (!conversationId) throw new Error("当前未选择可纠正的会话");
+    await loadDetail(conversationId, true);
     actionMessage.value = "人工纠正已记录；模型原判仍保留用于质量评估。";
   } catch {
     error.value = "人工纠正未提交，请稍后重试";

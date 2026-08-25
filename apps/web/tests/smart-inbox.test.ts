@@ -74,6 +74,7 @@ function makeFetch(): {
   corrections: Array<{ messageId: string; category: string }>;
 } {
   const corrections: Array<{ messageId: string; category: string }> = [];
+  const detailState = structuredClone(detail);
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
@@ -84,7 +85,7 @@ function makeFetch(): {
       request.method === "GET"
       && url.pathname === `/inbox/conversations/${conversationId}`
     ) {
-      return jsonResponse(detail);
+      return jsonResponse(detailState);
     }
     if (
       request.method === "POST"
@@ -92,6 +93,12 @@ function makeFetch(): {
     ) {
       const body = await request.json() as { category: string };
       corrections.push({ messageId, category: body.category });
+      detailState.messages[0]!.corrections.push({
+        corrected_at: "2026-08-21T10:03:00Z",
+        corrected_by: "emp-boss",
+        corrected_category: body.category as components["schemas"]["ReplyCategory"],
+      });
+      detailState.messages[0]!.effective_category = body.category as components["schemas"]["ReplyCategory"];
       return jsonResponse({
         message_id: messageId,
         category: body.category,
@@ -186,6 +193,8 @@ describe("SmartInbox", () => {
         { messageId, category: "unsubscribe" },
       ]);
       expect(root.textContent).toContain("人工纠正已记录");
+      expect(root.textContent).toContain("emp-boss");
+      expect(root.textContent).toContain("退订");
     });
   });
 });

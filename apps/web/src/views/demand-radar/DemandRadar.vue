@@ -266,7 +266,7 @@ onMounted(() => void loadRadar());
                     target="_blank"
                     rel="noopener noreferrer"
                   >查看证据来源 ↗</a>
-                  <span v-else-if="evidence.source_ref">来源记录：{{ evidence.source_ref }}</span>
+                  <span v-if="evidence.source_ref">来源记录：{{ evidence.source_ref }}</span>
                 </li>
               </ul>
             </details>
