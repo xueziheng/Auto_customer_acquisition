@@ -37,7 +37,11 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
-from workflows.account_discovery.flow import build_account_discovery_definition
+from workflows.account_discovery.flow import (
+    build_account_discovery_definition,
+    build_account_discovery_handlers,
+    register_account_discovery,
+)
 from workflows.account_discovery.ports import (
     AccountDiscoveryOrganizationFact,
     AccountDiscoveryTaskInput,
@@ -300,6 +304,60 @@ async def test_definition_discovers_and_verifies_before_durable_campaign_wait() 
     assert wait.run_on_entry is True
 
 
+def test_registration_preserves_exact_v1_and_registers_v2_as_latest() -> None:
+    class _Engine:
+        def __init__(self) -> None:
+            self.definitions: list[object] = []
+
+        def register(self, definition) -> None:
+            self.definitions.append(definition)
+
+    engine = _Engine()
+    register_account_discovery(engine)  # type: ignore[arg-type]
+
+    assert [definition.version for definition in engine.definitions] == [1, 2]
+    legacy, latest = engine.definitions
+    assert tuple(step.step_name for step in legacy.steps) == (
+        "find_company_details",
+        "resolve_account",
+        "find_contacts",
+        "verify_contacts",
+        "assign_owner",
+        "enroll_campaign",
+    )
+    assert next(
+        step.handler_ref for step in legacy.steps if step.step_name == "enroll_campaign"
+    ) == "account_discovery.enroll_campaign"
+    assert next(
+        step.handler_ref for step in latest.steps if step.step_name == "enroll_campaign"
+    ) == "account_discovery.enroll_campaign_v2"
+
+
+async def test_persisted_v1_enroll_context_completes_without_campaign_version() -> None:
+    contact_id = new_id("cp")
+    run = _run(verified_contact_point_ids=[contact_id])
+    outreach = _Outreach()
+    handlers = build_account_discovery_handlers(
+        task_reader=object(),  # type: ignore[arg-type]
+        capability=object(),  # type: ignore[arg-type]
+        prospecting=object(),  # type: ignore[arg-type]
+        enricher=object(),  # type: ignore[arg-type]
+        verifier=object(),  # type: ignore[arg-type]
+        employees=object(),  # type: ignore[arg-type]
+        outreach=outreach,  # type: ignore[arg-type]
+        actor_resolver=_ActorResolver(),
+        now=lambda: NOW,
+    )
+
+    action, next_step, patch = await handlers[
+        "account_discovery.enroll_campaign"
+    ].execute(run)
+
+    assert (action, next_step) == ("complete", None)
+    assert patch["enrollment_ids"]
+    assert outreach.calls[0].campaign_version is None
+
+
 async def test_verified_contacts_wait_for_exact_campaign_version_before_enrollment() -> None:
     run = _run(verified_contact_point_ids=[new_id("cp")])
     outreach = _Outreach()
@@ -359,6 +417,16 @@ async def test_activation_event_is_exact_and_enrollment_carries_bound_version() 
 
     await EnrollCampaignStep(outreach, _ActorResolver()).execute(run)
     assert outreach.calls[0].campaign_version == 3
+
+
+async def test_stale_active_event_cannot_advance_exact_bound_campaign() -> None:
+    run = _campaign_wait_run(state="active", event_version=2, bound_version=3)
+
+    result = await AwaitCampaignActivationStep(
+        _CampaignStateOutreach(CampaignState.ACTIVE, 3), _ActorResolver()
+    ).execute(run)
+
+    assert result[0:2] == ("fail", "campaign_event_version_mismatch")
 
 
 async def _campaign_active():

@@ -254,7 +254,9 @@ describe("opportunity board", () => {
       expect.stringContaining("远岚设施（演示）"),
     ]);
     expect(cards[0]?.getAttribute("aria-current")).toBe("true");
+    expect((cards[0] as HTMLElement).dataset.opportunityId).toBe("opportunity-demo-one");
     expect(root.querySelector("article")?.textContent).toContain("澄湾设备（演示）");
+    expect(root.textContent).not.toContain("演示数据");
     expect(root.textContent).toContain("排序桶：未知");
     expect(root.textContent).toContain("12345678901234567890.0040 USD");
     expect(root.textContent).toContain("9007199254740993.1200 USD");

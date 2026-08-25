@@ -147,7 +147,6 @@ function submitMarkLost(): void {
   >
     <header class="record-header">
       <div class="heading-row">
-        <span class="demo-badge">演示数据</span>
         <span class="status-tag"><span aria-hidden="true">●</span> {{ statusLabel }}</span>
       </div>
       <h1>{{ opportunity.account_name }}</h1>
@@ -437,7 +436,6 @@ function submitMarkLost(): void {
   gap: 9px;
 }
 
-.demo-badge,
 .status-tag,
 .fact-label,
 .inference-label,
@@ -452,12 +450,6 @@ function submitMarkLost(): void {
   font-weight: 750;
   line-height: 1.2;
   white-space: nowrap;
-}
-
-.demo-badge {
-  color: #445554;
-  border: 1px solid #cbd7d5;
-  background: #e9efee;
 }
 
 .status-tag {

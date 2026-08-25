@@ -1321,6 +1321,10 @@ class OutreachServiceImpl:
                     and existing.contact_point_id == request.contact_point_id
                     and existing.source_hypothesis_id
                     == request.source_hypothesis_id
+                    and (
+                        request.campaign_version is None
+                        or existing.campaign_version == request.campaign_version
+                    )
                 ):
                     view = self._enrollment_view(existing)
                 else:

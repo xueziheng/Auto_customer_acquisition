@@ -435,12 +435,12 @@ onMounted(() => void loadList());
             <button
               class="opportunity-card"
               type="button"
+              :data-opportunity-id="opportunity.opportunity_id"
               :aria-current="selectedId === opportunity.opportunity_id"
               :disabled="writePending"
               @click="selectOpportunity(opportunity.opportunity_id)"
             >
               <span class="card-top">
-                <span class="demo-badge">演示数据</span>
                 <span class="status-tag"><span aria-hidden="true">●</span> {{ statusLabel(opportunity.state) }}</span>
               </span>
               <span class="account-name">{{ opportunity.account_name }}</span>
@@ -759,7 +759,6 @@ h1 {
   gap: 9px;
 }
 
-.demo-badge,
 .status-tag,
 .rank-tag {
   display: inline-flex;
@@ -772,12 +771,6 @@ h1 {
   font-weight: 750;
   line-height: 1.2;
   white-space: nowrap;
-}
-
-.demo-badge {
-  color: #445554;
-  border: 1px solid #cbd7d5;
-  background: #e9efee;
 }
 
 .status-tag {

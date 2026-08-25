@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -289,6 +289,54 @@ async def test_enroll_rejects_stale_bound_campaign_version_before_creating() -> 
         )
 
     assert harness.store.enrollments == {}
+
+
+async def test_same_key_cross_version_replay_conflicts_while_none_stays_legacy() -> None:
+    harness = _build()
+    key = IdempotencyKey("enroll-cross-version-replay")
+    created = await harness.service.enroll(
+        harness.tenant,
+        harness.campaign_id,
+        EnrollmentCreateRequest(
+            harness.account,
+            harness.contact,
+            key,
+            campaign_version=1,
+        ),
+        actor=harness.boss,
+    )
+    campaign = harness.store.campaigns[harness.campaign_id]
+    campaign.current_version = 2
+    harness.store.versions[(harness.campaign_id, 2)] = replace(
+        harness.store.versions[(harness.campaign_id, 1)],
+        version=2,
+    )
+
+    with pytest.raises(IdempotencyConflictError, match="不同内容"):
+        await harness.service.enroll(
+            harness.tenant,
+            harness.campaign_id,
+            EnrollmentCreateRequest(
+                harness.account,
+                harness.contact,
+                key,
+                campaign_version=2,
+            ),
+            actor=harness.boss,
+        )
+
+    legacy_retry = await harness.service.enroll(
+        harness.tenant,
+        harness.campaign_id,
+        EnrollmentCreateRequest(
+            harness.account,
+            harness.contact,
+            key,
+            campaign_version=None,
+        ),
+        actor=harness.boss,
+    )
+    assert legacy_retry == created
 
 
 def _system(harness: Harness, enrollment_id: EnrollmentId) -> Actor:

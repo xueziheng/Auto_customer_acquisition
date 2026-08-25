@@ -134,7 +134,7 @@ Attempt / audit / outbox 只记录安全 ID、typed state/category、provider re
 
 ## 发布的事件
 
-`MessageSent`、`SuppressionAdded`
+`MessageSent`、`SuppressionAdded`、`ComplaintReceived`、`CampaignStateChanged`
 
 ## 订阅的事件
 

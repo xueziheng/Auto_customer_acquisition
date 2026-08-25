@@ -24,15 +24,22 @@ Phase 1 要求先发现并验证联系人，再由老板批准和激活 Campaign
    发布 `CampaignStateChanged`。事件只含 tenant、Campaign ID、版本、状态和事件元数据，不含
    联系人、正文、凭证或客户数据。
 4. dedicated scheduler 以 `AccountDiscoveryCampaignEventHandlers` 订阅状态事件：只把 exact
-   Campaign ID 的 active 事件投递给等待 run；cancelled 取消相关 run；修订产生的新版本取消仍
-   绑定旧版本的 run。Campaign approval 的 reject 通过既有 `ApprovalDecided` 加公共 Approval
-   重读，按 `campaign:{id}:v{version}` 精确取消对应 run。
+   Campaign ID 的 active 事件投递给等待 run，并要求事件版本、run 绑定版本和当前持久 Campaign
+   版本三者完全一致；cancelled 取消相关 run；修订产生的新版本取消仍绑定旧版本的 run。Campaign
+   approval 的 reject 通过既有 `ApprovalDecided` 加公共 Approval 重读，按
+   `campaign:{id}:v{version}` 精确取消对应 run。
 5. 等待 handler 收到 active 后必须再次通过 Outreach 公共服务读取 Campaign，同时核对 ID、版本
    和 active 状态；事件与当前持久事实任一不一致即 fail closed。重复事件由 workflow engine 的
    durable 事件指纹幂等处理，不会重复 Enrollment。
 6. `EnrollmentCreateRequest.campaign_version` 是可空的加法字段；v2 账户发现必须填写。Outreach
    在 Campaign 行锁内先比较请求版本，再检查 active 并创建 Enrollment，关闭“等待检查通过后
-   Campaign 又被修订”的竞态。其他现有调用方未传版本时维持兼容行为。
+   Campaign 又被修订”的竞态。非空版本同时属于 Enrollment 幂等内容，同 key 跨版本重放固定
+   冲突；其他现有调用方未传版本时维持兼容行为。
+7. worker 同时注册精确 v1 与 v2 definition。v1 保留原步骤、转换、handler ref，以及不要求
+   `campaign_version` 的 legacy assign/enroll handler；新 start 由引擎选择最高版本 v2。不得把
+   “部署前 drain 掉旧 run”当作兼容策略，因为宕机和长等待期间无法证明 drain 完整。
+8. `CampaignStateChanged` 同时登记在显式 outbox registry、`domains/outreach/events.PUBLISHES`
+   和领域 Agent 事件清单；序列化 round-trip 只允许安全 metadata。
 
 ## 理由
 
@@ -58,7 +65,9 @@ Outreach 域内，不需要跨域 SQL、test-only endpoint 或绕过审批 provi
 
 本决策不新增数据库列或迁移。`CampaignStateChanged` 是新增事件类型，
 `EnrollmentCreateRequest.campaign_version` 是可空加法字段；旧 Enrollment 行与旧调用方可继续读取
-和运行。workflow v1 已有 run 仍按注册版本执行，新的账户发现 run 使用 v2。
+和运行。workflow v1 已有 run 由精确 legacy definition 与 handler 执行，新的账户发现 run 使用
+最高版本 v2。真实 PostgreSQL 部署重启测试持久化一个 v1 run，再以同时注册 v1/v2 的新 engine
+完成旧 run，并证明新 start 记录为 v2。
 
 部署时先发布能解析新事件和请求字段的 shared/domain/workflow 代码，再发布已注册 v2 definition
 及两个 scheduler handler 的 worker，最后启用从 Web 启动的新账户发现。若 scheduler 未注册

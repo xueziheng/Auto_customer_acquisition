@@ -23,6 +23,7 @@ import pytest
 
 from shared.errors import ValidationError
 from shared.events.catalog import (
+    CampaignStateChanged,
     ComplaintReceived,
     ContactPointVerified,
     CountryPolicyVersionProposed,
@@ -90,6 +91,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "SendingIdentitySuspended",
         "ReputationThresholdBreached",
         "MessageSent",
+        "CampaignStateChanged",
         "SuppressionAdded",
         "AuthenticationCheckRequested",
         "ComplaintReceived",
@@ -195,6 +197,14 @@ def test_complaint_received_roundtrip_contains_only_safe_ids() -> None:
             scope="contact",
             target_id=new_id("cp"),
             reason="unsubscribe",
+        ),
+        CampaignStateChanged(
+            tenant_id=TenantId(new_id("tn")),
+            occurred_at=_NOW,
+            run_id=None,
+            campaign_id=CampaignId(new_id("cmp")),
+            campaign_version=3,
+            state="active",
         ),
     ],
 )

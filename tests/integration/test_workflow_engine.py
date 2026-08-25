@@ -39,6 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId
+from workflows.account_discovery.flow import (
+    build_legacy_account_discovery_definition,
+    register_account_discovery,
+)
 from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -501,6 +505,65 @@ async def test_start_idempotent_same_tenant_and_isolated_across_tenants(db_url: 
             await engine.start(TenantId(tenant_a), "wf", "subj-a", {}, "   ")
     finally:
         await handle.dispose()
+
+
+async def test_deployment_keeps_persisted_account_discovery_v1_executable_and_starts_v2(
+    db_url: str,
+) -> None:
+    """旧部署已持久化 v1；新部署同时注册 v1/v2 后旧 run 可完成，新 run 选 v2。"""
+
+    def _complete(run: WorkflowRun) -> tuple[str, str | None, dict[str, object]]:
+        return ("complete", None, {"completed_version": run.workflow_version})
+
+    handler = _handler(_complete)
+    handlers = {
+        "account_discovery.find_company_details": handler,
+        "account_discovery.resolve_account": handler,
+        "account_discovery.find_contacts": handler,
+        "account_discovery.verify_contacts": handler,
+        "account_discovery.assign_owner": handler,
+        "account_discovery.enroll_campaign": handler,
+        "account_discovery.bind_campaign": handler,
+        "account_discovery.assign_owner_v2": handler,
+        "account_discovery.await_campaign_activation": handler,
+        "account_discovery.enroll_campaign_v2": handler,
+    }
+    tenant = TenantId("tAccountCompat")
+    old_engine, old_handle = _make_engine(db_url, handlers)
+    try:
+        old_engine.register(build_legacy_account_discovery_definition())
+        old_run_id = await old_engine.start(
+            tenant,
+            "account_discovery",
+            "legacy-subject",
+            {"legacy_context": True},
+            "account-compat-v1",
+        )
+    finally:
+        await old_handle.dispose()
+
+    new_engine, new_handle = _make_engine(db_url, handlers)
+    try:
+        register_account_discovery(new_engine)
+        new_run_id = await new_engine.start(
+            tenant,
+            "account_discovery",
+            "new-subject",
+            {"new_context": True},
+            "account-compat-v2",
+        )
+        assert await new_engine.poll_due(tenant, limit=10) == 2
+
+        old_row = await _query_run(new_handle, str(tenant), old_run_id)
+        new_row = await _query_run(new_handle, str(tenant), new_run_id)
+        assert old_row is not None and old_row["workflow_version"] == 1
+        assert old_row["status"] == "completed"
+        assert old_row["context"]["completed_version"] == 1
+        assert new_row is not None and new_row["workflow_version"] == 2
+        assert new_row["status"] == "completed"
+        assert new_row["context"]["completed_version"] == 2
+    finally:
+        await new_handle.dispose()
 
 
 # --- poll_due：推进 / 并发 / 独立事务 / backoff / 永久失败 ---------------------------

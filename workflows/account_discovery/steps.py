@@ -401,6 +401,14 @@ class AssignOwnerStep:
         )
 
 
+class LegacyAssignOwnerStep(AssignOwnerStep):
+    """v1 兼容步骤：归属完成后按原定义直接进入入组。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        action, _next_step, patch = await super().execute(run)
+        return (action, "enroll_campaign", patch)
+
+
 class AwaitCampaignActivationStep:
     """等待精确 Campaign 版本激活；修订、拒绝或取消一律失败关闭。"""
 
@@ -417,6 +425,7 @@ class AwaitCampaignActivationStep:
         expected_version = _campaign_version(run)
         event = run.context.get("event")
         event_state: str | None = None
+        event_version: int | None = None
         if event is not None:
             if (
                 not isinstance(event, dict)
@@ -446,6 +455,12 @@ class AwaitCampaignActivationStep:
                 "fail",
                 "campaign_version_changed",
                 {"campaign_activation_state": campaign.state.value},
+            )
+        if event_version is not None and event_version != expected_version:
+            return (
+                "fail",
+                "campaign_event_version_mismatch",
+                {"campaign_activation_state": event_state},
             )
         if event_state in {"rejected", "cancelled", "revised"}:
             return (
@@ -482,8 +497,15 @@ class EnrollCampaignStep:
         self._actor_resolver = actor_resolver
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        return await self._execute(run, campaign_version=_campaign_version(run))
+
+    async def _execute(
+        self,
+        run: WorkflowRun,
+        *,
+        campaign_version: int | None,
+    ) -> tuple[str, str | None, dict[str, Any]]:
         hypothesis_id, campaign_id, acting_user, _hints, _assessment = _base_context(run)
-        campaign_version = _campaign_version(run)
         account_id = _account_id(run)
         raw_ids = run.context.get("verified_contact_point_ids")
         if not isinstance(raw_ids, list):
@@ -519,6 +541,13 @@ class EnrollCampaignStep:
         )
 
 
+class LegacyEnrollCampaignStep(EnrollCampaignStep):
+    """v1 兼容步骤：原 context 无绑定版本，沿用公共服务 legacy 门禁。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        return await self._execute(run, campaign_version=None)
+
+
 __all__ = (
     "AssignOwnerStep",
     "AwaitCampaignActivationStep",
@@ -526,6 +555,8 @@ __all__ = (
     "EnrollCampaignStep",
     "FindCompanyDetailsStep",
     "FindContactsStep",
+    "LegacyAssignOwnerStep",
+    "LegacyEnrollCampaignStep",
     "ResolveAccountStep",
     "VerifyContactsStep",
 )

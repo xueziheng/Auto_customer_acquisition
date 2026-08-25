@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 from collections.abc import AsyncIterator
@@ -123,6 +124,7 @@ def _enrollment(
     enrollment_id: EnrollmentId | None = None,
     account_id: ProspectAccountId | None = None,
     key: str = "enrollment-key-1",
+    campaign_version: int = 1,
 ) -> object:
     models = importlib.import_module("domains.outreach.models")
     tenant_id = tenant_id or TENANT_A
@@ -131,7 +133,7 @@ def _enrollment(
         tenant_id=tenant_id,
         enrollment_id=enrollment_id or EnrollmentId(new_id("enr")),
         campaign_id=CAMPAIGN,
-        campaign_version=1,
+        campaign_version=campaign_version,
         account_id=account_id,
         contact_point_id=CONTACT,
         sending_identity_id=SENDER,
@@ -281,6 +283,41 @@ async def test_enrollment_atomic_outcomes_locking_and_order(
             [first.enrollment_id, second.enrollment_id]
         )
         await session.commit()
+
+
+async def test_same_enrollment_key_cross_version_race_has_one_winner_and_one_conflict(
+    outreach_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_campaign(outreach_factory)
+    repositories = importlib.import_module("infra.db.repositories.outreach")
+    contract = importlib.import_module("domains.outreach.repository")
+    key = "enrollment-cross-version-race"
+
+    async def insert(version: int):
+        async with outreach_factory() as session:
+            result = await repositories.EnrollmentRepositoryImpl(
+                session, TENANT_A
+            ).insert_if_absent(
+                _enrollment(
+                    enrollment_id=EnrollmentId(new_id("enr")),
+                    key=key,
+                    campaign_version=version,
+                )
+            )
+            await session.commit()
+            return result
+
+    results = await asyncio.gather(insert(1), insert(2))
+
+    assert {result.status for result in results} == {
+        contract.EnrollmentInsertStatus.CREATED,
+        contract.EnrollmentInsertStatus.IDEMPOTENCY_CONFLICT,
+    }
+    async with outreach_factory() as session:
+        winner = await repositories.EnrollmentRepositoryImpl(
+            session, TENANT_A
+        ).get_by_key(TENANT_A, IdempotencyKey(key))
+        assert winner is not None and winner.campaign_version in {1, 2}
 
 
 async def test_suppression_attempt_and_quota_atomic_outcomes(

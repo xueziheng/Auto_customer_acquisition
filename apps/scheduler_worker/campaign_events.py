@@ -203,11 +203,16 @@ class AccountDiscoveryCampaignEventHandlers:
         return result
 
     async def on_campaign_state_changed(self, event: CampaignStateChanged) -> None:
+        current_version = await self._current_campaign_version(str(event.campaign_id))
         runs = await self._runs(
             str(event.campaign_id), only_waiting=event.state == "active"
         )
         for run_id, bound_version in runs:
-            if event.state == "active":
+            if (
+                event.state == "active"
+                and bound_version == event.campaign_version
+                and current_version == event.campaign_version
+            ):
                 await self._engine.deliver_event(
                     self._tenant_id,
                     run_id,
@@ -227,6 +232,17 @@ class AccountDiscoveryCampaignEventHandlers:
                 await self._engine.cancel(
                     self._tenant_id, run_id, "campaign no longer activatable"
                 )
+
+    async def _current_campaign_version(self, campaign_id: str) -> int | None:
+        async with self._factory() as session:
+            return (
+                await session.execute(
+                    select(OutreachCampaignRow.current_version).where(
+                        OutreachCampaignRow.tenant_id == str(self._tenant_id),
+                        OutreachCampaignRow.campaign_id == campaign_id,
+                    )
+                )
+            ).scalar_one_or_none()
 
     async def on_approval_decided(self, event: ApprovalDecided) -> None:
         if event.decision != "reject":

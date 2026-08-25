@@ -22,6 +22,8 @@ from workflows.account_discovery.steps import (
     EnrollCampaignStep,
     FindCompanyDetailsStep,
     FindContactsStep,
+    LegacyAssignOwnerStep,
+    LegacyEnrollCampaignStep,
     ResolveAccountStep,
     VerifyContactsStep,
 )
@@ -33,6 +35,44 @@ from workflows.engine.runner import (
 )
 
 WORKFLOW_TYPE = "account_discovery"
+
+
+def build_legacy_account_discovery_definition() -> WorkflowDefinition:
+    """保留已持久化 v1 run 的原始步骤、转换和 handler ref。"""
+    return WorkflowDefinition(
+        workflow_type=WORKFLOW_TYPE,
+        version=1,
+        steps=(
+            StepDefinition(
+                "find_company_details",
+                "account_discovery.find_company_details",
+                retry_backoff=timedelta(minutes=2),
+            ),
+            StepDefinition("resolve_account", "account_discovery.resolve_account"),
+            StepDefinition(
+                "find_contacts",
+                "account_discovery.find_contacts",
+                max_retries=1,
+                retry_backoff=timedelta(minutes=5),
+            ),
+            StepDefinition(
+                "verify_contacts",
+                "account_discovery.verify_contacts",
+                max_retries=1,
+                retry_backoff=timedelta(minutes=5),
+            ),
+            StepDefinition("assign_owner", "account_discovery.assign_owner"),
+            StepDefinition("enroll_campaign", "account_discovery.enroll_campaign"),
+        ),
+        transitions={
+            "find_company_details": ("resolve_account",),
+            "resolve_account": ("find_contacts",),
+            "find_contacts": ("verify_contacts",),
+            "verify_contacts": ("assign_owner",),
+            "assign_owner": ("enroll_campaign",),
+            "enroll_campaign": (),
+        },
+    )
 
 
 def build_account_discovery_definition() -> WorkflowDefinition:
@@ -60,14 +100,14 @@ def build_account_discovery_definition() -> WorkflowDefinition:
                 max_retries=1,
                 retry_backoff=timedelta(minutes=5),
             ),
-            StepDefinition("assign_owner", "account_discovery.assign_owner"),
+            StepDefinition("assign_owner", "account_discovery.assign_owner_v2"),
             StepDefinition(
                 "await_campaign_activation",
                 "account_discovery.await_campaign_activation",
                 wait_event_type="CampaignStateChanged",
                 run_on_entry=True,
             ),
-            StepDefinition("enroll_campaign", "account_discovery.enroll_campaign"),
+            StepDefinition("enroll_campaign", "account_discovery.enroll_campaign_v2"),
         ),
         transitions={
             "bind_campaign": ("find_company_details",),
@@ -95,6 +135,12 @@ def build_account_discovery_handlers(
     now: Callable[[], datetime],
 ) -> dict[str, StepHandler]:
     return {
+        "account_discovery.assign_owner": LegacyAssignOwnerStep(
+            employees, actor_resolver
+        ),
+        "account_discovery.enroll_campaign": LegacyEnrollCampaignStep(
+            outreach, actor_resolver
+        ),
         "account_discovery.bind_campaign": BindCampaignStep(
             outreach, actor_resolver
         ),
@@ -108,19 +154,20 @@ def build_account_discovery_handlers(
         "account_discovery.verify_contacts": VerifyContactsStep(
             prospecting, verifier
         ),
-        "account_discovery.assign_owner": AssignOwnerStep(
+        "account_discovery.assign_owner_v2": AssignOwnerStep(
             employees, actor_resolver
         ),
         "account_discovery.await_campaign_activation": AwaitCampaignActivationStep(
             outreach, actor_resolver
         ),
-        "account_discovery.enroll_campaign": EnrollCampaignStep(
+        "account_discovery.enroll_campaign_v2": EnrollCampaignStep(
             outreach, actor_resolver
         ),
     }
 
 
 def register_account_discovery(engine: WorkflowEngine) -> None:
+    engine.register(build_legacy_account_discovery_definition())
     engine.register(build_account_discovery_definition())
 
 
@@ -128,5 +175,6 @@ __all__ = (
     "WORKFLOW_TYPE",
     "build_account_discovery_definition",
     "build_account_discovery_handlers",
+    "build_legacy_account_discovery_definition",
     "register_account_discovery",
 )

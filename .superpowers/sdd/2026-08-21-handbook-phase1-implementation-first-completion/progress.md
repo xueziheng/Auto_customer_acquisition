@@ -62,4 +62,12 @@
 - Task 6C: initial independent review returned 6 Important findings (activation route interception bypassed production approval wiring; UI did not prove the durable chain ID-by-ID; Campaign-before-discovery order contradicted the Handbook flow; body-safety report/assertions were incomplete; per-surface interaction/page checks were incomplete; real handoffs were mislabeled as demo data).
 - Task 6C: fix round 1/5 pending (6 findings open; the workflow order gap will be fixed to the Handbook sequence rather than waived).
 - Task 6C: fix round 1/5 implementation submitted (6 Important findings addressed: real service-backed Campaign approval/activation; exact durable chain IDs; verified-contact pre-approval durable wait with exact-version event resume/fail-closed replay-reject-cancel-revise; >500-character raw-only body safety; per-surface identity/interaction/console checks; real handoff demo labels removed; independent re-review pending; external provider/model/mail remains `not_run`).
+- Task 6C: fix round 1/5 scoped re-review fully closed 5 original findings and partially closed raw-body safety, but returned 6 Important findings (in-flight v1 workflow incompatibility; non-exact Campaign event version; cross-version Enrollment idempotency mismatch; incomplete event publication contract with one red backend test; Opportunity demo labels; incomplete credential/all-console/in-process-log leakage proof).
+- Task 6C: fix round 2/5 pending (6 findings open).
+- Task 6C: fix round 2/5 implementation submitted (6 Important findings addressed: executable persisted-v1
+  compatibility alongside v2 new starts; exact event/run/persisted Campaign version gating; cross-version
+  Enrollment replay conflicts with legacy `None` compatibility; complete Campaign event publication contract;
+  Opportunity demo labels removed with exact-ID E2E; raw credential/tail/email markers scanned across durable
+  state, all console levels and captured in-process logs; independent re-review pending; external
+  provider/model/mail remains `not_run`).
 - Task 6D: pending.

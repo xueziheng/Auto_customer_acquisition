@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from shared.events.catalog import (
+    CampaignStateChanged,
     ComplaintReceived,
     MessageBounced,
     MessageSent,
@@ -13,7 +14,12 @@ from shared.events.catalog import (
     UnsubscribeReceived,
 )
 
-PUBLISHES = (MessageSent, SuppressionAdded, ComplaintReceived)
+PUBLISHES = (
+    MessageSent,
+    SuppressionAdded,
+    ComplaintReceived,
+    CampaignStateChanged,
+)
 
 SUBSCRIBES = (
     ReplyReceived,

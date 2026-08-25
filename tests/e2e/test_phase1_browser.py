@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from email.message import EmailMessage
@@ -180,6 +181,7 @@ class _CapturedAccountQueue:
 CUSTOMER_QUOTE = "We need 5000 hardware kits at USD 2 each for our controlled project."
 TAIL_SENTINEL = "RAW-ONLY-TAIL-SENTINEL-6C-9917"
 RAW_ONLY_EMAIL = "raw-only-tail@example.test"
+RAW_ONLY_CREDENTIAL = "Bearer RAW-ONLY-CREDENTIAL-6C-4F7C2A"
 LONG_REPLY_BODY = (
     CUSTOMER_QUOTE
     + "\n"
@@ -193,6 +195,7 @@ def _reply_bytes() -> bytes:
     message["Subject"] = "Hardware requirement"
     message["From"] = "controlled-buyer@example.test"
     message["To"] = "sales@example.test"
+    message["X-Raw-Only-Credential"] = RAW_ONLY_CREDENTIAL
     message.set_content(LONG_REPLY_BODY)
     return message.as_bytes()
 
@@ -320,8 +323,21 @@ async def _seed_ordering_sentinel(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_phase1_browser_visible_reply_to_handoff_chain(
     e2e_stack: E2EStack,
+    request: pytest.FixtureRequest,
 ) -> None:
     stack = e2e_stack
+    in_process_logs: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            in_process_logs.append(
+                f"{record.levelname}:{record.name}:{record.getMessage()}"
+            )
+
+    capture_handler = _CaptureHandler(level=logging.NOTSET)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(capture_handler)
+    request.addfinalizer(lambda: root_logger.removeHandler(capture_handler))
     tenant = TenantId(stack.tenant_id)
     clock = _Clock(datetime.now(UTC))
     blob_transport = _MemoryBlobTransport()
@@ -517,6 +533,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
     evidence_dir = Path(gettempdir()) / f"tradeos-task-6c-{new_id('run')}"
     evidence_dir.mkdir(parents=True)
     console_issues: list[str] = []
+    console_records: list[str] = []
     http_issues: list[str] = []
     surface_bodies: list[str] = []
 
@@ -524,14 +541,13 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
             page = await browser.new_page(viewport={"width": 1440, "height": 900})
-            page.on(
-                "console",
-                lambda message: (
-                    console_issues.append(f"{message.type}: {message.text}")
-                    if message.type in {"error", "warning"}
-                    else None
-                ),
-            )
+            def capture_console(message) -> None:
+                entry = f"{message.type}: {message.text}"
+                console_records.append(entry)
+                if message.type in {"error", "warning"}:
+                    console_issues.append(entry)
+
+            page.on("console", capture_console)
             page.on(
                 "response",
                 lambda response: (
@@ -1037,6 +1053,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             assert len(LONG_REPLY_BODY) > 500
             assert TAIL_SENTINEL.encode() in raw_reply
             assert RAW_ONLY_EMAIL.encode() in raw_reply
+            assert RAW_ONLY_CREDENTIAL.encode() in raw_reply
 
             await page.goto(f"{stack.web_origin}/inbox")
             await assert_surface("/inbox", "Smart Inbox")
@@ -1106,6 +1123,28 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             )
             await page.screenshot(path=evidence_dir / "05-need-mobile.png")
 
+            await page.set_viewport_size({"width": 1440, "height": 900})
+            await page.goto(f"{stack.web_origin}/crm/opportunities")
+            await assert_surface("/crm/opportunities", "机会看板")
+            opportunity_card = page.locator(
+                f'[data-opportunity-id="{opportunity.opportunity_id}"]'
+            )
+            await expect(opportunity_card).to_be_visible()
+            await opportunity_card.click()
+            await expect(opportunity_card).to_have_attribute("aria-current", "true")
+            await expect(
+                page.get_by_text(str(opportunity.opportunity_id), exact=True)
+            ).to_be_visible()
+            opportunity_body = await page.locator("body").inner_text()
+            surface_bodies.append(opportunity_body)
+            assert "演示数据" not in opportunity_body
+            assert TAIL_SENTINEL not in opportunity_body
+            assert RAW_ONLY_EMAIL not in opportunity_body
+            assert RAW_ONLY_CREDENTIAL not in opportunity_body
+            assert LONG_REPLY_BODY not in opportunity_body
+            await page.screenshot(path=evidence_dir / "06-opportunity.png")
+
+            await page.set_viewport_size({"width": 390, "height": 844})
             await page.goto(f"{stack.web_origin}/crm/handoffs")
             await assert_surface("/crm/handoffs", "人工接管队列")
             rows = page.locator(".handoff-card")
@@ -1145,7 +1184,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             assert await page.evaluate(
                 "document.documentElement.scrollWidth <= innerWidth"
             )
-            await page.screenshot(path=evidence_dir / "06-handoff-mobile.png")
+            await page.screenshot(path=evidence_dir / "07-handoff-mobile.png")
 
             await browser.close()
 
@@ -1203,9 +1242,16 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         },
         default=str,
     )
-    for forbidden in (TAIL_SENTINEL, RAW_ONLY_EMAIL, LONG_REPLY_BODY):
+    for forbidden in (
+        TAIL_SENTINEL,
+        RAW_ONLY_EMAIL,
+        RAW_ONLY_CREDENTIAL,
+        LONG_REPLY_BODY,
+    ):
         assert forbidden not in persisted
         assert all(forbidden not in body for body in surface_bodies)
+        assert forbidden not in "\n".join(console_records)
+        assert forbidden not in "\n".join(in_process_logs)
     process_logs = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in (
@@ -1215,7 +1261,12 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             stack.vite_process.stderr_path,
         )
     )
-    for forbidden in (TAIL_SENTINEL, RAW_ONLY_EMAIL, LONG_REPLY_BODY):
+    for forbidden in (
+        TAIL_SENTINEL,
+        RAW_ONLY_EMAIL,
+        RAW_ONLY_CREDENTIAL,
+        LONG_REPLY_BODY,
+    ):
         assert forbidden not in process_logs
     assert stack.runtime_settings.database_url.get_secret_value() not in process_logs
     assert evidence_dir.is_dir()
