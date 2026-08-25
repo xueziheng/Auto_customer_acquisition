@@ -126,6 +126,10 @@ async def test_hypothesis_without_visible_signal_evidence_is_rejected() -> None:
         "概率为82%，可能需要工业铰链，值得验证",
         "可能性为 0.82，可能需要工业铰链，值得验证",
         "概率为８２％，可能需要工业铰链，值得验证",
+        "There is an 82% chance of buying industrial hinges，可能采购，值得验证",
+        "The chance 82% suggests demand for industrial hinges，可能采购，值得验证",
+        "The buyer is 82% likely to need industrial hinges，可能采购，值得验证",
+        "Likely 82% to need industrial hinges，可能采购，值得验证",
     ],
 )
 async def test_numeric_confidence_variants_in_inference_are_rejected(

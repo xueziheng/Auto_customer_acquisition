@@ -37,7 +37,6 @@ from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import (
     DemandSignalView,
     EvidenceSummary,
-    HypothesisDiscoveryEvidenceView,
     HypothesisDiscoveryView,
     HypothesisView,
     NeedClusterView,
@@ -898,7 +897,7 @@ class DemandServiceImpl:
         tenant_id: TenantId,
         hypothesis_id: NeedHypothesisId,
     ) -> HypothesisDiscoveryView:
-        """返回活跃假设及其原始信号的最小、租户隔离投影。"""
+        """返回活跃假设的组织事实与 opaque evidence refs。"""
         if (
             not isinstance(hypothesis_id, str)
             or not hypothesis_id
@@ -915,29 +914,18 @@ class DemandServiceImpl:
                 HypothesisStatus.CONTACTING,
             ):
                 raise InvalidStateTransition("需求假设当前不可用于账户发现")
-            evidence: list[HypothesisDiscoveryEvidenceView] = []
-            for signal_id in hypothesis.signal_ids:
-                signal = await uow.signals.get(tenant_id, signal_id)
-                if signal is None or signal.status is SignalStatus.DISCARDED:
-                    raise ValidationError("需求假设证据链不完整")
-                evidence.append(
-                    HypothesisDiscoveryEvidenceView(
-                        signal_id=str(signal.signal_id),
-                        summary=signal.raw_observation,
-                        source_url=signal.provenance.source_url,
-                    )
-                )
-            if not evidence:
-                raise ValidationError("需求假设证据链不完整")
-            refs = tuple(item.signal_id for item in evidence)
-            return HypothesisDiscoveryView(
-                hypothesis_id=str(hypothesis.hypothesis_id),
-                account_id=str(hypothesis.account_id),
-                category=hypothesis.category,
-                reasoning=hypothesis.reasoning.value,
-                evidence=tuple(evidence),
-                source_signal_refs=refs,
-            )
+            signals = await self._load_signals(uow, tenant_id, hypothesis)
+        account_ids = (hypothesis.account_id,)
+        names = await self._load_account_names(tenant_id, account_ids)
+        countries = await self._load_account_countries(tenant_id, account_ids)
+        return HypothesisDiscoveryView(
+            hypothesis_id=str(hypothesis.hypothesis_id),
+            account_id=str(hypothesis.account_id),
+            organization_name=names[hypothesis.account_id],
+            country=countries[hypothesis.account_id],
+            category=hypothesis.category,
+            source_signal_refs=tuple(str(signal.signal_id) for signal in signals),
+        )
 
     async def list_signals(
         self,

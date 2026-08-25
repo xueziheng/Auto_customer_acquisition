@@ -60,12 +60,17 @@ def _uow_type():
 
 
 def _service(
-    factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    clock: MutableClock,
+    *,
+    account_names: object | None = None,
 ) -> DemandService:
     impl_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
     return impl_type(
         lambda requested: _uow_type()(factory, requested, now=clock.now),
         now=clock.now,
+        account_names=account_names,
     )
 
 
@@ -110,6 +115,26 @@ async def _seed_web_snapshot(
         await session.commit()
 
 
+class _AccountOrganizationFacts:
+    def __init__(
+        self, tenant_id: TenantId, account_id: object, name: str, country: str
+    ) -> None:
+        self._tenant_id = tenant_id
+        self._account_id = account_id
+        self._name = name
+        self._country = country
+
+    async def names_for(self, tenant_id, account_ids):
+        assert tenant_id == self._tenant_id
+        assert account_ids == (self._account_id,)
+        return {self._account_id: self._name}
+
+    async def countries_for(self, tenant_id, account_ids):
+        assert tenant_id == self._tenant_id
+        assert account_ids == (self._account_id,)
+        return {self._account_id: self._country}
+
+
 async def _hypothesis_rows(
     factory: async_sessionmaker[AsyncSession], tenant: TenantId
 ) -> list[object]:
@@ -141,6 +166,56 @@ async def _outbox_events(
             )
         ).scalars().all()
     return list(rows)
+
+
+async def test_discovery_view_exposes_only_typed_organization_and_opaque_evidence(
+    demand_db: AsyncEngine,
+) -> None:
+    """账户发现视图不暴露可能含联系人姓名的推断、摘要或 URL path。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    account_id = _models.ProspectAccountId(new_id("acc"))
+    clock = MutableClock(NOW)
+    service = _service(
+        factory,
+        tenant,
+        clock,
+        account_names=_AccountOrganizationFacts(tenant, account_id, "Apple", "US"),
+    )
+    await _seed_web_snapshot(factory, tenant)
+    signal_id = await _signal(
+        service,
+        tenant,
+        raw_observation="alice and ALICE SMITH reported a factory expansion",
+        source_type="web_page",
+        source_id=WEB_PAGE_HASH,
+        source_url="https://example.com/people/Alice-SMITH",
+        page_hash=WEB_PAGE_HASH,
+        snapshot_artifact_ref=WEB_SNAPSHOT_ARTIFACT_REF,
+    )
+    hypothesis_id = await service.create_hypothesis(
+        tenant,
+        account_id,
+        "五金",
+        [signal_id],
+        "Alice Smith 可能需要铰链",
+        "model-v1",
+    )
+
+    view = await service.get_hypothesis_for_discovery(tenant, hypothesis_id)
+
+    assert view.__dict__ == {
+        "hypothesis_id": str(hypothesis_id),
+        "account_id": str(account_id),
+        "organization_name": "Apple",
+        "country": "US",
+        "category": "五金",
+        "source_signal_refs": (signal_id,),
+    }
+    serialized = repr(view)
+    assert "Alice" not in serialized
+    assert "alice" not in serialized
+    assert "/people/" not in serialized
 
 
 def _hypothesis(**overrides: object):

@@ -181,6 +181,29 @@ def test_probability_rail_allows_discrete_evidence_labels() -> None:
     assert NoProbabilityOutputRail().check(change_set) == []
 
 
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        "There is an 82% chance of purchase.",
+        "The chance 82% is not calibrated.",
+        "The buyer is 82% likely to purchase.",
+        "Likely 82% to purchase.",
+        "CHANCE ８２％ of purchase.",
+    ],
+)
+def test_probability_rail_rejects_common_chance_and_likely_variants(
+    analysis: str,
+) -> None:
+    change_set = _change_set()
+    change_set.changes = [{"payload": {"analysis": analysis}}]
+
+    violations = NoProbabilityOutputRail().check(change_set)
+
+    assert [item.location for item in violations] == [
+        "changes[0].payload.analysis"
+    ]
+
+
 def test_evidence_rail_reports_missing_phase1_provenance_at_exact_paths() -> None:
     change_set = _change_set()
     change_set.changes = [

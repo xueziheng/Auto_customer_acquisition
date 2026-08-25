@@ -20,11 +20,23 @@ from shared.schemas.identifiers import (
 
 
 @dataclass(frozen=True)
+class AccountDiscoveryOrganizationFact:
+    """由 tenant-bound Prospecting 视图提供的组织事实，不是模型推断。"""
+
+    account_id: ProspectAccountId
+    entity_name: str
+    country: str
+
+
+@dataclass(frozen=True)
 class AccountDiscoveryTaskInput:
-    """从持久业务数据构造的模型安全输入；不含联系人信息。"""
+    """仅含结构化组织事实、typed category 与 opaque evidence refs。"""
 
     objective: str
-    hypothesis: dict[str, object]
+    hypothesis_id: NeedHypothesisId
+    organization: AccountDiscoveryOrganizationFact
+    category: str
+    source_signal_refs: tuple[str, ...]
     allowed_countries: tuple[str, ...]
 
 
@@ -80,6 +92,7 @@ __all__ = (
     "AccountDiscoveryActorResolver",
     "AccountDiscoveryActors",
     "AccountDiscoveryCapability",
+    "AccountDiscoveryOrganizationFact",
     "AccountDiscoveryTaskInput",
     "AccountDiscoveryTaskReader",
     "ContactEnricher",

@@ -26,58 +26,84 @@ class _CapturingModel:
         return json.dumps(self._response)
 
 
-def _task(*, summary: str, reasoning: str = "企业扩建，可能需要五金") -> AgentTask:
-    signal_id = new_id("sig")
+def _task(
+    *,
+    organization_name: str = "Apple",
+    category: str = "五金",
+    signal_id: str | None = None,
+) -> AgentTask:
+    source_ref = signal_id or new_id("sig")
     return AgentTask(
         tenant_id=TenantId(new_id("tn")),
         run_id=RunId(new_id("run")),
         acting_user=UserId("employee:manager"),
         objective="寻找企业公开官网",
         inputs={
-            "hypothesis": {
-                "hypothesis_id": new_id("hyp"),
-                "category": "industrial hinges",
-                "reasoning": reasoning,
-                "evidence": [
-                    {
-                        "signal_id": signal_id,
-                        "summary": summary,
-                        "source_url": "https://example.com/news",
-                    }
-                ],
-                "source_signal_refs": [signal_id],
+            "hypothesis_id": new_id("hyp"),
+            "organization": {
+                "account_id": new_id("acc"),
+                "entity_name": organization_name,
+                "country": "US",
             },
+            "category": category,
+            "source_signal_refs": [source_ref],
             "allowed_countries": ("US",),
         },
     )
 
 
 @pytest.mark.parametrize(
-    "summary",
+    ("organization_name", "category", "website_domain"),
     [
-        "Contact Alice at alice@example.com or +1 (212) 555-0199.",
-        "Alice Buyer confirmed Acme Manufacturing expanded.",
-        "Alice Smith confirmed Acme Manufacturing expanded.",
-        "Alice confirmed Acme Manufacturing expanded.",
-        "张三表示 Acme Manufacturing 已经扩建。",
-        "张三",
+        ("Apple", "五金", "apple.com"),
+        ("Google", "铰链", "google.com"),
+        ("General Electric", "industrial hinges", "ge.com"),
+        ("华为", "五金", "huawei.com"),
     ],
 )
-async def test_contact_pii_context_is_rejected_before_account_model_input(
-    summary: str,
+async def test_structured_organization_projection_avoids_name_false_positives(
+    organization_name: str,
+    category: str,
+    website_domain: str,
 ) -> None:
-    model = _CapturingModel()
+    signal_id = new_id("sig")
+    model = _CapturingModel(
+        {
+            "website_domain": website_domain,
+            "source_signal_refs": [signal_id],
+        }
+    )
     agent = AccountDiscoveryAgent(
         "model-v1", model, object(), CredentialMarkerGuard()
     )
 
-    result = await agent.run(
-        _task(summary=summary),
-        None,
+    task = _task(
+        organization_name=organization_name,
+        category=category,
+        signal_id=signal_id,
     )
+    result = await agent.run(task, None)
 
-    assert result.changes == []
-    assert model.calls == []
+    assert len(model.calls) == 1
+    assert model.calls[0]["hypothesis"] == {
+        "hypothesis_id": task.inputs["hypothesis_id"],
+        "organization": {
+            "entity_name": organization_name,
+            "country": "US",
+        },
+        "category": category,
+        "source_signal_refs": (signal_id,),
+    }
+    payload = result.changes[0]["payload"]
+    assert payload == {
+        "entity_name": organization_name,
+        "country": "US",
+        "website_domain": website_domain,
+        "entity_type": None,
+        "industry": None,
+        "size_hint": None,
+        "source_signal_refs": (signal_id,),
+    }
 
 
 async def test_credential_marker_stops_before_account_model() -> None:
@@ -87,7 +113,7 @@ async def test_credential_marker_stops_before_account_model() -> None:
     )
 
     result = await agent.run(
-        _task(summary="Public notice", reasoning="api_key: synthetic-secret-marker"),
+        _task(category="api_key: synthetic-secret-marker"),
         None,
     )
 
@@ -96,22 +122,19 @@ async def test_credential_marker_stops_before_account_model() -> None:
     assert "安全边界拒绝" in result.summary
 
 
-async def test_account_output_is_canonical_public_fact_without_contact_fields() -> None:
+async def test_account_output_is_canonical_public_fact_without_model_free_text() -> None:
     signal_id = new_id("sig")
     model = _CapturingModel(
         {
-            "entity_name": "Acme Manufacturing",
-            "country": "US",
             "website_domain": "EXAMPLE.COM.",
-            "entity_type": "manufacturer",
-            "industry": "hardware",
-            "size_hint": None,
             "source_signal_refs": [signal_id],
         }
     )
-    task = _task(summary="Acme Manufacturing opened a new factory.")
-    task.inputs["hypothesis"]["source_signal_refs"] = [signal_id]
-    task.inputs["hypothesis"]["evidence"][0]["signal_id"] = signal_id
+    task = _task(
+        organization_name="General Electric",
+        category="铰链",
+        signal_id=signal_id,
+    )
     agent = AccountDiscoveryAgent(
         "model-v1", model, object(), CredentialMarkerGuard()
     )
@@ -120,47 +143,42 @@ async def test_account_output_is_canonical_public_fact_without_contact_fields() 
 
     assert len(result.changes) == 1
     payload = result.changes[0]["payload"]
+    assert payload["entity_name"] == "General Electric"
     assert payload["website_domain"] == "example.com"
+    assert payload["entity_type"] is None
+    assert payload["industry"] is None
     assert not ({"email", "phone", "full_name", "confidence"} & set(payload))
 
 
 @pytest.mark.parametrize(
-    ("field", "unsafe_value"),
+    "unsafe_extra",
     [
-        ("entity_name", "Alice Buyer"),
-        ("industry", "Alice Smith"),
-        ("industry", "张三经理"),
-        ("industry", "alice@example.com"),
-        ("industry", "+1 (212) 555-0199"),
-        ("size_hint", "api_key: synthetic-secret-marker"),
-        ("size_hint", "概率为82%"),
-        ("industry", "send email now"),
+        {"entity_name": "alice"},
+        {"entity_name": "ALICE SMITH"},
+        {"source_url": "https://example.com/people/Alice-SMITH"},
+        {"industry": "alice@example.com"},
+        {"size_hint": "api_key: synthetic-secret-marker"},
+        {"analysis": "82% chance"},
+        {"next_action": "send email now"},
     ],
 )
 async def test_every_unsafe_model_output_string_is_rejected_before_changeset(
-    field: str,
-    unsafe_value: str,
+    unsafe_extra: dict[str, str],
 ) -> None:
     signal_id = new_id("sig")
     response: dict[str, object] = {
-        "entity_name": "Acme Manufacturing",
-        "country": "US",
         "website_domain": "example.com",
-        "entity_type": "manufacturer",
-        "industry": "hardware",
-        "size_hint": None,
         "source_signal_refs": [signal_id],
     }
-    response[field] = unsafe_value
+    response.update(unsafe_extra)
     model = _CapturingModel(response)
-    task = _task(summary="Acme Manufacturing opened a new factory.")
-    task.inputs["hypothesis"]["source_signal_refs"] = [signal_id]
-    task.inputs["hypothesis"]["evidence"][0]["signal_id"] = signal_id
+    task = _task(signal_id=signal_id)
     agent = AccountDiscoveryAgent(
         "model-v1", model, object(), CredentialMarkerGuard()
     )
 
     result = await agent.run(task, None)
 
+    assert len(model.calls) == 1
     assert result.changes == []
     assert "护栏拦截" in result.summary

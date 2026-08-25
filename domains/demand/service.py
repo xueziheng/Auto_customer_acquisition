@@ -255,8 +255,9 @@ class DemandService(Protocol):
     ) -> HypothesisDiscoveryView:
         """读取账户发现所需的最小安全投影。
 
-        只返回仍处于 inferred/contacting 的假设、内部 signal ID、观察摘要与
-        公开来源 URL；不暴露仓储对象、联系人数据或来源凭证。
+        只返回仍处于 inferred/contacting 的假设、tenant-bound 企业名/国家、
+        typed category 与内部 signal ID。推断正文、观察摘要、来源 URL 均不跨越
+        此边界，避免其中的联系人姓名进入账户发现模型。
         """
         ...
 

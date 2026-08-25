@@ -1,8 +1,8 @@
-"""AccountDiscoveryAgent：把带证据的假设收窄为企业消歧候选。
+"""AccountDiscoveryAgent：以结构化组织事实解析官网域名。
 
-模型只读取已批准的假设证据投影，只能输出企业公开事实；联系人姓名、邮箱、
-电话、凭证、动作、概率和最终金额均不属于本边界。联系人补全在后续 workflow
-经 Tool Gateway 执行，结果不会进入模型或 ChangeSet。
+模型只读取 tenant-bound 企业名/国家、typed category 与 opaque evidence refs；
+推断、观察摘要和 URL 不进入模型。模型只返回官网域名与 evidence refs，ChangeSet
+中的企业身份完全来自可信投影，因此无需猜测自由文本里哪个词是人名。
 """
 
 from __future__ import annotations
@@ -13,90 +13,23 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
-from agent_runtime.guardrails.rails import (
-    contains_numeric_probability,
-    guard_phase1_change_set,
-)
+from agent_runtime.guardrails.rails import guard_phase1_change_set
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, new_id
 
 _MAX_OUTPUT_BYTES = 32_768
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _HYPOTHESIS_RE = re.compile(rf"hyp_{_ULID}")
+_ACCOUNT_RE = re.compile(rf"acc_{_ULID}")
 _SIGNAL_RE = re.compile(rf"sig_{_ULID}")
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-_EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,63}")
-_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
-_DATE_LIKE = re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}")
-_CONTACT_CONTEXT = re.compile(
-    r"(?i)\b(?:contact|call|email|reach(?:\s+out)?)\b|联系人|联系(?:人|方式|电话|邮箱)?"
-)
-_PERSON_ROLE = re.compile(
-    r"(?i)(?:\b(?:mr|mrs|ms|miss|dr)\.?\s+[a-z]|"
-    r"\b[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*){0,2}\s+"
-    r"(?:buyer|manager|director|contact)\b|"
-    r"[\u3400-\u9fff]{2,4}(?:经理|采购|联系人))"
-)
-_PROPER_NOUN_SEQUENCE = re.compile(
-    r"\b[A-Z][A-Za-z'.-]*(?:\s+[A-Z][A-Za-z'.-]*){1,2}\b"
-)
-_SINGLE_PROPER_NOUN = re.compile(r"\b[A-Z][a-z][A-Za-z'.-]{0,30}\b")
-_ORGANIZATION_SUFFIXES = frozenset(
-    {
-        "co",
-        "company",
-        "corp",
-        "corporation",
-        "enterprises",
-        "factory",
-        "group",
-        "hardware",
-        "holdings",
-        "inc",
-        "industries",
-        "industrial",
-        "limited",
-        "llc",
-        "logistics",
-        "ltd",
-        "manufacturing",
-        "solutions",
-        "systems",
-        "technologies",
-        "technology",
-        "trading",
-        "works",
-    }
-)
-_CJK_PERSON_SPEECH = re.compile(
-    r"[\u3400-\u9fff]{2,3}(?=表示|称|说|确认|回复|告知)"
-)
-_ISOLATED_CJK_NAME = re.compile(
-    r"(?<![\u3400-\u9fff])[\u3400-\u9fff]{2,3}(?![\u3400-\u9fff])"
-)
-_ACTION_INSTRUCTION = re.compile(
-    r"(?i)\b(?:send|email|call|contact|reach\s+out|follow\s+up)\b|"
-    r"(?:发送|联系|拨打|跟进|执行)(?:邮件|电话|客户|动作|操作)?"
-)
-_OUTPUT_KEYS = frozenset(
-    {
-        "entity_name",
-        "country",
-        "website_domain",
-        "entity_type",
-        "industry",
-        "size_hint",
-        "source_signal_refs",
-    }
-)
-_OPTIONAL_TEXT_KEYS = ("entity_type", "industry", "size_hint")
+_OUTPUT_KEYS = frozenset({"website_domain", "source_signal_refs"})
 
-_SYSTEM_PROMPT = """你是 TradeOS 的企业发现能力。输入是一个带来源的需求假设。
+_SYSTEM_PROMPT = """你是 TradeOS 的企业发现能力。输入只含可信组织事实、需求类别和证据 ID。
 只输出一个 JSON 对象，禁止 Markdown、解释或额外键。输出字段固定为：
-entity_name, country, website_domain, entity_type, industry, size_hint,
-source_signal_refs。website_domain 必须是企业公开官网域名，不含协议或路径。
+website_domain, source_signal_refs。website_domain 必须是企业公开官网域名，不含协议或路径。
 source_signal_refs 只能引用输入中的 signal ID。没有足够证据时输出空对象 {}。
-禁止输出联系人姓名、邮箱、电话、凭证、动作、概率/置信度或任何金额。
+禁止输出企业名、联系人信息、自由文本、凭证、动作、概率或金额。
 """
 
 
@@ -120,12 +53,6 @@ def _exact_text(value: object, *, max_len: int) -> str:
     return value
 
 
-def _optional_text(value: object, *, max_len: int) -> str | None:
-    if value is None:
-        return None
-    return _exact_text(value, max_len=max_len)
-
-
 def _canonical_domain(value: object) -> str:
     raw = _exact_text(value, max_len=253)
     if any(marker in raw for marker in (":", "/", "?", "#", "@")):
@@ -138,68 +65,6 @@ def _canonical_domain(value: object) -> str:
     if len(labels) < 2 or any(_DOMAIN_LABEL.fullmatch(label) is None for label in labels):
         raise ValidationError("企业发现官网域名无效")
     return canonical
-
-
-def _contains_phone(value: str) -> bool:
-    return any(
-        _DATE_LIKE.fullmatch(match.group(0)) is None
-        for match in _PHONE.finditer(value)
-    )
-
-
-def _contains_likely_person_name(value: str) -> bool:
-    if (
-        _PERSON_ROLE.search(value) is not None
-        or _CJK_PERSON_SPEECH.search(value) is not None
-        or _ISOLATED_CJK_NAME.search(value) is not None
-    ):
-        return True
-    organization_spans: list[tuple[int, int]] = []
-    for match in _PROPER_NOUN_SEQUENCE.finditer(value):
-        if match.group(0).split()[-1].casefold() not in _ORGANIZATION_SUFFIXES:
-            return True
-        organization_spans.append(match.span())
-    without_organizations = value
-    for start, end in reversed(organization_spans):
-        without_organizations = (
-            without_organizations[:start]
-            + (" " * (end - start))
-            + without_organizations[end:]
-        )
-    return _SINGLE_PROPER_NOUN.search(without_organizations) is not None
-
-
-def _safe_input_text(value: object, *, max_len: int) -> str:
-    text = _exact_text(value, max_len=max_len)
-    if (
-        _EMAIL.search(text) is not None
-        or _contains_phone(text)
-        or _CONTACT_CONTEXT.search(text) is not None
-        or _contains_likely_person_name(text)
-    ):
-        raise ValidationError("企业发现输入含联系人信息")
-    return text
-
-
-def _contact_free_source_url(value: object) -> str | None:
-    source_url = _optional_text(value, max_len=2_000)
-    if source_url is None:
-        return None
-    if _EMAIL.search(source_url) is not None or _contains_phone(source_url):
-        raise ValidationError("企业发现输入含联系人信息")
-    return source_url
-
-
-def _model_strings(value: object) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, dict):
-        return tuple(
-            text for child in value.values() for text in _model_strings(child)
-        )
-    if isinstance(value, list):
-        return tuple(text for child in value for text in _model_strings(child))
-    return ()
 
 
 class AccountDiscoveryAgent(CapabilityAgent):
@@ -227,80 +92,58 @@ class AccountDiscoveryAgent(CapabilityAgent):
 
     @staticmethod
     def _safe_projection(task: AgentTask) -> dict[str, object]:
-        raw = task.inputs.get("hypothesis")
-        allowed_countries = task.inputs.get("allowed_countries")
-        if not isinstance(raw, dict) or not isinstance(allowed_countries, tuple):
-            raise ValidationError("account discovery 任务输入无效")
-        if set(raw) != {
+        if set(task.inputs) != {
             "hypothesis_id",
+            "organization",
             "category",
-            "reasoning",
-            "evidence",
             "source_signal_refs",
+            "allowed_countries",
         }:
             raise ValidationError("account discovery 任务输入无效")
-        hypothesis_id = _exact_text(raw.get("hypothesis_id"), max_len=40)
+        organization = task.inputs.get("organization")
+        allowed_countries = task.inputs.get("allowed_countries")
+        if (
+            not isinstance(organization, dict)
+            or set(organization) != {"account_id", "entity_name", "country"}
+            or not isinstance(allowed_countries, tuple)
+        ):
+            raise ValidationError("account discovery 任务输入无效")
+        hypothesis_id = _exact_text(task.inputs.get("hypothesis_id"), max_len=40)
         if _HYPOTHESIS_RE.fullmatch(hypothesis_id) is None:
             raise ValidationError("account discovery 任务输入无效")
-        category = _safe_input_text(raw.get("category"), max_len=200)
-        reasoning = _safe_input_text(raw.get("reasoning"), max_len=4_000)
+        account_id = _exact_text(organization.get("account_id"), max_len=40)
+        if _ACCOUNT_RE.fullmatch(account_id) is None:
+            raise ValidationError("account discovery 任务输入无效")
+        entity_name = _exact_text(organization.get("entity_name"), max_len=200)
+        country = _exact_text(organization.get("country"), max_len=64)
+        category = _exact_text(task.inputs.get("category"), max_len=200)
         countries = tuple(
             sorted({_exact_text(value, max_len=64) for value in allowed_countries})
         )
-        if not countries:
+        if not countries or country not in countries:
             raise ValidationError("account discovery 任务输入无效")
-        raw_refs = raw.get("source_signal_refs")
+        raw_refs = task.inputs.get("source_signal_refs")
         if not isinstance(raw_refs, (list, tuple)) or not raw_refs:
             raise ValidationError("account discovery 任务输入无效")
         refs = tuple(dict.fromkeys(_exact_text(value, max_len=40) for value in raw_refs))
         if any(_SIGNAL_RE.fullmatch(value) is None for value in refs):
             raise ValidationError("account discovery 任务输入无效")
-        raw_evidence = raw.get("evidence")
-        if not isinstance(raw_evidence, (list, tuple)) or not raw_evidence:
-            raise ValidationError("account discovery 任务输入无效")
-        evidence: list[dict[str, str | None]] = []
-        for item in raw_evidence:
-            if not isinstance(item, dict) or set(item) != {
-                "signal_id",
-                "summary",
-                "source_url",
-            }:
-                raise ValidationError("account discovery 证据输入无效")
-            signal_id = _exact_text(item.get("signal_id"), max_len=40)
-            if signal_id not in refs:
-                raise ValidationError("account discovery 证据输入无效")
-            evidence.append(
-                {
-                    "signal_id": signal_id,
-                    "summary": _safe_input_text(item.get("summary"), max_len=4_000),
-                    "source_url": _contact_free_source_url(item.get("source_url")),
-                }
-            )
         return {
             "hypothesis_id": hypothesis_id,
+            "organization": {
+                "entity_name": entity_name,
+                "country": country,
+            },
             "category": category,
-            "reasoning": reasoning,
-            "allowed_countries": countries,
             "source_signal_refs": refs,
-            "evidence": evidence,
         }
-
-    def _validate_model_output_text(self, value: str) -> None:
-        self._input_guard.check(subject=None, body=value)
-        if (
-            _EMAIL.search(value) is not None
-            or _contains_phone(value)
-            or _contains_likely_person_name(value)
-            or _ACTION_INSTRUCTION.search(value) is not None
-            or contains_numeric_probability(value)
-        ):
-            raise ValidationError("企业发现模型输出含未授权内容")
 
     def _validate_output(
         self, raw: str, projection: dict[str, object]
     ) -> dict[str, object] | None:
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > _MAX_OUTPUT_BYTES:
             raise ValidationError("企业发现模型输出无效")
+        self._input_guard.check(subject=None, body=raw)
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -309,21 +152,6 @@ class AccountDiscoveryAgent(CapabilityAgent):
             return None
         if not isinstance(payload, dict) or set(payload) != _OUTPUT_KEYS:
             raise ValidationError("企业发现模型输出含未授权字段")
-        for text in _model_strings(payload):
-            self._validate_model_output_text(text)
-        entity_name = _exact_text(payload.get("entity_name"), max_len=200)
-        evidence = projection.get("evidence")
-        if not isinstance(evidence, list):
-            raise ValidationError("企业发现安全证据投影无效")
-        evidence_text = " ".join(
-            str(item.get("summary")) for item in evidence if isinstance(item, dict)
-        ).casefold()
-        if entity_name.casefold() not in evidence_text:
-            raise ValidationError("企业发现模型输出企业名缺少可见证据")
-        country = _exact_text(payload.get("country"), max_len=64)
-        allowed_countries = projection["allowed_countries"]
-        if not isinstance(allowed_countries, tuple) or country not in allowed_countries:
-            raise ValidationError("企业发现模型输出国家越界")
         domain = _canonical_domain(payload.get("website_domain"))
         raw_refs = payload.get("source_signal_refs")
         if not isinstance(raw_refs, list) or not raw_refs:
@@ -332,14 +160,16 @@ class AccountDiscoveryAgent(CapabilityAgent):
         source_refs = projection["source_signal_refs"]
         if not isinstance(source_refs, tuple) or any(ref not in source_refs for ref in refs):
             raise ValidationError("企业发现模型输出证据越界")
+        organization = projection.get("organization")
+        if not isinstance(organization, dict):
+            raise ValidationError("企业发现安全组织投影无效")
         return {
-            "entity_name": entity_name,
-            "country": country,
+            "entity_name": organization["entity_name"],
+            "country": organization["country"],
             "website_domain": domain,
-            **{
-                key: _optional_text(payload.get(key), max_len=200)
-                for key in _OPTIONAL_TEXT_KEYS
-            },
+            "entity_type": None,
+            "industry": None,
+            "size_hint": None,
             "source_signal_refs": refs,
         }
 

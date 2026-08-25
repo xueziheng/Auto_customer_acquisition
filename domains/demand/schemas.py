@@ -35,23 +35,14 @@ class DemandSignalView:
 
 
 @dataclass(frozen=True)
-class HypothesisDiscoveryEvidenceView:
-    """账户发现可消费的单条信号投影；保留内部 signal ID 与公开来源。"""
-
-    signal_id: str
-    summary: str
-    source_url: str | None
-
-
-@dataclass(frozen=True)
 class HypothesisDiscoveryView:
-    """账户发现模型安全投影；推断与支撑信号仍在结构上分离。"""
+    """账户发现结构化投影；自由文本证据仅在 demand 域内保留。"""
 
     hypothesis_id: str
     account_id: str
+    organization_name: str
+    country: str
     category: str
-    reasoning: str
-    evidence: tuple[HypothesisDiscoveryEvidenceView, ...]
     source_signal_refs: tuple[str, ...]
 
 

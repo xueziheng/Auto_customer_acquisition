@@ -108,6 +108,8 @@ class FindCompanyDetailsStep:
         # 在模型与 Provider 产生任何成本之前，从持久员工记录重新推导权限。
         await self._actor_resolver.resolve(run.tenant_id, acting_user)
         source = await self._task_reader.load(run.tenant_id, hypothesis_id, acting_user)
+        if source.hypothesis_id != hypothesis_id:
+            raise TenantIsolationViolation("账户发现需求投影不匹配")
         result = await self._capability.run(
             AgentTask(
                 tenant_id=run.tenant_id,
@@ -115,7 +117,14 @@ class FindCompanyDetailsStep:
                 acting_user=acting_user,
                 objective=source.objective,
                 inputs={
-                    "hypothesis": source.hypothesis,
+                    "hypothesis_id": str(source.hypothesis_id),
+                    "organization": {
+                        "account_id": str(source.organization.account_id),
+                        "entity_name": source.organization.entity_name,
+                        "country": source.organization.country,
+                    },
+                    "category": source.category,
+                    "source_signal_refs": list(source.source_signal_refs),
                     "allowed_countries": source.allowed_countries,
                 },
             ),
@@ -142,7 +151,7 @@ class FindCompanyDetailsStep:
             {
                 "account_candidate": payload,
                 "need_category": _exact_text(
-                    source.hypothesis.get("category"),
+                    source.category,
                     "账户发现需求类别无效",
                 ),
             },

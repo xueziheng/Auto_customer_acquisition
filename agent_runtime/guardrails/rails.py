@@ -494,16 +494,23 @@ class TenantConsistencyRail:
         return violations
 
 
-_PROBABILITY_KEY_PARTS = ("confidence", "probability", "likelihood")
+_PROBABILITY_KEY_PARTS = (
+    "confidence",
+    "probability",
+    "likelihood",
+    "chance",
+    "likely",
+)
 _NUMERIC_VALUE = re.compile(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)\s*%?")
+_PROBABILITY_LABEL = (
+    r"(?:置信度|概率|可能性|(?:confidence|probability|likelihood|chance|likely)\b)"
+)
 _PROBABILITY_TEXT = re.compile(
-    r"(?:"
-    r"(?:置信度|概率|可能性|confidence|probability|likelihood)"
-    r"\s*(?:(?:约|为|is|of)\s*|[:=]\s*)?"
-    r"(?:\d+(?:\.\d+)?|\.\d+)\s*%?"
-    r"|(?:\d+(?:\.\d+)?|\.\d+)\s*%\s*"
-    r"(?:置信度|概率|可能性|confidence|probability|likelihood)"
-    r")",
+    rf"(?:{_PROBABILITY_LABEL}"
+    rf"\s*(?:(?:约|为|is|of)\s*|[:=]\s*)?"
+    rf"(?:\d+(?:\.\d+)?|\.\d+)\s*%?"
+    rf"|(?:\d+(?:\.\d+)?|\.\d+)\s*%\s*"
+    rf"{_PROBABILITY_LABEL})",
 )
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 _CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")

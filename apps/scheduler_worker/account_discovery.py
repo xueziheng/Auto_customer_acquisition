@@ -28,6 +28,7 @@ from shared.schemas.identifiers import (
 from tool_gateway.checks.contact_provider import ContactDiscoveryPreflight
 from workflows.account_discovery.ports import (
     AccountDiscoveryActors,
+    AccountDiscoveryOrganizationFact,
     AccountDiscoveryTaskInput,
 )
 
@@ -71,20 +72,14 @@ class DemandAccountDiscoveryTaskReader:
         )
         return AccountDiscoveryTaskInput(
             objective="依据已留痕的需求信号解析一个可消歧的目标企业",
-            hypothesis={
-                "hypothesis_id": view.hypothesis_id,
-                "category": view.category,
-                "reasoning": view.reasoning,
-                "evidence": [
-                    {
-                        "signal_id": item.signal_id,
-                        "summary": item.summary,
-                        "source_url": item.source_url,
-                    }
-                    for item in view.evidence
-                ],
-                "source_signal_refs": list(view.source_signal_refs),
-            },
+            hypothesis_id=NeedHypothesisId(view.hypothesis_id),
+            organization=AccountDiscoveryOrganizationFact(
+                account_id=ProspectAccountId(view.account_id),
+                entity_name=view.organization_name,
+                country=view.country,
+            ),
+            category=view.category,
+            source_signal_refs=view.source_signal_refs,
             allowed_countries=self._allowed_countries,
         )
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from apps.scheduler_worker.account_discovery import DemandAccountDiscoveryTaskReader
 from connectors.contact_enrichment.client import (
     ContactCandidate,
     ContactEmailKind,
@@ -27,11 +28,17 @@ from domains.prospecting.schemas import (
 )
 from shared.schemas.identifiers import (
     ContactPointId,
+    NeedHypothesisId,
     ProspectAccountId,
     ProspectContactId,
     RunId,
     TenantId,
+    UserId,
     new_id,
+)
+from workflows.account_discovery.ports import (
+    AccountDiscoveryOrganizationFact,
+    AccountDiscoveryTaskInput,
 )
 from workflows.account_discovery.steps import (
     EnrollCampaignStep,
@@ -40,6 +47,51 @@ from workflows.account_discovery.steps import (
     VerifyContactsStep,
 )
 from workflows.engine.runner import StepStatus, WorkflowRun
+
+
+class _UnsafeFreeTextDemandView:
+    async def get_hypothesis_for_discovery(self, tenant_id, hypothesis_id):
+        del tenant_id
+        signal_id = new_id("sig")
+        return SimpleNamespace(
+            hypothesis_id=str(hypothesis_id),
+            account_id=new_id("acc"),
+            organization_name="Google",
+            country="US",
+            category="五金",
+            source_signal_refs=(signal_id,),
+            reasoning="alice and ALICE SMITH may buy hinges",
+            evidence=(
+                SimpleNamespace(
+                    signal_id=signal_id,
+                    summary="Alice Smith reported expansion",
+                    source_url="https://example.com/people/Alice-SMITH",
+                ),
+            ),
+        )
+
+
+async def test_task_reader_omits_arbitrary_free_text_and_url_paths() -> None:
+    reader = DemandAccountDiscoveryTaskReader(
+        _UnsafeFreeTextDemandView(),  # type: ignore[arg-type]
+        allowed_countries=("US",),
+    )
+    hypothesis_id = NeedHypothesisId(new_id("hyp"))
+
+    loaded = await reader.load(
+        TenantId(new_id("tn")), hypothesis_id, UserId("employee:manager")
+    )
+
+    assert loaded.hypothesis_id == hypothesis_id
+    assert loaded.organization.entity_name == "Google"
+    assert loaded.organization.country == "US"
+    assert loaded.category == "五金"
+    assert loaded.source_signal_refs
+    assert not hasattr(loaded, "hypothesis")
+    serialized = repr(loaded)
+    assert "Alice" not in serialized
+    assert "alice" not in serialized
+    assert "/people/" not in serialized
 
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
 
@@ -254,24 +306,19 @@ class _UnsafeAccountModel:
 
 class _AccountTaskReader:
     async def load(self, tenant_id, hypothesis_id, acting_user):
-        del tenant_id, hypothesis_id, acting_user
+        del tenant_id, acting_user
         signal_id = new_id("sig")
-        return SimpleNamespace(
+        return AccountDiscoveryTaskInput(
             objective="寻找企业公开官网",
+            hypothesis_id=hypothesis_id,
+            organization=AccountDiscoveryOrganizationFact(
+                account_id=ProspectAccountId(new_id("acc")),
+                entity_name="Acme Manufacturing",
+                country="US",
+            ),
+            category="industrial hinges",
+            source_signal_refs=(signal_id,),
             allowed_countries=("US",),
-            hypothesis={
-                "hypothesis_id": new_id("hyp"),
-                "category": "industrial hinges",
-                "reasoning": "企业扩建，可能需要五金",
-                "evidence": [
-                    {
-                        "signal_id": signal_id,
-                        "summary": "Acme Manufacturing opened a factory.",
-                        "source_url": "https://example.com/news",
-                    }
-                ],
-                "source_signal_refs": [signal_id],
-            },
         )
 
 
