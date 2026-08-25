@@ -127,3 +127,41 @@ Phase 1 已可运营。
    PostgreSQL 往返。
 
 预存未跟踪的 `apps/web/node_modules` 符号链接未纳入任何提交。
+
+## Fix round 1（2026-08-25）
+
+独立审查指出的 1 个 Critical 与 5 个 Important 已按行为 RED→GREEN 修复：
+
+1. typed `suppress_scope` 现从 QualificationAgent 结果贯穿分类记录、0036 数据库、
+   workflow metadata 与 SuppressionTarget。明确公司/组织/多人退订由通用确定性安全规则
+   强制升级为 account，即使 provider 漏给或错误给 contact 也不降级；四条既有 account
+   corpus 全部命中。contact scope 真实停止跨 Campaign 行；account scope 落企业抑制，
+   并拦截后续 Campaign 的另一联系人入组。
+2. `start_qualification`、`mark_future_restart`、`create_follow_up`、
+   `intake_new_contact` 不再抛永久不可用异常。0036 新增 tenant-bound、metadata-only
+   `conversation_reply_work` owner queue，按 message+action 和 idempotency 双唯一；四类均为
+   `pending`，referral 只进入 `verified_contact_intake_review`，绝不自动 enrollment。
+3. suppression 的 `occurred_at` 改为通过 conversations 公共 tenant-bound 只读 API
+   重读已落库 `MessageClassification.classified_at`，并只把该非敏感 metadata 时间写入
+   workflow context；同 key 的动作重试 payload 完全相同，不再读取当前墙钟。广回归还
+   见证了 `WorkflowRun.created_at` 可能与注入业务时钟不一致，故未以 run 表服务器时间
+   规避 Outreach 的未来时间校验。
+4. eval runner 现在消费每个 expected 的 `must_intercept`、`must_not_intercept` 与
+   `suppress_scope`，并让 classifier error 留在类别、动作、范围、投诉、退订与提取的相关
+   分母。controlled smoke 为 160 cases / 0 errors；unsubscribe recall 1.000、
+   scope accuracy 1.000、action-contract accuracy 0.775。它仍明确是 smoke，真实 provider
+   状态仍为 `not_run`。
+5. 完整 migration 文件原有失败来自 0034 roundtrip 在显式 `upgrade 0034` 后错误断言全局
+   head；现断言实际 revision `0034`。完整 migration 文件为 `57 passed`；连同 head 与
+   AppleDouble 门禁最终为 `62 passed`。
+6. 新增 ADR 0012（shared Provenance 可选 `source_quote`）和 ADR 0013
+   （跨 Opportunities/Outreach 的 `materials_requested`），记录历史兼容、发布顺序与
+   无数据迁移决策。
+
+本轮不改变真实 provider `not_run`，不调用网络/Gmail/客户发送，不宣称 Phase 1 已可运营。
+
+最终验证：受影响业务回归 `209 passed`（`-W error`）；migration/head/AppleDouble
+`62 passed`；controlled smoke 160 cases / 0 errors（overall 0.762、unsubscribe recall
+1.000、complaint recall 0.700、action contract 0.775、scope 1.000）；Ruff 全绿；configured
+mypy `391 source files` 无问题；七项边界检查全绿。真实 provider acceptance 仍为
+`not_run`，上述 smoke 不作为 provider 验收结果。

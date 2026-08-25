@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from domains.conversations.schemas import ReplyWorkAction, ReplyWorkActionRequest
+from domains.conversations.service import ConversationService
 from domains.demand.service import DemandService
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
@@ -66,10 +68,6 @@ _SYSTEM_ACTOR = OpportunityActor(
     OpportunityScope(level=OpportunityScopeLevel.SYSTEM),
     "system",
 )
-
-
-class ReplyActionUnavailableError(ValidationError):
-    """当前没有合法公共领域写端口的动作必须显式失败。"""
 
 
 def _enrollment_actor(enrollment_id: EnrollmentId) -> OutreachActor:
@@ -165,8 +163,8 @@ class ReplyBusinessFactsReader(Protocol):
 class ComposedReplyActionPorts:
     """把字段、接管与投递反馈动作接到真实公共域服务。
 
-    尚无公共领域写 API 的 qualification/future/follow-up/referral 动作固定
-    fail-closed；不能用可静默 no-op 的万能 auxiliary 端口冒充生产实现。
+    qualification/future/follow-up/referral 通过 conversations 公共 API 写入
+    metadata-only owner queue；referral 只排队核验，不自动 enrollment。
     """
 
     def __init__(
@@ -180,6 +178,7 @@ class ComposedReplyActionPorts:
         opportunities: OpportunityService,
         outreach: OutreachService,
         sending_identities: SendingIdentityService,
+        conversations: ConversationService,
     ) -> None:
         if (
             not isinstance(tenant_id, str)
@@ -202,6 +201,9 @@ class ComposedReplyActionPorts:
             or not callable(
                 getattr(sending_identities, "record_delivery_event", None)
             )
+            or not callable(
+                getattr(conversations, "enqueue_reply_work_action", None)
+            )
         ):
             raise ValidationError("回复动作生产组合依赖未完整配置")
         self._tenant_id = tenant_id
@@ -212,6 +214,7 @@ class ComposedReplyActionPorts:
         self._opportunities = opportunities
         self._outreach = outreach
         self._sending_identities = sending_identities
+        self._conversations = conversations
 
     def _require_call(
         self,
@@ -463,22 +466,62 @@ class ComposedReplyActionPorts:
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "start_qualification")
-        raise ReplyActionUnavailableError("需求确认动作暂不可用：缺少公共领域写端口")
+        await self._enqueue_work(
+            tenant_id,
+            context,
+            idempotency_key,
+            ReplyWorkAction.START_QUALIFICATION,
+        )
 
     async def mark_future_restart(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "mark_future_restart")
-        raise ReplyActionUnavailableError("未来重启动作暂不可用：缺少公共领域写端口")
+        await self._enqueue_work(
+            tenant_id,
+            context,
+            idempotency_key,
+            ReplyWorkAction.MARK_FUTURE_RESTART,
+        )
 
     async def create_follow_up(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "create_follow_up")
-        raise ReplyActionUnavailableError("跟进任务动作暂不可用：缺少公共领域写端口")
+        await self._enqueue_work(
+            tenant_id,
+            context,
+            idempotency_key,
+            ReplyWorkAction.CREATE_FOLLOW_UP,
+        )
 
     async def intake_new_contact(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "intake_new_contact")
-        raise ReplyActionUnavailableError("新联系人准入动作暂不可用：缺少公共领域写端口")
+        await self._enqueue_work(
+            tenant_id,
+            context,
+            idempotency_key,
+            ReplyWorkAction.INTAKE_NEW_CONTACT,
+        )
+
+    async def _enqueue_work(
+        self,
+        tenant_id: TenantId,
+        context: ReplyActionContext,
+        idempotency_key: str,
+        action: ReplyWorkAction,
+    ) -> None:
+        await self._conversations.enqueue_reply_work_action(
+            tenant_id,
+            ReplyWorkActionRequest(
+                message_id=context.message_id,
+                outbound_message_id=context.outbound_message_id,
+                enrollment_id=context.enrollment_id,
+                account_id=context.account_id,
+                contact_point_id=context.contact_point_id,
+                action=action,
+                idempotency_key=IdempotencyKey(idempotency_key),
+            ),
+        )

@@ -1058,7 +1058,7 @@ async def test_no_subject_uses_fixed_placeholder(
     reader = _FakeContentReader(
         {
             "msg_inbound_reply_007": ReplyMessageContent(
-                subject=None, body="Please stop contacting me."
+                subject=None, body="No thank you."
             )
         }
     )

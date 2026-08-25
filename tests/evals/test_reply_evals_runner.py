@@ -12,6 +12,14 @@ from agent_runtime.qualification_agent.agent import QualificationAgent
 from tests.evals.reply_evals_runner import KeywordBaselinePort, run_reply_evals
 
 
+class _AlwaysErrorClassifier:
+    model = "controlled-error-v1"
+
+    async def classify(self, *, message: dict[str, str]) -> object:
+        del message
+        raise RuntimeError("controlled classifier failure")
+
+
 def _smoke_agent() -> tuple[QualificationAgent, KeywordBaselinePort]:
     port = KeywordBaselinePort()
     agent = QualificationAgent(
@@ -62,3 +70,45 @@ async def test_critical_acceptance_metrics_are_reported() -> None:
     assert 0.0 <= report.auto_reply_false_stop_rate <= 1.0
     assert 0.0 <= report.complaint_recall <= 1.0
     assert 0.0 <= report.extract_recall <= 1.0
+    assert 0.0 <= report.action_contract_accuracy <= 1.0
+    assert 0.0 <= report.suppress_scope_accuracy <= 1.0
+
+
+async def test_runner_validates_expected_actions_and_all_account_scope_cases() -> None:
+    """评估必须消费 expected 的动作/范围，且四条 account 语义不能降级。"""
+    agent, _port = _smoke_agent()
+    report = await run_reply_evals(agent)
+    account_results = tuple(
+        result
+        for result in report.results
+        if result.expected_suppress_scope == "account"
+    )
+
+    assert len(account_results) == 4
+    assert {result.case_path for result in account_results} == {
+        "unsubscribe/case_06",
+        "unsubscribe/case_10",
+        "unsubscribe/case_13",
+        "unsubscribe/case_18",
+    }
+    assert all(result.predicted_suppress_scope == "account" for result in account_results)
+    assert all(result.action_contract_passed is True for result in account_results)
+    assert report.suppress_scope_accuracy == 1.0
+    assert report.action_contract_accuracy == (
+        sum(result.action_contract_passed is True for result in report.results)
+        / report.total
+    )
+
+
+async def test_classifier_errors_fail_every_relevant_metric_denominator() -> None:
+    """单条错误不能被 continue 排除，从而虚增类别、动作、scope 或提取指标。"""
+    report = await run_reply_evals(_AlwaysErrorClassifier())  # type: ignore[arg-type]
+
+    assert report.errors == report.total
+    assert report.overall_accuracy == 0.0
+    assert report.unsubscribe_recall == 0.0
+    assert report.complaint_recall == 0.0
+    assert report.extract_recall == 0.0
+    assert report.action_contract_accuracy == 0.0
+    assert report.suppress_scope_accuracy == 0.0
+    assert all(correct == 0 for correct, _total in report.per_category_accuracy.values())

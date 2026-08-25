@@ -8,9 +8,11 @@ from typing import Protocol, runtime_checkable
 from domains.conversations.models import (
     Conversation,
     Message,
+    MessageClassification,
     NextQuestionSuggestion,
     ReplyCategory,
     ReplyFieldEvidence,
+    ReplySuppressScope,
 )
 from domains.conversations.repository import (
     ConversationsUnitOfWork as _ConversationsUnitOfWork,
@@ -18,6 +20,9 @@ from domains.conversations.repository import (
 from domains.conversations.schemas import (
     ConversationInboxDetail,
     ConversationInboxItem,
+    ReplyWorkActionRequest,
+    ReplyWorkActionView,
+    ReplyWorkStatus,
 )
 
 #: 域公共 API 复出口（outreach/sending_identity 同款先例）：apps 侧
@@ -74,6 +79,7 @@ class ConversationService(Protocol):
         *,
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
+        suppress_scope: ReplySuppressScope | None = None,
     ) -> tuple[str, ...]:
         """落分类结果，返回 ``REPLY_ACTIONS`` 对应的动作序列。
 
@@ -83,6 +89,14 @@ class ConversationService(Protocol):
         RFC Message-ID（In-Reply-To/References 关联）；无关联传 None，
         订阅方 fail-closed。
         """
+        ...
+
+    async def get_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> MessageClassification | None:
+        """读取 tenant-bound 分类事实，供动作重试复用其耐久发生时间。"""
         ...
 
     async def correct_classification(
@@ -97,6 +111,24 @@ class ConversationService(Protocol):
         原分类保留（``classified_by`` 不变，另记纠正人）——
         纠正样本是评估集的直接来源，覆盖掉就丢了。
         """
+        ...
+
+    async def enqueue_reply_work_action(
+        self,
+        tenant_id: TenantId,
+        request: ReplyWorkActionRequest,
+    ) -> ReplyWorkActionView:
+        """按 message+action 创建 owner-facing metadata-only 工作项；重试幂等。"""
+        ...
+
+    async def list_reply_work_queue(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: ReplyWorkStatus,
+        limit: int,
+    ) -> tuple[ReplyWorkActionView, ...]:
+        """读取本租户 owner queue；不返回客户正文、主题或地址。"""
         ...
 
     async def suggest_next_questions(

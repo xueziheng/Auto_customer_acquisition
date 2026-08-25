@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from domains.conversations.errors import ReingestConflictError
 from domains.conversations.models import (
     REPLY_ACTIONS,
+    REPLY_WORK_QUEUES,
     ClassificationCorrection,
     Conversation,
     Message,
@@ -23,6 +24,9 @@ from domains.conversations.models import (
     NextQuestionSuggestion,
     ReplyCategory,
     ReplyFieldEvidence,
+    ReplySuppressScope,
+    ReplyWorkRecord,
+    ReplyWorkStatus,
 )
 from domains.conversations.repository import (
     ClassificationRepository,
@@ -33,6 +37,8 @@ from domains.conversations.schemas import (
     ConversationInboxDetail,
     ConversationInboxItem,
     InboxMessageView,
+    ReplyWorkActionRequest,
+    ReplyWorkActionView,
 )
 from shared.errors import ValidationError
 from shared.events.catalog import InboundMessageStored, ReplyReceived
@@ -259,6 +265,7 @@ class ConversationServiceImpl:
         *,
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
+        suppress_scope: ReplySuppressScope | None = None,
     ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
@@ -288,6 +295,12 @@ class ConversationServiceImpl:
             not isinstance(item, ReplyFieldEvidence) for item in candidate_fields
         ):
             raise ValidationError("回复字段证据无效")
+        if category is ReplyCategory.UNSUBSCRIBE:
+            suppress_scope = suppress_scope or ReplySuppressScope.CONTACT
+            if not isinstance(suppress_scope, ReplySuppressScope):
+                raise ValidationError("退订抑制范围无效")
+        elif suppress_scope is not None:
+            raise ValidationError("非退订分类不得携带抑制范围")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
@@ -305,6 +318,8 @@ class ConversationServiceImpl:
                     )
                 if existing.candidate_fields != candidate_fields:
                     raise ValidationError("同 message+分类者字段证据冲突，拒绝覆盖")
+                if existing.suppress_scope is not suppress_scope:
+                    raise ValidationError("同 message+分类者抑制范围冲突，拒绝覆盖")
                 return REPLY_ACTIONS[category]
             await classifications.add(
                 MessageClassification(
@@ -314,6 +329,7 @@ class ConversationServiceImpl:
                     classified_by=classified_by,
                     classified_at=now,
                     candidate_fields=candidate_fields,
+                    suppress_scope=suppress_scope,
                 )
             )
             if (
@@ -332,6 +348,124 @@ class ConversationServiceImpl:
                     )
                 )
         return REPLY_ACTIONS[category]
+
+    async def get_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> MessageClassification | None:
+        """按租户读取分类事实；不返回消息正文或 artifact 引用。"""
+        if not isinstance(tenant_id, str) or not tenant_id:
+            raise ValidationError("会话租户无效")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValidationError("会话消息无效")
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.classifications.get(tenant_id, message_id)
+
+    @staticmethod
+    def _reply_work_view(record: ReplyWorkRecord) -> ReplyWorkActionView:
+        return ReplyWorkActionView(
+            action_id=record.action_id,
+            message_id=record.message_id,
+            outbound_message_id=record.outbound_message_id,
+            enrollment_id=record.enrollment_id,
+            account_id=record.account_id,
+            contact_point_id=record.contact_point_id,
+            action=record.action,
+            owner_queue=record.owner_queue,
+            status=record.status,
+            idempotency_key=record.idempotency_key,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _require_reply_work_identity(
+        record: ReplyWorkRecord,
+        request: ReplyWorkActionRequest,
+    ) -> None:
+        if (
+            record.message_id != request.message_id
+            or record.outbound_message_id != request.outbound_message_id
+            or record.enrollment_id != request.enrollment_id
+            or record.account_id != request.account_id
+            or record.contact_point_id != request.contact_point_id
+            or record.action is not request.action
+            or record.idempotency_key != request.idempotency_key
+        ):
+            raise ValidationError("回复工作动作幂等冲突")
+
+    async def enqueue_reply_work_action(
+        self,
+        tenant_id: TenantId,
+        request: ReplyWorkActionRequest,
+    ) -> ReplyWorkActionView:
+        """创建 metadata-only owner queue 事实；message+action 串行幂等。"""
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("回复工作动作租户无效")
+        if not isinstance(request, ReplyWorkActionRequest):
+            raise ValidationError("回复工作动作请求无效")
+        expected_key = f"reply:{request.action.value}:{request.message_id}"
+        if request.idempotency_key != expected_key:
+            raise ValidationError("回复工作动作幂等冲突")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            await uow.lock_message(tenant_id, request.message_id)
+            message = await uow.messages.get(tenant_id, request.message_id)
+            if message is None:
+                raise ValidationError("回复工作动作消息不存在")
+            conversation = await uow.conversations.get(
+                tenant_id, message.conversation_id
+            )
+            if conversation is None or conversation.account_id != request.account_id:
+                raise ValidationError("回复工作动作账户关联不匹配")
+            existing = await uow.reply_work.get_by_message_action(
+                tenant_id, request.message_id, request.action
+            )
+            if existing is not None:
+                self._require_reply_work_identity(existing, request)
+                return self._reply_work_view(existing)
+            await uow.reply_work.add_if_absent(
+                ReplyWorkRecord(
+                    action_id=new_id("rwa"),
+                    tenant_id=tenant_id,
+                    message_id=request.message_id,
+                    outbound_message_id=request.outbound_message_id,
+                    enrollment_id=request.enrollment_id,
+                    account_id=request.account_id,
+                    contact_point_id=request.contact_point_id,
+                    action=request.action,
+                    owner_queue=REPLY_WORK_QUEUES[request.action],
+                    status=ReplyWorkStatus.PENDING,
+                    idempotency_key=request.idempotency_key,
+                    created_at=now,
+                )
+            )
+            winner = await uow.reply_work.get_by_message_action(
+                tenant_id, request.message_id, request.action
+            )
+            if winner is None:
+                raise ValidationError("回复工作动作幂等冲突")
+            self._require_reply_work_identity(winner, request)
+            return self._reply_work_view(winner)
+
+    async def list_reply_work_queue(
+        self,
+        tenant_id: TenantId,
+        *,
+        status: ReplyWorkStatus,
+        limit: int,
+    ) -> tuple[ReplyWorkActionView, ...]:
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValidationError("回复工作队列租户无效")
+        if not isinstance(status, ReplyWorkStatus):
+            raise ValidationError("回复工作队列状态无效")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValidationError("回复工作队列 limit 无效")
+        async with self._uow_factory(tenant_id) as uow:
+            records = await uow.reply_work.list_by_status(
+                tenant_id, status, limit=limit
+            )
+        return tuple(self._reply_work_view(record) for record in records)
 
     async def suggest_next_questions(
         self,

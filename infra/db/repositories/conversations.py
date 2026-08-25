@@ -18,21 +18,31 @@ from domains.conversations.models import (
     MessageDirection,
     ReplyCategory,
     ReplyFieldEvidence,
+    ReplySuppressScope,
+    ReplyWorkAction,
+    ReplyWorkQueue,
+    ReplyWorkRecord,
+    ReplyWorkStatus,
 )
 from domains.conversations.repository import (
     ClassificationRepository,
     ConversationRepository,
     MessageRepository,
+    ReplyWorkRepository,
 )
 from infra.db.tables import (
     ConversationClassificationCorrectionRow,
     ConversationClassificationRow,
+    ConversationReplyWorkRow,
     ConversationRow,
     MessageRow,
 )
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
+    ContactPointId,
     ConversationId,
+    EnrollmentId,
+    IdempotencyKey,
     MessageId,
     OutboundMessageId,
     ProspectAccountId,
@@ -74,6 +84,11 @@ def _classification_to_row(
             {"field": item.field, "value": item.value, "quote": item.quote}
             for item in classification.candidate_fields
         ],
+        suppress_scope=(
+            classification.suppress_scope.value
+            if classification.suppress_scope is not None
+            else None
+        ),
     )
 
 
@@ -93,6 +108,11 @@ def _row_to_classification(
                 quote=str(item["quote"]),
             )
             for item in row.candidate_fields
+        ),
+        suppress_scope=(
+            ReplySuppressScope(row.suppress_scope)
+            if row.suppress_scope is not None
+            else None
         ),
     )
 
@@ -188,6 +208,90 @@ class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepos
             )
         ).scalars().all()
         return [_row_to_correction(row) for row in rows]
+
+
+def _row_to_reply_work(row: ConversationReplyWorkRow) -> ReplyWorkRecord:
+    return ReplyWorkRecord(
+        action_id=row.action_id,
+        tenant_id=TenantId(row.tenant_id),
+        message_id=MessageId(row.message_id),
+        outbound_message_id=OutboundMessageId(row.outbound_message_id),
+        enrollment_id=EnrollmentId(row.enrollment_id),
+        account_id=ProspectAccountId(row.account_id),
+        contact_point_id=ContactPointId(row.contact_point_id),
+        action=ReplyWorkAction(row.action),
+        owner_queue=ReplyWorkQueue(row.owner_queue),
+        status=ReplyWorkStatus(row.status),
+        idempotency_key=IdempotencyKey(row.idempotency_key),
+        created_at=row.created_at,
+    )
+
+
+class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
+    """回复 owner queue；所有唯一冲突先 no-op，再由服务层比对语义。"""
+
+    async def add_if_absent(self, record: ReplyWorkRecord) -> None:
+        self._require_tenant(record.tenant_id, "conversation_reply_work_add")
+        await self._session.execute(
+            pg_insert(ConversationReplyWorkRow)
+            .values(
+                tenant_id=str(record.tenant_id),
+                action_id=record.action_id,
+                message_id=str(record.message_id),
+                outbound_message_id=str(record.outbound_message_id),
+                enrollment_id=str(record.enrollment_id),
+                account_id=str(record.account_id),
+                contact_point_id=str(record.contact_point_id),
+                action=record.action.value,
+                owner_queue=record.owner_queue.value,
+                status=record.status.value,
+                idempotency_key=str(record.idempotency_key),
+                created_at=record.created_at,
+            )
+            .on_conflict_do_nothing()
+        )
+
+    async def get_by_message_action(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        action: ReplyWorkAction,
+    ) -> ReplyWorkRecord | None:
+        self._require_tenant(tenant_id, "conversation_reply_work_get")
+        row = (
+            await self._session.execute(
+                select(ConversationReplyWorkRow).where(
+                    ConversationReplyWorkRow.tenant_id == str(tenant_id),
+                    ConversationReplyWorkRow.message_id == str(message_id),
+                    ConversationReplyWorkRow.action == action.value,
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_reply_work(row) if row is not None else None
+
+    async def list_by_status(
+        self,
+        tenant_id: TenantId,
+        status: ReplyWorkStatus,
+        *,
+        limit: int,
+    ) -> list[ReplyWorkRecord]:
+        self._require_tenant(tenant_id, "conversation_reply_work_list")
+        rows = (
+            await self._session.execute(
+                select(ConversationReplyWorkRow)
+                .where(
+                    ConversationReplyWorkRow.tenant_id == str(tenant_id),
+                    ConversationReplyWorkRow.status == status.value,
+                )
+                .order_by(
+                    ConversationReplyWorkRow.created_at,
+                    ConversationReplyWorkRow.action_id,
+                )
+                .limit(limit)
+            )
+        ).scalars().all()
+        return [_row_to_reply_work(row) for row in rows]
 
 
 def _conversation_to_row(

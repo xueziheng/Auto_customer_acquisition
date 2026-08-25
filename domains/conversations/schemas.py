@@ -10,12 +10,68 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from domains.conversations.models import ReplyCategory, ReplyFieldEvidence
+from domains.conversations.models import (
+    ReplyCategory,
+    ReplyFieldEvidence,
+    ReplySuppressScope,
+    ReplyWorkAction,
+    ReplyWorkQueue,
+    ReplyWorkStatus,
+)
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    ContactPointId,
     ConversationId,
+    EnrollmentId,
+    IdempotencyKey,
     MessageId,
+    OutboundMessageId,
     ProspectAccountId,
 )
+
+
+@dataclass(frozen=True)
+class ReplyWorkActionRequest:
+    """创建 metadata-only 回复工作项；不接受正文、地址或自由文本。"""
+
+    message_id: MessageId
+    outbound_message_id: OutboundMessageId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    action: ReplyWorkAction
+    idempotency_key: IdempotencyKey
+
+    def __post_init__(self) -> None:
+        values = (
+            self.message_id,
+            self.outbound_message_id,
+            self.enrollment_id,
+            self.account_id,
+            self.contact_point_id,
+            self.idempotency_key,
+        )
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValidationError("回复工作动作关联无效")
+        if not isinstance(self.action, ReplyWorkAction):
+            raise ValidationError("回复工作动作类型无效")
+
+
+@dataclass(frozen=True)
+class ReplyWorkActionView:
+    """Owner queue 只读项；内容通过 message/artifact 授权链另行读取。"""
+
+    action_id: str
+    message_id: MessageId
+    outbound_message_id: OutboundMessageId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    action: ReplyWorkAction
+    owner_queue: ReplyWorkQueue
+    status: ReplyWorkStatus
+    idempotency_key: IdempotencyKey
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -86,4 +142,10 @@ __all__ = (
     "InboxMessageView",
     "ReplyCategory",
     "ReplyFieldEvidence",
+    "ReplySuppressScope",
+    "ReplyWorkAction",
+    "ReplyWorkActionRequest",
+    "ReplyWorkActionView",
+    "ReplyWorkQueue",
+    "ReplyWorkStatus",
 )

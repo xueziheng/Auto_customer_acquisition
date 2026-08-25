@@ -32,7 +32,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from domains.conversations.schemas import ReplyCategory
+from domains.conversations.schemas import ReplyCategory, ReplySuppressScope
 from domains.conversations.service import ConversationService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import MessageId, TenantId, new_id
@@ -137,6 +137,11 @@ async def test_record_classification_persists_with_provenance_and_publishes_cont
     assert row.category == "unsubscribe"
     assert row.classified_by == "test-model-v1"
     assert row.classified_at == NOW
+    loaded = await service.get_classification(tenant, message_id)
+    assert loaded is not None
+    assert loaded.classified_at == NOW
+    assert loaded.suppress_scope is ReplySuppressScope.CONTACT
+    assert await service.get_classification(TenantId(new_id("tn")), message_id) is None
 
     replies = [e for e in await _outbox_events(factory, tenant) if e.event_type == "ReplyReceived"]
     assert len(replies) == 1
@@ -146,6 +151,45 @@ async def test_record_classification_persists_with_provenance_and_publishes_cont
     assert payload["reply_category"] == "unsubscribe"
     assert "body" not in json.dumps(payload)
     assert "subject" not in json.dumps(payload)
+
+
+async def test_unsubscribe_scope_is_typed_persisted_and_idempotency_checked(
+    conversations_db: AsyncEngine,
+) -> None:
+    """scope 是分类事实的一部分；同 message 重试若 scope 改变必须冲突。"""
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    message_id = MessageId("msg_scope_001")
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    scope_type = importlib.import_module("domains.conversations.schemas").ReplySuppressScope
+
+    await service.record_classification(
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        classified_by="test-model-v1",
+        suppress_scope=scope_type.ACCOUNT,
+    )
+    await service.record_classification(
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        classified_by="test-model-v1",
+        suppress_scope=scope_type.ACCOUNT,
+    )
+    rows = await _classification_rows(factory, tenant)
+    assert len(rows) == 1
+    assert rows[0].suppress_scope == "account"
+
+    with pytest.raises(ValidationError, match="抑制范围冲突"):
+        await service.record_classification(
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            classified_by="test-model-v1",
+            suppress_scope=scope_type.CONTACT,
+        )
 
 
 async def test_same_message_and_version_is_idempotent_and_conflict_fails_closed(

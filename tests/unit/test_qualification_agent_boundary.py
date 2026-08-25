@@ -3,8 +3,8 @@
 边界契约（最小闭环）：
 - 结构化模型调用抽象为可注入 port（ReplyModelPort）；agent 只验证受限输出并
   生成 typed ChangeSet；
-- 模型输出 schema 只允许 category + candidate_fields——动作/置信度/任何其他键
-  一律护栏拦截（确定性动作由域 REPLY_ACTIONS 决定，本任务不派生、不执行）；
+- 模型输出 schema 只允许 category + candidate_fields + 退订专用 suppress_scope；
+  动作/置信度/其他键一律护栏拦截（动作由域 REPLY_ACTIONS 决定）；
 - 提取候选必须用 demand 词表，quote 必须逐字出现在原消息（provenance）；
 - agent 不落库、不执行动作、不 import infra/domains 内部实现（AST 锁定）；
 - 凭证不进模型：prompt 只含消息正文。
@@ -96,16 +96,32 @@ async def test_classification_produces_typed_changeset_without_actions() -> None
         "subject": "Unsubscribe",
         "body": "Please unsubscribe me from your emails.",
     }
-    port = _FakePort([json.dumps({"category": "unsubscribe", "candidate_fields": []})])
+    port = _FakePort(
+        [
+            json.dumps(
+                {
+                    "category": "unsubscribe",
+                    "candidate_fields": [],
+                    "suppress_scope": "contact",
+                }
+            )
+        ]
+    )
     task = _task(message)
     changeset = await _agent(port).run(task, None)
     entry = _classification_entry(changeset)
     assert entry is not None
     payload = entry["payload"]
     assert payload["category"] == "unsubscribe"
+    assert payload["suppress_scope"] == "contact"
     assert payload["message_id"] == "msg_boundary_1"
     assert payload["model_version"] == "test-model-v1"
-    assert set(payload) == {"category", "message_id", "model_version"}
+    assert set(payload) == {
+        "category",
+        "message_id",
+        "model_version",
+        "suppress_scope",
+    }
     assert entry["risk_level"] == "low"
     assert changeset.tenant_id == task.tenant_id
     assert changeset.run_id == task.run_id
@@ -125,6 +141,91 @@ async def test_typed_classify_result_is_the_boundary() -> None:
     result = await agent.classify(message=message)
     assert result.category.value == "clear_interest"
     assert result.candidate_fields == ()
+
+
+@pytest.mark.parametrize(
+    ("subject", "body"),
+    (
+        (
+            "Company-wide opt out",
+            "Please remove our entire company from your database.",
+        ),
+        (
+            "Not interested, remove us",
+            "Please remove us from your contact list.",
+        ),
+        (
+            "Remove our company",
+            "Please remove our company from your distribution list.",
+        ),
+        (
+            "Both addresses",
+            "Please remove me and my assistant from your list.",
+        ),
+    ),
+)
+async def test_explicit_account_unsubscribe_never_downgrades_to_contact(
+    subject: str,
+    body: str,
+) -> None:
+    """通用安全判定必须覆盖所有受控 account-scope 表达，不能信任模型降级。"""
+    message = {
+        "message_id": "msg_account_scope",
+        "subject": subject,
+        "body": body,
+    }
+    port = _FakePort(
+        [
+            json.dumps(
+                {
+                    "category": "unsubscribe",
+                    "candidate_fields": [],
+                    "suppress_scope": "contact",
+                }
+            )
+        ]
+    )
+
+    result = await _agent(port).classify(message=message)
+
+    assert result.suppress_scope.value == "account"
+
+
+async def test_unsubscribe_without_broader_evidence_defaults_to_contact_scope() -> None:
+    message = {
+        "message_id": "msg_contact_scope",
+        "subject": "Unsubscribe",
+        "body": "Please unsubscribe me from your emails.",
+    }
+    port = _FakePort(
+        [json.dumps({"category": "unsubscribe", "candidate_fields": []})]
+    )
+
+    result = await _agent(port).classify(message=message)
+
+    assert result.suppress_scope.value == "contact"
+
+
+async def test_non_unsubscribe_cannot_smuggle_suppression_scope() -> None:
+    message = {
+        "message_id": "msg_wrong_scope",
+        "subject": "Not interested",
+        "body": "We are not interested.",
+    }
+    port = _FakePort(
+        [
+            json.dumps(
+                {
+                    "category": "rejection",
+                    "candidate_fields": [],
+                    "suppress_scope": "account",
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(ValidationError, match="非退订分类不得携带抑制范围"):
+        await _agent(port).classify(message=message)
 
 
 async def test_auto_reply_classifies_without_stopping_semantics() -> None:

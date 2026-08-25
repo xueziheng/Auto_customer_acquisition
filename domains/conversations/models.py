@@ -11,7 +11,10 @@ from enum import Enum
 
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    ContactPointId,
     ConversationId,
+    EnrollmentId,
+    IdempotencyKey,
     MessageId,
     OutboundMessageId,
     ProspectAccountId,
@@ -77,6 +80,48 @@ class ReplyCategory(str, Enum):
     """投诉。→ 停序列 + 抑制 + 计入发件身份信誉 + 通知负责人。"""
 
 
+class ReplySuppressScope(str, Enum):
+    """客户明确退订的业务范围；只对 ``unsubscribe`` 分类有值。"""
+
+    CONTACT = "contact"
+    ACCOUNT = "account"
+
+
+class ReplyWorkAction(str, Enum):
+    """由回复产生、需要内部员工继续处理的耐久业务动作。"""
+
+    START_QUALIFICATION = "start_qualification"
+    MARK_FUTURE_RESTART = "mark_future_restart"
+    CREATE_FOLLOW_UP = "create_follow_up"
+    INTAKE_NEW_CONTACT = "intake_new_contact"
+
+
+class ReplyWorkQueue(str, Enum):
+    """Owner 可消费的明确队列；referral 只能进入核验准入队列。"""
+
+    NEED_QUALIFICATION = "need_qualification"
+    FUTURE_RESTART_REVIEW = "future_restart_review"
+    FOLLOW_UP = "follow_up"
+    VERIFIED_CONTACT_INTAKE_REVIEW = "verified_contact_intake_review"
+
+
+class ReplyWorkStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+REPLY_WORK_QUEUES: dict[ReplyWorkAction, ReplyWorkQueue] = {
+    ReplyWorkAction.START_QUALIFICATION: ReplyWorkQueue.NEED_QUALIFICATION,
+    ReplyWorkAction.MARK_FUTURE_RESTART: ReplyWorkQueue.FUTURE_RESTART_REVIEW,
+    ReplyWorkAction.CREATE_FOLLOW_UP: ReplyWorkQueue.FOLLOW_UP,
+    ReplyWorkAction.INTAKE_NEW_CONTACT: (
+        ReplyWorkQueue.VERIFIED_CONTACT_INTAKE_REVIEW
+    ),
+}
+
+
 REPLY_ACTIONS: dict[ReplyCategory, tuple[str, ...]] = {
     ReplyCategory.CLEAR_INTEREST: ("stop_sequence", "start_qualification"),
     ReplyCategory.WILLING_TO_CONTINUE: ("stop_sequence", "start_qualification"),
@@ -135,6 +180,44 @@ class MessageClassification:
     classified_by: str
     classified_at: datetime
     candidate_fields: tuple[ReplyFieldEvidence, ...] = ()
+    suppress_scope: ReplySuppressScope | None = None
+
+    def __post_init__(self) -> None:
+        if self.category is ReplyCategory.UNSUBSCRIBE:
+            if not isinstance(self.suppress_scope, ReplySuppressScope):
+                raise ValidationError("退订分类必须带抑制范围")
+        elif self.suppress_scope is not None:
+            raise ValidationError("非退订分类不得携带抑制范围")
+
+
+@dataclass(frozen=True)
+class ReplyWorkRecord:
+    """metadata-only 回复工作事实；客户正文与地址不得进入本记录。"""
+
+    action_id: str
+    tenant_id: TenantId
+    message_id: MessageId
+    outbound_message_id: OutboundMessageId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    action: ReplyWorkAction
+    owner_queue: ReplyWorkQueue
+    status: ReplyWorkStatus
+    idempotency_key: IdempotencyKey
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.owner_queue is not REPLY_WORK_QUEUES.get(self.action):
+            raise ValidationError("回复工作动作与 owner queue 不匹配")
+        if self.status is not ReplyWorkStatus.PENDING:
+            raise ValidationError("新回复工作动作状态无效")
+        if (
+            not isinstance(self.created_at, datetime)
+            or self.created_at.tzinfo is None
+            or self.created_at.utcoffset() != UTC.utcoffset(self.created_at)
+        ):
+            raise ValidationError("回复工作动作时间必须为 UTC")
 
 
 @dataclass

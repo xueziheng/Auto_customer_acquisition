@@ -15,6 +15,7 @@ from infra.db.repositories.conversations import (
     ClassificationRepositoryImpl,
     ConversationRepositoryImpl,
     MessageRepositoryImpl,
+    ReplyWorkRepositoryImpl,
 )
 from infra.db.tables import OutboxEventRow
 from shared.errors import TenantIsolationViolation
@@ -41,6 +42,7 @@ class SqlAlchemyConversationsUnitOfWork:
         self.classifications = ClassificationRepositoryImpl(session, self._tenant_id)
         self.conversations = ConversationRepositoryImpl(session, self._tenant_id)
         self.messages = MessageRepositoryImpl(session, self._tenant_id)
+        self.reply_work = ReplyWorkRepositoryImpl(session, self._tenant_id)
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 

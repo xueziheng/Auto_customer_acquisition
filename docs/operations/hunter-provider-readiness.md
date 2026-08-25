@@ -39,7 +39,7 @@ test -x "$TRADEOS_PYTHON_BIN"
 "$TRADEOS_PYTHON_BIN" scripts/scan_sensitive.py
 ```
 
-预期第一条只输出 `0035 (head)`，后两条零违规。真实环境还必须由部署平台以不出现在命令行
+预期第一条只输出 `0036 (head)`，后两条零违规。真实环境还必须由部署平台以不出现在命令行
 参数、日志或进程列表中的方式注入数据库、Gateway fingerprint 与 Hunter 凭证。
 
 ## 2. 不解析凭证地声明配置

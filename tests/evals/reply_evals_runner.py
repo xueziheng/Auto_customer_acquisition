@@ -32,12 +32,30 @@ def _stop_categories() -> frozenset[str]:
     )
 
 
+def _actions_for_category(category: str) -> tuple[str, ...]:
+    """按生产确定性动作表派生预测动作；未知类别返回空。"""
+    models = importlib.import_module("domains.conversations.models")
+    try:
+        typed = models.ReplyCategory(category)
+    except ValueError:
+        return ()
+    return tuple(models.REPLY_ACTIONS[typed])
+
+
 @dataclass(frozen=True)
 class ReplyCaseResult:
     case_path: str
     expected_category: str
     predicted_category: str | None
     error: str | None
+    expected_actions: tuple[str, ...]
+    predicted_actions: tuple[str, ...]
+    missing_actions: tuple[str, ...]
+    forbidden_actions: tuple[str, ...]
+    action_contract_passed: bool
+    expected_suppress_scope: str | None
+    predicted_suppress_scope: str | None
+    suppress_scope_passed: bool | None
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,8 @@ class ReplyEvalReport:
     auto_reply_false_stop_rate: float
     complaint_recall: float
     extract_recall: float
+    action_contract_accuracy: float
+    suppress_scope_accuracy: float
     results: tuple[ReplyCaseResult, ...]
 
     @property
@@ -78,7 +98,6 @@ def _corpus_cases() -> list[tuple[str, dict[str, object], dict[str, object]]]:
 async def run_reply_evals(classifier: ReplyClassifier) -> ReplyEvalReport:
     """遍历全部用例：分类器按消息产出结果，与 expected 比对并计算指标。"""
     provider = getattr(classifier, "model", type(classifier).__name__)
-    stop_categories = _stop_categories()
     results: list[ReplyCaseResult] = []
     expected_by_category: dict[str, int] = {}
     correct_by_category: dict[str, int] = {}
@@ -90,55 +109,114 @@ async def run_reply_evals(classifier: ReplyClassifier) -> ReplyEvalReport:
     complaint_hit = 0
     extract_expected = 0
     extract_hit = 0
+    action_contract_hit = 0
+    scope_total = 0
+    scope_hit = 0
 
     for case_path, input_payload, expected in _corpus_cases():
         expected_category = str(expected["category"])
         expected_by_category[expected_category] = (
             expected_by_category.get(expected_category, 0) + 1
         )
+        if expected_category == "unsubscribe":
+            unsubscribe_total += 1
+        if expected_category == "auto_reply":
+            auto_reply_total += 1
+        if expected_category == "complaint":
+            complaint_total += 1
+        expected_actions = tuple(
+            str(item) for item in expected.get("must_intercept", [])
+        )
+        must_not_actions = tuple(
+            str(item) for item in expected.get("must_not_intercept", [])
+        )
+        expected_scope_raw = expected.get("suppress_scope")
+        expected_scope = (
+            str(expected_scope_raw) if expected_scope_raw is not None else None
+        )
+        if expected_scope is not None:
+            scope_total += 1
+        raw_extract = expected.get("extract")
+        extract_items = (
+            tuple(item for item in raw_extract if isinstance(item, dict))
+            if isinstance(raw_extract, list)
+            else ()
+        )
+        extract_expected += len(extract_items)
         message = {
             "message_id": str(input_payload["message_id"]),
             "subject": str(input_payload["subject"]),
             "body": str(input_payload["body"]),
         }
         predicted: str | None = None
+        predicted_scope: str | None = None
+        predicted_actions: tuple[str, ...] = ()
+        candidate_fields: tuple[object, ...] = ()
         error: str | None = None
         try:
             result = await classifier.classify(message=message)
             predicted = result.category.value
+            predicted_actions = _actions_for_category(predicted)
+            scope = getattr(result, "suppress_scope", None)
+            predicted_scope = getattr(scope, "value", None)
+            candidate_fields = tuple(result.candidate_fields)
         except Exception as exc:  # noqa: BLE001 - 单条失败不中断整批评估
             error = type(exc).__name__
-        results.append(ReplyCaseResult(case_path, expected_category, predicted, error))
-        if error is not None:
-            continue
-        assert predicted is not None
-        if predicted == expected_category:
+        missing_actions = tuple(
+            action for action in expected_actions if action not in predicted_actions
+        )
+        forbidden_actions = tuple(
+            action for action in must_not_actions if action in predicted_actions
+        )
+        action_contract_passed = (
+            error is None and not missing_actions and not forbidden_actions
+        )
+        if action_contract_passed:
+            action_contract_hit += 1
+        suppress_scope_passed = (
+            None
+            if expected_scope is None
+            else error is None and predicted_scope == expected_scope
+        )
+        if suppress_scope_passed is True:
+            scope_hit += 1
+        results.append(
+            ReplyCaseResult(
+                case_path=case_path,
+                expected_category=expected_category,
+                predicted_category=predicted,
+                error=error,
+                expected_actions=expected_actions,
+                predicted_actions=predicted_actions,
+                missing_actions=missing_actions,
+                forbidden_actions=forbidden_actions,
+                action_contract_passed=action_contract_passed,
+                expected_suppress_scope=expected_scope,
+                predicted_suppress_scope=predicted_scope,
+                suppress_scope_passed=suppress_scope_passed,
+            )
+        )
+        if error is None and predicted == expected_category:
             correct_by_category[expected_category] = (
                 correct_by_category.get(expected_category, 0) + 1
             )
         if expected_category == "unsubscribe":
-            unsubscribe_total += 1
-            unsubscribe_hit += 1 if predicted == "unsubscribe" else 0
-        if expected_category == "auto_reply":
-            auto_reply_total += 1
-            if predicted in stop_categories:
-                auto_reply_false_stop += 1
+            unsubscribe_hit += 1 if error is None and predicted == "unsubscribe" else 0
+        if (
+            expected_category == "auto_reply"
+            and error is None
+            and "stop_sequence" in predicted_actions
+        ):
+            auto_reply_false_stop += 1
         if expected_category == "complaint":
-            complaint_total += 1
-            complaint_hit += 1 if predicted == "complaint" else 0
-        # 提取指标：expected.extract 的字段 + value 是否被分类器候选命中
-        raw_extract = expected.get("extract")
-        if isinstance(raw_extract, list):
-            for item in raw_extract:
-                if not isinstance(item, dict):
-                    continue
-                extract_expected += 1
-                if any(
-                    candidate.field == item.get("field")
-                    and candidate.value == item.get("value")
-                    for candidate in result.candidate_fields
-                ):
-                    extract_hit += 1
+            complaint_hit += 1 if error is None and predicted == "complaint" else 0
+        for item in extract_items:
+            if error is None and any(
+                getattr(candidate, "field", None) == item.get("field")
+                and getattr(candidate, "value", None) == item.get("value")
+                for candidate in candidate_fields
+            ):
+                extract_hit += 1
 
     total = len(results)
     errors = sum(1 for r in results if r.error is not None)
@@ -159,6 +237,8 @@ async def run_reply_evals(classifier: ReplyClassifier) -> ReplyEvalReport:
         ),
         complaint_recall=complaint_hit / complaint_total if complaint_total else 0.0,
         extract_recall=extract_hit / extract_expected if extract_expected else 0.0,
+        action_contract_accuracy=action_contract_hit / total if total else 0.0,
+        suppress_scope_accuracy=scope_hit / scope_total if scope_total else 0.0,
         results=tuple(results),
     )
 
@@ -296,6 +376,10 @@ def main() -> int:
     print(f"  退订召回 {report.unsubscribe_recall:.3f}，自动回复误停率 "
           f"{report.auto_reply_false_stop_rate:.3f}，投诉召回 {report.complaint_recall:.3f}，"
           f"提取召回 {report.extract_recall:.3f}")
+    print(
+        f"  动作契约准确率 {report.action_contract_accuracy:.3f}，"
+        f"退订范围准确率 {report.suppress_scope_accuracy:.3f}"
+    )
     return 0
 
 

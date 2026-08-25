@@ -1,9 +1,9 @@
 """QualificationAgent —— 回复分类与候选提取的最小边界（评估基线第一步）。
 
 分工（agent_runtime/AGENTS.md）：
-- **模型只产出受约束输出**：14 类枚举值 + 候选提取（field/value/quote）。
-  输出 schema 只允许 ``category`` 与 ``candidate_fields`` 两个键——任何
-  动作、置信度（硬边界 3）、副作用键一律护栏拦截。
+- **模型只产出受约束输出**：14 类枚举值、候选提取（field/value/quote）与
+  退订专用 typed ``suppress_scope``。任何动作、置信度（硬边界 3）、
+  副作用键一律护栏拦截；明确组织级退订由确定性安全规则只升级不降级。
 - **确定性动作由域 ``REPLY_ACTIONS`` 决定**（本任务不派生、不执行；由
   workflows/reply_qualification 的 apply_actions 后续消费）。
 - **本能力不落库、不执行动作**：只产出 typed ChangeSet（record_classification /
@@ -17,11 +17,12 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
-from domains.conversations.schemas import ReplyCategory
+from domains.conversations.schemas import ReplyCategory, ReplySuppressScope
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, new_id
 
@@ -42,11 +43,35 @@ NEED_FIELD_NAMES = frozenset(
     }
 )
 
-_ALLOWED_OUTPUT_KEYS = frozenset({"category", "candidate_fields"})
+_ALLOWED_OUTPUT_KEYS = frozenset(
+    {"category", "candidate_fields", "suppress_scope"}
+)
 _CANDIDATE_KEYS = frozenset({"field", "value", "quote"})
 
 #: 模型输出大小上限（64 KiB）：在 json.loads 之前快速失败，防超大 payload 解析。
 _MAX_MODEL_OUTPUT_BYTES = 65_536
+
+_ACCOUNT_UNSUBSCRIBE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:our|my)\s+(?:entire\s+|whole\s+)?(?:company|organization|organisation|team)\b",
+        r"\bremove\s+us\b",
+        r"\bremove\s+me\s+and\s+(?:my|our)\b",
+        r"\bboth\s+(?:addresses|email addresses|of us)\b",
+    )
+)
+_EXPLICIT_UNSUBSCRIBE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bunsubscribe\b",
+        r"\bopt[ -]?out\b",
+        r"\b(?:remove|take)\b.{0,80}\b(?:list|database|emails?)\b",
+        r"\bstop\s+(?:sending|contacting)\b",
+        r"\bdo\s+not\s+contact\b",
+        r"\bno\s+further\s+communication\b",
+        r"\bdo\s+not\s+(?:wish|want)\s+to\s+receive\b",
+    )
+)
 
 _SYSTEM_PROMPT = """你是 TradeOS 的回复分类与需求提取模型。输入是客户对英文开发信的回复（subject 与 body）。
 只输出一个 JSON 对象，禁止输出任何其他文字、Markdown 或代码块。禁止输出任何数值置信度或概率。
@@ -59,6 +84,8 @@ candidate_fields 为可选数组，每项 {field, value, quote}：
 - field 必须是：product_category, application, material, size_spec, quantity, packaging,
   destination, required_by, target_price, current_supply_issue, certification_required
 - quote 必须是输入消息中逐字出现的摘录（证明字段来自客户原话）
+仅 category=unsubscribe 时可输出 suppress_scope，值只能是 contact 或 account；
+客户明确要求停止联系整个公司、组织、团队或多名收件人时必须是 account，否则是 contact。
 输出示例：{"category": "clear_interest", "candidate_fields": []}
 """
 
@@ -89,6 +116,7 @@ class ReplyClassificationResult:
 
     category: ReplyCategory
     candidate_fields: tuple[ReplyFieldCandidate, ...] = ()
+    suppress_scope: ReplySuppressScope | None = None
 
 
 @runtime_checkable
@@ -191,6 +219,24 @@ class QualificationAgent(CapabilityAgent):
             category = ReplyCategory(raw_category)
         except (TypeError, ValueError):
             raise ValidationError("模型输出了未知类别") from None
+        combined = f"{message.get('subject', '')}\n{message.get('body', '')}"
+        if any(pattern.search(combined) for pattern in _EXPLICIT_UNSUBSCRIBE_PATTERNS):
+            category = ReplyCategory.UNSUBSCRIBE
+        raw_scope = payload.get("suppress_scope")
+        if category is ReplyCategory.UNSUBSCRIBE:
+            if raw_scope is None:
+                suppress_scope = ReplySuppressScope.CONTACT
+            else:
+                try:
+                    suppress_scope = ReplySuppressScope(raw_scope)
+                except (TypeError, ValueError):
+                    raise ValidationError("模型输出退订抑制范围无效") from None
+            if any(pattern.search(combined) for pattern in _ACCOUNT_UNSUBSCRIBE_PATTERNS):
+                suppress_scope = ReplySuppressScope.ACCOUNT
+        else:
+            if raw_scope is not None:
+                raise ValidationError("非退订分类不得携带抑制范围")
+            suppress_scope = None
         raw_candidates = payload.get("candidate_fields", [])
         if not isinstance(raw_candidates, list):
             raise ValidationError("模型输出 candidate_fields 必须是数组")
@@ -231,7 +277,11 @@ class QualificationAgent(CapabilityAgent):
                 raise ValidationError(f"模型输出候选字段冲突：{field}")
             seen_fields[field] = (value, quote)
             candidates.append(ReplyFieldCandidate(field=field, value=value, quote=quote))
-        return ReplyClassificationResult(category=category, candidate_fields=tuple(candidates))
+        return ReplyClassificationResult(
+            category=category,
+            candidate_fields=tuple(candidates),
+            suppress_scope=suppress_scope,
+        )
 
     # ---- ChangeSet ---------------------------------------------------------
 
@@ -263,6 +313,8 @@ class QualificationAgent(CapabilityAgent):
                 "risk_level": "low",
             }
         ]
+        if result.suppress_scope is not None:
+            changes[0]["payload"]["suppress_scope"] = result.suppress_scope.value
         if result.candidate_fields:
             changes.append(
                 {

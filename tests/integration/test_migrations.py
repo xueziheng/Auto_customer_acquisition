@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0035"
+_ALEMBIC_HEAD = "0036"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -3423,6 +3423,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
         assert set(contract["checks"]) == {
             "ck_conversation_classifications_category",
             "ck_conversation_classifications_candidate_fields",
+            "ck_conversation_classifications_suppress_scope",
         }
         # CHECK 语义 parity（不比较 raw SQL：Postgres 会把 IN 规范化为 ANY，
         # TextClause 不能直接等于字符串）：从 ReplyCategory 枚举取完整 14 类词表，
@@ -5002,7 +5003,7 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
             )
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
         assert restored == artifact
-        assert revision == _ALEMBIC_HEAD
+        assert revision == "0034"
     finally:
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()
@@ -5058,6 +5059,143 @@ async def test_0035_reply_field_evidence_roundtrip_matches_orm(
 
         _run_alembic(db_url, "downgrade", "0034")
         assert "candidate_fields" not in await _columns(
+            engine, "conversation_classifications"
+        )
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0036_reply_scope_and_owner_work_roundtrip_match_orm(
+    db_url: str,
+) -> None:
+    """0036→0035→0036：typed scope 与 metadata-only owner queue 可逆且 ORM 同构。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import (
+        ConversationClassificationRow,
+        ConversationReplyWorkRow,
+    )
+
+    engine = create_engine_from(db_url)
+
+    def inspect_contract(sync: Connection) -> dict[str, object]:
+        inspector = inspect(sync)
+        classification_columns = {
+            item["name"]: item
+            for item in inspector.get_columns("conversation_classifications")
+        }
+        return {
+            "tables": set(inspector.get_table_names()),
+            "scope_type": str(classification_columns["suppress_scope"]["type"]),
+            "scope_nullable": classification_columns["suppress_scope"]["nullable"],
+            "classification_checks": {
+                str(item["name"]): str(item["sqltext"])
+                for item in inspector.get_check_constraints(
+                    "conversation_classifications"
+                )
+            },
+            "work_columns": {
+                item["name"] for item in inspector.get_columns("conversation_reply_work")
+            },
+            "work_pk": tuple(
+                inspector.get_pk_constraint("conversation_reply_work")[
+                    "constrained_columns"
+                ]
+            ),
+            "work_uniques": {
+                str(item["name"]): tuple(item["column_names"])
+                for item in inspector.get_unique_constraints(
+                    "conversation_reply_work"
+                )
+            },
+            "work_checks": {
+                str(item["name"]): str(item["sqltext"])
+                for item in inspector.get_check_constraints(
+                    "conversation_reply_work"
+                )
+            },
+            "work_fks": {
+                str(item["name"]): (
+                    tuple(item["constrained_columns"]),
+                    str(item["referred_table"]),
+                    tuple(item["referred_columns"]),
+                )
+                for item in inspector.get_foreign_keys("conversation_reply_work")
+            },
+        }
+
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            contract = await conn.run_sync(inspect_contract)
+        assert revision == _ALEMBIC_HEAD
+        assert contract["scope_type"] == "VARCHAR(16)"
+        assert contract["scope_nullable"] is True
+        assert "ck_conversation_classifications_suppress_scope" in contract[
+            "classification_checks"
+        ]
+        expected_columns = {
+            "tenant_id",
+            "action_id",
+            "message_id",
+            "outbound_message_id",
+            "enrollment_id",
+            "account_id",
+            "contact_point_id",
+            "action",
+            "owner_queue",
+            "status",
+            "idempotency_key",
+            "created_at",
+        }
+        assert "conversation_reply_work" in contract["tables"]
+        assert contract["work_columns"] == expected_columns
+        assert contract["work_columns"] == set(
+            ConversationReplyWorkRow.__table__.columns.keys()
+        )
+        assert contract["work_pk"] == ("tenant_id", "action_id")
+        assert contract["work_uniques"] == {
+            "uq_conversation_reply_work_idempotency": (
+                "tenant_id",
+                "idempotency_key",
+            ),
+            "uq_conversation_reply_work_message_action": (
+                "tenant_id",
+                "message_id",
+                "action",
+            ),
+        }
+        assert set(contract["work_checks"]) == {
+            "ck_conversation_reply_work_action",
+            "ck_conversation_reply_work_queue",
+            "ck_conversation_reply_work_status",
+        }
+        assert contract["work_fks"] == {
+            "fk_conversation_reply_work_message": (
+                ("tenant_id", "message_id"),
+                "messages",
+                ("tenant_id", "message_id"),
+            )
+        }
+        orm_classification_checks = {
+            str(item.name) for item in ConversationClassificationRow.__table__.constraints
+            if isinstance(item, CheckConstraint)
+        }
+        assert "ck_conversation_classifications_suppress_scope" in (
+            orm_classification_checks
+        )
+        assert set(contract["work_checks"]) == {
+            str(item.name) for item in ConversationReplyWorkRow.__table__.constraints
+            if isinstance(item, CheckConstraint)
+        }
+
+        _run_alembic(db_url, "downgrade", "0035")
+        assert "conversation_reply_work" not in await _table_names(engine)
+        assert "suppress_scope" not in await _columns(
             engine, "conversation_classifications"
         )
         _run_alembic(db_url, "upgrade", "head")

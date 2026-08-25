@@ -2600,6 +2600,11 @@ class ConversationClassificationRow(Base):
             "jsonb_typeof(candidate_fields) = 'array'",
             name="ck_conversation_classifications_candidate_fields",
         ),
+        CheckConstraint(
+            "(category = 'unsubscribe' AND suppress_scope IN ('contact','account')) "
+            "OR (category <> 'unsubscribe' AND suppress_scope IS NULL)",
+            name="ck_conversation_classifications_suppress_scope",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -2610,6 +2615,75 @@ class ConversationClassificationRow(Base):
     candidate_fields: Mapped[list[dict[str, str]]] = mapped_column(
         postgresql.JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
+    suppress_scope: Mapped[str | None] = mapped_column(String(16))
+
+
+class ConversationReplyWorkRow(Base):
+    """回复产生的 metadata-only owner queue；message+action 天然幂等。"""
+
+    __tablename__ = "conversation_reply_work"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "action_id",
+            name="pk_conversation_reply_work",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "message_id",
+            "action",
+            name="uq_conversation_reply_work_message_action",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_conversation_reply_work_idempotency",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "message_id"],
+            ["messages.tenant_id", "messages.message_id"],
+            ondelete="RESTRICT",
+            name="fk_conversation_reply_work_message",
+        ),
+        CheckConstraint(
+            "action IN ('start_qualification','mark_future_restart',"
+            "'create_follow_up','intake_new_contact')",
+            name="ck_conversation_reply_work_action",
+        ),
+        CheckConstraint(
+            "status IN ('pending','in_progress','completed','cancelled')",
+            name="ck_conversation_reply_work_status",
+        ),
+        CheckConstraint(
+            "(action = 'start_qualification' AND owner_queue = 'need_qualification') OR "
+            "(action = 'mark_future_restart' AND owner_queue = 'future_restart_review') OR "
+            "(action = 'create_follow_up' AND owner_queue = 'follow_up') OR "
+            "(action = 'intake_new_contact' AND "
+            "owner_queue = 'verified_contact_intake_review')",
+            name="ck_conversation_reply_work_queue",
+        ),
+        Index(
+            "ix_conversation_reply_work_owner_queue",
+            "tenant_id",
+            "status",
+            "owner_queue",
+            "created_at",
+            "action_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    action_id: Mapped[str] = mapped_column(String(32))
+    message_id: Mapped[str] = mapped_column(String(32))
+    outbound_message_id: Mapped[str] = mapped_column(String(256))
+    enrollment_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    contact_point_id: Mapped[str] = mapped_column(String(40))
+    action: Mapped[str] = mapped_column(String(40))
+    owner_queue: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ConversationClassificationCorrectionRow(Base):

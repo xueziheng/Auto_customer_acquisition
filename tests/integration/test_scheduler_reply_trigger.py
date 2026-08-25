@@ -902,10 +902,12 @@ async def test_inbound_stored_starts_reply_run_and_applies_actions(
             ).scalars().all()
         assert len(reply_runs) == 1
         assert reply_runs[0].status == "completed"
-        # 完成后允许并精确断言已知内部键：五个 typed ID + category + actions
+        # 完成后只增加分类/动作/抑制范围及耐久分类时刻，不携带原文。
         assert set(reply_runs[0].context) == _REPLY_CONTEXT_KEYS | {
             "category",
             "actions",
+            "classification_occurred_at",
+            "suppress_scope",
         }
         # 最小披露：completed run 的 context 与 last_error（应为 None）
         # 不含正文 marker 与真实 secret marker。

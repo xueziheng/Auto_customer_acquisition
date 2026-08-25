@@ -13,6 +13,9 @@ from domains.conversations.models import (
     Conversation,
     Message,
     MessageClassification,
+    ReplyWorkAction,
+    ReplyWorkRecord,
+    ReplyWorkStatus,
 )
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
@@ -91,6 +94,27 @@ class ClassificationRepository(Protocol):
 
 
 @runtime_checkable
+class ReplyWorkRepository(Protocol):
+    """回复产生的 metadata-only owner work queue。"""
+
+    async def add_if_absent(self, record: ReplyWorkRecord) -> None: ...
+
+    async def get_by_message_action(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        action: ReplyWorkAction,
+    ) -> ReplyWorkRecord | None: ...
+
+    async def list_by_status(
+        self,
+        tenant_id: TenantId,
+        status: ReplyWorkStatus,
+        *,
+        limit: int,
+    ) -> list[ReplyWorkRecord]: ...
+
+@runtime_checkable
 class ConversationsUnitOfWork(Protocol):
     """conversations 域事务边界（域级接口；实现为 SqlAlchemyConversationsUnitOfWork）。
 
@@ -100,6 +124,7 @@ class ConversationsUnitOfWork(Protocol):
     classifications: ClassificationRepository
     conversations: ConversationRepository
     messages: MessageRepository
+    reply_work: ReplyWorkRepository
     bus: EventBus
 
     async def __aenter__(self) -> Self: ...

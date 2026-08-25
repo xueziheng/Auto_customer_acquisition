@@ -28,8 +28,8 @@ def _valid_appledouble_sidecar() -> bytes:
 
 
 def test_project_alembic_runner_removes_appledouble_sidecar_before_listing_heads() -> None:
-    """受控入口清理 AppleDouble 后仍只能发现 0035 这个有效 head。"""
-    sidecar = _VERSIONS / "._0035_reply_field_evidence.py"
+    """受控入口清理 AppleDouble 后仍只能发现 0036 这个有效 head。"""
+    sidecar = _VERSIONS / "._0036_reply_acceptance_fixes.py"
     unrelated = _VERSIONS / "._preserve-me.txt"
     sidecar.write_bytes(_valid_appledouble_sidecar())
     unrelated.write_text("not an Alembic migration", encoding="utf-8")
@@ -44,7 +44,7 @@ def test_project_alembic_runner_removes_appledouble_sidecar_before_listing_heads
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "0035 (head)"
+        assert result.stdout.strip() == "0036 (head)"
         assert unrelated.exists()
     finally:
         sidecar.unlink(missing_ok=True)

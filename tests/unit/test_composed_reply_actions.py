@@ -239,6 +239,16 @@ class _SendingIdentities:
         return created
 
 
+class _ConversationActions:
+    def __init__(self) -> None:
+        self.requests: dict[str, object] = {}
+
+    async def enqueue_reply_work_action(self, tenant_id, request):
+        assert tenant_id == TENANT
+        self.requests.setdefault(str(request.idempotency_key), request)
+        return SimpleNamespace(status="pending")
+
+
 async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> None:
     module = _module()
     demand = _Demand()
@@ -252,6 +262,7 @@ async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> Non
         opportunities=opportunities,
         outreach=_Outreach(),
         sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
     )
 
     for _ in range(2):
@@ -299,6 +310,7 @@ async def test_composed_actions_fail_closed_without_business_mapping() -> None:
         opportunities=_Opportunities(),
         outreach=_Outreach(),
         sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
     )
 
     with pytest.raises(ValidationError, match="业务关联不存在"):
@@ -331,6 +343,7 @@ async def test_handoff_categories_do_not_require_extracted_fields(
         opportunities=opportunities,
         outreach=_Outreach(),
         sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
     )
 
     await actions.request_handoff(
@@ -371,6 +384,7 @@ async def test_composed_feedback_actions_apply_once_through_outreach(
         opportunities=_Opportunities(),
         outreach=outreach,
         sending_identities=sending_identities,
+        conversations=_ConversationActions(),
     )
 
     for _ in range(2):
@@ -410,6 +424,7 @@ async def test_composed_feedback_actions_reject_corrupt_correlation() -> None:
         opportunities=_Opportunities(),
         outreach=_Outreach(corrupt_target=True),
         sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
     )
 
     with pytest.raises(ValidationError, match="关联不匹配"):
@@ -427,11 +442,12 @@ async def test_composed_feedback_actions_reject_corrupt_correlation() -> None:
         ("intake_new_contact", "intake_new_contact"),
     ],
 )
-async def test_composed_actions_without_public_domain_write_port_fail_closed(
+async def test_composed_actions_create_durable_conversation_work_once(
     method_name: str,
     action: str,
 ) -> None:
     module = _module()
+    conversations = _ConversationActions()
     actions = module.ComposedReplyActionPorts(
         tenant_id=TENANT,
         evidence=_Evidence(),
@@ -441,9 +457,20 @@ async def test_composed_actions_without_public_domain_write_port_fail_closed(
         opportunities=_Opportunities(),
         outreach=_Outreach(),
         sending_identities=_SendingIdentities(),
+        conversations=conversations,
     )
 
-    with pytest.raises(module.ReplyActionUnavailableError, match="暂不可用"):
+    for _ in range(2):
         await getattr(actions, method_name)(
             TENANT, CONTEXT, f"reply:{action}:{MESSAGE_ID}"
         )
+
+    assert len(conversations.requests) == 1
+    request = next(iter(conversations.requests.values()))
+    assert request.message_id == MESSAGE_ID
+    assert request.outbound_message_id == OUTBOUND_MESSAGE_ID
+    assert request.enrollment_id == ENROLLMENT_ID
+    assert request.account_id == ACCOUNT_ID
+    assert request.contact_point_id == CONTACT_POINT_ID
+    assert request.action.value == action
+    assert str(request.idempotency_key) == f"reply:{action}:{MESSAGE_ID}"

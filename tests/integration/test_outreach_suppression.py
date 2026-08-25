@@ -14,7 +14,14 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
-from domains.outreach.schemas import SuppressionRequest, SuppressionTarget
+from domains.outreach.schemas import (
+    ContactEligibilitySnapshot,
+    ContactLegalBasis,
+    ContactVerificationStatus,
+    EnrollmentCreateRequest,
+    SuppressionRequest,
+    SuppressionTarget,
+)
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -22,6 +29,7 @@ from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
     ProspectAccountId,
+    RunId,
     SendingIdentityId,
     TenantId,
     new_id,
@@ -217,6 +225,182 @@ async def test_contact_suppression_stops_cross_campaign_rows_and_is_tenant_isola
             "target_id",
             "reason",
         }
+
+
+async def test_reply_contact_suppression_stops_cross_campaign_rows(
+    suppression_engine: AsyncEngine,
+) -> None:
+    """reply action 的 contact 退订必须实际停止跨 campaign Enrollment。"""
+    from workflows.engine.runner import StepStatus, WorkflowRun
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    factory = async_sessionmaker(suppression_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service, enrollments, contact = await _seed_two_campaign_contact_rows(
+        factory,
+        tenant,
+    )
+    run = WorkflowRun(
+        run_id=RunId(new_id("run")),
+        tenant_id=tenant,
+        workflow_type="reply_qualification",
+        workflow_version=1,
+        subject_ref=new_id("msg"),
+        current_step="apply_actions",
+        status=StepStatus.RUNNING,
+        created_at=NOW,
+        context={
+            "message_id": new_id("msg"),
+            "outbound_message_id": new_id("out"),
+            "enrollment_id": str(enrollments[0].enrollment_id),
+            "account_id": str(enrollments[0].account_id),
+            "contact_point_id": str(contact),
+            "category": "unsubscribe",
+            "suppress_scope": "contact",
+            "classification_occurred_at": NOW.isoformat(),
+            "actions": ["suppress"],
+        },
+    )
+    step = ApplyActionsStep(service, tenant, lambda: NOW)
+
+    assert await step.execute(run) == ("complete", None, {})
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        stored = (
+            await session.execute(
+                select(rows.OutreachEnrollmentRow).where(
+                    rows.OutreachEnrollmentRow.tenant_id == str(tenant),
+                    rows.OutreachEnrollmentRow.enrollment_id.in_(
+                        [str(item.enrollment_id) for item in enrollments]
+                    ),
+                )
+            )
+        ).scalars().all()
+    assert {row.state for row in stored} == {"stopped_suppressed"}
+
+
+async def test_reply_account_suppression_blocks_new_contact_in_later_campaign(
+    suppression_engine: AsyncEngine,
+) -> None:
+    """account scope 要落企业抑制，并拦截后续 campaign 的另一个联系人。"""
+    from workflows.engine.runner import StepStatus, WorkflowRun
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    factory = async_sessionmaker(suppression_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    sender = SendingIdentityId(new_id("sid"))
+    account = ProspectAccountId(new_id("acc"))
+    current_contact = ContactPointId(new_id("cp"))
+    later_contact = ContactPointId(new_id("cp"))
+    campaigns = (CampaignId(new_id("cmp")), CampaignId(new_id("cmp")))
+    approvals = (ApprovalId(new_id("apr")), ApprovalId(new_id("apr")))
+    for campaign, approval in zip(campaigns, approvals, strict=True):
+        await _seed_active_campaign(
+            factory,
+            tenant,
+            campaign,
+            (sender,),
+            approval,
+            new_contact_limit=20,
+            message_limit=20,
+        )
+    enrollment = await _seed_enrollment(
+        factory,
+        tenant,
+        campaigns[0],
+        account,
+        current_contact,
+        sender,
+        key="reply-account-current",
+    )
+    service = _service(
+        factory,
+        tenant,
+        campaigns[0],
+        approvals[0],
+        (sender,),
+        {},
+        MutableClock(NOW),
+    )
+    run = WorkflowRun(
+        run_id=RunId(new_id("run")),
+        tenant_id=tenant,
+        workflow_type="reply_qualification",
+        workflow_version=1,
+        subject_ref=new_id("msg"),
+        current_step="apply_actions",
+        status=StepStatus.RUNNING,
+        created_at=NOW,
+        context={
+            "message_id": new_id("msg"),
+            "outbound_message_id": new_id("out"),
+            "enrollment_id": str(enrollment.enrollment_id),
+            "account_id": str(account),
+            "contact_point_id": str(current_contact),
+            "category": "unsubscribe",
+            "suppress_scope": "account",
+            "classification_occurred_at": NOW.isoformat(),
+            "actions": ["suppress"],
+        },
+    )
+
+    assert await ApplyActionsStep(service, tenant, lambda: NOW).execute(run) == (
+        "complete",
+        None,
+        {},
+    )
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        suppression = (
+            await session.execute(
+                select(rows.OutreachSuppressionRow).where(
+                    rows.OutreachSuppressionRow.tenant_id == str(tenant),
+                    rows.OutreachSuppressionRow.account_id == str(account),
+                )
+            )
+        ).scalar_one()
+    assert suppression.contact_point_id is None
+
+    eligibility = ContactEligibilitySnapshot(
+        tenant,
+        later_contact,
+        account,
+        ContactVerificationStatus.VERIFIED,
+        NOW,
+        ContactLegalBasis.LEGITIMATE_INTEREST,
+        "basis_reply_account_scope",
+        True,
+        "US",
+        "importer",
+        frozenset({"hardware"}),
+        NOW,
+    )
+    later_service = _service(
+        factory,
+        tenant,
+        campaigns[1],
+        approvals[1],
+        (sender,),
+        {(later_contact, account): eligibility},
+        MutableClock(NOW),
+    )
+    boss = Actor("boss:reply-account", OutreachScope(level=ScopeLevel.TENANT), "boss")
+    suppressed_error = importlib.import_module(
+        "domains.outreach.errors"
+    ).SuppressedError
+    with pytest.raises(suppressed_error):
+        await later_service.enroll(
+            tenant,
+            campaigns[1],
+            EnrollmentCreateRequest(
+                account,
+                later_contact,
+                IdempotencyKey("reply-account-later-campaign"),
+            ),
+            actor=boss,
+        )
 
 
 async def test_twenty_same_suppression_key_create_one_fact_actions_and_outbox(

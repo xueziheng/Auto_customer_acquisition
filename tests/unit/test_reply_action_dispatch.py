@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -11,6 +11,12 @@ from domains.outreach.service import OutreachService
 from shared.schemas.identifiers import RunId, TenantId, new_id
 from workflows.engine.runner import StepStatus, WorkflowRun
 
+MESSAGE = "msg_01K3H0T8NBWM3KGT9XQ06YRC5V"
+OUTBOUND = "out_01K3H0T8NBWM3KGT9XQ06YRC5V"
+ENROLLMENT = "enr_01K3H0T8NBWM3KGT9XQ06YRC5V"
+ACCOUNT = "acc_01K3H0T8NBWM3KGT9XQ06YRC5V"
+CONTACT = "cp_01K3H0T8NBWM3KGT9XQ06YRC5V"
+
 
 class _Outreach:
     async def stop_enrollment(self, *args: object, **kwargs: object) -> None:
@@ -18,6 +24,15 @@ class _Outreach:
 
     async def add_suppression(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
+
+
+class _RecordingOutreach(_Outreach):
+    def __init__(self) -> None:
+        self.suppressions: list[object] = []
+
+    async def add_suppression(self, *args: object, **kwargs: object) -> None:
+        del kwargs
+        self.suppressions.append(args[1])
 
 
 class _Classifier:
@@ -100,25 +115,35 @@ def test_reply_production_composition_rejects_missing_action_ports() -> None:
         )
 
 
-def _run(tenant_id: TenantId, action: str) -> WorkflowRun:
+def _run(
+    tenant_id: TenantId,
+    action: str,
+    *,
+    category: str = "clear_interest",
+    suppress_scope: str | None = None,
+) -> WorkflowRun:
+    context = {
+        "message_id": MESSAGE,
+        "outbound_message_id": OUTBOUND,
+        "enrollment_id": ENROLLMENT,
+        "account_id": ACCOUNT,
+        "contact_point_id": CONTACT,
+        "category": category,
+        "actions": [action],
+        "classification_occurred_at": datetime(2026, 8, 21, tzinfo=UTC).isoformat(),
+    }
+    if suppress_scope is not None:
+        context["suppress_scope"] = suppress_scope
     return WorkflowRun(
         run_id=RunId(new_id("run")),
         tenant_id=tenant_id,
         workflow_type="reply_qualification",
         workflow_version=1,
-        subject_ref="msg_reply_action_1",
+        subject_ref=MESSAGE,
         current_step="apply_actions",
         status=StepStatus.RUNNING,
         created_at=datetime(2026, 8, 21, tzinfo=UTC),
-        context={
-            "message_id": "msg_reply_action_1",
-            "outbound_message_id": "out_reply_action_1",
-            "enrollment_id": "enr_reply_action_1",
-            "account_id": "acc_reply_action_1",
-            "contact_point_id": "cp_reply_action_1",
-            "category": "clear_interest",
-            "actions": [action],
-        },
+        context=context,
     )
 
 
@@ -156,10 +181,93 @@ async def test_reply_action_dispatch_uses_metadata_only_context(
     called_method, context, idempotency_key = ports.calls[0]
     assert called_method == method
     assert vars(context) == {
-        "message_id": "msg_reply_action_1",
-        "outbound_message_id": "out_reply_action_1",
-        "enrollment_id": "enr_reply_action_1",
-        "account_id": "acc_reply_action_1",
-        "contact_point_id": "cp_reply_action_1",
+        "message_id": MESSAGE,
+        "outbound_message_id": OUTBOUND,
+        "enrollment_id": ENROLLMENT,
+        "account_id": ACCOUNT,
+        "contact_point_id": CONTACT,
     }
-    assert idempotency_key == f"reply:{action}:msg_reply_action_1"
+    assert idempotency_key == f"reply:{action}:{MESSAGE}"
+
+
+async def test_suppression_retry_uses_stable_run_occurrence() -> None:
+    """重试同一 workflow run 必须生成相同 suppression payload。"""
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    tenant = TenantId(new_id("tn"))
+    outreach = _RecordingOutreach()
+    wall_clock = datetime(2026, 8, 22, tzinfo=UTC)
+    step = ApplyActionsStep(
+        cast(OutreachService, outreach),
+        tenant,
+        lambda: wall_clock,
+        _Actions(),
+    )
+    run = _run(
+        tenant,
+        "suppress",
+        category="unsubscribe",
+        suppress_scope="contact",
+    )
+
+    await step.execute(run)
+    wall_clock += timedelta(days=1)
+    await step.execute(run)
+
+    first, second = outreach.suppressions
+    assert first == second
+    assert first.occurred_at == datetime.fromisoformat(
+        run.context["classification_occurred_at"]
+    )
+
+
+async def test_account_unsubscribe_uses_account_target() -> None:
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    tenant = TenantId(new_id("tn"))
+    outreach = _RecordingOutreach()
+    step = ApplyActionsStep(
+        cast(OutreachService, outreach),
+        tenant,
+        lambda: datetime(2026, 8, 22, tzinfo=UTC),
+        _Actions(),
+    )
+
+    await step.execute(
+        _run(
+            tenant,
+            "suppress",
+            category="unsubscribe",
+            suppress_scope="account",
+        )
+    )
+
+    request = outreach.suppressions[0]
+    assert request.target.account_id == ACCOUNT
+    assert request.target.contact_point_id is None
+
+
+async def test_contact_unsubscribe_uses_contact_target() -> None:
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    tenant = TenantId(new_id("tn"))
+    outreach = _RecordingOutreach()
+    step = ApplyActionsStep(
+        cast(OutreachService, outreach),
+        tenant,
+        lambda: datetime(2026, 8, 22, tzinfo=UTC),
+        _Actions(),
+    )
+
+    await step.execute(
+        _run(
+            tenant,
+            "suppress",
+            category="unsubscribe",
+            suppress_scope="contact",
+        )
+    )
+
+    request = outreach.suppressions[0]
+    assert request.target.contact_point_id == CONTACT
+    assert request.target.account_id is None

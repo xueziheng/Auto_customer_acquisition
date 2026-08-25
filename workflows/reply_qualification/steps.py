@@ -28,7 +28,11 @@ from datetime import datetime
 from typing import Any
 
 from agent_runtime.qualification_agent.agent import ReplyClassifier
-from domains.conversations.schemas import ReplyCategory, ReplyFieldEvidence
+from domains.conversations.schemas import (
+    ReplyCategory,
+    ReplyFieldEvidence,
+    ReplySuppressScope,
+)
 from domains.conversations.service import ConversationService
 from domains.outreach.permissions import (
     Actor as OutreachActor,
@@ -161,14 +165,27 @@ class ClassifyStep:
                 ReplyFieldEvidence(item.field, item.value, item.quote)
                 for item in result.candidate_fields
             ),
+            suppress_scope=result.suppress_scope,
         )
+        classification = await self._conversations.get_classification(
+            run.tenant_id, message_id
+        )
+        if classification is None:
+            raise ValidationError("回复分类事实不可读")
         if category is ReplyCategory.AUTO_REPLY:
             # 自动回复不算回复：停序列/动作一律不触发
             return ("complete", None, {})
+        patch: dict[str, Any] = {
+            "category": category.value,
+            "actions": list(actions),
+            "classification_occurred_at": classification.classified_at.isoformat(),
+        }
+        if result.suppress_scope is not None:
+            patch["suppress_scope"] = result.suppress_scope.value
         return (
             "advance",
             "apply_actions",
-            {"category": category.value, "actions": list(actions)},
+            patch,
         )
 
 
@@ -293,17 +310,34 @@ class ApplyActionsStep:
         message_id = run.context.get("message_id")
         if not isinstance(message_id, str) or not message_id:
             raise ValidationError("回复 suppress 缺少 message_id")
-        # SuppressionTarget 必须且只能指定一个资源：退订/投诉/硬退信来自该
-        # 回复地址，确定性取 contact 粒度（公司级抑制需更高阶证据，不在此
-        # 切片推断）。
-        target = SuppressionTarget(contact_point_id=ContactPointId(raw_contact))
-        del raw_account
+        raw_occurred_at = run.context.get("classification_occurred_at")
+        if not isinstance(raw_occurred_at, str):
+            raise ValidationError("回复 suppress 缺少分类发生时间")
+        try:
+            occurred_at = datetime.fromisoformat(raw_occurred_at)
+        except ValueError:
+            raise ValidationError("回复 suppress 分类发生时间无效") from None
+        if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+            raise ValidationError("回复 suppress 分类发生时间无效")
+        if category == ReplyCategory.UNSUBSCRIBE.value:
+            raw_scope = run.context.get("suppress_scope")
+            try:
+                suppress_scope = ReplySuppressScope(raw_scope)
+            except (TypeError, ValueError):
+                raise ValidationError("回复退订抑制范围无效") from None
+        else:
+            suppress_scope = ReplySuppressScope.CONTACT
+        target = (
+            SuppressionTarget(account_id=ProspectAccountId(raw_account))
+            if suppress_scope is ReplySuppressScope.ACCOUNT
+            else SuppressionTarget(contact_point_id=ContactPointId(raw_contact))
+        )
         await self._outreach.add_suppression(
             run.tenant_id,
             SuppressionRequest(
                 target=target,
                 reason=reason,
-                occurred_at=self._now(),
+                occurred_at=occurred_at,
                 source_ref=f"reply:{message_id}",
                 idempotency_key=IdempotencyKey(f"reply-suppress:{message_id}"),
             ),
