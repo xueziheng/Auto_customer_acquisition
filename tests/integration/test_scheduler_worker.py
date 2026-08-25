@@ -125,6 +125,7 @@ def _runtime(
     poller: object,
     *,
     lock_key: int,
+    activation: object | None = None,
 ) -> Any:
     return module.SchedulerRuntime(
         lock_engine=lock_engine,
@@ -132,7 +133,28 @@ def _runtime(
         workflow=poller,
         tenant_id=tenant,
         config=_config(module, lock_key=lock_key),
+        activation=activation,
     )
+
+
+class _RecordingActivation:
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+        self.calls = 0
+
+    async def activate(self) -> None:
+        self.calls += 1
+        self.order.append("runtime_composed")
+
+
+class _FailingActivation:
+    def __init__(self, message: str = "activation-sensitive-detail") -> None:
+        self.message = message
+        self.calls = 0
+
+    async def activate(self) -> None:
+        self.calls += 1
+        raise TransientError(self.message)
 
 
 def _stop_after_waits(
@@ -281,6 +303,129 @@ async def test_real_postgres_lock_allows_only_one_worker_and_releases(
     )
     assert restarted.status is module.WorkerStartStatus.STARTED
     assert restarted.cycles_completed == 1
+
+
+async def test_runtime_activation_runs_after_lock_and_before_first_cycle(
+    scheduler_db: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _scheduler()
+    order: list[str] = []
+    stop = asyncio.Event()
+    activation = _RecordingActivation(order)
+    original_heartbeat = module._same_lock_backend
+
+    async def recording_heartbeat(connection: object, expected_pid: int) -> bool:
+        confirmed = await original_heartbeat(connection, expected_pid)
+        if confirmed:
+            order.append("lock_confirmed")
+        return confirmed
+
+    monkeypatch.setattr(module, "_same_lock_backend", recording_heartbeat)
+    runtime = _runtime(
+        module,
+        scheduler_db,
+        TenantId("scheduler-runtime-activation"),
+        _Drainer([0], order),
+        _Poller([0], on_call=stop.set),
+        lock_key=3_110_002,
+        activation=activation,
+    )
+
+    result = await module.run_scheduler_worker(
+        runtime,
+        stop_event=stop,
+        install_signal_handlers=False,
+    )
+
+    assert result.status is module.WorkerStartStatus.STARTED
+    assert activation.calls == 1
+    assert order[:3] == ["lock_confirmed", "runtime_composed", "drain:1"]
+
+
+async def test_activation_failure_releases_lock_and_runs_no_cycle(
+    scheduler_db: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _scheduler()
+    lock_key = 3_110_003
+    activation = _FailingActivation()
+    drainer = _Drainer([0])
+    poller = _Poller([0])
+    runtime = _runtime(
+        module,
+        scheduler_db,
+        TenantId("scheduler-activation-failure"),
+        drainer,
+        poller,
+        lock_key=lock_key,
+        activation=activation,
+    )
+    caplog.set_level(logging.ERROR, logger="apps.scheduler_worker.main")
+
+    with pytest.raises(TransientError, match="activation-sensitive-detail"):
+        await module.run_scheduler_worker(runtime, install_signal_handlers=False)
+
+    assert activation.calls == 1
+    assert drainer.calls == 0
+    assert poller.calls == []
+    assert "activation-sensitive-detail" not in caplog.text
+    async with scheduler_db.connect() as connection:
+        acquired = (
+            await connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        ).scalar_one()
+        assert acquired is True
+        released = (
+            await connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        ).scalar_one()
+        assert released is True
+
+
+async def test_worker_without_lock_never_writes_runtime_composed(
+    scheduler_db: AsyncEngine,
+) -> None:
+    module = _scheduler()
+    lock_key = 3_110_004
+    first_drainer = _BlockingDrainer()
+    first = _runtime(
+        module,
+        scheduler_db,
+        TenantId("scheduler-runtime-owner"),
+        first_drainer,
+        _Poller([0]),
+        lock_key=lock_key,
+    )
+    owner = asyncio.create_task(
+        module.run_scheduler_worker(first, install_signal_handlers=False)
+    )
+    await asyncio.wait_for(first_drainer.entered.wait(), timeout=2)
+    activation = _RecordingActivation([])
+    contender = _runtime(
+        module,
+        scheduler_db,
+        TenantId("scheduler-runtime-contender"),
+        _Drainer([0]),
+        _Poller([0]),
+        lock_key=lock_key,
+        activation=activation,
+    )
+
+    result = await module.run_scheduler_worker(
+        contender,
+        install_signal_handlers=False,
+    )
+
+    assert result.status is module.WorkerStartStatus.NOT_STARTED
+    assert activation.calls == 0
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
 
 
 async def _lock_holder(
@@ -939,6 +1084,492 @@ def test_scheduler_exports_concrete_production_composition_and_health() -> None:
         "SchedulerHealthServer",
     ):
         assert hasattr(runtime_module, symbol), f"RED：缺少生产装配 {symbol}"
+
+
+class _FactoryOpportunity:
+    async def record_handoff_escalation(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryEmployees:
+    async def get_employee(self, *args, **kwargs):
+        del args, kwargs
+
+    async def resolve_owner(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryAudience:
+    async def recipients_for(self, tenant_id, event):
+        del tenant_id, event
+        return ()
+
+
+class _FactoryResolver:
+    async def resolve(self, name, rdtype):
+        del name, rdtype
+        pytest.fail("composition 不得触发真实 DNS")
+
+
+class _FactoryHealthServer:
+    def __init__(self, state, port):
+        self.state = state
+        self.port = port
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def serve(self):
+        self.started.set()
+        await self.closed.wait()
+
+    async def wait_started(self):
+        await self.started.wait()
+
+    async def close(self):
+        self.closed.set()
+
+
+class _FactoryCampaignFacts:
+    async def get_contact_eligibility(self, *args, **kwargs):
+        del args, kwargs
+
+    async def get_sending_identity_eligibility(self, *args, **kwargs):
+        del args, kwargs
+
+    async def get_campaign_approval(self, *args, **kwargs):
+        del args, kwargs
+
+    async def get_reply_status(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryMaterials:
+    async def resolve(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryGmailSecrets:
+    def resolve(self, secret_ref: str) -> str:
+        del secret_ref
+        raise AssertionError("runtime 装配不得解析 Gmail 凭证")
+
+
+class _FactoryGmailTransport:
+    async def search(self, **kwargs):
+        del kwargs
+
+    async def send(self, **kwargs):
+        del kwargs
+
+
+class _FactoryTaskReader:
+    async def load(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryCapability:
+    async def run(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryProspecting:
+    async def resolve_account(self, *args, **kwargs):
+        del args, kwargs
+
+    async def record_discovered_contact(self, *args, **kwargs):
+        del args, kwargs
+
+    async def get_contact_point(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryActorResolver:
+    async def resolve(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _FactoryDiscoveryPolicy:
+    async def preflight(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _NoIoHunterTransport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, path, params, *, api_key):
+        del path, params, api_key
+        self.calls += 1
+        raise AssertionError("runtime 装配不得调用 Hunter")
+
+
+class _TrackingEnvironmentSecrets:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def resolve(self, secret_ref: str) -> str:
+        self.calls.append(secret_ref)
+        if secret_ref == "HUNTER_API_KEY_REF":
+            raise AssertionError("runtime 装配不得解析 Hunter 凭证")
+        values = {
+            "SCHEDULER_FINGERPRINT_KEY": "f" * 32,
+            "UNSUBSCRIBE_HMAC_CURRENT": "u" * 32,
+        }
+        return values[secret_ref]
+
+
+def _factory_environ(
+    db_url: str,
+    tenant: TenantId,
+    *,
+    hunter_enabled: bool,
+) -> dict[str, str]:
+    environ = {
+        "DATABASE_URL": db_url,
+        "TRADEOS_TENANT_ID": str(tenant),
+        "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
+        "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+        "TRADEOS_SCHEDULER_LOCK_KEY": "3110090",
+        "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "7",
+        "TRADEOS_HANDOFF_T1_SECONDS": "3600",
+        "TRADEOS_HANDOFF_T2_SECONDS": "7200",
+        "TRADEOS_DKIM_SELECTOR": "s1",
+        "TRADEOS_SCHEDULER_HEALTH_PORT": "8094",
+        "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TOOL_CALL_FINGERPRINT_KEY_REF": "SCHEDULER_FINGERPRINT_KEY",
+        "TOOL_CALL_FINGERPRINT_KEY_VERSION": "v1",
+        "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
+        "GMAIL_OAUTH_TOKEN_REF": "GMAIL_OAUTH_TOKEN_REF",
+        "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "route-scheduler",
+        "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
+        "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
+            '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}'
+        ),
+        "SCHEDULER_FINGERPRINT_KEY": "f" * 32,
+        "UNSUBSCRIBE_HMAC_CURRENT": "u" * 32,
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "true" if hunter_enabled else "false",
+    }
+    if hunter_enabled:
+        environ.update(
+            {
+                "TRADEOS_HUNTER_CONFIGURATION_VERSION": "config-v1",
+                "TRADEOS_HUNTER_API_KEY_SECRET_REF": "HUNTER_API_KEY_REF",
+                "TRADEOS_HUNTER_API_KEY_VERSION": "key-v1",
+            }
+        )
+    return environ
+
+
+def _factory_dependencies(runtime_module: Any, *, with_hunter: bool) -> Any:
+    if not with_hunter:
+        return runtime_module.SchedulerDomainDependencies(
+            _FactoryOpportunity(), _FactoryEmployees(), _FactoryAudience()
+        )
+    facts = _FactoryCampaignFacts()
+    campaign = runtime_module.CampaignMessagingComposition(
+        contact_eligibility=facts,
+        sending_identity_eligibility=facts,
+        campaign_approvals=facts,
+        reply_status=facts,
+        delivery_materials=_FactoryMaterials(),
+        secret_resolver=_FactoryGmailSecrets(),
+        gmail_transport=_FactoryGmailTransport(),
+    )
+    prospecting = _FactoryProspecting()
+    account = runtime_module.AccountDiscoveryComposition(
+        task_reader=_FactoryTaskReader(),
+        capability=_FactoryCapability(),
+        prospecting=prospecting,
+        employees=_FactoryEmployees(),
+        actor_resolver=_FactoryActorResolver(),
+        hunter=runtime_module.HunterContactComposition(
+            discovery_policy=_FactoryDiscoveryPolicy()
+        ),
+    )
+    return runtime_module.SchedulerDomainDependencies(
+        _FactoryOpportunity(),
+        _FactoryEmployees(),
+        _FactoryAudience(),
+        campaign_messaging=campaign,
+        account_discovery=account,
+    )
+
+
+async def _seed_hunter_readiness(
+    db_url: str,
+    tenant: TenantId,
+    state: str,
+) -> object:
+    readiness = importlib.import_module("tool_gateway.provider_readiness")
+    uow_module = importlib.import_module("infra.db.provider_readiness_uow")
+    session_module = importlib.import_module("infra.db.session")
+    engine = session_module.create_engine_from(db_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        actor = readiness.ProviderReadinessActor(
+            "system:test-hunter",
+            tenant,
+            frozenset(readiness.ProviderReadinessPermission),
+        )
+        service = readiness.ProviderReadinessServiceImpl(
+            lambda requested: uow_module.SqlAlchemyProviderReadinessUnitOfWork(
+                factory, requested
+            ),
+            runtime_actor=actor,
+            now=lambda: datetime(2026, 8, 25, 12, tzinfo=UTC),
+        )
+        configuration = readiness.ProviderConfiguration.hunter_contacts(
+            "config-v1", "key-v1"
+        )
+        await service.declare_configuration(
+            tenant,
+            configuration,
+            actor=actor,
+            idempotency_key="configure:config-v1",
+        )
+        if state in {"passed", "ready"}:
+            await service.mark_validation_started(
+                tenant,
+                configuration.configuration_hash,
+                validation_key="validate:config-v1",
+                actor=actor,
+            )
+            await service.mark_validation_passed(
+                tenant,
+                configuration.configuration_hash,
+                validation_key="validate:config-v1",
+                evidence_ref="tool-call:validate-config-v1",
+                actor=actor,
+            )
+        if state == "ready":
+            runtime_actor = readiness.ProviderReadinessActor(
+                "system:scheduler-hunter",
+                tenant,
+                frozenset({readiness.ProviderReadinessPermission.COMPOSE}),
+            )
+            await service.mark_runtime_composed(
+                tenant,
+                configuration.configuration_hash,
+                actor=runtime_actor,
+                idempotency_key=(
+                    "hunter-runtime:config-v1:"
+                    f"{configuration.connector_profile_version}"
+                ),
+            )
+        return configuration
+    finally:
+        await engine.dispose()
+
+
+async def _hunter_readiness_events(
+    db_url: str,
+    tenant: TenantId,
+) -> list[object]:
+    readiness = importlib.import_module("tool_gateway.provider_readiness")
+    uow_module = importlib.import_module("infra.db.provider_readiness_uow")
+    session_module = importlib.import_module("infra.db.session")
+    engine = session_module.create_engine_from(db_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with uow_module.SqlAlchemyProviderReadinessUnitOfWork(
+            factory, tenant
+        ) as uow:
+            return await uow.readiness.list_events(
+                tenant,
+                readiness.ProviderId.HUNTER,
+                readiness.HUNTER_CONTACT_CAPABILITIES,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_hunter_disabled_builds_without_contact_tools_or_activation(
+    db_url: str,
+) -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNB7")
+    transport_calls = 0
+
+    def forbidden_transport() -> _NoIoHunterTransport:
+        nonlocal transport_calls
+        transport_calls += 1
+        return _NoIoHunterTransport()
+
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=False),
+        _factory_dependencies(runtime_module, with_hunter=False),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+        hunter_transport_factory=forbidden_transport,
+    )
+
+    async with factory() as runtime:
+        assert runtime.activation is None
+        assert not any(
+            name.startswith("account_discovery.")
+            for name in runtime.workflow._handlers
+        )
+    assert transport_calls == 0
+
+
+async def test_hunter_enabled_without_matching_configuration_fails_before_secrets(
+    db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNB8")
+    secrets = _TrackingEnvironmentSecrets()
+    transport_calls = 0
+    monkeypatch.setattr(
+        runtime_module, "EnvironmentSecretResolver", lambda environ: secrets
+    )
+
+    def transport_factory() -> _NoIoHunterTransport:
+        nonlocal transport_calls
+        transport_calls += 1
+        return _NoIoHunterTransport()
+
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_dependencies(runtime_module, with_hunter=False),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+        hunter_transport_factory=transport_factory,
+    )
+
+    with pytest.raises(ValidationError, match="Hunter 当前配置未声明"):
+        async with factory():
+            pytest.fail("未声明当前配置不得完成 runtime 装配")
+    assert secrets.calls == []
+    assert transport_calls == 0
+
+
+async def test_hunter_configured_pending_builds_fail_closed_adapters(
+    db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNB9")
+    await _seed_hunter_readiness(db_url, tenant, "configured")
+    secrets = _TrackingEnvironmentSecrets()
+    transport = _NoIoHunterTransport()
+    captured: list[object] = []
+    real_builder = runtime_module.build_hunter_contact_tools
+    monkeypatch.setattr(
+        runtime_module, "EnvironmentSecretResolver", lambda environ: secrets
+    )
+
+    def capturing_builder(**kwargs):
+        tools = real_builder(**kwargs)
+        captured.append(tools)
+        return tools
+
+    monkeypatch.setattr(runtime_module, "build_hunter_contact_tools", capturing_builder)
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_dependencies(runtime_module, with_hunter=True),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+        hunter_transport_factory=lambda: transport,
+    )
+
+    async with factory() as runtime:
+        assert runtime.activation is None
+        assert "account_discovery.find_contacts" in runtime.workflow._handlers
+        assert len(captured) == 1
+        assert captured[0].manifest_ids == ()
+        assert captured[0].registered_configuration_hash is None
+    assert "HUNTER_API_KEY_REF" not in secrets.calls
+    assert transport.calls == 0
+
+
+async def test_hunter_passed_without_account_discovery_fails_closed(
+    db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNBA")
+    await _seed_hunter_readiness(db_url, tenant, "passed")
+    secrets = _TrackingEnvironmentSecrets()
+    monkeypatch.setattr(
+        runtime_module, "EnvironmentSecretResolver", lambda environ: secrets
+    )
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_dependencies(runtime_module, with_hunter=False),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+        hunter_transport_factory=_NoIoHunterTransport,
+    )
+
+    with pytest.raises(ValidationError, match="Hunter 生产组合不完整"):
+        async with factory():
+            pytest.fail("已验证配置缺 account discovery 不得启动")
+    assert secrets.calls == []
+
+
+@pytest.mark.parametrize("initial_state", ["passed", "ready"])
+async def test_hunter_validated_configuration_builds_exact_tools_and_activation(
+    db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+) -> None:
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    suffix = "C" if initial_state == "passed" else "D"
+    tenant = TenantId(f"tn_01M0VKA9S6KX7HRBG3G3ETYNB{suffix}")
+    configuration = await _seed_hunter_readiness(db_url, tenant, initial_state)
+    secrets = _TrackingEnvironmentSecrets()
+    transport = _NoIoHunterTransport()
+    captured: list[object] = []
+    real_builder = runtime_module.build_hunter_contact_tools
+    monkeypatch.setattr(
+        runtime_module, "EnvironmentSecretResolver", lambda environ: secrets
+    )
+
+    def capturing_builder(**kwargs):
+        tools = real_builder(**kwargs)
+        captured.append(tools)
+        return tools
+
+    monkeypatch.setattr(runtime_module, "build_hunter_contact_tools", capturing_builder)
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_dependencies(runtime_module, with_hunter=True),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+        hunter_transport_factory=lambda: transport,
+    )
+
+    async with factory() as runtime:
+        assert runtime.activation is not None
+        assert len(captured) == 1
+        assert captured[0].manifest_ids == ("contact.enrich", "contact.verify")
+        assert (
+            captured[0].registered_configuration_hash
+            == configuration.configuration_hash
+        )
+        assert "HUNTER_API_KEY_REF" not in secrets.calls
+        assert transport.calls == 0
+
+        result = await _scheduler().run_scheduler_worker(
+            runtime,
+            wait=_stop_after_waits(1),
+            install_signal_handlers=False,
+        )
+        assert result.status is _scheduler().WorkerStartStatus.STARTED
+
+    assert transport.calls == 0
+    events = await _hunter_readiness_events(db_url, tenant)
+    runtime_events = [
+        event for event in events if event.event_type.value == "runtime_composed"
+    ]
+    assert len(runtime_events) == 1
+    assert runtime_events[0].actor_id == "system:scheduler-hunter"
+    assert runtime_events[0].idempotency_key == (
+        "hunter-runtime:config-v1:"
+        f"{configuration.connector_profile_version}"
+    )
 
 
 async def test_production_factory_builds_complete_runtime_and_cleans_resources(

@@ -50,6 +50,12 @@ class CampaignDriver(Protocol):
     async def scan_once(self) -> int: ...
 
 
+class RuntimeActivation(Protocol):
+    """仅由已持有并确认 dedicated scheduler 锁的副本执行的启动事实。"""
+
+    async def activate(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class SchedulerConfig:
     """调度参数；值由 composition root 明确注入，不在业务循环里猜默认值。"""
@@ -90,10 +96,15 @@ class SchedulerRuntime:
     tenant_id: TenantId
     config: SchedulerConfig
     campaign_driver: CampaignDriver | None = None
+    activation: RuntimeActivation | None = None
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():
             raise ValidationError("scheduler tenant_id 不得为空")
+        if self.activation is not None and not callable(
+            getattr(self.activation, "activate", None)
+        ):
+            raise ValidationError("scheduler runtime activation 无效")
 
 
 class RuntimeFactory(Protocol):
@@ -303,6 +314,7 @@ async def run_scheduler_worker(
         )
         cycles = 0
         lock_owned = True
+        activation_pending = runtime.activation is not None
         try:
             while not stop.is_set():
                 if not await _same_lock_backend(connection, lock_backend_pid):
@@ -314,6 +326,10 @@ async def run_scheduler_worker(
                     return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
                 if stop.is_set():
                     break
+                if activation_pending:
+                    assert runtime.activation is not None
+                    await runtime.activation.activate()
+                    activation_pending = False
                 await _run_cycle(runtime, cycles + 1)
                 cycles += 1
                 if stop.is_set():

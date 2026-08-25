@@ -30,6 +30,7 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from connectors.hunter.transport import HunterApiHttpTransport, HunterHttpTransport
 from domains.approvals.service import ApprovalService
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.compliance.permissions import (
@@ -100,6 +101,7 @@ from infra.db.email_feedback_uow import (
 from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
+from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
@@ -123,6 +125,7 @@ from shared.events.catalog import (
 )
 from shared.schemas.identifiers import (
     ContactPointId,
+    IdempotencyKey,
     MessageAttemptId,
     NeedHypothesisId,
     RunId,
@@ -164,6 +167,16 @@ from tool_gateway.pipeline import (
     ToolCallContext,
     ToolGateway,
     ToolInvocationState,
+)
+from tool_gateway.provider_readiness import (
+    HUNTER_CONTACT_CAPABILITIES,
+    ProviderConfiguration,
+    ProviderReadinessActor,
+    ProviderReadinessPermission,
+    ProviderReadinessService,
+    ProviderReadinessServiceImpl,
+    ProviderReadinessSnapshot,
+    ProviderReadinessState,
 )
 from tool_gateway.repository import (
     ToolGatewayUnitOfWork,
@@ -244,6 +257,7 @@ from .hunter_contacts import (
 )
 from .main import (
     OutboxDrainer,
+    RuntimeActivation,
     SchedulerConfig,
     SchedulerRuntime,
     WorkflowPoller,
@@ -809,6 +823,28 @@ class _SchedulerLazyGmailConnector(GmailConnector):
         return await super().reconcile_once(request)
 
 
+@dataclass(frozen=True)
+class _HunterRuntimeActivation(RuntimeActivation):
+    """锁 owner 对已注册的精确 Hunter 配置追加 runtime_composed 事实。"""
+
+    service: ProviderReadinessService
+    tenant_id: TenantId
+    configuration: ProviderConfiguration
+    actor: ProviderReadinessActor
+
+    async def activate(self) -> None:
+        await self.service.mark_runtime_composed(
+            self.tenant_id,
+            self.configuration.configuration_hash,
+            actor=self.actor,
+            idempotency_key=IdempotencyKey(
+                "hunter-runtime:"
+                f"{self.configuration.configuration_version}:"
+                f"{self.configuration.connector_profile_version}"
+            ),
+        )
+
+
 class SchedulerRuntimeFactory:
     """生产 composition root：只注入 typed 业务依赖，其余资源在此构造/释放。"""
 
@@ -821,6 +857,9 @@ class SchedulerRuntimeFactory:
         health_server_factory: Callable[
             [SchedulerHealthState, int], SchedulerHealthServer
         ] = SchedulerHealthServer,
+        hunter_transport_factory: Callable[
+            [], HunterHttpTransport
+        ] = HunterApiHttpTransport,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if not isinstance(environ, Mapping) or not isinstance(
@@ -831,6 +870,9 @@ class SchedulerRuntimeFactory:
         self._dependencies = dependencies
         self._resolver_factory = resolver_factory
         self._health_server_factory = health_server_factory
+        if not callable(hunter_transport_factory):
+            raise ValidationError("scheduler Hunter transport factory 无效")
+        self._hunter_transport_factory = hunter_transport_factory
         self._now = now
 
     def __call__(self):
@@ -852,6 +894,52 @@ class SchedulerRuntimeFactory:
             async with engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))
             health.mark_ready("database")
+
+            hunter_snapshot: ProviderReadinessSnapshot | None = None
+            hunter_readiness: ProviderReadinessServiceImpl | None = None
+            hunter_actor: ProviderReadinessActor | None = None
+            hunter_configuration = config.hunter_contacts.configuration
+            hunter_validated = False
+            if config.hunter_contacts.enabled:
+                if hunter_configuration is None:
+                    raise ValidationError("scheduler Hunter 配置无效")
+                hunter_actor = ProviderReadinessActor(
+                    actor_id="system:scheduler-hunter",
+                    tenant_id=config.tenant_id,
+                    permissions=frozenset(
+                        {
+                            ProviderReadinessPermission.READ,
+                            ProviderReadinessPermission.COMPOSE,
+                        }
+                    ),
+                )
+                hunter_readiness = ProviderReadinessServiceImpl(
+                    lambda requested_tenant: SqlAlchemyProviderReadinessUnitOfWork(
+                        factory, requested_tenant, now=self._now
+                    ),
+                    runtime_actor=hunter_actor,
+                    now=self._now,
+                )
+                hunter_snapshot = await hunter_readiness.get_snapshot(
+                    config.tenant_id,
+                    HUNTER_CONTACT_CAPABILITIES,
+                    actor=hunter_actor,
+                )
+                if (
+                    hunter_snapshot.configuration is None
+                    or hunter_snapshot.configuration.configuration_hash
+                    != hunter_configuration.configuration_hash
+                ):
+                    raise ValidationError("scheduler Hunter 当前配置未声明")
+                hunter_validated = hunter_snapshot.state in {
+                    ProviderReadinessState.RUNTIME_NOT_COMPOSED,
+                    ProviderReadinessState.READY,
+                }
+                if hunter_validated and (
+                    self._dependencies.account_discovery is None
+                    or self._dependencies.account_discovery.hunter is None
+                ):
+                    raise ValidationError("scheduler Hunter 生产组合不完整")
 
             jobs = PostgresNotificationJobStore(factory, now=self._now)
             notification_handler = NotificationProjectionHandler(
@@ -1024,6 +1112,7 @@ class SchedulerRuntimeFactory:
                     action_ports=reply_composition.action_ports,
                 )
             account_handlers: dict[str, StepHandler] = {}
+            runtime_activation: RuntimeActivation | None = None
             if self._dependencies.account_discovery is not None:
                 if campaign_outreach is None:
                     raise ValidationError(
@@ -1031,6 +1120,14 @@ class SchedulerRuntimeFactory:
                     )
                 account = self._dependencies.account_discovery
                 if account.hunter is not None:
+                    if (
+                        not config.hunter_contacts.enabled
+                        or hunter_configuration is None
+                        or config.hunter_contacts.secret_ref is None
+                        or hunter_readiness is None
+                        or hunter_actor is None
+                    ):
+                        raise ValidationError("scheduler Hunter 生产组合不完整")
                     contact_tools = build_hunter_contact_tools(
                         factory=factory,
                         tenant_id=config.tenant_id,
@@ -1040,9 +1137,33 @@ class SchedulerRuntimeFactory:
                         prospecting=account.prospecting,
                         country_policy=country_policy_reader,
                         composition=account.hunter,
+                        secret_resolver=secrets,
+                        secret_ref=config.hunter_contacts.secret_ref,
+                        transport=self._hunter_transport_factory(),
+                        snapshot=hunter_snapshot,
+                        readiness_guard=hunter_readiness,
                         lease_duration=timedelta(seconds=config.tool_lease_seconds),
                         now=self._now,
                     )
+                    if hunter_validated:
+                        if (
+                            contact_tools.manifest_ids
+                            != ("contact.enrich", "contact.verify")
+                            or contact_tools.registered_configuration_hash
+                            != hunter_configuration.configuration_hash
+                        ):
+                            raise ValidationError("scheduler Hunter registry 无效")
+                        runtime_activation = _HunterRuntimeActivation(
+                            hunter_readiness,
+                            config.tenant_id,
+                            hunter_configuration,
+                            hunter_actor,
+                        )
+                    elif (
+                        contact_tools.manifest_ids
+                        or contact_tools.registered_configuration_hash is not None
+                    ):
+                        raise ValidationError("scheduler Hunter registry 无效")
                     enricher = contact_tools.enricher
                     verifier = contact_tools.verifier
                 else:
@@ -1188,6 +1309,7 @@ class SchedulerRuntimeFactory:
                     config.lock_key,
                 ),
                 campaign_driver=campaign_driver,
+                activation=runtime_activation,
             )
         except BaseException as error:
             primary = error

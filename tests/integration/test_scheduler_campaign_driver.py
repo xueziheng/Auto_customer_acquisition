@@ -234,6 +234,7 @@ def _environ(db_url: str, tenant: TenantId) -> dict[str, str]:
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
         "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
         "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}',
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
         "SCHEDULER_FINGERPRINT_KEY": "f" * 32,
         "UNSUBSCRIBE_HMAC_CURRENT": "u" * 32,
     }

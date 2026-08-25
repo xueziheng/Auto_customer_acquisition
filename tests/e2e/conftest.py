@@ -217,6 +217,7 @@ def _scheduler_runtime_env(
         "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
             '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'
         ),
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
         "TOOL_FINGERPRINT_KEY": "f" * 32,
     }
 
