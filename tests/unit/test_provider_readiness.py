@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import TracebackType
@@ -14,9 +16,10 @@ from shared.errors import (
     InvalidStateTransition,
     PermissionDenied,
     TenantIsolationViolation,
+    TransientError,
     ValidationError,
 )
-from shared.schemas.identifiers import IdempotencyKey, TenantId
+from shared.schemas.identifiers import IdempotencyKey, TenantId, new_id
 from tool_gateway.provider_readiness import (
     HUNTER_CONTACT_CAPABILITIES,
     ProviderCapability,
@@ -24,6 +27,8 @@ from tool_gateway.provider_readiness import (
     ProviderId,
     ProviderReadinessActor,
     ProviderReadinessEvent,
+    ProviderReadinessEventId,
+    ProviderReadinessEventType,
     ProviderReadinessPermission,
     ProviderReadinessRepository,
     ProviderReadinessServiceImpl,
@@ -175,6 +180,31 @@ async def declare_and_compose(
     )
 
 
+def stored_event(
+    *,
+    sequence: int,
+    configuration: ProviderConfiguration,
+    event_type: ProviderReadinessEventType,
+    validation_key: IdempotencyKey | None = None,
+    evidence_ref: str | None = None,
+) -> ProviderReadinessEvent:
+    return ProviderReadinessEvent(
+        tenant_id=TENANT,
+        event_id=ProviderReadinessEventId(new_id("pre")),
+        provider=ProviderId.HUNTER,
+        capabilities=HUNTER_CAPABILITIES,
+        sequence=sequence,
+        event_type=event_type,
+        configuration=configuration,
+        validation_key=validation_key,
+        failure_code=None,
+        evidence_ref=evidence_ref,
+        actor_id="system:stored-event",
+        occurred_at=NOW,
+        idempotency_key=IdempotencyKey(f"stored:{sequence}"),
+    )
+
+
 def test_hunter_configuration_hash_uses_safe_exact_metadata() -> None:
     first = ProviderConfiguration.hunter_contacts("deploy-v1", "key-v1")
     replay = ProviderConfiguration.hunter_contacts("deploy-v1", "key-v1")
@@ -194,6 +224,41 @@ def test_hunter_configuration_hash_uses_safe_exact_metadata() -> None:
 def test_configuration_versions_are_canonical(value: str) -> None:
     with pytest.raises(ValidationError):
         ProviderConfiguration.hunter_contacts(value, "key-v1")
+
+
+@pytest.mark.parametrize(
+    ("connector_profile_version", "transport_profile"),
+    [
+        ("hunter-contacts-v2", "hunter_api_v2_fixed_host"),
+        ("hunter-contacts-v1", "hunter_api_v3_fixed_host"),
+    ],
+)
+def test_direct_configuration_rejects_nonfixed_hunter_profiles(
+    connector_profile_version: str, transport_profile: str
+) -> None:
+    payload = {
+        "provider": "hunter",
+        "capabilities": ["contact.enrich", "contact.verify"],
+        "connector_profile_version": connector_profile_version,
+        "transport_profile": transport_profile,
+        "configuration_version": "deploy-v1",
+        "api_key_version": "key-v1",
+    }
+
+    with pytest.raises(ValidationError):
+        ProviderConfiguration(
+            provider=ProviderId.HUNTER,
+            capabilities=HUNTER_CAPABILITIES,
+            configuration_version="deploy-v1",
+            connector_profile_version=connector_profile_version,
+            transport_profile=transport_profile,
+            api_key_version="key-v1",
+            configuration_hash=hashlib.sha256(
+                json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
 
 
 @pytest.mark.asyncio
@@ -245,6 +310,69 @@ async def test_started_without_terminal_fact_is_inconclusive() -> None:
     assert (
         await service.get_snapshot(TENANT, HUNTER_CAPABILITIES, actor=READER)
     ).state is ProviderReadinessState.VALIDATION_INCONCLUSIVE
+
+
+@pytest.mark.asyncio
+async def test_mismatched_stored_events_cannot_make_runtime_guard_ready() -> None:
+    service, events = in_memory_service()
+    events.extend(
+        [
+            stored_event(
+                sequence=1,
+                configuration=CONFIG_V2,
+                event_type=ProviderReadinessEventType.CONFIGURED,
+            ),
+            stored_event(
+                sequence=2,
+                configuration=CONFIG_V1,
+                event_type=ProviderReadinessEventType.VALIDATION_PASSED,
+                validation_key=IdempotencyKey("validate:v1"),
+                evidence_ref="tool-call:validation",
+            ),
+            stored_event(
+                sequence=3,
+                configuration=CONFIG_V1,
+                event_type=ProviderReadinessEventType.RUNTIME_COMPOSED,
+            ),
+        ]
+    )
+
+    with pytest.raises(TransientError):
+        await service.get_snapshot(TENANT, HUNTER_CAPABILITIES, actor=READER)
+    with pytest.raises(ProviderReadinessUnavailableError) as captured:
+        await service.require_current(TENANT, CONFIG_V2.configuration_hash)
+
+    assert str(captured.value) == "Provider 配置当前不可用"
+
+
+@pytest.mark.asyncio
+async def test_runtime_fact_without_current_passed_validation_is_rejected_on_read() -> None:
+    service, events = in_memory_service()
+    events.extend(
+        [
+            stored_event(
+                sequence=1,
+                configuration=CONFIG_V2,
+                event_type=ProviderReadinessEventType.CONFIGURED,
+            ),
+            stored_event(
+                sequence=2,
+                configuration=CONFIG_V2,
+                event_type=ProviderReadinessEventType.VALIDATION_STARTED,
+                validation_key=IdempotencyKey("validate:v2"),
+            ),
+            stored_event(
+                sequence=3,
+                configuration=CONFIG_V2,
+                event_type=ProviderReadinessEventType.RUNTIME_COMPOSED,
+            ),
+        ]
+    )
+
+    with pytest.raises(TransientError):
+        await service.get_snapshot(TENANT, HUNTER_CAPABILITIES, actor=READER)
+    with pytest.raises(ProviderReadinessUnavailableError):
+        await service.require_current(TENANT, CONFIG_V2.configuration_hash)
 
 
 @pytest.mark.asyncio

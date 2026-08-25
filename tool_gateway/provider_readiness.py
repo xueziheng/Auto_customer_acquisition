@@ -33,6 +33,8 @@ _HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 _EVENT_ID_RE = re.compile(r"pre_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
 _SAFE_REFERENCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
 _SECRET_MARKERS = ("secret", "token", "password", "authorization", "bearer")
+_HUNTER_CONNECTOR_PROFILE_VERSION = "hunter-contacts-v1"
+_HUNTER_TRANSPORT_PROFILE = "hunter_api_v2_fixed_host"
 
 
 class ProviderId(str, Enum):
@@ -159,6 +161,11 @@ class ProviderConfiguration:
         if self.provider is not ProviderId.HUNTER:
             raise ValidationError("Provider 标识无效")
         _require_hunter_capabilities(self.capabilities)
+        if (
+            self.connector_profile_version != _HUNTER_CONNECTOR_PROFILE_VERSION
+            or self.transport_profile != _HUNTER_TRANSPORT_PROFILE
+        ):
+            raise ValidationError("Provider profile 无效")
         require_version(self.configuration_version)
         require_version(self.connector_profile_version)
         require_version(self.transport_profile)
@@ -186,8 +193,8 @@ class ProviderConfiguration:
         payload = {
             "provider": "hunter",
             "capabilities": ["contact.enrich", "contact.verify"],
-            "connector_profile_version": "hunter-contacts-v1",
-            "transport_profile": "hunter_api_v2_fixed_host",
+            "connector_profile_version": _HUNTER_CONNECTOR_PROFILE_VERSION,
+            "transport_profile": _HUNTER_TRANSPORT_PROFILE,
             "configuration_version": safe_configuration_version,
             "api_key_version": safe_api_key_version,
         }
@@ -196,8 +203,8 @@ class ProviderConfiguration:
             provider=ProviderId.HUNTER,
             capabilities=HUNTER_CONTACT_CAPABILITIES,
             configuration_version=safe_configuration_version,
-            connector_profile_version="hunter-contacts-v1",
-            transport_profile="hunter_api_v2_fixed_host",
+            connector_profile_version=_HUNTER_CONNECTOR_PROFILE_VERSION,
+            transport_profile=_HUNTER_TRANSPORT_PROFILE,
             api_key_version=safe_api_key_version,
             configuration_hash=digest,
         )
@@ -749,6 +756,42 @@ def _validate_loaded_events(
         ):
             raise TransientError("Provider readiness 存储返回无效")
         last_sequence = event.sequence
+    _validate_loaded_stream(events)
+
+
+def _validate_loaded_stream(events: list[ProviderReadinessEvent]) -> None:
+    """验证持久化流的因果关系，避免损坏事实被状态推导误认成 ready。"""
+    current_configuration: ProviderConfiguration | None = None
+    open_validations: set[IdempotencyKey] = set()
+    latest_validation: ProviderReadinessEventType | None = None
+    for event in events:
+        if event.event_type is ProviderReadinessEventType.CONFIGURED:
+            current_configuration = event.configuration
+            open_validations.clear()
+            latest_validation = None
+            continue
+        if current_configuration is None or event.configuration != current_configuration:
+            raise TransientError("Provider readiness 存储返回无效")
+        if event.event_type is ProviderReadinessEventType.VALIDATION_STARTED:
+            if event.validation_key is None or event.validation_key in open_validations:
+                raise TransientError("Provider readiness 存储返回无效")
+            open_validations.add(event.validation_key)
+            latest_validation = event.event_type
+            continue
+        if event.event_type in {
+            ProviderReadinessEventType.VALIDATION_PASSED,
+            ProviderReadinessEventType.VALIDATION_FAILED,
+        }:
+            if (
+                event.validation_key is None
+                or event.validation_key not in open_validations
+            ):
+                raise TransientError("Provider readiness 存储返回无效")
+            open_validations.remove(event.validation_key)
+            latest_validation = event.event_type
+            continue
+        if latest_validation is not ProviderReadinessEventType.VALIDATION_PASSED:
+            raise TransientError("Provider readiness 存储返回无效")
 
 
 def _validate_persisted_event(
