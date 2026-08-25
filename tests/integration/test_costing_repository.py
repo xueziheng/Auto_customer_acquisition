@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -121,7 +122,7 @@ async def test_costing_tables_persist_every_business_row_with_tenant_scope(
 
 def _run_alembic(db_url: str, *command: str) -> None:
     result = subprocess.run(
-        ["alembic", *command],
+        [sys.executable, "scripts/run_alembic.py", *command],
         cwd=_REPO_ROOT,
         env={**os.environ, "DATABASE_URL": db_url},
         capture_output=True,

@@ -31,6 +31,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -136,7 +137,7 @@ def _run_alembic(db_url: str, *command: str) -> None:
     """
     env = {**os.environ, "DATABASE_URL": db_url}
     result = subprocess.run(
-        ["alembic", *command],
+        [sys.executable, "scripts/run_alembic.py", *command],
         capture_output=True,
         check=False,
         env=env,

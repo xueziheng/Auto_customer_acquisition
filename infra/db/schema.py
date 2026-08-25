@@ -9,6 +9,8 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from infra.db.migration_hygiene import remove_appledouble_version_sidecars
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -24,6 +26,7 @@ async def assert_database_schema_current(engine: AsyncEngine) -> None:
     try:
         config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
         config.set_main_option("path_separator", "os")
+        remove_appledouble_version_sidecars(_REPO_ROOT / "migrations" / "versions")
         local_heads = tuple(ScriptDirectory.from_config(config).get_heads())
         async with engine.connect() as connection:
             database_heads = tuple(

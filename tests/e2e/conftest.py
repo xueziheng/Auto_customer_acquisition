@@ -418,7 +418,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         database_url = _to_asyncpg(container.get_connection_url())
         migration = await asyncio.to_thread(
             subprocess.run,
-            ["alembic", "upgrade", "head"],
+            [sys.executable, "scripts/run_alembic.py", "upgrade", "head"],
             cwd=_REPO_ROOT,
             env={**_minimal_process_env(), "DATABASE_URL": database_url},
             capture_output=True,

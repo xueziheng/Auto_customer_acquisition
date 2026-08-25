@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from domains.employees.permissions import (
     StandardAuditLogger,
 )
 from domains.organization.service import OrganizationService
+from infra.db.migration_hygiene import remove_appledouble_version_sidecars
 from infra.db.outbox import PostgresEventBus
 from infra.db.session import create_engine_from
 from infra.db.tables import WorkflowRunRow
@@ -58,7 +60,7 @@ def _composition_module():
 
 def _run_alembic(database_url: str, *args: str) -> None:
     result = subprocess.run(
-        ["alembic", *args],
+        [sys.executable, "scripts/run_alembic.py", *args],
         cwd=_REPO_ROOT,
         env={**os.environ, "DATABASE_URL": database_url},
         capture_output=True,
@@ -70,6 +72,7 @@ def _run_alembic(database_url: str, *args: str) -> None:
 def _local_unique_head() -> str:
     config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
     config.set_main_option("path_separator", "os")
+    remove_appledouble_version_sidecars(_REPO_ROOT / "migrations" / "versions")
     heads = ScriptDirectory.from_config(config).get_heads()
     assert len(heads) == 1
     return heads[0]

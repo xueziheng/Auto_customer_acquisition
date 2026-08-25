@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,7 +36,11 @@ _BASE = datetime(2026, 8, 9, 1, 0, 0, tzinfo=UTC)
 def _run_alembic(db_url: str, *args: str) -> None:
     env = {**os.environ, "DATABASE_URL": db_url}
     result = subprocess.run(
-        ["alembic", *args], cwd=_ROOT, env=env, capture_output=True, check=False
+        [sys.executable, "scripts/run_alembic.py", *args],
+        cwd=_ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
     )
     assert result.returncode == 0, f"alembic {' '.join(args)} 失败（不输出连接内容）"
 

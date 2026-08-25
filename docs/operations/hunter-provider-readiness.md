@@ -34,7 +34,7 @@ export TRADEOS_PYTHON_BIN
 test -x "$TRADEOS_PYTHON_BIN"
 "$TRADEOS_PYTHON_BIN" -c \
   'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else "需要 Python 3.12")'
-"$TRADEOS_PYTHON_BIN" -m alembic heads
+"$TRADEOS_PYTHON_BIN" scripts/run_alembic.py heads
 "$TRADEOS_PYTHON_BIN" scripts/check_boundaries.py
 "$TRADEOS_PYTHON_BIN" scripts/scan_sensitive.py
 ```

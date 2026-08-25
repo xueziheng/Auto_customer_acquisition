@@ -8,7 +8,7 @@ dev:
 	docker compose -f infra/docker-compose.yml up -d
 
 migrate:
-	alembic upgrade head
+	python3 scripts/run_alembic.py upgrade head
 
 test:
 	pytest -q

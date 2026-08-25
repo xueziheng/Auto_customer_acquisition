@@ -45,7 +45,7 @@ bounce/complaint）、事务通知（站内 + 邮件）。配套演示与验收�
 进程命令（迁移后）：
 
 ```bash
-alembic upgrade head
+python3 scripts/run_alembic.py upgrade head
 python -m apps.api.main            # API（多副本）
 python -m apps.scheduler_worker.main   # 单副本或带分布式锁
 python -m apps.notification_worker.main
@@ -56,7 +56,7 @@ python -m apps.email_feedback_worker.main
 
 ## 2. Alembic 与 readiness
 
-- 启动前：`alembic upgrade head`；所有 worker 启动时执行
+- 启动前：`python3 scripts/run_alembic.py upgrade head`；所有 worker 启动时执行
   `assert_database_schema_current`，schema 不匹配即拒绝启动（不自动升级）。
 - 就绪探针：API `/health/ready`；scheduler/notification 各自 health 端口；
   容器验收脚本会等待全部就绪后才开始旅程。

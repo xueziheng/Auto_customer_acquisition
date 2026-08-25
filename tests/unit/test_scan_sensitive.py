@@ -371,7 +371,7 @@ def test_hunter_runbook_pins_runtime_outcome_queries_and_exact_ready_copy() -> N
     assert "/Users/" not in runbook
     assert "CODEX_HOME" not in runbook
     assert "$HOME" not in runbook
-    assert '"$TRADEOS_PYTHON_BIN" -m alembic heads' in runbook
+    assert '"$TRADEOS_PYTHON_BIN" scripts/run_alembic.py heads' in runbook
     assert (
         '"$TRADEOS_PYTHON_BIN" scripts/configure_hunter_provider.py' in runbook
     )

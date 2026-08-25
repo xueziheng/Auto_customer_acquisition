@@ -6,6 +6,8 @@ from shutil import copytree
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from infra.db.migration_hygiene import remove_appledouble_version_sidecars
+
 
 def test_migration_chain_has_single_head(tmp_path: Path) -> None:
     clean_scripts = tmp_path / "migrations"
@@ -16,6 +18,7 @@ def test_migration_chain_has_single_head(tmp_path: Path) -> None:
             name for name in names if name.startswith("._") or name == "__pycache__"
         ],
     )
+    remove_appledouble_version_sidecars(clean_scripts / "versions")
     config = Config()
     config.set_main_option("script_location", str(clean_scripts))
     heads = ScriptDirectory.from_config(config).get_heads()

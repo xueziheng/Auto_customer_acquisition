@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -122,7 +123,7 @@ def _run_alembic(db_url: str, *command: str) -> None:
     """在仓库根运行 ``alembic <command>``；仅经 env 注入 DATABASE_URL，不输出连接内容。"""
     env = {**os.environ, "DATABASE_URL": db_url}
     result = subprocess.run(
-        ["alembic", *command],
+        [sys.executable, "scripts/run_alembic.py", *command],
         capture_output=True,
         check=False,
         env=env,

@@ -13,6 +13,7 @@ import importlib
 import os
 import shutil
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -71,7 +72,7 @@ def complaint_db_url(complaint_postgres: PostgresContainer) -> str:
     url = _to_asyncpg(complaint_postgres.get_connection_url())
     env = {**os.environ, "DATABASE_URL": url}
     result = subprocess.run(
-        ["alembic", "upgrade", "head"],
+        [sys.executable, "scripts/run_alembic.py", "upgrade", "head"],
         capture_output=True,
         check=False,
         env=env,

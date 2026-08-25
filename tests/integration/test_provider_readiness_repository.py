@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,7 +61,7 @@ async def db_factory(
 def alembic_runner(db_url: str) -> Callable[[str, str], None]:
     def _run(command: str, revision: str) -> None:
         result = subprocess.run(
-            ["alembic", command, revision],
+            [sys.executable, "scripts/run_alembic.py", command, revision],
             cwd=_REPO_ROOT,
             env={**os.environ, "DATABASE_URL": db_url},
             capture_output=True,

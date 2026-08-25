@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 
@@ -65,7 +66,7 @@ def _migrated(_postgres_container: PostgresContainer) -> None:
     url = _to_asyncpg(_postgres_container.get_connection_url())
     env = {**os.environ, "DATABASE_URL": url}
     result = subprocess.run(
-        ["alembic", "upgrade", "head"],
+        [sys.executable, "scripts/run_alembic.py", "upgrade", "head"],
         capture_output=True,
         check=False,
         env=env,
