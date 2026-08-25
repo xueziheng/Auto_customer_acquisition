@@ -9,7 +9,10 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.outbox import PostgresEventBus
-from infra.db.repositories.demand import DemandSignalRepositoryImpl
+from infra.db.repositories.demand import (
+    DemandSignalRepositoryImpl,
+    SnapshotArtifactEvidenceRepositoryImpl,
+)
 from infra.db.repositories.need_clusters import NeedClusterRepositoryImpl
 from infra.db.repositories.need_hypotheses import (
     NeedHypothesisRepositoryImpl,
@@ -36,6 +39,9 @@ class SqlAlchemyDemandUnitOfWork:
         session = self._factory()
         self._session = session
         self.signals = DemandSignalRepositoryImpl(session, self._tenant_id)
+        self.snapshot_artifacts = SnapshotArtifactEvidenceRepositoryImpl(
+            session, self._tenant_id
+        )
         self.hypotheses = NeedHypothesisRepositoryImpl(
             session, self._tenant_id, now=self._now
         )

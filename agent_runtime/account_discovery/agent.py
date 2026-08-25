@@ -13,6 +13,10 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from agent_runtime.guardrails.rails import (
+    contains_numeric_probability,
+    guard_phase1_change_set,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, new_id
 
@@ -24,6 +28,56 @@ _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,63}")
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
 _DATE_LIKE = re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}")
+_CONTACT_CONTEXT = re.compile(
+    r"(?i)\b(?:contact|call|email|reach(?:\s+out)?)\b|联系人|联系(?:人|方式|电话|邮箱)?"
+)
+_PERSON_ROLE = re.compile(
+    r"(?i)(?:\b(?:mr|mrs|ms|miss|dr)\.?\s+[a-z]|"
+    r"\b[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*){0,2}\s+"
+    r"(?:buyer|manager|director|contact)\b|"
+    r"[\u3400-\u9fff]{2,4}(?:经理|采购|联系人))"
+)
+_PROPER_NOUN_SEQUENCE = re.compile(
+    r"\b[A-Z][A-Za-z'.-]*(?:\s+[A-Z][A-Za-z'.-]*){1,2}\b"
+)
+_SINGLE_PROPER_NOUN = re.compile(r"\b[A-Z][a-z][A-Za-z'.-]{0,30}\b")
+_ORGANIZATION_SUFFIXES = frozenset(
+    {
+        "co",
+        "company",
+        "corp",
+        "corporation",
+        "enterprises",
+        "factory",
+        "group",
+        "hardware",
+        "holdings",
+        "inc",
+        "industries",
+        "industrial",
+        "limited",
+        "llc",
+        "logistics",
+        "ltd",
+        "manufacturing",
+        "solutions",
+        "systems",
+        "technologies",
+        "technology",
+        "trading",
+        "works",
+    }
+)
+_CJK_PERSON_SPEECH = re.compile(
+    r"[\u3400-\u9fff]{2,3}(?=表示|称|说|确认|回复|告知)"
+)
+_ISOLATED_CJK_NAME = re.compile(
+    r"(?<![\u3400-\u9fff])[\u3400-\u9fff]{2,3}(?![\u3400-\u9fff])"
+)
+_ACTION_INSTRUCTION = re.compile(
+    r"(?i)\b(?:send|email|call|contact|reach\s+out|follow\s+up)\b|"
+    r"(?:发送|联系|拨打|跟进|执行)(?:邮件|电话|客户|动作|操作)?"
+)
 _OUTPUT_KEYS = frozenset(
     {
         "entity_name",
@@ -86,25 +140,66 @@ def _canonical_domain(value: object) -> str:
     return canonical
 
 
-def _redact_contacts(value: str) -> str:
-    redacted = _EMAIL.sub("[CONTACT_REDACTED]", value)
-    return _PHONE.sub(
-        lambda match: (
-            match.group(0)
-            if _DATE_LIKE.fullmatch(match.group(0)) is not None
-            else "[CONTACT_REDACTED]"
-        ),
-        redacted,
+def _contains_phone(value: str) -> bool:
+    return any(
+        _DATE_LIKE.fullmatch(match.group(0)) is None
+        for match in _PHONE.finditer(value)
     )
+
+
+def _contains_likely_person_name(value: str) -> bool:
+    if (
+        _PERSON_ROLE.search(value) is not None
+        or _CJK_PERSON_SPEECH.search(value) is not None
+        or _ISOLATED_CJK_NAME.search(value) is not None
+    ):
+        return True
+    organization_spans: list[tuple[int, int]] = []
+    for match in _PROPER_NOUN_SEQUENCE.finditer(value):
+        if match.group(0).split()[-1].casefold() not in _ORGANIZATION_SUFFIXES:
+            return True
+        organization_spans.append(match.span())
+    without_organizations = value
+    for start, end in reversed(organization_spans):
+        without_organizations = (
+            without_organizations[:start]
+            + (" " * (end - start))
+            + without_organizations[end:]
+        )
+    return _SINGLE_PROPER_NOUN.search(without_organizations) is not None
+
+
+def _safe_input_text(value: object, *, max_len: int) -> str:
+    text = _exact_text(value, max_len=max_len)
+    if (
+        _EMAIL.search(text) is not None
+        or _contains_phone(text)
+        or _CONTACT_CONTEXT.search(text) is not None
+        or _contains_likely_person_name(text)
+    ):
+        raise ValidationError("企业发现输入含联系人信息")
+    return text
 
 
 def _contact_free_source_url(value: object) -> str | None:
     source_url = _optional_text(value, max_len=2_000)
     if source_url is None:
         return None
-    if _EMAIL.search(source_url) is not None or _PHONE.search(source_url) is not None:
-        return None
+    if _EMAIL.search(source_url) is not None or _contains_phone(source_url):
+        raise ValidationError("企业发现输入含联系人信息")
     return source_url
+
+
+def _model_strings(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, dict):
+        return tuple(
+            text for child in value.values() for text in _model_strings(child)
+        )
+    if isinstance(value, list):
+        return tuple(text for child in value for text in _model_strings(child))
+    return ()
 
 
 class AccountDiscoveryAgent(CapabilityAgent):
@@ -147,10 +242,8 @@ class AccountDiscoveryAgent(CapabilityAgent):
         hypothesis_id = _exact_text(raw.get("hypothesis_id"), max_len=40)
         if _HYPOTHESIS_RE.fullmatch(hypothesis_id) is None:
             raise ValidationError("account discovery 任务输入无效")
-        category = _redact_contacts(_exact_text(raw.get("category"), max_len=200))
-        reasoning = _redact_contacts(
-            _exact_text(raw.get("reasoning"), max_len=4_000)
-        )
+        category = _safe_input_text(raw.get("category"), max_len=200)
+        reasoning = _safe_input_text(raw.get("reasoning"), max_len=4_000)
         countries = tuple(
             sorted({_exact_text(value, max_len=64) for value in allowed_countries})
         )
@@ -179,9 +272,7 @@ class AccountDiscoveryAgent(CapabilityAgent):
             evidence.append(
                 {
                     "signal_id": signal_id,
-                    "summary": _redact_contacts(
-                        _exact_text(item.get("summary"), max_len=4_000)
-                    ),
+                    "summary": _safe_input_text(item.get("summary"), max_len=4_000),
                     "source_url": _contact_free_source_url(item.get("source_url")),
                 }
             )
@@ -194,9 +285,19 @@ class AccountDiscoveryAgent(CapabilityAgent):
             "evidence": evidence,
         }
 
-    @classmethod
+    def _validate_model_output_text(self, value: str) -> None:
+        self._input_guard.check(subject=None, body=value)
+        if (
+            _EMAIL.search(value) is not None
+            or _contains_phone(value)
+            or _contains_likely_person_name(value)
+            or _ACTION_INSTRUCTION.search(value) is not None
+            or contains_numeric_probability(value)
+        ):
+            raise ValidationError("企业发现模型输出含未授权内容")
+
     def _validate_output(
-        cls, raw: str, projection: dict[str, object]
+        self, raw: str, projection: dict[str, object]
     ) -> dict[str, object] | None:
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > _MAX_OUTPUT_BYTES:
             raise ValidationError("企业发现模型输出无效")
@@ -208,7 +309,17 @@ class AccountDiscoveryAgent(CapabilityAgent):
             return None
         if not isinstance(payload, dict) or set(payload) != _OUTPUT_KEYS:
             raise ValidationError("企业发现模型输出含未授权字段")
+        for text in _model_strings(payload):
+            self._validate_model_output_text(text)
         entity_name = _exact_text(payload.get("entity_name"), max_len=200)
+        evidence = projection.get("evidence")
+        if not isinstance(evidence, list):
+            raise ValidationError("企业发现安全证据投影无效")
+        evidence_text = " ".join(
+            str(item.get("summary")) for item in evidence if isinstance(item, dict)
+        ).casefold()
+        if entity_name.casefold() not in evidence_text:
+            raise ValidationError("企业发现模型输出企业名缺少可见证据")
         country = _exact_text(payload.get("country"), max_len=64)
         allowed_countries = projection["allowed_countries"]
         if not isinstance(allowed_countries, tuple) or country not in allowed_countries:
@@ -255,7 +366,7 @@ class AccountDiscoveryAgent(CapabilityAgent):
             return self._empty(task, f"模型输出被护栏拦截：{exc}")
         if candidate is None:
             return self._empty(task, "现有证据不足以解析企业官网")
-        return ChangeSet(
+        candidate_change_set = ChangeSet(
             change_set_id=ChangeSetId(new_id("cs")),
             tenant_id=task.tenant_id,
             run_id=task.run_id,
@@ -269,6 +380,7 @@ class AccountDiscoveryAgent(CapabilityAgent):
             ],
             summary="已生成 1 条企业消歧候选",
         )
+        return guard_phase1_change_set(candidate_change_set)
 
     @staticmethod
     def _empty(task: AgentTask, summary: str) -> ChangeSet:

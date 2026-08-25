@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
+from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
+from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from connectors.contact_enrichment.client import (
     ContactCandidate,
     ContactEmailKind,
@@ -33,6 +35,7 @@ from shared.schemas.identifiers import (
 )
 from workflows.account_discovery.steps import (
     EnrollCampaignStep,
+    FindCompanyDetailsStep,
     FindContactsStep,
     VerifyContactsStep,
 )
@@ -234,3 +237,54 @@ async def test_enrollment_replay_uses_stable_contact_bound_idempotency_keys() ->
         for contact_id in contact_ids
     ]
     assert keys == expected_once + expected_once
+
+
+class _UnsafeAccountModel:
+    async def discover_account(self, *, system_prompt, hypothesis):
+        del system_prompt
+        return (
+            '{"entity_name":"Alice Buyer alice@example.com",'
+            '"country":"US","website_domain":"example.com",'
+            '"entity_type":"manufacturer","industry":"hardware",'
+            '"size_hint":null,"source_signal_refs":["'
+            + hypothesis["source_signal_refs"][0]
+            + '"]}'
+        )
+
+
+class _AccountTaskReader:
+    async def load(self, tenant_id, hypothesis_id, acting_user):
+        del tenant_id, hypothesis_id, acting_user
+        signal_id = new_id("sig")
+        return SimpleNamespace(
+            objective="寻找企业公开官网",
+            allowed_countries=("US",),
+            hypothesis={
+                "hypothesis_id": new_id("hyp"),
+                "category": "industrial hinges",
+                "reasoning": "企业扩建，可能需要五金",
+                "evidence": [
+                    {
+                        "signal_id": signal_id,
+                        "summary": "Acme Manufacturing opened a factory.",
+                        "source_url": "https://example.com/news",
+                    }
+                ],
+                "source_signal_refs": [signal_id],
+            },
+        )
+
+
+async def test_unsafe_model_output_never_enters_persisted_context_patch() -> None:
+    run = _run()
+    agent = AccountDiscoveryAgent(
+        "model-v1", _UnsafeAccountModel(), object(), CredentialMarkerGuard()
+    )
+    step = FindCompanyDetailsStep(_AccountTaskReader(), agent, _ActorResolver())
+
+    action, next_step, patch = await step.execute(run)
+
+    assert (action, next_step) == ("complete", None)
+    assert patch == {"company_resolution": "no_evidence"}
+    assert "Alice" not in repr(patch)
+    assert "alice@example.com" not in repr(patch)

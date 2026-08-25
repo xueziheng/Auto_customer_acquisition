@@ -32,6 +32,8 @@ _models = importlib.import_module("domains.demand.models")
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
 OBSERVATION_MARKER = "Acme SECRET-OBSERVATION-77 opened a new plant in Rotterdam."
+WEB_SNAPSHOT_ARTIFACT_REF = "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
+WEB_PAGE_HASH = "e" * 64
 
 
 @dataclass
@@ -85,6 +87,27 @@ async def _signal(
     service: DemandService, tenant: TenantId, **overrides: object
 ) -> str:
     return await service.capture_signal(tenant, _request(**overrides))
+
+
+async def _seed_web_snapshot(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId
+) -> None:
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        session.add(
+            tables.RawArtifactRow(
+                tenant_id=str(tenant),
+                artifact_id=WEB_SNAPSHOT_ARTIFACT_REF,
+                kind="web_snapshot",
+                content_hash=WEB_PAGE_HASH,
+                size_bytes=20,
+                mime_type="text/html",
+                object_key=f"raw/{tenant}/{WEB_SNAPSHOT_ARTIFACT_REF}",
+                uploaded_by=None,
+                uploaded_at=NOW,
+            )
+        )
+        await session.commit()
 
 
 async def _hypothesis_rows(
@@ -596,15 +619,16 @@ async def test_promote_rejects_agent_inference_evidence(
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    await _seed_web_snapshot(factory, tenant)
     signal_id = await _signal(
         service,
         tenant,
         signal_type="product_line_expansion",
         source_type="web_page",
-        source_id="sha256:pagehash001",
+        source_id=WEB_PAGE_HASH,
         source_url="https://example.com/acme",
-        page_hash="sha256:pagehash001",
-        snapshot_artifact_ref="art_01K3H0T8NBWM3KGT9XQ06YRC5V",
+        page_hash=WEB_PAGE_HASH,
+        snapshot_artifact_ref=WEB_SNAPSHOT_ARTIFACT_REF,
     )
     hypothesis_id = await service.create_hypothesis(
         tenant,

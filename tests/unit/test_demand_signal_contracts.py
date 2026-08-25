@@ -23,6 +23,7 @@ from shared.events.catalog import DemandSignalCaptured
 
 _repository = importlib.import_module("domains.demand.repository")
 DemandSignalRepository = _repository.DemandSignalRepository
+SnapshotArtifactEvidenceRepository = _repository.SnapshotArtifactEvidenceRepository
 NeedHypothesisRepository = _repository.NeedHypothesisRepository
 ValidatedNeedRepository = _repository.ValidatedNeedRepository
 NeedClusterRepository = _repository.NeedClusterRepository
@@ -38,14 +39,14 @@ def test_signal_capture_request_requires_source_id_and_extracted_by() -> None:
         raw_observation="Acme announced a new production facility.",
         observed_at=NOW,
         source_type="web_page",
-        source_id="sha256:pagehash001",
+        source_id="a" * 64,
         extracted_by="model-v1",
         source_url="https://example.com/acme",
-        page_hash="sha256:pagehash001",
+        page_hash="a" * 64,
         snapshot_artifact_ref="art_01K3H0T8NBWM3KGT9XQ06YRC5V",
         possible_need="stainless steel hinges",
     )
-    assert request.source_id == "sha256:pagehash001"
+    assert request.source_id == "a" * 64
     assert request.extracted_by == "model-v1"
     assert request.snapshot_artifact_ref == "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
     # 必填性（GREEN 阶段执行）：省略任一必填字段都必须 TypeError——
@@ -60,7 +61,7 @@ def test_signal_capture_request_requires_source_id_and_extracted_by() -> None:
     with pytest.raises(TypeError):
         SignalCaptureRequest(**base)
     with pytest.raises(TypeError):
-        SignalCaptureRequest(**base, source_id="sha256:pagehash001")
+        SignalCaptureRequest(**base, source_id="a" * 64)
     with pytest.raises(TypeError):
         SignalCaptureRequest(**base, extracted_by="model-v1")
 
@@ -90,10 +91,26 @@ def test_repository_and_uow_protocol_shapes() -> None:
         signature = inspect.signature(getattr(DemandSignalRepository, method))
         assert list(signature.parameters) == expected, method
 
+    signature = inspect.signature(
+        SnapshotArtifactEvidenceRepository.matches_web_snapshot
+    )
+    assert list(signature.parameters) == [
+        "self",
+        "tenant_id",
+        "artifact_id",
+        "content_hash",
+    ]
+
     protocol_attrs = set(
         getattr(DemandUnitOfWork, "__protocol_attrs__", ())
     )
-    assert {"signals", "bus", "__aenter__", "__aexit__"} <= protocol_attrs
+    assert {
+        "signals",
+        "snapshot_artifacts",
+        "bus",
+        "__aenter__",
+        "__aexit__",
+    } <= protocol_attrs
 
 
 def test_demand_signal_captured_registered_in_event_registry() -> None:
@@ -167,6 +184,7 @@ def test_demand_uow_protocol_includes_need_clusters() -> None:
     attrs = set(getattr(DemandUnitOfWork, "__protocol_attrs__", ()))
     assert {
         "signals",
+        "snapshot_artifacts",
         "hypotheses",
         "needs",
         "clusters",

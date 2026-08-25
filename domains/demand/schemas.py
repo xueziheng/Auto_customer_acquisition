@@ -70,8 +70,9 @@ class SignalCaptureRequest:
         observed_at
         source_type:    见 ``SourceType``
 
-    校验：``source_type == WEB_PAGE`` 时 URL、hash 与不可变快照引用必填，
-    且 ``source_id == page_hash``。服务层拒绝不合格入参，不做"友好补全"。
+    校验：``source_type == WEB_PAGE`` 时 URL、小写 SHA-256 hash 与不可变
+    快照引用必填，且 ``source_id == page_hash``；服务层还会在同一事务验证
+    快照的租户、kind 与 content_hash。服务层拒绝不合格入参，不做"友好补全"。
     """
 
     signal_type: str

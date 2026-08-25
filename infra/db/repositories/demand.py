@@ -11,10 +11,14 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.demand.models import DemandSignal, SignalStatus, SignalType
-from domains.demand.repository import DemandSignalRepository
-from infra.db.tables import DemandSignalRow
+from domains.demand.repository import (
+    DemandSignalRepository,
+    SnapshotArtifactEvidenceRepository,
+)
+from infra.db.tables import DemandSignalRow, RawArtifactRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
+    ArtifactId,
     DemandSignalId,
     EmployeeId,
     ProspectAccountId,
@@ -42,6 +46,30 @@ class _DemandRepository:
     def _require_tenant(self, tenant_id: TenantId, action: str) -> None:
         if not self._tenant_matches(tenant_id, action):
             raise TenantIsolationViolation("跨租户数据隔离违规")
+
+
+class SnapshotArtifactEvidenceRepositoryImpl(
+    _DemandRepository, SnapshotArtifactEvidenceRepository
+):
+    """同一事务内验证 tenant-bound immutable web snapshot metadata。"""
+
+    async def matches_web_snapshot(
+        self,
+        tenant_id: TenantId,
+        artifact_id: ArtifactId,
+        content_hash: str,
+    ) -> bool:
+        if not self._tenant_matches(tenant_id, "demand_snapshot_artifact_match"):
+            return False
+        match = await self._session.scalar(
+            select(RawArtifactRow.artifact_id).where(
+                RawArtifactRow.tenant_id == str(self._tenant_id),
+                RawArtifactRow.artifact_id == str(artifact_id),
+                RawArtifactRow.kind == "web_snapshot",
+                RawArtifactRow.content_hash == content_hash,
+            )
+        )
+        return match is not None
 
 
 def _signal_to_row(signal: DemandSignal) -> DemandSignalRow:

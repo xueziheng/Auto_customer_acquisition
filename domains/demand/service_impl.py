@@ -1,8 +1,9 @@
 """需求域服务实现（需求信号与需求假设生命周期）。
 
 捕获语义（规格 §5/§7）：输入校验全部在开 UoW 前完成；所有 str 输入
-item == item.strip()；WEB_PAGE 强约束（URL、hash、不可变快照引用非空且
-source_id == page_hash）；去重 key 全非空 5 列；重复返回既有 ID 不重复发事件；
+item == item.strip()；WEB_PAGE 强约束（URL、小写 SHA-256、不可变快照引用
+非空且 source_id == page_hash，并在同一事务验证快照 tenant/kind/hash）；
+去重 key 全非空 5 列；重复返回既有 ID 不重复发事件；
 业务插入 + outbox 同事务。事件只用共享契约 DemandSignalCaptured
 （metadata-only，不含 raw_observation/possible_need/provenance）。
 """
@@ -64,6 +65,7 @@ from shared.schemas.evidence import (
     derive_confidence,
 )
 from shared.schemas.identifiers import (
+    ArtifactId,
     DemandSignalId,
     EmployeeId,
     MessageId,
@@ -83,6 +85,7 @@ from shared.schemas.provenance import (
 )
 
 _SNAPSHOT_ARTIFACT_REF = re.compile(r"art_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_WEB_CONTENT_HASH = re.compile(r"[0-9a-f]{64}")
 
 _EVIDENCE_RANK = {level: index for index, level in enumerate(EvidenceLevel)}
 _PROMOTABLE_SOURCE_TYPES = frozenset(
@@ -315,6 +318,7 @@ class DemandServiceImpl:
             or source_id != page_hash
             or snapshot_artifact_ref is None
             or _SNAPSHOT_ARTIFACT_REF.fullmatch(snapshot_artifact_ref) is None
+            or _WEB_CONTENT_HASH.fullmatch(page_hash) is None
         ):
             raise MissingWebEvidenceError(
                 "网页来源信号缺少 URL/page_hash/snapshot artifact，"
@@ -345,6 +349,16 @@ class DemandServiceImpl:
             ),
         )
         async with self._uow_factory(tenant_id) as uow:
+            if source_type is SourceType.WEB_PAGE:
+                assert snapshot_artifact_ref is not None and page_hash is not None
+                if not await uow.snapshot_artifacts.matches_web_snapshot(
+                    tenant_id,
+                    ArtifactId(snapshot_artifact_ref),
+                    page_hash,
+                ):
+                    raise MissingWebEvidenceError(
+                        "网页快照不存在，或租户、kind、hash 与信号不匹配"
+                    )
             inserted = await uow.signals.add(signal)
             if inserted:
                 await uow.bus.publish(

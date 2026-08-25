@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from agent_runtime.base import AgentTask
 from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
@@ -117,8 +119,19 @@ async def test_hypothesis_without_visible_signal_evidence_is_rejected() -> None:
     assert "模型输出被护栏拦截" in result.summary
 
 
-async def test_numeric_confidence_in_inference_is_rejected() -> None:
-    model = _CapturingModel(_response(reasoning="有 82% 概率需要工业铰链，可能采购，值得验证"))
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "有 82% 概率需要工业铰链，可能采购，值得验证",
+        "概率为82%，可能需要工业铰链，值得验证",
+        "可能性为 0.82，可能需要工业铰链，值得验证",
+        "概率为８２％，可能需要工业铰链，值得验证",
+    ],
+)
+async def test_numeric_confidence_variants_in_inference_are_rejected(
+    reasoning: str,
+) -> None:
+    model = _CapturingModel(_response(reasoning=reasoning))
     agent = DemandIntelligenceAgent(
         "model-v1", model, object(), CredentialMarkerGuard()
     )

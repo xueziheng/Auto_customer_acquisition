@@ -9,6 +9,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from agent_runtime.guardrails.rails import contains_numeric_probability
 from shared.errors import ValidationError
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import ChangeSetId, new_id
@@ -23,10 +24,6 @@ _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,63}")
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d .()/-]{7,}\d)(?!\w)")
 _DATE_LIKE = re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}")
-_PROBABILITY = re.compile(
-    r"(?i)(?:confidence|probability|置信度|概率)\s*[:：]?\s*\d|"
-    r"\d{1,3}\s*%\s*(?:likely|chance|probab|可能|置信|概率)"
-)
 _MONEY = re.compile(
     r"(?i)(?:[$€£¥₹]\s*\d)|(?:\d\s*(?:usd|eur|gbp|cny|rmb))|"
     r"(?:价格|报价|price|quote)\s*[:：]?\s*\d"
@@ -485,7 +482,7 @@ def _contains_phone(value: str) -> bool:
 
 
 def _reject_inference_numbers(value: str) -> None:
-    if _PROBABILITY.search(value) is not None or _MONEY.search(value) is not None:
+    if contains_numeric_probability(value) or _MONEY.search(value) is not None:
         raise ValidationError("需求推断包含概率或最终金额")
 
 

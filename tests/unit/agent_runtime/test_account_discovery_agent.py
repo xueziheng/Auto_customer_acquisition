@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
 from agent_runtime.base import AgentTask
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
@@ -50,23 +52,32 @@ def _task(*, summary: str, reasoning: str = "企业扩建，可能需要五金")
     )
 
 
-async def test_contact_pii_is_redacted_before_account_model_input() -> None:
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Contact Alice at alice@example.com or +1 (212) 555-0199.",
+        "Alice Buyer confirmed Acme Manufacturing expanded.",
+        "Alice Smith confirmed Acme Manufacturing expanded.",
+        "Alice confirmed Acme Manufacturing expanded.",
+        "张三表示 Acme Manufacturing 已经扩建。",
+        "张三",
+    ],
+)
+async def test_contact_pii_context_is_rejected_before_account_model_input(
+    summary: str,
+) -> None:
     model = _CapturingModel()
     agent = AccountDiscoveryAgent(
         "model-v1", model, object(), CredentialMarkerGuard()
     )
 
     result = await agent.run(
-        _task(summary="Contact Alice at alice@example.com or +1 (212) 555-0199."),
+        _task(summary=summary),
         None,
     )
 
     assert result.changes == []
-    assert len(model.calls) == 1
-    model_blob = json.dumps(model.calls[0], ensure_ascii=False)
-    assert "alice@example.com" not in model_blob
-    assert "212" not in model_blob
-    assert "[CONTACT_REDACTED]" in model_blob
+    assert model.calls == []
 
 
 async def test_credential_marker_stops_before_account_model() -> None:
@@ -98,7 +109,7 @@ async def test_account_output_is_canonical_public_fact_without_contact_fields() 
             "source_signal_refs": [signal_id],
         }
     )
-    task = _task(summary="Acme opened a new factory.")
+    task = _task(summary="Acme Manufacturing opened a new factory.")
     task.inputs["hypothesis"]["source_signal_refs"] = [signal_id]
     task.inputs["hypothesis"]["evidence"][0]["signal_id"] = signal_id
     agent = AccountDiscoveryAgent(
@@ -111,3 +122,45 @@ async def test_account_output_is_canonical_public_fact_without_contact_fields() 
     payload = result.changes[0]["payload"]
     assert payload["website_domain"] == "example.com"
     assert not ({"email", "phone", "full_name", "confidence"} & set(payload))
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("entity_name", "Alice Buyer"),
+        ("industry", "Alice Smith"),
+        ("industry", "张三经理"),
+        ("industry", "alice@example.com"),
+        ("industry", "+1 (212) 555-0199"),
+        ("size_hint", "api_key: synthetic-secret-marker"),
+        ("size_hint", "概率为82%"),
+        ("industry", "send email now"),
+    ],
+)
+async def test_every_unsafe_model_output_string_is_rejected_before_changeset(
+    field: str,
+    unsafe_value: str,
+) -> None:
+    signal_id = new_id("sig")
+    response: dict[str, object] = {
+        "entity_name": "Acme Manufacturing",
+        "country": "US",
+        "website_domain": "example.com",
+        "entity_type": "manufacturer",
+        "industry": "hardware",
+        "size_hint": None,
+        "source_signal_refs": [signal_id],
+    }
+    response[field] = unsafe_value
+    model = _CapturingModel(response)
+    task = _task(summary="Acme Manufacturing opened a new factory.")
+    task.inputs["hypothesis"]["source_signal_refs"] = [signal_id]
+    task.inputs["hypothesis"]["evidence"][0]["signal_id"] = signal_id
+    agent = AccountDiscoveryAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+
+    result = await agent.run(task, None)
+
+    assert result.changes == []
+    assert "护栏拦截" in result.summary

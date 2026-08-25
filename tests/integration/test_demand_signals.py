@@ -41,6 +41,7 @@ NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
 OBSERVATION_MARKER = "Acme SECRET-OBSERVATION-42 opened a new plant in Rotterdam."
 NEED_MARKER = "stainless steel hinges SECRET-NEED-42"
 SNAPSHOT_ARTIFACT_REF = "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
+PAGE_HASH = "a" * 64
 
 
 @dataclass
@@ -84,10 +85,10 @@ def _request(**overrides: object) -> SignalCaptureRequest:
         "raw_observation": OBSERVATION_MARKER,
         "observed_at": NOW,
         "source_type": "web_page",
-        "source_id": "sha256:pagehash001",
+        "source_id": PAGE_HASH,
         "extracted_by": "model-v1",
         "source_url": "https://example.com/acme-expansion",
-        "page_hash": "sha256:pagehash001",
+        "page_hash": PAGE_HASH,
         "snapshot_artifact_ref": SNAPSHOT_ARTIFACT_REF,
         "possible_need": NEED_MARKER,
     }
@@ -125,6 +126,59 @@ async def _signal_rows(
     return list(rows)
 
 
+async def _seed_raw_artifact(
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    *,
+    artifact_ref: str = SNAPSHOT_ARTIFACT_REF,
+    kind: str = "web_snapshot",
+    content_hash: str = PAGE_HASH,
+) -> None:
+    tables = importlib.import_module("infra.db.tables")
+    mime_type = "text/html" if kind == "web_snapshot" else "application/pdf"
+    async with factory() as session:
+        session.add(
+            tables.RawArtifactRow(
+                tenant_id=str(tenant),
+                artifact_id=artifact_ref,
+                kind=kind,
+                content_hash=content_hash,
+                size_bytes=20,
+                mime_type=mime_type,
+                object_key=f"raw/{tenant}/{artifact_ref}",
+                uploaded_by=None,
+                uploaded_at=NOW,
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.parametrize(
+    "artifact_state",
+    ["missing", "cross_tenant", "wrong_kind", "wrong_hash"],
+)
+async def test_capture_rejects_unbound_snapshot_artifact_state(
+    demand_db: AsyncEngine,
+    artifact_state: str,
+) -> None:
+    """网页证据引用必须同租户存在，且是 hash 一致的 web_snapshot。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    if artifact_state == "cross_tenant":
+        await _seed_raw_artifact(factory, TenantId(new_id("tn")))
+    elif artifact_state == "wrong_kind":
+        await _seed_raw_artifact(factory, tenant, kind="pdf")
+    elif artifact_state == "wrong_hash":
+        await _seed_raw_artifact(factory, tenant, content_hash="b" * 64)
+
+    with pytest.raises(MissingWebEvidenceError):
+        await service.capture_signal(tenant, _request())
+
+    assert await _signal_rows(factory, tenant) == []
+
+
 async def test_capture_roundtrip_persists_all_columns(demand_db: AsyncEngine) -> None:
     """capture 落库：19 列全往返（含网页证据四元组、confirmed pair None、
     possible_need/account_id/discard_reason None）。"""
@@ -132,6 +186,7 @@ async def test_capture_roundtrip_persists_all_columns(demand_db: AsyncEngine) ->
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     signal_id = await service.capture_signal(tenant, _request())
     assert signal_id.startswith("sig_")
@@ -149,12 +204,12 @@ async def test_capture_roundtrip_persists_all_columns(demand_db: AsyncEngine) ->
     assert row.account_id is None
     assert row.discard_reason is None
     assert row.source_type == "web_page"
-    assert row.source_id == "sha256:pagehash001"
+    assert row.source_id == PAGE_HASH
     assert row.extracted_by == "model-v1"
     assert row.extracted_at == NOW
     assert row.confirmed_by is None and row.confirmed_at is None
     assert row.source_url == "https://example.com/acme-expansion"
-    assert row.page_hash == "sha256:pagehash001"
+    assert row.page_hash == PAGE_HASH
     assert row.snapshot_artifact_ref == SNAPSHOT_ARTIFACT_REF
 
 
@@ -170,7 +225,7 @@ async def test_capture_web_evidence_fail_closed(demand_db: AsyncEngine) -> None:
         {"page_hash": None},
         {"snapshot_artifact_ref": None},
         {"snapshot_artifact_ref": "art_invalid"},
-        {"source_id": "sha256:other", "page_hash": "sha256:pagehash001"},
+        {"source_id": "b" * 64, "page_hash": PAGE_HASH},
     ]
     for overrides in cases:
         with pytest.raises(MissingWebEvidenceError):
@@ -221,6 +276,7 @@ async def test_capture_duplicate_replay_returns_first_id_single_event(
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     first_id = await service.capture_signal(tenant, _request())
     replayed = await service.capture_signal(
@@ -242,6 +298,7 @@ async def test_capture_concurrent_same_key_exactly_one_row_one_event(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)
     service_b = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     results = await asyncio.gather(
         service_a.capture_signal(tenant, _request()),
@@ -262,6 +319,8 @@ async def test_capture_cross_tenant_same_key_two_rows(demand_db: AsyncEngine) ->
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant_a, clock)
     service_b = _service(factory, tenant_b, clock)
+    await _seed_raw_artifact(factory, tenant_a)
+    await _seed_raw_artifact(factory, tenant_b)
 
     await service_a.capture_signal(tenant_a, _request())
     await service_b.capture_signal(tenant_b, _request())
@@ -275,6 +334,7 @@ async def test_capture_optional_fields_none_and_present(demand_db: AsyncEngine) 
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     await service.capture_signal(tenant, _request(possible_need=None))
     rows = await _signal_rows(factory, tenant)
@@ -297,11 +357,11 @@ async def test_demand_signals_db_checks_fail_closed(demand_db: AsyncEngine) -> N
             "observed_at": NOW,
             "status": "captured",
             "source_type": "web_page",
-            "source_id": "sha256:pagehash001",
+            "source_id": PAGE_HASH,
             "extracted_by": "model-v1",
             "extracted_at": NOW,
             "source_url": "https://example.com/acme",
-            "page_hash": "sha256:pagehash001",
+            "page_hash": PAGE_HASH,
             "snapshot_artifact_ref": SNAPSHOT_ARTIFACT_REF,
         }
 
@@ -315,11 +375,11 @@ async def test_demand_signals_db_checks_fail_closed(demand_db: AsyncEngine) -> N
         ),
         (
             "ck_demand_signals_web_evidence",
-            {"source_url": None, "page_hash": "sha256:pagehash001"},
+            {"source_url": None, "page_hash": PAGE_HASH},
         ),
         (
             "ck_demand_signals_web_evidence",
-            {"source_id": "sha256:other", "page_hash": "sha256:pagehash001"},
+            {"source_id": "b" * 64, "page_hash": PAGE_HASH},
         ),
         (
             "ck_demand_signals_discard_reason",
@@ -338,6 +398,7 @@ async def test_demand_signals_db_checks_fail_closed(demand_db: AsyncEngine) -> N
             {"possible_need": "   "},
         ),
     ]
+    await _seed_raw_artifact(factory, tenant)
     for _label, overrides in bad_cases:
         values = base()
         values.update(overrides)
@@ -377,7 +438,7 @@ async def test_capture_repo_tenant_mismatch_raises(demand_db: AsyncEngine) -> No
                 "Acme Manufacturing",
                 "product_line_expansion",
                 "web_page",
-                "sha256:pagehash001",
+                PAGE_HASH,
             )
 
 
@@ -387,11 +448,11 @@ def _provenance_for():
 
     return Provenance(
         source_type=SourceType.WEB_PAGE,
-        source_id="sha256:pagehash001",
+        source_id=PAGE_HASH,
         extracted_by="model-v1",
         extracted_at=NOW,
         source_url="https://example.com/acme",
-        page_hash="sha256:pagehash001",
+        page_hash=PAGE_HASH,
     )
 
 
@@ -442,6 +503,7 @@ async def test_capture_outbox_metadata_only_no_marker_leak(
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
     caplog.clear()
+    await _seed_raw_artifact(factory, tenant)
 
     await service.capture_signal(tenant, _request())
     events = await _outbox_events(factory, tenant)
@@ -459,7 +521,7 @@ async def test_capture_outbox_metadata_only_no_marker_leak(
     blob = str(payload)
     assert OBSERVATION_MARKER not in blob
     assert NEED_MARKER not in blob
-    assert "pagehash001" not in blob
+    assert PAGE_HASH not in blob
     assert caplog.records == []
 
 
@@ -491,6 +553,7 @@ async def test_capture_publish_failure_rolls_back_signal(demand_db: AsyncEngine)
             return await self._inner.__aexit__(*args)
 
     service = impl_type(lambda _t: _BusFailureUoW(), now=clock.now)  # type: ignore[arg-type]
+    await _seed_raw_artifact(factory, tenant)
     with pytest.raises(RuntimeError, match="bus down"):
         await service.capture_signal(tenant, _request())
     assert await _signal_rows(factory, tenant) == []  # 业务行回滚
@@ -508,6 +571,7 @@ async def test_discard_captured_to_discarded_persists_first_reason(
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
     caplog.clear()
+    await _seed_raw_artifact(factory, tenant)
 
     signal_id = await service.capture_signal(tenant, _request())
     await service.discard_signal(tenant, signal_id, "noise")
@@ -528,6 +592,7 @@ async def test_discard_idempotent_same_reason_and_conflict_on_different(
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     signal_id = await service.capture_signal(tenant, _request())
     await service.discard_signal(tenant, signal_id, "noise")
@@ -546,6 +611,7 @@ async def test_discard_linked_rejected(demand_db: AsyncEngine) -> None:
     factory = async_sessionmaker(demand_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
     tables = importlib.import_module("infra.db.tables")
+    await _seed_raw_artifact(factory, tenant)
     # 直插 linked 行（模拟假设已关联）
     signal_id = new_id("sig")
     async with factory() as session:
@@ -559,11 +625,11 @@ async def test_discard_linked_rejected(demand_db: AsyncEngine) -> None:
                 observed_at=NOW,
                 status="linked_to_hypothesis",
                 source_type="web_page",
-                source_id="sha256:pagehash001",
+                source_id=PAGE_HASH,
                 extracted_by="model-v1",
                 extracted_at=NOW,
                 source_url="https://example.com/acme",
-                page_hash="sha256:pagehash001",
+                page_hash=PAGE_HASH,
                 snapshot_artifact_ref=SNAPSHOT_ARTIFACT_REF,
             )
         )
@@ -587,6 +653,7 @@ async def test_discard_missing_or_cross_tenant_invisible(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant_a, clock)
     service_b = _service(factory, tenant_b, clock)
+    await _seed_raw_artifact(factory, tenant_a)
 
     ghost = new_id("sig")
     with pytest.raises(ValidationError) as exc_info:
@@ -610,6 +677,7 @@ async def test_discard_concurrent_same_reason_both_succeed_single_reason(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)
     service_b = _service(factory, tenant, clock)
+    await _seed_raw_artifact(factory, tenant)
 
     signal_id = await service_a.capture_signal(tenant, _request())
     results = await asyncio.gather(
@@ -640,6 +708,7 @@ async def test_discard_concurrent_different_reasons_one_wins_one_conflict(
     service_a = _service(factory, tenant, clock)
     service_b = _service(factory, tenant, clock)
     uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    await _seed_raw_artifact(factory, tenant)
 
     signal_id = await service_a.capture_signal(tenant, _request())
     a_locked = asyncio.Event()
@@ -671,6 +740,7 @@ async def test_discard_snapshot_semantics_and_rollback(demand_db: AsyncEngine) -
     tenant = TenantId(new_id("tn"))
     clock = MutableClock(NOW)
     uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    await _seed_raw_artifact(factory, tenant)
 
     # 快照语义：repo 直接调用，captured 行返回快照 status=captured，但 DB 已更新
     signal = _models.DemandSignal(

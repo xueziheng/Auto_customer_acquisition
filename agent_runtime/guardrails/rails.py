@@ -497,12 +497,24 @@ class TenantConsistencyRail:
 _PROBABILITY_KEY_PARTS = ("confidence", "probability", "likelihood")
 _NUMERIC_VALUE = re.compile(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)\s*%?")
 _PROBABILITY_TEXT = re.compile(
-    r"(?:置信度|概率|confidence|probability|likelihood)"
+    r"(?:"
+    r"(?:置信度|概率|可能性|confidence|probability|likelihood)"
     r"\s*(?:(?:约|为|is|of)\s*|[:=]\s*)?"
-    r"(?:\d+(?:\.\d+)?|\.\d+)\s*%?",
+    r"(?:\d+(?:\.\d+)?|\.\d+)\s*%?"
+    r"|(?:\d+(?:\.\d+)?|\.\d+)\s*%\s*"
+    r"(?:置信度|概率|可能性|confidence|probability|likelihood)"
+    r")",
 )
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 _CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def contains_numeric_probability(value: str) -> bool:
+    """NFKC 归一化后识别自由文本里的数值概率表达。"""
+    if not isinstance(value, str):
+        raise ValidationError("概率护栏文本无效")
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return _PROBABILITY_TEXT.search(normalized) is not None
 
 
 class NoProbabilityOutputRail:
@@ -525,10 +537,7 @@ class NoProbabilityOutputRail:
         violations: list[RailViolation] = []
         if self._is_numeric_probability(field_name, value) or (
             isinstance(value, str)
-            and _PROBABILITY_TEXT.search(
-                unicodedata.normalize("NFKC", value).casefold()
-            )
-            is not None
+            and contains_numeric_probability(value)
         ):
             violations.append(
                 RailViolation(

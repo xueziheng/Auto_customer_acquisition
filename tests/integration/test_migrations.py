@@ -3745,6 +3745,15 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
                         str(item["name"]): sorted(item["column_names"])
                         for item in inspect(sync).get_unique_constraints("demand_signals")
                     },
+                    "fks": {
+                        str(item["name"]): (
+                            tuple(item["constrained_columns"]),
+                            str(item["referred_table"]),
+                            tuple(item["referred_columns"]),
+                            item.get("options", {}).get("ondelete"),
+                        )
+                        for item in inspect(sync).get_foreign_keys("demand_signals")
+                    },
                     "checks": {
                         str(item["name"]): str(item["sqltext"])
                         for item in inspect(sync).get_check_constraints("demand_signals")
@@ -3780,6 +3789,16 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         str(c.name): str(c.sqltext)
         for c in DemandSignalRow.__table__.constraints
         if isinstance(c, CheckConstraint)
+    }
+    orm_fks = {
+        str(constraint.name): (
+            tuple(constraint.columns.keys()),
+            constraint.referred_table.name,
+            tuple(element.column.name for element in constraint.elements),
+            constraint.ondelete,
+        )
+        for constraint in DemandSignalRow.__table__.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
     }
     def _normalize_default(value: object) -> str | None:
         """server_default 归一化：去 PG cast 标注与引号，空视为无默认。"""
@@ -3843,6 +3862,15 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
             "tenant_id",
         ]
     }
+    expected_fks = {
+        "fk_demand_signals_snapshot_artifact": (
+            ("tenant_id", "snapshot_artifact_ref"),
+            "raw_artifacts",
+            ("tenant_id", "artifact_id"),
+            "RESTRICT",
+        )
+    }
+    assert db_contract["fks"] == orm_fks == expected_fks
     assert set(db_contract["checks"]) == set(orm_checks) == {
         "ck_demand_signals_type",
         "ck_demand_signals_status",
@@ -3891,6 +3919,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
             "source_type <> 'web_page' OR "
             "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
             "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
+            "page_hash ~ '^[0-9a-f]{64}$' AND "
             "source_id = page_hash AND "
             "snapshot_artifact_ref IS NOT NULL AND "
             "snapshot_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$')"
@@ -4073,6 +4102,69 @@ async def test_demand_signals_web_evidence_rejects_incomplete_tuple(
             raise AssertionError(
                 "web 行 snapshot_artifact_ref=NULL 未被证据约束拒绝"
             )
+    finally:
+        await engine.dispose()
+
+
+async def test_0034_snapshot_artifact_reference_is_tenant_bound(
+    db_url: str,
+) -> None:
+    """数据库拒绝不存在或只存在于其他租户的 snapshot artifact 引用。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+    from shared.schemas.identifiers import new_id
+
+    tenant = new_id("tn")
+    other_tenant = new_id("tn")
+    artifact = new_id("art")
+    missing_artifact = new_id("art")
+    page_hash = "e" * 64
+    engine = create_engine_from(db_url)
+
+    async def _insert_signal(signal_id: str, artifact_ref: str) -> None:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO demand_signals "
+                    "(tenant_id,signal_id,signal_type,entity_name,raw_observation,"
+                    "observed_at,status,source_type,source_id,extracted_by,"
+                    "extracted_at,source_url,page_hash,snapshot_artifact_ref) VALUES "
+                    "(:tenant,:signal,'product_line_expansion','Acme','expanded',"
+                    ":now,'captured','web_page',:hash,'model-v1',:now,"
+                    "'https://example.com/news',:hash,:artifact)"
+                ),
+                {
+                    "tenant": tenant,
+                    "signal": signal_id,
+                    "hash": page_hash,
+                    "artifact": artifact_ref,
+                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                },
+            )
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO raw_artifacts "
+                    "(tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,"
+                    "object_key,uploaded_by,uploaded_at) VALUES "
+                    "(:tenant,:artifact,'web_snapshot',:hash,20,'text/html',"
+                    ":object_key,NULL,:now)"
+                ),
+                {
+                    "tenant": other_tenant,
+                    "artifact": artifact,
+                    "hash": page_hash,
+                    "object_key": f"raw/{other_tenant}/{artifact}",
+                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                },
+            )
+        with pytest.raises(IntegrityError):
+            await _insert_signal(new_id("sig"), artifact)
+        with pytest.raises(IntegrityError):
+            await _insert_signal(new_id("sig"), missing_artifact)
     finally:
         await engine.dispose()
 
@@ -4807,15 +4899,16 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
 ) -> None:
     """0034 降级后从不可变 raw artifact 元数据确定性恢复需求信号引用。"""
     from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from infra.db.session import create_engine_from
-    from shared.schemas.identifiers import new_id
+    from shared.schemas.identifiers import TenantId, new_id
 
     tenant = new_id("tn")
     artifact = new_id("art")
     duplicate_artifact = new_id("art")
-    signal = new_id("sig")
     page_hash = "b" * 64
+    captured_at = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
     engine = create_engine_from(db_url)
     try:
         async with engine.begin() as conn:
@@ -4836,7 +4929,7 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
                     "artifact": artifact,
                     "hash": page_hash,
                     "object_key": f"raw/{tenant}/{artifact}",
-                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
+                    "now": captured_at,
                 },
             )
         with pytest.raises(IntegrityError):
@@ -4857,25 +4950,35 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
                         "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
                     },
                 )
-        async with engine.begin() as conn:
-            await conn.execute(
-                text(
-                    "INSERT INTO demand_signals "
-                    "(tenant_id,signal_id,signal_type,entity_name,raw_observation,"
-                    "observed_at,status,source_type,source_id,extracted_by,"
-                    "extracted_at,source_url,page_hash,snapshot_artifact_ref) VALUES "
-                    "(:tenant,:signal,'product_line_expansion','Acme','expanded',"
-                    ":now,'captured','web_page',:hash,'model-v1',:now,"
-                    "'https://example.com/news',:hash,:artifact)"
-                ),
-                {
-                    "tenant": tenant,
-                    "signal": signal,
-                    "hash": page_hash,
-                    "artifact": artifact,
-                    "now": datetime(2026, 8, 25, 9, 0, tzinfo=UTC),
-                },
-            )
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        uow_type = importlib.import_module(
+            "infra.db.demand_uow"
+        ).SqlAlchemyDemandUnitOfWork
+        service_type = importlib.import_module(
+            "domains.demand.service_impl"
+        ).DemandServiceImpl
+        from domains.demand.schemas import SignalCaptureRequest
+
+        tenant_id = TenantId(tenant)
+        service = service_type(
+            lambda requested: uow_type(factory, requested, now=lambda: captured_at),
+            now=lambda: captured_at,
+        )
+        signal = await service.capture_signal(
+            tenant_id,
+            SignalCaptureRequest(
+                signal_type="product_line_expansion",
+                entity_name="Acme",
+                raw_observation="expanded",
+                observed_at=captured_at,
+                source_type="web_page",
+                source_id=page_hash,
+                extracted_by="model-v1",
+                source_url="https://example.com/news",
+                page_hash=page_hash,
+                snapshot_artifact_ref=artifact,
+            ),
+        )
         _run_alembic(db_url, "downgrade", "0033")
         async with engine.connect() as conn:
             columns = await conn.run_sync(
@@ -4948,5 +5051,92 @@ async def test_0034_snapshot_artifact_backfill_missing_match_fails_closed(
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM demand_signals"))
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed(
+    db_url: str,
+) -> None:
+    """0034 遇到同租户同 hash 多快照时拒绝任意挑选，证据不得降级。"""
+    from sqlalchemy import text
+
+    from infra.db.session import create_engine_from
+    from shared.schemas.identifiers import new_id
+
+    tenant = new_id("tn")
+    signal = new_id("sig")
+    artifacts = (new_id("art"), new_id("art"))
+    page_hash = "f" * 64
+    now = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
+    engine = create_engine_from(db_url)
+    unique_dropped = False
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM demand_signals"))
+        _run_alembic(db_url, "downgrade", "0033")
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE raw_artifacts DROP CONSTRAINT "
+                    "uq_raw_artifacts_tenant_kind_hash"
+                )
+            )
+            unique_dropped = True
+            for artifact in artifacts:
+                await conn.execute(
+                    text(
+                        "INSERT INTO raw_artifacts "
+                        "(tenant_id,artifact_id,kind,content_hash,size_bytes,"
+                        "mime_type,object_key,uploaded_by,uploaded_at) VALUES "
+                        "(:tenant,:artifact,'web_snapshot',:hash,20,'text/html',"
+                        ":object_key,NULL,:now)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "artifact": artifact,
+                        "hash": page_hash,
+                        "object_key": f"raw/{tenant}/{artifact}",
+                        "now": now,
+                    },
+                )
+            await conn.execute(
+                text(
+                    "INSERT INTO demand_signals "
+                    "(tenant_id,signal_id,signal_type,entity_name,raw_observation,"
+                    "observed_at,status,source_type,source_id,extracted_by,"
+                    "extracted_at,source_url,page_hash) VALUES "
+                    "(:tenant,:signal,'product_line_expansion','Acme','expanded',"
+                    ":now,'captured','web_page',:hash,'model-v1',:now,"
+                    "'https://example.com/news',:hash)"
+                ),
+                {
+                    "tenant": tenant,
+                    "signal": signal,
+                    "hash": page_hash,
+                    "now": now,
+                },
+            )
+
+        with pytest.raises(AssertionError, match="alembic upgrade 0034"):
+            _run_alembic(db_url, "upgrade", "0034")
+    finally:
+        if unique_dropped:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM demand_signals WHERE tenant_id=:tenant"),
+                    {"tenant": tenant},
+                )
+                await conn.execute(
+                    text("DELETE FROM raw_artifacts WHERE tenant_id=:tenant"),
+                    {"tenant": tenant},
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE raw_artifacts ADD CONSTRAINT "
+                        "uq_raw_artifacts_tenant_kind_hash "
+                        "UNIQUE (tenant_id,kind,content_hash)"
+                    )
+                )
         _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()

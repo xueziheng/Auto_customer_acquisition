@@ -2676,6 +2676,12 @@ class DemandSignalRow(Base):
             "source_id",
             name="uq_demand_signals_source_identity",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "snapshot_artifact_ref"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_demand_signals_snapshot_artifact",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             f"signal_type IN ({_DEMAND_SIGNAL_TYPES})", name="ck_demand_signals_type"
         ),
@@ -2694,6 +2700,7 @@ class DemandSignalRow(Base):
             "source_type <> 'web_page' OR "
             "(source_url IS NOT NULL AND btrim(source_url) <> '' AND "
             "page_hash IS NOT NULL AND btrim(page_hash) <> '' AND "
+            "page_hash ~ '^[0-9a-f]{64}$' AND "
             "source_id = page_hash AND "
             "snapshot_artifact_ref IS NOT NULL AND "
             "snapshot_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$')",

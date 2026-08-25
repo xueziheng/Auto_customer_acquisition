@@ -18,6 +18,7 @@ from domains.demand.models import (
 )
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
+    ArtifactId,
     DemandSignalId,
     NeedClusterId,
     NeedHypothesisId,
@@ -25,6 +26,18 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+
+
+@runtime_checkable
+class SnapshotArtifactEvidenceRepository(Protocol):
+    """只暴露网页快照证据绑定，不让 demand 域依赖 Artifact Store 内部类型。"""
+
+    async def matches_web_snapshot(
+        self,
+        tenant_id: TenantId,
+        artifact_id: ArtifactId,
+        content_hash: str,
+    ) -> bool: ...
 
 
 @runtime_checkable
@@ -85,6 +98,7 @@ class DemandUnitOfWork(Protocol):
     """demand 域事务边界（域级接口；实现为 SqlAlchemyDemandUnitOfWork）。"""
 
     signals: DemandSignalRepository
+    snapshot_artifacts: SnapshotArtifactEvidenceRepository
     hypotheses: NeedHypothesisRepository
     needs: ValidatedNeedRepository
     clusters: NeedClusterRepository
