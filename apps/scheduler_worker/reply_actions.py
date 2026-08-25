@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
-from domains.conversations.schemas import ReplyWorkAction, ReplyWorkActionRequest
+from domains.conversations.schemas import (
+    MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
+    ReplyWorkAction,
+    ReplyWorkActionRequest,
+)
 from domains.conversations.service import ConversationService
 from domains.demand.schemas import CustomerReplyEvidenceClaim
 from domains.demand.service import DemandService
@@ -57,6 +61,7 @@ from shared.schemas.identifiers import (
     NeedHypothesisId,
     OpportunityId,
     OutboundMessageId,
+    ProspectAccountId,
     SendingIdentityId,
     TenantId,
     ValidatedNeedId,
@@ -73,9 +78,6 @@ _SYSTEM_ACTOR = OpportunityActor(
     "system",
 )
 
-_HANDOFF_VERBATIM_MAX_CHARS = 500
-
-
 def _bounded_verbatim_excerpt(
     body: str,
     candidate_fields: tuple[ReplyFieldSnapshot, ...],
@@ -90,13 +92,15 @@ def _bounded_verbatim_excerpt(
         raise ValidationError("回复消息正文无效")
     for field in candidate_fields:
         quote = field.quote
+        if len(quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS:
+            raise ValidationError("回复字段逐字证据超长")
         if quote not in body:
             continue
-        bounded_quote = quote[:_HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+        bounded_quote = quote.rstrip()
         if bounded_quote.strip():
             return bounded_quote
     start = next(index for index, char in enumerate(body) if not char.isspace())
-    excerpt = body[start : start + _HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+    excerpt = body[start : start + MAX_REPLY_FIELD_QUOTE_CODEPOINTS].rstrip()
     if not excerpt:
         raise ValidationError("回复消息摘录无效")
     return excerpt
@@ -143,12 +147,22 @@ class ReplyFieldSnapshot:
     value: str
     quote: str
 
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (self.field, self.value, self.quote)
+        ):
+            raise ValidationError("回复字段证据无效")
+        if len(self.quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS:
+            raise ValidationError("回复字段逐字证据超长")
+
 
 @dataclass(frozen=True)
 class ReplyEvidenceSnapshot:
     """按 message_id 重读的 tenant-bound 分类证据，不进入 workflow context。"""
 
     message_id: MessageId
+    account_id: ProspectAccountId
     category: str
     classified_by: str
     classified_at: datetime
@@ -307,6 +321,8 @@ class ComposedReplyActionPorts:
             raise ValidationError("回复分类证据不存在")
         if evidence.outbound_message_id != context.outbound_message_id:
             raise ValidationError("回复出站消息关联不匹配")
+        if evidence.account_id != context.account_id:
+            raise ValidationError("回复企业关联不匹配")
         if business is None:
             raise ValidationError("回复业务关联不存在")
         return evidence, business

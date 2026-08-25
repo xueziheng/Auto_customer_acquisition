@@ -29,6 +29,11 @@ class _Outreach:
 class _RecordingOutreach(_Outreach):
     def __init__(self) -> None:
         self.suppressions: list[object] = []
+        self.stops: list[object] = []
+
+    async def stop_enrollment(self, *args: object, **kwargs: object) -> None:
+        del kwargs
+        self.stops.append(args[1])
 
     async def add_suppression(self, *args: object, **kwargs: object) -> None:
         del kwargs
@@ -188,6 +193,55 @@ async def test_reply_action_dispatch_uses_metadata_only_context(
         "contact_point_id": CONTACT,
     }
     assert idempotency_key == f"reply:{action}:{MESSAGE}"
+
+
+async def test_second_specification_reply_replays_stop_update_then_handoff() -> None:
+    """第二条消息在字段更新后崩溃，整步重放仍完成 stop/update/handoff。"""
+    from workflows.reply_qualification.steps import ApplyActionsStep
+
+    class CrashOnceActions(_Actions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.extract_attempts = 0
+
+        async def extract_need_fields(
+            self, tenant_id, context, idempotency_key
+        ) -> None:
+            del tenant_id
+            self.extract_attempts += 1
+            await self._record("extract_need_fields", context, idempotency_key)
+            if self.extract_attempts == 1:
+                raise RuntimeError("simulated second-message crash")
+
+    tenant = TenantId(new_id("tn"))
+    outreach = _RecordingOutreach()
+    actions = CrashOnceActions()
+    step = ApplyActionsStep(
+        cast(OutreachService, outreach),
+        tenant,
+        lambda: datetime(2026, 8, 21, tzinfo=UTC),
+        actions,
+    )
+    run = _run(tenant, "stop_sequence", category="provides_specification")
+    run.context["actions"] = [
+        "stop_sequence",
+        "extract_need_fields",
+        "handoff",
+    ]
+
+    with pytest.raises(RuntimeError, match="second-message crash"):
+        await step.execute(run)
+
+    result = await step.execute(run)
+
+    assert result == ("complete", None, {})
+    assert len(outreach.stops) == 2
+    assert [call[0] for call in actions.calls] == [
+        "extract_need_fields",
+        "extract_need_fields",
+        "handoff",
+    ]
+    assert actions.calls[-1][2] == f"reply:handoff:{MESSAGE}"
 
 
 async def test_suppression_retry_uses_stable_run_occurrence() -> None:

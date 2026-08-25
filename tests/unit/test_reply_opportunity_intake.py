@@ -53,7 +53,9 @@ HYPOTHESIS = NeedHypothesisId(new_id("hyp"))
 NEED = ValidatedNeedId(new_id("need"))
 OPPORTUNITY = OpportunityId(new_id("opp"))
 MESSAGE = MessageId(new_id("msg"))
+HISTORICAL_MESSAGE = MessageId(new_id("msg"))
 QUOTE = "We need 5000 hinges at USD 2 each."
+HISTORICAL_QUOTE = "We source industrial hinges for our assembly line."
 PAGE_HASH = "a" * 64
 ACCOUNT_NAME_PROVENANCE = Provenance(
     source_type=SourceType.WEB_PAGE,
@@ -82,6 +84,7 @@ CONTEXT = ReplyActionContext(
 )
 EVIDENCE = ReplyEvidenceSnapshot(
     message_id=MESSAGE,
+    account_id=ACCOUNT,
     category="provides_specification",
     classified_by="controlled-model-v1",
     classified_at=NOW,
@@ -95,6 +98,34 @@ EVIDENCE = ReplyEvidenceSnapshot(
         ),
     ),
 )
+
+HISTORICAL_EVIDENCE = ReplyEvidenceSnapshot(
+    message_id=HISTORICAL_MESSAGE,
+    account_id=ACCOUNT,
+    category="provides_specification",
+    classified_by="controlled-model-v0",
+    classified_at=NOW,
+    raw_artifact_ref="art_reply_intake_historical",
+    outbound_message_id=CONTEXT.outbound_message_id,
+    candidate_fields=(
+        ReplyFieldSnapshot(
+            "product_category", "hinges", HISTORICAL_QUOTE
+        ),
+    ),
+)
+
+
+class _DurableEvidence:
+    def __init__(self, *, include_historical: bool = True) -> None:
+        self._snapshots = {MESSAGE: EVIDENCE}
+        if include_historical:
+            self._snapshots[HISTORICAL_MESSAGE] = HISTORICAL_EVIDENCE
+        self.calls: list[MessageId] = []
+
+    async def load(self, tenant_id, message_id):
+        assert tenant_id == TENANT
+        self.calls.append(message_id)
+        return self._snapshots.get(message_id)
 
 
 class _Demand:
@@ -251,6 +282,33 @@ def _intake(opportunities: _Opportunities) -> DurableReplyOpportunityIntake:
         organization=_Organization(),
         opportunities=opportunities,
         employees=_Employees(),
+        evidence_reader=_DurableEvidence(),
+        organization_actor=OrganizationActor(
+            str(BOSS),
+            OrganizationScope(OrganizationScopeLevel.TENANT, TENANT),
+            "boss",
+        ),
+        opportunity_actor=OpportunityActor(
+            str(BOSS), OpportunityScope(level=ScopeLevel.TENANT), "boss"
+        ),
+        employee_actor=EmployeeActor(str(BOSS), EmployeeScope.TENANT, "boss"),
+    )
+
+
+def _intake_with_evidence(
+    opportunities: _Opportunities,
+    *,
+    demand: object,
+    evidence: object,
+) -> DurableReplyOpportunityIntake:
+    return DurableReplyOpportunityIntake(
+        tenant_id=TENANT,
+        demand=demand,
+        prospecting=_Prospecting(),
+        organization=_Organization(),
+        opportunities=opportunities,
+        employees=_Employees(),
+        evidence_reader=evidence,
         organization_actor=OrganizationActor(
             str(BOSS),
             OrganizationScope(OrganizationScopeLevel.TENANT, TENANT),
@@ -314,6 +372,123 @@ async def test_intake_recovers_when_owner_commit_precedes_assigned_transition() 
     assert opportunities.assigned == []
     assert opportunities.state == "assigned"
     assert opportunities.transitions[0][2] is OpportunityState.ASSIGNED
+
+
+async def test_existing_opportunity_does_not_revalidate_historical_fields_as_current() -> None:
+    """第二条回复只恢复机会归属/状态；历史 Need 字段不必来自当前消息。"""
+    class HistoricalDemand(_Demand):
+        async def get_need(self, tenant_id, need_id):
+            need = await super().get_need(tenant_id, need_id)
+            for field in need.fields:
+                field.source_ref = str(HISTORICAL_MESSAGE)
+                field.source_quote = HISTORICAL_QUOTE
+            return need
+
+    class EvidenceMustNotBeRead:
+        async def load(self, tenant_id, message_id):
+            raise AssertionError(
+                f"existing Opportunity 不应重验历史字段：{tenant_id}/{message_id}"
+            )
+
+    opportunities = _ExistingOwnerBeforeTransitionOpportunities()
+    intake = _intake_with_evidence(
+        opportunities,
+        demand=HistoricalDemand(),
+        evidence=EvidenceMustNotBeRead(),
+    )
+
+    result = await intake.create_and_assign(
+        TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+    )
+
+    assert result == OPPORTUNITY
+    assert opportunities.created == []
+    assert opportunities.assigned == []
+    assert opportunities.state == "assigned"
+
+
+async def test_new_opportunity_uses_each_fields_durable_message_provenance() -> None:
+    """跨多条已验证回复积累的事实保持各自 source_id/quote/classifier。"""
+    class CrossMessageDemand(_Demand):
+        async def get_need(self, tenant_id, need_id):
+            need = await super().get_need(tenant_id, need_id)
+            product = next(
+                field for field in need.fields if field.name == "product_category"
+            )
+            product.source_ref = str(HISTORICAL_MESSAGE)
+            product.source_quote = HISTORICAL_QUOTE
+            return need
+
+    opportunities = _Opportunities()
+    evidence = _DurableEvidence()
+    intake = _intake_with_evidence(
+        opportunities,
+        demand=CrossMessageDemand(),
+        evidence=evidence,
+    )
+
+    result = await intake.create_and_assign(
+        TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+    )
+
+    assert result == OPPORTUNITY
+    request = opportunities.created[0][1]
+    validated_need_evidence = opportunities.created[0][2]
+    assert validated_need_evidence.provenance.source_id == HISTORICAL_MESSAGE
+    assert validated_need_evidence.provenance.source_quote == HISTORICAL_QUOTE
+    assert validated_need_evidence.provenance.extracted_by == "controlled-model-v0"
+    assert request.field_provenance["quantity"].source_id == MESSAGE
+    assert request.field_provenance["quantity"].source_quote == QUOTE
+    assert set(evidence.calls) == {HISTORICAL_MESSAGE, MESSAGE}
+
+
+async def test_new_opportunity_fails_closed_when_historical_field_is_not_verified() -> None:
+    class CrossMessageDemand(_Demand):
+        async def get_need(self, tenant_id, need_id):
+            need = await super().get_need(tenant_id, need_id)
+            product = next(
+                field for field in need.fields if field.name == "product_category"
+            )
+            product.source_ref = str(HISTORICAL_MESSAGE)
+            product.source_quote = HISTORICAL_QUOTE
+            return need
+
+    intake = _intake_with_evidence(
+        _Opportunities(),
+        demand=CrossMessageDemand(),
+        evidence=_DurableEvidence(include_historical=False),
+    )
+
+    with pytest.raises(ValidationError, match="持久分类证据不存在"):
+        await intake.create_and_assign(
+            TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+        )
+
+
+@pytest.mark.parametrize("source_quote", (None, "fabricated historical quote"))
+async def test_new_opportunity_fails_closed_on_missing_or_inexact_field_quote(
+    source_quote: str | None,
+) -> None:
+    class InvalidQuoteDemand(_Demand):
+        async def get_need(self, tenant_id, need_id):
+            need = await super().get_need(tenant_id, need_id)
+            product = next(
+                field for field in need.fields if field.name == "product_category"
+            )
+            product.source_ref = str(HISTORICAL_MESSAGE)
+            product.source_quote = source_quote
+            return need
+
+    intake = _intake_with_evidence(
+        _Opportunities(),
+        demand=InvalidQuoteDemand(),
+        evidence=_DurableEvidence(),
+    )
+
+    with pytest.raises(ValidationError, match="持久来源不完整|逐字证据不匹配"):
+        await intake.create_and_assign(
+            TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+        )
 
 
 async def test_intake_rejects_account_without_field_specific_provenance() -> None:

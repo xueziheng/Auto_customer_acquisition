@@ -974,6 +974,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
                 organization=organization,
                 opportunities=opportunities,
                 employees=employees,
+                evidence_reader=evidence_reader,
                 organization_actor=organization_boss,
                 opportunity_actor=opportunity_actor,
                 employee_actor=EmployeeActor(str(boss), EmployeeScope.TENANT, "boss"),

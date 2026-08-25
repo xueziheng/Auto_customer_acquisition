@@ -21,6 +21,8 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 
+MAX_REPLY_FIELD_QUOTE_CODEPOINTS = 500
+
 
 class ReplyCategory(str, Enum):
     """回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
@@ -152,7 +154,8 @@ class ReplyFieldEvidence:
     """模型从单条客户回复提取的候选事实与逐字证据。
 
     本业务事实随分类记录 tenant-bound 持久化，供后续动作按 message_id
-    重读；不得复制到 workflow context、事件或日志。
+    重读；不得复制到 workflow context、事件或日志。quote 最多 500 个
+    Unicode code point；超长必须拒绝，不能截断后伪装成原候选。
     """
 
     field: str
@@ -163,6 +166,8 @@ class ReplyFieldEvidence:
         for value in (self.field, self.value, self.quote):
             if not isinstance(value, str) or not value.strip():
                 raise ValidationError("回复字段证据无效")
+        if len(self.quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS:
+            raise ValidationError("回复字段逐字证据超长")
 
 
 @dataclass

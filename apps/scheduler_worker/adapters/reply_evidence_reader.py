@@ -39,6 +39,11 @@ class ConversationReplyEvidenceReader:
             if classification is None:
                 return None
             message = await uow.messages.get(tenant_id, message_id)
+            conversation = (
+                await uow.conversations.get(tenant_id, message.conversation_id)
+                if message is not None
+                else None
+            )
         if message is None:
             raise ValidationError("回复证据消息不存在")
         if (
@@ -50,10 +55,14 @@ class ConversationReplyEvidenceReader:
             or message.outbound_message_id is None
             or not isinstance(message.raw_artifact_ref, str)
             or not message.raw_artifact_ref
+            or conversation is None
+            or conversation.tenant_id != tenant_id
+            or conversation.conversation_id != message.conversation_id
         ):
             raise ValidationError("回复证据关联损坏")
         return ReplyEvidenceSnapshot(
             message_id=message_id,
+            account_id=conversation.account_id,
             category=classification.category.value,
             classified_by=classification.classified_by,
             classified_at=classification.classified_at,

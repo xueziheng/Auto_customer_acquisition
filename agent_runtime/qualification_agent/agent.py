@@ -22,7 +22,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
-from domains.conversations.schemas import ReplyCategory, ReplySuppressScope
+from domains.conversations.schemas import (
+    MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
+    ReplyCategory,
+    ReplySuppressScope,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ChangeSetId, new_id
 
@@ -83,7 +87,8 @@ rejection 拒绝；unsubscribe 退订；bounce 退信；auto_reply 自动回复�
 candidate_fields 为可选数组，每项 {field, value, quote}：
 - field 必须是：product_category, application, material, size_spec, quantity, packaging,
   destination, required_by, target_price, current_supply_issue, certification_required
-- quote 必须是输入消息中逐字出现的摘录（证明字段来自客户原话）
+- quote 必须是输入消息中逐字出现、且不超过 500 个 Unicode code point 的摘录
+  （证明字段来自客户原话；禁止返回整段正文）
 仅 category=unsubscribe 时可输出 suppress_scope，值只能是 contact 或 account；
 客户明确要求停止联系整个公司、组织、团队或多名收件人时必须是 account，否则是 contact。
 输出示例：{"category": "clear_interest", "candidate_fields": []}
@@ -251,6 +256,11 @@ class QualificationAgent(CapabilityAgent):
             field = item.get("field")
             value = item.get("value")
             quote = item.get("quote")
+            if (
+                isinstance(quote, str)
+                and len(quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS
+            ):
+                raise ValidationError("模型输出候选逐字证据超长")
             if (
                 not isinstance(field, str)
                 or field not in NEED_FIELD_NAMES

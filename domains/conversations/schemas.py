@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from domains.conversations.models import (
+    MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
     ReplyCategory,
     ReplyFieldEvidence,
     ReplySuppressScope,
@@ -137,6 +138,7 @@ class ConversationInboxDetail:
 
 
 __all__ = (
+    "MAX_REPLY_FIELD_QUOTE_CODEPOINTS",
     "ClassificationCorrectionView",
     "ConversationInboxDetail",
     "ConversationInboxItem",

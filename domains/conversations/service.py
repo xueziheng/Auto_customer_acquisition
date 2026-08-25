@@ -87,7 +87,8 @@ class ConversationService(Protocol):
         「该做什么」。发布 ``ReplyReceived``（AUTO_REPLY 除外——
         自动回复不算回复）。``outbound_message_id`` 是被回复出站消息的
         RFC Message-ID（In-Reply-To/References 关联）；无关联传 None，
-        订阅方 fail-closed。
+        订阅方 fail-closed。每个候选 quote 必须是最多 500 个 Unicode
+        code point 的已验证逐字摘录；超长由 durable domain contract 拒绝。
         """
         ...
 

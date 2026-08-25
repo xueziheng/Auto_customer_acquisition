@@ -973,6 +973,11 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                     organization=dependencies.organization,
                     opportunities=dependencies.opportunities,
                     employees=employees,
+                    evidence_reader=ConversationReplyEvidenceReader(
+                        lambda bound: SqlAlchemyConversationsUnitOfWork(
+                            stack.factory, bound, now=clock.now
+                        )
+                    ),
                     organization_actor=organization_actor,
                     opportunity_actor=opportunity_actor,
                     employee_actor=EmployeeActor(

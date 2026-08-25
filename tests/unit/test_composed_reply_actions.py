@@ -58,10 +58,12 @@ class _Evidence:
         *,
         has_candidate_fields: bool = True,
         outbound_message_id: OutboundMessageId = OUTBOUND_MESSAGE_ID,
+        account_id: ProspectAccountId = ACCOUNT_ID,
     ) -> None:
         self.category = category
         self.has_candidate_fields = has_candidate_fields
         self.outbound_message_id = outbound_message_id
+        self.account_id = account_id
 
     async def load(self, tenant_id: TenantId, message_id: MessageId):
         module = _module()
@@ -70,6 +72,7 @@ class _Evidence:
         quote = "We need 5000 stainless steel hinges."
         return module.ReplyEvidenceSnapshot(
             message_id=message_id,
+            account_id=self.account_id,
             category=self.category,
             classified_by="reply-model-v3",
             classified_at=NOW,
@@ -132,6 +135,7 @@ class _EvidenceWithQuotes:
         assert message_id == MESSAGE_ID
         return module.ReplyEvidenceSnapshot(
             message_id=MESSAGE_ID,
+            account_id=ACCOUNT_ID,
             category="provides_specification",
             classified_by="reply-model-v3",
             classified_at=NOW,
@@ -555,6 +559,28 @@ async def test_action_rejects_message_whose_stored_outbound_link_is_stale() -> N
         )
 
 
+async def test_action_rejects_message_whose_stored_account_link_is_stale() -> None:
+    module = _module()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=_Evidence(account_id=ProspectAccountId(new_id("acc"))),
+        business=_Business(),
+        content=_Content(),
+        demand=_Demand(),
+        opportunities=_Opportunities(),
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+    )
+
+    with pytest.raises(ValidationError, match="企业关联不匹配"):
+        await actions.extract_need_fields(
+            TENANT,
+            CONTEXT,
+            f"reply:extract_need_fields:{MESSAGE_ID}",
+        )
+
+
 async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
     """生产回归：删除 quote 优先或恢复整段 body 持久化时必须失败。"""
     module = _module()
@@ -568,6 +594,7 @@ async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
             assert message_id == MESSAGE_ID
             return module.ReplyEvidenceSnapshot(
                 message_id=MESSAGE_ID,
+                account_id=ACCOUNT_ID,
                 category="provides_specification",
                 classified_by="reply-model-v3",
                 classified_at=NOW,
@@ -623,24 +650,16 @@ async def test_handoff_candidate_quote_preserves_leading_whitespace() -> None:
     assert packet.customer_verbatim
 
 
-async def test_handoff_skips_quote_with_blank_bounded_window() -> None:
-    """前 500 code point 全为空白的 quote 不得持久化或抢占后续有效 quote。"""
+async def test_handoff_rejects_overlong_candidate_instead_of_truncating_or_skipping() -> None:
+    """耐久边界若出现超长候选，handoff 防御层也必须 fail-closed。"""
     blank_window_quote = f"{' ' * 501}must not win"
     second_quote = "  Use the second exact quote.   "
     body = f"Header{blank_window_quote}Middle{second_quote}Footer"
 
-    first = await _handoff_packet_for_quotes(
-        body, (blank_window_quote, second_quote)
-    )
-    second = await _handoff_packet_for_quotes(
-        body, (blank_window_quote, second_quote)
-    )
-
-    assert first.customer_verbatim == "  Use the second exact quote."
-    assert second.customer_verbatim == first.customer_verbatim
-    assert first.customer_verbatim_provenance.source_quote == first.customer_verbatim
-    assert first.customer_verbatim in body
-    assert first.customer_verbatim.strip()
+    with pytest.raises(ValidationError, match="逐字证据超长"):
+        await _handoff_packet_for_quotes(
+            body, (blank_window_quote, second_quote)
+        )
 
 
 async def test_composed_actions_fail_closed_without_business_mapping() -> None:

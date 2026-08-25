@@ -2,6 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-08-25
+- 修订：2026-08-26（回复候选 500 code point 持久边界与跨消息字段来源）
 
 ## 背景
 
@@ -18,21 +19,30 @@ Provenance 结构；把整封正文复制到 workflow、outbox 或日志又违�
 逐字摘录；它只随 tenant-bound 业务事实保存。客户完整正文仍只保存在 artifact store，
 workflow context、事件、outbox 与日志不得携带 `source_quote` 或正文。
 
-Conversation 来源的新回复字段保存经过输入原文逐字包含校验的 quote；既有来源和无法提供
-可靠摘录的历史事实继续使用 `None`。
+Conversation 来源的新回复字段保存经过输入原文逐字包含校验的 quote；模型候选 quote
+还必须在 QualificationAgent 与 Conversation 的 durable candidate contract 两层都满足
+**不超过 500 个 Unicode code point**。超长候选使整份模型输出 fail-closed，禁止截断后
+落库。既有来源和无法提供可靠摘录的历史事实继续使用 `None`。
 
 reply handoff writer 的摘录策略固定如下：
 
 1. 上限为 **500 个 Unicode code point**，不是 500 bytes；
-2. 按持久化 `candidate_fields` 的稳定顺序，先验证完整 quote 在重新读取正文中仍可精确
-   找到，再直接取其前 500 个 code point 并只移除末尾空白；候选 quote 的前导空白属于
-   已验证原文边界，必须保留。若这个 500-code-point 窗口仍全为空白，则跳过该候选，继续
-   下一条有效 quote，最终才使用正文 fallback；
+2. 按持久化 `candidate_fields` 的稳定顺序，先验证 quote 未超过上限且在重新读取正文中
+   仍可精确找到，再只移除末尾空白；候选 quote 的前导空白属于已验证原文边界，必须保留。
+   若防御层读到超长候选，整次 handoff fail-closed，不静默截断或跳过；
 3. 没有可用 quote 时，从正文首个非空白字符开始取最多 500 个 code point；
 4. 只允许截取和移除摘录末尾空白，不做摘要、拼接或同义改写。因此结果必须非空，并且是
    当前 artifact 原文的精确连续子串；
 5. 同一摘录同时写入 handoff `customer_verbatim` 与 Provenance `source_quote`，完整正文只
    通过 `raw_artifact_ref` / `evidence_links` 在授权后重读。
+
+Opportunity 首次创建时，Need 可能由多条已验证客户消息逐步补全。intake 必须按每个字段
+自己的 `source_ref` 重读 tenant-bound、同企业的持久入站分类，并以该分类的
+`classified_by` / `classified_at` 和该字段自己的 `source_quote` 构造 Provenance；不得把
+所有字段伪装成来自触发本次 intake 的当前消息。若字段缺来源、缺逐字证据、找不到对应
+持久分类或逐字证据不匹配，首次创建 fail-closed。若该 Need 已有唯一 Opportunity，后续
+回复只幂等恢复负责人和 `qualified → assigned` 状态，不把历史 Need 字段重新解释为当前
+消息字段，也不因此阻断当前消息的 handoff。
 
 ## 理由
 
@@ -61,10 +71,10 @@ PII 涂黑：涂黑后的文本不再是原文精确子串，会削弱 Provenanc
 新 writer 可写 quote，旧 reader 若采用严格未知字段拒绝策略，必须先升级 reader 再升级
 writer。Need 仓储序列化必须保留该字段，UI 仍需通过租户授权读取。
 
-quote 不是新的原始资料副本，也不能替代 artifact 引用；它必须保持短摘录语义。未来如需
-把 500 code point 扩展成所有来源类型的 shared 全局上限，应先盘点网页、上传和历史人工
-输入的兼容性，再在公共契约中统一收紧；本 ADR 先约束此次新增的 reply handoff writer，
-不得由调用方绕过。
+quote 不是新的原始资料副本，也不能替代 artifact 引用；它必须保持短摘录语义。500 code
+point 是 Conversation reply candidate 及 reply handoff 的公共持久边界，不扩张为网页、
+上传和历史人工输入等所有 `Provenance.source_quote` 的 shared 全局上限。调用方不能绕过
+agent/domain contract；handoff 对遗留或损坏的超长候选再次 fail-closed。
 
 摘录不建立独立保留期限：它与 tenant-bound handoff/Provenance 业务事实同生命周期；完整
 消息则继续服从 artifact store 的保留与删除策略。任一侧到期都不构成把完整正文复制到另一

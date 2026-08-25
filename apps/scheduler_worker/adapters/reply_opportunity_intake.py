@@ -18,6 +18,7 @@ from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
+    MessageId,
     NeedHypothesisId,
     OpportunityId,
     ProspectAccountId,
@@ -27,7 +28,7 @@ from shared.schemas.identifiers import (
 from shared.schemas.provenance import Provenance, SourceType
 from workflows.reply_qualification.ports import ReplyActionContext
 
-from ..reply_actions import ReplyEvidenceSnapshot
+from ..reply_actions import ReplyEvidenceReader, ReplyEvidenceSnapshot
 
 
 class DurableReplyOpportunityIntake:
@@ -42,6 +43,7 @@ class DurableReplyOpportunityIntake:
         organization: OrganizationService,
         opportunities: OpportunityService,
         employees: EmployeeService,
+        evidence_reader: ReplyEvidenceReader,
         organization_actor: OrganizationActor,
         opportunity_actor: OpportunityActor,
         employee_actor: EmployeeActor,
@@ -65,6 +67,7 @@ class DurableReplyOpportunityIntake:
             or not isinstance(organization_actor, OrganizationActor)
             or not isinstance(opportunity_actor, OpportunityActor)
             or not isinstance(employee_actor, EmployeeActor)
+            or not isinstance(evidence_reader, ReplyEvidenceReader)
             or opportunity_actor.role != "boss"
             or employee_actor.role != "boss"
             or organization_actor.role != "boss"
@@ -78,35 +81,48 @@ class DurableReplyOpportunityIntake:
         self._organization = organization
         self._opportunities = opportunities
         self._employees = employees
+        self._evidence_reader = evidence_reader
         self._organization_actor = organization_actor
         self._opportunity_actor = opportunity_actor
         self._employee_actor = employee_actor
 
-    @staticmethod
-    def _reply_provenance(
+    async def _reply_provenance(
+        self,
+        tenant_id: TenantId,
         field: object,
-        context: ReplyActionContext,
-        evidence: ReplyEvidenceSnapshot,
+        account_id: ProspectAccountId,
     ) -> Provenance:
         source_ref = getattr(field, "source_ref", None)
         source_quote = getattr(field, "source_quote", None)
         if (
-            source_ref != str(context.message_id)
+            not isinstance(source_ref, str)
+            or not source_ref.strip()
             or not isinstance(source_quote, str)
             or not source_quote.strip()
         ):
-            raise ValidationError("回复需求字段来源不匹配")
+            raise ValidationError("回复需求字段持久来源不完整")
+        snapshot = await self._evidence_reader.load(
+            tenant_id, MessageId(source_ref)
+        )
+        if snapshot is None:
+            raise ValidationError("回复需求字段持久分类证据不存在")
+        if (
+            snapshot.message_id != source_ref
+            or snapshot.account_id != account_id
+            or snapshot.category != "provides_specification"
+        ):
+            raise ValidationError("回复需求字段持久来源链不匹配")
         if not any(
             candidate.quote == source_quote
-            for candidate in evidence.candidate_fields
+            for candidate in snapshot.candidate_fields
             if candidate.field == getattr(field, "name", None)
         ):
             raise ValidationError("回复需求字段逐字证据不匹配")
         return Provenance(
             source_type=SourceType.CONVERSATION,
-            source_id=str(context.message_id),
-            extracted_by=evidence.classified_by,
-            extracted_at=evidence.classified_at,
+            source_id=source_ref,
+            extracted_by=snapshot.classified_by,
+            extracted_at=snapshot.classified_at,
             source_quote=source_quote,
         )
 
@@ -120,6 +136,11 @@ class DurableReplyOpportunityIntake:
     ) -> OpportunityId | None:
         if tenant_id != self._tenant_id:
             raise TenantIsolationViolation("回复机会创建跨租户执行")
+        if (
+            evidence.message_id != context.message_id
+            or evidence.account_id != context.account_id
+        ):
+            raise ValidationError("回复机会当前分类证据关联不匹配")
         hypothesis = await self._demand.get_hypothesis(tenant_id, hypothesis_id)
         need = await self._demand.get_need(tenant_id, need_id)
         account = await self._prospecting.get_account(tenant_id, context.account_id)
@@ -145,64 +166,60 @@ class DurableReplyOpportunityIntake:
         existing = await self._opportunities.get_by_need(
             tenant_id, need_id, actor=self._opportunity_actor
         )
-
-        playbook = await self._organization.get_playbook(
-            tenant_id, actor=self._organization_actor
-        )
-        if playbook.tenant_id != tenant_id:
-            raise TenantIsolationViolation("回复机会 Playbook 跨租户")
-
-        fields = {item.name: item for item in need.fields}
-        product_field = fields.get("product_category")
-        if product_field is None:
-            raise ValidationError("回复需求缺少产品类别证据")
-        reply_provenance = {
-            name: self._reply_provenance(field, context, evidence)
-            for name, field in fields.items()
-        }
-        account_provenance = getattr(account, "field_provenance", None)
-        if (
-            not isinstance(account_provenance, dict)
-            or set(account_provenance) != {"name", "country"}
-            or any(
-                not isinstance(value, Provenance)
-                or value.source_type is SourceType.AGENT_INFERENCE
-                for value in account_provenance.values()
-            )
-        ):
-            raise ValidationError("企业关键字段来源不完整或无效")
-        target_price = need.target_price
-        estimated_order_value = (
-            target_price.multiply(need.quantity)
-            if target_price is not None and need.quantity is not None
-            else None
-        )
-        category_key = need.product_category.casefold()
-        country_key = account.country.casefold()
-        category_allowed = category_key not in set(
-            playbook.excluded_categories
-        ) and country_key not in set(playbook.excluded_countries)
-        field_provenance = {
-            "account_name": account_provenance["name"],
-            "country": account_provenance["country"],
-        }
-        for request_name, need_name in (
-            ("quantity", "quantity"),
-            ("application", "application"),
-            ("destination", "destination"),
-            ("required_by", "required_by"),
-            ("target_price", "target_price"),
-            ("current_supply_problem", "current_supply_issue"),
-        ):
-            if need_name in reply_provenance:
-                field_provenance[request_name] = reply_provenance[need_name]
-
-        level = (
-            EvidenceLevel.CUSTOMER_SPECIFICATION
-            if evidence.category == "provides_specification"
-            else EvidenceLevel.CUSTOMER_INTEREST_REPLY
-        )
         if existing is None:
+            playbook = await self._organization.get_playbook(
+                tenant_id, actor=self._organization_actor
+            )
+            if playbook.tenant_id != tenant_id:
+                raise TenantIsolationViolation("回复机会 Playbook 跨租户")
+
+            fields = {item.name: item for item in need.fields}
+            product_field = fields.get("product_category")
+            if product_field is None:
+                raise ValidationError("回复需求缺少产品类别证据")
+            reply_provenance = {
+                name: await self._reply_provenance(
+                    tenant_id, field, context.account_id
+                )
+                for name, field in fields.items()
+            }
+            account_provenance = getattr(account, "field_provenance", None)
+            if (
+                not isinstance(account_provenance, dict)
+                or set(account_provenance) != {"name", "country"}
+                or any(
+                    not isinstance(value, Provenance)
+                    or value.source_type is SourceType.AGENT_INFERENCE
+                    for value in account_provenance.values()
+                )
+            ):
+                raise ValidationError("企业关键字段来源不完整或无效")
+            target_price = need.target_price
+            estimated_order_value = (
+                target_price.multiply(need.quantity)
+                if target_price is not None and need.quantity is not None
+                else None
+            )
+            category_key = need.product_category.casefold()
+            country_key = account.country.casefold()
+            category_allowed = category_key not in set(
+                playbook.excluded_categories
+            ) and country_key not in set(playbook.excluded_countries)
+            field_provenance = {
+                "account_name": account_provenance["name"],
+                "country": account_provenance["country"],
+            }
+            for request_name, need_name in (
+                ("quantity", "quantity"),
+                ("application", "application"),
+                ("destination", "destination"),
+                ("required_by", "required_by"),
+                ("target_price", "target_price"),
+                ("current_supply_problem", "current_supply_issue"),
+            ):
+                if need_name in reply_provenance:
+                    field_provenance[request_name] = reply_provenance[need_name]
+
             opportunity_id = await self._opportunities.create_from_need(
                 tenant_id,
                 OpportunityCreateRequest(
@@ -211,7 +228,7 @@ class DurableReplyOpportunityIntake:
                     account_name=account.name,
                     country=account.country,
                     product_category=need.product_category,
-                    evidence_tier=level.value,
+                    evidence_tier=EvidenceLevel.CUSTOMER_SPECIFICATION.value,
                     has_verified_contact=True,
                     category_allowed=category_allowed,
                     minimum_order_value=playbook.minimum_deal_value,
@@ -232,7 +249,7 @@ class DurableReplyOpportunityIntake:
                     estimated_order_value=estimated_order_value,
                 ),
                 ValidatedNeedEvidence(
-                    level=level,
+                    level=EvidenceLevel.CUSTOMER_SPECIFICATION,
                     provenance=reply_provenance["product_category"],
                 ),
                 actor=self._opportunity_actor,

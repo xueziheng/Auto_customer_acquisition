@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from agent_runtime.base import AgentTask, ChangeSet
+from domains.conversations.schemas import ReplyFieldEvidence
 from shared.errors import ValidationError
 from shared.schemas.identifiers import RunId, TenantId, UserId, new_id
 
@@ -319,6 +320,54 @@ async def test_extraction_candidates_require_vocabulary_and_verbatim_quote() -> 
         ("quantity", "50000"),
         ("size_spec", "M8 x 20mm"),
     }
+
+
+async def test_overlong_exact_candidate_quote_rejects_entire_model_output() -> None:
+    """逐字命中仍不够：超过 500 code point 的整正文不得进入任何 ChangeSet。"""
+    body = (
+        "email-marker@example.test RAW-CRED-MARKER "
+        + "界" * 1_150
+        + " RAW-TAIL-MARKER"
+    )
+    port = _FakePort(
+        [
+            json.dumps(
+                {
+                    "category": "provides_specification",
+                    "candidate_fields": [
+                        {
+                            "field": "product_category",
+                            "value": "hinges",
+                            "quote": body,
+                        }
+                    ],
+                }
+            )
+        ]
+    )
+    agent = _agent(port)
+    message = {
+        "message_id": "msg_overlong_candidate_quote",
+        "subject": "Specification",
+        "body": body,
+    }
+
+    with pytest.raises(ValidationError, match="候选逐字证据超长"):
+        await agent.classify(message=message)
+
+    changeset = await agent.run(_task(message), None)
+    assert changeset.changes == []
+    assert changeset.summary == "模型输出被护栏拦截：模型输出候选逐字证据超长"
+
+
+def test_durable_reply_field_contract_rejects_overlong_quote() -> None:
+    """绕过 agent 的调用方也不能把超长模型候选交给 Conversation 持久化。"""
+    with pytest.raises(ValidationError, match="回复字段逐字证据超长"):
+        ReplyFieldEvidence(
+            field="product_category",
+            value="hinges",
+            quote="界" * 501,
+        )
 
 
 async def test_non_string_port_output_is_rejected_without_leaking() -> None:

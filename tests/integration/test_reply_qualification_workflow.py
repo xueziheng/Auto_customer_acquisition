@@ -445,6 +445,7 @@ async def test_long_reply_persists_only_bounded_verbatim_and_artifact_link(
             assert requested_message == message_id
             return module.ReplyEvidenceSnapshot(
                 message_id=requested_message,
+                account_id=account,
                 category="requests_quote",
                 classified_by="reply-test-model-v1",
                 classified_at=NOW,
@@ -763,6 +764,143 @@ async def test_classification_persists_verbatim_field_evidence_without_workflow_
     assert port.calls == 1
 
 
+async def test_overlong_full_body_candidate_leaves_zero_durable_business_effects(
+    reply_db: AsyncEngine,
+    caplog: LogCaptureFixture,
+) -> None:
+    """模型把含标记的 1,230+ 字正文当 quote 返回时，整份分类必须 fail-closed。"""
+    factory = async_sessionmaker(reply_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    campaign_id = CampaignId(new_id("cmp"))
+    approval_id = ApprovalId(new_id("apr"))
+    boss = EmployeeId(new_id("emp"))
+    account = ProspectAccountId(new_id("acc"))
+    contact = ContactPointId(new_id("cp"))
+    contacts = {
+        (contact, account): ContactEligibilitySnapshot(
+            tenant,
+            contact,
+            account,
+            ContactVerificationStatus.VERIFIED,
+            NOW,
+            ContactLegalBasis.LEGITIMATE_INTEREST,
+            "basis_overlong_candidate",
+            True,
+            "US",
+            "importer",
+            frozenset({"hardware"}),
+            NOW,
+        )
+    }
+    replies = {
+        (contact, account): ReplyStatusSnapshot(
+            tenant, contact, account, ReplyState.NO_REPLY, None, NOW
+        )
+    }
+    sender = await _seed_identity(factory, tenant, boss)
+    await _seed_campaign(factory, tenant, campaign_id, sender, approval_id)
+    clock = MutableClock(NOW)
+    outreach = _outreach_service(
+        factory,
+        tenant,
+        campaign_id,
+        approval_id,
+        sender,
+        contacts,
+        replies,
+        clock,
+    )
+    enrollment = await _enroll(outreach, tenant, campaign_id, contact, account)
+    conversations = _conversations_service(factory, tenant, clock)
+    email_marker = "raw-only-address@example.test"
+    credential_marker = "RAW-CRED-MARKER-DO-NOT-PERSIST"
+    tail_marker = "RAW-TAIL-MARKER-DO-NOT-PERSIST"
+    body = (
+        f"{email_marker} {credential_marker} "
+        + "界" * 1_230
+        + f" {tail_marker}"
+    )
+    message_id = "msg_overlong_full_body_candidate"
+    port = _FakeModelPort(
+        "provides_specification",
+        [
+            {
+                "field": "product_category",
+                "value": "hinges",
+                "quote": body,
+            }
+        ],
+    )
+    reader = _FakeContentReader(
+        {
+            message_id: ReplyMessageContent(
+                subject="Complete specification",
+                body=body,
+            )
+        }
+    )
+    flow = importlib.import_module("workflows.reply_qualification.flow")
+    engine = await _build_engine(
+        flow, factory, tenant, outreach, conversations, port, reader, clock
+    )
+    context = _reply_run_context(
+        message_id,
+        "route-v1.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@messages.tradeos.invalid",
+        str(enrollment.enrollment_id),
+        str(account),
+        str(contact),
+    )
+
+    run_id = await _start_reply_run(engine, tenant, context)
+    await _poll(engine, tenant)
+
+    rows = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        run_row = await session.get(rows.WorkflowRunRow, run_id)
+        enrollment_row = await session.get(
+            rows.OutreachEnrollmentRow,
+            (str(tenant), str(enrollment.enrollment_id)),
+        )
+        classification_row = await session.get(
+            rows.ConversationClassificationRow,
+            (str(tenant), message_id),
+        )
+        needs = (
+            await session.execute(
+                select(rows.ValidatedNeedRow).where(
+                    rows.ValidatedNeedRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+        opportunities = (
+            await session.execute(
+                select(rows.OpportunityRow).where(
+                    rows.OpportunityRow.tenant_id == str(tenant)
+                )
+            )
+        ).scalars().all()
+        reply_events = (
+            await session.execute(
+                select(rows.OutboxEventRow).where(
+                    rows.OutboxEventRow.tenant_id == str(tenant),
+                    rows.OutboxEventRow.event_type == "ReplyReceived",
+                )
+            )
+        ).scalars().all()
+
+    assert run_row.status == "failed"
+    assert classification_row is None
+    assert needs == []
+    assert opportunities == []
+    assert reply_events == []
+    assert enrollment_row.state == "enrolled"
+    durable_dump = json.dumps(run_row.context)
+    log_dump = "\n".join(record.getMessage() for record in caplog.records)
+    for marker in (email_marker, credential_marker, tail_marker):
+        assert marker not in durable_dump
+        assert marker not in log_dump
+
+
 async def test_production_evidence_reader_reloads_tenant_bound_business_evidence(
     reply_db: AsyncEngine,
 ) -> None:
@@ -816,6 +954,7 @@ async def test_production_evidence_reader_reloads_tenant_bound_business_evidence
     snapshot = await reader.load(tenant, message_id)
     assert snapshot is not None
     assert snapshot.message_id == message_id
+    assert snapshot.account_id == account
     assert snapshot.category == "provides_specification"
     assert snapshot.classified_by == "reply-model-v3"
     assert snapshot.classified_at == NOW
