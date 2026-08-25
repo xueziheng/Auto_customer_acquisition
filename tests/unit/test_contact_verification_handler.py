@@ -13,7 +13,8 @@ from connectors.email_verification.client import (
     EmailVerificationResult,
     VerificationCostNote,
 )
-from connectors.hunter.client import HunterUncertainError
+from connectors.hunter.client import HunterConnector, HunterUncertainError
+from connectors.hunter.transport import HunterHttpResponse
 from domains.prospecting.schemas import (
     ContactPointKind,
     ContactPointView,
@@ -33,17 +34,23 @@ from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.contact_verification import (
     MANIFEST,
     ContactVerificationHandler,
+    HunterProviderContactVerifier,
     ToolGatewayContactVerifier,
 )
 from tool_gateway.handlers.single_result_slot import ContextLocalSingleResultSlot
 from tool_gateway.manifest import CostClass, IdempotencyRequirement, RiskLevel
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
+from tool_gateway.provider_readiness import (
+    ProviderConfiguration,
+    ProviderReadinessUnavailableError,
+)
 
 TENANT = TenantId("ten_01J00000000000000000000000")
 USER = UserId("usr_01J00000000000000000000000")
 POINT = ContactPointId("cp_01J00000000000000000000000")
 NOW = datetime(2026, 8, 21, 15, tzinfo=UTC)
 EMAIL = "private-verify-canary@example.com"
+CONFIG = ProviderConfiguration.hunter_contacts("config-v1", "key-v1")
 
 
 def _point(
@@ -281,6 +288,127 @@ async def test_uncertain_paid_call_is_not_retried_and_clears_slot() -> None:
     assert captured.value.category is ToolErrorCategory.RECONCILIATION_REQUIRED
     assert reader.calls == 1
     assert slot.is_empty
+
+
+@pytest.mark.asyncio
+async def test_handler_maps_readiness_failure_to_sanitized_permanent_category() -> None:
+    reader = _Reader(ProviderReadinessUnavailableError())
+    slot = _slot()
+    handler = _handler(reader, slot)
+    prepared = await handler.prepare(
+        _ctx(),
+        ContactVerificationPreflight(
+            TENANT, _point(VerificationStatus.UNVERIFIED, None), False
+        ),
+    )
+
+    with pytest.raises(ToolGatewayError) as captured:
+        await handler.execute(TENANT, prepared)
+
+    assert captured.value.category is ToolErrorCategory.PROVIDER_PERMANENT
+    assert str(captured.value) == "工具调用失败"
+    assert "Provider 配置当前不可用" not in repr(captured.value)
+    assert CONFIG.configuration_hash not in repr(captured.value)
+    assert reader.calls == 1
+    assert slot.is_empty
+
+
+class _ReadinessGuard:
+    def __init__(self, allowed_calls: int) -> None:
+        self.allowed_calls = allowed_calls
+        self.calls: list[tuple[TenantId, str]] = []
+
+    async def require_current(
+        self, tenant_id: TenantId, configuration_hash: str
+    ) -> None:
+        self.calls.append((tenant_id, configuration_hash))
+        if len(self.calls) > self.allowed_calls:
+            raise ProviderReadinessUnavailableError()
+
+
+class _Secrets:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, secret_ref: str) -> str:
+        assert secret_ref == "HUNTER_API_KEY_REF"
+        self.calls += 1
+        return "hunter-unit-key"
+
+
+class _Transport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, path, params, *, api_key):
+        assert path == "/email-verifier"
+        assert params == (("email", EMAIL),)
+        assert api_key == "hunter-unit-key"
+        self.calls += 1
+        return HunterHttpResponse(200, {"data": {"status": "valid"}})
+
+
+@pytest.mark.asyncio
+async def test_live_guard_failure_precedes_connector_secret_and_transport() -> None:
+    guard = _ReadinessGuard(allowed_calls=0)
+    secrets = _Secrets()
+    transport = _Transport()
+    factory_calls = 0
+
+    def connector_factory(tenant_id: TenantId) -> HunterConnector:
+        nonlocal factory_calls
+        assert tenant_id == TENANT
+        factory_calls += 1
+        return HunterConnector(transport, now=lambda: NOW)
+
+    adapter = HunterProviderContactVerifier(
+        connector_factory,
+        secrets,
+        guard,
+        CONFIG.configuration_hash,
+    )
+
+    with pytest.raises(ProviderReadinessUnavailableError):
+        await adapter.verify(TENANT, EMAIL)
+
+    assert guard.calls == [(TENANT, CONFIG.configuration_hash)]
+    assert factory_calls == 0
+    assert secrets.calls == 0
+    assert transport.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_live_guard_detects_new_configuration_before_second_connector() -> None:
+    guard = _ReadinessGuard(allowed_calls=1)
+    secrets = _Secrets()
+    transport = _Transport()
+    factory_calls = 0
+
+    def connector_factory(tenant_id: TenantId) -> HunterConnector:
+        nonlocal factory_calls
+        assert tenant_id == TENANT
+        factory_calls += 1
+        return HunterConnector(transport, now=lambda: NOW)
+
+    adapter = HunterProviderContactVerifier(
+        connector_factory,
+        secrets,
+        guard,
+        CONFIG.configuration_hash,
+    )
+
+    result = await adapter.verify(TENANT, EMAIL)
+    assert result.outcome is EmailVerificationOutcome.VERIFIED
+    with pytest.raises(ProviderReadinessUnavailableError):
+        await adapter.verify(TENANT, EMAIL)
+
+    assert guard.calls == [
+        (TENANT, CONFIG.configuration_hash),
+        (TENANT, CONFIG.configuration_hash),
+    ]
+    assert factory_calls == 1
+    assert secrets.calls == 1
+    assert transport.calls == 1
 
 
 class _Gateway:

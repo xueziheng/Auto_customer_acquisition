@@ -11,10 +11,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from connectors.contact_enrichment.client import ContactEnrichmentResult
 from connectors.hunter.client import HunterConnector
 from connectors.hunter.transport import HunterHttpResponse, HunterNetworkError
+from domains.compliance.schemas import CountryPolicyAction, CountryPolicyDecision
 from infra.db.session import create_engine_from
 from infra.db.tables import OutboxEventRow, ToolCallEventRow, ToolCallRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.schemas.identifiers import (
+    CountryPolicyVersionId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -22,6 +24,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from tool_gateway.checks.contact_provider import (
+    ContactCountryPolicyCheck,
     ContactDiscoveryPreflight,
     ContactResourceTenantCheck,
 )
@@ -36,12 +39,14 @@ from tool_gateway.handlers.contact_enrichment import (
 from tool_gateway.handlers.single_result_slot import ContextLocalSingleResultSlot
 from tool_gateway.manifest import ToolRegistry
 from tool_gateway.pipeline import CheckRejection, ToolCallContext, ToolGateway
+from tool_gateway.provider_readiness import ProviderConfiguration
 
 NOW = datetime(2026, 8, 21, 13, tzinfo=UTC)
 KEY = "hunter-integration-key-canary"
 EMAIL = "private-integration-email@example.com"
 NAME = "Private Integration Name"
 SOURCE = "https://source.example/private-integration"
+CONFIG = ProviderConfiguration.hunter_contacts("config-v1", "key-v1")
 
 
 class _Secrets:
@@ -96,8 +101,50 @@ class _Transport:
         )
 
 
+class _ReadinessGuard:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TenantId, str]] = []
+
+    async def require_current(
+        self, tenant_id: TenantId, configuration_hash: str
+    ) -> None:
+        self.calls.append((tenant_id, configuration_hash))
+
+
+class _CountryPolicy:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    async def decision(
+        self,
+        tenant_id: TenantId,
+        country: str,
+        action: CountryPolicyAction,
+    ) -> CountryPolicyDecision:
+        del tenant_id
+        assert country == "de"
+        if self.mode == "read_failure":
+            raise RuntimeError("private country reader failure")
+        configured = self.mode != "unknown"
+        return CountryPolicyDecision(
+            country_key="de",
+            action=action,
+            configured=configured,
+            allowed=self.mode == "allow",
+            active_version_id=(
+                CountryPolicyVersionId("cpp_01J00000000000000000000000")
+                if configured
+                else None
+            ),
+            content_hash="c" * 64 if configured else None,
+            requirements=(),
+        )
+
+
 class _Stage:
-    def __init__(self, name: str, preflight: ContactDiscoveryPreflight, *, allow: bool = True) -> None:
+    def __init__(
+        self, name: str, preflight: ContactDiscoveryPreflight, *, allow: bool = True
+    ) -> None:
         self.name = name
         self.preflight = preflight
         self.allow = allow
@@ -126,6 +173,7 @@ async def test_real_gateway_is_late_configured_and_ledger_contains_only_handle(
     )
     secrets = _Secrets()
     transport = _Transport()
+    readiness = _ReadinessGuard()
     factory_calls: list[TenantId] = []
 
     def connector_factory(requested_tenant: TenantId) -> HunterConnector:
@@ -134,37 +182,78 @@ async def test_real_gateway_is_late_configured_and_ledger_contains_only_handle(
 
     slot = ContextLocalSingleResultSlot[ContactEnrichmentResult]("ceb", new_id)
     handler = ContactEnrichmentHandler(
-        _HunterProviderContactEnricher(connector_factory, secrets),
+        _HunterProviderContactEnricher(
+            connector_factory,
+            secrets,
+            readiness,
+            CONFIG.configuration_hash,
+        ),
         slot,
         HmacFingerprintProvider("contact-v1", b"c" * 32),
     )
     registry = ToolRegistry()
     registry.register(MANIFEST, handler)
 
-    def gateway(permission: bool) -> ToolGateway:
+    def gateway(permission: bool, *, country_mode: str = "allow") -> ToolGateway:
         stages = {
             "tenant": ContactResourceTenantCheck(),
             "permission": _Stage("permission", preflight, allow=permission),
             "playbook": _Stage("playbook", preflight),
-            "country_policy": _Stage("country_policy", preflight),
+            "country_policy": ContactCountryPolicyCheck(_CountryPolicy(country_mode)),
             "suppression": _Stage("suppression", preflight),
             "rate_limit": _Stage("rate_limit", preflight),
         }
         return ToolGateway(
             registry,
             stages,
-            lambda requested: SqlAlchemyToolGatewayUnitOfWork(factory, requested, now=lambda: NOW),
+            lambda requested: SqlAlchemyToolGatewayUnitOfWork(
+                factory, requested, now=lambda: NOW
+            ),
             lease_duration=timedelta(minutes=1),
             lease_owner="contact-enrichment",
             now=lambda: NOW,
             id_factory=new_id,
         )
 
-    params = {"hypothesis_id": str(hypothesis), "account_id": str(account), "role_hints": ()}
+    params = {
+        "hypothesis_id": str(hypothesis),
+        "account_id": str(account),
+        "role_hints": (),
+    }
     try:
-        denied = await gateway(False).invoke(ToolCallContext(tenant, user, "contact.enrich", params))
+        denied = await gateway(False).invoke(
+            ToolCallContext(tenant, user, "contact.enrich", params)
+        )
         assert denied.status is ToolCallStatus.REJECTED
         assert factory_calls == []
+        assert readiness.calls == []
+        assert secrets.calls == 0
+        assert transport.calls == 0
+
+        for mode, expected_status, expected_category in (
+            (
+                "unknown",
+                ToolCallStatus.REJECTED,
+                ToolErrorCategory.VALIDATION,
+            ),
+            (
+                "denied",
+                ToolCallStatus.REJECTED,
+                ToolErrorCategory.VALIDATION,
+            ),
+            (
+                "read_failure",
+                ToolCallStatus.REJECTED,
+                ToolErrorCategory.PROVIDER_TRANSIENT,
+            ),
+        ):
+            closed = await gateway(True, country_mode=mode).invoke(
+                ToolCallContext(tenant, user, "contact.enrich", params)
+            )
+            assert closed.status is expected_status
+            assert closed.error_category is expected_category
+        assert factory_calls == []
+        assert readiness.calls == []
         assert secrets.calls == 0
         assert transport.calls == 0
 
@@ -173,6 +262,7 @@ async def test_real_gateway_is_late_configured_and_ledger_contains_only_handle(
         assert result.candidates[0].email == EMAIL
         assert slot.is_empty
         assert factory_calls == [tenant]
+        assert readiness.calls == [(tenant, CONFIG.configuration_hash)]
         assert secrets.calls == 1
         assert transport.calls == 1
 
@@ -181,12 +271,42 @@ async def test_real_gateway_is_late_configured_and_ledger_contains_only_handle(
             await trusted.find_contacts(tenant, hypothesis, account, ())
         assert uncertain.value.category is ToolErrorCategory.RECONCILIATION_REQUIRED
         assert transport.calls == 2
+        assert readiness.calls == [
+            (tenant, CONFIG.configuration_hash),
+            (tenant, CONFIG.configuration_hash),
+        ]
         assert slot.is_empty
 
         async with factory() as session:
-            rows = (await session.execute(select(ToolCallRow).where(ToolCallRow.tenant_id == tenant))).scalars().all()
-            events = (await session.execute(select(ToolCallEventRow).where(ToolCallEventRow.tenant_id == tenant))).scalars().all()
-            outbox = (await session.execute(select(OutboxEventRow).where(OutboxEventRow.tenant_id == tenant))).scalars().all()
+            rows = (
+                (
+                    await session.execute(
+                        select(ToolCallRow).where(ToolCallRow.tenant_id == tenant)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            events = (
+                (
+                    await session.execute(
+                        select(ToolCallEventRow).where(
+                            ToolCallEventRow.tenant_id == tenant
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            outbox = (
+                (
+                    await session.execute(
+                        select(OutboxEventRow).where(OutboxEventRow.tenant_id == tenant)
+                    )
+                )
+                .scalars()
+                .all()
+            )
         assert {row.status for row in rows} == {
             "rejected",
             "succeeded",
@@ -195,15 +315,24 @@ async def test_real_gateway_is_late_configured_and_ledger_contains_only_handle(
         succeeded = next(row for row in rows if row.status == "succeeded")
         assert succeeded.provider_ref.startswith("ceb_")
         row_values = [
-            {column.name: getattr(row, column.name) for column in ToolCallRow.__table__.columns}
+            {
+                column.name: getattr(row, column.name)
+                for column in ToolCallRow.__table__.columns
+            }
             for row in rows
         ]
         event_values = [
-            {column.name: getattr(event, column.name) for column in ToolCallEventRow.__table__.columns}
+            {
+                column.name: getattr(event, column.name)
+                for column in ToolCallEventRow.__table__.columns
+            }
             for event in events
         ]
         outbox_values = [
-            {column.name: getattr(event, column.name) for column in OutboxEventRow.__table__.columns}
+            {
+                column.name: getattr(event, column.name)
+                for column in OutboxEventRow.__table__.columns
+            }
             for event in outbox
         ]
         log_values = [(record.getMessage(), record.args) for record in caplog.records]

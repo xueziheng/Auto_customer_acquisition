@@ -38,6 +38,10 @@ from tool_gateway.pipeline import (
     ToolCallContext,
     ToolCallResult,
 )
+from tool_gateway.provider_readiness import (
+    ProviderReadinessUnavailableError,
+    ProviderRuntimeGuard,
+)
 
 MANIFEST = ToolManifest(
     tool_id="contact.verify",
@@ -65,6 +69,7 @@ MANIFEST = ToolManifest(
 )
 
 _CONTACT_POINT_RE = re.compile(r"cp_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_CONFIGURATION_HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CACHE_TTL = timedelta(days=30)
 _OUTCOMES = {
     VerificationStatus.VERIFIED: EmailVerificationOutcome.VERIFIED,
@@ -95,19 +100,28 @@ class HunterProviderContactVerifier:
         self,
         connector_factory: Callable[[TenantId], HunterConnector],
         secret_resolver: HunterSecretResolver,
+        readiness_guard: ProviderRuntimeGuard,
+        configuration_hash: str,
     ) -> None:
-        if not callable(connector_factory) or not isinstance(
-            secret_resolver, HunterSecretResolver
+        if (
+            not callable(connector_factory)
+            or not isinstance(secret_resolver, HunterSecretResolver)
+            or not isinstance(readiness_guard, ProviderRuntimeGuard)
+            or not isinstance(configuration_hash, str)
+            or _CONFIGURATION_HASH_RE.fullmatch(configuration_hash) is None
         ):
             raise ValidationError("Hunter 邮箱验证 reader 依赖无效")
         self._connector_factory = connector_factory
         self._secret_resolver = secret_resolver
+        self._readiness_guard = readiness_guard
+        self._configuration_hash = configuration_hash
 
     async def verify(
         self,
         tenant_id: TenantId,
         email: str,
     ) -> EmailVerificationResult:
+        await self._readiness_guard.require_current(tenant_id, self._configuration_hash)
         connector = self._connector_factory(tenant_id)
         if not isinstance(connector, HunterConnector):
             raise ValidationError("Hunter 邮箱验证 connector 无效")
@@ -230,6 +244,9 @@ class ContactVerificationHandler:
                 if not isinstance(payload.email, str):
                     raise ValidationError("contact verification payload 无效")
                 result = await self._reader.verify(tenant_id, payload.email)
+        except ProviderReadinessUnavailableError:
+            self._slot.discard_all()
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT) from None
         except HunterConnectorError as error:
             mapped_error = map_contact_provider_error(error)
             result = None

@@ -15,6 +15,7 @@ from connectors.hunter.client import (
     HunterConnector,
     HunterSecretResolver,
 )
+from connectors.hunter.secrets import BoundHunterSecretResolver
 from connectors.hunter.transport import HunterHttpTransport
 from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.permissions import OutreachScope
@@ -39,6 +40,11 @@ from tool_gateway.checks.contact_provider import (
 from tool_gateway.checks.permission import PermissionCheck
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.contact_enrichment import (
+    MANIFEST as CONTACT_ENRICH_MANIFEST,
+)
+from tool_gateway.handlers.contact_enrichment import (
+    ContactEnrichmentHandler,
+    HunterProviderContactEnricher,
     ToolGatewayContactEnricher,
 )
 from tool_gateway.handlers.contact_verification import (
@@ -57,31 +63,18 @@ from tool_gateway.pipeline import (
     ToolGateway,
     ToolInvocationState,
 )
+from tool_gateway.provider_readiness import (
+    HUNTER_CONTACT_CAPABILITIES,
+    ProviderId,
+    ProviderReadinessSnapshot,
+    ProviderReadinessState,
+    ProviderRuntimeGuard,
+)
 from tool_gateway.repository import (
     ToolGatewayUnitOfWork,
     ToolGatewayUnitOfWorkFactory,
 )
 from workflows.account_discovery.ports import ContactEnricher, ContactVerifier
-
-
-class _BoundHunterSecretResolver:
-    """把 Hunter 固定逻辑引用映射到部署配置的环境密钥引用。"""
-
-    def __init__(self, resolver: HunterSecretResolver, configured_ref: str) -> None:
-        if (
-            not isinstance(resolver, HunterSecretResolver)
-            or not isinstance(configured_ref, str)
-            or not configured_ref
-            or configured_ref != configured_ref.strip()
-        ):
-            raise ValidationError("Hunter 密钥引用配置无效")
-        self._resolver = resolver
-        self._configured_ref = configured_ref
-
-    def resolve(self, secret_ref: str) -> str:
-        if secret_ref != "HUNTER_API_KEY_REF":
-            raise ValidationError("Hunter 凭证引用无效")
-        return self._resolver.resolve(self._configured_ref)
 
 
 class _OutreachContactSuppressionReader:
@@ -109,26 +102,14 @@ class _OutreachContactSuppressionReader:
 
 @dataclass(frozen=True)
 class HunterContactComposition:
-    """启用 Hunter 验证所需的凭证边界与固定主机传输。"""
+    """Hunter 联系人业务检查依赖；凭证与传输由生产组合显式传入。"""
 
     discovery_policy: ContactDiscoveryPolicyReader
-    secret_resolver: HunterSecretResolver
-    secret_ref: str
-    transport: HunterHttpTransport
     quota: ProviderQuotaGuard | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.discovery_policy, ContactDiscoveryPolicyReader)
-            or not isinstance(self.secret_resolver, HunterSecretResolver)
-            or not isinstance(self.secret_ref, str)
-            or not self.secret_ref
-            or self.secret_ref != self.secret_ref.strip()
-            or not isinstance(self.transport, HunterHttpTransport)
-            or (
-                self.quota is not None
-                and not isinstance(self.quota, ProviderQuotaGuard)
-            )
+        if not isinstance(self.discovery_policy, ContactDiscoveryPolicyReader) or (
+            self.quota is not None and not isinstance(self.quota, ProviderQuotaGuard)
         ):
             raise ValidationError("scheduler Hunter 联系人工具依赖未完整配置")
 
@@ -137,6 +118,8 @@ class HunterContactComposition:
 class HunterContactTools:
     enricher: ContactEnricher
     verifier: ContactVerifier
+    registered_configuration_hash: str | None
+    manifest_ids: tuple[str, ...]
 
 
 def build_hunter_contact_tools(
@@ -149,42 +132,82 @@ def build_hunter_contact_tools(
     prospecting: ProspectingService,
     country_policy: CountryPolicyDecisionReader,
     composition: HunterContactComposition,
+    secret_resolver: HunterSecretResolver,
+    secret_ref: str,
+    transport: HunterHttpTransport,
+    snapshot: ProviderReadinessSnapshot | None,
+    readiness_guard: ProviderRuntimeGuard,
     lease_duration: timedelta,
     now: Callable[[], datetime],
 ) -> HunterContactTools:
-    """只注册验证工具；补全 adapter 固定走未注册的 fail-closed Gateway。"""
+    """仅对当前已验证的精确配置注册两个 Hunter 工具。"""
+    if (
+        not isinstance(secret_resolver, HunterSecretResolver)
+        or not isinstance(secret_ref, str)
+        or not isinstance(transport, HunterHttpTransport)
+        or not isinstance(readiness_guard, ProviderRuntimeGuard)
+    ):
+        raise ValidationError("scheduler Hunter 运行依赖无效")
     enrichment_slot = ContextLocalSingleResultSlot[ContactEnrichmentResult](
         "ceb", new_id
     )
     verification_slot = ContextLocalSingleResultSlot[EmailVerificationResult](
         "veb", new_id
     )
-    bound_secrets = _BoundHunterSecretResolver(
-        composition.secret_resolver, composition.secret_ref
-    )
-
-    def connector_factory(requested_tenant: TenantId) -> HunterConnector:
-        if requested_tenant != tenant_id:
-            raise ValidationError("Hunter connector 租户不匹配")
-        return HunterConnector(composition.transport, now=now)
 
     registry = ToolRegistry()
-    registry.register(
-        CONTACT_VERIFY_MANIFEST,
-        ContactVerificationHandler(
-            HunterProviderContactVerifier(connector_factory, bound_secrets),
-            verification_slot,
-            fingerprints,
-            now=now,
-        ),
+    registered_configuration_hash = _registered_configuration_hash(snapshot, tenant_id)
+    if registered_configuration_hash is not None:
+        bound_secrets = BoundHunterSecretResolver(secret_resolver, secret_ref)
+
+        def connector_factory(requested_tenant: TenantId) -> HunterConnector:
+            if requested_tenant != tenant_id:
+                raise ValidationError("Hunter connector 租户不匹配")
+            return HunterConnector(transport, now=now)
+
+        registry.register(
+            CONTACT_ENRICH_MANIFEST,
+            ContactEnrichmentHandler(
+                HunterProviderContactEnricher(
+                    connector_factory,
+                    bound_secrets,
+                    readiness_guard,
+                    registered_configuration_hash,
+                ),
+                enrichment_slot,
+                fingerprints,
+            ),
+        )
+        registry.register(
+            CONTACT_VERIFY_MANIFEST,
+            ContactVerificationHandler(
+                HunterProviderContactVerifier(
+                    connector_factory,
+                    bound_secrets,
+                    readiness_guard,
+                    registered_configuration_hash,
+                ),
+                verification_slot,
+                fingerprints,
+                now=now,
+            ),
+        )
+
+    manifest_ids = tuple(item.tool_id for item in registry.list_manifests())
+    expected_ids = (
+        ()
+        if registered_configuration_hash is None
+        else (CONTACT_ENRICH_MANIFEST.tool_id, CONTACT_VERIFY_MANIFEST.tool_id)
     )
+    if manifest_ids != expected_ids:
+        raise ValidationError("scheduler Hunter registry 无效")
 
     async def authorize(ctx: ToolCallContext, state: ToolInvocationState) -> bool:
         del state
         return (
             ctx.tenant_id == tenant_id
             and ctx.user_id == tool_user
-            and ctx.tool_id == CONTACT_VERIFY_MANIFEST.tool_id
+            and ctx.tool_id in expected_ids
         )
 
     suppression = _OutreachContactSuppressionReader(outreach)
@@ -217,14 +240,32 @@ def build_hunter_contact_tools(
         now=now,
         id_factory=new_id,
     )
-    if tuple(item.tool_id for item in registry.list_manifests()) != (
-        CONTACT_VERIFY_MANIFEST.tool_id,
-    ):
-        raise ValidationError("scheduler Hunter registry 无效")
     return HunterContactTools(
         enricher=ToolGatewayContactEnricher(gateway, enrichment_slot, tool_user),
         verifier=ToolGatewayContactVerifier(gateway, verification_slot, tool_user),
+        registered_configuration_hash=registered_configuration_hash,
+        manifest_ids=manifest_ids,
     )
+
+
+def _registered_configuration_hash(
+    snapshot: object,
+    tenant_id: TenantId,
+) -> str | None:
+    if (
+        not isinstance(snapshot, ProviderReadinessSnapshot)
+        or snapshot.tenant_id != tenant_id
+        or snapshot.provider is not ProviderId.HUNTER
+        or snapshot.capabilities != HUNTER_CONTACT_CAPABILITIES
+        or snapshot.configuration is None
+        or snapshot.state
+        not in {
+            ProviderReadinessState.RUNTIME_NOT_COMPOSED,
+            ProviderReadinessState.READY,
+        }
+    ):
+        return None
+    return snapshot.configuration.configuration_hash
 
 
 __all__ = (

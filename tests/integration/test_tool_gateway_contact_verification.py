@@ -16,6 +16,8 @@ from connectors.email_verification.client import (
     EmailVerificationResult,
     VerificationCostNote,
 )
+from connectors.hunter.client import HunterConnector
+from connectors.hunter.transport import HunterHttpResponse
 from infra.db.session import create_engine_from
 from infra.db.tables import OutboxEventRow, ToolCallEventRow, ToolCallRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
@@ -37,15 +39,18 @@ from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.contact_verification import (
     MANIFEST,
     ContactVerificationHandler,
+    HunterProviderContactVerifier,
     ToolGatewayContactVerifier,
 )
 from tool_gateway.handlers.single_result_slot import ContextLocalSingleResultSlot
 from tool_gateway.manifest import ToolRegistry
 from tool_gateway.pipeline import ToolCallContext, ToolGateway, ToolInvocationState
+from tool_gateway.provider_readiness import ProviderConfiguration
 
 NOW = datetime(2026, 8, 21, 16, tzinfo=UTC)
 EMAIL = "private-ledger-verify@example.com"
 KEY = "private-hunter-key-canary"
+CONFIG = ProviderConfiguration.hunter_contacts("config-v1", "key-v1")
 
 
 class _Reader:
@@ -61,6 +66,38 @@ class _Reader:
             NOW,
             VerificationCostNote.COUNTED,
         )
+
+
+class _Secrets:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, secret_ref: str) -> str:
+        assert secret_ref == "HUNTER_API_KEY_REF"
+        self.calls += 1
+        return KEY
+
+
+class _Transport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, path, params, *, api_key):
+        assert path == "/email-verifier"
+        assert params == (("email", EMAIL),)
+        assert api_key == KEY
+        self.calls += 1
+        return HunterHttpResponse(200, {"data": {"status": "valid"}})
+
+
+class _ReadinessGuard:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TenantId, str]] = []
+
+    async def require_current(
+        self, tenant_id: TenantId, configuration_hash: str
+    ) -> None:
+        self.calls.append((tenant_id, configuration_hash))
 
 
 class _SuppressionReader:
@@ -181,7 +218,21 @@ async def test_verify_ledger_contains_only_veb_handle(db_url: str, caplog) -> No
         NOW,
     )
     preflight = ContactVerificationPreflight(tenant, point, False)
-    reader = _Reader()
+    secrets = _Secrets()
+    transport = _Transport()
+    readiness = _ReadinessGuard()
+    factory_calls: list[TenantId] = []
+
+    def connector_factory(requested_tenant: TenantId) -> HunterConnector:
+        factory_calls.append(requested_tenant)
+        return HunterConnector(transport, now=lambda: NOW)
+
+    reader = HunterProviderContactVerifier(
+        connector_factory,
+        secrets,
+        readiness,
+        CONFIG.configuration_hash,
+    )
     slot = ContextLocalSingleResultSlot("veb", new_id)
     handler = ContactVerificationHandler(
         reader, slot, HmacFingerprintProvider("verify-v1", b"v" * 32), now=lambda: NOW
@@ -209,11 +260,11 @@ async def test_verify_ledger_contains_only_veb_handle(db_url: str, caplog) -> No
         result = await ToolGatewayContactVerifier(gateway, slot, user).verify(
             tenant, point_id
         )
-        assert (
-            result.outcome is EmailVerificationOutcome.VERIFIED
-            and reader.calls == 1
-            and slot.is_empty
-        )
+        assert result.outcome is EmailVerificationOutcome.VERIFIED and slot.is_empty
+        assert factory_calls == [tenant]
+        assert readiness.calls == [(tenant, CONFIG.configuration_hash)]
+        assert secrets.calls == 1
+        assert transport.calls == 1
         async with factory() as session:
             rows = (
                 (

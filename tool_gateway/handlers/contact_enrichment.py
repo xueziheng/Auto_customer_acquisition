@@ -37,6 +37,10 @@ from tool_gateway.pipeline import (
     ToolCallContext,
     ToolCallResult,
 )
+from tool_gateway.provider_readiness import (
+    ProviderReadinessUnavailableError,
+    ProviderRuntimeGuard,
+)
 
 MANIFEST = ToolManifest(
     tool_id="contact.enrich",
@@ -80,6 +84,7 @@ MANIFEST = ToolManifest(
 
 _HYPOTHESIS_RE = re.compile(r"hyp_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _ACCOUNT_RE = re.compile(r"acc_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_CONFIGURATION_HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @runtime_checkable
@@ -104,13 +109,21 @@ class HunterProviderContactEnricher:
         self,
         connector_factory: Callable[[TenantId], HunterConnector],
         secret_resolver: HunterSecretResolver,
+        readiness_guard: ProviderRuntimeGuard,
+        configuration_hash: str,
     ) -> None:
-        if not callable(connector_factory) or not isinstance(
-            secret_resolver, HunterSecretResolver
+        if (
+            not callable(connector_factory)
+            or not isinstance(secret_resolver, HunterSecretResolver)
+            or not isinstance(readiness_guard, ProviderRuntimeGuard)
+            or not isinstance(configuration_hash, str)
+            or _CONFIGURATION_HASH_RE.fullmatch(configuration_hash) is None
         ):
             raise ValidationError("Hunter 联系人 reader 依赖无效")
         self._connector_factory = connector_factory
         self._secret_resolver = secret_resolver
+        self._readiness_guard = readiness_guard
+        self._configuration_hash = configuration_hash
 
     async def find_contacts(
         self,
@@ -118,6 +131,7 @@ class HunterProviderContactEnricher:
         company_domain: str,
         role_hints: tuple[str, ...],
     ) -> ContactEnrichmentResult:
+        await self._readiness_guard.require_current(tenant_id, self._configuration_hash)
         connector = self._connector_factory(tenant_id)
         if not isinstance(connector, HunterConnector):
             raise ValidationError("Hunter 联系人 connector 无效")
@@ -229,6 +243,9 @@ class ContactEnrichmentHandler:
                 payload.company_domain,
                 payload.role_hints,
             )
+        except ProviderReadinessUnavailableError:
+            self._slot.discard_all()
+            raise ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT) from None
         except HunterConnectorError as error:
             mapped_error = map_contact_provider_error(error)
             result = None
@@ -296,7 +313,9 @@ class ToolGatewayContactEnricher:
                     result.error_category or ToolErrorCategory.UNEXPECTED,
                     retry_after_seconds=result.retry_after_seconds,
                 )
-            handle = None if result.output is None else result.output.get("provider_ref")
+            handle = (
+                None if result.output is None else result.output.get("provider_ref")
+            )
             if not isinstance(handle, str):
                 raise ValidationError("contact enrichment tool result 无效")
             taken = self._slot.take(handle)
