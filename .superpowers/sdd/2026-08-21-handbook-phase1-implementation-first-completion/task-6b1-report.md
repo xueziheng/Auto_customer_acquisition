@@ -3,6 +3,7 @@
 日期：2026-08-25
 初次实现提交：`d87a3e8f08965b46da779fa41a5e06df9f9e9a64`
 审查修复提交：`804a72b99209a1970b88ece72350816f6592a90c`
+第二轮审查修复提交：`d15ff650432182e653333090724eb7337146e65a`
 
 ## 结论
 
@@ -172,3 +173,101 @@ fail-closed。上线前应先做历史数据审计和可追溯 backfill；不得
   不可变快照修复历史数据，不得合成引用。
 - 本轮没有真实网络、Hunter/Gmail key、客户发送、部署或 push，也不据此作运营完成
   声明。预存未跟踪 `apps/web/node_modules` 仍未纳入提交。
+
+## Code Review Fix Round 2/5
+
+Scoped re-review 确认 round 1 的姓名 heuristic 既不能证明 PII 隔离，又误拒绝合法
+组织/类别；模型输出和英文概率常见变体仍有缺口。Round 2 删除姓名猜测，改为结构化
+组织事实与封闭输出契约。Round 1 的 artifact 修复保持不变，本轮 artifact/迁移生产
+文件零 diff。
+
+### 结构化组织投影
+
+数据路径现为：
+
+```text
+Prospecting public account view
+  → DemandAccountNameReader (tenant_id + typed account_id)
+  → HypothesisDiscoveryView
+       hypothesis/account IDs
+       organization_name + country
+       typed category
+       opaque source_signal_refs
+  → AccountDiscoveryTaskInput / FindCompanyDetailsStep
+  → model projection
+       organization name + country
+       category
+       hypothesis ID + opaque signal refs
+```
+
+`HypothesisDiscoveryView` 不再包含 reasoning、raw observation、evidence summary 或
+source URL，因此其中的 lowercase/UPPERCASE 联系人姓名和 URL path 姓名没有机会进入
+模型。企业身份来自 tenant-bound Prospecting/Demand typed view，而不是用正则猜测某个
+字符串是不是人名。
+
+模型输出也从七个自由文本字段收窄为且仅为：
+
+```text
+website_domain + source_signal_refs
+```
+
+`website_domain` 走确定性 canonical-domain 校验；refs 必须是输入 refs 的子集。ChangeSet
+中的 entity name/country 来自可信组织投影，entity_type/industry/size_hint 不再由模型
+自由生成。任何额外的姓名、邮箱、URL、credential、概率或动作字段都会因封闭 schema
+fail-closed；完整 raw JSON 仍先经过 credential marker guard。ChangeSet 最后继续经过
+Phase 1 中央 rails。
+
+该设计允许 `Apple`、`Google`、`General Electric`、`华为` 等合法组织名，以及
+`五金`、`铰链` 等 typed category，不再依赖组织后缀 allowlist，也不会因为大小写或
+CJK 长度误判。
+
+### Probability 修复
+
+中央 NFKC rail 的 probability label 增加 `chance` 与 `likely`，同时加入 numeric
+field-name 检查。现在统一拒绝：
+
+- `82% chance`
+- `chance 82%`
+- `82% likely`
+- `likely 82%`
+- 全角数字/百分号及 round 1 已覆盖的中文、decimal 形式
+
+Demand agent 继续复用同一个 `contains_numeric_probability`，没有新建旁路正则。
+
+### Round 2 RED
+
+- 结构化 Account agent、Scheduler TaskReader、真实 Demand PostgreSQL view、英文
+  probability 与中央 rail 的首次聚合：`23 failed, 5 passed`。其中结构化投影失败均为
+  旧输入合同拒绝合法组织或旧 view 仍暴露 reasoning/summary/URL；中央 chance/likely
+  五种形式全部漏检。
+- 首次英文 Demand agent probe 缺少既有 inference marker，先被另一条护栏拒绝；修正
+  fixture 后重新见证真实行为 RED：新增四种英文 probability 均生成了 ChangeSet，
+  `4 failed, 4 passed`（四个 round 1 变体仍能拒绝）。
+
+### Round 2 GREEN 与最终门禁
+
+- 新增结构化投影 + probability 聚焦：`28 passed`。
+- Account/Demand agent、完整 Account workflow、中央 rails：`60 passed`。
+- Demand signal/hypothesis PostgreSQL：`46 passed`。
+- Scheduler config/runtime + Demand workflow：`64 passed`。
+- 直接受影响聚合合计：`170 passed`。
+- 全库回归：`3893 passed in 399.35s`，0 failed / 0 error。
+- Ruff（全部 round-2 changed Python）：`All checks passed!`。
+- Mypy（8 个受影响 production source）：无问题。
+- `scripts/check_boundaries.py`：七项全部通过。
+- `scripts/scan_sensitive.py`：exit 0、无输出。
+- `scripts/run_alembic.py heads`：唯一 `0034 (head)`。
+- `git diff --check`：exit 0。
+
+### 兼容性与约束
+
+- `HypothesisDiscoveryView` 与 `AccountDiscoveryTaskInput` 是内部 typed contract 收窄；
+  自定义 TaskReader 必须改用 organization/category/opaque refs，不能再提供 hypothesis
+  自由文本字典。
+- Account discovery 模型适配器必须返回两字段新 schema；旧七字段输出会安全拒绝，
+  不会静默持久化。
+- Workflow 的对外状态推进、Prospecting resolve payload 核心字段、evidence refs 与后续
+  联系人发现/验证/入组步骤保持不变；模型不再补写可选企业描述字段。
+- Artifact tenant/kind/hash/FK 与 0034 三态行为没有改动。
+- 未使用真实网络、外部密钥、客户发送、部署或 push；预存未跟踪
+  `apps/web/node_modules` 未提交。
