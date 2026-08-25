@@ -87,6 +87,15 @@ _PATTERNS: list[tuple[str, re.Pattern[str], str | None]] = [
     ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), None),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), None),
     (
+        "hunter-api-key",
+        re.compile(
+            r"(?i)(?<![A-Za-z0-9_-])(?:hunter_api_key|X-API-KEY)"
+            r"(?![A-Za-z0-9_-])['\"]?\s*[:=]\s*['\"]?"
+            r"(?P<val>[A-Za-z0-9_-]{20,})"
+        ),
+        "val",
+    ),
+    (
         "password-assignment",
         re.compile(r"(?i)password\s*=\s*(?P<val>['\"]?[^\s'\"`\\=,;，。；、：！？…（）【】《》]+)"),
         "val",

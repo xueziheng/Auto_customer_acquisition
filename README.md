@@ -25,7 +25,13 @@
 
 ## 当前状态
 
-**架构骨架阶段。** 目录结构、模块边界、接口契约和治理文档已就位，业务实现尚未开始——大部分函数体是 `raise NotImplementedError`，但签名、类型和职责说明是完整的、可据以实现的。
+**Phase 1 分切片实现中。** 公共契约、持久化基建、机会与接管、发件身份与 Tool Gateway、
+Campaign/账户发现接线、Company Playbook、国家政策和 Hunter Provider 安全组合门禁等切片
+已经实现并有自动化测试；仓库不再是“业务实现尚未开始”的纯骨架。
+
+这不代表 Hunter 已在真实部署激活，也不代表 Phase 1 完成：仓库验收没有真实 Hunter Key 或
+网络调用，真实 Provider validation/smoke 与真实 Campaign 运营验收均为 `not_run`。Phase 1
+仍须证明客户原话/Provenance 证据链、健康发件信誉和已测量的人工接管 SLA。
 
 当前阶段为 Phase 1（需求验证闭环）：单租户运行、Postgres 状态机、寻源与报价先由人工完成。
 

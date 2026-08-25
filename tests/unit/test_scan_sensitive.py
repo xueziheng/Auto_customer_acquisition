@@ -66,6 +66,11 @@ def _password_secret() -> str:
     return "sup" + "er" + "secret"  # -> "supersecret"
 
 
+def _hunter_key_canary() -> str:
+    """无前缀 Hunter-shaped canary；只在运行时拼接，仓库不保存可运行值。"""
+    return "a1b2c3d4e5" + "f60718293a" + "4b5c6d7e8f" + "9012345678"
+
+
 def _placeholder_dsn() -> str:
     """占位 DSN 形态：源码不写完整 DSN，运行时拼接。"""
     return "postgresql://<" + "user" + ">:<" + "pass" + ">@host:5432/db"
@@ -153,6 +158,52 @@ def test_cli_exit_one_and_output_never_leaks() -> None:
         assert "dsn-userinfo" in result.stdout
         assert "hunter2x" not in result.stdout
         assert "hunter2x" not in result.stderr
+
+
+def test_hunter_validation_json_and_log_canaries_report_only_fixed_metadata() -> None:
+    """验证相关 JSON/log 中的 Hunter key 只能产生固定 path/line/category。"""
+    if not _SCRIPT.exists():
+        pytest.fail(f"RED：{_SCRIPT} 尚未创建")
+    canary = _hunter_key_canary()
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        tmp = Path(td) / "provider-validation.json"
+        tmp.write_text(
+            '{"event":"provider_validation_failed","hunter_api_key":"'
+            + canary
+            + '","outcome":"auth_required"}\n'
+            + "provider=hunter operation=validation X-API-KEY="
+            + canary
+            + " outcome=provider_transient\n",
+            encoding="utf-8",
+        )
+        result = _run_cli([str(tmp)], quiet=True)
+        rel = tmp.resolve().relative_to(_REPO_ROOT.resolve()).as_posix()
+
+        assert result.returncode == 1
+        assert result.stderr == ""
+        assert result.stdout.splitlines() == [
+            f"{rel}:1:hunter-api-key",
+            f"{rel}:2:hunter-api-key",
+        ]
+        assert canary not in result.stdout + result.stderr
+
+
+def test_hunter_key_field_case_separator_boundaries_and_placeholders() -> None:
+    module = _load_scanner()
+    canary = _hunter_key_canary()
+    findings = module.scan_text(
+        '"HUNTER_API_KEY" : "'
+        + canary
+        + '"\nX-API-KEY: '
+        + canary
+        + "\nnot_hunter_api_key="
+        + canary
+        + "\nX-API-KEY-NOTE="
+        + canary
+        + '\n{"hunter_api_key":"<your-hunter-api-key>"}\n'
+    )
+
+    assert findings == [(1, "hunter-api-key"), (2, "hunter-api-key")]
 
 
 def test_cli_clean_exit_zero() -> None:
@@ -267,6 +318,26 @@ def test_documented_placeholder_tokens_allowed() -> None:
         "password=" + "非" + "占位" + "\n"
     )
     assert module.scan_text(sample) == []
+
+
+def test_hunter_docs_and_fixtures_contain_refs_without_runnable_secrets() -> None:
+    """受跟踪文档/fixture 只保存引用名与占位符，扫描结果必须为空。"""
+    module = _load_scanner()
+    tracked = set(module.discover_tracked())
+    expected = {
+        Path("infra/.env.example"): "TRADEOS_HUNTER_API_KEY_SECRET_REF",
+        Path("docs/operations/hunter-provider-readiness.md"):
+            "TRADEOS_HUNTER_API_KEY_SECRET_REF",
+        Path("docs/superpowers/specs/2026-08-25-hunter-provider-readiness-design.md"):
+            "TRADEOS_HUNTER_API_KEY_SECRET_REF",
+        Path("tests/integration/test_provider_validation_gateway.py"): "DEPLOYMENT_REF",
+    }
+
+    for path, reference_name in expected.items():
+        assert path in tracked
+        text = (_REPO_ROOT / path).read_text(encoding="utf-8")
+        assert reference_name in text
+        assert module.scan_file(path) == []
 
 
 # --- 默认 tracked / --staged 文件发现（运行时临时 git 仓库 + monkeypatch） ----------

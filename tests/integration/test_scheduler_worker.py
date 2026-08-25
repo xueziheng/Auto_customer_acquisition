@@ -967,7 +967,7 @@ def test_slice4_scheduler_environment_helpers_satisfy_strict_config() -> None:
     e2e_module = importlib.import_module("tests.e2e.test_slice4_manual_send")
     demo_module = importlib.import_module("scripts.demo_slice4_manual_send")
     identifiers = importlib.import_module("shared.schemas.identifiers")
-    database_url = "postgresql+asyncpg://test:test@localhost:5432/test"
+    database_url = "postgresql+asyncpg://localhost:5432/test"
     tenant = identifiers.TenantId(identifiers.new_id("tn"))
     e2e_env = e2e_module._runtime_env(
         database_url,

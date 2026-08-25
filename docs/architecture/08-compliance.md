@@ -34,9 +34,10 @@ UTC 时间绑定为提取/确认事实。政策表不保存网页正文、凭证
 
 Gateway reader 已实现结构化 fail-closed 判断：未知国家、明确禁止、无效返回和存储故障都在
 Provider IO 前阻断。Settings 可区分 `COUNTRY_POLICY_NOT_CONFIGURED`、
-`CONTACT_ENRICHMENT_NOT_ALLOWED` 与 `CONTACT_ENRICHMENT_NOT_COMPOSED`。当前最多到第三种：
-生产 `contact.enrich` 仍未注册；真实 Hunter 凭证/transport composition、Provider 运维验证
-与 Phase 1 运营验收仍被阻断。
+`CONTACT_ENRICHMENT_NOT_ALLOWED`，以及 Provider 未配置、待验证、验证失败、验证不确定、
+runtime 未组合等持久原因。Hunter 双工具生产组合代码和持久激活门禁已实现；仓库验收仍未
+配置真实 Hunter Key、未请求真实 Hunter 网络，真实 validation/smoke 与 Phase 1 运营验收
+均为 `not_run`，也没有生产部署已激活的外部事实。
 
 ---
 
@@ -73,6 +74,16 @@ Provider 返回的 `score` / `confidence` 不是校准证据，必须丢弃。�
 记录 UTC 检查时间和固定成本备注，严格缓存 30 天；451 隐私声明保留为 typed 事实，由
 业务 workflow 执行删除/抑制，Gateway 不得擅自写业务状态。任何抑制、政策或读取依赖失败
 都 fail closed；不确定的付费调用进入人工对账，禁止自动重复调用。
+
+Provider readiness 与国家政策是两个不能互相替代的门槛。`validation_passed` 只证明精确
+Hunter 配置能经固定 `/account` 工作，`runtime_composed` 只证明单例 scheduler 曾为同一配置
+完整注册两个工具；两者都不构成任何国家的法律结论。即使 Settings 显示 ready，
+`contact.enrich` 仍须针对每次目标国家重新读取已激活政策，并继续执行 tenant、permission、
+Playbook、suppression 与 quota 检查。政策失效、禁止或 reader 故障必须在 Hunter IO 前关闭。
+
+密钥或安全配置版本变化会使旧 validation/runtime 事实失效；旧 adapter 的 live guard 在
+Connector 创建和凭证解析前关闭。真实运维不得手写 readiness 行或用历史验证绕过新配置，
+固定流程见 `docs/operations/hunter-provider-readiness.md`。
 
 ---
 

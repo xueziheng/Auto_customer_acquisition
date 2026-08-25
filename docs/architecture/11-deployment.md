@@ -62,6 +62,33 @@ docker compose -f infra/docker-compose.yml up -d
 
 ---
 
+## Hunter Provider 配置、验证与重启顺序
+
+Hunter 联系人工具的生产 composition 和持久 activation gate 已实现，但仓库自动化没有真实
+Hunter Key、不会访问真实 Hunter 网络；真实 validation/smoke 当前均为 `not_run`，也没有
+任何外部生产部署已激活的事实。
+
+真实部署必须按以下顺序执行：
+
+1. 在密钥服务中注入 key；值不得进入 Git、命令行、日志、工单或模型上下文。
+2. 分配新的安全配置版本和非秘密 key 轮换版本，通过
+   `scripts/configure_hunter_provider.py` 声明 tenant-scoped 配置；该命令不解析 key、不联网。
+3. 确认 Settings 显示 validation pending；缺配置或验证时两个 Hunter 工具同时关闭。
+4. 授权真人以新的幂等键运行一次 `scripts/validate_hunter_provider.py`；它只经 Tool Gateway
+   访问固定 `/account`。失败或不确定时停止，禁止自动重试。
+5. 仅在 validation passed 后重启 scheduler。部署入口必须注入完整
+   `SchedulerRuntimeFactory`，并维持单副本/单 advisory-lock owner。
+6. 锁 owner 复核 dedicated backend connection 后，在第一轮 cycle 前写 matching
+   `runtime_composed`；失败则释放锁、零 cycle 退出。
+7. Settings ready 后仍逐次执行国家政策、Playbook、suppression 与 quota；scheduler 当前
+   存活由独立 health/readiness 监控，而不是由历史 runtime fact 猜测。
+
+key 轮换、修复认证或回滚都必须创建新的配置版本并重走全流程；新配置立即使旧
+validation/runtime 失效。精确命令、固定失败分类、安全证据 allowlist 与 `not_run` 记录见
+`docs/operations/hunter-provider-readiness.md`。
+
+---
+
 ## Slice 4 演示、验收与运维
 
 发件身份 / 手动发送 / 投递反馈 / 事务通知的可重复演示与运维手册：

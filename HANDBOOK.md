@@ -1,6 +1,8 @@
 # TradeOS 实现手册
 
-骨架已经就位：目录、边界、契约、状态机、接口签名都有了，但函数体全是 `NotImplementedError`。这份手册回答一个问题：**怎么把它变成能跑的系统，且过程中架构不腐化。**
+项目已经越过纯骨架阶段：目录、边界与契约仍是实现依据，多个 Phase 1 切片已经落地，尚未
+交付的能力继续按本手册顺序实现。这份手册回答一个问题：**怎么把它变成完整可运营的系统，
+且过程中架构不腐化。**
 
 读者是接手实现的人（或 AI）。架构**为什么**这样设计在 `docs/architecture/` 和 `docs/adr/`，这里只讲**怎么做**。
 
@@ -266,10 +268,17 @@ Company Playbook 的不可变版本、独立审批、批准后自动激活、运
 已实现。国家政策包现已实现 tenant-scoped 不可变版本、逐字段人工确认 Provenance、独立
 审批、批准后激活、Settings 管理、结构化 fail-closed Gateway reader 与真实就绪原因。
 
-这仍不等于切片 7 或 Phase 1 完成。生产 `contact.enrich` 注册、真实 Hunter 凭证与 transport
-composition、Provider 运维验证和 Phase 1 真实运营验收仍被阻断。下一独立切片只能在这些
-条件齐备后受控组合 Hunter；在此之前不得把当前受控测试误报为已上线的联系人补全能力或
-完整需求验证闭环。
+Hunter Provider 的安全配置声明、tenant-scoped append-only readiness、`/account` 人工验证
+插件、双工具条件注册、scheduler 单例锁后激活与 Settings 持久事实展示已经实现。缺少配置、
+当前配置未验证或结果失败/不确定时，`contact.enrich` 与 `contact.verify` 均不注册；验证通过的
+候选进程才同时构造两者，但只有锁 owner 写入 matching `runtime_composed` 后才可进入业务
+cycle。配置漂移或 reader 故障仍会在凭证解析和 Provider IO 前失败。
+
+这仍不等于切片 7 或 Phase 1 完成。仓库验收没有配置真实 Hunter Key、没有访问真实 Hunter
+网络，真实 Provider validation/smoke 均为 `not_run`；生产部署是否已激活也没有外部事实。
+后续运维必须按 `docs/operations/hunter-provider-readiness.md` 逐次声明、真人验证和重启单例
+scheduler。Phase 1 仍需真实 Campaign、客户原话与 Provenance 证据链、健康发件信誉和已测量
+的人工接管 SLA；这些运营验收当前为 `not_run`。
 
 ---
 

@@ -28,6 +28,13 @@ dedicated backend connection 的 scheduler 副本写入，且必须早于第一�
 锁已丢失或双工具未精确注册时一律不得写。激活失败必须释放同一把锁、零 cycle 退出，
 日志不得包含异常原文、凭证引用、配置哈希或凭证值。
 
+验证只能由授权真人经 `provider.hunter.validate` 逐次触发，scheduler 不得代跑或自动重试。
+validation passed 后必须重启 singleton scheduler；Settings 只有在 matching
+`runtime_composed` 提交后才可显示 ready。密钥轮换、认证修复和回滚均创建新的配置版本，
+不得复用历史 validation/runtime；运行中的旧 adapter 必须用 live guard 在 Connector 创建和
+凭证解析前关闭。Provider ready 也不替代每次国家政策、Playbook、suppression 与 quota 检查。
+运维证据只能使用 `docs/operations/hunter-provider-readiness.md` 的安全 allowlist。
+
 ## 入口
 
 `main.py`：装配依赖 → 注册流程定义 → 循环。优雅停机：收到信号后完成当前批再退出，不中断在途事务。

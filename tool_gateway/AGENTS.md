@@ -134,6 +134,13 @@ ledger 保留期内必须仍可核验；否则相同幂等键只能固定报冲�
 `validation_passed` 且后续 `runtime_composed` 时才是 `ready`。任何 hash 不匹配、租户不匹配、
 权限不足或 reader/storage 故障都必须关闭；guard 在解析凭证或创建 Connector 前执行。
 
+`provider.hunter.validate` 只能由真人显式运行，只访问固定 `/account`，并精确执行
+`tenant → permission → idempotency → rate_limit`。Gateway `EXECUTING` 必须先提交，随后才可
+追加 `validation_started` 并接触 Provider；只保存安全 ID、版本、固定 outcome 与 UTC 时间，
+不得保存 `/account` 原始响应、账户信息、异常文本、secret ref 或值。失败或 inconclusive 均
+禁止自动重试；轮换和回滚必须创建新配置版本。readiness 不能替代 `contact.enrich` 每次调用
+的 Playbook、国家政策、suppression 和 quota 检查。
+
 ## Gmail 不确定结果恢复
 
 `CLAIMED` 的 lease 过期且尚未提交 `EXECUTING` 时，可以重新跑**当前事实**与六个
@@ -152,11 +159,12 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 
 manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
 ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部
-固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、Hunter 联系人插件的
-离线实现、租约恢复与人工对账边界。Company Playbook、真实国家政策 reader/persistence/
-readiness，以及账户发现持久化 workflow、Campaign 接线、API 与 UI 已实现；Hunter 测试不
-使用真实 Key 或网络。
+固定模板事务通知 handler、`email.feedback.fetch` typed 只读 handler、Hunter 联系人插件、
+持久 Provider readiness、人工验证插件、双工具条件注册、租约恢复与人工对账边界。Company
+Playbook、真实国家政策 reader/persistence/readiness，以及账户发现持久化 workflow、Campaign
+接线、API 与 UI 已实现；Hunter 测试不使用真实 Key 或网络。
 
-这仍不等于 Phase 1 完成：生产 `contact.enrich` 仍未注册，真实 Hunter credential/transport
-composition、Provider 运维验证与 Phase 1 运营验收仍被阻断。成本钱包仍是 Phase 3 挂载点；
-不在本阶段实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。
+这仍不等于 Hunter 已在真实生产激活或 Phase 1 完成：代码 composition 与持久激活门已交付，
+但仓库真实 Hunter validation/smoke 为 `not_run`，没有生产部署事实；Phase 1 真实 Campaign、
+证据链、发件信誉与人工接管 SLA 运营验收也为 `not_run`。成本钱包仍是 Phase 3 挂载点；不在
+本阶段实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。

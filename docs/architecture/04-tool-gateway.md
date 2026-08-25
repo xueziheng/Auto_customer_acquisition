@@ -5,11 +5,12 @@ Token、浏览器 Cookie 或其他凭证（硬边界 1）。Gateway 不是一个
 Connector 之间最后一道独立、可恢复、可审计的闸门。
 
 本页只描述当前已经实现并由测试锁定的 Phase 1 Gmail 客户单封发送、内部员工固定模板
-事务通知、typed DSN 反馈读取，以及 Hunter 联系人补全/邮箱验证插件。国家政策的真实
-tenant-scoped reader 已由合规域提供，两个 capability-specific Gateway check 会消费其
-结构化决定并在未配置、禁止、无效或读取故障时于 Provider IO 前失败关闭。Hunter 部分仍
-只有无真实 Key、无真实网络的协议与边界测试，尚未接入生产 composition。自动对账扫描器、
-人工对账 UI、回复正文/投诉 worker 与其他工具仍是后续能力，不能按已实现能力对外承诺。
+事务通知、typed DSN 反馈读取，以及 Hunter 联系人补全/邮箱验证与 Provider readiness 插件。
+国家政策的真实 tenant-scoped reader 已由合规域提供，两个 capability-specific Gateway check
+会消费其结构化决定并在未配置、禁止、无效或读取故障时于 Provider IO 前失败关闭。Hunter
+的生产组合代码与持久激活门禁已交付，但仓库验收仍无真实 Key、无真实网络，真实 Provider
+validation/smoke 为 `not_run`，也没有生产部署已激活的外部事实。自动对账扫描器、人工对账
+UI、回复正文/投诉 worker 与其他工具仍是后续能力，不能按已实现能力对外承诺。
 
 ---
 
@@ -222,7 +223,28 @@ typed `privacy_claimed` 事实，由账户发现 workflow 决定持久化或删�
 映射为 `country_policy:not_configured`，明确禁止映射为
 `country_policy:action_not_allowed`，返回类型/国家/action 不匹配或 reader 异常均映射为
 transient failure；这些路径的 Hunter transport 调用固定为零。当前测试全部使用受控
-transport，没有真实 Hunter Key/网络，生产 ToolRegistry 也没有注册 `contact.enrich`。
+transport，没有真实 Hunter Key/网络。
+
+### Hunter Provider readiness 与生产注册
+
+`provider.hunter.validate` 是独立的 MEDIUM/LOW、`idempotency=REQUIRED` 运维工具，只执行
+`tenant → permission → idempotency → rate_limit`，并只允许固定 Hunter `/account`。它不
+接受联系人 PII、国家或任意 URL。Gateway 已提交 canonical `EXECUTING` 后，handler 才追加
+`validation_started`；Connector 随后解析精确 secret ref。终态只保存
+`validation_passed`，或 `auth_required` / `rate_limited` / `provider_transient` /
+`provider_permanent` / `response_invalid` 之一；请求或提交结果不确定时保留 started 并推导
+为 inconclusive。原始响应、异常文本、账户资料和凭证均不持久化，任何结果都不自动重试。
+
+Provider readiness 是 tenant-scoped append-only 事实流：`configured → validation_started →
+validation_passed|validation_failed → runtime_composed`。新配置世代使旧 validation/runtime
+事实失效。只有当前精确配置已 passed 时，scheduler 候选进程才同时注册
+`contact.enrich` 与 `contact.verify`；只有取得并复核单例 advisory lock 的副本能在第一轮
+cycle 前追加 `runtime_composed`。运行中的两个 adapter 每次都先执行 live guard，配置漂移或
+reader 故障会在 Connector 创建和凭证解析前关闭。
+
+readiness 只证明 Provider 配置和双工具生产组合，不替代联系人调用的 Playbook、国家政策、
+suppression、租户、权限、配额或可达性门禁。真实操作顺序与安全证据字段见
+`docs/operations/hunter-provider-readiness.md`。
 
 ---
 
@@ -300,6 +322,8 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Gmail 单封发送、确定性 header、只读恢复搜索；
 - Gmail RFC 3464 typed 反馈读取、一次性 page handle 与真实 feedback worker；
 - Hunter 单 Provider connector、联系人补全/邮箱验证 handler 与一次性 typed handle；
+- Hunter 安全配置声明、持久 readiness、`provider.hunter.validate`、双工具条件注册与
+  scheduler 锁后 `runtime_composed` 激活；
 - 国家政策不可变版本、独立审批与激活后的结构化 fail-closed Gateway reader；
 - 账户发现持久化 workflow、Campaign 入组接线及对应 API/UI；
 - API 手工发送入口、离线 controlled-transport 演示与真实 PostgreSQL 恢复测试。
@@ -312,8 +336,9 @@ ledger 与 Gmail 受限搜索结果显式裁决。
 - Browser Agent 发送邮件；
 - 接受任意旧 approval 或绕过 Campaign current-facts；
 - 自动重发任何交付结果不确定的邮件；
-- 生产注册 `contact.enrich`（Playbook 与国家政策 persistence/readiness 已实现，但真实
-  Hunter 凭证/transport composition 与 Provider 运维验证尚未完成）；
+- 自动配置或自动重试 Hunter Provider 验证；
+- 把仓库受控 transport 验收当作真实 Hunter validation/smoke（两者当前为 `not_run`）；
+- 在没有外部部署事实时宣称生产 `contact.enrich` 已激活；
 - 多 Provider 联系人瀑布路由；
 - Phase 3 成本钱包。
 
