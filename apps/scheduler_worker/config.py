@@ -6,12 +6,14 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Self
 from urllib.parse import urlsplit
 
 from infra.secrets import validate_environment_secret_reference
 from shared.errors import ValidationError
 from shared.schemas.dns_auth import DnsAuthenticationRequest
 from shared.schemas.identifiers import TenantId
+from tool_gateway.provider_readiness import ProviderConfiguration
 from workflows.email_feedback.unsubscribe import UnsubscribeKeyReference
 
 _TENANT = re.compile(r"tn_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
@@ -39,6 +41,12 @@ _REQUIRED = (
     "TRADEOS_UNSUBSCRIBE_BASE_URL",
     "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID",
     "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON",
+    "TRADEOS_HUNTER_CONTACTS_ENABLED",
+)
+_HUNTER_COMPANION_METADATA = (
+    "TRADEOS_HUNTER_CONFIGURATION_VERSION",
+    "TRADEOS_HUNTER_API_KEY_SECRET_REF",
+    "TRADEOS_HUNTER_API_KEY_VERSION",
 )
 
 
@@ -122,6 +130,44 @@ def _integer(environ: Mapping[str, str], name: str, *, minimum: int) -> int:
 
 
 @dataclass(frozen=True)
+class HunterContactsSettings:
+    """仅保存 Hunter 部署元数据，禁止在此解析或接触密钥值。"""
+
+    enabled: bool
+    configuration: ProviderConfiguration | None
+    secret_ref: str | None = field(repr=False)
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> Self:
+        """严格解析显式开关与部署元数据，缺失或不安全输入均失败关闭。"""
+        try:
+            enabled = environ["TRADEOS_HUNTER_CONTACTS_ENABLED"]
+        except (KeyError, TypeError):
+            raise ValidationError("scheduler worker 配置无效") from None
+        if enabled == "false":
+            for name in _HUNTER_COMPANION_METADATA:
+                value = environ.get(name, "")
+                if not isinstance(value, str) or value:
+                    raise ValidationError("scheduler worker 配置无效")
+            return cls(False, None, None)
+        if enabled != "true":
+            raise ValidationError("scheduler worker 配置无效")
+        try:
+            configuration_version = environ[
+                "TRADEOS_HUNTER_CONFIGURATION_VERSION"
+            ]
+            secret_ref = environ["TRADEOS_HUNTER_API_KEY_SECRET_REF"]
+            api_key_version = environ["TRADEOS_HUNTER_API_KEY_VERSION"]
+            safe_secret_ref = validate_environment_secret_reference(secret_ref)
+            configuration = ProviderConfiguration.hunter_contacts(
+                configuration_version, api_key_version
+            )
+        except (KeyError, TypeError, ValidationError):
+            raise ValidationError("scheduler worker 配置无效") from None
+        return cls(True, configuration, safe_secret_ref)
+
+
+@dataclass(frozen=True)
 class SchedulerWorkerConfig:
     database_url: str = field(repr=False)
     tenant_id: TenantId
@@ -142,6 +188,7 @@ class SchedulerWorkerConfig:
     unsubscribe_base_url: str
     unsubscribe_active_key_id: str
     unsubscribe_key_refs: tuple[UnsubscribeKeyReference, ...]
+    hunter_contacts: HunterContactsSettings
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> SchedulerWorkerConfig:
@@ -149,6 +196,7 @@ class SchedulerWorkerConfig:
             name not in environ for name in _REQUIRED
         ):
             raise ValidationError("scheduler worker 配置无效")
+        hunter_contacts = HunterContactsSettings.from_environ(environ)
         database_url = environ["DATABASE_URL"]
         tenant = environ["TRADEOS_TENANT_ID"]
         selector = environ["TRADEOS_DKIM_SELECTOR"]
@@ -220,4 +268,5 @@ class SchedulerWorkerConfig:
             unsubscribe_url,
             active_key_id,
             key_references,
+            hunter_contacts,
         )

@@ -796,6 +796,7 @@ def test_task4_scheduler_config_is_strict_and_redacts_database_url() -> None:
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
         "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
         "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}',
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
     }
     config = config_module.SchedulerWorkerConfig.from_environ(environ)
     assert config.dkim_selector == "s1"
@@ -1018,6 +1019,7 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
         "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
         "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}',
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
         "SCHEDULER_FINGERPRINT_KEY": "x" * 32,
     }
     dependencies = runtime_module.SchedulerDomainDependencies(
