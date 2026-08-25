@@ -100,7 +100,8 @@ fake；没有真实凭证、网络、客户消息、Gmail/Hunter 动作、部署
 - upgrade from previous head：0037 roundtrip 执行 `0037 → 0036 → head`，验证 nullable
   `VARCHAR(40)`、tenant 复合 FK、tenant-first index 与 ORM columns 完全一致；包含在上述
   16 项 integration GREEN 中。
-- Ruff（全部 changed Python）：`All checks passed!`。
+- Ruff 首次门禁发现测试文件在 `from __future__ import annotations` 下的旧式字符串注解
+  `UP037`；去除多余引号后，全部 changed Python 复验为 `All checks passed!`。
 - configured mypy：`Success: no issues found in 357 source files`。
 - `scripts/check_boundaries.py`：七项全部通过。
 - `scripts/scan_sensitive.py` working tree：exit 0。
@@ -192,3 +193,45 @@ fake；没有真实凭证、网络、客户消息、Gmail/Hunter 动作、部署
 未获授权使用真实凭证、网络、客户数据、部署、push 或外部动作。剩余风险是生产 composition
 root 仍需只注入 ADR 0014 指定的真实 tenant-bound verifier；0038 在目标环境上线前仍需备份与
 演练；frontend/browser 6C、整库 exact-HEAD 6D 和真实 provider 质量不由本任务证明。
+
+## 独立审查修复轮 2（2026-08-25）
+
+本轮只处理 fix round 1 复审返回的 2 个 Important，未扩大公共契约：
+
+1. **Enrollment/Delivery 返回值信任边界：已修复。** `TenantBoundCustomerReplyEvidenceVerifier`
+   现在对 Enrollment 重新核对精确 `tenant_id`、`enrollment_id`、account 和 contact；
+   delivery 必须是真实 `DeliveryFeedbackTarget`，并且 tenant、enrollment、account、contact
+   和 sending identity 全部精确一致。错租户 Enrollment、错 Enrollment ID、伪造 delivery
+   DTO 和错租户 delivery 全部 fail closed。
+2. **0038 JSONB 形状约束：已修复。** migration 和 `ProspectAccountRow` 同时增加
+   `ck_prospect_accounts_field_provenance_jsonb`，限定 `jsonb_typeof(field_provenance) =
+   'object'`。`NOT NULL` 与 server default `{}` 保持不变；downgrade 先删 CHECK 再删列。
+
+### 本轮 TDD 证据
+
+- verifier RED：`pytest tests/unit/test_reply_customer_evidence_adapter.py -q` 为
+  `9 passed, 4 failed in 0.24s`；4 个 adversarial 均是 `DID NOT RAISE ValidationError`。
+  最小身份/类型核对后聚焦 GREEN 为 `13 passed in 0.15s`。
+- migration RED：`test_0038_prospect_account_field_provenance_roundtrip_matches_orm`
+  为 `1 failed in 4.33s`，scalar JSONB 更新未触发 `IntegrityError`。加入 DB/ORM CHECK
+  后为 `1 passed in 4.66s`；同一测试证明非空 object 存取、省略列时 `{}` 默认值、
+  scalar/array 均被拒绝，以及 PostgreSQL/ORM CHECK 名称集合完全一致。
+
+### 本轮最终 GREEN 与门禁
+
+- 受影响 unit 扩大回归：`120 passed in 2.03s`。
+- 受影响 PostgreSQL integration：`50 passed in 8.25s`。
+- Scheduler durable reply trigger：`6 passed in 8.07s`。
+- migration from empty（head → base → head）：`1 passed in 5.81s`。
+- 完整 Alembic PostgreSQL integration：`59 passed in 43.38s`。
+- Ruff（全部 changed Python）：`All checks passed!`。
+- configured mypy：`Success: no issues found in 358 source files`。
+- `scripts/check_boundaries.py`：七项全部通过。
+- `scripts/scan_sensitive.py` working tree：exit 0。
+- `git diff --check`：exit 0。
+
+本轮没有新增公共跨模块契约，因此不需要新 ADR；它只实现 ADR 0014 已规定的 fail-closed
+tenant-bound verifier 和账户字段 provenance 数据约束。真实 provider/model/mail/外部网络仍为
+**`not_run`**；仍未获授权使用真实凭证、客户数据、部署、push 或其他外部动作。
+剩余风险与上轮一致：目标环境仍需 0038 备份/演练，并且 6C/6D 仍须分别证明浏览器与
+exact-HEAD 全仓闭环。

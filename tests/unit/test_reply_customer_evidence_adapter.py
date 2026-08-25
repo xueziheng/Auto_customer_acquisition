@@ -48,7 +48,7 @@ class _Repository:
 
 
 class _Uow:
-    def __init__(self, state: "_State") -> None:
+    def __init__(self, state: _State) -> None:
         self.messages = _Repository(state.message)
         self.classifications = _Repository(state.classification)
         self.conversations = _Repository(state.conversation)
@@ -87,12 +87,16 @@ class _Outreach:
     def __init__(self) -> None:
         self.source_hypothesis_id = HYPOTHESIS
         self.account_id = ACCOUNT
+        self.enrollment_tenant_id = TENANT
+        self.enrollment_id = ENROLLMENT
+        self.delivery_tenant_id = TENANT
+        self.delivery_override: object | None = None
 
     async def get_enrollment(self, tenant_id, enrollment_id, *, actor):
         del actor
         return SimpleNamespace(
-            tenant_id=tenant_id,
-            enrollment_id=enrollment_id,
+            tenant_id=self.enrollment_tenant_id,
+            enrollment_id=self.enrollment_id,
             account_id=self.account_id,
             contact_point_id=CONTACT,
             sending_identity_id=IDENTITY,
@@ -100,9 +104,11 @@ class _Outreach:
         )
 
     async def resolve_delivery_feedback(self, tenant_id, lookup, *, actor):
-        del lookup, actor
+        del tenant_id, lookup, actor
+        if self.delivery_override is not None:
+            return self.delivery_override
         return DeliveryFeedbackTarget(
-            tenant_id=tenant_id,
+            tenant_id=self.delivery_tenant_id,
             attempt_id=MessageAttemptId(new_id("mat")),
             enrollment_id=ENROLLMENT,
             account_id=self.account_id,
@@ -191,3 +197,41 @@ async def test_verifier_fails_closed_for_untrusted_customer_evidence(
 async def test_verifier_rejects_cross_tenant_before_reading() -> None:
     with pytest.raises(TenantIsolationViolation):
         await _verifier(_State(), _Outreach()).verify(OTHER_TENANT, _claim())
+
+
+async def test_verifier_rejects_enrollment_returned_for_another_tenant() -> None:
+    outreach = _Outreach()
+    outreach.enrollment_tenant_id = OTHER_TENANT
+
+    with pytest.raises(ValidationError, match="Enrollment 关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())
+
+
+async def test_verifier_rejects_wrong_enrollment_returned_by_service() -> None:
+    outreach = _Outreach()
+    outreach.enrollment_id = EnrollmentId(new_id("enr"))
+
+    with pytest.raises(ValidationError, match="Enrollment 关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())
+
+
+async def test_verifier_rejects_delivery_dto_impostor() -> None:
+    outreach = _Outreach()
+    outreach.delivery_override = SimpleNamespace(
+        tenant_id=TENANT,
+        enrollment_id=ENROLLMENT,
+        account_id=ACCOUNT,
+        contact_point_id=CONTACT,
+        sending_identity_id=IDENTITY,
+    )
+
+    with pytest.raises(ValidationError, match="投递关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())
+
+
+async def test_verifier_rejects_delivery_returned_for_another_tenant() -> None:
+    outreach = _Outreach()
+    outreach.delivery_tenant_id = OTHER_TENANT
+
+    with pytest.raises(ValidationError, match="投递关联不匹配"):
+        await _verifier(_State(), outreach).verify(TENANT, _claim())

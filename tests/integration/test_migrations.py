@@ -5285,24 +5285,117 @@ async def test_0038_prospect_account_field_provenance_roundtrip_matches_orm(
     """0038→0037→0038：企业字段证据可逆，且数据库与 ORM 契约同构。"""
     from infra.db.session import create_engine_from
     from infra.db.tables import ProspectAccountRow
+    from shared.schemas.identifiers import new_id
 
     engine = create_engine_from(db_url)
 
-    def inspect_contract(sync: Connection) -> tuple[str, bool, str]:
+    def inspect_contract(
+        sync: Connection,
+    ) -> tuple[tuple[str, bool, str], tuple[str, ...]]:
+        inspector = inspect(sync)
         column = next(
             item
-            for item in inspect(sync).get_columns("prospect_accounts")
+            for item in inspector.get_columns("prospect_accounts")
             if item["name"] == "field_provenance"
         )
-        return str(column["type"]), bool(column["nullable"]), str(column["default"])
+        checks = tuple(
+            sorted(
+                str(item["name"])
+                for item in inspector.get_check_constraints("prospect_accounts")
+            )
+        )
+        return (
+            (str(column["type"]), bool(column["nullable"]), str(column["default"])),
+            checks,
+        )
 
     try:
         async with engine.connect() as conn:
             revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
             contract = await conn.run_sync(inspect_contract)
         assert revision == _ALEMBIC_HEAD
-        assert contract == ("JSONB", False, "'{}'::jsonb")
+        assert contract[0] == ("JSONB", False, "'{}'::jsonb")
         assert "field_provenance" in ProspectAccountRow.__table__.columns
+        tenant_id = new_id("tn")
+        account_id = new_id("acc")
+        legacy_account_id = new_id("acc")
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO prospect_accounts "
+                    "(tenant_id, account_id, name, country, source_signal_refs, "
+                    "field_provenance, created_at) VALUES "
+                    "(:tenant_id, :account_id, 'Acme', 'US', '[]'::jsonb, "
+                    "CAST(:field_provenance AS jsonb), :created_at)"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "account_id": account_id,
+                    "field_provenance": json.dumps(
+                        {"name": {"extracted_by": "company-page-extractor-v1"}}
+                    ),
+                    "created_at": datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO prospect_accounts "
+                    "(tenant_id, account_id, name, country, source_signal_refs, "
+                    "created_at) VALUES "
+                    "(:tenant_id, :account_id, 'Legacy', 'US', '[]'::jsonb, "
+                    ":created_at)"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "account_id": legacy_account_id,
+                    "created_at": datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
+                },
+            )
+            stored = await conn.scalar(
+                text(
+                    "SELECT field_provenance FROM prospect_accounts "
+                    "WHERE tenant_id=:tenant_id AND account_id=:account_id"
+                ),
+                {"tenant_id": tenant_id, "account_id": account_id},
+            )
+            legacy_stored = await conn.scalar(
+                text(
+                    "SELECT field_provenance FROM prospect_accounts "
+                    "WHERE tenant_id=:tenant_id AND account_id=:account_id"
+                ),
+                {"tenant_id": tenant_id, "account_id": legacy_account_id},
+            )
+        assert stored == {
+            "name": {"extracted_by": "company-page-extractor-v1"}
+        }
+        assert legacy_stored == {}
+
+        for invalid in ('"scalar"', "[]"):
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as conn:
+                    await conn.execute(
+                        text(
+                            "UPDATE prospect_accounts "
+                            "SET field_provenance=CAST(:field_provenance AS jsonb) "
+                            "WHERE tenant_id=:tenant_id AND account_id=:account_id"
+                        ),
+                        {
+                            "tenant_id": tenant_id,
+                            "account_id": account_id,
+                            "field_provenance": invalid,
+                        },
+                    )
+
+        check_name = "ck_prospect_accounts_field_provenance_jsonb"
+        orm_checks = tuple(
+            sorted(
+                str(item.name)
+                for item in ProspectAccountRow.__table__.constraints
+                if isinstance(item, CheckConstraint)
+            )
+        )
+        assert check_name in contract[1]
+        assert contract[1] == orm_checks
 
         _run_alembic(db_url, "downgrade", "0037")
         assert "field_provenance" not in await _columns(engine, "prospect_accounts")

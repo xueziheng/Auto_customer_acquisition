@@ -11,7 +11,7 @@ from domains.demand.schemas import (
     VerifiedCustomerReplyEvidence,
 )
 from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
-from domains.outreach.schemas import DeliveryCorrelationLookup
+from domains.outreach.schemas import DeliveryCorrelationLookup, DeliveryFeedbackTarget
 from domains.outreach.service import OutreachService
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.evidence import EvidenceLevel
@@ -90,13 +90,15 @@ class TenantBoundCustomerReplyEvidenceVerifier:
         enrollment = await self._outreach.get_enrollment(
             tenant_id, claim.enrollment_id, actor=actor
         )
-        if enrollment.source_hypothesis_id != claim.hypothesis_id:
-            raise ValidationError("客户回复来源假设不匹配")
         if (
-            enrollment.account_id != claim.account_id
+            enrollment.tenant_id != tenant_id
+            or enrollment.enrollment_id != claim.enrollment_id
+            or enrollment.account_id != claim.account_id
             or enrollment.contact_point_id != claim.contact_point_id
         ):
             raise ValidationError("客户回复 Enrollment 关联不匹配")
+        if enrollment.source_hypothesis_id != claim.hypothesis_id:
+            raise ValidationError("客户回复来源假设不匹配")
         target = await self._outreach.resolve_delivery_feedback(
             tenant_id,
             DeliveryCorrelationLookup(
@@ -113,10 +115,10 @@ class TenantBoundCustomerReplyEvidenceVerifier:
                 "system",
             ),
         )
-        if target is None:
-            raise ValidationError("客户回复投递关联不存在")
         if (
-            target.enrollment_id != claim.enrollment_id
+            not isinstance(target, DeliveryFeedbackTarget)
+            or target.tenant_id != tenant_id
+            or target.enrollment_id != claim.enrollment_id
             or target.account_id != claim.account_id
             or target.contact_point_id != claim.contact_point_id
             or target.sending_identity_id != enrollment.sending_identity_id

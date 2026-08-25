@@ -53,5 +53,7 @@
   crash replay、field-specific provenance/0038、ASSIGNED recovery、public proposal + artifact
   closed loop、ADR 0014；受影响 unit 116、PG integration 50、full migrations 59 均 GREEN；
   精确提交 SHA 见本轮 handoff，独立复审 pending）。
+- Task 6B3: fix round 1/5 scoped re-review fully resolved 5 original findings and substantially closed the Critical public-method backdoor, but returned 2 Important integrity findings (verifier did not revalidate returned enrollment/delivery tenant and identity; migration 0038 JSONB lacked an object-shape CHECK).
+- Task 6B3: fix round 2/5 implementation submitted (2 Important findings addressed, 0 implementation findings open: verifier now revalidates exact Enrollment/Delivery DTO tenant, type and identity; migration 0038 now enforces matching DB/ORM JSON object shape while preserving the `{}` legacy default; affected unit 120、PG integration 50、scheduler reply 6、full migrations 59 均 GREEN；独立复审 pending).
 - Task 6C: pending.
 - Task 6D: pending.

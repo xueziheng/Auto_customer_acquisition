@@ -25,7 +25,17 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.create_check_constraint(
+        "ck_prospect_accounts_field_provenance_jsonb",
+        "prospect_accounts",
+        "jsonb_typeof(field_provenance) = 'object'",
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        "ck_prospect_accounts_field_provenance_jsonb",
+        "prospect_accounts",
+        type_="check",
+    )
     op.drop_column("prospect_accounts", "field_provenance")

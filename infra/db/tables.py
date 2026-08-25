@@ -2862,6 +2862,10 @@ class ProspectAccountRow(Base):
             "jsonb_typeof(source_signal_refs) = 'array'",
             name="ck_prospect_accounts_source_refs_jsonb",
         ),
+        CheckConstraint(
+            "jsonb_typeof(field_provenance) = 'object'",
+            name="ck_prospect_accounts_field_provenance_jsonb",
+        ),
         Index(
             "uq_prospect_accounts_domain",
             "tenant_id",
