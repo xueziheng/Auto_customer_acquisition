@@ -14,6 +14,8 @@ RED：``scripts/scan_sensitive.py`` 尚未创建 → 动态加载 pytest.fail / 
 """
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -340,6 +342,24 @@ def test_hunter_docs_and_fixtures_contain_refs_without_runnable_secrets() -> Non
         assert module.scan_file(path) == []
 
 
+def _fenced_blocks(text: str, language: str) -> list[str]:
+    return re.findall(
+        rf"```{re.escape(language)}\n(.*?)\n```",
+        text,
+        flags=re.DOTALL,
+    )
+
+
+def _selected_columns(sql: str) -> tuple[str, ...]:
+    match = re.search(
+        r"\ASELECT\s+(.*?)\s+FROM\s+",
+        sql.strip(),
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    assert match is not None
+    return tuple(" ".join(column.split()) for column in match.group(1).split(","))
+
+
 def test_hunter_runbook_pins_runtime_outcome_queries_and_exact_ready_copy() -> None:
     """运维文档必须使用受控 Python、双层结果查询与前端真实 ready 文案。"""
     runbook = (
@@ -365,10 +385,78 @@ def test_hunter_runbook_pins_runtime_outcome_queries_and_exact_ready_copy() -> N
     assert "durable readiness outcome" in runbook
     assert "provider_auth_required" in runbook
     assert "CLI 不会直接输出 `auth_required` 或 `response_invalid`" in runbook
+    validation_section = runbook.split(
+        "## 4. 显式执行一次 provider.hunter.validate", maxsplit=1
+    )[1].split("## 5. 处理固定结果", maxsplit=1)[0]
+    validation_queries = _fenced_blocks(validation_section, "sql")
+    assert len(validation_queries) == 2
+    assert _selected_columns(validation_queries[0]) == (
+        "event_type",
+        "outcome_code",
+        "occurred_at",
+    )
+    assert _selected_columns(validation_queries[1]) == (
+        "tool_call_id",
+        "status",
+        "error_category",
+        "retry_after_at",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    )
+    for query in validation_queries:
+        assert "select *" not in query.lower()
+        projection = " ".join(_selected_columns(query)).lower()
+        for forbidden in (
+            "*",
+            "configuration_hash",
+            "secret_ref",
+            "response",
+            "payload",
+            "credential",
+            "key",
+        ):
+            assert forbidden not in projection
     assert (
         "联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。"
         in runbook
     )
+
+
+def test_hunter_runbook_bootstrap_stops_after_wrong_python(tmp_path: Path) -> None:
+    """版本探针失败时不得继续执行 Alembic 或安全门命令。"""
+    runbook = (
+        _REPO_ROOT / "docs/operations/hunter-provider-readiness.md"
+    ).read_text(encoding="utf-8")
+    bootstrap = _fenced_blocks(runbook, "bash")[0]
+    marker = tmp_path / "unexpected-later-command"
+    fake_python = tmp_path / "tradeos-fake-python"
+    fake_python.write_text(
+        """#!/bin/sh
+if [ "${1:-}" = "-c" ]; then
+  exit 23
+fi
+printf '%s\n' "$*" >> "$TRADEOS_TEST_MARKER"
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "-c", bootstrap],
+        cwd=_REPO_ROOT,
+        env={
+            **os.environ,
+            "TRADEOS_PYTHON_BIN": str(fake_python),
+            "TRADEOS_TEST_MARKER": str(marker),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert not marker.exists()
 
 
 # --- 默认 tracked / --staged 文件发现（运行时临时 git 仓库 + monkeypatch） ----------

@@ -25,6 +25,8 @@ Hunter API key 由密钥服务或受限进程环境在 Git 之外注入。只有
 版本。不要在文档或脚本里假设某台机器的 conda 绝对路径：
 
 ```bash
+set -euo pipefail
+
 if [ -z "${TRADEOS_PYTHON_BIN:-}" ]; then
   TRADEOS_PYTHON_BIN="$(command -v python3)"
 fi
