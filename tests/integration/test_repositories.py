@@ -782,6 +782,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "enrollment_id", "campaign_id", "campaign_version", "account_id",
             "contact_point_id", "sending_identity_id", "state", "current_step",
             "next_send_at", "enrolled_at", "stopped_at", "stop_reason", "idempotency_key",
+            "source_hypothesis_id",
         },
         "outreach_suppressions": {
             "tenant_id", "suppression_id", "contact_point_id", "account_id", "reason",
@@ -800,6 +801,11 @@ def test_orm_metadata_parity_with_head() -> None:
         "outreach_actions": {
             "tenant_id", "action_id", "action_key", "action", "entity_id", "actor_id",
             "occurred_at",
+        },
+        "conversation_reply_work": {
+            "tenant_id", "action_id", "message_id", "outbound_message_id",
+            "enrollment_id", "account_id", "contact_point_id", "action",
+            "owner_queue", "status", "idempotency_key", "created_at",
         },
         "tool_calls": {
             "tenant_id", "tool_call_id", "tool_id", "tool_version", "risk_level",
@@ -860,6 +866,7 @@ def test_orm_metadata_parity_with_head() -> None:
         "prospect_accounts": {
             "tenant_id", "account_id", "name", "country", "website_domain",
             "entity_type", "industry", "size_hint", "source_signal_refs", "created_at",
+            "field_provenance",
         },
         "prospect_contacts": {
             "tenant_id", "contact_id", "account_id", "full_name", "role_title",
@@ -977,6 +984,9 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_outreach_enrollments_tenant_contact_state": (
             "tenant_id", "contact_point_id", "state",
         ),
+        "ix_outreach_enrollments_tenant_source_hypothesis": (
+            "tenant_id", "source_hypothesis_id",
+        ),
         "ix_outreach_suppressions_tenant_contact": (
             "tenant_id", "contact_point_id", "occurred_at",
         ),
@@ -1000,6 +1010,9 @@ def test_orm_metadata_parity_with_head() -> None:
         ),
         "ix_unsubscribe_tokens_tenant_attempt": (
             "tenant_id", "message_attempt_id", "created_at",
+        ),
+        "ix_conversation_reply_work_owner_queue": (
+            "tenant_id", "status", "owner_queue", "created_at", "action_id",
         ),
         "uq_tool_calls_tenant_tool_key": (
             "tenant_id", "tool_id", "idempotency_key",
@@ -1136,6 +1149,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_outreach_enrollments", "uq_outreach_enrollments_tenant_key",
             "fk_outreach_enrollments_version", "ck_outreach_enrollment_state",
             "ck_outreach_enrollment_step", "ck_outreach_enrollment_stop_fields",
+            "fk_outreach_enrollments_source_hypothesis",
         },
         "outreach_suppressions": {
             "pk_outreach_suppressions", "uq_outreach_suppressions_tenant_key",
@@ -1154,6 +1168,15 @@ def test_orm_metadata_parity_with_head() -> None:
         },
         "outreach_actions": {
             "pk_outreach_actions", "uq_outreach_actions_tenant_key",
+        },
+        "conversation_reply_work": {
+            "pk_conversation_reply_work",
+            "uq_conversation_reply_work_message_action",
+            "uq_conversation_reply_work_idempotency",
+            "fk_conversation_reply_work_message",
+            "ck_conversation_reply_work_action",
+            "ck_conversation_reply_work_status",
+            "ck_conversation_reply_work_queue",
         },
         "tool_calls": {
             "pk_tool_calls", "uq_tool_calls_tenant_call", "fk_tool_calls_duplicate",
@@ -1229,6 +1252,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_prospect_accounts", "ck_prospect_accounts_core_nonblank",
             "ck_prospect_accounts_optional_nonblank",
             "ck_prospect_accounts_source_refs_jsonb",
+            "ck_prospect_accounts_field_provenance_jsonb",
         },
         "prospect_contacts": {
             "pk_prospect_contacts", "fk_prospect_contacts_account",

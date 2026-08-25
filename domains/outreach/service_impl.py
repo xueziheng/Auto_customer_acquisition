@@ -1496,6 +1496,13 @@ class OutreachServiceImpl:
         action = OutreachAction.ENROLLMENT_PREPARE_SEND
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
         located = await self._locate_enrollment(tenant_id, enrollment_id)
+        approval = await self._require_approved_version(
+            tenant_id,
+            located.campaign_id,
+            located.campaign_version,
+            actor,
+            action,
+        )
         now = self._validate_now(self._now())
         blocked: Exception | None = None
         async with self._uow_factory(tenant_id) as uow:
@@ -1530,13 +1537,6 @@ class OutreachServiceImpl:
             )
             if bound_version is None or current_version is None:
                 raise ValidationError("Enrollment Campaign 版本不存在")
-            approval = await self._require_approved_version(
-                tenant_id,
-                campaign.campaign_id,
-                enrollment.campaign_version,
-                actor,
-                action,
-            )
             if enrollment.campaign_version == campaign.current_version and (
                 campaign.approval_id != approval.approval_id
                 or campaign.approved_by != approval.approved_by
@@ -1831,6 +1831,7 @@ class OutreachServiceImpl:
         tenant_id: TenantId,
         attempt_id: MessageAttemptId,
         located: MessageAttempt,
+        approval: CampaignApprovalSnapshot,
         actor: Actor,
         action: OutreachAction,
     ) -> tuple[MessageAttempt, MessageSendPreflight, str]:
@@ -1863,13 +1864,6 @@ class OutreachServiceImpl:
         )
         if version is None or enrollment.campaign_version != attempt.campaign_version:
             raise MessageAttemptConflictError("Message Attempt Campaign 版本不匹配")
-        approval = await self._require_approved_version(
-            tenant_id,
-            campaign.campaign_id,
-            attempt.campaign_version,
-            actor,
-            action,
-        )
         if attempt.campaign_version == campaign.current_version and (
             campaign.approval_id != approval.approval_id
             or campaign.approved_by != approval.approved_by
@@ -1961,9 +1955,16 @@ class OutreachServiceImpl:
         action = OutreachAction.ENROLLMENT_PREPARE_SEND
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
         located = await self._locate_attempt(tenant_id, attempt_id)
+        approval = await self._require_approved_version(
+            tenant_id,
+            located.campaign_id,
+            located.campaign_version,
+            actor,
+            action,
+        )
         async with self._uow_factory(tenant_id) as uow:
             _attempt, preflight, rule = await self._validate_message_send_current_facts(
-                uow, tenant_id, attempt_id, located, actor, action
+                uow, tenant_id, attempt_id, located, approval, actor, action
             )
         self._allow(actor, action, tenant_id, rule)
         return preflight
@@ -1978,10 +1979,17 @@ class OutreachServiceImpl:
         action = OutreachAction.ENROLLMENT_PREPARE_SEND
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
         located = await self._locate_attempt(tenant_id, attempt_id)
+        approval = await self._require_approved_version(
+            tenant_id,
+            located.campaign_id,
+            located.campaign_version,
+            actor,
+            action,
+        )
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             attempt, _preflight, rule = await self._validate_message_send_current_facts(
-                uow, tenant_id, attempt_id, located, actor, action
+                uow, tenant_id, attempt_id, located, approval, actor, action
             )
             if attempt.state is not MessageAttemptState.SENDING:
                 attempt.transition_to(MessageAttemptState.SENDING, at=now)

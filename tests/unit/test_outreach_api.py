@@ -275,6 +275,7 @@ def test_sales_list_sees_only_own_campaign_enrollments() -> None:
         "tenant_id", "enrollment_id", "campaign_id", "campaign_version",
         "account_id", "contact_point_id", "sending_identity_id", "state",
         "current_step", "next_send_at", "enrolled_at", "stopped_at", "stop_reason",
+        "source_hypothesis_id",
     }
     assert resolver.calls == [frozenset({str(SALES)})]
     tenant, scope, limit, actor = outreach.list_calls[0]

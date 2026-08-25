@@ -116,6 +116,54 @@ async def _prepared_harness() -> tuple[object, object, object]:
     return harness, actor, attempt
 
 
+async def test_prepare_attempt_reads_approval_before_campaign_lock() -> None:
+    """审批查询若放在 Campaign 锁内，同 Attempt 并发会耗尽连接池。"""
+    helpers = importlib.import_module("tests.unit.test_outreach_enrollment_service")
+    harness = helpers._build()
+    enrollment = await harness.service.enroll(
+        harness.tenant,
+        harness.campaign_id,
+        helpers._request(harness),
+        actor=harness.boss,
+    )
+    actor = helpers._system(harness, enrollment.enrollment_id)
+    harness.trace.calls.clear()
+
+    await harness.service.prepare_message_attempt(
+        harness.tenant, enrollment.enrollment_id, actor=actor
+    )
+
+    approval_index = next(
+        index for index, call in enumerate(harness.trace.calls) if call[0] == "approval"
+    )
+    campaign_lock_index = next(
+        index
+        for index, call in enumerate(harness.trace.calls)
+        if call[0] == "campaign_lock"
+    )
+    assert approval_index < campaign_lock_index
+
+
+async def test_preflight_reads_approval_before_campaign_lock() -> None:
+    """发送 current-fact 复核必须在锁外取不可变审批事实。"""
+    harness, actor, attempt = await _prepared_harness()
+    harness.trace.calls.clear()
+
+    await harness.service.preflight_message_send(
+        harness.tenant, attempt.attempt_id, actor=actor
+    )
+
+    approval_index = next(
+        index for index, call in enumerate(harness.trace.calls) if call[0] == "approval"
+    )
+    campaign_lock_index = next(
+        index
+        for index, call in enumerate(harness.trace.calls)
+        if call[0] == "campaign_lock"
+    )
+    assert approval_index < campaign_lock_index
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
