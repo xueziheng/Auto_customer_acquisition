@@ -27,6 +27,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from shared.schemas.provenance import Provenance, SourceType
 
 _models = importlib.import_module("domains.prospecting.models")
 NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)
@@ -118,7 +119,7 @@ async def test_account_repository_roundtrip_dedup_merge_and_tenant_guard(
     candidates = await repo.search_by_name(tenant, "Acme", "DE")
     assert [item.account_id for item in candidates] == [account.account_id, ProspectAccountId("acc-duplicate")]
     merged = await repo.merge_source_signal_refs(
-        tenant, account.account_id, ("sig-1", "sig-2", "sig-1")
+        tenant, account.account_id, ("sig-1", "sig-2", "sig-1"), {}
     )
     assert merged is not None
     assert merged.source_signal_refs == ["sig-1", "sig-2"]
@@ -359,6 +360,24 @@ async def test_service_resolves_and_records_contacts_with_compliance_gates(
         _StableTestHasher(),
         now=lambda: NOW,
     )
+    account_name_provenance = Provenance(
+        SourceType.WEB_PAGE,
+        "a" * 64,
+        "identity-extractor-v2",
+        NOW,
+        source_url="https://acme.example/about",
+        page_hash="a" * 64,
+        source_quote="Acme",
+    )
+    country_provenance = Provenance(
+        SourceType.WEB_PAGE,
+        "b" * 64,
+        "country-extractor-v3",
+        NOW,
+        source_url="https://acme.example/contact",
+        page_hash="b" * 64,
+        source_quote="Germany",
+    )
     first = await service.resolve_account(
         tenant,
         AccountResolveRequest(
@@ -366,6 +385,10 @@ async def test_service_resolves_and_records_contacts_with_compliance_gates(
             country="DE",
             website_domain="Acme.Example.",
             source_signal_refs=("sig-1",),
+            field_provenance={
+                "name": account_name_provenance,
+                "country": country_provenance,
+            },
         ),
     )
     repeated = await service.resolve_account(
@@ -381,6 +404,10 @@ async def test_service_resolves_and_records_contacts_with_compliance_gates(
     view = await service.get_account(tenant, first)
     assert view.website_domain == "acme.example"
     assert view.source_signal_refs == ("sig-1", "sig-2")
+    assert view.field_provenance == {
+        "name": account_name_provenance,
+        "country": country_provenance,
+    }
     without_domain_a = await service.resolve_account(
         tenant, AccountResolveRequest(entity_name="Same Name", country="DE")
     )

@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0037"
+_ALEMBIC_HEAD = "0038"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -5270,6 +5270,42 @@ async def test_0037_enrollment_source_hypothesis_roundtrip_matches_orm(
         assert "source_hypothesis_id" not in await _columns(
             engine, "outreach_enrollments"
         )
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0038_prospect_account_field_provenance_roundtrip_matches_orm(
+    db_url: str,
+) -> None:
+    """0038→0037→0038：企业字段证据可逆，且数据库与 ORM 契约同构。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import ProspectAccountRow
+
+    engine = create_engine_from(db_url)
+
+    def inspect_contract(sync: Connection) -> tuple[str, bool, str]:
+        column = next(
+            item
+            for item in inspect(sync).get_columns("prospect_accounts")
+            if item["name"] == "field_provenance"
+        )
+        return str(column["type"]), bool(column["nullable"]), str(column["default"])
+
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            contract = await conn.run_sync(inspect_contract)
+        assert revision == _ALEMBIC_HEAD
+        assert contract == ("JSONB", False, "'{}'::jsonb")
+        assert "field_provenance" in ProspectAccountRow.__table__.columns
+
+        _run_alembic(db_url, "downgrade", "0037")
+        assert "field_provenance" not in await _columns(engine, "prospect_accounts")
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:
             restored = await conn.run_sync(inspect_contract)

@@ -47,6 +47,11 @@
 - Task 6B2: fix round 2/5 scoped re-review resolved the Important finding but found 1 Minor leading-whitespace policy mismatch.
 - Task 6B2: fix round 3/5 scoped re-review Approved (1 addressed, 0 open).
 - Task 6B2: complete (commits `b727069..ce995ad`, review clean; real-provider/model acceptance remains explicitly `not_run`).
-- Task 6B3: implementation complete from base `ce995ad63c3da20472dd8d7706e738569b493aeb`; implementation/report/ledger share one commit whose exact SHA is recorded in handoff; independent review pending. Final affected unit `90 passed`, focused PostgreSQL integration `16 passed`, full migration file `58 passed` (including migration-from-empty); real provider/model/mail remains `not_run`.
+- Task 6B3: initial implementation submitted at `138c25a41c7a85401ef1126890d024e650af211e`; implementation evidence reported affected unit `90 passed`, focused PostgreSQL integration `16 passed`, and full migration file `58 passed`; real provider/model/mail remains `not_run`.
+- Task 6B3: initial independent review returned 1 Critical and 5 Important findings (unverified customer-evidence public backdoor; promotion/intake crash-window replay gap; fabricated critical-field provenance; owner without ASSIGNED transition; acceptance bypassed confirmed proposal and durable reply artifact; missing ADR for public contracts).
+- Task 6B3: fix round 1/5 implementation submitted（6 项已逐项修复：durable evidence verifier、
+  crash replay、field-specific provenance/0038、ASSIGNED recovery、public proposal + artifact
+  closed loop、ADR 0014；受影响 unit 116、PG integration 50、full migrations 59 均 GREEN；
+  精确提交 SHA 见本轮 handoff，独立复审 pending）。
 - Task 6C: pending.
 - Task 6D: pending.

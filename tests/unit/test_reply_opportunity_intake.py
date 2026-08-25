@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 from apps.scheduler_worker.adapters.reply_opportunity_intake import (
     DurableReplyOpportunityIntake,
 )
@@ -17,11 +19,13 @@ from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope, ScopeLevel
+from domains.opportunities.service import OpportunityState
 from domains.organization.permissions import (
     OrganizationActor,
     OrganizationScope,
     OrganizationScopeLevel,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
     EmployeeId,
@@ -36,6 +40,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import Provenance, SourceType
 from workflows.reply_qualification.ports import ReplyActionContext
 
 NOW = datetime(2026, 8, 25, 9, tzinfo=UTC)
@@ -50,6 +55,24 @@ OPPORTUNITY = OpportunityId(new_id("opp"))
 MESSAGE = MessageId(new_id("msg"))
 QUOTE = "We need 5000 hinges at USD 2 each."
 PAGE_HASH = "a" * 64
+ACCOUNT_NAME_PROVENANCE = Provenance(
+    source_type=SourceType.WEB_PAGE,
+    source_id="b" * 64,
+    extracted_by="account-name-extractor-v2",
+    extracted_at=NOW,
+    source_url="https://acme.example/about",
+    page_hash="b" * 64,
+    source_quote="Acme Components manufactures industrial hardware.",
+)
+COUNTRY_PROVENANCE = Provenance(
+    source_type=SourceType.WEB_PAGE,
+    source_id="c" * 64,
+    extracted_by="country-extractor-v7",
+    extracted_at=NOW,
+    source_url="https://acme.example/contact",
+    page_hash="c" * 64,
+    source_quote="Headquarters: Cleveland, United States.",
+)
 CONTEXT = ReplyActionContext(
     message_id=MESSAGE,
     outbound_message_id=OutboundMessageId("<reply.test@messages.tradeos.invalid>"),
@@ -130,6 +153,10 @@ class _Prospecting:
             account_id=account_id,
             name="Acme Components",
             country="US",
+            field_provenance={
+                "name": ACCOUNT_NAME_PROVENANCE,
+                "country": COUNTRY_PROVENANCE,
+            },
         )
 
     async def get_contact_point(self, tenant_id, contact_point_id):
@@ -157,12 +184,24 @@ class _Opportunities:
     def __init__(self) -> None:
         self.created = []
         self.assigned = []
+        self.transitions = []
+        self.owner = None
+        self.state = "qualified"
+        self.exists = False
 
     async def get_by_need(self, tenant_id, need_id, *, actor):
         del tenant_id, need_id, actor
+        if not self.exists:
+            return None
+        return SimpleNamespace(
+            opportunity_id=OPPORTUNITY,
+            owner=self.owner,
+            state=self.state,
+        )
 
     async def create_from_need(self, tenant_id, request, evidence, *, actor):
         self.created.append((tenant_id, request, evidence, actor))
+        self.exists = True
         return OPPORTUNITY
 
     async def assign(
@@ -171,6 +210,14 @@ class _Opportunities:
         self.assigned.append(
             (tenant_id, opportunity_id, owner, assigned_by, actor)
         )
+        self.owner = owner
+
+    async def transition(self, tenant_id, opportunity_id, target, *, actor):
+        self.transitions.append((tenant_id, opportunity_id, target, actor))
+        assert self.owner == OWNER
+        assert self.state == "qualified"
+        assert target is OpportunityState.ASSIGNED
+        self.state = "assigned"
 
 
 class _Employees:
@@ -182,9 +229,18 @@ class _Employees:
 
 
 class _ExistingUnassignedOpportunities(_Opportunities):
+    def __init__(self) -> None:
+        super().__init__()
+        self.exists = True
+
     async def get_by_need(self, tenant_id, need_id, *, actor):
-        del tenant_id, need_id, actor
-        return SimpleNamespace(opportunity_id=OPPORTUNITY, owner=None)
+        return await super().get_by_need(tenant_id, need_id, actor=actor)
+
+
+class _ExistingOwnerBeforeTransitionOpportunities(_ExistingUnassignedOpportunities):
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner = OWNER
 
 
 def _intake(opportunities: _Opportunities) -> DurableReplyOpportunityIntake:
@@ -225,9 +281,14 @@ async def test_intake_uses_reply_money_playbook_and_employee_owner() -> None:
     )
     assert request.has_verified_contact is True
     assert request.category_allowed is True
-    assert request.field_provenance["account_name"].page_hash == PAGE_HASH
+    assert request.field_provenance["account_name"] == ACCOUNT_NAME_PROVENANCE
+    assert request.field_provenance["country"] == COUNTRY_PROVENANCE
+    assert request.field_provenance["account_name"].extracted_by == (
+        "account-name-extractor-v2"
+    )
     assert request.field_provenance["quantity"].source_id == MESSAGE
     assert opportunities.assigned[0][2:4] == (OWNER, BOSS)
+    assert opportunities.state == "assigned"
 
 
 async def test_intake_replay_assigns_an_existing_unassigned_opportunity() -> None:
@@ -239,3 +300,33 @@ async def test_intake_replay_assigns_an_existing_unassigned_opportunity() -> Non
 
     assert result == OPPORTUNITY
     assert opportunities.assigned[0][1:4] == (OPPORTUNITY, OWNER, BOSS)
+    assert opportunities.state == "assigned"
+
+
+async def test_intake_recovers_when_owner_commit_precedes_assigned_transition() -> None:
+    opportunities = _ExistingOwnerBeforeTransitionOpportunities()
+
+    result = await _intake(opportunities).create_and_assign(
+        TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+    )
+
+    assert result == OPPORTUNITY
+    assert opportunities.assigned == []
+    assert opportunities.state == "assigned"
+    assert opportunities.transitions[0][2] is OpportunityState.ASSIGNED
+
+
+async def test_intake_rejects_account_without_field_specific_provenance() -> None:
+    class MissingCountryProvenance(_Prospecting):
+        async def get_account(self, tenant_id, account_id):
+            account = await super().get_account(tenant_id, account_id)
+            account.field_provenance = {"name": ACCOUNT_NAME_PROVENANCE}
+            return account
+
+    intake = _intake(_Opportunities())
+    intake._prospecting = MissingCountryProvenance()
+
+    with pytest.raises(ValidationError, match="企业关键字段来源"):
+        await intake.create_and_assign(
+            TENANT, CONTEXT, HYPOTHESIS, NEED, EVIDENCE
+        )

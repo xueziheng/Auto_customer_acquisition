@@ -35,6 +35,7 @@ from domains.demand.models import (
 )
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import (
+    CustomerReplyEvidenceClaim,
     DemandSignalView,
     EvidenceSummary,
     HypothesisDiscoveryView,
@@ -43,8 +44,10 @@ from domains.demand.schemas import (
     NeedFieldView,
     SignalCaptureRequest,
     ValidatedNeedView,
+    VerifiedCustomerReplyEvidence,
 )
 from domains.demand.service import (
+    CustomerReplyEvidenceVerifier,
     DemandAccountNameReader,
     mutable_need_field_names,
     promotable_need_field_names,
@@ -240,6 +243,7 @@ class DemandServiceImpl:
         *,
         now: Callable[[], datetime],
         account_names: DemandAccountNameReader | None = None,
+        customer_evidence: CustomerReplyEvidenceVerifier | None = None,
     ) -> None:
         if not callable(uow_factory) or not callable(now):
             raise ValidationError("需求服务依赖无效")
@@ -250,6 +254,11 @@ class DemandServiceImpl:
         ):
             raise ValidationError("需求账户展示名依赖无效")
         self._account_names = account_names
+        if customer_evidence is not None and not isinstance(
+            customer_evidence, CustomerReplyEvidenceVerifier
+        ):
+            raise ValidationError("客户回复证据验证依赖无效")
+        self._customer_evidence = customer_evidence
 
     @staticmethod
     def _validate_now(value: datetime) -> datetime:
@@ -710,39 +719,45 @@ class DemandServiceImpl:
     async def record_customer_reply_evidence(
         self,
         tenant_id: TenantId,
-        hypothesis_id: NeedHypothesisId,
-        source_message_id: MessageId,
-        evidence_level: EvidenceLevel,
+        claim: CustomerReplyEvidenceClaim,
     ) -> None:
-        """只追加客户会话证据；晋升仍由统一门槛决定。"""
-        if (
-            not isinstance(hypothesis_id, str)
-            or not hypothesis_id.strip()
-            or hypothesis_id != hypothesis_id.strip()
-            or len(hypothesis_id) > 40
-            or not isinstance(source_message_id, str)
-            or not source_message_id.strip()
-            or source_message_id != source_message_id.strip()
-            or len(source_message_id) > 40
-            or not isinstance(evidence_level, EvidenceLevel)
-            or _EVIDENCE_RANK[evidence_level]
-            < _EVIDENCE_RANK[EvidenceLevel.CUSTOMER_INTEREST_REPLY]
-        ):
+        """验证耐久 Conversation/Outreach 绑定后才追加客户会话证据。"""
+        if not isinstance(claim, CustomerReplyEvidenceClaim):
             raise ValidationError("客户回复证据无效")
-        now = self._validate_now(self._now())
+        if self._customer_evidence is None:
+            raise ValidationError("客户回复证据未验证")
+        proof = await self._customer_evidence.verify(tenant_id, claim)
+        if not isinstance(proof, VerifiedCustomerReplyEvidence):
+            raise ValidationError("客户回复证据未验证")
+        if (
+            proof.tenant_id != tenant_id
+            or proof.hypothesis_id != claim.hypothesis_id
+            or proof.source_message_id != claim.source_message_id
+            or proof.account_id != claim.account_id
+            or not isinstance(proof.evidence_level, EvidenceLevel)
+            or _EVIDENCE_RANK[proof.evidence_level]
+            < _EVIDENCE_RANK[EvidenceLevel.CUSTOMER_INTEREST_REPLY]
+            or not isinstance(proof.classified_by, str)
+            or not proof.classified_by.strip()
+            or proof.classified_by != proof.classified_by.strip()
+        ):
+            raise ValidationError("客户回复证据验证结果不匹配")
+        observed_at = self._validate_now(proof.classified_at)
         async with self._uow_factory(tenant_id) as uow:
             hypothesis = await uow.hypotheses.get_for_update(
-                tenant_id, hypothesis_id
+                tenant_id, claim.hypothesis_id
             )
             if hypothesis is None:
                 raise ValidationError("需求假设不存在")
+            if hypothesis.account_id != claim.account_id:
+                raise ValidationError("客户回复企业关联不匹配")
             if hypothesis.status is HypothesisStatus.REJECTED:
                 raise HypothesisAlreadyResolvedError("已否决的假设不可追加客户证据")
             incoming = EvidenceItem(
-                level=evidence_level,
+                level=proof.evidence_level,
                 source_type=SourceType.CONVERSATION.value,
-                source_id=str(source_message_id),
-                observed_at=now,
+                source_id=str(proof.source_message_id),
+                observed_at=observed_at,
                 summary="客户回复提供需求事实",
             )
             merged = _merge_evidence(hypothesis.evidence(), [incoming])

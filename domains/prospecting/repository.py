@@ -20,6 +20,7 @@ from shared.schemas.identifiers import (
     ProspectContactId,
     TenantId,
 )
+from shared.schemas.provenance import Provenance
 
 
 @runtime_checkable
@@ -56,6 +57,7 @@ class AccountRepository(Protocol):
         tenant_id: TenantId,
         account_id: ProspectAccountId,
         source_signal_refs: tuple[str, ...],
+        field_provenance: dict[str, Provenance],
     ) -> ProspectAccount | None:
         """行锁下做稳定去重并集；不存在返回 None。"""
         ...

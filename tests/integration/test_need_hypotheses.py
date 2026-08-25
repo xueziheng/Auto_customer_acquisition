@@ -24,7 +24,15 @@ from domains.demand.errors import (
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service import DemandService
 from shared.errors import TenantIsolationViolation, ValidationError
-from shared.schemas.identifiers import TenantId, new_id
+from shared.schemas.evidence import EvidenceLevel
+from shared.schemas.identifiers import (
+    ContactPointId,
+    EnrollmentId,
+    MessageId,
+    OutboundMessageId,
+    TenantId,
+    new_id,
+)
 from shared.schemas.money import Money
 from shared.schemas.provenance import SourceType
 
@@ -65,12 +73,18 @@ def _service(
     clock: MutableClock,
     *,
     account_names: object | None = None,
+    customer_evidence: object | None = None,
 ) -> DemandService:
     impl_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    kwargs: dict[str, object] = {
+        "now": clock.now,
+        "account_names": account_names,
+    }
+    if customer_evidence is not None:
+        kwargs["customer_evidence"] = customer_evidence
     return impl_type(
         lambda requested: _uow_type()(factory, requested, now=clock.now),
-        now=clock.now,
-        account_names=account_names,
+        **kwargs,
     )
 
 
@@ -733,6 +747,88 @@ async def test_promote_rejects_agent_inference_evidence(
     rows = await _hypothesis_rows(factory, tenant)
     assert rows[0].status == "inferred"
     assert len(await _outbox_events(factory, tenant)) == before
+
+
+async def test_customer_reply_evidence_requires_verified_durable_binding(
+    demand_db: AsyncEngine,
+) -> None:
+    """删除 verifier 或只传 synthetic MessageId 时，客户证据门槛必须仍关闭。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    account_id = _models.ProspectAccountId(new_id("acc"))
+    clock = MutableClock(NOW)
+    unverified = _service(factory, tenant, clock)
+    await _seed_web_snapshot(factory, tenant)
+    signal_id = await _signal(
+        unverified,
+        tenant,
+        signal_type="product_line_expansion",
+        source_type="web_page",
+        source_id=WEB_PAGE_HASH,
+        source_url="https://example.com/acme",
+        page_hash=WEB_PAGE_HASH,
+        snapshot_artifact_ref=WEB_SNAPSHOT_ARTIFACT_REF,
+    )
+    hypothesis_id = await unverified.create_hypothesis(
+        tenant,
+        account_id,
+        "hinges",
+        [signal_id],
+        "工厂扩建，可能需要五金",
+        "model-v1",
+    )
+    message_id = MessageId(new_id("msg"))
+    schemas = importlib.import_module("domains.demand.schemas")
+    claim = schemas.CustomerReplyEvidenceClaim(
+        hypothesis_id=hypothesis_id,
+        source_message_id=message_id,
+        outbound_message_id=OutboundMessageId(
+            f"<reply-demand.{'e' * 64}@messages.tradeos.invalid>"
+        ),
+        enrollment_id=EnrollmentId(new_id("enr")),
+        account_id=account_id,
+        contact_point_id=ContactPointId(new_id("cp")),
+    )
+
+    with pytest.raises(ValidationError, match="未验证"):
+        await unverified.record_customer_reply_evidence(tenant, claim)
+    with pytest.raises(InsufficientEvidenceError):
+        await unverified.promote_to_validated(
+            tenant,
+            hypothesis_id,
+            message_id,
+            {"product_category": "hinges"},
+        )
+
+    class Verifier:
+        def __init__(self, proof: object) -> None:
+            self.proof = proof
+
+        async def verify(self, requested_tenant, claim):
+            assert requested_tenant == tenant
+            assert claim.hypothesis_id == hypothesis_id
+            assert claim.source_message_id == message_id
+            return self.proof
+
+    proof = schemas.VerifiedCustomerReplyEvidence(
+        tenant_id=tenant,
+        hypothesis_id=hypothesis_id,
+        source_message_id=message_id,
+        account_id=account_id,
+        evidence_level=EvidenceLevel.CUSTOMER_SPECIFICATION,
+        classified_by="reply-model-v4",
+        classified_at=NOW,
+    )
+    verified = _service(
+        factory,
+        tenant,
+        clock,
+        customer_evidence=Verifier(proof),
+    )
+    await verified.record_customer_reply_evidence(tenant, claim)
+
+    confidence = await verified.get_confidence(tenant, hypothesis_id)
+    assert confidence.tier.value == "high"
 
 
 async def test_promote_success_status_and_event(demand_db: AsyncEngine) -> None:

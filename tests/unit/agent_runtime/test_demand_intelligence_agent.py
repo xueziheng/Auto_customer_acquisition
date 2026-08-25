@@ -15,7 +15,7 @@ from shared.schemas.identifiers import RunId, TenantId, UserId, new_id
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
 HASH = "a" * 64
 ARTIFACT = "art_01K3H0T8NBWM3KGT9XQ06YRC5V"
-FACT = "Acme opened a new outdoor furniture production line."
+FACT = "Example.com is headquartered in the US and opened a new production line."
 
 
 class _CapturingModel:
@@ -70,7 +70,9 @@ def _response(*, reasoning: str = "企业扩产，可能需要工业铰链，值
         ],
         "hypotheses": [
             {
+                "account_name_signal_index": 0,
                 "country": "US",
+                "country_signal_index": 0,
                 "category": "industrial hinges",
                 "reasoning": reasoning,
                 "signal_indexes": [0],
@@ -101,6 +103,8 @@ async def test_signal_carries_complete_snapshot_tuple_and_separates_inference() 
     assert hypothesis["entity_name"] == "example.com"
     assert hypothesis["website_domain"] == "example.com"
     assert hypothesis["signal_indexes"] == (0,)
+    assert hypothesis["account_name_signal_index"] == 0
+    assert hypothesis["country_signal_index"] == 0
     assert "reasoning" not in signal
     assert "raw_observation" not in hypothesis
 
@@ -154,6 +158,21 @@ async def test_hypothesis_without_visible_signal_evidence_is_rejected() -> None:
 
     assert result.changes == []
     assert "模型输出被护栏拦截" in result.summary
+
+
+async def test_country_provenance_fails_closed_when_cited_quote_has_no_country() -> None:
+    unsupported = "Example.com opened a new production line."
+    response = _response()
+    response["signals"][0]["source_excerpt"] = unsupported
+    model = _CapturingModel(response)
+    agent = DemandIntelligenceAgent(
+        "model-v1", model, object(), CredentialMarkerGuard()
+    )
+
+    result = await agent.run(_task(text=unsupported), None)
+
+    assert result.changes == []
+    assert "国家字段证据" in result.summary
 
 
 @pytest.mark.parametrize(

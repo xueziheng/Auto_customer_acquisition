@@ -51,7 +51,9 @@ _SIGNAL_KEYS = frozenset(
 )
 _HYPOTHESIS_KEYS = frozenset(
     {
+        "account_name_signal_index",
         "country",
+        "country_signal_index",
         "category",
         "reasoning",
         "signal_indexes",
@@ -73,8 +75,9 @@ source_excerpt, possible_need, evidence_level。source_excerpt 必须逐字摘�
 它是事实。possible_need 是推断，不能写进 source_excerpt。evidence_level 只能是
 public_company_event 或 agent_industry_inference。
 
-hypotheses 每项字段固定为 country, category,
-reasoning, signal_indexes。signal_indexes 只能引用本次 signals 的数组下标且不得为空；
+hypotheses 每项字段固定为 country, category, reasoning, signal_indexes,
+account_name_signal_index, country_signal_index。三个索引只能引用本次 signals，
+其中字段索引还必须属于 signal_indexes；country_signal_index 指向的逐字事实必须支持国家；
 reasoning 必须使用“可能……值得验证”的推断措辞。国家和品类只能选输入目标集合。
 
 企业身份与官网域名由系统从获批页面 host 确定，模型不得输出或改写。
@@ -373,12 +376,28 @@ def _hypothesis(
     indexes = tuple(dict.fromkeys(raw_indexes))
     if any(not 0 <= index < len(signals) for index in indexes):
         raise ValidationError("需求假设信号引用越界")
+    account_name_index = item.get("account_name_signal_index")
+    country_index = item.get("country_signal_index")
+    if (
+        type(account_name_index) is not int
+        or type(country_index) is not int
+        or account_name_index not in indexes
+        or country_index not in indexes
+    ):
+        raise ValidationError("需求假设企业字段证据引用无效")
     cited_entities = {signals[index]["entity_name"] for index in indexes}
     if len(cited_entities) != 1:
         raise ValidationError("需求假设不得跨企业合并证据")
     entity_name = next(iter(cited_entities))
     assert isinstance(entity_name, str)
     country = _text(item.get("country"), maximum=2)
+    country_quote = signals[country_index].get("source_excerpt")
+    if not isinstance(country_quote, str) or re.search(
+        rf"(?<![A-Za-z]){re.escape(country)}(?![A-Za-z])",
+        country_quote,
+        flags=re.IGNORECASE,
+    ) is None:
+        raise ValidationError("需求假设国家字段证据不支持该国家")
     category = _text(item.get("category"), maximum=100)
     target_countries = projection["target_countries"]
     target_categories = projection["target_categories"]
@@ -403,6 +422,8 @@ def _hypothesis(
         "category": category,
         "reasoning": raw_reasoning,
         "signal_indexes": indexes,
+        "account_name_signal_index": account_name_index,
+        "country_signal_index": country_index,
     }
 
 

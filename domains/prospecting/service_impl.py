@@ -142,6 +142,7 @@ def _account_view(account: ProspectAccount) -> ProspectAccountView:
         industry=account.industry,
         size_hint=account.size_hint,
         source_signal_refs=tuple(account.source_signal_refs),
+        field_provenance=dict(account.field_provenance),
     )
 
 
@@ -216,6 +217,11 @@ class ProspectingServiceImpl:
         _optional_text(request.size_hint, "潜在企业字段无效")
         if any(not item or item != item.strip() for item in request.source_signal_refs):
             raise ValidationError("潜在企业来源引用无效")
+        if request.field_provenance and set(request.field_provenance) != {
+            "name",
+            "country",
+        }:
+            raise ValidationError("潜在企业关键字段来源不完整")
         domain = (
             _canonical_domain(request.website_domain)
             if request.website_domain is not None
@@ -233,6 +239,7 @@ class ProspectingServiceImpl:
             industry=request.industry,
             size_hint=request.size_hint,
             source_signal_refs=source_refs,
+            field_provenance=dict(request.field_provenance),
         )
         async with self._uow_factory(tenant_id) as uow:
             if await uow.accounts.add(account):
@@ -243,7 +250,10 @@ class ProspectingServiceImpl:
             if winner is None:
                 raise ProspectingConflictError("潜在企业消歧冲突")
             merged = await uow.accounts.merge_source_signal_refs(
-                tenant_id, winner.account_id, tuple(source_refs)
+                tenant_id,
+                winner.account_id,
+                tuple(source_refs),
+                request.field_provenance,
             )
             if merged is None:
                 raise ProspectingConflictError("潜在企业消歧冲突")

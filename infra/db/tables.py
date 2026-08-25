@@ -2881,6 +2881,9 @@ class ProspectAccountRow(Base):
     industry: Mapped[str | None] = mapped_column(String(160))
     size_hint: Mapped[str | None] = mapped_column(String(80))
     source_signal_refs: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    field_provenance: Mapped[dict[str, object]] = mapped_column(
+        postgresql.JSONB, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

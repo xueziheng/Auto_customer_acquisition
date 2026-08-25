@@ -11,14 +11,16 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from domains.demand.schemas import (
+    CustomerReplyEvidenceClaim,
     DemandSignalView,
     HypothesisDiscoveryView,
     HypothesisView,
     NeedClusterView,
     SignalCaptureRequest,
     ValidatedNeedView,
+    VerifiedCustomerReplyEvidence,
 )
-from shared.schemas.evidence import ConfidenceResult, EvidenceLevel
+from shared.schemas.evidence import ConfidenceResult
 from shared.schemas.identifiers import (
     EmployeeId,
     MessageId,
@@ -28,6 +30,18 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+
+
+@runtime_checkable
+class CustomerReplyEvidenceVerifier(Protocol):
+    """由上层验证 Conversation/Outreach 的租户绑定持久回复链。"""
+
+    async def verify(
+        self,
+        tenant_id: TenantId,
+        claim: CustomerReplyEvidenceClaim,
+    ) -> VerifiedCustomerReplyEvidence: ...
+
 
 _PROMOTABLE_NEED_FIELDS = (
     "product_category",
@@ -173,11 +187,9 @@ class DemandService(Protocol):
     async def record_customer_reply_evidence(
         self,
         tenant_id: TenantId,
-        hypothesis_id: NeedHypothesisId,
-        source_message_id: MessageId,
-        evidence_level: EvidenceLevel,
+        claim: CustomerReplyEvidenceClaim,
     ) -> None:
-        """幂等追加一条 customer_* 会话证据；不自行晋升。"""
+        """验证持久回复链后幂等追加 customer_* 证据；不自行晋升。"""
         ...
 
     async def promote_to_validated(

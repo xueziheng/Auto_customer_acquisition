@@ -185,11 +185,9 @@ class _PromotingDemand(_Demand):
         self.reply_evidence = []
 
     async def record_customer_reply_evidence(
-        self, tenant_id, hypothesis_id, source_message_id, evidence_level
+        self, tenant_id, claim
     ) -> None:
-        self.reply_evidence.append(
-            (tenant_id, hypothesis_id, source_message_id, evidence_level.value)
-        )
+        self.reply_evidence.append((tenant_id, claim))
 
     async def promote_to_validated(
         self,
@@ -235,6 +233,47 @@ class _OpportunityIntake:
             (tenant_id, context, hypothesis_id, need_id, evidence.message_id)
         )
         return "opp_promoted_reply_1"
+
+
+class _CrashWindowBusiness(_Business):
+    def __init__(self, demand: _PromotingDemand) -> None:
+        super().__init__()
+        self._demand = demand
+
+    async def load(self, tenant_id: TenantId, context: ReplyActionContext):
+        module = _module()
+        assert tenant_id == TENANT and context == CONTEXT
+        return module.ReplyBusinessFacts(
+            need_id=(
+                "need_promoted_reply_1" if self._demand.promotions else None
+            ),
+            hypothesis_id="hyp_promoted_reply_1",
+            opportunity_id=None,
+            account_name="Acme Imports",
+            country="US",
+            why_valuable="Customer supplied order specifications.",
+        )
+
+
+class _CrashOnceOpportunityIntake(_OpportunityIntake):
+    async def create_and_assign(
+        self,
+        tenant_id,
+        context,
+        hypothesis_id,
+        need_id,
+        evidence,
+    ) -> str:
+        result = await super().create_and_assign(
+            tenant_id,
+            context,
+            hypothesis_id,
+            need_id,
+            evidence,
+        )
+        if len(self.calls) == 1:
+            raise RuntimeError("simulated crash after need commit")
+        return result
 
 
 class _Opportunities:
@@ -437,14 +476,12 @@ async def test_first_promotion_creates_and_assigns_opportunity_before_handoff() 
     )
 
     assert demand.promotions == 1
-    assert demand.reply_evidence == [
-        (
-            TENANT,
-            "hyp_promoted_reply_1",
-            MESSAGE_ID,
-            "customer_specification",
-        )
-    ]
+    assert len(demand.reply_evidence) == 1
+    evidence_tenant, claim = demand.reply_evidence[0]
+    assert evidence_tenant == TENANT
+    assert claim.hypothesis_id == "hyp_promoted_reply_1"
+    assert claim.source_message_id == MESSAGE_ID
+    assert claim.outbound_message_id == CONTEXT.outbound_message_id
     assert intake.calls == [
         (
             TENANT,
@@ -454,6 +491,42 @@ async def test_first_promotion_creates_and_assigns_opportunity_before_handoff() 
             MESSAGE_ID,
         )
     ]
+
+
+async def test_replay_resumes_intake_after_crash_between_need_and_opportunity() -> None:
+    """删除 existing-need 恢复分支时，第一次崩溃会永久丢失 Opportunity。"""
+    module = _module()
+    demand = _PromotingDemand()
+    intake = _CrashOnceOpportunityIntake()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=_Evidence(),
+        business=_CrashWindowBusiness(demand),
+        content=_Content(),
+        demand=demand,
+        opportunities=_Opportunities(),
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+        opportunity_intake=intake,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await actions.extract_need_fields(
+            TENANT,
+            CONTEXT,
+            f"reply:extract_need_fields:{MESSAGE_ID}",
+        )
+
+    await actions.extract_need_fields(
+        TENANT,
+        CONTEXT,
+        f"reply:extract_need_fields:{MESSAGE_ID}",
+    )
+
+    assert demand.promotions == 1
+    assert len(intake.calls) == 2
+    assert intake.calls[1][3] == "need_promoted_reply_1"
 
 
 async def test_action_rejects_message_whose_stored_outbound_link_is_stale() -> None:

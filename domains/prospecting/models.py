@@ -18,6 +18,7 @@ from shared.schemas.identifiers import (
     ProspectContactId,
     TenantId,
 )
+from shared.schemas.provenance import Provenance, SourceType
 
 
 class VerificationStatus(str, Enum):
@@ -120,6 +121,7 @@ class ProspectAccount:
     industry: str | None = None
     size_hint: str | None = None
     source_signal_refs: list[str] = field(default_factory=list)
+    field_provenance: dict[str, Provenance] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_text(str(self.account_id), "潜在企业字段无效")
@@ -133,6 +135,14 @@ class ProspectAccount:
         _require_utc(self.created_at, "潜在企业时间必须为 UTC")
         if any(not _is_exact_nonblank(item) for item in self.source_signal_refs):
             raise ValidationError("潜在企业来源引用无效")
+        if self.field_provenance and set(self.field_provenance) != {"name", "country"}:
+            raise ValidationError("潜在企业关键字段来源不完整")
+        if any(
+            not isinstance(item, Provenance)
+            or item.source_type is SourceType.AGENT_INFERENCE
+            for item in self.field_provenance.values()
+        ):
+            raise ValidationError("潜在企业关键字段来源无效")
 
 
 @dataclass

@@ -34,12 +34,51 @@ from infra.db.tables import (
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
+    EmployeeId,
     ProspectAccountId,
     ProspectContactId,
     TenantId,
 )
+from shared.schemas.provenance import Provenance, SourceType
 
 _logger = logging.getLogger("infra.db.repositories.prospecting")
+
+
+def _provenance_to_json(value: Provenance) -> dict[str, object]:
+    return {
+        "source_type": value.source_type.value,
+        "source_id": value.source_id,
+        "extracted_by": value.extracted_by,
+        "extracted_at": value.extracted_at.isoformat(),
+        "confirmed_by": str(value.confirmed_by) if value.confirmed_by else None,
+        "confirmed_at": value.confirmed_at.isoformat() if value.confirmed_at else None,
+        "source_url": value.source_url,
+        "page_hash": value.page_hash,
+        "source_quote": value.source_quote,
+    }
+
+
+def _provenance_from_json(value: object) -> Provenance:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ValidationError("潜在企业关键字段来源损坏")
+    payload = cast(dict[str, object], value)
+    confirmed_by = payload.get("confirmed_by")
+    confirmed_at = payload.get("confirmed_at")
+    return Provenance(
+        source_type=SourceType(str(payload["source_type"])),
+        source_id=str(payload["source_id"]),
+        extracted_by=str(payload["extracted_by"]),
+        extracted_at=datetime.fromisoformat(str(payload["extracted_at"])),
+        confirmed_by=EmployeeId(str(confirmed_by)) if confirmed_by else None,
+        confirmed_at=(
+            datetime.fromisoformat(str(confirmed_at)) if confirmed_at else None
+        ),
+        source_url=(str(payload["source_url"]) if payload.get("source_url") else None),
+        page_hash=(str(payload["page_hash"]) if payload.get("page_hash") else None),
+        source_quote=(
+            str(payload["source_quote"]) if payload.get("source_quote") else None
+        ),
+    )
 
 
 class _TenantBound:
@@ -68,6 +107,10 @@ def _row_to_account(row: ProspectAccountRow) -> ProspectAccount:
         industry=row.industry,
         size_hint=row.size_hint,
         source_signal_refs=list(row.source_signal_refs),
+        field_provenance={
+            key: _provenance_from_json(value)
+            for key, value in row.field_provenance.items()
+        },
         created_at=row.created_at,
     )
 
@@ -124,6 +167,10 @@ class ProspectAccountRepositoryImpl(_TenantBound, AccountRepository):
             industry=account.industry,
             size_hint=account.size_hint,
             source_signal_refs=list(account.source_signal_refs),
+            field_provenance={
+                key: _provenance_to_json(value)
+                for key, value in account.field_provenance.items()
+            },
             created_at=account.created_at,
         )
         if account.website_domain is None:
@@ -204,6 +251,7 @@ class ProspectAccountRepositoryImpl(_TenantBound, AccountRepository):
         tenant_id: TenantId,
         account_id: ProspectAccountId,
         source_signal_refs: tuple[str, ...],
+        field_provenance: dict[str, Provenance],
     ) -> ProspectAccount | None:
         self._require_tenant(tenant_id, "prospect_account_merge_source_refs")
         row = (
@@ -218,7 +266,13 @@ class ProspectAccountRepositoryImpl(_TenantBound, AccountRepository):
         ).scalar_one_or_none()
         if row is None:
             return None
-        row.source_signal_refs = list(dict.fromkeys([*row.source_signal_refs, *source_signal_refs]))
+        row.source_signal_refs = list(
+            dict.fromkeys([*row.source_signal_refs, *source_signal_refs])
+        )
+        stored = dict(row.field_provenance)
+        for key, value in field_provenance.items():
+            stored.setdefault(key, _provenance_to_json(value))
+        row.field_provenance = stored
         await self._session.flush()
         return _row_to_account(row)
 
@@ -330,7 +384,10 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
             .join(
                 ContactLegalBasisRow,
                 (ContactLegalBasisRow.tenant_id == ContactPointRow.tenant_id)
-                & (ContactLegalBasisRow.contact_point_id == ContactPointRow.contact_point_id),
+                & (
+                    ContactLegalBasisRow.contact_point_id
+                    == ContactPointRow.contact_point_id
+                ),
             )
             .where(
                 ContactPointRow.tenant_id == str(self._tenant_id),
@@ -438,12 +495,16 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
             .join(
                 ContactLegalBasisRow,
                 (ContactLegalBasisRow.tenant_id == ContactPointRow.tenant_id)
-                & (ContactLegalBasisRow.contact_point_id == ContactPointRow.contact_point_id),
+                & (
+                    ContactLegalBasisRow.contact_point_id
+                    == ContactPointRow.contact_point_id
+                ),
             )
             .where(
                 ContactPointRow.tenant_id == str(self._tenant_id),
                 ProspectContactRow.account_id == str(account_id),
-                ContactPointRow.verification_status == VerificationStatus.VERIFIED.value,
+                ContactPointRow.verification_status
+                == VerificationStatus.VERIFIED.value,
             )
             .order_by(ContactPointRow.created_at, ContactPointRow.contact_point_id)
         )

@@ -13,14 +13,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
+from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.qualification_agent.agent import QualificationAgent
 from apps.scheduler_worker.account_discovery import (
     BossAccountDiscoveryActorResolver,
     DemandAccountDiscoveryTaskReader,
 )
+from apps.scheduler_worker.adapters.message_content_reader import (
+    ArtifactMessageContentReader,
+)
 from apps.scheduler_worker.adapters.reply_business_facts import (
     TenantBoundReplyBusinessFactsReader,
+)
+from apps.scheduler_worker.adapters.reply_customer_evidence import (
+    TenantBoundCustomerReplyEvidenceVerifier,
 )
 from apps.scheduler_worker.adapters.reply_evidence_reader import (
     ConversationReplyEvidenceReader,
@@ -28,7 +35,11 @@ from apps.scheduler_worker.adapters.reply_evidence_reader import (
 from apps.scheduler_worker.adapters.reply_opportunity_intake import (
     DurableReplyOpportunityIntake,
 )
+from apps.scheduler_worker.directive_reader import DirectiveDemandDiscoveryTaskReader
 from apps.scheduler_worker.reply_actions import ComposedReplyActionPorts
+from artifact_store.service_impl import RawArtifactStoreImpl
+from artifact_store.store import RawArtifactKind
+from artifact_store.transport import BlobObjectNotFoundError
 from connectors.contact_enrichment.client import (
     ContactCandidate,
     ContactEmailKind,
@@ -41,6 +52,12 @@ from connectors.email_verification.client import (
     EmailVerificationResult,
     VerificationCostNote,
 )
+from connectors.web_search.client import PageSnapshot, WebSearchResult
+from domains.directives.schemas import (
+    DemandDiscoveryPlanInput,
+    DiscoverySearchQueryInput,
+)
+from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees import models as employee_models
 from domains.employees.permissions import (
     Actor as EmployeeActor,
@@ -99,10 +116,11 @@ from domains.outreach.schemas import (
     ReplyStatusSnapshot,
     SendingIdentityEligibilitySnapshot,
 )
-from domains.prospecting.schemas import AccountResolveRequest
 from domains.prospecting.service_impl import ProspectingServiceImpl
+from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
+from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
@@ -113,6 +131,7 @@ from infra.db.repositories.employees import (
 )
 from infra.db.session import create_engine_from
 from infra.db.tables import (
+    DirectiveProposalRow,
     HandoffRow,
     NeedHypothesisRow,
     OpportunityRow,
@@ -128,7 +147,6 @@ from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
     EmployeeId,
-    MessageId,
     OutboundMessageId,
     ProspectAccountId,
     SendingIdentityId,
@@ -137,7 +155,6 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
-from shared.schemas.provenance import SourceType
 from tests.integration.test_outreach_enrollment_lifecycle import (
     APPROVER as CAMPAIGN_APPROVER,
 )
@@ -146,26 +163,57 @@ from tests.integration.test_outreach_enrollment_lifecycle import (
     _seed_active_campaign,
 )
 from tests.outreach_fakes import FakeApprovals, FakeAudit, FakeSenders, Trace
+from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.account_discovery.flow import (
     build_account_discovery_definition,
     build_account_discovery_handlers,
+)
+from workflows.demand_discovery.flow import (
+    build_demand_discovery_definition,
+    build_demand_discovery_handlers,
 )
 from workflows.engine.runner import StepStatus
 from workflows.reply_qualification.flow import (
     build_reply_qualification_definition,
     build_reply_qualification_handlers,
 )
-from workflows.reply_qualification.ports import ReplyActionContext, ReplyMessageContent
+from workflows.reply_qualification.ports import ReplyActionContext
 
 NOW = datetime(2026, 8, 25, 10, 0, tzinfo=UTC)
 BODY = "We need 5000 hardware kits at USD 2 each. CLOSED-LOOP-BODY-7719"
 EMAIL = "buyer.closed-loop@example.test"
-PAGE_HASH = "c" * 64
+PAGE_TEXT = (
+    "Example.test is headquartered in the US and opened a hardware distribution center."
+)
+PAGE_BYTES = f"<html><body>{PAGE_TEXT}</body></html>".encode()
+PAGE_HASH = hashlib.sha256(PAGE_BYTES).hexdigest()
+REPLY_BYTES = (
+    "Subject: Hardware requirement\r\n"
+    f"From: {EMAIL}\r\n"
+    "To: sales@example.test\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "\r\n"
+    f"{BODY}\r\n"
+).encode()
 
 
 class _StableHasher:
     def fingerprint(self, canonical_value: str) -> str:
         return hashlib.sha256(canonical_value.encode()).hexdigest()
+
+
+class _DirectiveEmployees:
+    def __init__(self, tenant_id: TenantId, boss: EmployeeId) -> None:
+        self._tenant_id = tenant_id
+        self._boss = boss
+
+    async def is_active_boss(self, tenant_id, employee_id) -> bool:
+        return tenant_id == self._tenant_id and employee_id == self._boss
+
+    async def names_for(self, tenant_id, employee_ids):
+        if tenant_id != self._tenant_id:
+            return {}
+        return {item: "Boss" for item in employee_ids if item == self._boss}
 
 
 class _ProspectingOrganizationFacts:
@@ -212,12 +260,135 @@ class _ControlledAccountModel:
         )
 
 
+class _MemoryBlobTransport:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def put(self, object_key: str, content: bytes) -> None:
+        self.objects[object_key] = bytes(content)
+
+    async def get(self, object_key: str) -> bytes:
+        try:
+            return self.objects[object_key]
+        except KeyError:
+            raise BlobObjectNotFoundError() from None
+
+    async def delete(self, object_key: str) -> None:
+        self.objects.pop(object_key, None)
+
+
+class _ControlledDemandSearcher:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search(self, tenant_id, run_id, query, country, category, limit):
+        del run_id, query, limit
+        self.calls += 1
+        return SearchResultBatch(
+            new_id("wsb"),
+            tenant_id,
+            country,
+            category,
+            (WebSearchResult("Expansion", "https://example.test/news", ""),),
+        )
+
+    def release(self, batch) -> None:
+        del batch
+
+    def discard_all(self) -> None:
+        return None
+
+
+class _ControlledDemandPageReader:
+    def __init__(self, store: object) -> None:
+        self._store = store
+        self.calls = 0
+
+    async def read_page(self, tenant_id, run_id, batch, result_index):
+        del run_id, batch, result_index
+        self.calls += 1
+        meta = await self._store.put(
+            tenant_id,
+            RawArtifactKind.WEB_SNAPSHOT,
+            PAGE_BYTES,
+            "text/html",
+        )
+        return PageSnapshot(
+            PAGE_TEXT,
+            "https://example.test/news",
+            NOW,
+            meta.content_hash,
+            meta.artifact_id,
+        )
+
+
+class _ControlledDemandModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def analyze_pages(self, *, system_prompt, discovery):
+        del system_prompt, discovery
+        self.calls += 1
+        return json.dumps(
+            {
+                "signals": [
+                    {
+                        "signal_type": "product_line_expansion",
+                        "source_page_index": 0,
+                        "source_excerpt": PAGE_TEXT,
+                        "possible_need": "hardware",
+                        "evidence_level": "public_company_event",
+                    }
+                ],
+                "hypotheses": [
+                    {
+                        "account_name_signal_index": 0,
+                        "country": "US",
+                        "country_signal_index": 0,
+                        "category": "hardware",
+                        "reasoning": "企业扩张，可能需要 hardware，值得验证",
+                        "signal_indexes": [0],
+                    }
+                ],
+            }
+        )
+
+
+class _AccountWorkflowQueue:
+    def __init__(self) -> None:
+        self.engine: object | None = None
+
+    async def start(
+        self,
+        tenant_id,
+        hypothesis_id,
+        *,
+        campaign_id,
+        acting_user,
+        role_hints,
+        assessment_ref,
+    ):
+        if self.engine is None:
+            raise AssertionError("account workflow queue 未绑定")
+        return await self.engine.start(
+            tenant_id,
+            "account_discovery",
+            str(hypothesis_id),
+            {
+                "hypothesis_id": str(hypothesis_id),
+                "campaign_id": campaign_id,
+                "acting_user_id": str(acting_user),
+                "role_hints": list(role_hints),
+                "assessment_ref": assessment_ref,
+            },
+            f"closed-loop-account:{hypothesis_id}:{campaign_id}",
+        )
+
+
 class _ControlledEnricher:
     calls = 0
 
-    async def find_contacts(
-        self, tenant_id, hypothesis_id, account_id, role_hints
-    ):
+    async def find_contacts(self, tenant_id, hypothesis_id, account_id, role_hints):
         del tenant_id, hypothesis_id, account_id, role_hints
         self.calls += 1
         return ContactEnrichmentResult(
@@ -333,19 +504,6 @@ class _ControlledReplyModel:
         )
 
 
-class _MemoryContent:
-    def __init__(self, message_id: MessageId) -> None:
-        self._message_id = message_id
-        self.calls = 0
-
-    async def load(self, tenant_id, message_id):
-        del tenant_id
-        self.calls += 1
-        if message_id != self._message_id:
-            return None
-        return ReplyMessageContent(subject="Hardware requirement", body=BODY)
-
-
 class _UnusedSendingIdentities:
     async def record_delivery_event(self, *args, **kwargs):
         raise AssertionError("provides_specification 不应写投递反馈")
@@ -372,75 +530,22 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
     campaign_id = CampaignId(new_id("cmp"))
     approval_id = ApprovalId(new_id("apr"))
     sender_id = SendingIdentityId(new_id("sid"))
-    artifact_id = new_id("art")
     employee_session = AsyncSession(bind=engine, expire_on_commit=False)
     try:
+        blob_transport = _MemoryBlobTransport()
+        raw_store = RawArtifactStoreImpl(
+            lambda bound: SqlAlchemyArtifactUnitOfWork(factory, bound),
+            blob_transport,
+            1_000_000,
+            lambda: NOW,
+            new_id,
+        )
         prospecting = ProspectingServiceImpl(
             lambda bound: SqlAlchemyProspectingUnitOfWork(
                 factory, bound, now=lambda: NOW
             ),
             _StableHasher(),
             now=lambda: NOW,
-        )
-        account_id = await prospecting.resolve_account(
-            tenant,
-            AccountResolveRequest(
-                entity_name="Acme Controlled Imports",
-                country="US",
-                website_domain="example.test",
-                entity_type="importer",
-                industry="hardware",
-            ),
-        )
-        async with factory() as session:
-            session.add(
-                RawArtifactRow(
-                    tenant_id=tenant,
-                    artifact_id=artifact_id,
-                    kind="web_snapshot",
-                    content_hash=PAGE_HASH,
-                    size_bytes=64,
-                    mime_type="text/html",
-                    object_key=f"raw/{tenant}/{artifact_id}",
-                    uploaded_by=None,
-                    uploaded_at=NOW,
-                )
-            )
-            await session.commit()
-
-        from domains.demand.schemas import SignalCaptureRequest
-        from domains.demand.service_impl import DemandServiceImpl
-
-        demand = DemandServiceImpl(
-            lambda bound: SqlAlchemyDemandUnitOfWork(
-                factory, bound, now=lambda: NOW
-            ),
-            now=lambda: NOW,
-            account_names=_ProspectingOrganizationFacts(prospecting),
-        )
-        signal_id = await demand.capture_signal(
-            tenant,
-            SignalCaptureRequest(
-                signal_type="product_line_expansion",
-                entity_name="Acme Controlled Imports",
-                raw_observation="Acme opened a new hardware distribution center.",
-                possible_need="May need hardware kits.",
-                observed_at=NOW,
-                source_type=SourceType.WEB_PAGE.value,
-                source_id=PAGE_HASH,
-                extracted_by="controlled-discovery-model",
-                source_url="https://example.test/news/expansion",
-                page_hash=PAGE_HASH,
-                snapshot_artifact_ref=artifact_id,
-            ),
-        )
-        hypothesis_id = await demand.create_hypothesis(
-            tenant,
-            account_id,
-            "hardware",
-            [signal_id],
-            "Public expansion suggests a hardware procurement need.",
-            "controlled-discovery-model",
         )
 
         employees_repo = EmployeeRepositoryImpl(employee_session, tenant)
@@ -509,9 +614,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         from domains.outreach.service_impl import OutreachServiceImpl
 
         outreach = OutreachServiceImpl(
-            lambda bound: SqlAlchemyOutreachUnitOfWork(
-                factory, bound, now=lambda: NOW
-            ),
+            lambda bound: SqlAlchemyOutreachUnitOfWork(factory, bound, now=lambda: NOW),
             _ProspectingContactEligibility(prospecting),
             senders,
             approvals,
@@ -521,10 +624,65 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             now=lambda: NOW,
         )
 
+        from domains.demand.service_impl import DemandServiceImpl
+        from infra.db.workflow_engine import PostgresWorkflowEngine
+
+        demand = DemandServiceImpl(
+            lambda bound: SqlAlchemyDemandUnitOfWork(factory, bound, now=lambda: NOW),
+            now=lambda: NOW,
+            account_names=_ProspectingOrganizationFacts(prospecting),
+            customer_evidence=TenantBoundCustomerReplyEvidenceVerifier(
+                tenant_id=tenant,
+                conversations_uow_factory=lambda bound: (
+                    SqlAlchemyConversationsUnitOfWork(factory, bound, now=lambda: NOW)
+                ),
+                outreach=outreach,
+            ),
+        )
+        directives = DirectiveServiceImpl(
+            lambda bound: SqlAlchemyDirectiveUnitOfWork(
+                factory, bound, now=lambda: NOW
+            ),
+            _DirectiveEmployees(tenant, boss),
+            now=lambda: NOW,
+        )
+        proposal_id = await directives.submit_discovery_proposal(
+            tenant,
+            "Find verified US hardware demand from public company events.",
+            DemandDiscoveryPlanInput(
+                objective="探索 US hardware 的公开需求信号",
+                queries=(
+                    DiscoverySearchQueryInput(
+                        "US hardware distribution expansion",
+                        "US",
+                        "hardware",
+                        1,
+                    ),
+                ),
+                target_countries=("US",),
+                target_categories=("hardware",),
+                excluded_countries=(),
+                excluded_categories=(),
+                max_search_queries=1,
+                max_pages_read=1,
+                max_signals=1,
+                max_hypotheses=1,
+                minimum_confidence_tier="low_mid",
+                strategy_group="company_change",
+                campaign_id=str(campaign_id),
+                role_hints=("procurement",),
+                assessment_ref="closed-loop-lia",
+            ),
+            "在已确认预算内从公开扩张事实形成需求假设并进入账户发现。",
+            ["执行一次公开搜索", "最多创建一个需求假设并排队账户发现"],
+            "controlled-directive-parser-v1",
+        )
+        await directives.confirm_proposal(tenant, proposal_id, boss)
+
         account_model = _ControlledAccountModel()
         enricher = _ControlledEnricher()
         verifier = _ControlledVerifier()
-        discovery_handlers = build_account_discovery_handlers(
+        account_handlers = build_account_discovery_handlers(
             task_reader=DemandAccountDiscoveryTaskReader(
                 demand, allowed_countries=("US",)
             ),
@@ -542,24 +700,39 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             actor_resolver=BossAccountDiscoveryActorResolver(employees),
             now=lambda: NOW,
         )
-        from infra.db.workflow_engine import PostgresWorkflowEngine
-
-        discovery_engine = PostgresWorkflowEngine(
-            factory, discovery_handlers, now=lambda: NOW
+        demand_model = _ControlledDemandModel()
+        demand_searcher = _ControlledDemandSearcher()
+        demand_page_reader = _ControlledDemandPageReader(raw_store)
+        account_queue = _AccountWorkflowQueue()
+        demand_handlers = build_demand_discovery_handlers(
+            task_reader=DirectiveDemandDiscoveryTaskReader(directives),
+            searcher=demand_searcher,
+            page_reader=demand_page_reader,
+            capability=DemandIntelligenceAgent(
+                "controlled-discovery-model-v1",
+                demand_model,
+                object(),
+                CredentialMarkerGuard(),
+            ),
+            demand=demand,
+            prospecting=prospecting,
+            account_queue=account_queue,
         )
+        discovery_engine = PostgresWorkflowEngine(
+            factory, {**demand_handlers, **account_handlers}, now=lambda: NOW
+        )
+        account_queue.engine = discovery_engine
+        discovery_engine.register(build_demand_discovery_definition())
         discovery_engine.register(build_account_discovery_definition())
         discovery_run_id = await discovery_engine.start(
             tenant,
-            "account_discovery",
-            str(hypothesis_id),
+            "demand_discovery",
+            proposal_id,
             {
-                "hypothesis_id": str(hypothesis_id),
-                "campaign_id": str(campaign_id),
+                "proposal_id": proposal_id,
                 "acting_user_id": str(UserId(str(boss))),
-                "role_hints": ["procurement"],
-                "assessment_ref": "closed-loop-lia",
             },
-            f"account-discovery:{hypothesis_id}",
+            f"closed-loop-demand:{proposal_id}",
         )
         await _poll_until_idle(discovery_engine, tenant)
         await employee_session.commit()
@@ -573,9 +746,29 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
                     )
                 )
             ).scalar_one()
+            account_run = (
+                await session.execute(
+                    select(WorkflowRunRow).where(
+                        WorkflowRunRow.tenant_id == tenant,
+                        WorkflowRunRow.workflow_type == "account_discovery",
+                    )
+                )
+            ).scalar_one()
+        hypothesis_id = enrollment.source_hypothesis_id
+        assert hypothesis_id is not None
         assert discovery_run.status == StepStatus.COMPLETED.value
+        assert account_run.status == StepStatus.COMPLETED.value
         assert enrollment.source_hypothesis_id == hypothesis_id
         assert EMAIL not in json.dumps(discovery_run.context)
+        assert (
+            demand_model.calls,
+            demand_searcher.calls,
+            demand_page_reader.calls,
+        ) == (
+            1,
+            1,
+            1,
+        )
         assert (account_model.calls, enricher.calls, verifier.calls) == (1, 1, 1)
 
         contact_point_id = enrollment.contact_point_id
@@ -627,7 +820,18 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             ),
             now=lambda: NOW,
         )
-        reply_artifact = new_id("art")
+        reply_meta = await raw_store.put(
+            tenant,
+            RawArtifactKind.EMAIL_RAW,
+            REPLY_BYTES,
+            "message/rfc822",
+        )
+        reply_artifact = reply_meta.artifact_id
+        stored_reply_meta, stored_reply_bytes = await raw_store.get(
+            tenant, reply_artifact
+        )
+        assert stored_reply_meta.kind is RawArtifactKind.EMAIL_RAW
+        assert stored_reply_bytes == REPLY_BYTES
         message_id = await conversations.ingest_inbound(
             tenant,
             None,
@@ -637,15 +841,18 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             NOW,
             outbound_message_id=outbound_id,
         )
-        assert await conversations.ingest_inbound(
-            tenant,
-            None,
-            ProspectAccountId(enrollment.account_id),
-            reply_artifact,
-            "<closed-loop-reply@example.test>",
-            NOW,
-            outbound_message_id=outbound_id,
-        ) == message_id
+        assert (
+            await conversations.ingest_inbound(
+                tenant,
+                None,
+                ProspectAccountId(enrollment.account_id),
+                reply_artifact,
+                "<closed-loop-reply@example.test>",
+                NOW,
+                outbound_message_id=outbound_id,
+            )
+            == message_id
+        )
 
         organization = OrganizationServiceImpl(
             lambda bound: SqlAlchemyOrganizationUnitOfWork(factory, bound),
@@ -741,7 +948,15 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         assert pre_promotion_facts is not None
         assert pre_promotion_facts.hypothesis_id == hypothesis_id
         assert pre_promotion_facts.need_id is None
-        content = _MemoryContent(message_id)
+        content = ArtifactMessageContentReader(
+            lambda bound: SqlAlchemyConversationsUnitOfWork(
+                factory, bound, now=lambda: NOW
+            ),
+            raw_store,
+            max_raw_bytes=100_000,
+            max_subject_chars=500,
+            max_body_chars=10_000,
+        )
         action_ports = ComposedReplyActionPorts(
             tenant_id=tenant,
             evidence=evidence_reader,
@@ -761,9 +976,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
                 employees=employees,
                 organization_actor=organization_boss,
                 opportunity_actor=opportunity_actor,
-                employee_actor=EmployeeActor(
-                    str(boss), EmployeeScope.TENANT, "boss"
-                ),
+                employee_actor=EmployeeActor(str(boss), EmployeeScope.TENANT, "boss"),
             ),
         )
         reply_model = _ControlledReplyModel()
@@ -820,54 +1033,93 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
                 (str(tenant), str(enrollment.enrollment_id)),
             )
             hypotheses = (
-                await session.execute(
-                    select(NeedHypothesisRow).where(
-                        NeedHypothesisRow.tenant_id == tenant
+                (
+                    await session.execute(
+                        select(NeedHypothesisRow).where(
+                            NeedHypothesisRow.tenant_id == tenant
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             needs = (
-                await session.execute(
-                    select(ValidatedNeedRow).where(
-                        ValidatedNeedRow.tenant_id == tenant
+                (
+                    await session.execute(
+                        select(ValidatedNeedRow).where(
+                            ValidatedNeedRow.tenant_id == tenant
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             opportunity_rows = (
-                await session.execute(
-                    select(OpportunityRow).where(OpportunityRow.tenant_id == tenant)
-                )
-            ).scalars().all()
-            handoffs = (
-                await session.execute(
-                    select(HandoffRow).where(HandoffRow.tenant_id == tenant)
-                )
-            ).scalars().all()
-            outbox_payloads = (
-                await session.execute(
-                    select(OutboxEventRow.event_payload).where(
-                        OutboxEventRow.tenant_id == tenant
+                (
+                    await session.execute(
+                        select(OpportunityRow).where(OpportunityRow.tenant_id == tenant)
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
+            handoffs = (
+                (
+                    await session.execute(
+                        select(HandoffRow).where(HandoffRow.tenant_id == tenant)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            outbox_payloads = (
+                (
+                    await session.execute(
+                        select(OutboxEventRow.event_payload).where(
+                            OutboxEventRow.tenant_id == tenant
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            directive_proposals = (
+                (
+                    await session.execute(
+                        select(DirectiveProposalRow).where(
+                            DirectiveProposalRow.tenant_id == tenant,
+                            DirectiveProposalRow.proposal_id == proposal_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            persisted_reply_artifact = await session.get(
+                RawArtifactRow, (str(tenant), reply_artifact)
+            )
 
         assert reply_run.status == StepStatus.COMPLETED.value, reply_run.last_error
         assert enrollment_row.state == "replied"
-        assert len(hypotheses) == len(needs) == len(opportunity_rows) == len(handoffs) == 1
+        assert (
+            len(hypotheses) == len(needs) == len(opportunity_rows) == len(handoffs) == 1
+        )
         assert hypotheses[0].validated_need_id == needs[0].need_id
         assert opportunity_rows[0].need_id == needs[0].need_id
         assert opportunity_rows[0].owner == owner
         assert handoffs[0].opportunity_id == opportunity_rows[0].opportunity_id
         assert handoffs[0].state == "requested"
+        assert len(directive_proposals) == 1
+        assert directive_proposals[0].state == "confirmed"
+        assert persisted_reply_artifact is not None
+        assert persisted_reply_artifact.kind == "email_raw"
 
         opportunity = await opportunities.get_by_need(
             tenant, needs[0].need_id, actor=opportunity_actor
         )
         assert opportunity is not None
-        assert opportunity.state == "qualified"
-        assert opportunity.target_price == Money(
-            Decimal(2), CurrencyCode("USD")
-        )
+        assert opportunity.state == "assigned"
+        assert opportunity.target_price == Money(Decimal(2), CurrencyCode("USD"))
         provenance = {item.field_name: item for item in opportunity.provenance}
         assert provenance["account_name"].page_hash == PAGE_HASH
         assert provenance["quantity"].source_id == message_id
@@ -915,11 +1167,14 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         assert "api_key=" not in persisted_control_plane
         assert all(BODY not in record.getMessage() for record in caplog.records)
         assert all(EMAIL not in record.getMessage() for record in caplog.records)
-        assert await employee_session.scalar(
-            select(func.count()).select_from(OpportunityRow).where(
-                OpportunityRow.tenant_id == tenant
+        assert (
+            await employee_session.scalar(
+                select(func.count())
+                .select_from(OpportunityRow)
+                .where(OpportunityRow.tenant_id == tenant)
             )
-        ) == 1
+            == 1
+        )
     finally:
         await employee_session.close()
         await engine.dispose()

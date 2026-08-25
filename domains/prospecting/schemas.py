@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from domains.prospecting.models import (
@@ -18,6 +18,7 @@ from shared.schemas.identifiers import (
     ProspectContactId,
     TenantId,
 )
+from shared.schemas.provenance import Provenance
 
 __all__ = (
     "AccountResolveRequest",
@@ -50,6 +51,7 @@ class AccountResolveRequest:
     industry: str | None = None
     size_hint: str | None = None
     source_signal_refs: tuple[str, ...] = ()
+    field_provenance: dict[str, Provenance] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ class ProspectAccountView:
     industry: str | None = None
     size_hint: str | None = None
     source_signal_refs: tuple[str, ...] = ()
+    field_provenance: dict[str, Provenance] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

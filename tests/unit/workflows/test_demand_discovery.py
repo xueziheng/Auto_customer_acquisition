@@ -132,7 +132,7 @@ class _PageReader:
         if self.first_permanent_failure and result_index == 0:
             raise ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT)
         return PageSnapshot(
-            "Acme opened a new production line.",
+            "Example.com is headquartered in the US and opened a new production line.",
             self.url or f"https://example.com/{result_index}",
             NOW,
             HASH,
@@ -209,14 +209,19 @@ class _DemandModel:
                     {
                         "signal_type": "product_line_expansion",
                         "source_page_index": 0,
-                        "source_excerpt": "Acme opened a new production line.",
+                        "source_excerpt": (
+                            "Example.com is headquartered in the US and opened "
+                            "a new production line."
+                        ),
                         "possible_need": "hinges",
                         "evidence_level": "public_company_event",
                     }
                 ],
                 "hypotheses": [
                     {
+                        "account_name_signal_index": 0,
                         "country": "US",
+                        "country_signal_index": 0,
                         "category": "hinges",
                         "reasoning": "企业扩产，可能需要铰链，值得验证",
                         "signal_indexes": [0],
@@ -254,6 +259,15 @@ async def test_production_origin_binds_identity_to_host_not_url_name() -> None:
     assert demand.requests[0].entity_name == "example.com"
     assert prospecting.requests[0].entity_name == "example.com"
     assert prospecting.requests[0].website_domain == "example.com"
+    provenance = prospecting.requests[0].field_provenance
+    assert provenance["name"].extracted_by == "system:url-host-v1"
+    assert provenance["name"].source_quote == (
+        "https://EXAMPLE.com/people/Alice-SMITH?ref=alice"
+    )
+    assert provenance["country"].extracted_by == "model-v1"
+    assert provenance["country"].source_quote.startswith(
+        "Example.com is headquartered in the US"
+    )
     assert "alice" not in patch_blob
     assert "/people/" not in patch_blob
 
@@ -310,7 +324,10 @@ async def test_snapshot_tuple_reaches_domain_capture_without_workflow_body_leak(
             "payload": {
                 "signal_type": "product_line_expansion",
                 "entity_name": "Acme",
-                "raw_observation": "Acme opened a new production line.",
+                "raw_observation": (
+                    "Example.com is headquartered in the US and opened "
+                    "a new production line."
+                ),
                 "possible_need": "hinges",
                 "source_type": "web_page",
                 "source_id": HASH,

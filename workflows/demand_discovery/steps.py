@@ -17,6 +17,7 @@ from shared.schemas.identifiers import (
     ProspectAccountId,
     UserId,
 )
+from shared.schemas.provenance import Provenance, SourceType
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from workflows.demand_discovery.ports import (
     AccountDiscoveryQueue,
@@ -81,9 +82,9 @@ def _validate_plan(plan: DemandDiscoveryPlan) -> None:
     excluded_categories = _string_tuple(
         plan.excluded_categories, maximum=100, limit=100, allow_empty=True
     )
-    if set(target_countries) & set(excluded_countries) or set(
-        target_categories
-    ) & set(excluded_categories):
+    if set(target_countries) & set(excluded_countries) or set(target_categories) & set(
+        excluded_categories
+    ):
         raise ValidationError("需求探索目标命中排除项")
     if (
         type(plan.queries) is not tuple
@@ -105,7 +106,10 @@ def _validate_plan(plan: DemandDiscoveryPlan) -> None:
         _text(query.query, "需求探索查询无效", maximum=400)
         if len(query.query.split()) > 50:
             raise ValidationError("需求探索查询无效")
-        if query.country not in target_countries or query.category not in target_categories:
+        if (
+            query.country not in target_countries
+            or query.category not in target_categories
+        ):
             raise ValidationError("需求探索查询超出已确认范围")
         if type(query.limit) is not int or not 1 <= query.limit <= 20:
             raise ValidationError("需求探索查询上限无效")
@@ -124,9 +128,7 @@ class PlanSearchStep:
     def __init__(self, task_reader: DemandDiscoveryTaskReader) -> None:
         self._task_reader = task_reader
 
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, Any]]:
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         plan, _acting_user = await _confirmed_plan(run, self._task_reader)
         return (
             "advance",
@@ -160,9 +162,7 @@ class ExecuteSearchStep:
         self._demand = demand
         self._prospecting = prospecting
 
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, Any]]:
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         plan, acting_user = await _confirmed_plan(run, self._task_reader)
         pages: list[dict[str, object]] = []
         searches_used = 0
@@ -287,16 +287,22 @@ class ExecuteSearchStep:
                         ),
                         observed_at=observed_at,
                         source_type=_text(
-                            payload.get("source_type"), "需求信号来源类型无效", maximum=64
+                            payload.get("source_type"),
+                            "需求信号来源类型无效",
+                            maximum=64,
                         ),
                         source_id=_text(
                             payload.get("source_id"), "需求信号来源无效", maximum=200
                         ),
                         extracted_by=_text(
-                            payload.get("extracted_by"), "需求信号提取者无效", maximum=128
+                            payload.get("extracted_by"),
+                            "需求信号提取者无效",
+                            maximum=128,
                         ),
                         source_url=_text(
-                            payload.get("source_url"), "需求信号 URL 无效", maximum=2_000
+                            payload.get("source_url"),
+                            "需求信号 URL 无效",
+                            maximum=2_000,
                         ),
                         page_hash=_text(
                             payload.get("page_hash"), "需求信号页面哈希无效", maximum=64
@@ -316,13 +322,25 @@ class ExecuteSearchStep:
             if not isinstance(raw_indexes, (list, tuple)) or not raw_indexes:
                 raise ValidationError("需求假设信号索引无效")
             indexes = tuple(dict.fromkeys(raw_indexes))
-            if any(type(index) is not int or not 0 <= index < len(signal_ids) for index in indexes):
+            if any(
+                type(index) is not int or not 0 <= index < len(signal_ids)
+                for index in indexes
+            ):
                 raise ValidationError("需求假设信号索引越界")
             refs = tuple(signal_ids[index] for index in indexes)
-            entity_name = _text(
-                payload.get("entity_name"), "需求假设企业无效"
-            )
+            account_name_index = payload.get("account_name_signal_index")
+            country_index = payload.get("country_signal_index")
+            if (
+                type(account_name_index) is not int
+                or type(country_index) is not int
+                or account_name_index not in indexes
+                or country_index not in indexes
+            ):
+                raise ValidationError("需求假设企业字段证据引用无效")
+            entity_name = _text(payload.get("entity_name"), "需求假设企业无效")
             country = _text(payload.get("country"), "需求假设国家无效", maximum=64)
+            name_signal = _payload(signal_changes[account_name_index], "capture_signal")
+            country_signal = _payload(signal_changes[country_index], "capture_signal")
             account_id = await self._prospecting.resolve_account(
                 run.tenant_id,
                 AccountResolveRequest(
@@ -334,6 +352,22 @@ class ExecuteSearchStep:
                         maximum=253,
                     ),
                     source_signal_refs=refs,
+                    field_provenance={
+                        "name": _account_field_provenance(
+                            name_signal,
+                            extracted_by="system:url-host-v1",
+                            quote_key="source_url",
+                        ),
+                        "country": _account_field_provenance(
+                            country_signal,
+                            extracted_by=_text(
+                                country_signal.get("extracted_by"),
+                                "需求信号提取者无效",
+                                maximum=128,
+                            ),
+                            quote_key="raw_observation",
+                        ),
+                    },
                 ),
             )
             hypothesis_id = await self._demand.create_hypothesis(
@@ -373,15 +407,34 @@ class ExecuteSearchStep:
         )
 
 
+def _account_field_provenance(
+    signal: dict[str, object],
+    *,
+    extracted_by: str,
+    quote_key: str,
+) -> Provenance:
+    """从字段显式引用的单条 signal 构造原样来源，不借用其他网页证据。"""
+    page_hash = _text(signal.get("page_hash"), "需求信号页面哈希无效", maximum=64)
+    return Provenance(
+        source_type=SourceType.WEB_PAGE,
+        source_id=page_hash,
+        extracted_by=extracted_by,
+        extracted_at=_utc_datetime(signal.get("observed_at")),
+        source_url=_text(signal.get("source_url"), "需求信号 URL 无效", maximum=2_000),
+        page_hash=page_hash,
+        source_quote=_text(
+            signal.get(quote_key), "需求信号字段证据无效", maximum=2_000
+        ),
+    )
+
+
 class GenerateHypothesesStep:
     """持久化后证据完整性检查；正文和模型输出不跨步骤。"""
 
     def __init__(self, demand: DemandService) -> None:
         self._demand = demand
 
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, Any]]:
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         _base_context(run)
         raw_ids = run.context.get("hypothesis_ids")
         if not isinstance(raw_ids, list):
@@ -391,9 +444,7 @@ class GenerateHypothesesStep:
             hypothesis_id = NeedHypothesisId(
                 _text(raw_id, "需求探索假设标识无效", maximum=40)
             )
-            confidence = await self._demand.get_confidence(
-                run.tenant_id, hypothesis_id
-            )
+            confidence = await self._demand.get_confidence(run.tenant_id, hypothesis_id)
             tiers[str(hypothesis_id)] = confidence.tier.value
         return (
             "advance",
@@ -413,9 +464,7 @@ class ScoreAndQueueStep:
         self._demand = demand
         self._queue = queue
 
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, Any]]:
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         plan, acting_user = await _confirmed_plan(run, self._task_reader)
         minimum = ConfidenceTier(plan.minimum_confidence_tier)
         raw_ids = run.context.get("hypothesis_ids")
@@ -427,9 +476,7 @@ class ScoreAndQueueStep:
             hypothesis_id = NeedHypothesisId(
                 _text(raw_id, "需求探索假设标识无效", maximum=40)
             )
-            confidence = await self._demand.get_confidence(
-                run.tenant_id, hypothesis_id
-            )
+            confidence = await self._demand.get_confidence(run.tenant_id, hypothesis_id)
             if not meets_threshold(confidence, minimum):
                 continue
             child = await self._queue.start(
@@ -510,7 +557,9 @@ def _string_tuple(
     if type(values) is not tuple or len(values) > limit:
         raise ValidationError("需求探索集合无效")
     result = tuple(
-        dict.fromkeys(_text(value, "需求探索集合无效", maximum=maximum) for value in values)
+        dict.fromkeys(
+            _text(value, "需求探索集合无效", maximum=maximum) for value in values
+        )
     )
     if not allow_empty and not result:
         raise ValidationError("需求探索集合无效")

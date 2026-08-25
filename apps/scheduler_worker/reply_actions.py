@@ -16,6 +16,7 @@ from typing import Protocol, runtime_checkable
 
 from domains.conversations.schemas import ReplyWorkAction, ReplyWorkActionRequest
 from domains.conversations.service import ConversationService
+from domains.demand.schemas import CustomerReplyEvidenceClaim
 from domains.demand.service import DemandService
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
@@ -49,7 +50,6 @@ from domains.sending_identity.service import (
     ScopeLevel as SendingIdentityScopeLevel,
 )
 from shared.errors import TenantIsolationViolation, ValidationError
-from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
@@ -418,46 +418,57 @@ class ComposedReplyActionPorts:
             }
             for item in evidence.candidate_fields
         }
+        hypothesis_id = (
+            NeedHypothesisId(str(business.hypothesis_id))
+            if business.hypothesis_id is not None
+            else None
+        )
         if business.need_id is not None:
+            need_id = ValidatedNeedId(str(business.need_id))
             await self._demand.update_need_fields(
                 tenant_id,
-                ValidatedNeedId(str(business.need_id)),
+                need_id,
                 fields,
                 context.message_id,
                 None,
             )
-            return
+            if self._opportunity_intake is None:
+                return
+        else:
+            if hypothesis_id is None:
+                raise ValidationError("回复需求关联不存在")
+            record_reply_evidence = getattr(
+                self._demand, "record_customer_reply_evidence", None
+            )
+            if not callable(record_reply_evidence):
+                raise ValidationError("回复客户证据组合未配置")
+            await record_reply_evidence(
+                tenant_id,
+                CustomerReplyEvidenceClaim(
+                    hypothesis_id=hypothesis_id,
+                    source_message_id=context.message_id,
+                    outbound_message_id=context.outbound_message_id,
+                    enrollment_id=context.enrollment_id,
+                    account_id=context.account_id,
+                    contact_point_id=context.contact_point_id,
+                ),
+            )
+            need_id = await self._demand.promote_to_validated(
+                tenant_id,
+                hypothesis_id,
+                context.message_id,
+                fields,
+                None,
+            )
         if business.hypothesis_id is None:
             raise ValidationError("回复需求关联不存在")
-        record_reply_evidence = getattr(
-            self._demand, "record_customer_reply_evidence", None
-        )
-        if not callable(record_reply_evidence):
-            raise ValidationError("回复客户证据组合未配置")
-        level = (
-            EvidenceLevel.CUSTOMER_SPECIFICATION
-            if evidence.category == "provides_specification"
-            else EvidenceLevel.CUSTOMER_INTEREST_REPLY
-        )
-        await record_reply_evidence(
-            tenant_id,
-            NeedHypothesisId(str(business.hypothesis_id)),
-            context.message_id,
-            level,
-        )
-        need_id = await self._demand.promote_to_validated(
-            tenant_id,
-            NeedHypothesisId(str(business.hypothesis_id)),
-            context.message_id,
-            fields,
-            None,
-        )
+        assert hypothesis_id is not None
         if self._opportunity_intake is None:
             raise ValidationError("回复机会创建组合未配置")
         await self._opportunity_intake.create_and_assign(
             tenant_id,
             context,
-            NeedHypothesisId(str(business.hypothesis_id)),
+            hypothesis_id,
             ValidatedNeedId(str(need_id)),
             evidence,
         )

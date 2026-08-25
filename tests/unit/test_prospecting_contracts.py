@@ -30,6 +30,7 @@ from shared.schemas.identifiers import (
     ProspectAccountId,
     ProspectContactId,
 )
+from shared.schemas.provenance import Provenance, SourceType
 
 _schemas = importlib.import_module("domains.prospecting.schemas")
 CHECKED_AT = datetime(2026, 8, 21, tzinfo=UTC)
@@ -49,6 +50,26 @@ def test_public_requests_are_constructible_without_internal_models() -> None:
         country="DE",
         website_domain="acme.example",
         source_signal_refs=("sig_01K0000000000000000000000",),
+        field_provenance={
+            "name": Provenance(
+                SourceType.WEB_PAGE,
+                "a" * 64,
+                "identity-extractor-v2",
+                CHECKED_AT,
+                source_url="https://acme.example/about",
+                page_hash="a" * 64,
+                source_quote="Acme Manufacturing",
+            ),
+            "country": Provenance(
+                SourceType.WEB_PAGE,
+                "b" * 64,
+                "country-extractor-v3",
+                CHECKED_AT,
+                source_url="https://acme.example/contact",
+                page_hash="b" * 64,
+                source_quote="Germany",
+            ),
+        },
     )
     contact = ContactCreateRequest(account_id=ProspectAccountId("acc-1"))
     point = ContactPointCreateRequest(
@@ -58,6 +79,7 @@ def test_public_requests_are_constructible_without_internal_models() -> None:
         legal_basis=basis,
     )
     assert account.website_domain == "acme.example"
+    assert account.field_provenance["name"].extracted_by == "identity-extractor-v2"
     assert contact.account_id == ProspectAccountId("acc-1")
     assert point.legal_basis is basis
 

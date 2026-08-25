@@ -12,7 +12,42 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from shared.schemas.evidence import EvidenceLevel
+from shared.schemas.identifiers import (
+    ContactPointId,
+    EnrollmentId,
+    MessageId,
+    NeedHypothesisId,
+    OutboundMessageId,
+    ProspectAccountId,
+    TenantId,
+)
 from shared.schemas.money import Money
+
+
+@dataclass(frozen=True)
+class CustomerReplyEvidenceClaim:
+    """调用方声明的回复关联；必须经持久事实 verifier 证明后才能入证据链。"""
+
+    hypothesis_id: NeedHypothesisId
+    source_message_id: MessageId
+    outbound_message_id: OutboundMessageId
+    enrollment_id: EnrollmentId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+
+
+@dataclass(frozen=True)
+class VerifiedCustomerReplyEvidence:
+    """租户绑定 verifier 从 Conversation/Outreach 持久事实得出的证明。"""
+
+    tenant_id: TenantId
+    hypothesis_id: NeedHypothesisId
+    source_message_id: MessageId
+    account_id: ProspectAccountId
+    evidence_level: EvidenceLevel
+    classified_by: str
+    classified_at: datetime
 
 
 @dataclass(frozen=True)

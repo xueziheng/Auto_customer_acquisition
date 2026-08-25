@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from domains.demand.service import DemandService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.service import EmployeeService
@@ -12,7 +10,7 @@ from domains.opportunities.schemas import (
     OpportunityCreateRequest,
     ValidatedNeedEvidence,
 )
-from domains.opportunities.service import OpportunityService
+from domains.opportunities.service import OpportunityService, OpportunityState
 from domains.organization.permissions import OrganizationActor
 from domains.organization.service import OrganizationService
 from domains.prospecting.service import ProspectingService
@@ -30,8 +28,6 @@ from shared.schemas.provenance import Provenance, SourceType
 from workflows.reply_qualification.ports import ReplyActionContext
 
 from ..reply_actions import ReplyEvidenceSnapshot
-
-_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class DurableReplyOpportunityIntake:
@@ -59,6 +55,7 @@ class DurableReplyOpportunityIntake:
             (opportunities, "create_from_need"),
             (opportunities, "assign"),
             (opportunities, "get_by_need"),
+            (opportunities, "transition"),
             (employees, "resolve_owner"),
         )
         if (
@@ -86,32 +83,6 @@ class DurableReplyOpportunityIntake:
         self._employee_actor = employee_actor
 
     @staticmethod
-    def _web_provenance(hypothesis: object) -> Provenance:
-        evidence = getattr(hypothesis, "evidence", None)
-        if not isinstance(evidence, list) or not evidence:
-            raise ValidationError("回复来源假设缺少公开证据")
-        item = evidence[0]
-        source_ref = getattr(item, "source_ref", None)
-        source_url = getattr(item, "source_url", None)
-        observed_at = getattr(item, "observed_at", None)
-        if (
-            not isinstance(source_ref, str)
-            or _SHA256.fullmatch(source_ref) is None
-            or not isinstance(source_url, str)
-            or not source_url.strip()
-            or observed_at is None
-        ):
-            raise ValidationError("回复来源假设公开证据无效")
-        return Provenance(
-            source_type=SourceType.WEB_PAGE,
-            source_id=source_ref,
-            extracted_by="demand-discovery",
-            extracted_at=observed_at,
-            source_url=source_url,
-            page_hash=source_ref,
-        )
-
-    @staticmethod
     def _reply_provenance(
         field: object,
         context: ReplyActionContext,
@@ -119,9 +90,11 @@ class DurableReplyOpportunityIntake:
     ) -> Provenance:
         source_ref = getattr(field, "source_ref", None)
         source_quote = getattr(field, "source_quote", None)
-        if source_ref != str(context.message_id) or not isinstance(
-            source_quote, str
-        ) or not source_quote.strip():
+        if (
+            source_ref != str(context.message_id)
+            or not isinstance(source_quote, str)
+            or not source_quote.strip()
+        ):
             raise ValidationError("回复需求字段来源不匹配")
         if not any(
             candidate.quote == source_quote
@@ -172,8 +145,6 @@ class DurableReplyOpportunityIntake:
         existing = await self._opportunities.get_by_need(
             tenant_id, need_id, actor=self._opportunity_actor
         )
-        if existing is not None and existing.owner is not None:
-            return OpportunityId(str(existing.opportunity_id))
 
         playbook = await self._organization.get_playbook(
             tenant_id, actor=self._organization_actor
@@ -189,7 +160,17 @@ class DurableReplyOpportunityIntake:
             name: self._reply_provenance(field, context, evidence)
             for name, field in fields.items()
         }
-        web_provenance = self._web_provenance(hypothesis)
+        account_provenance = getattr(account, "field_provenance", None)
+        if (
+            not isinstance(account_provenance, dict)
+            or set(account_provenance) != {"name", "country"}
+            or any(
+                not isinstance(value, Provenance)
+                or value.source_type is SourceType.AGENT_INFERENCE
+                for value in account_provenance.values()
+            )
+        ):
+            raise ValidationError("企业关键字段来源不完整或无效")
         target_price = need.target_price
         estimated_order_value = (
             target_price.multiply(need.quantity)
@@ -198,13 +179,12 @@ class DurableReplyOpportunityIntake:
         )
         category_key = need.product_category.casefold()
         country_key = account.country.casefold()
-        category_allowed = (
-            category_key not in set(playbook.excluded_categories)
-            and country_key not in set(playbook.excluded_countries)
-        )
+        category_allowed = category_key not in set(
+            playbook.excluded_categories
+        ) and country_key not in set(playbook.excluded_countries)
         field_provenance = {
-            "account_name": web_provenance,
-            "country": web_provenance,
+            "account_name": account_provenance["name"],
+            "country": account_provenance["country"],
         }
         for request_name, need_name in (
             ("quantity", "quantity"),
@@ -222,41 +202,45 @@ class DurableReplyOpportunityIntake:
             if evidence.category == "provides_specification"
             else EvidenceLevel.CUSTOMER_INTEREST_REPLY
         )
-        opportunity_id = await self._opportunities.create_from_need(
-            tenant_id,
-            OpportunityCreateRequest(
-                need_id=str(need_id),
-                account_id=str(context.account_id),
-                account_name=account.name,
-                country=account.country,
-                product_category=need.product_category,
-                evidence_tier=level.value,
-                has_verified_contact=True,
-                category_allowed=category_allowed,
-                minimum_order_value=playbook.minimum_deal_value,
-                supply_available=None,
-                field_provenance=field_provenance,
-                quantity=need.quantity,
-                application=(
-                    fields["application"].value
-                    if "application" in fields
-                    else None
+        if existing is None:
+            opportunity_id = await self._opportunities.create_from_need(
+                tenant_id,
+                OpportunityCreateRequest(
+                    need_id=str(need_id),
+                    account_id=str(context.account_id),
+                    account_name=account.name,
+                    country=account.country,
+                    product_category=need.product_category,
+                    evidence_tier=level.value,
+                    has_verified_contact=True,
+                    category_allowed=category_allowed,
+                    minimum_order_value=playbook.minimum_deal_value,
+                    supply_available=None,
+                    field_provenance=field_provenance,
+                    quantity=need.quantity,
+                    application=(
+                        fields["application"].value if "application" in fields else None
+                    ),
+                    destination=need.destination,
+                    required_by=need.required_by,
+                    target_price=target_price,
+                    current_supply_problem=(
+                        fields["current_supply_issue"].value
+                        if "current_supply_issue" in fields
+                        else None
+                    ),
+                    estimated_order_value=estimated_order_value,
                 ),
-                destination=need.destination,
-                required_by=need.required_by,
-                target_price=target_price,
-                current_supply_problem=(
-                    fields["current_supply_issue"].value
-                    if "current_supply_issue" in fields
-                    else None
+                ValidatedNeedEvidence(
+                    level=level,
+                    provenance=reply_provenance["product_category"],
                 ),
-                estimated_order_value=estimated_order_value,
-            ),
-            ValidatedNeedEvidence(level=level, provenance=reply_provenance["product_category"]),
-            actor=self._opportunity_actor,
-        )
-        if opportunity_id is None:
-            return None
+                actor=self._opportunity_actor,
+            )
+            if opportunity_id is None:
+                return None
+        else:
+            opportunity_id = OpportunityId(str(existing.opportunity_id))
         ownership = await self._employees.resolve_owner(
             tenant_id,
             ProspectAccountId(str(context.account_id)),
@@ -264,7 +248,12 @@ class DurableReplyOpportunityIntake:
             country=account.country,
             need_category=need.product_category,
         )
-        if existing is None or existing.owner is None:
+        current = await self._opportunities.get_by_need(
+            tenant_id, need_id, actor=self._opportunity_actor
+        )
+        if current is None:
+            raise ValidationError("回复机会创建结果不可读")
+        if current.owner is None:
             await self._opportunities.assign(
                 tenant_id,
                 opportunity_id,
@@ -272,8 +261,29 @@ class DurableReplyOpportunityIntake:
                 EmployeeId(self._opportunity_actor.actor_id),
                 actor=self._opportunity_actor,
             )
-        elif existing.owner != str(ownership.owner):
+            current = await self._opportunities.get_by_need(
+                tenant_id, need_id, actor=self._opportunity_actor
+            )
+            if current is None:
+                raise ValidationError("回复机会分配结果不可读")
+        if str(current.owner) != str(ownership.owner):
             raise ValidationError("回复机会负责人关联冲突")
+        state = getattr(current.state, "value", current.state)
+        if state == OpportunityState.QUALIFIED.value:
+            await self._opportunities.transition(
+                tenant_id,
+                opportunity_id,
+                OpportunityState.ASSIGNED,
+                actor=self._opportunity_actor,
+            )
+            current = await self._opportunities.get_by_need(
+                tenant_id, need_id, actor=self._opportunity_actor
+            )
+            if current is None:
+                raise ValidationError("回复机会状态结果不可读")
+            state = getattr(current.state, "value", current.state)
+        if state != OpportunityState.ASSIGNED.value:
+            raise ValidationError("回复机会未进入 assigned 状态")
         return OpportunityId(str(opportunity_id))
 
 
