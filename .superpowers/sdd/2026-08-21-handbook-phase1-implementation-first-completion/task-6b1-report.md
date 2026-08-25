@@ -1,0 +1,111 @@
+# Task 6B1 实施报告
+
+日期：2026-08-25
+实现提交：`d87a3e8f08965b46da779fa41a5e06df9f9e9a64`
+
+## 结论
+
+Task 6B1 的 Account Discovery 与 Demand Discovery 验收已在受控本地假数据、
+测试替身及 disposable PostgreSQL 上完成。没有调用真实 Hunter、Web、Gmail，
+没有客户发送、部署或 push，也不据此声称 Phase 1 已投入运营。
+
+## 既有覆盖盘点
+
+没有为了匹配历史文件名而复制等价测试；以下行为复用既有覆盖：
+
+- canonical website domain 去重及 tenant guard：
+  `tests/unit/test_prospecting_service.py`、
+  `tests/integration/test_prospecting_repositories.py`。
+- 联系人 legal basis、四种验证状态、隐私删除与 recollection suppression、
+  verified-only 入组前置：prospecting domain/repository 与 contact gateway 既有测试。
+- enrollment 的 tenant 隔离、重放与幂等：
+  `tests/unit/test_outreach_enrollment_service.py`、
+  `tests/integration/test_outreach_enrollment_lifecycle.py`。
+- Demand signal/hypothesis 的租户隔离、visible evidence、证据等级、事实/推断分离：
+  `tests/integration/test_demand_signals.py`、
+  `tests/integration/test_need_hypotheses.py`、
+  `tests/unit/test_need_hypothesis_models.py`、`tests/unit/test_evidence.py`。
+
+新增聚合测试只补 agent、workflow、Web gateway 和数据库迁移边界上原来没有直接证明的
+行为，不新增等价的 `test_account_discovery_postgres.py` 或
+`test_demand_discovery_postgres.py`。
+
+## 找到并修复的真实缺口
+
+1. Demand workflow 已生成 snapshot artifact，但在转换为
+   `SignalCaptureRequest` 时丢失，PostgreSQL 只保存 URL、时间和 hash。
+   已将 `snapshot_artifact_ref` 贯通 agent ChangeSet、workflow、domain schema/model、
+   repository、ORM 和 Alembic `0034`；网页信号必须持有完整四元组，非网页信号禁止
+   携带 snapshot ref。
+2. `AccountDiscoveryAgent` 会把 hypothesis reasoning/evidence 中的联系人邮箱、电话
+   原样交给模型。现由确定性代码在模型调用前脱敏；含联系人信息的 source URL 直接
+   删除；credential marker 仍在模型调用前 fail-closed。
+3. Demand numeric probability 护栏未识别中文后缀形式 `82% 概率`，现已拒绝。
+4. PostgreSQL CHECK 若只依赖正则，`NULL` 会以三值逻辑绕过。0034/ORM 约束现显式要求
+   web `snapshot_artifact_ref IS NOT NULL`。
+
+## 0034 backfill 行为
+
+- 0 匹配：升级抛 PostgreSQL `23514` 并保持 0033，绝不生成虚假 artifact 引用。
+- 1 匹配：按同 tenant、`web_snapshot` kind、相同 content hash 恢复原 artifact ID；
+  `0034 → 0033 → 0034` roundtrip 已验证。
+- 多匹配：`raw_artifacts` 的
+  `uq_raw_artifacts_tenant_kind_hash(tenant_id, kind, content_hash)` 在数据形成前拒绝；
+  集成测试显式尝试第二个匹配 artifact 并得到 `IntegrityError`。因此 backfill 不存在
+  非确定性任选，也不会降低证据质量。
+
+## TDD 证据
+
+见证的 RED：
+
+1. `pytest tests/integration/test_demand_signals.py::test_capture_roundtrip_persists_all_columns -q`
+   因 `SignalCaptureRequest` 不接受 `snapshot_artifact_ref` 失败。
+2. `pytest tests/unit/agent_runtime/test_account_discovery_agent.py::test_contact_pii_is_redacted_before_account_model_input -q`
+   捕获的模型输入仍含合成邮箱和电话而失败。
+3. `pytest tests/unit/agent_runtime/test_demand_intelligence_agent.py::test_numeric_confidence_in_inference_is_rejected -q`
+   `82% 概率` 未被护栏拒绝而失败。
+4. `pytest tests/integration/test_migrations.py::test_demand_signals_web_evidence_rejects_incomplete_tuple -q`
+   PostgreSQL 接受 `snapshot_artifact_ref=NULL` 的 web 行而失败。
+
+每个生产修复均先有上述行为 RED，再做最小修复并见证 GREEN。
+
+## 变更文件
+
+- Account/Demand agent：
+  `agent_runtime/account_discovery/agent.py`、
+  `agent_runtime/demand_intelligence/agent.py`。
+- Demand domain/persistence/workflow：
+  `domains/demand/{errors,models,schemas,service,service_impl}.py`、
+  `infra/db/repositories/demand.py`、`infra/db/tables.py`、
+  `workflows/demand_discovery/steps.py`。
+- Migration/operation head：
+  `migrations/versions/0034_demand_signal_snapshot_artifacts.py`、
+  `docs/operations/hunter-provider-readiness.md` 及相关 head/roundtrip 测试。
+- Acceptance tests：
+  `tests/unit/agent_runtime/`、`tests/unit/workflows/`、
+  `tests/unit/test_web_search_discovery.py`，以及受影响的 demand、migration、
+  provider-readiness 既有测试。
+
+## GREEN 与门禁
+
+- 新增 Account/Demand agent、workflow、Web boundary：`23 passed`。
+- 受影响单元测试选择集：`210 passed`。
+- 相关 PostgreSQL domain/gateway 集成：`58 passed`。
+- 迁移选择集（补充三态前）：`8 passed`。
+- 0034 单/零匹配专项（同时断言重复匹配被唯一约束拒绝）：`2 passed`。
+- 最终受影响聚合回归：`277 passed in 15.81s`。
+- Ruff（全部 changed Python）：`All checks passed!`。
+- configured mypy + affected agent modules：`359 source files`，无问题。
+- `python scripts/check_boundaries.py`：全部七项通过。
+- `python scripts/scan_sensitive.py`：exit 0，无输出。
+- `python scripts/run_alembic.py heads`：`0034 (head)`。
+- `git diff --check`：exit 0。
+
+## 剩余风险
+
+代码验收没有已知失败或 flaky。唯一需要在真实环境迁移前处理的操作风险是：如果已有
+web demand signal 无法按 tenant/kind/hash 关联到 `raw_artifacts`，0034 会有意
+fail-closed。上线前应先做历史数据审计和可追溯 backfill；不得绕过约束或合成 artifact
+引用。
+
+预存未跟踪的 `apps/web/node_modules` 符号链接未纳入提交。
