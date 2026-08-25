@@ -271,3 +271,77 @@ Demand agent 继续复用同一个 `contains_numeric_probability`，没有新建
 - Artifact tenant/kind/hash/FK 与 0034 三态行为没有改动。
 - 未使用真实网络、外部密钥、客户发送、部署或 push；预存未跟踪
   `apps/web/node_modules` 未提交。
+
+## Code Review Fix Round 3/5
+
+第二次 scoped review 指出两条仍在生产链上的身份控制缺口：DemandIntelligence 模型
+可以生成随后创建 ProspectAccount 的企业名/域名；AccountDiscovery 模型可以改写域名，
+而 workflow 又丢弃既有 account_id 后重新做域名消歧。本轮删除两处模型身份权限，
+没有新增姓名 heuristic。
+
+### Demand 身份来源
+
+受控页面 URL 先通过确定性规则生成企业身份：scheme 仅允许 `http/https`、禁止 URL
+userinfo、拒绝 IP host，hostname 经 IDNA、小写和 DNS label 校验后成为 canonical host。
+URL path/query、content hash、artifact ref 与观察时间仍留在系统侧做 provenance，但模型
+投影的 page 只含正文，不含 URL/path 或其他身份元数据。
+
+DemandIntelligence 模型 schema 已删除 signal `entity_name` 以及 hypothesis
+`entity_name/website_domain`。signal 身份由其 `source_page_index` 对应的 canonical host
+生成；hypothesis 引用的 signals 必须全部属于同一 host，否则 fail-closed。旧模型若继续
+输出身份字段，会因 exact-key schema 被整体拒绝，不能创建 account。生产链回归以
+`https://EXAMPLE.com/people/Alice-SMITH?ref=alice` 为受控来源，证明 lowercase
+`alice` 和 path 姓名不进入模型投影、账户身份或 workflow patch；持久证据 URL 仍保留。
+既有 DemandSignalCaptured outbox 测试继续证明事件 payload 只有 metadata/typed ID，
+不会携带 URL path 或页面正文。
+
+### Account 绑定契约
+
+`HypothesisDiscoveryView`、`DemandAccountNameReader` 的上层 Prospecting adapter 和
+`AccountDiscoveryOrganizationFact` 现在共同提供 tenant-bound：
+
+```text
+account_id + organization_name + country + canonical website_domain
+```
+
+AccountDiscovery 模型输出收窄为且仅为
+`evidence_sufficient + source_signal_refs`；模型不得输出 account_id、企业名或域名。
+ChangeSet 的操作改为 `bind_account`，payload 身份全部从可信 task projection 回填。
+`ResolveAccountStep` 不再调用 `resolve_account`，只调用
+`ProspectingService.get_account(tenant_id, account_id)`，并精确核验 tenant、account ID、
+名称、国家、域名后推进。Apple/account-A + 恶意 `google.com` 的旧 schema 在 ChangeSet
+前 fail-closed；安全路径 fake 约定“任何 resolve_account 调用都立即失败”，证明 workflow
+只绑定原 account-A，不会创建、重定向或合并账户。
+
+### Round 3 RED → GREEN
+
+- Demand 新 schema/host 身份首次 focused 运行：`1 failed`（旧 agent 因缺少模型生成的
+  `entity_name` 而返回空 ChangeSet）。
+- Account trusted-domain/identity 绑定首次 focused 运行：`1 failed`（旧 task schema 在
+  模型调用前拒绝新增 `website_domain`，`model.calls == 0`）。
+- Round 3 focused 最终：`62 passed in 8.08s`。
+- 直接受影响 Account/Demand agent、workflow 与 PostgreSQL domain/repository 聚合：
+  `104 passed in 17.43s`。
+- 全库回归：`3899 passed in 485.23s`，0 failed / 0 error。
+- Ruff（全部 round-3 changed Python）：`All checks passed!`。
+- Configured mypy + 两个受影响 agent package：`395 source files`，无问题。
+- 项目 Python 3.12 运行 `scripts/check_boundaries.py`：七项全部通过。
+- `scripts/scan_sensitive.py`：exit 0、无输出。
+- `scripts/run_alembic.py heads`：唯一 `0034 (head)`。
+- `git diff --check`：exit 0。
+- 生产代码提交：`e6f82352ee809f175ef319d86f73dfaf68c3c515`。
+
+### 兼容性与剩余风险
+
+- 内部 typed contract 有意收紧：自定义 Demand account fact adapter 必须实现
+  `domains_for`；自定义 AccountDiscovery TaskReader 必须提供既有 account_id 与
+  website_domain。缺少已验证官网的历史/非网页 hypothesis 会在模型或联系人 Provider
+  产生费用前 fail-closed，不能再让模型猜域名。
+- canonical identity 当前是获批页面的完整 hostname，而不是依赖外部 public-suffix
+  规则推导 registrable domain；因此不同受控子域仍可能形成不同账户。这比错误合并更
+  安全，但上线前若需要跨子域归并，应由 tenant-bound 验证事实或人工消歧完成，不能
+  把决定权交还模型。
+- Artifact tenant/kind/hash/FK、0034 backfill 与 probability rail 本轮未改动；round 1/2
+  的相应回归仍包含在全库 GREEN 中。
+- 未使用真实网络、Hunter/Gmail key、客户发送、部署或 push，也不据此作运营完成声明。
+  预存未跟踪 `apps/web/node_modules` 未提交。
