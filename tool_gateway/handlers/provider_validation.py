@@ -44,6 +44,7 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessSnapshot,
     ProviderReadinessState,
     ProviderValidationFailureCode,
+    require_provider_validation_key,
 )
 
 PROVIDER_VALIDATION_MANIFEST = ToolManifest(
@@ -136,6 +137,10 @@ class ProviderValidationHandler:
         requested_version = ctx.params.get("configuration_version")
         if not isinstance(requested_version, str) or ctx.idempotency_key is None:
             raise ValidationError("Provider validation params 无效")
+        try:
+            validation_key = require_provider_validation_key(ctx.idempotency_key)
+        except ValidationError:
+            raise ValidationError("Provider validation params 无效") from None
         actor = self._actor_provider(ctx)
         if not isinstance(actor, ProviderReadinessActor):
             raise ValidationError("Provider validation actor 无效")
@@ -169,7 +174,7 @@ class ProviderValidationHandler:
             _ProviderValidationPayload(
                 ctx.tenant_id,
                 configuration,
-                ctx.idempotency_key,
+                validation_key,
                 actor,
             ),
         )

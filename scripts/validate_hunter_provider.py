@@ -45,6 +45,7 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessActor,
     ProviderReadinessPermission,
     ProviderReadinessServiceImpl,
+    require_provider_validation_key,
 )
 from tool_gateway.repository import (
     ToolGatewayUnitOfWork,
@@ -103,7 +104,11 @@ def _arguments(argv: Sequence[str] | None) -> tuple[str, IdempotencyKey]:
         or _SAFE_ARGUMENT.fullmatch(idempotency_key) is None
     ):
         raise ValidationError(_INPUT_FAILURE)
-    return actor_id, IdempotencyKey(idempotency_key)
+    try:
+        validation_key = require_provider_validation_key(idempotency_key)
+    except ValidationError:
+        raise ValidationError(_INPUT_FAILURE) from None
+    return actor_id, validation_key
 
 
 def _lease_seconds(environ: Mapping[str, str]) -> int:

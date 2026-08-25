@@ -32,6 +32,12 @@ _VERSION_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}\Z")
 _HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 _EVENT_ID_RE = re.compile(r"pre_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
 _SAFE_REFERENCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}\Z")
+_VALIDATION_EVENT_PREFIXES = (
+    "validation:started:",
+    "validation:passed:",
+    "validation:failed:",
+)
+_MAX_VALIDATION_KEY_LENGTH = 200 - max(map(len, _VALIDATION_EVENT_PREFIXES))
 _SECRET_MARKERS = ("secret", "token", "password", "authorization", "bearer")
 _HUNTER_CONNECTOR_PROFILE_VERSION = "hunter-contacts-v1"
 _HUNTER_TRANSPORT_PROFILE = "hunter_api_v2_fixed_host"
@@ -123,6 +129,14 @@ def _require_safe_reference(value: object, message: str) -> str:
     ):
         raise ValidationError(message)
     return value
+
+
+def require_provider_validation_key(value: object) -> IdempotencyKey:
+    """校验 Gateway 验证键，并为最长 readiness 事件前缀预留容量。"""
+    safe = _require_safe_reference(value, "Provider 验证幂等键无效")
+    if len(safe) > _MAX_VALIDATION_KEY_LENGTH:
+        raise ValidationError("Provider 验证幂等键无效")
+    return IdempotencyKey(safe)
 
 
 def _require_tenant_id(value: object) -> TenantId:
@@ -279,7 +293,7 @@ class ProviderReadinessEvent:
         _require_utc(self.occurred_at)
         _require_safe_reference(self.idempotency_key, "Provider 事件幂等键无效")
         if self.validation_key is not None:
-            _require_safe_reference(self.validation_key, "Provider 验证幂等键无效")
+            require_provider_validation_key(self.validation_key)
         if self.evidence_ref is not None:
             _require_safe_reference(self.evidence_ref, "Provider 验证证据引用无效")
         if self.failure_code is not None and not isinstance(
@@ -846,8 +860,8 @@ def _validation_event_idempotency(
     phase: str, validation_key: IdempotencyKey
 ) -> IdempotencyKey:
     """把同一 Gateway validation key 分成 append-only 的开始与终态事实。"""
-    _require_safe_reference(validation_key, "Provider 验证幂等键无效")
-    return IdempotencyKey(f"validation:{phase}:{validation_key}")
+    safe_validation_key = require_provider_validation_key(validation_key)
+    return IdempotencyKey(f"validation:{phase}:{safe_validation_key}")
 
 
 def _current_configuration(
@@ -985,4 +999,5 @@ __all__ = (
     "ProviderReadinessUnitOfWorkFactory",
     "ProviderRuntimeGuard",
     "ProviderValidationFailureCode",
+    "require_provider_validation_key",
 )

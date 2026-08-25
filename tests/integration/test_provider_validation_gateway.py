@@ -577,6 +577,86 @@ def _cli_environ(database_url: str, tenant_id: str) -> dict[str, str]:
     }
 
 
+def test_cli_accepts_181_character_validation_key_with_controlled_transport(
+    db_url: str, capsys
+) -> None:
+    tenant_id = "tn_01K2C5R6J7ABCDEFGHJKMNPQRX"
+    environ = _cli_environ(str(db_url), tenant_id)
+    assert configure_main(
+        environ, ["--actor-id", "employee:hunter-validator"]
+    ) == 0
+    capsys.readouterr()
+
+    class _ControlledTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, path, params, *, api_key):
+            assert (path, params, api_key) == ("/account", (), API_KEY_CANARY)
+            self.calls += 1
+            return HunterHttpResponse(200, {"data": {"requests": {}}})
+
+    transport = _ControlledTransport()
+    status = validate_main(
+        environ,
+        [
+            "--actor-id",
+            "employee:hunter-validator",
+            "--idempotency-key",
+            "a" * 181,
+        ],
+        transport_factory=lambda: transport,
+    )
+    output = capsys.readouterr()
+
+    assert status == 0
+    assert output.err == ""
+    assert json.loads(output.out)["status"] == "validation_passed"
+    assert transport.calls == 1
+
+
+@pytest.mark.parametrize("length", [182, 200])
+def test_cli_rejects_derived_event_overflow_before_environment_or_provider_io(
+    length: int, capsys
+) -> None:
+    class _UnreadEnvironment(dict[str, str]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads: list[str] = []
+
+        def __getitem__(self, key: str) -> str:
+            self.reads.append(key)
+            return super().__getitem__(key)
+
+    environment = _UnreadEnvironment()
+    transport_factories = 0
+
+    def transport_factory():
+        nonlocal transport_factories
+        transport_factories += 1
+        raise AssertionError("invalid CLI input must not construct Provider transport")
+
+    key = "a" * length
+    status = validate_main(
+        environment,
+        [
+            "--actor-id",
+            "employee:hunter-validator",
+            "--idempotency-key",
+            key,
+        ],
+        transport_factory=transport_factory,
+    )
+    output = capsys.readouterr()
+
+    assert status == 2
+    assert output.out == ""
+    assert output.err == "Hunter Provider 验证输入无效\n"
+    assert key not in output.err
+    assert environment.reads == []
+    assert transport_factories == 0
+
+
 def test_cli_normalizes_success_and_duplicate_without_real_transport(
     db_url: str, capsys
 ) -> None:

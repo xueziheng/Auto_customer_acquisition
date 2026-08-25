@@ -426,6 +426,42 @@ async def test_prepare_requires_current_matching_configuration_and_gateway_key()
 
 
 @pytest.mark.asyncio
+async def test_prepare_accepts_validation_key_at_derived_event_capacity() -> None:
+    handler = _handler(
+        _Readiness(),
+        _Transport(HunterHttpResponse(200, {"data": {}})),
+    )
+
+    prepared = await handler.prepare(
+        _context(validation_key=IdempotencyKey("a" * 181)),
+        None,
+    )
+
+    assert prepared.audit_projection["configuration_version"] == "deploy-v1"
+
+
+@pytest.mark.parametrize("length", [182, 200])
+@pytest.mark.asyncio
+async def test_prepare_rejects_validation_key_that_overflows_derived_event(
+    length: int,
+) -> None:
+    resolver = _Resolver()
+    transport = _Transport(HunterHttpResponse(200, {"data": {}}))
+    readiness = _Readiness()
+    handler = _handler(readiness, transport, resolver=resolver)
+
+    with pytest.raises(ValidationError, match="Provider validation params 无效"):
+        await handler.prepare(
+            _context(validation_key=IdempotencyKey("a" * length)),
+            None,
+        )
+
+    assert readiness.events == []
+    assert resolver.refs == []
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
 async def test_handler_commits_started_before_provider_io() -> None:
     order: list[str] = []
     readiness = _Readiness(order=order)
