@@ -101,6 +101,7 @@ class InboxMessageView:
     classified_at: datetime | None
     corrections: tuple[ClassificationCorrectionView, ...]
     required_actions: tuple[str, ...]
+    outbound_message_id: OutboundMessageId | None = None
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ from domains.conversations.schemas import (
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
+    OutboundMessageId,
     ProspectAccountId,
     TenantId,
     new_id,
@@ -28,6 +29,7 @@ NOW = datetime(2026, 8, 21, 10, 0, tzinfo=UTC)
 TENANT = TenantId("tenant-a")
 CONVERSATION = ConversationId(new_id("con"))
 MESSAGE = MessageId(new_id("msg"))
+OUTBOUND = OutboundMessageId("<tradeos.outbound@example.test>")
 ACCOUNT = ProspectAccountId(new_id("acc"))
 
 
@@ -77,6 +79,7 @@ class _Conversations:
             messages=(
                 InboxMessageView(
                     message_id=MESSAGE,
+                    outbound_message_id=OUTBOUND,
                     direction="inbound",
                     sent_at=NOW,
                     raw_artifact_ref="artifact:reply-1",
@@ -140,6 +143,20 @@ def test_inbox_list_filters_by_effective_category_and_tenant() -> None:
     assert conversations.list_calls == [
         (TENANT, ReplyCategory.REQUESTS_QUOTE, 20)
     ]
+
+
+def test_inbox_detail_exposes_only_safe_outbound_correlation_id() -> None:
+    app, _conversations = _inbox_app()
+
+    response = _ApiClient(app).get(
+        f"/inbox/conversations/{CONVERSATION}", headers=_headers()
+    )
+
+    assert response.status_code == 200
+    message = response.json()["messages"][0]
+    assert message["message_id"] == MESSAGE
+    assert message["outbound_message_id"] == OUTBOUND
+    assert set(message).isdisjoint({"body", "subject", "from_address", "to_address"})
 
 
 def test_inbox_detail_never_returns_copied_subject_or_body() -> None:

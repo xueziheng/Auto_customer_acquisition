@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
+from email.message import EmailMessage
 from pathlib import Path
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.encoders import jsonable_encoder
-from playwright.async_api import Route, async_playwright, expect
+from playwright.async_api import Request, Route, async_playwright, expect
 from sqlalchemy import select
 
 from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
 from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.qualification_agent.agent import QualificationAgent
-from apps.api.composition.runtime import build_phase1_dependencies
+from apps.api.composition.runtime import (
+    ManualSendComposition,
+    build_phase1_dependencies,
+)
 from apps.scheduler_worker.account_discovery import (
     BossAccountDiscoveryActorResolver,
     DemandAccountDiscoveryTaskReader,
@@ -37,6 +42,9 @@ from apps.scheduler_worker.adapters.reply_evidence_reader import (
 )
 from apps.scheduler_worker.adapters.reply_opportunity_intake import (
     DurableReplyOpportunityIntake,
+)
+from apps.scheduler_worker.campaign_events import (
+    AccountDiscoveryCampaignEventHandlers,
 )
 from apps.scheduler_worker.directive_reader import DirectiveDemandDiscoveryTaskReader
 from apps.scheduler_worker.reply_actions import ComposedReplyActionPorts
@@ -68,8 +76,6 @@ from domains.outreach.permissions import Actor as OutreachActor
 from domains.outreach.permissions import OutreachScope
 from domains.outreach.permissions import ScopeLevel as OutreachScopeLevel
 from domains.outreach.schemas import (
-    CampaignApprovalSnapshot,
-    CampaignApprovalState,
     CampaignCreateRequest,
     DeliveryCorrelationBinding,
     OutreachSenderRole,
@@ -77,23 +83,27 @@ from domains.outreach.schemas import (
     SequenceStepRequest,
     StepIntent,
 )
-from domains.outreach.service_impl import OutreachServiceImpl
 from domains.prospecting.service_impl import ProspectingServiceImpl
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
-from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.tables import (
+    ConversationClassificationCorrectionRow,
     DemandSignalRow,
     HandoffRow,
     NeedHypothesisRow,
     OpportunityRow,
+    OutboxEventRow,
+    OutreachActionRow,
     OutreachEnrollmentRow,
     RawArtifactRow,
     ValidatedNeedRow,
+    WorkflowRunRow,
+    WorkflowStepRow,
 )
 from infra.secrets import EnvironmentSecretResolver
+from shared.events.catalog import ApprovalDecided, CampaignStateChanged
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -107,17 +117,12 @@ from shared.schemas.identifiers import (
 from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import Provenance, SourceType
 from tests.integration.test_phase1_closed_loop import (
-    BODY,
-    EMAIL,
-    NOW,
     PAGE_TEXT,
-    REPLY_BYTES,
     _ControlledAccountModel,
     _ControlledDemandModel,
     _ControlledDemandPageReader,
     _ControlledDemandSearcher,
     _ControlledEnricher,
-    _ControlledReplyModel,
     _ControlledTransport,
     _ControlledVerifier,
     _MemoryBlobTransport,
@@ -128,7 +133,7 @@ from tests.integration.test_phase1_closed_loop import (
     _StableHasher,
     _UnusedSendingIdentities,
 )
-from tests.outreach_fakes import FakeApprovals, FakeAudit, FakeSenders, Trace
+from tests.outreach_fakes import FakeSenders, Trace
 from workflows.account_discovery.flow import (
     build_account_discovery_definition,
     build_account_discovery_handlers,
@@ -153,8 +158,8 @@ class _Clock:
     def now(self) -> datetime:
         return self.value
 
-    def advance(self, delta: timedelta) -> None:
-        self.value += delta
+    def sync(self) -> None:
+        self.value = max(self.value, datetime.now(UTC))
 
 
 class _CapturedAccountQueue:
@@ -170,6 +175,81 @@ class _CapturedAccountQueue:
         del tenant_id, kwargs
         self.hypothesis_id = str(hypothesis_id)
         return "run_browser_account_pending"
+
+
+CUSTOMER_QUOTE = "We need 5000 hardware kits at USD 2 each for our controlled project."
+TAIL_SENTINEL = "RAW-ONLY-TAIL-SENTINEL-6C-9917"
+RAW_ONLY_EMAIL = "raw-only-tail@example.test"
+LONG_REPLY_BODY = (
+    CUSTOMER_QUOTE
+    + "\n"
+    + ("Additional controlled operational context without new factual fields. " * 12)
+    + f"\n{TAIL_SENTINEL} {RAW_ONLY_EMAIL}"
+)
+
+
+def _reply_bytes() -> bytes:
+    message = EmailMessage()
+    message["Subject"] = "Hardware requirement"
+    message["From"] = "controlled-buyer@example.test"
+    message["To"] = "sales@example.test"
+    message.set_content(LONG_REPLY_BODY)
+    return message.as_bytes()
+
+
+REPLY_BYTES = _reply_bytes()
+
+
+class _ControlledLongReplyModel:
+    async def classify_reply(
+        self, *, system_prompt: str, message: dict[str, str]
+    ) -> str:
+        del system_prompt
+        assert len(message["body"]) > 500
+        assert TAIL_SENTINEL in message["body"]
+        return json.dumps(
+            {
+                "category": "provides_specification",
+                "candidate_fields": [
+                    {
+                        "field": "product_category",
+                        "value": "hardware",
+                        "quote": CUSTOMER_QUOTE,
+                    },
+                    {
+                        "field": "quantity",
+                        "value": "5000",
+                        "quote": CUSTOMER_QUOTE,
+                    },
+                    {
+                        "field": "target_price",
+                        "value": '{"amount":"2","currency":"USD"}',
+                        "quote": CUSTOMER_QUOTE,
+                    },
+                ],
+            }
+        )
+
+
+class _UnusedDeliveryMaterials:
+    async def resolve(self, *args: object) -> object:
+        del args
+        raise AssertionError("浏览器验收不调用真实/受控邮件工具发送")
+
+
+class _NoNetworkGmailTransport:
+    async def search(self, **kwargs: object) -> None:
+        del kwargs
+        raise AssertionError("浏览器验收不访问 Gmail")
+
+    async def send(self, **kwargs: object) -> str:
+        del kwargs
+        raise AssertionError("浏览器验收不访问 Gmail")
+
+
+class _NoFallbackCampaignApproval:
+    async def get_campaign_approval(self, *args: object) -> None:
+        del args
 
 
 def _json(value: object) -> object:
@@ -243,28 +323,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
 ) -> None:
     stack = e2e_stack
     tenant = TenantId(stack.tenant_id)
-    clock = _Clock(NOW)
-    dependencies = build_phase1_dependencies(
-        stack.runtime_settings,
-        stack.factory,
-        now=clock.now,
-        secret_resolver=EnvironmentSecretResolver(
-            {
-                stack.runtime_settings.tool_call_fingerprint_key_ref: "f" * 32,
-                stack.runtime_settings.gmail_oauth_token_ref: "not-used",
-                stack.runtime_settings.openai_api_key_ref: "not-used",
-                **{
-                    reference.secret_ref: "u" * 32
-                    for reference in stack.runtime_settings.unsubscribe_key_refs
-                },
-            }
-        ),
-    )
-    assert dependencies.directives is not None
-    assert dependencies.approvals is not None
-    assert dependencies.organization is not None
-    assert dependencies.conversations is not None
-
+    clock = _Clock(datetime.now(UTC))
     blob_transport = _MemoryBlobTransport()
     raw_store = RawArtifactStoreImpl(
         lambda bound: SqlAlchemyArtifactUnitOfWork(stack.factory, bound),
@@ -280,16 +339,9 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         _StableHasher(),
         now=clock.now,
     )
-    demand = DemandServiceImpl(
-        lambda bound: SqlAlchemyDemandUnitOfWork(stack.factory, bound, now=clock.now),
-        now=clock.now,
-        account_names=_ProspectingOrganizationFacts(prospecting),
-        customer_evidence=None,
-    )
     sender_id = SendingIdentityId(new_id("sid"))
     campaign_id = CampaignId(new_id("cmp"))
     trace = Trace()
-    approval_snapshots = FakeApprovals(trace)
     senders = FakeSenders(
         {
             sender_id: SendingIdentityEligibilitySnapshot(
@@ -304,15 +356,42 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         },
         trace,
     )
-    outreach = OutreachServiceImpl(
-        lambda bound: SqlAlchemyOutreachUnitOfWork(stack.factory, bound, now=clock.now),
-        _ProspectingContactEligibility(prospecting),
-        senders,
-        approval_snapshots,
-        _NoReply(),
-        dependencies.outreach_authorizer,
-        FakeAudit(trace),
+    secrets = EnvironmentSecretResolver(
+        {
+            stack.runtime_settings.tool_call_fingerprint_key_ref: "f" * 32,
+            stack.runtime_settings.gmail_oauth_token_ref: "not-used",
+            stack.runtime_settings.openai_api_key_ref: "not-used",
+            **{
+                reference.secret_ref: "u" * 32
+                for reference in stack.runtime_settings.unsubscribe_key_refs
+            },
+        }
+    )
+    dependencies = build_phase1_dependencies(
+        stack.runtime_settings,
+        stack.factory,
         now=clock.now,
+        manual_send=ManualSendComposition(
+            contact_eligibility=_ProspectingContactEligibility(prospecting),
+            sending_identity_eligibility=senders,
+            campaign_approvals=_NoFallbackCampaignApproval(),
+            reply_status=_NoReply(),
+            delivery_materials=_UnusedDeliveryMaterials(),
+            secret_resolver=secrets,
+            gmail_transport=_NoNetworkGmailTransport(),
+        ),
+        secret_resolver=secrets,
+    )
+    assert dependencies.directives is not None
+    assert dependencies.approvals is not None
+    assert dependencies.organization is not None
+    assert dependencies.conversations is not None
+    outreach = dependencies.outreach
+    demand = DemandServiceImpl(
+        lambda bound: SqlAlchemyDemandUnitOfWork(stack.factory, bound, now=clock.now),
+        now=clock.now,
+        account_names=_ProspectingOrganizationFacts(prospecting),
+        customer_evidence=None,
     )
     outreach_actor = OutreachActor(
         str(stack.employees.boss),
@@ -434,11 +513,12 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         actor=opportunity_actor,
         clock=clock,
     )
-    clock.advance(timedelta(hours=1))
 
     evidence_dir = Path(gettempdir()) / f"tradeos-task-6c-{new_id('run')}"
     evidence_dir.mkdir(parents=True)
     console_issues: list[str] = []
+    http_issues: list[str] = []
+    surface_bodies: list[str] = []
 
     async with dependencies.employees(tenant) as employees:  # noqa: SIM117
         async with async_playwright() as playwright:
@@ -452,46 +532,43 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                     else None
                 ),
             )
+            page.on(
+                "response",
+                lambda response: (
+                    http_issues.append(f"{response.status} {response.url}")
+                    if response.status >= 400
+                    else None
+                ),
+            )
+
+            async def assert_surface(path: str, heading: str) -> None:
+                await expect(page).to_have_url(f"{stack.web_origin}{path}")
+                await expect(page).to_have_title("TradeOS")
+                await expect(
+                    page.get_by_role("heading", name=heading).first
+                ).to_be_visible()
+                body = (await page.locator("body").inner_text()).strip()
+                assert len(body) > 40
+                surface_bodies.append(body)
+                assert (
+                    await page.locator(
+                        "vite-error-overlay, #vite-error-overlay, .vite-error-overlay"
+                    ).count()
+                    == 0
+                )
+                assert not console_issues, {
+                    "console": console_issues,
+                    "http": http_issues,
+                }
 
             async def proposal_route(route: Route) -> None:
                 await route.fulfill(status=200, json=_json(proposal))
-
-            confirmed_run_ids: list[str] = []
-
-            async def confirmation_route(route: Route) -> None:
-                await dependencies.directives.confirm_proposal(
-                    tenant, proposal_id, stack.employees.boss
-                )
-                active = await dependencies.directives.get_active(tenant)
-                assert active is not None
-                run_id = await demand_engine.start(
-                    tenant,
-                    "demand_discovery",
-                    str(proposal_id),
-                    {
-                        "proposal_id": str(proposal_id),
-                        "acting_user_id": str(stack.employees.boss),
-                    },
-                    f"demand-discovery:{proposal_id}",
-                )
-                await _poll_until_idle(demand_engine, tenant)
-                confirmed_run_ids.append(str(run_id))
-                await route.fulfill(
-                    status=200,
-                    json={
-                        "proposal_id": str(proposal_id),
-                        "directive_id": str(active.directive_id),
-                        "run_id": str(run_id),
-                        "workflow_type": "demand_discovery",
-                    },
-                )
 
             await page.route(
                 f"{stack.api_origin}/commands/discovery-proposals", proposal_route
             )
             await page.goto(f"{stack.web_origin}/commands")
-            await expect(page).to_have_title("TradeOS")
-            await expect(page.get_by_role("heading", name="指挥中心")).to_be_visible()
+            await assert_surface("/commands", "指挥中心")
             await page.get_by_label("老板原始指令").fill(proposal.raw_text)
             await page.get_by_role("button", name="生成待确认提案").click()
             await expect(page.get_by_text(str(proposal_id), exact=True)).to_be_visible()
@@ -499,17 +576,24 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             await page.unroute(
                 f"{stack.api_origin}/commands/discovery-proposals", proposal_route
             )
-            confirmation_url = (
-                f"{stack.api_origin}/commands/discovery-proposals/{proposal_id}/confirm"
-            )
-            await page.route(confirmation_url, confirmation_route)
             await page.get_by_role("button", name="确认并启动").click()
             await expect(page.get_by_text("受限工作流已启动")).to_be_visible()
-            await page.unroute(confirmation_url, confirmation_route)
+            async with stack.factory() as session:
+                demand_run = (
+                    await session.execute(
+                        select(WorkflowRunRow).where(
+                            WorkflowRunRow.tenant_id == str(tenant),
+                            WorkflowRunRow.workflow_type == "demand_discovery",
+                            WorkflowRunRow.subject_ref == str(proposal_id),
+                        )
+                    )
+                ).scalar_one()
+            confirmed_run_id = demand_run.run_id
+            assert demand_run.context["proposal_id"] == str(proposal_id)
+            clock.sync()
+            await _poll_until_idle(demand_engine, tenant)
             await page.screenshot(path=evidence_dir / "01-command-confirmed.png")
 
-            assert len(confirmed_run_ids) == 1
-            confirmed_run_id = confirmed_run_ids[0]
             async with stack.factory() as session:
                 hypothesis_row = (
                     await session.execute(
@@ -557,91 +641,94 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             account_engine.register(build_account_discovery_definition())
 
             await page.goto(f"{stack.web_origin}/demand")
-            await expect(page.get_by_role("heading", name="需求雷达")).to_be_visible()
+            await assert_surface("/demand", "需求雷达")
             await expect(page.get_by_text(PAGE_TEXT)).to_be_visible()
+            await expect(page.get_by_text(str(signal_id), exact=False)).to_be_visible()
             await page.get_by_role("button", name="需求假设").click()
             await expect(page.get_by_text("推断", exact=True).first).to_be_visible()
             await expect(page.get_by_text("置信档位：low_mid")).to_be_visible()
+            await expect(
+                page.get_by_text(str(hypothesis_id), exact=False)
+            ).to_be_visible()
+            await expect(page.get_by_text(str(account_id), exact=False)).to_be_visible()
+            evidence_disclosure = page.locator(".hypothesis-card details").first
+            await evidence_disclosure.locator("summary").focus()
+            await evidence_disclosure.locator("summary").press("Enter")
+            await expect(evidence_disclosure).to_have_attribute("open", "")
             assert "置信档位：0." not in await page.locator("body").inner_text()
             await page.screenshot(path=evidence_dir / "02-demand-evidence.png")
 
-            async def activate_route(route: Route) -> None:
-                approval_snapshots.values[(campaign_id, campaign.version)] = (
-                    CampaignApprovalSnapshot(
-                        tenant,
-                        campaign_id,
-                        campaign.version,
-                        ApprovalId(str(approval_id)),
-                        CampaignApprovalState.APPROVED,
-                        stack.employees.boss,
-                        clock.now(),
-                    )
-                )
-                active = await outreach.activate_campaign(
-                    tenant, campaign_id, actor=outreach_actor
-                )
-                await route.fulfill(status=200, json=_json(active))
+            discovery_bodies: list[dict[str, object]] = []
 
-            await page.goto(f"{stack.web_origin}/approvals")
-            await expect(page.get_by_text(str(approval_id), exact=True)).to_be_visible()
-            await expect(
-                page.get_by_text(f"Campaign {campaign_id} 版本 1")
-            ).to_be_visible()
-            await page.get_by_role("button", name="批准此精确变更").click()
-            await expect(page.get_by_text(str(approval_id), exact=True)).to_have_count(
-                0
-            )
+            def capture_discovery(request: Request) -> None:
+                if (
+                    request.method == "POST"
+                    and request.url == f"{stack.api_origin}/prospects/discoveries"
+                ):
+                    discovery_bodies.append(request.post_data_json)
 
-            activation_url = f"{stack.api_origin}/crm/campaigns/{campaign_id}/activate"
-            await page.route(activation_url, activate_route)
-            await page.goto(f"{stack.web_origin}/campaigns")
-            await expect(page.get_by_text("不可变版本 v1")).to_be_visible()
-            await expect(
-                page.get_by_text("暂停只阻止新发送；入站回复仍继续处理。")
-            ).to_be_visible()
-            await page.get_by_role("button", name="激活已批准版本").click()
-            await expect(page.get_by_text("Campaign 精确版本已激活。")).to_be_visible()
-            await page.unroute(activation_url, activate_route)
-
-            async def discovery_route(route: Route) -> None:
-                payload = route.request.post_data_json
-                assert set(payload) == {
-                    "hypothesis_id",
-                    "campaign_id",
-                    "role_hints",
-                    "assessment_ref",
-                }
-                run_id = await account_engine.start(
-                    tenant,
-                    "account_discovery",
-                    str(hypothesis_id),
-                    {
-                        **payload,
-                        "acting_user_id": str(stack.employees.boss),
-                    },
-                    f"account-discovery:{hypothesis_id}:{campaign_id}",
-                )
-                await _poll_until_idle(account_engine, tenant)
-                await route.fulfill(
-                    status=200,
-                    json={
-                        "run_id": str(run_id),
-                        "workflow_type": "account_discovery",
-                        "subject_ref": str(hypothesis_id),
-                    },
-                )
-
-            discovery_url = f"{stack.api_origin}/prospects/discoveries"
-            await page.route(discovery_url, discovery_route)
+            page.on("request", capture_discovery)
             await page.goto(f"{stack.web_origin}/prospects/accounts")
+            await assert_surface("/prospects/accounts", "客户发现")
             await page.get_by_label("需求假设 ID").fill(str(hypothesis_id))
             await page.get_by_label("Campaign ID").fill(str(campaign_id))
             await page.get_by_label("联系人角色线索").fill("procurement")
             await page.get_by_label("正当利益评估引用").fill("phase1-browser-lia")
-            await page.get_by_role("button", name="启动账户发现").click()
+            async with page.expect_response(
+                f"{stack.api_origin}/prospects/discoveries"
+            ) as discovery_response_info:
+                await page.get_by_role("button", name="启动账户发现").click()
+            discovery_response = await discovery_response_info.value
+            assert discovery_response.status == 200, await discovery_response.text()
             await expect(
                 page.get_by_text("账户发现任务已创建", exact=False)
             ).to_be_visible()
+            assert discovery_bodies == [
+                {
+                    "hypothesis_id": str(hypothesis_id),
+                    "campaign_id": str(campaign_id),
+                    "role_hints": ["procurement"],
+                    "assessment_ref": "phase1-browser-lia",
+                }
+            ]
+            async with stack.factory() as session:
+                account_run = (
+                    await session.execute(
+                        select(WorkflowRunRow).where(
+                            WorkflowRunRow.tenant_id == str(tenant),
+                            WorkflowRunRow.workflow_type == "account_discovery",
+                            WorkflowRunRow.subject_ref == str(hypothesis_id),
+                        )
+                    )
+                ).scalar_one()
+            clock.sync()
+            await _poll_until_idle(account_engine, tenant)
+            async with stack.factory() as session:
+                waiting_run = await session.get(WorkflowRunRow, account_run.run_id)
+                waiting_step = (
+                    await session.execute(
+                        select(WorkflowStepRow).where(
+                            WorkflowStepRow.tenant_id == str(tenant),
+                            WorkflowStepRow.run_id == account_run.run_id,
+                            WorkflowStepRow.step_name == "await_campaign_activation",
+                        )
+                    )
+                ).scalar_one()
+                enrollments_before_approval = (
+                    (
+                        await session.execute(
+                            select(OutreachEnrollmentRow).where(
+                                OutreachEnrollmentRow.tenant_id == str(tenant)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            assert waiting_run is not None
+            assert waiting_run.current_step == "await_campaign_activation"
+            assert waiting_step.status == "waiting_event"
+            assert enrollments_before_approval == []
             await page.get_by_role("button", name="刷新").first.click()
             account_row = page.locator(".account-list li").filter(has_text=account_name)
             await account_row.focus()
@@ -651,23 +738,88 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                 page.get_by_text("legitimate_interest", exact=False)
             ).to_be_visible()
             await expect(page.get_by_text(signal_id, exact=True)).to_be_visible()
-            await page.unroute(discovery_url, discovery_route)
-            await page.screenshot(path=evidence_dir / "03-discovery-enrollment.png")
+            await expect(page.get_by_text(str(account_id), exact=True)).to_be_visible()
+            await page.screenshot(path=evidence_dir / "03-discovery-waiting.png")
+
+            account_events = AccountDiscoveryCampaignEventHandlers(
+                engine=account_engine,
+                approvals=dependencies.approvals,
+                factory=stack.factory,
+                tenant_id=tenant,
+            )
+            stack.scheduler_runtime.outbox.register_handler(
+                CampaignStateChanged,
+                "e2e.account_discovery.campaign_state_changed",
+                account_events,
+            )
+            stack.scheduler_runtime.outbox.register_handler(
+                ApprovalDecided,
+                "e2e.account_discovery.campaign_approval_decided",
+                account_events,
+            )
+
+            await page.goto(f"{stack.web_origin}/approvals")
+            await assert_surface("/approvals", "Approval Center")
+            await expect(page.get_by_text(str(approval_id), exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text(f"Campaign {campaign_id} 版本 1")
+            ).to_be_visible()
+            await page.get_by_role("button", name="批准此精确变更").click()
+            await expect(page.get_by_text(str(approval_id), exact=True)).to_have_count(
+                0
+            )
 
             await page.goto(f"{stack.web_origin}/campaigns")
-            await expect(page.get_by_text("Campaign v1", exact=True)).to_be_visible()
-            await expect(page.get_by_text("enrolled", exact=True).first).to_be_visible()
+            await assert_surface("/campaigns", "Campaign Center")
+            await expect(page.get_by_text("不可变版本 v1")).to_be_visible()
+            await expect(
+                page.get_by_text("暂停只阻止新发送；入站回复仍继续处理。")
+            ).to_be_visible()
+            await page.get_by_role("button", name="激活已批准版本").click()
+            await expect(page.get_by_text("Campaign 精确版本已激活。")).to_be_visible()
+            approval_view = await dependencies.approvals.get(tenant, approval_id)
+            assert approval_view.state == "applied"
+            assert approval_view.decided_by_employee == stack.employees.boss
 
+            await stack.scheduler_runtime.outbox.drain()
+            for _ in range(20):
+                await account_engine.poll_due(tenant, 10)
+                async with stack.factory() as session:
+                    resumed_run = await session.get(
+                        WorkflowRunRow, account_run.run_id
+                    )
+                if resumed_run is not None and resumed_run.status == "completed":
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                raise AssertionError("Campaign 激活事件未在有界时间内恢复账户发现")
             async with stack.factory() as session:
+                completed_account_run = await session.get(
+                    WorkflowRunRow, account_run.run_id
+                )
                 enrollment = (
                     await session.execute(
                         select(OutreachEnrollmentRow).where(
-                            OutreachEnrollmentRow.tenant_id == tenant,
+                            OutreachEnrollmentRow.tenant_id == str(tenant),
                             OutreachEnrollmentRow.source_hypothesis_id
                             == str(hypothesis_id),
                         )
                     )
                 ).scalar_one()
+            assert completed_account_run is not None
+            assert completed_account_run.status == "completed"
+            await page.get_by_role("button", name="刷新").first.click()
+            await expect(
+                page.get_by_text(str(enrollment.enrollment_id), exact=True)
+            ).to_be_visible()
+            await expect(page.get_by_text(str(account_id), exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text(str(hypothesis_id), exact=True)
+            ).to_be_visible()
+            await expect(page.get_by_text("Campaign v1", exact=True)).to_be_visible()
+            await expect(page.get_by_text("enrolled", exact=True).first).to_be_visible()
+
+            await page.screenshot(path=evidence_dir / "04-campaign-enrolled.png")
 
             send_actor = OutreachActor(
                 "system:phase1-browser-send",
@@ -809,7 +961,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             reply_handlers = build_reply_qualification_handlers(
                 classifier=QualificationAgent(
                     model="controlled-reply-model",
-                    model_client=_ControlledReplyModel(),
+                    model_client=_ControlledLongReplyModel(),
                     gateway=None,
                     guardrails=None,
                 ),
@@ -872,35 +1024,90 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                     RawArtifactRow, (str(tenant), str(reply_meta.artifact_id))
                 )
             assert hypothesis is not None
+            assert hypothesis.signal_ids == [str(signal_id)]
+            assert hypothesis.account_id == str(account_id)
             assert hypothesis.validated_need_id == need.need_id
+            assert enrollment.source_hypothesis_id == str(hypothesis_id)
+            assert enrollment.account_id == str(account_id)
             assert opportunity.need_id == need.need_id
+            assert opportunity.account_id == str(account_id)
             assert handoff.opportunity_id == opportunity.opportunity_id
             assert artifact is not None and artifact.kind == "email_raw"
+            _, raw_reply = await raw_store.get(tenant, reply_meta.artifact_id)
+            assert len(LONG_REPLY_BODY) > 500
+            assert TAIL_SENTINEL.encode() in raw_reply
+            assert RAW_ONLY_EMAIL.encode() in raw_reply
 
             await page.goto(f"{stack.web_origin}/inbox")
-            await expect(
-                page.get_by_role("heading", name="Smart Inbox")
-            ).to_be_visible()
+            await assert_surface("/inbox", "Smart Inbox")
+            await page.get_by_role("button", name="报价 / 样品 / 规格 1").click()
             await expect(page.get_by_text("提供规格", exact=True).first).to_be_visible()
             await expect(page.get_by_text(str(reply_meta.artifact_id))).to_be_visible()
-            assert BODY not in await page.locator("body").inner_text()
-            assert EMAIL not in await page.locator("body").inner_text()
+            await expect(page.get_by_text(str(message_id), exact=True)).to_be_visible()
+            await expect(page.get_by_text(str(outbound_id), exact=True)).to_be_visible()
+            inbox_body = await page.locator("body").inner_text()
+            surface_bodies.append(inbox_body)
+            assert TAIL_SENTINEL not in inbox_body
+            assert RAW_ONLY_EMAIL not in inbox_body
+            assert LONG_REPLY_BODY not in inbox_body
+            await page.get_by_label("纠正后的分类").select_option("requests_quote")
+            await page.get_by_role("button", name="提交纠正").click()
+            await expect(
+                page.get_by_text(
+                    "人工纠正已记录；模型原判仍保留用于质量评估。",
+                    exact=True,
+                )
+            ).to_be_visible()
+            await expect(
+                page.get_by_text("人工纠正后：要求报价", exact=True)
+            ).to_be_visible()
+            await expect(
+                page.get_by_text(str(stack.employees.boss), exact=False)
+            ).to_be_visible()
+            async with stack.factory() as session:
+                correction = (
+                    await session.execute(
+                        select(ConversationClassificationCorrectionRow).where(
+                            ConversationClassificationCorrectionRow.tenant_id
+                            == str(tenant),
+                            ConversationClassificationCorrectionRow.message_id
+                            == str(message_id),
+                        )
+                    )
+                ).scalar_one()
+            assert correction.corrected_category == "requests_quote"
+            assert correction.corrected_by == str(stack.employees.boss)
 
             await page.goto(f"{stack.web_origin}/demand/needs/{need.need_id}")
-            await expect(page.get_by_text(BODY, exact=False).first).to_be_visible()
+            await assert_surface(f"/demand/needs/{need.need_id}", "已验证需求证据链")
+            await expect(
+                page.get_by_text(CUSTOMER_QUOTE, exact=False).first
+            ).to_be_visible()
+            await expect(page.get_by_text(need.need_id, exact=False)).to_be_visible()
+            await expect(page.get_by_text(str(account_id), exact=False)).to_be_visible()
+            provenance_summary = page.locator(".field-provenance summary").first
+            await provenance_summary.focus()
+            await provenance_summary.press("Enter")
+            await expect(provenance_summary.locator("..")).to_have_attribute("open", "")
             await expect(
                 page.get_by_text(str(message_id), exact=True).first
             ).to_be_visible()
+            assert await provenance_summary.evaluate(
+                "element => element === document.activeElement"
+            )
+            need_body = await page.locator("body").inner_text()
+            surface_bodies.append(need_body)
+            assert TAIL_SENTINEL not in need_body
+            assert RAW_ONLY_EMAIL not in need_body
+            assert LONG_REPLY_BODY not in need_body
             await page.set_viewport_size({"width": 390, "height": 844})
             assert await page.evaluate(
                 "document.documentElement.scrollWidth <= innerWidth"
             )
-            await page.screenshot(path=evidence_dir / "04-need-mobile.png")
+            await page.screenshot(path=evidence_dir / "05-need-mobile.png")
 
             await page.goto(f"{stack.web_origin}/crm/handoffs")
-            await expect(
-                page.get_by_role("heading", name="人工接管队列")
-            ).to_be_visible()
+            await assert_surface("/crm/handoffs", "人工接管队列")
             rows = page.locator(".handoff-card")
             await expect(rows).to_have_count(2)
             assert (
@@ -912,7 +1119,21 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             )
             await rows.nth(1).focus()
             await rows.nth(1).press("Enter")
-            await expect(page.get_by_text(BODY, exact=True)).to_be_visible()
+            await expect(page.get_by_text(CUSTOMER_QUOTE, exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text(str(handoff.handoff_id), exact=False)
+            ).to_be_visible()
+            await expect(
+                page.get_by_text(str(opportunity.opportunity_id), exact=False)
+            ).to_be_visible()
+            await expect(page.get_by_text(need.need_id, exact=False)).to_be_visible()
+            await expect(page.get_by_text(str(account_id), exact=False)).to_be_visible()
+            handoff_body = await page.locator("body").inner_text()
+            surface_bodies.append(handoff_body)
+            assert "演示数据" not in handoff_body
+            assert TAIL_SENTINEL not in handoff_body
+            assert RAW_ONLY_EMAIL not in handoff_body
+            assert LONG_REPLY_BODY not in handoff_body
             evidence_button = page.get_by_role("button", name="查看来源").first
             await evidence_button.focus()
             await evidence_button.press("Enter")
@@ -924,21 +1145,67 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             assert await page.evaluate(
                 "document.documentElement.scrollWidth <= innerWidth"
             )
-            await page.screenshot(path=evidence_dir / "05-handoff-mobile.png")
+            await page.screenshot(path=evidence_dir / "06-handoff-mobile.png")
 
             await browser.close()
 
     assert not console_issues, console_issues
+    async with stack.factory() as session:
+        workflow_contexts = (
+            (
+                await session.execute(
+                    select(WorkflowRunRow.context).where(
+                        WorkflowRunRow.tenant_id == str(tenant)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        outbox_payloads = (
+            (
+                await session.execute(
+                    select(OutboxEventRow.event_payload).where(
+                        OutboxEventRow.tenant_id == str(tenant)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        outreach_ledger = (
+            await session.execute(
+                select(
+                    OutreachActionRow.action_key,
+                    OutreachActionRow.action,
+                    OutreachActionRow.entity_id,
+                    OutreachActionRow.actor_id,
+                ).where(OutreachActionRow.tenant_id == str(tenant))
+            )
+        ).all()
     persisted = json.dumps(
         {
+            "proposal_id": str(proposal_id),
+            "demand_run_id": confirmed_run_id,
+            "account_run_id": account_run.run_id,
+            "signal_id": str(signal_id),
             "hypothesis_id": str(hypothesis_id),
+            "account_id": str(account_id),
+            "enrollment_id": str(enrollment.enrollment_id),
+            "outbound_message_id": str(outbound_id),
+            "inbound_message_id": str(message_id),
             "need_id": need.need_id,
             "opportunity_id": opportunity.opportunity_id,
             "handoff_id": handoff.handoff_id,
-        }
+            "workflow_contexts": workflow_contexts,
+            "outbox_payloads": outbox_payloads,
+            "outreach_ledger": [tuple(row) for row in outreach_ledger],
+        },
+        default=str,
     )
-    assert BODY not in persisted
-    assert EMAIL not in persisted
+    for forbidden in (TAIL_SENTINEL, RAW_ONLY_EMAIL, LONG_REPLY_BODY):
+        assert forbidden not in persisted
+        assert all(forbidden not in body for body in surface_bodies)
     process_logs = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in (
@@ -948,7 +1215,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             stack.vite_process.stderr_path,
         )
     )
-    assert BODY not in process_logs
-    assert EMAIL not in process_logs
+    for forbidden in (TAIL_SENTINEL, RAW_ONLY_EMAIL, LONG_REPLY_BODY):
+        assert forbidden not in process_logs
     assert stack.runtime_settings.database_url.get_secret_value() not in process_logs
     assert evidence_dir.is_dir()

@@ -36,6 +36,7 @@ from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
     ApprovalDecided,
     AuthenticationCheckRequested,
+    CampaignStateChanged,
     CommitmentCreated,
     CommitmentOverdue,
     ComplaintReceived,
@@ -79,6 +80,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "SendingIdentitySuspended": SendingIdentitySuspended,
     "ReputationThresholdBreached": ReputationThresholdBreached,
     "MessageSent": MessageSent,
+    "CampaignStateChanged": CampaignStateChanged,
     # conversations 入站消息落库即发布（切片 6 producer）：metadata-only，
     # 下一片 scheduler 订阅后按 outbound_message_id 解析并启动 reply run
     "InboundMessageStored": InboundMessageStored,
@@ -266,7 +268,7 @@ def _matches_wire(value: object, kind: str) -> bool:
 
 
 def _validate_outreach_event(event: DomainEvent) -> None:
-    if not isinstance(event, (MessageSent, SuppressionAdded)):
+    if not isinstance(event, (CampaignStateChanged, MessageSent, SuppressionAdded)):
         return
     if (
         not _matches_wire(event.tenant_id, "tenant")
@@ -275,6 +277,17 @@ def _validate_outreach_event(event: DomainEvent) -> None:
         or event.occurred_at.utcoffset() != UTC.utcoffset(event.occurred_at)
     ):
         raise _invalid_outreach_event()
+    if isinstance(event, CampaignStateChanged):
+        if (
+            not _matches_wire(event.campaign_id, "campaign")
+            or not isinstance(event.campaign_version, int)
+            or isinstance(event.campaign_version, bool)
+            or event.campaign_version < 1
+            or event.state
+            not in {"active", "pending_approval", "cancelled"}
+        ):
+            raise _invalid_outreach_event()
+        return
     if isinstance(event, MessageSent):
         if (
             not _matches_wire(event.message_id, "message")

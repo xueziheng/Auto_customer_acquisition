@@ -352,6 +352,9 @@ describe("handoff queue", () => {
     ]);
     expect(cards[0]?.getAttribute("aria-current")).toBe("true");
     await eventually(() => expect(root.textContent).toContain("PACKET-ONLY-CUSTOMER-ONE"));
+    expect(root.querySelector(".demo-badge")).toBeNull();
+    expect(root.textContent).toContain(firstOpportunity.need_id);
+    expect(root.textContent).toContain(firstOpportunity.account_id);
 
     const requests = fetch.mock.calls.map(([input]) => asRequest(input));
     // 全局壳新增请求：NotificationBadge 挂载即精确 GET /notifications?limit=100（仅一次）

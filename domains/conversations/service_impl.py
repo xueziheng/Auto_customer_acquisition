@@ -759,6 +759,7 @@ class ConversationServiceImpl:
         effective = corrections[-1].corrected_category if corrections else original
         return InboxMessageView(
             message_id=message.message_id,
+            outbound_message_id=message.outbound_message_id,
             direction=message.direction.value,
             sent_at=message.sent_at,
             raw_artifact_ref=message.raw_artifact_ref,

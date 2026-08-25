@@ -22,6 +22,7 @@ from apps.api.dependencies import (
     require_opportunity_action,
 )
 from apps.api.identity import RequestIdentity
+from apps.api.routers.customer_discovery import AccountDiscoveryStartBody
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
@@ -131,6 +132,19 @@ _EXPECTED_API_PATHS = {
     "/work-uploads/{upload_id}/extraction",
     "/work-uploads/{upload_id}/confirm",
 }
+
+
+def test_account_discovery_start_body_accepts_real_json_array() -> None:
+    body = AccountDiscoveryStartBody.model_validate(
+        {
+            "hypothesis_id": "hyp_01M0WZJR473D6HMTER5N2K6Z9A",
+            "campaign_id": "cmp_01M0WZJR473D6HMTER5N2K6Z9B",
+            "role_hints": ["procurement"],
+            "assessment_ref": "phase1-controlled-lia",
+        }
+    )
+
+    assert body.role_hints == ["procurement"]
 
 
 class _ApiClient:

@@ -20,6 +20,7 @@ from connectors.email_verification.client import (
     EmailVerificationResult,
     VerificationCostNote,
 )
+from domains.outreach.schemas import CampaignState
 from domains.prospecting.schemas import (
     DiscoveredContactResult,
     ProspectAccountDetailView,
@@ -36,11 +37,14 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
+from workflows.account_discovery.flow import build_account_discovery_definition
 from workflows.account_discovery.ports import (
     AccountDiscoveryOrganizationFact,
     AccountDiscoveryTaskInput,
 )
 from workflows.account_discovery.steps import (
+    AwaitCampaignActivationStep,
+    BindCampaignStep,
     EnrollCampaignStep,
     FindCompanyDetailsStep,
     FindContactsStep,
@@ -276,10 +280,164 @@ class _Outreach:
         self.calls.append(request)
         return SimpleNamespace(enrollment_id=new_id("enr"))
 
+    async def get_campaign(self, tenant_id, campaign_id, *, actor):
+        del tenant_id, campaign_id, actor
+        return SimpleNamespace(state=CampaignState.PENDING_APPROVAL, version=3)
+
+
+async def test_definition_discovers_and_verifies_before_durable_campaign_wait() -> None:
+    definition = build_account_discovery_definition()
+    names = tuple(step.step_name for step in definition.steps)
+
+    assert definition.version == 2
+    assert names.index("find_contacts") < names.index("verify_contacts")
+    assert names.index("verify_contacts") < names.index("await_campaign_activation")
+    assert names.index("await_campaign_activation") < names.index("enroll_campaign")
+    wait = next(
+        step for step in definition.steps if step.step_name == "await_campaign_activation"
+    )
+    assert wait.wait_event_type == "CampaignStateChanged"
+    assert wait.run_on_entry is True
+
+
+async def test_verified_contacts_wait_for_exact_campaign_version_before_enrollment() -> None:
+    run = _run(verified_contact_point_ids=[new_id("cp")])
+    outreach = _Outreach()
+    bind_action, bind_next, bind_patch = await BindCampaignStep(
+        outreach, _ActorResolver()
+    ).execute(run)
+    assert (bind_action, bind_next, bind_patch) == (
+        "advance",
+        "find_company_details",
+        {"campaign_version": 3},
+    )
+
+    context = dict(run.context)
+    context.update(bind_patch)
+    waiting_run = WorkflowRun(
+        run.run_id,
+        run.tenant_id,
+        run.workflow_type,
+        2,
+        run.subject_ref,
+        "await_campaign_activation",
+        StepStatus.RUNNING,
+        run.created_at,
+        context=context,
+    )
+    action, next_step, patch = await AwaitCampaignActivationStep(
+        outreach, _ActorResolver()
+    ).execute(waiting_run)
+
+    assert (action, next_step) == ("wait", None)
+    assert patch == {"campaign_activation_state": "pending_approval"}
+    assert outreach.calls == []
+
+
+async def test_activation_event_is_exact_and_enrollment_carries_bound_version() -> None:
+    contact_id = new_id("cp")
+    run = _run(
+        verified_contact_point_ids=[contact_id],
+        campaign_version=3,
+        event={
+            "event_type": "CampaignStateChanged",
+            "payload": {
+                "campaign_id": None,
+                "campaign_version": 3,
+                "state": "active",
+            },
+        },
+    )
+    run.context["event"]["payload"]["campaign_id"] = run.context["campaign_id"]
+    outreach = _Outreach()
+    outreach.get_campaign = lambda *args, **kwargs: _campaign_active()  # type: ignore[method-assign]
+
+    action, next_step, _patch = await AwaitCampaignActivationStep(
+        outreach, _ActorResolver()
+    ).execute(run)
+    assert (action, next_step) == ("advance", "enroll_campaign")
+
+    await EnrollCampaignStep(outreach, _ActorResolver()).execute(run)
+    assert outreach.calls[0].campaign_version == 3
+
+
+async def _campaign_active():
+    return SimpleNamespace(state=CampaignState.ACTIVE, version=3)
+
+
+class _CampaignStateOutreach(_Outreach):
+    def __init__(self, state: CampaignState, version: int) -> None:
+        super().__init__()
+        self.state = state
+        self.version = version
+
+    async def get_campaign(self, tenant_id, campaign_id, *, actor):
+        del tenant_id, campaign_id, actor
+        return SimpleNamespace(state=self.state, version=self.version)
+
+
+def _campaign_wait_run(
+    *,
+    state: str,
+    event_version: int = 3,
+    bound_version: int = 3,
+) -> WorkflowRun:
+    run = _run(
+        campaign_version=bound_version,
+        event={
+            "event_type": "CampaignStateChanged",
+            "payload": {
+                "campaign_id": "placeholder",
+                "campaign_version": event_version,
+                "state": state,
+            },
+        },
+    )
+    run.context["event"]["payload"]["campaign_id"] = run.context["campaign_id"]
+    return run
+
+
+async def test_rejected_cancelled_and_revised_campaigns_fail_closed() -> None:
+    rejected = _campaign_wait_run(state="rejected")
+    rejected_result = await AwaitCampaignActivationStep(
+        _CampaignStateOutreach(CampaignState.PENDING_APPROVAL, 3), _ActorResolver()
+    ).execute(rejected)
+    assert rejected_result[0:2] == ("fail", "campaign_activation_rejected")
+
+    cancelled = _campaign_wait_run(state="cancelled")
+    cancelled_result = await AwaitCampaignActivationStep(
+        _CampaignStateOutreach(CampaignState.CANCELLED, 3), _ActorResolver()
+    ).execute(cancelled)
+    assert cancelled_result[0:2] == ("fail", "campaign_activation_rejected")
+
+    revised = _campaign_wait_run(
+        state="pending_approval", event_version=4, bound_version=3
+    )
+    revised_result = await AwaitCampaignActivationStep(
+        _CampaignStateOutreach(CampaignState.PENDING_APPROVAL, 4), _ActorResolver()
+    ).execute(revised)
+    assert revised_result[0:2] == ("fail", "campaign_version_changed")
+
+
+async def test_activation_event_replay_keeps_contact_bound_enrollment_key() -> None:
+    run = _campaign_wait_run(state="active")
+    outreach = _CampaignStateOutreach(CampaignState.ACTIVE, 3)
+    wait = AwaitCampaignActivationStep(outreach, _ActorResolver())
+    first = await wait.execute(run)
+    second = await wait.execute(run)
+    assert first[0:2] == second[0:2] == ("advance", "enroll_campaign")
+
+    run.context["verified_contact_point_ids"] = [new_id("cp")]
+    enrollment = EnrollCampaignStep(outreach, _ActorResolver())
+    await enrollment.execute(run)
+    await enrollment.execute(run)
+    assert len({str(call.idempotency_key) for call in outreach.calls}) == 1
+    assert {call.campaign_version for call in outreach.calls} == {3}
+
 
 async def test_enrollment_replay_uses_stable_contact_bound_idempotency_keys() -> None:
     contact_ids = [new_id("cp"), new_id("cp")]
-    run = _run(verified_contact_point_ids=contact_ids)
+    run = _run(verified_contact_point_ids=contact_ids, campaign_version=1)
     outreach = _Outreach()
     step = EnrollCampaignStep(outreach, _ActorResolver())
 

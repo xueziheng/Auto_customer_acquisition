@@ -294,6 +294,7 @@ onMounted(() => void loadAccounts());
             <div>
               <h2>{{ detail.account.name }}</h2>
               <p>{{ detail.account.country }} · {{ detail.account.website_domain }}</p>
+              <code>{{ detail.account.account_id }}</code>
             </div>
             <span class="verified-summary">{{ verifiedCount }} 个已验证地址</span>
           </div>

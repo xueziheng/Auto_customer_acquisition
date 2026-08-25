@@ -123,6 +123,7 @@ describe("CustomerDiscovery", () => {
     const accountButton = root.querySelector<HTMLElement>(`.account-list li[role="button"]`);
     accountButton?.click();
     await eventually(() => {
+      expect(root.textContent).toContain(account.account_id);
       expect(root.textContent).toContain(account.source_signal_refs[0]);
       expect(root.textContent).toContain("legitimate_interest");
       expect(root.textContent).toContain("已验证，可入组");

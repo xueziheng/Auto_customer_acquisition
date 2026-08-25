@@ -49,6 +49,7 @@ const detail: InboxDetail = {
       direction: "inbound",
       effective_category: "requests_quote",
       message_id: messageId,
+      outbound_message_id: "<tradeos.outbound@example.test>",
       original_category: "rejection",
       raw_artifact_ref: "artifact:reply-1",
       required_actions: ["stop_sequence", "handoff"],
@@ -166,6 +167,7 @@ describe("SmartInbox", () => {
 
     await eventually(() => {
       expect(root.textContent).toContain("artifact:reply-1");
+      expect(root.textContent).toContain("<tradeos.outbound@example.test>");
       expect(root.textContent).toContain("规则要求（不代表已执行）");
     });
     expect(root.textContent).not.toContain("邮件正文");

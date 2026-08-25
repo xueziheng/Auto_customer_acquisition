@@ -96,6 +96,15 @@ describe("ValidatedNeedDetail", () => {
       expect(root.textContent).toContain("寻源前仍缺：规格");
     });
     expect(root.querySelector("[v-html]")).toBeNull();
+    const disclosure = root.querySelector<HTMLDetailsElement>(".field-provenance");
+    const summary = disclosure?.querySelector<HTMLElement>("summary");
+    expect(disclosure?.open).toBe(false);
+    summary?.focus();
+    summary?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    await nextTick();
+    expect(disclosure?.open).toBe(true);
+    expect(document.activeElement).toBe(summary);
+    expect(disclosure?.textContent).toContain("msg_01K39P9M5D6K4A91YEQ80EJZ0Z");
     expect(requestedUrls).toContain(`https://tradeos.test/demand/needs/${needId}`);
     app.unmount();
   });

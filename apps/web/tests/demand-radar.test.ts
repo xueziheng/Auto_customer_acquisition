@@ -13,6 +13,7 @@ const signal: Signal = {
   entity_name: "Northwind Hardware",
   is_inference: false,
   observed_at: "2026-08-21T10:00:00Z",
+  page_hash: null,
   possible_need: "可能需要补充工业铰链供应",
   raw_observation: "公开扩建公告已发布",
   signal_id: "sig_01K39P9M5D6K4A91YEQ80EJZ0X",
@@ -20,6 +21,7 @@ const signal: Signal = {
   source_ref: "artifact:public-page-1",
   source_type: "web_page",
   source_url: "https://example.test/news/expansion",
+  snapshot_artifact_ref: null,
   status: "captured",
 };
 
@@ -88,6 +90,7 @@ describe("DemandRadar", () => {
     await router.replace("/demand");
 
     await eventually(() => expect(root.textContent).toContain(signal.raw_observation));
+    expect(root.textContent).toContain(signal.signal_id);
     expect(root.textContent).toContain("事实：公开来源中的原始观察");
     expect(root.textContent).toContain("查看原始来源");
 
@@ -100,6 +103,8 @@ describe("DemandRadar", () => {
 
     const hypothesisCard = root.querySelector(".hypothesis-card");
     expect(hypothesisCard?.textContent).toContain("推断");
+    expect(hypothesisCard?.textContent).toContain(hypothesis.hypothesis_id);
+    expect(hypothesisCard?.textContent).toContain(hypothesis.account_id);
     expect(hypothesisCard?.textContent).toContain("置信档位：中档");
     expect(hypothesisCard?.textContent).toContain(signal.source_ref);
     expect(hypothesisCard?.textContent).not.toMatch(/\b0(?:\.\d+)?\b|\b1\.0+\b|\d+%/);

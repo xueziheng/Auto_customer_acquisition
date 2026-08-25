@@ -15,6 +15,7 @@ from apps.api.dependencies import UnconfiguredApiDependencies
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
 from apps.api.runtime_config import Phase1RuntimeSettings
+from domains.approvals.service import ApprovalState, ApprovalType
 from domains.compliance.service import ComplianceService
 from domains.organization.service import OrganizationService
 from shared.errors import TransientError
@@ -191,7 +192,9 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
         == "_StartOnlyWorkflowHandler"
         for step in country_policy_definition.steps
     )
-    assert vars(dependencies.outreach)["_approvals"] is facts
+    approval_provider = vars(dependencies.outreach)["_approvals"]
+    assert type(approval_provider).__name__ == "_ServiceBackedCampaignApprovalProvider"
+    assert vars(approval_provider)["_fallback"] is facts
     assert secrets.refs == [
         "UNSUBSCRIBE_HMAC_2025",
         "UNSUBSCRIBE_HMAC_2026",
@@ -205,6 +208,43 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
             now=lambda: datetime.now(UTC),
             manual_send=replace(manual, delivery_materials=object()),
         )
+
+
+@pytest.mark.asyncio
+async def test_service_backed_campaign_approval_uses_durable_employee_id() -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    tenant_id = TenantId("tn_01K00000000000000000000000")
+    campaign_id = "cmp_01K00000000000000000000000"
+    employee_id = "emp_01K00000000000000000000000"
+    approval_id = "apr_01K00000000000000000000000"
+
+    class _Approvals:
+        async def get_by_change_set(self, requested_tenant, change_set_ref):
+            assert requested_tenant == tenant_id
+            assert change_set_ref == f"campaign:{campaign_id}:v3"
+            return type(
+                "View",
+                (),
+                {
+                    "approval_id": approval_id,
+                    "approval_type": ApprovalType.CAMPAIGN_BOUNDARY_CHANGE.value,
+                    "state": ApprovalState.APPROVED.value,
+                    "decided_by_name": "Boss Zhang",
+                    "decided_by_employee": employee_id,
+                    "decided_at": datetime(2026, 8, 26, tzinfo=UTC),
+                },
+            )()
+
+    provider = module._ServiceBackedCampaignApprovalProvider(
+        _Approvals(), _ManualFacts()
+    )
+    snapshot = await provider.get_campaign_approval(
+        tenant_id, campaign_id, 3
+    )
+
+    assert snapshot is not None
+    assert snapshot.approved_by == employee_id
+    assert snapshot.approved_by != "Boss Zhang"
 
 
 @pytest.mark.asyncio

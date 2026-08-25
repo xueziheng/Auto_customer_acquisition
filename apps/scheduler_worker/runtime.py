@@ -113,6 +113,7 @@ from shared.errors import ValidationError
 from shared.events.bus import EventHandler
 from shared.events.catalog import (
     ApprovalDecided,
+    CampaignStateChanged,
     CommitmentOverdue,
     DomainEvent,
     HandoffQueueBacklogged,
@@ -249,7 +250,10 @@ from .campaign_driver import (
     outreach_actor_for,
     sending_actor_for,
 )
-from .campaign_events import CampaignEventHandlers
+from .campaign_events import (
+    AccountDiscoveryCampaignEventHandlers,
+    CampaignEventHandlers,
+)
 from .config import SchedulerWorkerConfig
 from .hunter_contacts import (
     HunterContactComposition,
@@ -1284,6 +1288,22 @@ class SchedulerRuntimeFactory:
 
             if self._dependencies.account_discovery is not None:
                 register_account_discovery(workflow)
+                account_campaign_events = AccountDiscoveryCampaignEventHandlers(
+                    engine=workflow,
+                    approvals=change_approvals,
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                )
+                outbox.register_handler(
+                    CampaignStateChanged,
+                    "account_discovery.campaign_state_changed",
+                    account_campaign_events,
+                )
+                outbox.register_handler(
+                    ApprovalDecided,
+                    "account_discovery.campaign_approval_decided",
+                    account_campaign_events,
+                )
 
             if self._dependencies.demand_discovery is not None:
                 register_demand_discovery(workflow)

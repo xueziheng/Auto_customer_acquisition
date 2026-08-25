@@ -130,7 +130,6 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocumentPointe
       </button>
     </header>
     <div class="provenance-body">
-      <span class="demo-badge">演示数据</span>
       <dl>
         <div><dt>来源类型</dt><dd>{{ provenance.source_type }}</dd></div>
         <div><dt>来源标识</dt><dd>{{ provenance.source_id }}</dd></div>

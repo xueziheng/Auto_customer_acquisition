@@ -184,6 +184,15 @@ class MessageSent(DomainEvent):
 
 
 @dataclass(frozen=True)
+class CampaignStateChanged(DomainEvent):
+    """Campaign 持久状态或版本已改变，供等待中的账户发现流程精确收束。"""
+
+    campaign_id: CampaignId = None  # type: ignore[assignment]
+    campaign_version: int = 0
+    state: str = ""
+
+
+@dataclass(frozen=True)
 class ReplyReceived(DomainEvent):
     """收到客户回复。
 

@@ -312,6 +312,9 @@ onMounted(() => void loadItems());
             </div>
             <dl>
               <div><dt>消息 ID</dt><dd>{{ message.message_id }}</dd></div>
+              <div v-if="message.outbound_message_id">
+                <dt>关联出站 ID</dt><dd><code>{{ message.outbound_message_id }}</code></dd>
+              </div>
               <div><dt>原件引用</dt><dd><code>{{ message.raw_artifact_ref }}</code></dd></div>
               <div v-if="message.direction === 'inbound'">
                 <dt>有效分类</dt><dd>{{ categoryLabel(message.effective_category) }}</dd>

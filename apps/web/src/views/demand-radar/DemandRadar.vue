@@ -193,6 +193,7 @@ onMounted(() => void loadRadar());
               <div><span class="signal-type">{{ signal.signal_type }}</span><h3>{{ signal.entity_name }}</h3></div>
               <span class="record-status">{{ signal.status }}</span>
             </header>
+            <code class="record-id">Signal ID · {{ signal.signal_id }}</code>
             <div class="fact-block">
               <span>原始观察</span>
               <p>{{ signal.raw_observation }}</p>
@@ -242,6 +243,9 @@ onMounted(() => void loadRadar());
               <div><span class="kind-badge inference">推断</span><h3>{{ hypothesis.account_name }}</h3></div>
               <span class="tier">置信档位：{{ confidenceLabel(hypothesis.confidence_tier) }}</span>
             </header>
+            <p class="record-id">
+              Hypothesis ID · {{ hypothesis.hypothesis_id }} · Account ID · {{ hypothesis.account_id }}
+            </p>
             <p class="category">
               {{ hypothesis.category }}
             </p>

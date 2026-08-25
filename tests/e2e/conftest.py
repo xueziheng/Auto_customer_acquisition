@@ -23,6 +23,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from apps.api.runtime_config import Phase1RuntimeSettings
 from apps.scheduler_worker.main import (
+    SchedulerRuntime,
     WorkerRunResult,
     WorkerStartStatus,
     run_scheduler_worker,
@@ -76,6 +77,7 @@ class E2EStack:
     runtime_settings: Phase1RuntimeSettings
     api_process: ManagedProcess
     vite_process: ManagedProcess
+    scheduler_runtime: SchedulerRuntime
     scheduler_task: asyncio.Task[WorkerRunResult]
 
 
@@ -530,6 +532,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             runtime_settings=runtime_settings,
             api_process=api_process,
             vite_process=vite_process,
+            scheduler_runtime=scheduler_runtime,
             scheduler_task=scheduler_task,
         )
     finally:

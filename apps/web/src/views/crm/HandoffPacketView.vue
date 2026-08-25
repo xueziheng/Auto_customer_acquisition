@@ -49,12 +49,11 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
   >
     <header class="packet-header">
       <div class="packet-badges">
-        <span class="demo-badge">演示数据</span>
         <span class="state-tag"><span aria-hidden="true">●</span> {{ packet.state }}</span>
       </div>
       <h1>{{ packet.account_name }}</h1>
       <p class="record-ids">
-        接管 {{ packet.handoff_id }} · 机会 {{ packet.opportunity_id }}
+        接管 {{ packet.handoff_id }} · 机会 {{ packet.opportunity_id }} · 需求 {{ opportunity.need_id }} · 企业 {{ opportunity.account_id }}
       </p>
       <dl class="summary-grid">
         <div><dt>触发条件</dt><dd>{{ packet.trigger }}</dd></div>

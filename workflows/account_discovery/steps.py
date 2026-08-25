@@ -14,7 +14,7 @@ from agent_runtime.base import AgentTask
 from connectors.contact_enrichment.client import ContactEmailKind
 from connectors.email_verification.client import EmailVerificationOutcome
 from domains.employees.service import EmployeeService
-from domains.outreach.schemas import EnrollmentCreateRequest
+from domains.outreach.schemas import CampaignState, EnrollmentCreateRequest
 from domains.outreach.service import OutreachService
 from domains.prospecting.schemas import (
     ContactPointKind,
@@ -89,6 +89,43 @@ def _account_id(run: WorkflowRun) -> ProspectAccountId:
     return ProspectAccountId(
         _exact_text(run.context.get("account_id"), "账户发现缺少 account", max_len=40)
     )
+
+
+def _campaign_version(run: WorkflowRun) -> int:
+    value = run.context.get("campaign_version")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValidationError("账户发现缺少 Campaign 绑定版本")
+    return value
+
+
+class BindCampaignStep:
+    """在任何 Provider 成本前绑定 Campaign 的精确持久版本。"""
+
+    def __init__(
+        self,
+        outreach: OutreachService,
+        actor_resolver: AccountDiscoveryActorResolver,
+    ) -> None:
+        self._outreach = outreach
+        self._actor_resolver = actor_resolver
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _hypothesis, campaign_id, acting_user, _hints, _assessment = _base_context(run)
+        actors = await self._actor_resolver.resolve(run.tenant_id, acting_user)
+        campaign = await self._outreach.get_campaign(
+            run.tenant_id, campaign_id, actor=actors.outreach
+        )
+        if campaign.state not in {
+            CampaignState.DRAFT,
+            CampaignState.PENDING_APPROVAL,
+            CampaignState.ACTIVE,
+        }:
+            return ("fail", "campaign_not_discoverable", {})
+        return (
+            "advance",
+            "find_company_details",
+            {"campaign_version": campaign.version},
+        )
 
 
 class FindCompanyDetailsStep:
@@ -357,7 +394,82 @@ class AssignOwnerStep:
             country=country,
             need_category=category,
         )
-        return ("advance", "enroll_campaign", {"owner_id": str(owner.owner)})
+        return (
+            "advance",
+            "await_campaign_activation",
+            {"owner_id": str(owner.owner)},
+        )
+
+
+class AwaitCampaignActivationStep:
+    """等待精确 Campaign 版本激活；修订、拒绝或取消一律失败关闭。"""
+
+    def __init__(
+        self,
+        outreach: OutreachService,
+        actor_resolver: AccountDiscoveryActorResolver,
+    ) -> None:
+        self._outreach = outreach
+        self._actor_resolver = actor_resolver
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _hypothesis, campaign_id, acting_user, _hints, _assessment = _base_context(run)
+        expected_version = _campaign_version(run)
+        event = run.context.get("event")
+        event_state: str | None = None
+        if event is not None:
+            if (
+                not isinstance(event, dict)
+                or event.get("event_type") != "CampaignStateChanged"
+                or not isinstance(event.get("payload"), dict)
+            ):
+                raise ValidationError("账户发现 Campaign 事件无效")
+            payload = event["payload"]
+            if payload.get("campaign_id") != str(campaign_id):
+                raise ValidationError("账户发现 Campaign 事件关联失败")
+            event_version = payload.get("campaign_version")
+            if (
+                not isinstance(event_version, int)
+                or isinstance(event_version, bool)
+                or event_version < 1
+            ):
+                raise ValidationError("账户发现 Campaign 事件版本无效")
+            event_state = _exact_text(
+                payload.get("state"), "账户发现 Campaign 事件状态无效", max_len=32
+            )
+        actors = await self._actor_resolver.resolve(run.tenant_id, acting_user)
+        campaign = await self._outreach.get_campaign(
+            run.tenant_id, campaign_id, actor=actors.outreach
+        )
+        if campaign.version != expected_version:
+            return (
+                "fail",
+                "campaign_version_changed",
+                {"campaign_activation_state": campaign.state.value},
+            )
+        if event_state in {"rejected", "cancelled", "revised"}:
+            return (
+                "fail",
+                "campaign_activation_rejected",
+                {"campaign_activation_state": event_state},
+            )
+        if campaign.state is CampaignState.ACTIVE:
+            return (
+                "advance",
+                "enroll_campaign",
+                {"campaign_activation_state": CampaignState.ACTIVE.value},
+            )
+        if campaign.state in {CampaignState.DRAFT, CampaignState.PENDING_APPROVAL}:
+            return (
+                "wait",
+                None,
+                {"campaign_activation_state": campaign.state.value},
+            )
+        return (
+            "fail",
+            "campaign_not_activatable",
+            {"campaign_activation_state": campaign.state.value},
+        )
 
 
 class EnrollCampaignStep:
@@ -371,6 +483,7 @@ class EnrollCampaignStep:
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         hypothesis_id, campaign_id, acting_user, _hints, _assessment = _base_context(run)
+        campaign_version = _campaign_version(run)
         account_id = _account_id(run)
         raw_ids = run.context.get("verified_contact_point_ids")
         if not isinstance(raw_ids, list):
@@ -391,6 +504,7 @@ class EnrollCampaignStep:
                         f"account-discovery:{run.run_id}:{contact_point_id}"
                     ),
                     source_hypothesis_id=hypothesis_id,
+                    campaign_version=campaign_version,
                 ),
                 actor=actors.outreach,
             )
@@ -407,6 +521,8 @@ class EnrollCampaignStep:
 
 __all__ = (
     "AssignOwnerStep",
+    "AwaitCampaignActivationStep",
+    "BindCampaignStep",
     "EnrollCampaignStep",
     "FindCompanyDetailsStep",
     "FindContactsStep",

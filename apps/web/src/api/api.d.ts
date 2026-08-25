@@ -2083,6 +2083,8 @@ export interface components {
              * Format: date-time
              */
             observed_at: string;
+            /** Page Hash */
+            page_hash: string | null;
             /** Possible Need */
             possible_need: string | null;
             /** Raw Observation */
@@ -2091,6 +2093,8 @@ export interface components {
             signal_id: string;
             /** Signal Type */
             signal_type: string;
+            /** Snapshot Artifact Ref */
+            snapshot_artifact_ref: string | null;
             /** Source Ref */
             source_ref: string;
             /** Source Type */
@@ -2211,6 +2215,8 @@ export interface components {
             next_send_at: string | null;
             /** Sending Identity Id */
             sending_identity_id: string;
+            /** Source Hypothesis Id */
+            source_hypothesis_id?: string | null;
             state: components["schemas"]["EnrollmentState"];
             stop_reason: components["schemas"]["EnrollmentStopReason"] | null;
             /** Stopped At */
@@ -2514,6 +2520,8 @@ export interface components {
             reasoning: string;
             /** Status */
             status: string;
+            /** Validated Need Id */
+            validated_need_id?: string | null;
         };
         /**
          * IdentityState
@@ -2608,6 +2616,8 @@ export interface components {
             /** Message Id */
             message_id: string;
             original_category: components["schemas"]["ReplyCategory"] | null;
+            /** Outbound Message Id */
+            outbound_message_id?: string | null;
             /** Raw Artifact Ref */
             raw_artifact_ref: string;
             /** Required Actions */
@@ -3243,6 +3253,10 @@ export interface components {
             created_at: string;
             /** Entity Type */
             entity_type?: string | null;
+            /** Field Provenance */
+            field_provenance?: {
+                [key: string]: components["schemas"]["Provenance"];
+            };
             /** Industry */
             industry?: string | null;
             /** Name */
@@ -3304,6 +3318,7 @@ export interface components {
          *         confirmed_at:  确认时间
          *         source_url:    来源 URL，网页类必填
          *         page_hash:     页面内容哈希，网页类必填
+         *         source_quote:  客户/员工原文逐字摘录；事实提取可选，禁止空串
          *
          *     ``extracted_by`` 要记具体的模型版本标识，不要只写 ``"model"``——
          *     换模型后需要能分开评估提取质量。
@@ -3333,6 +3348,11 @@ export interface components {
             page_hash: string | null;
             /** Source Id */
             source_id: string;
+            /**
+             * Source Quote
+             * @default null
+             */
+            source_quote: string | null;
             source_type: components["schemas"]["SourceType"];
             /**
              * Source Url

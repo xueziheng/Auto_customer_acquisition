@@ -50,7 +50,8 @@ const enrollment: Enrollment = {
   stop_reason: "reply",
   stopped_at: "2026-08-21T10:06:00Z",
   tenant_id: "tn_server_bound",
-};
+  source_hypothesis_id: "hyp_01K39P9M5D6K4A91YEQ80EJZ0Z",
+} as Enrollment;
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -102,6 +103,8 @@ describe("CampaignCenter", () => {
     expect(root.textContent).toContain("暂停只阻止新发送；入站回复仍继续处理");
     expect(root.textContent).toContain("manual quality review");
     expect(root.textContent).toContain("enr_controlled");
+    expect(root.textContent).toContain("acc_controlled");
+    expect(root.textContent).toContain("hyp_01K39P9M5D6K4A91YEQ80EJZ0Z");
     expect(root.textContent).toContain("Campaign v3");
     expect(root.textContent).toContain("replied");
     app.unmount();

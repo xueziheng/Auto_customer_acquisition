@@ -1519,6 +1519,14 @@ async def test_hunter_configured_pending_builds_fail_closed_adapters(
     async with factory() as runtime:
         assert runtime.activation is None
         assert "account_discovery.find_contacts" in runtime.workflow._handlers
+        assert ("account_discovery", 2) in runtime.workflow._definitions
+        assert {
+            name
+            for name, _handler in runtime.outbox._handlers["CampaignStateChanged"]
+        } == {"account_discovery.campaign_state_changed"}
+        assert "account_discovery.campaign_approval_decided" in {
+            name for name, _handler in runtime.outbox._handlers["ApprovalDecided"]
+        }
         assert len(captured) == 1
         assert captured[0].manifest_ids == ()
         assert captured[0].registered_configuration_hash is None

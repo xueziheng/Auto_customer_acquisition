@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* global HTMLDetailsElement, HTMLElement, KeyboardEvent */
 import { inject, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
@@ -40,6 +41,14 @@ function safeError(status: number): string {
   if (status === 403) return "当前身份无权读取该已验证需求";
   if (status === 400 || status === 404) return "该已验证需求不存在或不可见";
   return "已验证需求加载失败，请稍后重试";
+}
+
+function toggleProvenance(event: KeyboardEvent): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  const summary = event.currentTarget as HTMLElement | null;
+  const details = summary?.parentElement as HTMLDetailsElement | null;
+  if (details) details.open = !details.open;
 }
 
 async function loadNeed(): Promise<void> {
@@ -163,10 +172,15 @@ onMounted(() => void loadNeed());
           >
             该字段没有保存客户原话摘录，请通过来源记录核对原件。
           </p>
-          <dl>
-            <div><dt>来源记录</dt><dd><code>{{ field.source_ref }}</code></dd></div>
-            <div><dt>人工确认</dt><dd>{{ field.confirmed_by ?? "未人工确认" }}</dd></div>
-          </dl>
+          <details class="field-provenance">
+            <summary @keydown="toggleProvenance">
+              查看字段 Provenance
+            </summary>
+            <dl>
+              <div><dt>来源记录</dt><dd><code>{{ field.source_ref }}</code></dd></div>
+              <div><dt>人工确认</dt><dd>{{ field.confirmed_by ?? "未人工确认" }}</dd></div>
+            </dl>
+          </details>
         </article>
       </section>
 

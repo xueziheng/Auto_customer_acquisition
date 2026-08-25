@@ -21,6 +21,7 @@ from domains.outreach.schemas import (
     SequenceStepRequest,
 )
 from shared.errors import PermissionDenied, TenantIsolationViolation
+from shared.events.catalog import CampaignStateChanged
 from shared.schemas.identifiers import (
     ApprovalId,
     EmployeeId,
@@ -160,6 +161,15 @@ async def test_campaign_lifecycle_binds_exact_approval_and_preserves_v1() -> Non
     approvals.values[(created.campaign_id, 1)] = approval
     active = await service.activate_campaign(TENANT, created.campaign_id, actor=BOSS)
     assert (active.state, active.approval_id) == (CampaignState.ACTIVE, approval.approval_id)
+    assert store.events == [
+        CampaignStateChanged(
+            tenant_id=TENANT,
+            occurred_at=NOW,
+            campaign_id=created.campaign_id,
+            campaign_version=1,
+            state="active",
+        )
+    ]
     frozen_v1 = store.versions[(created.campaign_id, 1)]
     revised = await service.revise_campaign(
         TENANT, created.campaign_id, _request("Hardware discovery v2"), actor=BOSS
@@ -170,10 +180,22 @@ async def test_campaign_lifecycle_binds_exact_approval_and_preserves_v1() -> Non
         None,
     )
     assert store.versions[(created.campaign_id, 1)] == frozen_v1
+    assert [(event.campaign_version, event.state) for event in store.events] == [
+        (1, "active"),
+        (2, "pending_approval"),
+    ]
     with pytest.raises(CampaignApprovalRequiredError):
         await service.activate_campaign(TENANT, created.campaign_id, actor=BOSS)
-    assert sum(record["rule"].startswith("allow:") for record in audit.records) == 4
-    assert trace.calls[-1][0] == "uow_exit"
+    await service.cancel_campaign(TENANT, created.campaign_id, actor=BOSS)
+    await service.cancel_campaign(TENANT, created.campaign_id, actor=BOSS)
+    assert [(event.campaign_version, event.state) for event in store.events] == [
+        (1, "active"),
+        (2, "pending_approval"),
+        (2, "cancelled"),
+    ]
+    assert sum(record["rule"].startswith("allow:") for record in audit.records) == 6
+    assert trace.calls[-2][0] == "uow_exit"
+    assert trace.calls[-1][0] == "audit"
 
 
 @pytest.mark.parametrize(

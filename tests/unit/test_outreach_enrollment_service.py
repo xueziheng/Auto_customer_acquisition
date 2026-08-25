@@ -274,6 +274,23 @@ def _request(harness: Harness, *, key: str = "enroll-key-1") -> EnrollmentCreate
     )
 
 
+async def test_enroll_rejects_stale_bound_campaign_version_before_creating() -> None:
+    harness = _build()
+    request = EnrollmentCreateRequest(
+        harness.account,
+        harness.contact,
+        IdempotencyKey("enroll-bound-version"),
+        campaign_version=2,
+    )
+
+    with pytest.raises(CampaignNotActiveError, match="版本"):
+        await harness.service.enroll(
+            harness.tenant, harness.campaign_id, request, actor=harness.boss
+        )
+
+    assert harness.store.enrollments == {}
+
+
 def _system(harness: Harness, enrollment_id: EnrollmentId) -> Actor:
     return Actor(
         "system:test",

@@ -570,7 +570,7 @@ onMounted(() => {
               :disabled="!canSelect"
               @click="selectHandoff(item.handoff_id)"
             >
-              <span class="card-top"><span class="demo-badge">演示数据</span><span class="trigger-tag">{{ item.trigger }}</span></span>
+              <span class="card-top"><span class="trigger-tag">{{ item.trigger }}</span></span>
               <span class="wait-time"><small>已等待</small>{{ item.wait_seconds }} 秒</span>
               <span class="queue-order-row"><span class="queue-order">等待顺序第 {{ index + 1 }} 项</span><span class="requested-at">{{ item.requested_at }}</span></span>
               <strong class="account-name">{{ item.account_name }}</strong>

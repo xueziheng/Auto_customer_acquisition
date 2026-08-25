@@ -17,6 +17,8 @@ from workflows.account_discovery.ports import (
 )
 from workflows.account_discovery.steps import (
     AssignOwnerStep,
+    AwaitCampaignActivationStep,
+    BindCampaignStep,
     EnrollCampaignStep,
     FindCompanyDetailsStep,
     FindContactsStep,
@@ -37,8 +39,9 @@ def build_account_discovery_definition() -> WorkflowDefinition:
     """企业解析 → 联系人补全 → 验证 → 归属 → Campaign 入组。"""
     return WorkflowDefinition(
         workflow_type=WORKFLOW_TYPE,
-        version=1,
+        version=2,
         steps=(
+            StepDefinition("bind_campaign", "account_discovery.bind_campaign"),
             StepDefinition(
                 "find_company_details",
                 "account_discovery.find_company_details",
@@ -58,14 +61,22 @@ def build_account_discovery_definition() -> WorkflowDefinition:
                 retry_backoff=timedelta(minutes=5),
             ),
             StepDefinition("assign_owner", "account_discovery.assign_owner"),
+            StepDefinition(
+                "await_campaign_activation",
+                "account_discovery.await_campaign_activation",
+                wait_event_type="CampaignStateChanged",
+                run_on_entry=True,
+            ),
             StepDefinition("enroll_campaign", "account_discovery.enroll_campaign"),
         ),
         transitions={
+            "bind_campaign": ("find_company_details",),
             "find_company_details": ("resolve_account",),
             "resolve_account": ("find_contacts",),
             "find_contacts": ("verify_contacts",),
             "verify_contacts": ("assign_owner",),
-            "assign_owner": ("enroll_campaign",),
+            "assign_owner": ("await_campaign_activation",),
+            "await_campaign_activation": ("enroll_campaign",),
             "enroll_campaign": (),
         },
     )
@@ -84,6 +95,9 @@ def build_account_discovery_handlers(
     now: Callable[[], datetime],
 ) -> dict[str, StepHandler]:
     return {
+        "account_discovery.bind_campaign": BindCampaignStep(
+            outreach, actor_resolver
+        ),
         "account_discovery.find_company_details": FindCompanyDetailsStep(
             task_reader, capability, actor_resolver
         ),
@@ -96,6 +110,9 @@ def build_account_discovery_handlers(
         ),
         "account_discovery.assign_owner": AssignOwnerStep(
             employees, actor_resolver
+        ),
+        "account_discovery.await_campaign_activation": AwaitCampaignActivationStep(
+            outreach, actor_resolver
         ),
         "account_discovery.enroll_campaign": EnrollCampaignStep(
             outreach, actor_resolver

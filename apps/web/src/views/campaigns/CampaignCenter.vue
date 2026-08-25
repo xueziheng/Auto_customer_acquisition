@@ -560,12 +560,12 @@ onMounted(() => {
               :key="state"
             ><strong>{{ count }}</strong>{{ state }}</span>
           </div><table v-if="enrollments.length">
-            <thead><tr><th>Enrollment</th><th>Campaign 版本</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
+            <thead><tr><th>Enrollment</th><th>Account</th><th>来源 Hypothesis</th><th>Campaign 版本</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
               <tr
                 v-for="item in enrollments"
                 :key="item.enrollment_id"
               >
-                <td>{{ item.enrollment_id }}</td><td>Campaign v{{ item.campaign_version }}</td><td>{{ item.state }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
+                <td>{{ item.enrollment_id }}</td><td>{{ item.account_id }}</td><td>{{ item.source_hypothesis_id ?? "—" }}</td><td>Campaign v{{ item.campaign_version }}</td><td>{{ item.state }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
               </tr>
             </tbody>
           </table><div

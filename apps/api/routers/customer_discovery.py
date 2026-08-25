@@ -48,7 +48,8 @@ class AccountDiscoveryStartBody(BaseModel):
 
     hypothesis_id: str
     campaign_id: str
-    role_hints: tuple[str, ...] = Field(max_length=10)
+    # JSON 没有 tuple；strict model 必须直接接受线上请求解析得到的 array/list。
+    role_hints: list[str] = Field(max_length=10)
     assessment_ref: str
 
 

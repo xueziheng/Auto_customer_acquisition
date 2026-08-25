@@ -96,7 +96,12 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
-from shared.events.catalog import ComplaintReceived, MessageSent, SuppressionAdded
+from shared.events.catalog import (
+    CampaignStateChanged,
+    ComplaintReceived,
+    MessageSent,
+    SuppressionAdded,
+)
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -466,6 +471,15 @@ class OutreachServiceImpl:
             campaign.paused_reason = None
             await uow.campaigns.update(campaign)
             await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{next_version}:revise", action, now))
+            await uow.bus.publish(
+                CampaignStateChanged(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    campaign_id=campaign_id,
+                    campaign_version=next_version,
+                    state=CampaignState.PENDING_APPROVAL.value,
+                )
+            )
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
         return view
@@ -495,6 +509,7 @@ class OutreachServiceImpl:
                 or approval.state is not CampaignApprovalState.APPROVED
             ):
                 raise CampaignApprovalRequiredError("Campaign 当前版本缺少有效审批")
+            activated = False
             if campaign.state is CampaignState.ACTIVE:
                 if campaign.approval_id != approval.approval_id:
                     raise IdempotencyConflictError("Campaign activation 审批冲突")
@@ -505,9 +520,20 @@ class OutreachServiceImpl:
                 campaign.approved_at = approval.approved_at
                 campaign.paused_reason = None
                 await uow.campaigns.update(campaign)
+                activated = True
             else:
                 raise InvalidStateTransition("Campaign 当前状态不能激活")
             await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:activate:{approval.approval_id}", action, now))
+            if activated:
+                await uow.bus.publish(
+                    CampaignStateChanged(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        campaign_id=campaign_id,
+                        campaign_version=campaign.current_version,
+                        state=CampaignState.ACTIVE.value,
+                    )
+                )
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
         return view
@@ -566,10 +592,21 @@ class OutreachServiceImpl:
                 uow, tenant_id, campaign_id, actor, action
             )
             rule = self._require(actor, action, tenant_id, campaign_id=campaign_id)
-            if campaign.state is not CampaignState.CANCELLED:
+            cancelled = campaign.state is not CampaignState.CANCELLED
+            if cancelled:
                 campaign.transition_to(CampaignState.CANCELLED)
                 await uow.campaigns.update(campaign)
             await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:cancel", action, now))
+            if cancelled:
+                await uow.bus.publish(
+                    CampaignStateChanged(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        campaign_id=campaign_id,
+                        campaign_version=campaign.current_version,
+                        state=CampaignState.CANCELLED.value,
+                    )
+                )
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
         return view
@@ -1249,6 +1286,11 @@ class OutreachServiceImpl:
             )
             if version is None:
                 raise ValidationError("Campaign 当前版本不存在")
+            if (
+                request.campaign_version is not None
+                and request.campaign_version != campaign.current_version
+            ):
+                raise CampaignNotActiveError("Campaign 绑定版本已变化，不允许入组")
             rule = self._require(
                 actor,
                 action,

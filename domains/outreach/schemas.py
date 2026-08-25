@@ -320,6 +320,7 @@ class EnrollmentCreateRequest:
     contact_point_id: ContactPointId
     idempotency_key: IdempotencyKey
     source_hypothesis_id: NeedHypothesisId | None = None
+    campaign_version: int | None = None
 
     def __post_init__(self) -> None:
         _require_safe_id(self.account_id, "account_id", prefix="acc")
@@ -331,6 +332,12 @@ class EnrollmentCreateRequest:
                 "source_hypothesis_id",
                 prefix="hyp",
             )
+        if self.campaign_version is not None and (
+            not isinstance(self.campaign_version, int)
+            or isinstance(self.campaign_version, bool)
+            or self.campaign_version < 1
+        ):
+            raise ValidationError("campaign_version 无效")
 
 
 @dataclass(frozen=True)

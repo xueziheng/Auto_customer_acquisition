@@ -468,8 +468,8 @@ class _ServiceBackedCampaignApprovalProvider:
             approval_id=ApprovalId(view.approval_id),
             state=state,
             approved_by=(
-                EmployeeId(view.decided_by_name)
-                if approved and view.decided_by_name is not None
+                EmployeeId(view.decided_by_employee)
+                if approved and view.decided_by_employee is not None
                 else None
             ),
             approved_at=view.decided_at if approved else None,
@@ -885,13 +885,13 @@ def build_phase1_dependencies(
         if manual_send is not None
         else unavailable_send_sources
     )
-    campaign_approvals = (
-        manual_send.campaign_approvals
-        if manual_send is not None
-        else _ServiceBackedCampaignApprovalProvider(
-            approvals,
-            unavailable_send_sources,  # type: ignore[arg-type]
-        )
+    campaign_approvals = _ServiceBackedCampaignApprovalProvider(
+        approvals,
+        (
+            manual_send.campaign_approvals
+            if manual_send is not None
+            else unavailable_send_sources  # type: ignore[arg-type]
+        ),
     )
     reply_status = (
         manual_send.reply_status
