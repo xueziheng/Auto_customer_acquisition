@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from email.message import EmailMessage
 from pathlib import Path
 from tempfile import gettempdir
-from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 from fastapi.encoders import jsonable_encoder
 from playwright.async_api import Request, Route, async_playwright, expect
 from sqlalchemy import select
@@ -117,6 +118,7 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import Provenance, SourceType
+from tests.e2e.conftest import E2EStack, e2e_stack_lifecycle
 from tests.integration.test_phase1_closed_loop import (
     PAGE_TEXT,
     _ControlledAccountModel,
@@ -148,8 +150,12 @@ from workflows.reply_qualification.flow import (
     build_reply_qualification_handlers,
 )
 
-if TYPE_CHECKING:
-    from conftest import E2EStack
+
+@pytest_asyncio.fixture(scope="function", loop_scope="session")
+async def phase1_e2e_stack() -> AsyncIterator[E2EStack]:
+    """为会写 append-only 闭环事实的旅程启动独占真实栈。"""
+    async for stack in e2e_stack_lifecycle():
+        yield stack
 
 
 class _Clock:
@@ -322,10 +328,10 @@ async def _seed_ordering_sentinel(
 @pytest.mark.e2e
 @pytest.mark.asyncio(loop_scope="session")
 async def test_phase1_browser_visible_reply_to_handoff_chain(
-    e2e_stack: E2EStack,
+    phase1_e2e_stack: E2EStack,
     request: pytest.FixtureRequest,
 ) -> None:
-    stack = e2e_stack
+    stack = phase1_e2e_stack
     in_process_logs: list[str] = []
 
     class _CaptureHandler(logging.Handler):
