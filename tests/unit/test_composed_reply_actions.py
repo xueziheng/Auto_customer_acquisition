@@ -119,6 +119,37 @@ class _Content:
         )
 
 
+class _EvidenceWithQuotes:
+    def __init__(self, quotes: tuple[str, ...]) -> None:
+        self._quotes = quotes
+
+    async def load(self, tenant_id: TenantId, message_id: MessageId):
+        module = _module()
+        assert tenant_id == TENANT
+        assert message_id == MESSAGE_ID
+        return module.ReplyEvidenceSnapshot(
+            message_id=MESSAGE_ID,
+            category="provides_specification",
+            classified_by="reply-model-v3",
+            classified_at=NOW,
+            raw_artifact_ref="art_quote_whitespace",
+            candidate_fields=tuple(
+                module.ReplyFieldSnapshot("quantity", str(index), quote)
+                for index, quote in enumerate(self._quotes, 1)
+            ),
+        )
+
+
+class _ContentBody:
+    def __init__(self, body: str) -> None:
+        self._body = body
+
+    async def load(self, tenant_id: TenantId, message_id: MessageId):
+        assert tenant_id == TENANT
+        assert message_id == MESSAGE_ID
+        return ReplyMessageContent(subject="Whitespace evidence", body=self._body)
+
+
 class _Demand:
     def __init__(self) -> None:
         self.updates: dict[tuple[str, str], dict[str, object]] = {}
@@ -249,6 +280,26 @@ class _ConversationActions:
         return SimpleNamespace(status="pending")
 
 
+async def _handoff_packet_for_quotes(body: str, quotes: tuple[str, ...]):
+    module = _module()
+    opportunities = _Opportunities()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=_EvidenceWithQuotes(quotes),
+        business=_Business(),
+        content=_ContentBody(body),
+        demand=_Demand(),
+        opportunities=opportunities,
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+    )
+    await actions.request_handoff(
+        TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
+    )
+    return next(iter(opportunities.requests.values()))
+
+
 async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> None:
     module = _module()
     demand = _Demand()
@@ -351,6 +402,39 @@ async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
     assert body not in packet.customer_verbatim
     assert tail not in packet.customer_verbatim
     assert packet.evidence_links == ["art_long_reply_quote"]
+
+
+async def test_handoff_candidate_quote_preserves_leading_whitespace() -> None:
+    """对候选 quote 调用 strip() 会改变逐字证据左边界，本测试必须捕获。"""
+    quote = "\t  We need 2400 valves.   "
+    body = f"Header\n{quote}\nFooter"
+
+    packet = await _handoff_packet_for_quotes(body, (quote,))
+
+    assert packet.customer_verbatim == "\t  We need 2400 valves."
+    assert packet.customer_verbatim_provenance.source_quote == packet.customer_verbatim
+    assert packet.customer_verbatim in body
+    assert packet.customer_verbatim
+
+
+async def test_handoff_skips_quote_with_blank_bounded_window() -> None:
+    """前 500 code point 全为空白的 quote 不得持久化或抢占后续有效 quote。"""
+    blank_window_quote = f"{' ' * 501}must not win"
+    second_quote = "  Use the second exact quote.   "
+    body = f"Header{blank_window_quote}Middle{second_quote}Footer"
+
+    first = await _handoff_packet_for_quotes(
+        body, (blank_window_quote, second_quote)
+    )
+    second = await _handoff_packet_for_quotes(
+        body, (blank_window_quote, second_quote)
+    )
+
+    assert first.customer_verbatim == "  Use the second exact quote."
+    assert second.customer_verbatim == first.customer_verbatim
+    assert first.customer_verbatim_provenance.source_quote == first.customer_verbatim
+    assert first.customer_verbatim in body
+    assert first.customer_verbatim.strip()
 
 
 async def test_composed_actions_fail_closed_without_business_mapping() -> None:

@@ -185,3 +185,17 @@ TDD RED 为 `2 failed`：带有效字段 quote 的长消息仍保存整段正文
 本轮最终受影响回归为 `211 passed`（`-W error`）；Ruff、configured mypy（391 source
 files）、七项边界检查、working-tree 敏感信息扫描与 `git diff --check` 均通过。真实
 provider acceptance 仍为 `not_run`。
+
+## Fix round 3（2026-08-25）
+
+审查发现 round 2 的候选 quote 路径调用 `strip()`，会删除已验证 quote 的前导空白，违反
+ADR 0012「只允许移除末尾空白」的原文边界。TDD RED 为 `2 failed`：制表符加两个空格的
+quote 被改成无前导空白；前 501 个 code point 全为空白的 quote 被 `strip()` 后错误选中
+尾部文本，没有跳过到第二条有效 quote。
+
+修复后先验证完整原 quote 是正文连续子串，再直接取前 500 个 Unicode code point 并只
+`rstrip`；窗口仍为空白则按稳定顺序继续下一条，全部不可用才走正文 fallback。两条对抗
+用例均断言输出非空、确定性、与正文连续子串一致，聚焦 GREEN 为 `2 passed`。真实
+composer + reply workflow 文件回归为 `26 passed`；Ruff、configured mypy（391 source
+files）、七项边界检查、敏感信息扫描与 `git diff --check` 均通过。真实 provider
+acceptance 仍为 `not_run`。

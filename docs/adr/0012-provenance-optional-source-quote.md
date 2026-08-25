@@ -24,8 +24,10 @@ Conversation 来源的新回复字段保存经过输入原文逐字包含校验�
 reply handoff writer 的摘录策略固定如下：
 
 1. 上限为 **500 个 Unicode code point**，不是 500 bytes；
-2. 按持久化 `candidate_fields` 的稳定顺序，优先选择首个非空、且在重新读取正文中仍可
-   精确找到的 quote；超过上限时只保留其前 500 个 code point；
+2. 按持久化 `candidate_fields` 的稳定顺序，先验证完整 quote 在重新读取正文中仍可精确
+   找到，再直接取其前 500 个 code point 并只移除末尾空白；候选 quote 的前导空白属于
+   已验证原文边界，必须保留。若这个 500-code-point 窗口仍全为空白，则跳过该候选，继续
+   下一条有效 quote，最终才使用正文 fallback；
 3. 没有可用 quote 时，从正文首个非空白字符开始取最多 500 个 code point；
 4. 只允许截取和移除摘录末尾空白，不做摘要、拼接或同义改写。因此结果必须非空，并且是
    当前 artifact 原文的精确连续子串；

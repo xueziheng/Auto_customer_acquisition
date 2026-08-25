@@ -86,9 +86,12 @@ def _bounded_verbatim_excerpt(
     if not isinstance(body, str) or not body.strip():
         raise ValidationError("回复消息正文无效")
     for field in candidate_fields:
-        quote = field.quote.strip()
-        if quote and quote in body:
-            return quote[:_HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+        quote = field.quote
+        if quote not in body:
+            continue
+        bounded_quote = quote[:_HANDOFF_VERBATIM_MAX_CHARS].rstrip()
+        if bounded_quote.strip():
+            return bounded_quote
     start = next(index for index, char in enumerate(body) if not char.isspace())
     excerpt = body[start : start + _HANDOFF_VERBATIM_MAX_CHARS].rstrip()
     if not excerpt:
