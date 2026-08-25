@@ -207,6 +207,7 @@ def _runtime_env(
         "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}',
         "UNSUBSCRIBE_HMAC_2026": "u" * 32,
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
+        "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
         "TRADEOS_E2E_FAKE_GMAIL_URL": fake_gmail_url,
         "TRADEOS_E2E_BOSS_ID": str(boss),
         "TRADEOS_E2E_CAMPAIGN_ID": str(campaign),

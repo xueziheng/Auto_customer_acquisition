@@ -961,6 +961,48 @@ def test_task4_scheduler_config_is_strict_and_redacts_database_url() -> None:
         config_module.SchedulerWorkerConfig.from_environ(lease_too_long)
 
 
+def test_slice4_scheduler_environment_helpers_satisfy_strict_config() -> None:
+    """E2E 与演示的真实 helper 产物必须包含显式 Hunter 禁用事实。"""
+    config_module = importlib.import_module("apps.scheduler_worker.config")
+    e2e_module = importlib.import_module("tests.e2e.test_slice4_manual_send")
+    demo_module = importlib.import_module("scripts.demo_slice4_manual_send")
+    identifiers = importlib.import_module("shared.schemas.identifiers")
+    database_url = "postgresql+asyncpg://test:test@localhost:5432/test"
+    tenant = identifiers.TenantId(identifiers.new_id("tn"))
+    e2e_env = e2e_module._runtime_env(
+        database_url,
+        tenant,
+        "http://127.0.0.1:4173",
+        "http://127.0.0.1:8089",
+        boss=identifiers.EmployeeId(identifiers.new_id("emp")),
+        campaign=identifiers.CampaignId(identifiers.new_id("cmp")),
+        approval=identifiers.ApprovalId(identifiers.new_id("apr")),
+        identity=identifiers.SendingIdentityId(identifiers.new_id("sid")),
+        contact=identifiers.ContactPointId(identifiers.new_id("cp")),
+        account=identifiers.ProspectAccountId(identifiers.new_id("acc")),
+    )
+    e2e_env.update(
+        {
+            "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
+            "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
+            "TRADEOS_SCHEDULER_LOCK_KEY": "3110002",
+            "TRADEOS_SCHEDULER_OUTBOX_MAX_ATTEMPTS": "7",
+            "TRADEOS_HANDOFF_T1_SECONDS": "2",
+            "TRADEOS_HANDOFF_T2_SECONDS": "2",
+            "TRADEOS_DKIM_SELECTOR": "s1",
+            "TRADEOS_SCHEDULER_HEALTH_PORT": "8094",
+            "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
+        }
+    )
+    demo_env = demo_module._scheduler_env(database_url, tenant)
+
+    for environ in (e2e_env, demo_env):
+        config = config_module.SchedulerWorkerConfig.from_environ(environ)
+        assert config.hunter_contacts.enabled is False
+        assert config.hunter_contacts.configuration is None
+        assert config.hunter_contacts.secret_ref is None
+
+
 async def test_dns_read_rate_limit_enforces_bounded_window() -> None:
     """rate_limit stage 必须真实限流，不能只检查 prepared 存在。"""
     runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
