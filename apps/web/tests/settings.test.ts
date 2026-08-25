@@ -7,6 +7,7 @@ import App from "../src/App.vue";
 import router from "../src/router";
 
 type CountryPolicyVersionFixture = components["schemas"]["CountryPolicyVersionView"];
+type ContactEnrichmentReadiness = components["schemas"]["ContactEnrichmentReadiness"];
 type ProvenanceFixture = components["schemas"]["Provenance"];
 
 const versionId = "pbv_01K00000000000000000000000";
@@ -184,10 +185,7 @@ const candidateCountryPolicyVersion = {
   version_number: 2,
 };
 
-type ReadinessReason =
-  | "COUNTRY_POLICY_NOT_CONFIGURED"
-  | "CONTACT_ENRICHMENT_NOT_ALLOWED"
-  | "CONTACT_ENRICHMENT_NOT_COMPOSED";
+type ReadinessReason = NonNullable<ContactEnrichmentReadiness["reason_code"]>;
 
 interface CountryFetchOptions {
   activePolicies?: unknown[];
@@ -195,7 +193,7 @@ interface CountryFetchOptions {
   historyQueries?: string[];
   onHistory?: (country: string) => Promise<Response>;
   onOverview?: () => Promise<Response>;
-  reason?: ReadinessReason;
+  reason?: ReadinessReason | null;
   versions?: unknown[];
   onPost?: (request: Request) => Promise<Response>;
 }
@@ -206,10 +204,13 @@ function countryPolicyFetch({
   historyQueries,
   onHistory,
   onOverview,
-  reason = "CONTACT_ENRICHMENT_NOT_COMPOSED",
+  reason = "CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED",
   versions = [],
   onPost,
 }: CountryFetchOptions = {}): typeof globalThis.fetch {
+  const contactEnrichment: ContactEnrichmentReadiness = reason === null
+    ? { reason_code: null, state: "ready" }
+    : { reason_code: reason, state: "blocked" };
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     if (!(input instanceof Request)) throw new TypeError("Request required");
     const url = new URL(input.url);
@@ -217,7 +218,7 @@ function countryPolicyFetch({
       return jsonResponse({
         active_version: null,
         configured: false,
-        contact_enrichment: { reason_code: reason, state: "blocked" },
+        contact_enrichment: contactEnrichment,
       });
     }
     if (input.method === "GET" && url.pathname === "/settings/playbook/versions") {
@@ -227,7 +228,7 @@ function countryPolicyFetch({
       if (onOverview) return onOverview();
       return jsonResponse({
         active_policies: activePolicies,
-        contact_enrichment: { reason_code: reason, state: "blocked" },
+        contact_enrichment: contactEnrichment,
         coverage: {
           active_policy_count: activePolicies.length,
           contact_enrichment_allowed_count: allowedCount,
@@ -482,20 +483,93 @@ describe("SettingsCenter country policy workspace", () => {
   it.each([
     ["COUNTRY_POLICY_NOT_CONFIGURED", "尚无任何已激活国家政策，联系人补全保持阻断"],
     ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全"],
-    ["CONTACT_ENRICHMENT_NOT_COMPOSED", "Hunter / Provider 生产组合尚未完成"],
   ] as const)("maps %s inside the Playbook section without claiming Playbook can fix it", async (reason, expected) => {
     const { app, root } = await mountSettings(countryPolicyFetch({
       activePolicies: reason === "COUNTRY_POLICY_NOT_CONFIGURED" ? [] : [activeCountryPolicy],
-      allowedCount: reason === "CONTACT_ENRICHMENT_NOT_COMPOSED" ? 1 : 0,
+      allowedCount: 0,
       reason,
     }));
 
     await eventually(() => {
-      const banner = root.querySelector<HTMLElement>('[aria-label="Playbook 联系人补全就绪状态"]');
-      expect(banner?.textContent).toContain(expected);
-      expect(banner?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
+      const playbook = root.querySelector<HTMLElement>(
+        '[aria-label="Playbook 联系人补全就绪状态"]',
+      );
+      const countryPolicy = root.querySelector<HTMLElement>(
+        '[aria-label="国家政策联系人补全就绪状态"]',
+      );
+      expect(playbook?.textContent).toContain(expected);
+      expect(countryPolicy?.textContent).toContain(expected);
+      expect(playbook?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
+      expect(playbook?.getAttribute("aria-live")).toBe("polite");
+      expect(countryPolicy?.getAttribute("aria-live")).toBe("polite");
     });
     expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
+    app.unmount();
+  });
+
+  it.each([
+    ["CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", "部署尚未声明 Hunter 安全配置版本"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING", "Hunter 配置已声明，等待人工 Provider 验证"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED", "Hunter Provider 验证失败，请按固定分类排查"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE", "Hunter 验证结果不确定，禁止自动重试"],
+    ["CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED", "验证已通过，等待 scheduler 重启并完成工具注册"],
+  ] satisfies ReadonlyArray<readonly [ReadinessReason, string]>)(
+    "renders Provider reason %s in both readiness banners",
+    async (reason, expected) => {
+      const { app, root } = await mountSettings(countryPolicyFetch({ reason }));
+
+      await eventually(() => {
+        const playbook = root.querySelector<HTMLElement>(
+          '[aria-label="Playbook 联系人补全就绪状态"]',
+        );
+        const countryPolicy = root.querySelector<HTMLElement>(
+          '[aria-label="国家政策联系人补全就绪状态"]',
+        );
+        expect(playbook?.textContent).toContain(expected);
+        expect(countryPolicy?.textContent).toContain(expected);
+        expect(playbook?.getAttribute("aria-live")).toBe("polite");
+        expect(countryPolicy?.getAttribute("aria-live")).toBe("polite");
+      });
+      app.unmount();
+    },
+  );
+
+  it("renders READY truthfully in both banners while preserving per-country checks", async () => {
+    const { app, root } = await mountSettings(countryPolicyFetch({ reason: null }));
+
+    await eventually(() => {
+      const banners = [
+        root.querySelector<HTMLElement>('[aria-label="Playbook 联系人补全就绪状态"]'),
+        root.querySelector<HTMLElement>('[aria-label="国家政策联系人补全就绪状态"]'),
+      ];
+      for (const banner of banners) {
+        expect(banner?.textContent).toContain("联系人补全生产组合已就绪");
+        expect(banner?.textContent).toContain("每个目标国家仍会逐次检查国家政策");
+      }
+    });
+    app.unmount();
+  });
+
+  it("does not expose Provider credentials, validation success, or direct activation controls", async () => {
+    const { app, root } = await mountSettings(countryPolicyFetch());
+    await eventually(() => expect(root.textContent).toContain("国家政策包"));
+
+    const forbiddenInput = [
+      'input[type="password"]',
+      'input[name*="api_key" i]',
+      'input[name*="secret" i]',
+      'input[name*="password" i]',
+      'input[aria-label*="api key" i]',
+      'input[aria-label*="secret" i]',
+      'input[aria-label*="password" i]',
+    ].join(",");
+    const accessibleButtonNames = [...root.querySelectorAll<HTMLButtonElement>("button")]
+      .map((button) => button.textContent?.trim().toLocaleLowerCase() ?? "");
+
+    expect(root.querySelector(forbiddenInput)).toBeNull();
+    expect(accessibleButtonNames).not.toContain("验证成功");
+    expect(accessibleButtonNames).not.toContain("直接激活");
+    expect(accessibleButtonNames).not.toContain("立即激活");
     app.unmount();
   });
 
@@ -1175,12 +1249,11 @@ describe("SettingsCenter country policy workspace", () => {
     expect(root.textContent).not.toContain("尚无任何已激活国家政策");
   });
 
-  it("maps composition readiness to the Hunter and Provider explanation without claiming ready", async () => {
+  it("maps missing Provider configuration without claiming ready", async () => {
     const { root } = await mountSettings(countryPolicyFetch());
 
-    await eventually(() => expect(root.textContent).toContain("Hunter / Provider 生产组合尚未完成"));
-    expect(root.textContent).toContain("即使已有允许政策，联系人补全仍保持阻断");
-    expect(root.textContent).not.toContain("联系人补全已就绪");
+    await eventually(() => expect(root.textContent).toContain("部署尚未声明 Hunter 安全配置版本"));
+    expect(root.textContent).not.toContain("联系人补全生产组合已就绪");
   });
 
   it("does not expose delete, direct activation, force-apply, or legal-template controls", async () => {

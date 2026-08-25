@@ -167,10 +167,7 @@ async def test_real_country_policy_settings_approval_and_activation(
             await expect(active_country).to_be_visible()
             await expect(
                 page.get_by_label("国家政策包").get_by_text(
-                    (
-                        "Hunter / Provider 生产组合尚未完成；即使已有允许政策，"
-                        "联系人补全仍保持阻断。"
-                    ),
+                    "部署尚未声明 Hunter 安全配置版本。",
                     exact=True,
                 )
             ).to_be_visible()
