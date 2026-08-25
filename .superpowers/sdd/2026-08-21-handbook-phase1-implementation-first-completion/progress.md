@@ -70,4 +70,5 @@
   Opportunity demo labels removed with exact-ID E2E; raw credential/tail/email markers scanned across durable
   state, all console levels and captured in-process logs; independent re-review pending; external
   provider/model/mail remains `not_run`).
-- Task 6D: pending.
+- Task 6C: complete (commits `df9e574..7d098fc`, final scoped re-review Approved; external provider/model/mail/network remains explicitly `not_run`).
+- Task 6D: complete from base `7d098fc48f000a55586870c1dd855454bce1af98` at exact acceptance HEAD `3e4d3ad72641bf772fef26f15092828cea933f9e`（修复 manual-send 并发连接池死锁 `945db24` 与 E2E append-only 隔离缺陷 `3e4d3ad`；fresh migration 59、frontend 151、non-e2e 3988、E2E 6、mutation/security 166+3 全绿；reply keyword smoke 160/0 errors；真实 provider/model/mail 与四项运营标准均 `not_run`；证据见 `task-6d-report.md`；未 push/deploy）。
