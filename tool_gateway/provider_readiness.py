@@ -799,8 +799,6 @@ def _validate_persisted_event(
 ) -> None:
     if (
         not isinstance(persisted, ProviderReadinessEvent)
-        or persisted.tenant_id != requested.tenant_id
-        or persisted.event_id != requested.event_id
         or persisted.sequence is None
         or not _same_operation(persisted, requested)
     ):

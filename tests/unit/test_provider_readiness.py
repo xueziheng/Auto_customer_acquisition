@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
 
@@ -124,6 +125,45 @@ class FailingProviderReadinessRepository(InMemoryProviderReadinessRepository):
     ) -> list[ProviderReadinessEvent]:
         del tenant_id, provider, capabilities
         raise RuntimeError("repository unavailable")
+
+
+class CanonicalReplayProviderReadinessRepository(
+    InMemoryProviderReadinessRepository
+):
+    """模拟并发赢家已用另一事件身份提交的 canonical replay。"""
+
+    def __init__(
+        self,
+        events: list[ProviderReadinessEvent],
+        transform: Callable[[ProviderReadinessEvent], ProviderReadinessEvent],
+    ) -> None:
+        super().__init__(events)
+        self._transform = transform
+
+    async def append(
+        self, tenant_id: TenantId, event: ProviderReadinessEvent
+    ) -> ProviderReadinessEvent:
+        del tenant_id
+        return self._transform(event)
+
+
+def canonical_replay_service(
+    transform: Callable[[ProviderReadinessEvent], ProviderReadinessEvent],
+) -> ProviderReadinessServiceImpl:
+    events: list[ProviderReadinessEvent] = []
+
+    def factory(tenant_id: TenantId) -> ProviderReadinessUnitOfWork:
+        if tenant_id != TENANT:
+            raise TenantIsolationViolation("测试 UoW 租户不匹配")
+        uow = InMemoryProviderReadinessUnitOfWork(events)
+        uow.readiness = CanonicalReplayProviderReadinessRepository(
+            events, transform
+        )
+        return uow
+
+    return ProviderReadinessServiceImpl(
+        factory, runtime_actor=READER, now=lambda: NOW
+    )
 
 
 def in_memory_service(
@@ -448,6 +488,58 @@ async def test_same_idempotency_key_with_same_configuration_is_a_no_op() -> None
 
     assert replay == first
     assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_canonical_repository_replay_may_have_winner_identity_and_time() -> None:
+    canonical_event_id = ProviderReadinessEventId(new_id("pre"))
+    service = canonical_replay_service(
+        lambda event: replace(
+            event,
+            event_id=canonical_event_id,
+            sequence=1,
+            actor_id="operator:canonical-winner",
+            occurred_at=NOW + timedelta(minutes=1),
+        )
+    )
+
+    snapshot = await service.declare_configuration(
+        TENANT,
+        CONFIG_V1,
+        actor=CONFIGURER,
+        idempotency_key=IdempotencyKey("cfg:canonical-replay"),
+    )
+
+    assert snapshot.events[0].event_id == canonical_event_id
+    assert snapshot.events[0].actor_id == "operator:canonical-winner"
+    assert snapshot.events[0].occurred_at == NOW + timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["tenant", "configuration", "idempotency"])
+async def test_canonical_repository_replay_rejects_material_mismatch(
+    mismatch: str,
+) -> None:
+    def _mismatch(event: ProviderReadinessEvent) -> ProviderReadinessEvent:
+        if mismatch == "tenant":
+            return replace(event, tenant_id=OTHER_TENANT, sequence=1)
+        if mismatch == "configuration":
+            return replace(event, configuration=CONFIG_V2, sequence=1)
+        return replace(
+            event,
+            idempotency_key=IdempotencyKey("cfg:other"),
+            sequence=1,
+        )
+
+    service = canonical_replay_service(_mismatch)
+
+    with pytest.raises(TransientError):
+        await service.declare_configuration(
+            TENANT,
+            CONFIG_V1,
+            actor=CONFIGURER,
+            idempotency_key=IdempotencyKey("cfg:canonical-mismatch"),
+        )
 
 
 @pytest.mark.asyncio

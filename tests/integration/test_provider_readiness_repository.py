@@ -8,6 +8,8 @@ import subprocess
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import TracebackType
+from typing import Self
 
 import pytest
 import pytest_asyncio
@@ -26,6 +28,7 @@ from shared.errors import (
 from shared.schemas.identifiers import IdempotencyKey, TenantId, new_id
 from tool_gateway.provider_readiness import (
     HUNTER_CONTACT_CAPABILITIES,
+    ProviderCapability,
     ProviderConfiguration,
     ProviderId,
     ProviderReadinessActor,
@@ -33,6 +36,7 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessEventId,
     ProviderReadinessEventType,
     ProviderReadinessPermission,
+    ProviderReadinessRepository,
     ProviderReadinessServiceImpl,
     ProviderReadinessState,
 )
@@ -124,6 +128,71 @@ async def _append(
 ) -> ProviderReadinessEvent:
     async with SqlAlchemyProviderReadinessUnitOfWork(factory, tenant) as uow:
         return await uow.readiness.append(tenant, event)
+
+
+class _AppendBarrierRepository:
+    """仅在真实 Repository append 前同步两个 Service 调用。"""
+
+    def __init__(
+        self,
+        delegate: ProviderReadinessRepository,
+        ready: asyncio.Queue[None],
+        release: asyncio.Event,
+    ) -> None:
+        self._delegate = delegate
+        self._ready = ready
+        self._release = release
+
+    async def list_events(
+        self,
+        tenant_id: TenantId,
+        provider: ProviderId,
+        capabilities: tuple[ProviderCapability, ...],
+    ) -> list[ProviderReadinessEvent]:
+        return await self._delegate.list_events(
+            tenant_id, provider, capabilities
+        )
+
+    async def append(
+        self, tenant_id: TenantId, event: ProviderReadinessEvent
+    ) -> ProviderReadinessEvent:
+        self._ready.put_nowait(None)
+        await self._release.wait()
+        return await self._delegate.append(tenant_id, event)
+
+
+class _AppendBarrierUnitOfWork:
+    """保留真实 SQLAlchemy UoW/session，只在 append 边界加 barrier。"""
+
+    readiness: ProviderReadinessRepository
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        tenant_id: TenantId,
+        ready: asyncio.Queue[None],
+        release: asyncio.Event,
+    ) -> None:
+        self._delegate = SqlAlchemyProviderReadinessUnitOfWork(
+            factory, tenant_id
+        )
+        self._ready = ready
+        self._release = release
+
+    async def __aenter__(self) -> Self:
+        entered = await self._delegate.__aenter__()
+        self.readiness = _AppendBarrierRepository(
+            entered.readiness, self._ready, self._release
+        )
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self._delegate.__aexit__(exc_type, exc, traceback)
 
 
 async def test_configuration_and_validation_round_trip_is_tenant_scoped(
@@ -310,6 +379,60 @@ async def test_same_idempotency_key_same_payload_is_noop(db_factory) -> None:
             )
         )
     assert count == 1
+
+
+async def test_concurrent_service_same_operation_returns_canonical_replay(
+    db_factory,
+) -> None:
+    tenant = TenantId("tenant-ready-service-replay")
+    actor = _actor(tenant, "service-replay")
+    configuration = ProviderConfiguration.hunter_contacts("config-v1", "key-v1")
+    ready: asyncio.Queue[None] = asyncio.Queue()
+    release = asyncio.Event()
+
+    def _service_at(occurred_at: datetime) -> ProviderReadinessServiceImpl:
+        return ProviderReadinessServiceImpl(
+            lambda requested_tenant: _AppendBarrierUnitOfWork(
+                db_factory, requested_tenant, ready, release
+            ),
+            runtime_actor=_actor(tenant, "runtime-service-replay"),
+            now=lambda: occurred_at,
+        )
+
+    tasks = [
+        asyncio.create_task(
+            _service_at(NOW).declare_configuration(
+                tenant,
+                configuration,
+                actor=actor,
+                idempotency_key=IdempotencyKey("configure-service-replay"),
+            )
+        ),
+        asyncio.create_task(
+            _service_at(NOW + timedelta(minutes=1)).declare_configuration(
+                tenant,
+                configuration,
+                actor=actor,
+                idempotency_key=IdempotencyKey("configure-service-replay"),
+            )
+        ),
+    ]
+    await ready.get()
+    await ready.get()
+    release.set()
+    snapshots = await asyncio.gather(*tasks)
+
+    assert snapshots[0].state is ProviderReadinessState.VALIDATION_NOT_RUN
+    assert snapshots[1].state is ProviderReadinessState.VALIDATION_NOT_RUN
+    assert snapshots[0].events == snapshots[1].events
+    assert len(snapshots[0].events) == 1
+    async with db_factory() as session:
+        rows = await session.scalars(
+            select(ProviderReadinessEventRow).where(
+                ProviderReadinessEventRow.tenant_id == str(tenant)
+            )
+        )
+    assert len(rows.all()) == 1
 
 
 async def test_same_idempotency_key_different_payload_conflicts(db_factory) -> None:
