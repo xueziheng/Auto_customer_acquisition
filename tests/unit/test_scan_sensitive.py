@@ -340,6 +340,37 @@ def test_hunter_docs_and_fixtures_contain_refs_without_runnable_secrets() -> Non
         assert module.scan_file(path) == []
 
 
+def test_hunter_runbook_pins_runtime_outcome_queries_and_exact_ready_copy() -> None:
+    """运维文档必须使用受控 Python、双层结果查询与前端真实 ready 文案。"""
+    runbook = (
+        _REPO_ROOT / "docs/operations/hunter-provider-readiness.md"
+    ).read_text(encoding="utf-8")
+
+    assert "TRADEOS_PYTHON_BIN" in runbook
+    assert "Python 3.12" in runbook
+    assert "/Users/" not in runbook
+    assert "CODEX_HOME" not in runbook
+    assert "$HOME" not in runbook
+    assert '"$TRADEOS_PYTHON_BIN" -m alembic heads' in runbook
+    assert (
+        '"$TRADEOS_PYTHON_BIN" scripts/configure_hunter_provider.py' in runbook
+    )
+    assert '"$TRADEOS_PYTHON_BIN" scripts/validate_hunter_provider.py' in runbook
+    assert "WHERE tenant_id = :tenant_id" in runbook
+    assert "AND validation_key = :validation_key" in runbook
+    assert "AND idempotency_key = :validation_key" in runbook
+    assert "outcome_code" in runbook
+    assert "retry_after_at" in runbook
+    assert "CLI 安全 category" in runbook
+    assert "durable readiness outcome" in runbook
+    assert "provider_auth_required" in runbook
+    assert "CLI 不会直接输出 `auth_required` 或 `response_invalid`" in runbook
+    assert (
+        "联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。"
+        in runbook
+    )
+
+
 # --- 默认 tracked / --staged 文件发现（运行时临时 git 仓库 + monkeypatch） ----------
 
 

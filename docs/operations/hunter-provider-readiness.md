@@ -20,12 +20,21 @@ Hunter API key 由密钥服务或受限进程环境在 Git 之外注入。只有
 `echo`、`env`、`printenv` 或 `set -x` 检查它。`TRADEOS_HUNTER_API_KEY_SECRET_REF` 的值只是
 引用名而不是 key，但仍属于不应外显的部署信息。
 
-安全命令只操作非秘密元数据：
+所有运维命令必须从仓库根目录使用受控 Python 3.12。部署可预先把项目专用
+`TRADEOS_PYTHON_BIN` 指向批准的虚拟环境解释器；未预设时只从当前 `PATH` 解析，再显式核对
+版本。不要在文档或脚本里假设某台机器的 conda 绝对路径：
 
 ```bash
-alembic heads
-python scripts/check_boundaries.py
-python scripts/scan_sensitive.py
+if [ -z "${TRADEOS_PYTHON_BIN:-}" ]; then
+  TRADEOS_PYTHON_BIN="$(command -v python3)"
+fi
+export TRADEOS_PYTHON_BIN
+test -x "$TRADEOS_PYTHON_BIN"
+"$TRADEOS_PYTHON_BIN" -c \
+  'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else "需要 Python 3.12")'
+"$TRADEOS_PYTHON_BIN" -m alembic heads
+"$TRADEOS_PYTHON_BIN" scripts/check_boundaries.py
+"$TRADEOS_PYTHON_BIN" scripts/scan_sensitive.py
 ```
 
 预期第一条只输出 `0033 (head)`，后两条零违规。真实环境还必须由部署平台以不出现在命令行
@@ -40,7 +49,8 @@ python scripts/scan_sensitive.py
 不会创建 Connector、不会联网：
 
 ```bash
-python scripts/configure_hunter_provider.py --actor-id "$TRADEOS_OPERATOR_ID"
+"$TRADEOS_PYTHON_BIN" scripts/configure_hunter_provider.py \
+  --actor-id "$TRADEOS_OPERATOR_ID"
 ```
 
 安全成功输出只包含 `provider`、`configuration_version`、`state`，其中 `state` 应为
@@ -64,7 +74,7 @@ python scripts/configure_hunter_provider.py --actor-id "$TRADEOS_OPERATOR_ID"
 幂等键，并固定访问 Hunter `/account`；不得传邮箱、姓名、企业、国家、URL 或 API key：
 
 ```bash
-python scripts/validate_hunter_provider.py \
+"$TRADEOS_PYTHON_BIN" scripts/validate_hunter_provider.py \
   --actor-id "$TRADEOS_OPERATOR_ID" \
   --idempotency-key "$TRADEOS_VALIDATION_KEY"
 ```
@@ -72,22 +82,60 @@ python scripts/validate_hunter_provider.py \
 Tool Gateway 固定执行 `tenant → permission → idempotency → rate_limit`，提交 canonical
 `EXECUTING` 后才写 `validation_started`，再由 Connector 解析精确引用并访问固定 host。
 成功 stdout 只包含 `tool_id`、`status=validation_passed`、`tool_call_id` 和安全配置版本。
-失败只在 stderr 返回同一组安全 ID/版本与固定 category；原始 `/account` JSON、账户信息、
-Provider error body、凭证引用和值全部丢弃。
+失败只在 stderr 返回同一组安全 ID/版本与 **CLI 安全 category**；原始 `/account` JSON、账户
+信息、Provider error body、凭证引用和值全部丢弃。
+
+CLI category 是 Tool Gateway 给操作者的粗粒度处置分类，不等于 `durable readiness outcome`。
+例如 CLI 可见 `provider_auth_required`，readiness event 保存 `auth_required`；
+CLI 的 `provider_permanent` 可能对应 durable `provider_permanent`，也可能对应更精确的
+`response_invalid`。CLI 不会直接输出 `auth_required` 或 `response_invalid`。必须在受控只读
+数据库控制台以 `tenant_id` 和原 validation key 作为 bind parameter 查询，不得字符串拼接：
+
+```sql
+SELECT event_type, outcome_code, occurred_at
+FROM provider_readiness_events
+WHERE tenant_id = :tenant_id
+  AND validation_key = :validation_key
+  AND event_type IN (
+    'validation_started', 'validation_passed', 'validation_failed'
+  )
+ORDER BY sequence;
+```
+
+只有 `validation_failed.outcome_code` 是 durable 固定失败结果；`validation_passed` 的
+`outcome_code` 为 null，只有 `validation_started` 则推导为 inconclusive。再查同一个 canonical
+Tool Gateway 调用，取得 CLI category 和 rate-limit 时间：
+
+```sql
+SELECT tool_call_id, status, error_category, retry_after_at,
+       created_at, updated_at, completed_at
+FROM tool_calls
+WHERE tenant_id = :tenant_id
+  AND tool_id = 'provider.hunter.validate'
+  AND idempotency_key = :validation_key
+LIMIT 1;
+```
+
+这两条查询与输出只含安全 ID、固定枚举和 UTC 时间；禁止扩大列清单，尤其不得查询请求内容、
+fingerprint、provider payload、secret ref 或 key。`retry_after_at` 只来自 canonical ledger；
+不要从 CLI category 猜等待时间。
 
 同一当前配置同时只允许一个 active validation。不要并发运行；任何结果都不自动重试。
 
 ## 5. 处理固定结果
 
-| 结果 | 人工处置 | 是否直接重跑 |
-|---|---|---|
-| `validation_passed` | 保存安全证据，进入 singleton scheduler 重启 | 否 |
-| `auth_required` | 停止；核对密钥服务绑定。若 key 有变，创建新 key 版本和新配置版本 | 否 |
-| `rate_limited` | 停止；按有界 Retry-After 和 Provider 账户状态人工判断 | 否；人工决定后用新 validation key |
-| `provider_transient` | 停止；确认请求确定失败并检查网络/Provider 状态 | 否；人工决定后用新 validation key |
-| `provider_permanent` | 停止；检查固定 transport、部署版本与 Provider 契约 | 否 |
-| `response_invalid` | 停止；按契约/版本问题处理，不保存原始响应 | 否 |
-| `reconciliation_required` 或只有 `validation_started` | 记为 inconclusive，核对 Gateway ledger；不得猜测成功 | 否；如需重新验证，创建新配置版本 |
+| CLI 可见状态/category | 必须确认的 durable readiness 事实 | 人工处置 | 是否直接重跑 |
+|---|---|---|---|
+| `validation_passed` | `validation_passed` event | 保存安全证据，进入 singleton scheduler 重启 | 否 |
+| `provider_auth_required` | `validation_failed.outcome_code=auth_required` | 停止；核对密钥服务绑定。若 key 有变，创建新 key 版本和新配置版本 | 否 |
+| `rate_limited` | Provider 失败时为 `outcome_code=rate_limited`；同时读取 canonical `retry_after_at` | 停止；按持久时间和 Provider 账户状态人工判断 | 否；人工决定后用新 validation key |
+| `provider_transient` | `validation_failed.outcome_code=provider_transient` | 停止；确认请求确定失败并检查网络/Provider 状态 | 否；人工决定后用新 validation key |
+| `provider_permanent` | 查询区分 `outcome_code=provider_permanent` 或 `response_invalid` | 停止；按持久 outcome 检查 transport、部署版本或响应契约 | 否 |
+| `reconciliation_required` | 通常只有 `validation_started`，推导为 inconclusive | 核对 Gateway ledger，不得猜测成功 | 否；如需重新验证，创建新配置版本 |
+
+CLI 若显示 `validation`、`permission_denied`、`in_progress`、`unexpected` 等其他安全 category，
+也不能推断 Provider 已得到结果；先执行上述两条 tenant-scoped 查询。没有
+`validation_started` 表示尚未进入 Provider 验证，只有 started 表示结果不确定。
 
 失败后的再次验证仍必须是新的真人动作和新的 validation key。认证修复、配置变更、key 轮换
 或回滚必须先走第 8 节的新配置世代；禁止覆盖、删除或修改 append-only readiness 事实。
@@ -123,9 +171,10 @@ LIMIT 1;
 ```
 
 保存该 `provider_readiness_event_id` 作为 scheduler runtime fact ID。随后刷新 Settings；在国家
-政策已允许的前提下，应显示“联系人补全生产组合已就绪”，并同时显示“每个目标国家仍会逐次
-执行国家政策检查”的警告。`ready` 只证明同一 tenant、同一精确配置已验证并曾由锁 owner
-完整注册；scheduler 当前存活仍由独立 health/readiness 监控证明。
+政策已允许的前提下，必须精确显示
+`联系人补全生产组合已就绪；每个目标国家仍会逐次检查国家政策。`。`ready` 只证明同一
+tenant、同一精确配置已验证并曾由锁 owner 完整注册；scheduler 当前存活仍由独立
+health/readiness 监控证明。
 
 如果没有 runtime 事实或 Settings 显示 `CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED`，检查
 scheduler 锁、完整双工具注册和激活提交；不得手工插入事实。若 Settings/readiness reader
@@ -180,12 +229,13 @@ tenant_id: <tenant-id>
 configuration_version: <safe-configuration-version>
 validation_key: <safe-validation-key>
 tool_call_id: <tool-call-id>
-fixed_outcome: <validation_passed-or-fixed-failure-category>
+fixed_outcome: <durable-validation-passed-or-readiness-outcome-code>
 validation_started_at_utc: <utc-timestamp>
 validation_finished_at_utc: <utc-timestamp-or-null>
 scheduler_runtime_fact_id: <provider-readiness-event-id-or-null>
 operator_id: <operator-id>
 ```
 
-`not_run` 是真实状态，不是缺失值。只有外部事实确实发生并留下上述安全证据后，才能更新对应
-验收状态。
+`fixed_outcome` 从 readiness event 得出，不能复制或改写 CLI category；rate-limit 等待时间只
+留在 canonical ledger，不扩充本证据模板。`not_run` 是真实状态，不是缺失值。只有外部事实
+确实发生并留下上述安全证据后，才能更新对应验收状态。
