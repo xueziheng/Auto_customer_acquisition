@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Protocol, TypeGuard, runtime_checkable
@@ -41,6 +41,8 @@ MANIFEST = ConnectorManifest(
     rate_limit_note="Domain Search 15/s 500/min; Email Verifier 10/s 300/min",
     compliance_note="PII 仅 typed 临时交接；Provider score 不进入业务数据",
 )
+
+HUNTER_API_KEY_REF = "HUNTER_API_KEY_REF"
 
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _LOCAL_PART = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}")
@@ -78,6 +80,11 @@ class HunterRateLimitedError(HunterConnectorError):
 class HunterPermanentError(HunterConnectorError):
     def __init__(self) -> None:
         super().__init__("Hunter 永久失败")
+
+
+class HunterResponseInvalidError(HunterConnectorError):
+    def __init__(self) -> None:
+        super().__init__("Hunter 响应无效")
 
 
 class HunterTransientError(HunterConnectorError):
@@ -127,7 +134,7 @@ class HunterConnector(ContactEnrichmentConnector, EmailVerificationConnector):
         resolution_failed = False
         api_key: object = None
         try:
-            api_key = secret_resolver.resolve("HUNTER_API_KEY_REF")
+            api_key = secret_resolver.resolve(HUNTER_API_KEY_REF)
         # resolver 是凭证边界；任何实现异常都必须在这里脱敏后终止。
         except Exception:  # noqa: BLE001
             resolution_failed = True
@@ -147,6 +154,27 @@ class HunterConnector(ContactEnrichmentConnector, EmailVerificationConnector):
         except (HunterHttpStatusError, HunterNetworkError):
             return False
         return response.status_code == 200
+
+    async def validate_account(self) -> None:
+        """验证当前凭证可访问固定非 PII `/account`，并丢弃响应内容。"""
+        if self._api_key is None:
+            raise HunterAuthRequiredError()
+        safe_error: HunterConnectorError | None = None
+        response = None
+        try:
+            response = await self._transport.get(
+                "/account",
+                (),
+                api_key=self._api_key.value,
+            )
+        except (HunterHttpStatusError, HunterNetworkError) as error:
+            safe_error = _classify_transport_error(error)
+        if safe_error is not None:
+            raise safe_error
+        if response is None or response.status_code != 200:
+            raise HunterPermanentError()
+        if not isinstance(response.payload.get("data"), Mapping):
+            raise HunterResponseInvalidError()
 
     async def find_contacts(
         self,
@@ -548,12 +576,14 @@ def _valid_api_key(value: object) -> TypeGuard[str]:
 
 
 __all__ = (
+    "HUNTER_API_KEY_REF",
     "MANIFEST",
     "HunterAuthRequiredError",
     "HunterConnector",
     "HunterConnectorError",
     "HunterPermanentError",
     "HunterRateLimitedError",
+    "HunterResponseInvalidError",
     "HunterSecretResolver",
     "HunterTransientError",
     "HunterUncertainError",

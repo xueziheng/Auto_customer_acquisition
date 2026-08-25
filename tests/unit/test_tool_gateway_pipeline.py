@@ -31,12 +31,54 @@ from tool_gateway.pipeline import (
     CheckRejection,
     PreparedToolCall,
     ToolCallContext,
+    ToolCallResult,
     ToolGateway,
     ToolInvocationState,
 )
 from tool_gateway.repository import ClaimResult, ClaimStatus
 
 NOW = datetime(2026, 8, 11, 12, tzinfo=UTC)
+
+
+def test_safe_provider_validation_output_fields_are_accepted() -> None:
+    result = ToolCallResult(
+        "provider.hunter.validate",
+        ToolCallStatus.SUCCEEDED,
+        {
+            "provider_ref": "hunter-account:pre_01K2C5R6J7ABCDEFGHJKMNPQRS",
+            "configuration_version": "deploy-v1",
+            "status": "validation_passed",
+        },
+        tool_call_id="tcl_01K2C5R6J7ABCDEFGHJKMNPQRS",
+    )
+
+    assert dict(result.output or {}) == {
+        "provider_ref": "hunter-account:pre_01K2C5R6J7ABCDEFGHJKMNPQRS",
+        "configuration_version": "deploy-v1",
+        "status": "validation_passed",
+    }
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        {"provider_ref": "safe", "unknown": "value"},
+        {"provider_ref": "safe", "status": "bearer-canary"},
+        {"provider_ref": "safe", "configuration_version": "https://unsafe"},
+    ],
+)
+def test_safe_provider_validation_output_rejects_unknown_or_secret_like_values(
+    unsafe,
+) -> None:
+    from shared.errors import ValidationError
+
+    with pytest.raises(ValidationError):
+        ToolCallResult(
+            "provider.hunter.validate",
+            ToolCallStatus.SUCCEEDED,
+            unsafe,
+            tool_call_id="tcl_01K2C5R6J7ABCDEFGHJKMNPQRS",
+        )
 
 
 class _Ledger:

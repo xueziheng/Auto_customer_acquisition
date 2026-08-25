@@ -542,6 +542,11 @@ class ProviderReadinessServiceImpl:
             _validation_event_idempotency("started", validation_key),
             validation_key=validation_key,
         )
+        existing = _idempotency_event(events, event)
+        if existing is not None:
+            return existing
+        if not _can_start_validation(events):
+            raise InvalidStateTransition("Provider 当前配置不可开始验证")
         return await self._append(events, event)
 
     async def mark_validation_passed(
@@ -773,7 +778,12 @@ def _validate_loaded_stream(events: list[ProviderReadinessEvent]) -> None:
         if current_configuration is None or event.configuration != current_configuration:
             raise TransientError("Provider readiness 存储返回无效")
         if event.event_type is ProviderReadinessEventType.VALIDATION_STARTED:
-            if event.validation_key is None or event.validation_key in open_validations:
+            if (
+                event.validation_key is None
+                or open_validations
+                or latest_validation
+                not in {None, ProviderReadinessEventType.VALIDATION_FAILED}
+            ):
                 raise TransientError("Provider readiness 存储返回无效")
             open_validations.add(event.validation_key)
             latest_validation = event.event_type
@@ -869,6 +879,23 @@ def _has_unterminated_start(
         if event.validation_key == validation_key
     ]
     return bool(matching) and matching[-1].event_type is ProviderReadinessEventType.VALIDATION_STARTED
+
+
+def _can_start_validation(events: list[ProviderReadinessEvent]) -> bool:
+    validation_events = [
+        event
+        for event in _current_configuration_events(events)
+        if event.event_type
+        in {
+            ProviderReadinessEventType.VALIDATION_STARTED,
+            ProviderReadinessEventType.VALIDATION_PASSED,
+            ProviderReadinessEventType.VALIDATION_FAILED,
+        }
+    ]
+    return not validation_events or (
+        validation_events[-1].event_type
+        is ProviderReadinessEventType.VALIDATION_FAILED
+    )
 
 
 def _snapshot(

@@ -142,17 +142,22 @@ def _validate_transition(
         raise InvalidStateTransition("Provider 事件必须引用当前配置")
 
     if event.event_type is ProviderReadinessEventType.VALIDATION_STARTED:
-        matching = [
+        validation_events = [
             persisted
             for persisted in current
-            if persisted.validation_key == event.validation_key
+            if persisted.event_type
+            in {
+                ProviderReadinessEventType.VALIDATION_STARTED,
+                ProviderReadinessEventType.VALIDATION_PASSED,
+                ProviderReadinessEventType.VALIDATION_FAILED,
+            }
         ]
         if (
-            matching
-            and matching[-1].event_type
-            is ProviderReadinessEventType.VALIDATION_STARTED
+            validation_events
+            and validation_events[-1].event_type
+            is not ProviderReadinessEventType.VALIDATION_FAILED
         ):
-            raise InvalidStateTransition("Provider 验证已经开始")
+            raise InvalidStateTransition("Provider 当前配置不可开始验证")
         return
 
     if event.event_type in {

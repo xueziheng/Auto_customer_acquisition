@@ -287,7 +287,7 @@ async def test_other_tenant_cannot_read_or_append_stream(db_factory) -> None:
         await session.close()
 
 
-async def test_same_stream_concurrent_events_receive_unique_monotonic_sequences(
+async def test_same_stream_concurrent_validation_starts_allow_exactly_one(
     db_factory,
 ) -> None:
     tenant = TenantId("tenant-readiness-concurrency")
@@ -334,14 +334,26 @@ async def test_same_stream_concurrent_events_receive_unique_monotonic_sequences(
     await ready.get()
     await ready.get()
     release.set()
-    first, second = await asyncio.gather(*tasks)
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
-    assert {first.sequence, second.sequence} == {2, 3}
+    persisted = [
+        outcome for outcome in outcomes if isinstance(outcome, ProviderReadinessEvent)
+    ]
+    rejected = [
+        outcome for outcome in outcomes if isinstance(outcome, InvalidStateTransition)
+    ]
+    assert len(persisted) == 1
+    assert persisted[0].sequence == 2
+    assert len(rejected) == 1
     async with SqlAlchemyProviderReadinessUnitOfWork(db_factory, tenant) as uow:
         events = await uow.readiness.list_events(
             tenant, ProviderId.HUNTER, HUNTER_CONTACT_CAPABILITIES
         )
-    assert [event.sequence for event in events] == [1, 2, 3]
+    assert [event.sequence for event in events] == [1, 2]
+    assert [event.event_type for event in events] == [
+        ProviderReadinessEventType.CONFIGURED,
+        ProviderReadinessEventType.VALIDATION_STARTED,
+    ]
 
 
 async def test_same_idempotency_key_same_payload_is_noop(db_factory) -> None:

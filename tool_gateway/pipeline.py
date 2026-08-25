@@ -55,7 +55,14 @@ _SECRET_TOKENS = frozenset(
     }
 )
 _SAFE_OUTPUT_KEYS = frozenset(
-    {"provider_ref", "already_existed", "duplicate", "retry_after_seconds"}
+    {
+        "provider_ref",
+        "already_existed",
+        "duplicate",
+        "retry_after_seconds",
+        "configuration_version",
+        "status",
+    }
 )
 _SECRET_AUDIT_KEYS = frozenset(
     {
@@ -966,6 +973,12 @@ def _freeze_safe_mapping(
                 raise ValidationError("tool output provider ref 无效")
             if key == "provider_ref" and isinstance(value, str):
                 _require_provider_ref(value)
+            if key == "configuration_version":
+                if not isinstance(value, str):
+                    raise ValidationError("tool output configuration version 无效")
+                _require_audit_string(value, key)
+            if key == "status" and value != "validation_passed":
+                raise ValidationError("tool output status 无效")
             if key.endswith("_id"):
                 _require_canonical_id(value, key)
         copied[key] = value

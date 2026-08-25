@@ -44,8 +44,14 @@ from .email_send import (
     EmailSendHandler,
     UnsubscribeLinkProvider,
 )
+from .provider_validation import (
+    PROVIDER_VALIDATION_MANIFEST,
+    ProviderValidationHandler,
+    ProviderValidationRateLimitCheck,
+)
 
 __all__ = [
+    "PROVIDER_VALIDATION_MANIFEST",
     "ContactEnrichmentHandler",
     "ContactVerificationHandler",
     "DeliveryMaterial",
@@ -54,6 +60,8 @@ __all__ = [
     "EmailFeedbackFetchHandler",
     "EmailSendHandler",
     "FeedbackPageSlot",
+    "ProviderValidationHandler",
+    "ProviderValidationRateLimitCheck",
     "ToolEmailFeedbackReader",
     "ToolGatewayContactEnricher",
     "ToolGatewayContactVerifier",

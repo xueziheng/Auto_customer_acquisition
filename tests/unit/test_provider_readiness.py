@@ -353,6 +353,100 @@ async def test_started_without_terminal_fact_is_inconclusive() -> None:
 
 
 @pytest.mark.asyncio
+async def test_validation_start_requires_no_prior_validation_or_latest_failure() -> None:
+    service, events = in_memory_service()
+    await service.declare_configuration(
+        TENANT,
+        CONFIG_V1,
+        actor=CONFIGURER,
+        idempotency_key=IdempotencyKey("cfg:start-rules"),
+    )
+    first_key = IdempotencyKey("validate:start-first")
+    first = await service.mark_validation_started(
+        TENANT,
+        CONFIG_V1.configuration_hash,
+        validation_key=first_key,
+        actor=VALIDATOR,
+    )
+
+    replay = await service.mark_validation_started(
+        TENANT,
+        CONFIG_V1.configuration_hash,
+        validation_key=first_key,
+        actor=VALIDATOR,
+    )
+    assert replay == first
+    assert len(events) == 2
+
+    with pytest.raises(InvalidStateTransition):
+        await service.mark_validation_started(
+            TENANT,
+            CONFIG_V1.configuration_hash,
+            validation_key=IdempotencyKey("validate:start-second"),
+            actor=VALIDATOR,
+        )
+
+    await service.mark_validation_failed(
+        TENANT,
+        CONFIG_V1.configuration_hash,
+        validation_key=first_key,
+        failure_code=ProviderValidationFailureCode.PROVIDER_TRANSIENT,
+        actor=VALIDATOR,
+    )
+    second_key = IdempotencyKey("validate:start-second")
+    await service.mark_validation_started(
+        TENANT,
+        CONFIG_V1.configuration_hash,
+        validation_key=second_key,
+        actor=VALIDATOR,
+    )
+    await service.mark_validation_passed(
+        TENANT,
+        CONFIG_V1.configuration_hash,
+        validation_key=second_key,
+        evidence_ref="tool-call:start-second",
+        actor=VALIDATOR,
+    )
+
+    with pytest.raises(InvalidStateTransition):
+        await service.mark_validation_started(
+            TENANT,
+            CONFIG_V1.configuration_hash,
+            validation_key=IdempotencyKey("validate:after-passed"),
+            actor=VALIDATOR,
+        )
+
+
+@pytest.mark.asyncio
+async def test_loaded_stream_with_multiple_active_validation_keys_fails_closed() -> None:
+    service, events = in_memory_service()
+    events.extend(
+        [
+            stored_event(
+                sequence=1,
+                configuration=CONFIG_V1,
+                event_type=ProviderReadinessEventType.CONFIGURED,
+            ),
+            stored_event(
+                sequence=2,
+                configuration=CONFIG_V1,
+                event_type=ProviderReadinessEventType.VALIDATION_STARTED,
+                validation_key=IdempotencyKey("validate:open-a"),
+            ),
+            stored_event(
+                sequence=3,
+                configuration=CONFIG_V1,
+                event_type=ProviderReadinessEventType.VALIDATION_STARTED,
+                validation_key=IdempotencyKey("validate:open-b"),
+            ),
+        ]
+    )
+
+    with pytest.raises(TransientError):
+        await service.get_snapshot(TENANT, HUNTER_CAPABILITIES, actor=READER)
+
+
+@pytest.mark.asyncio
 async def test_mismatched_stored_events_cannot_make_runtime_guard_ready() -> None:
     service, events = in_memory_service()
     events.extend(
