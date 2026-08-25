@@ -370,7 +370,7 @@ class EnrollCampaignStep:
         self._actor_resolver = actor_resolver
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
-        _hypothesis_id, campaign_id, acting_user, _hints, _assessment = _base_context(run)
+        hypothesis_id, campaign_id, acting_user, _hints, _assessment = _base_context(run)
         account_id = _account_id(run)
         raw_ids = run.context.get("verified_contact_point_ids")
         if not isinstance(raw_ids, list):
@@ -390,6 +390,7 @@ class EnrollCampaignStep:
                     idempotency_key=IdempotencyKey(
                         f"account-discovery:{run.run_id}:{contact_point_id}"
                     ),
+                    source_hypothesis_id=hypothesis_id,
                 ),
                 actor=actors.outreach,
             )

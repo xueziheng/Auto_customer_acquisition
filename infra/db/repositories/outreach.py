@@ -60,6 +60,7 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     MessageAttemptId,
     MessageId,
+    NeedHypothesisId,
     ProspectAccountId,
     SendingIdentityId,
     SuppressionId,
@@ -188,6 +189,11 @@ def _enrollment_row(enrollment: Enrollment) -> OutreachEnrollmentRow:
         stopped_at=enrollment.stopped_at,
         stop_reason=enrollment.stop_reason.value if enrollment.stop_reason else None,
         idempotency_key=str(enrollment.idempotency_key),
+        source_hypothesis_id=(
+            str(enrollment.source_hypothesis_id)
+            if enrollment.source_hypothesis_id is not None
+            else None
+        ),
     )
 
 
@@ -207,6 +213,11 @@ def _row_to_enrollment(row: OutreachEnrollmentRow) -> Enrollment:
         stopped_at=row.stopped_at,
         stop_reason=EnrollmentStopReason(row.stop_reason) if row.stop_reason else None,
         idempotency_key=IdempotencyKey(row.idempotency_key),
+        source_hypothesis_id=(
+            NeedHypothesisId(row.source_hypothesis_id)
+            if row.source_hypothesis_id is not None
+            else None
+        ),
     )
 
 

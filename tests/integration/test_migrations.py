@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0036"
+_ALEMBIC_HEAD = "0037"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -5197,6 +5197,78 @@ async def test_0036_reply_scope_and_owner_work_roundtrip_match_orm(
         assert "conversation_reply_work" not in await _table_names(engine)
         assert "suppress_scope" not in await _columns(
             engine, "conversation_classifications"
+        )
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.connect() as conn:
+            restored = await conn.run_sync(inspect_contract)
+        assert restored == contract
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        await engine.dispose()
+
+
+async def test_0037_enrollment_source_hypothesis_roundtrip_matches_orm(
+    db_url: str,
+) -> None:
+    """0037→0036→0037：Enrollment 来源假设的 tenant-bound FK 可逆且 ORM 同构。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import OutreachEnrollmentRow
+
+    engine = create_engine_from(db_url)
+
+    def inspect_contract(sync: Connection) -> dict[str, object]:
+        inspector = inspect(sync)
+        return {
+            "columns": {
+                str(item["name"]): (
+                    str(item["type"]),
+                    bool(item["nullable"]),
+                    str(item["default"]),
+                )
+                for item in inspector.get_columns("outreach_enrollments")
+            },
+            "fks": {
+                str(item["name"]): (
+                    tuple(item["constrained_columns"]),
+                    str(item["referred_table"]),
+                    tuple(item["referred_columns"]),
+                    str(item["options"].get("ondelete")),
+                )
+                for item in inspector.get_foreign_keys("outreach_enrollments")
+            },
+            "indexes": {
+                str(item["name"]): tuple(item["column_names"])
+                for item in inspector.get_indexes("outreach_enrollments")
+                if not item.get("duplicates_constraint")
+            },
+        }
+
+    try:
+        async with engine.connect() as conn:
+            revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            contract = await conn.run_sync(inspect_contract)
+        assert revision == _ALEMBIC_HEAD
+        assert contract["columns"]["source_hypothesis_id"] == (
+            "VARCHAR(40)",
+            True,
+            "None",
+        )
+        assert contract["fks"]["fk_outreach_enrollments_source_hypothesis"] == (
+            ("tenant_id", "source_hypothesis_id"),
+            "need_hypotheses",
+            ("tenant_id", "hypothesis_id"),
+            "RESTRICT",
+        )
+        assert contract["indexes"][
+            "ix_outreach_enrollments_tenant_source_hypothesis"
+        ] == ("tenant_id", "source_hypothesis_id")
+        assert set(contract["columns"]) == set(
+            OutreachEnrollmentRow.__table__.columns.keys()
+        )
+
+        _run_alembic(db_url, "downgrade", "0036")
+        assert "source_hypothesis_id" not in await _columns(
+            engine, "outreach_enrollments"
         )
         _run_alembic(db_url, "upgrade", "head")
         async with engine.connect() as conn:

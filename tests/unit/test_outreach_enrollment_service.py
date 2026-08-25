@@ -53,6 +53,7 @@ from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
     MessageAttemptId,
+    NeedHypothesisId,
     ProspectAccountId,
     SendingIdentityId,
     SuppressionId,
@@ -409,6 +410,50 @@ async def test_enroll_round_robin_is_canonical_persistent_and_idempotent() -> No
         winners.append(result.sending_identity_id)
     canonical = sorted((harness.sender_a, harness.sender_b))
     assert winners == [canonical[0], canonical[1], canonical[0]]
+
+
+async def test_enroll_preserves_exact_source_hypothesis_and_binds_it_to_idempotency() -> None:
+    harness = _build()
+    hypothesis_id = NeedHypothesisId(new_id("hyp"))
+    request = EnrollmentCreateRequest(
+        harness.account,
+        harness.contact,
+        IdempotencyKey("enroll-source-hypothesis"),
+        source_hypothesis_id=hypothesis_id,
+    )
+
+    created = await harness.service.enroll(
+        harness.tenant,
+        harness.campaign_id,
+        request,
+        actor=harness.boss,
+    )
+    retried = await harness.service.enroll(
+        harness.tenant,
+        harness.campaign_id,
+        request,
+        actor=harness.boss,
+    )
+
+    assert created.source_hypothesis_id == hypothesis_id
+    assert retried == created
+    assert (
+        harness.store.enrollments[created.enrollment_id].source_hypothesis_id
+        == hypothesis_id
+    )
+
+    with pytest.raises(IdempotencyConflictError):
+        await harness.service.enroll(
+            harness.tenant,
+            harness.campaign_id,
+            EnrollmentCreateRequest(
+                harness.account,
+                harness.contact,
+                IdempotencyKey("enroll-source-hypothesis"),
+                source_hypothesis_id=NeedHypothesisId(new_id("hyp")),
+            ),
+            actor=harness.boss,
+        )
 
 
 async def test_enroll_idempotency_and_active_account_conflicts_fail_closed() -> None:

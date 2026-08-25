@@ -131,6 +131,7 @@ class HypothesisView:
     status: str
     created_at: datetime
     is_inference: bool = True
+    validated_need_id: str | None = None
 
 
 @dataclass(frozen=True)

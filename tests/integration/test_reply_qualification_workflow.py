@@ -449,6 +449,7 @@ async def test_long_reply_persists_only_bounded_verbatim_and_artifact_link(
                 classified_by="reply-test-model-v1",
                 classified_at=NOW,
                 raw_artifact_ref=artifact_ref,
+                outbound_message_id=context["outbound_message_id"],
                 candidate_fields=(),
             )
 

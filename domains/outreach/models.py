@@ -22,6 +22,7 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     MessageAttemptId,
     MessageId,
+    NeedHypothesisId,
     ProspectAccountId,
     SendingIdentityId,
     SuppressionId,
@@ -525,6 +526,7 @@ class Enrollment:
     stopped_at: datetime | None
     stop_reason: EnrollmentStopReason | None
     idempotency_key: IdempotencyKey
+    source_hypothesis_id: NeedHypothesisId | None = None
 
     def __post_init__(self) -> None:
         _require_id(self.enrollment_id, "enr", "enrollment_id")
@@ -532,6 +534,12 @@ class Enrollment:
         _require_id(self.account_id, "acc", "account_id")
         _require_id(self.contact_point_id, "cp", "contact_point_id")
         _require_id(self.sending_identity_id, "sid", "sending_identity_id")
+        if self.source_hypothesis_id is not None:
+            _require_id(
+                self.source_hypothesis_id,
+                "hyp",
+                "source_hypothesis_id",
+            )
         if not isinstance(self.campaign_version, int) or isinstance(self.campaign_version, bool) or self.campaign_version < 1:
             raise ValidationError("campaign_version 无效")
         if not isinstance(self.current_step, int) or isinstance(self.current_step, bool) or self.current_step < 0:

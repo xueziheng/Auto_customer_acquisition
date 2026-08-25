@@ -21,6 +21,7 @@ from shared.schemas.identifiers import (
     HandoffId,
     OpportunityId,
     TenantId,
+    ValidatedNeedId,
 )
 
 
@@ -220,6 +221,16 @@ class OpportunityService(Protocol):
     ) -> OpportunityView:
         """读取机会。View 要带打分快照摘要——老板点「为什么是高意向」
         时要能展开看门槛和因子。"""
+        ...
+
+    async def get_by_need(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        *,
+        actor: Actor,
+    ) -> OpportunityView | None:
+        """按已验证需求精确读取机会；不存在返回 None，不按企业猜测。"""
         ...
 
     async def list_for_employee(

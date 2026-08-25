@@ -57,9 +57,11 @@ class _Evidence:
         category: str = "provides_specification",
         *,
         has_candidate_fields: bool = True,
+        outbound_message_id: OutboundMessageId = OUTBOUND_MESSAGE_ID,
     ) -> None:
         self.category = category
         self.has_candidate_fields = has_candidate_fields
+        self.outbound_message_id = outbound_message_id
 
     async def load(self, tenant_id: TenantId, message_id: MessageId):
         module = _module()
@@ -72,6 +74,7 @@ class _Evidence:
             classified_by="reply-model-v3",
             classified_at=NOW,
             raw_artifact_ref="art_reply_actions_1",
+            outbound_message_id=self.outbound_message_id,
             candidate_fields=(
                 (
                     module.ReplyFieldSnapshot("product_category", "hinges", quote),
@@ -133,6 +136,7 @@ class _EvidenceWithQuotes:
             classified_by="reply-model-v3",
             classified_at=NOW,
             raw_artifact_ref="art_quote_whitespace",
+            outbound_message_id=OUTBOUND_MESSAGE_ID,
             candidate_fields=tuple(
                 module.ReplyFieldSnapshot("quantity", str(index), quote)
                 for index, quote in enumerate(self._quotes, 1)
@@ -172,6 +176,65 @@ class _Demand:
     async def promote_to_validated(self, *args: object, **kwargs: object) -> str:
         del args, kwargs
         raise AssertionError("已有 need 时不得重复晋升")
+
+
+class _PromotingDemand(_Demand):
+    def __init__(self) -> None:
+        super().__init__()
+        self.promotions = 0
+        self.reply_evidence = []
+
+    async def record_customer_reply_evidence(
+        self, tenant_id, hypothesis_id, source_message_id, evidence_level
+    ) -> None:
+        self.reply_evidence.append(
+            (tenant_id, hypothesis_id, source_message_id, evidence_level.value)
+        )
+
+    async def promote_to_validated(
+        self,
+        tenant_id,
+        hypothesis_id,
+        source_message_id,
+        fields,
+        confirmed_by=None,
+    ) -> str:
+        del tenant_id, hypothesis_id, source_message_id, fields, confirmed_by
+        self.promotions += 1
+        return "need_promoted_reply_1"
+
+
+class _PromotingBusiness(_Business):
+    async def load(self, tenant_id: TenantId, context: ReplyActionContext):
+        module = _module()
+        assert tenant_id == TENANT
+        assert context == CONTEXT
+        return module.ReplyBusinessFacts(
+            need_id=None,
+            hypothesis_id="hyp_promoted_reply_1",
+            opportunity_id=None,
+            account_name="Acme Imports",
+            country="US",
+            why_valuable="Customer supplied order specifications.",
+        )
+
+
+class _OpportunityIntake:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def create_and_assign(
+        self,
+        tenant_id,
+        context,
+        hypothesis_id,
+        need_id,
+        evidence,
+    ) -> str:
+        self.calls.append(
+            (tenant_id, context, hypothesis_id, need_id, evidence.message_id)
+        )
+        return "opp_promoted_reply_1"
 
 
 class _Opportunities:
@@ -350,6 +413,75 @@ async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> Non
     assert packet.already_sent == ["Discovery email"]
 
 
+async def test_first_promotion_creates_and_assigns_opportunity_before_handoff() -> None:
+    module = _module()
+    demand = _PromotingDemand()
+    intake = _OpportunityIntake()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=_Evidence(),
+        business=_PromotingBusiness(),
+        content=_Content(),
+        demand=demand,
+        opportunities=_Opportunities(),
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+        opportunity_intake=intake,
+    )
+
+    await actions.extract_need_fields(
+        TENANT,
+        CONTEXT,
+        f"reply:extract_need_fields:{MESSAGE_ID}",
+    )
+
+    assert demand.promotions == 1
+    assert demand.reply_evidence == [
+        (
+            TENANT,
+            "hyp_promoted_reply_1",
+            MESSAGE_ID,
+            "customer_specification",
+        )
+    ]
+    assert intake.calls == [
+        (
+            TENANT,
+            CONTEXT,
+            "hyp_promoted_reply_1",
+            "need_promoted_reply_1",
+            MESSAGE_ID,
+        )
+    ]
+
+
+async def test_action_rejects_message_whose_stored_outbound_link_is_stale() -> None:
+    module = _module()
+    actions = module.ComposedReplyActionPorts(
+        tenant_id=TENANT,
+        evidence=_Evidence(
+            outbound_message_id=OutboundMessageId(
+                f"<reply-route.{'b' * 64}@messages.tradeos.invalid>"
+            )
+        ),
+        business=_Business(),
+        content=_Content(),
+        demand=_Demand(),
+        opportunities=_Opportunities(),
+        outreach=_Outreach(),
+        sending_identities=_SendingIdentities(),
+        conversations=_ConversationActions(),
+    )
+
+    with pytest.raises(ValidationError, match="出站消息关联不匹配"):
+        await actions.extract_need_fields(
+            TENANT,
+            CONTEXT,
+            f"reply:extract_need_fields:{MESSAGE_ID}",
+        )
+
+
 async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
     """生产回归：删除 quote 优先或恢复整段 body 持久化时必须失败。"""
     module = _module()
@@ -367,6 +499,7 @@ async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
                 classified_by="reply-model-v3",
                 classified_at=NOW,
                 raw_artifact_ref="art_long_reply_quote",
+                outbound_message_id=OUTBOUND_MESSAGE_ID,
                 candidate_fields=(
                     module.ReplyFieldSnapshot("quantity", "2400", quote),
                 ),

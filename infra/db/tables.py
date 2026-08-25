@@ -964,6 +964,12 @@ class OutreachEnrollmentRow(Base):
             ondelete="RESTRICT",
             name="fk_outreach_enrollments_version",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_hypothesis_id"],
+            ["need_hypotheses.tenant_id", "need_hypotheses.hypothesis_id"],
+            ondelete="RESTRICT",
+            name="fk_outreach_enrollments_source_hypothesis",
+        ),
         CheckConstraint(
             "state IN ('enrolled','in_sequence','replied','completed',"
             "'stopped_suppressed','stopped_bounced','stopped_manual',"
@@ -1009,6 +1015,11 @@ class OutreachEnrollmentRow(Base):
             "contact_point_id",
             "state",
         ),
+        Index(
+            "ix_outreach_enrollments_tenant_source_hypothesis",
+            "tenant_id",
+            "source_hypothesis_id",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -1025,6 +1036,7 @@ class OutreachEnrollmentRow(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stop_reason: Mapped[str | None] = mapped_column(String(32))
     idempotency_key: Mapped[str] = mapped_column(String(200))
+    source_hypothesis_id: Mapped[str | None] = mapped_column(String(40))
 
 
 class OutreachSuppressionRow(Base):

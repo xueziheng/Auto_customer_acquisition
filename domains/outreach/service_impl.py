@@ -638,6 +638,7 @@ class OutreachServiceImpl:
             enrolled_at=enrollment.enrolled_at,
             stopped_at=enrollment.stopped_at,
             stop_reason=enrollment.stop_reason,
+            source_hypothesis_id=enrollment.source_hypothesis_id,
         )
 
     @staticmethod
@@ -1276,6 +1277,8 @@ class OutreachServiceImpl:
                     existing.campaign_id == campaign_id
                     and existing.account_id == request.account_id
                     and existing.contact_point_id == request.contact_point_id
+                    and existing.source_hypothesis_id
+                    == request.source_hypothesis_id
                 ):
                     view = self._enrollment_view(existing)
                 else:
@@ -1337,6 +1340,7 @@ class OutreachServiceImpl:
                     stopped_at=None,
                     stop_reason=None,
                     idempotency_key=request.idempotency_key,
+                    source_hypothesis_id=request.source_hypothesis_id,
                 )
                 campaign.round_robin_cursor = winner_index
                 await uow.campaigns.update(campaign)

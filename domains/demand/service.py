@@ -18,7 +18,7 @@ from domains.demand.schemas import (
     SignalCaptureRequest,
     ValidatedNeedView,
 )
-from shared.schemas.evidence import ConfidenceResult
+from shared.schemas.evidence import ConfidenceResult, EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
     MessageId,
@@ -169,6 +169,16 @@ class DemandService(Protocol):
         ...
 
     # --- 验证（本域最关键的操作） ---------------------------------------
+
+    async def record_customer_reply_evidence(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+        source_message_id: MessageId,
+        evidence_level: EvidenceLevel,
+    ) -> None:
+        """幂等追加一条 customer_* 会话证据；不自行晋升。"""
+        ...
 
     async def promote_to_validated(
         self,

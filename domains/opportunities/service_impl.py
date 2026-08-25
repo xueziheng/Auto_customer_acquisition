@@ -1199,6 +1199,32 @@ class OpportunityServiceImpl:
             ],
         )
 
+    async def get_by_need(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        *,
+        actor: Actor,
+    ) -> OpportunityView | None:
+        """按 tenant + need 唯一链读取，供上层闭环组合使用。"""
+        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id)
+        async with self._uow_factory() as uow:
+            opp = await uow.opportunities.find_by_need(tenant_id, need_id)
+            if opp is None:
+                view = None
+            else:
+                self._enforce_resource_abac(
+                    actor,
+                    owner=opp.owner,
+                    country=opp.country,
+                    product_category=opp.product_category,
+                    tenant_id=tenant_id,
+                    action=OpportunityAction.OPPORTUNITY_READ,
+                )
+                view = await self._build_view(uow, tenant_id, opp)
+        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id, rule)
+        return view
+
     async def list_for_employee(
         self,
         tenant_id: TenantId,

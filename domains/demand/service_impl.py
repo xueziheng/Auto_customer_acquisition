@@ -707,6 +707,54 @@ class DemandServiceImpl:
             )
             return need.need_id
 
+    async def record_customer_reply_evidence(
+        self,
+        tenant_id: TenantId,
+        hypothesis_id: NeedHypothesisId,
+        source_message_id: MessageId,
+        evidence_level: EvidenceLevel,
+    ) -> None:
+        """只追加客户会话证据；晋升仍由统一门槛决定。"""
+        if (
+            not isinstance(hypothesis_id, str)
+            or not hypothesis_id.strip()
+            or hypothesis_id != hypothesis_id.strip()
+            or len(hypothesis_id) > 40
+            or not isinstance(source_message_id, str)
+            or not source_message_id.strip()
+            or source_message_id != source_message_id.strip()
+            or len(source_message_id) > 40
+            or not isinstance(evidence_level, EvidenceLevel)
+            or _EVIDENCE_RANK[evidence_level]
+            < _EVIDENCE_RANK[EvidenceLevel.CUSTOMER_INTEREST_REPLY]
+        ):
+            raise ValidationError("客户回复证据无效")
+        now = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            hypothesis = await uow.hypotheses.get_for_update(
+                tenant_id, hypothesis_id
+            )
+            if hypothesis is None:
+                raise ValidationError("需求假设不存在")
+            if hypothesis.status is HypothesisStatus.REJECTED:
+                raise HypothesisAlreadyResolvedError("已否决的假设不可追加客户证据")
+            incoming = EvidenceItem(
+                level=evidence_level,
+                source_type=SourceType.CONVERSATION.value,
+                source_id=str(source_message_id),
+                observed_at=now,
+                summary="客户回复提供需求事实",
+            )
+            merged = _merge_evidence(hypothesis.evidence(), [incoming])
+            if merged == hypothesis.evidence():
+                return
+            await uow.hypotheses.update(
+                replace(
+                    hypothesis,
+                    reasoning=replace(hypothesis.reasoning, based_on=merged),
+                )
+            )
+
     async def reject_hypothesis(
         self,
         tenant_id: TenantId,
@@ -1433,6 +1481,11 @@ class DemandServiceImpl:
             ],
             status=hypothesis.status.value,
             created_at=hypothesis.created_at,
+            validated_need_id=(
+                str(hypothesis.validated_need_id)
+                if hypothesis.validated_need_id is not None
+                else None
+            ),
         )
 
     @staticmethod

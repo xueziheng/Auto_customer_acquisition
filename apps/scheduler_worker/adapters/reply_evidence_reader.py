@@ -47,6 +47,7 @@ class ConversationReplyEvidenceReader:
             or message.tenant_id != tenant_id
             or message.message_id != message_id
             or getattr(message.direction, "value", None) != "inbound"
+            or message.outbound_message_id is None
             or not isinstance(message.raw_artifact_ref, str)
             or not message.raw_artifact_ref
         ):
@@ -57,6 +58,7 @@ class ConversationReplyEvidenceReader:
             classified_by=classification.classified_by,
             classified_at=classification.classified_at,
             raw_artifact_ref=message.raw_artifact_ref,
+            outbound_message_id=message.outbound_message_id,
             candidate_fields=tuple(
                 ReplyFieldSnapshot(item.field, item.value, item.quote)
                 for item in classification.candidate_fields

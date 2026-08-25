@@ -9,6 +9,7 @@ artifact 引用定位，不进入 workflow/outbox/log。
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -48,12 +49,14 @@ from domains.sending_identity.service import (
     ScopeLevel as SendingIdentityScopeLevel,
 )
 from shared.errors import TenantIsolationViolation, ValidationError
+from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
     MessageId,
     NeedHypothesisId,
     OpportunityId,
+    OutboundMessageId,
     SendingIdentityId,
     TenantId,
     ValidatedNeedId,
@@ -150,6 +153,7 @@ class ReplyEvidenceSnapshot:
     classified_by: str
     classified_at: datetime
     raw_artifact_ref: str
+    outbound_message_id: OutboundMessageId
     candidate_fields: tuple[ReplyFieldSnapshot, ...]
 
 
@@ -189,6 +193,38 @@ class ReplyBusinessFactsReader(Protocol):
     ) -> ReplyBusinessFacts | None: ...
 
 
+@runtime_checkable
+class ReplyOpportunityIntake(Protocol):
+    """首次需求晋升后的机会创建与真实 owner 分配端口。"""
+
+    async def create_and_assign(
+        self,
+        tenant_id: TenantId,
+        context: ReplyActionContext,
+        hypothesis_id: NeedHypothesisId,
+        need_id: ValidatedNeedId,
+        evidence: ReplyEvidenceSnapshot,
+    ) -> OpportunityId | None: ...
+
+
+def _candidate_business_value(field: ReplyFieldSnapshot) -> object:
+    """把模型字符串边界中的结构化金额恢复为确定性业务形状。"""
+    if field.field != "target_price":
+        return field.value
+    try:
+        value = json.loads(field.value)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("回复目标价格式无效") from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"amount", "currency"}
+        or not isinstance(value["amount"], str)
+        or not isinstance(value["currency"], str)
+    ):
+        raise ValidationError("回复目标价格式无效")
+    return value
+
+
 class ComposedReplyActionPorts:
     """把字段、接管与投递反馈动作接到真实公共域服务。
 
@@ -208,6 +244,7 @@ class ComposedReplyActionPorts:
         outreach: OutreachService,
         sending_identities: SendingIdentityService,
         conversations: ConversationService,
+        opportunity_intake: ReplyOpportunityIntake | None = None,
     ) -> None:
         if (
             not isinstance(tenant_id, str)
@@ -244,6 +281,7 @@ class ComposedReplyActionPorts:
         self._outreach = outreach
         self._sending_identities = sending_identities
         self._conversations = conversations
+        self._opportunity_intake = opportunity_intake
 
     def _require_call(
         self,
@@ -267,6 +305,8 @@ class ComposedReplyActionPorts:
         business = await self._business.load(tenant_id, context)
         if evidence is None or evidence.message_id != context.message_id:
             raise ValidationError("回复分类证据不存在")
+        if evidence.outbound_message_id != context.outbound_message_id:
+            raise ValidationError("回复出站消息关联不匹配")
         if business is None:
             raise ValidationError("回复业务关联不存在")
         return evidence, business
@@ -372,7 +412,7 @@ class ComposedReplyActionPorts:
             raise ValidationError("回复没有可应用的字段证据")
         fields = {
             item.field: {
-                "value": item.value,
+                "value": _candidate_business_value(item),
                 "quote": item.quote,
                 "extracted_by": evidence.classified_by,
             }
@@ -389,12 +429,37 @@ class ComposedReplyActionPorts:
             return
         if business.hypothesis_id is None:
             raise ValidationError("回复需求关联不存在")
-        await self._demand.promote_to_validated(
+        record_reply_evidence = getattr(
+            self._demand, "record_customer_reply_evidence", None
+        )
+        if not callable(record_reply_evidence):
+            raise ValidationError("回复客户证据组合未配置")
+        level = (
+            EvidenceLevel.CUSTOMER_SPECIFICATION
+            if evidence.category == "provides_specification"
+            else EvidenceLevel.CUSTOMER_INTEREST_REPLY
+        )
+        await record_reply_evidence(
+            tenant_id,
+            NeedHypothesisId(str(business.hypothesis_id)),
+            context.message_id,
+            level,
+        )
+        need_id = await self._demand.promote_to_validated(
             tenant_id,
             NeedHypothesisId(str(business.hypothesis_id)),
             context.message_id,
             fields,
             None,
+        )
+        if self._opportunity_intake is None:
+            raise ValidationError("回复机会创建组合未配置")
+        await self._opportunity_intake.create_and_assign(
+            tenant_id,
+            context,
+            NeedHypothesisId(str(business.hypothesis_id)),
+            ValidatedNeedId(str(need_id)),
+            evidence,
         )
 
     async def request_handoff(

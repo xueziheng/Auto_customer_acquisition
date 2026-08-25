@@ -33,6 +33,7 @@ from shared.schemas.identifiers import (
     IdempotencyKey,
     MessageAttemptId,
     MessageId,
+    NeedHypothesisId,
     ProspectAccountId,
     SendingIdentityId,
     SuppressionId,
@@ -318,11 +319,18 @@ class EnrollmentCreateRequest:
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
     idempotency_key: IdempotencyKey
+    source_hypothesis_id: NeedHypothesisId | None = None
 
     def __post_init__(self) -> None:
         _require_safe_id(self.account_id, "account_id", prefix="acc")
         _require_safe_id(self.contact_point_id, "contact_point_id", prefix="cp")
         _require_safe_text(self.idempotency_key, "idempotency_key")
+        if self.source_hypothesis_id is not None:
+            _require_safe_id(
+                self.source_hypothesis_id,
+                "source_hypothesis_id",
+                prefix="hyp",
+            )
 
 
 @dataclass(frozen=True)
@@ -545,6 +553,7 @@ class EnrollmentView:
     enrolled_at: datetime
     stopped_at: datetime | None
     stop_reason: EnrollmentStopReason | None
+    source_hypothesis_id: NeedHypothesisId | None = None
 
 
 @dataclass(frozen=True)
