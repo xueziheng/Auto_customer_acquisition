@@ -264,7 +264,10 @@ def test_manifest_is_exact() -> None:
     assert manifest.checks == ("tenant", "permission", "idempotency", "rate_limit")
     assert dict(manifest.output_schema["properties"]) == {
         "provider_ref": {"type": "string"},
-        "configuration_version": {"type": "string"},
+        "configuration_version": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+        },
         "status": {"type": "string", "enum": ("validation_passed",)},
     }
 
@@ -350,6 +353,30 @@ def test_bound_resolver_maps_only_fixed_logical_reference_without_disclosure() -
     combined = f"{captured.value!s} {captured.value!r}"
     assert DEPLOYMENT_REF not in combined
     assert "HUNTER_OTHER_REF_CANARY" not in combined
+
+
+def test_bound_resolver_sanitizes_underlying_resolution_failure_completely() -> None:
+    nested_canary = "hunter-resolver-nested-canary"
+    resolver = _Resolver(
+        RuntimeError(f"{DEPLOYMENT_REF} {API_KEY} {nested_canary}")
+    )
+    bound = BoundHunterSecretResolver(resolver, DEPLOYMENT_REF)
+
+    with pytest.raises(ValidationError) as captured:
+        bound.resolve("HUNTER_API_KEY_REF")
+
+    exposed = repr(
+        (
+            str(captured.value),
+            repr(captured.value),
+            captured.value.__cause__,
+            captured.value.__context__,
+        )
+    )
+    for forbidden in (DEPLOYMENT_REF, API_KEY, nested_canary):
+        assert forbidden not in exposed
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
 
 
 @pytest.mark.asyncio

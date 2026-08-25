@@ -33,7 +33,17 @@ class BoundHunterSecretResolver:
     def resolve(self, secret_ref: str) -> str:
         if secret_ref != HUNTER_API_KEY_REF:
             raise ValidationError("Hunter 凭证引用无效")
-        return self._resolver.resolve(self._configured_ref)
+        resolution_failed = False
+        resolved: str | None = None
+        try:
+            resolved = self._resolver.resolve(self._configured_ref)
+        except Exception:  # noqa: BLE001 - 凭证边界不得穿透实现异常。
+            resolution_failed = True
+        if resolution_failed:
+            raise ValidationError("Hunter 凭证解析失败") from None
+        if not isinstance(resolved, str):
+            raise ValidationError("Hunter 凭证解析失败")
+        return resolved
 
 
 __all__ = ("BoundHunterSecretResolver",)

@@ -71,7 +71,10 @@ PROVIDER_VALIDATION_MANIFEST = ToolManifest(
         "type": "object",
         "properties": {
             "provider_ref": {"type": "string"},
-            "configuration_version": {"type": "string"},
+            "configuration_version": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+            },
             "status": {"type": "string", "enum": ("validation_passed",)},
         },
         "required": ("provider_ref", "configuration_version", "status"),

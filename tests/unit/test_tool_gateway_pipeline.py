@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -218,9 +219,11 @@ class _Handler:
         trace: list[str],
         *,
         execute_error: Exception | None = None,
+        execute_output: Mapping[str, str | int | bool | None] | None = None,
     ) -> None:
         self.trace = trace
         self.execute_error = execute_error
+        self.execute_output = execute_output
 
     async def prepare(self, ctx, preflight):
         del ctx
@@ -233,10 +236,15 @@ class _Handler:
         self.trace.append("handler.execute")
         if self.execute_error is not None:
             raise self.execute_error
-        return {"provider_ref": "gmail_ref_1", "already_existed": False}
+        return self.execute_output or {
+            "provider_ref": "gmail_ref_1",
+            "already_existed": False,
+        }
 
 
-def _tool_manifest() -> ToolManifest:
+def _tool_manifest(
+    *, output_schema: Mapping[str, object] | None = None
+) -> ToolManifest:
     return ToolManifest(
             tool_id="email.send",
             version="v1",
@@ -247,6 +255,16 @@ def _tool_manifest() -> ToolManifest:
             idempotency=IdempotencyRequirement.REQUIRED,
             required_permissions=("outreach:message_send",),
             checks=("tenant", "permission", "suppression", "approval", "idempotency", "rate_limit"),
+            output_schema=output_schema
+            or {
+                "type": "object",
+                "required": ("provider_ref", "already_existed"),
+                "properties": {
+                    "provider_ref": {"type": "string"},
+                    "already_existed": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
     )
 
 
@@ -256,12 +274,18 @@ def _gateway(
     fail_executing_commit: bool = False,
     fail_succeeded_commit: bool = False,
     execute_error: Exception | None = None,
+    execute_output: Mapping[str, str | int | bool | None] | None = None,
+    output_schema: Mapping[str, object] | None = None,
 ):
     trace: list[str] = []
     registry = ToolRegistry()
     registry.register(
-        _tool_manifest(),
-        _Handler(trace, execute_error=execute_error),
+        _tool_manifest(output_schema=output_schema),
+        _Handler(
+            trace,
+            execute_error=execute_error,
+            execute_output=execute_output,
+        ),
     )
     ledger = _Ledger(trace)
     checks = {
@@ -291,7 +315,7 @@ def _gateway(
         now=lambda: NOW,
         id_factory=new_id,
     )
-    return gateway, trace
+    return gateway, trace, ledger
 
 
 def _context() -> ToolCallContext:
@@ -306,7 +330,7 @@ def _context() -> ToolCallContext:
 
 
 async def test_gateway_success_has_exact_stage_and_side_effect_order() -> None:
-    gateway, trace = _gateway()
+    gateway, trace, _ = _gateway()
     result = await gateway.invoke(_context())
     assert result.status is ToolCallStatus.SUCCEEDED
     assert trace == [
@@ -339,7 +363,7 @@ async def test_gateway_success_has_exact_stage_and_side_effect_order() -> None:
 async def test_rejection_short_circuits_every_later_side_effect(
     rejected: str, absent: str
 ) -> None:
-    gateway, trace = _gateway(reject=rejected)
+    gateway, trace, _ = _gateway(reject=rejected)
     result = await gateway.invoke(_context())
     assert result.status is ToolCallStatus.REJECTED
     assert absent not in trace
@@ -349,7 +373,7 @@ async def test_rejection_short_circuits_every_later_side_effect(
 
 
 async def test_executing_commit_failure_never_calls_connector() -> None:
-    gateway, trace = _gateway(fail_executing_commit=True)
+    gateway, trace, _ = _gateway(fail_executing_commit=True)
     result = await gateway.invoke(_context())
     assert result.status is ToolCallStatus.FAILED_TRANSIENT
     assert result.error_category is ToolErrorCategory.PROVIDER_TRANSIENT
@@ -360,7 +384,7 @@ async def test_executing_commit_failure_never_calls_connector() -> None:
 
 
 async def test_success_ledger_commit_failure_returns_reconciliation_required() -> None:
-    gateway, trace = _gateway(fail_succeeded_commit=True)
+    gateway, trace, _ = _gateway(fail_succeeded_commit=True)
     result = await gateway.invoke(_context())
     assert result.status is ToolCallStatus.FAILED_TRANSIENT
     assert result.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
@@ -370,7 +394,7 @@ async def test_success_ledger_commit_failure_returns_reconciliation_required() -
 
 
 async def test_unexpected_connector_error_is_safely_classified() -> None:
-    gateway, trace = _gateway(
+    gateway, trace, _ = _gateway(
         execute_error=RuntimeError("provider-runtime-marker")
     )
 
@@ -381,6 +405,87 @@ async def test_unexpected_connector_error_is_safely_classified() -> None:
     assert result.output is None
     assert trace.count("handler.execute") == 1
     assert trace[-1] == "ledger.failed_permanent"
+
+
+async def test_gateway_does_not_expose_handler_fields_undeclared_by_manifest() -> None:
+    gateway, trace, ledger = _gateway(
+        execute_output={
+            "provider_ref": "gmail_ref_1",
+            "already_existed": False,
+            "configuration_version": "deploy-v1",
+        }
+    )
+
+    result = await gateway.invoke(_context())
+
+    assert result.status is ToolCallStatus.FAILED_TRANSIENT
+    assert result.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert result.output is None
+    assert result.tool_call_id is not None
+    persisted = ledger.records[result.tool_call_id]
+    assert persisted.status is ToolCallStatus.FAILED_TRANSIENT
+    assert persisted.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert persisted.provider_ref is None
+    assert trace.count("handler.execute") == 1
+    assert trace[-1] == "ledger.failed_transient"
+
+
+@pytest.mark.parametrize(
+    "handler_output",
+    [
+        {"provider_ref": "gmail_ref_1", "status": "validation_passed"},
+        {
+            "provider_ref": "gmail_ref_1",
+            "configuration_version": "deploy-v1",
+            "status": "validation_passed",
+            "already_existed": "false",
+        },
+        {
+            "provider_ref": "gmail_ref_1",
+            "configuration_version": "Deploy-V1",
+            "status": "validation_passed",
+        },
+        {
+            "provider_ref": "gmail_ref_1",
+            "configuration_version": "deploy-v1",
+            "status": "unexpected",
+        },
+    ],
+)
+async def test_gateway_fails_closed_for_required_type_pattern_or_enum_output(
+    handler_output: Mapping[str, str | int | bool | None],
+) -> None:
+    gateway, trace, _ = _gateway(
+        execute_output=handler_output,
+        output_schema={
+            "type": "object",
+            "required": (
+                "provider_ref",
+                "configuration_version",
+                "status",
+            ),
+            "properties": {
+                "provider_ref": {"type": "string"},
+                "configuration_version": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ("validation_passed",),
+                },
+            },
+            "additionalProperties": False,
+        },
+    )
+
+    result = await gateway.invoke(_context())
+
+    assert result.status is ToolCallStatus.FAILED_TRANSIENT
+    assert result.error_category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert result.output is None
+    assert trace.count("handler.execute") == 1
+    assert trace[-1] == "ledger.failed_transient"
 
 
 class _OutreachStageService:

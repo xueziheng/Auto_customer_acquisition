@@ -33,6 +33,7 @@ from .repository import (
 type SafeScalar = str | int | bool | None
 _LABEL_RE = re.compile(r"[a-z][a-z0-9_.:-]{0,99}")
 _AUDIT_VALUE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}")
+_CONFIGURATION_VERSION_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 _CANONICAL_ID_RE = re.compile(r"[a-z]{2,8}_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _SECRET_TOKENS = frozenset(
@@ -281,6 +282,8 @@ class _GatewayManifest(Protocol):
     cost_class: _ManifestValue
     idempotency: _ManifestValue
     checks: tuple[str, ...]
+
+    def validate_output(self, output: object) -> None: ...
 
 
 class _GatewayHandler(Protocol):
@@ -684,18 +687,30 @@ class ToolGateway:
                 canonical=True,
                 stage="connector",
             )
-        safe_result = ToolCallResult(
-            tool_id=ctx.tool_id,
-            status=ToolCallStatus.SUCCEEDED,
-            output=handler_output,
-            tool_call_id=str(call_id),
-            cost_note=manifest.cost_class.value,
-        )
-        provider_ref = None if safe_result.output is None else safe_result.output.get(
-            "provider_ref"
-        )
-        if not isinstance(provider_ref, str):
-            raise ValidationError("成功工具结果缺少 provider_ref")
+        try:
+            manifest.validate_output(handler_output)
+            safe_result = ToolCallResult(
+                tool_id=ctx.tool_id,
+                status=ToolCallStatus.SUCCEEDED,
+                output=handler_output,
+                tool_call_id=str(call_id),
+                cost_note=manifest.cost_class.value,
+            )
+            provider_ref = (
+                None
+                if safe_result.output is None
+                else safe_result.output.get("provider_ref")
+            )
+            if not isinstance(provider_ref, str):
+                raise ValidationError("成功工具结果缺少 provider_ref")
+        except Exception:  # noqa: BLE001 -- Provider 已执行，结果边界失败必须对账。
+            return await self._fail_typed(
+                ctx,
+                call_id,
+                ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED),
+                canonical=True,
+                stage="handler.output",
+            )
         rate_stage = self._checks.get("rate_limit")
         record_sent = getattr(rate_stage, "record_sent", None)
         if record_sent is not None:
@@ -955,7 +970,10 @@ def _freeze_safe_mapping(
             raise ValidationError("safe mapping value 无效")
         if isinstance(value, str):
             if audit:
-                _require_audit_string(value, key)
+                if key == "configuration_version":
+                    _require_configuration_version(value)
+                else:
+                    _require_audit_string(value, key)
             else:
                 _require_safe_text(value, key, max_length=200)
         if isinstance(value, int) and not isinstance(value, bool) and value < 0:
@@ -976,7 +994,7 @@ def _freeze_safe_mapping(
             if key == "configuration_version":
                 if not isinstance(value, str):
                     raise ValidationError("tool output configuration version 无效")
-                _require_audit_string(value, key)
+                _require_configuration_version(value)
             if key == "status" and value != "validation_passed":
                 raise ValidationError("tool output status 无效")
             if key.endswith("_id"):
@@ -992,6 +1010,12 @@ def _require_audit_string(value: str, field_name: str) -> str:
     tokens = frozenset(re.split(r"[_.:-]", value.casefold()))
     if tokens & _SECRET_TOKENS:
         raise ValidationError(f"{field_name} 无效")
+    return value
+
+
+def _require_configuration_version(value: object) -> str:
+    if not isinstance(value, str) or _CONFIGURATION_VERSION_RE.fullmatch(value) is None:
+        raise ValidationError("configuration_version 无效")
     return value
 
 

@@ -153,6 +153,7 @@ async def _composition(
     transport: _AssertingTransport,
     *,
     validation_key: str = "hunter-gateway-validation-1",
+    configuration_version: str = "deploy-v1",
     rate_barrier: tuple[asyncio.Queue[None], asyncio.Event] | None = None,
 ) -> tuple[ToolGateway, ToolCallContext]:
     actor = _actor(tenant_id)
@@ -163,7 +164,9 @@ async def _composition(
         runtime_actor=actor,
         now=lambda: NOW,
     )
-    configuration = ProviderConfiguration.hunter_contacts("deploy-v1", "key-v1")
+    configuration = ProviderConfiguration.hunter_contacts(
+        configuration_version, "key-v1"
+    )
     await readiness.declare_configuration(
         tenant_id,
         configuration,
@@ -218,10 +221,73 @@ async def _composition(
         tenant_id,
         user_id,
         PROVIDER_VALIDATION_MANIFEST.tool_id,
-        {"configuration_version": "deploy-v1"},
+        {"configuration_version": configuration_version},
         idempotency_key=IdempotencyKey(validation_key),
     )
     return gateway, context
+
+
+@pytest.mark.parametrize("configuration_version", ["url", "dsn", "cookie"])
+@pytest.mark.asyncio
+async def test_canonical_marker_shaped_versions_complete_gateway_and_readiness(
+    integration_engine,
+    configuration_version: str,
+) -> None:
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    tenant_id = TenantId(new_id("tn"))
+    user_id = UserId(new_id("usr"))
+    transport = _AssertingTransport(
+        factory,
+        tenant_id,
+        HunterHttpResponse(200, {"data": {"requests": {}}}),
+    )
+    gateway, context = await _composition(
+        factory,
+        tenant_id,
+        user_id,
+        transport,
+        validation_key=f"hunter-version-{configuration_version}",
+        configuration_version=configuration_version,
+    )
+
+    result = await gateway.invoke(context)
+
+    assert result.status is ToolCallStatus.SUCCEEDED
+    assert dict(result.output or {}) == {
+        "provider_ref": next(
+            value
+            for key, value in dict(result.output or {}).items()
+            if key == "provider_ref"
+        ),
+        "configuration_version": configuration_version,
+        "status": "validation_passed",
+    }
+    assert transport.calls == 1
+    async with factory() as session:
+        tool_statuses = list(
+            (
+                await session.execute(
+                    select(ToolCallRow.status).where(
+                        ToolCallRow.tenant_id == tenant_id
+                    )
+                )
+            ).scalars()
+        )
+        readiness_types = list(
+            (
+                await session.execute(
+                    select(ProviderReadinessEventRow.event_type)
+                    .where(ProviderReadinessEventRow.tenant_id == tenant_id)
+                    .order_by(ProviderReadinessEventRow.sequence)
+                )
+            ).scalars()
+        )
+    assert tool_statuses == [ToolCallStatus.SUCCEEDED.value]
+    assert readiness_types == [
+        ProviderReadinessEventType.CONFIGURED.value,
+        ProviderReadinessEventType.VALIDATION_STARTED.value,
+        ProviderReadinessEventType.VALIDATION_PASSED.value,
+    ]
 
 
 @pytest.mark.asyncio

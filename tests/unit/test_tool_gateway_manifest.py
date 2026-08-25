@@ -228,6 +228,42 @@ def test_manifest_defensively_freezes_schema_and_sequence_inputs() -> None:
         manifest.input_schema["type"] = "array"  # type: ignore[index]
 
 
+@pytest.mark.parametrize(
+    "output_schema",
+    [
+        {"type": "array"},
+        {"type": "object", "required": ("missing",), "properties": {}},
+        {
+            "type": "object",
+            "properties": {"provider_ref": {"type": "number"}},
+        },
+        {
+            "type": "object",
+            "properties": {
+                "provider_ref": {"type": "string", "enum": None}
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "provider_ref": {"type": "string", "pattern": None}
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "provider_ref": {"type": "string", "maxLength": 200}
+            },
+        },
+    ],
+)
+def test_manifest_rejects_output_schema_outside_bounded_object_subset(
+    output_schema: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _manifest(output_schema=output_schema)
+
+
 class _ExecuteOnly:
     async def execute(self, tenant_id: TenantId, prepared: PreparedToolCall) -> dict[str, str]:
         del tenant_id, prepared

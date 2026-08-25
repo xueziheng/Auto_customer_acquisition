@@ -167,8 +167,15 @@ class ToolManifest:
         object.__setattr__(self, "checks", checks)
         object.__setattr__(self, "high_risk_stage_profile", profile)
         object.__setattr__(self, "redact_fields", redact_fields)
-        object.__setattr__(self, "input_schema", _freeze_json(self.input_schema))
-        object.__setattr__(self, "output_schema", _freeze_json(self.output_schema))
+        frozen_input_schema = _freeze_json(self.input_schema)
+        frozen_output_schema = _freeze_json(self.output_schema)
+        _validate_bounded_output_schema(frozen_output_schema)
+        object.__setattr__(self, "input_schema", frozen_input_schema)
+        object.__setattr__(self, "output_schema", frozen_output_schema)
+
+    def validate_output(self, output: object) -> None:
+        """按当前 manifest 声明的有界 object schema 校验 handler 输出。"""
+        _validate_bounded_output(self.output_schema, output)
 
 
 @runtime_checkable
@@ -280,3 +287,115 @@ def _freeze_json(value: object) -> object:
     if value is None or isinstance(value, (str, int, bool)):
         return value
     raise ValidationError("tool schema value 无效")
+
+
+def _validate_bounded_output_schema(schema: object) -> None:
+    if not isinstance(schema, Mapping):
+        raise ValidationError("tool output schema 无效")
+    if not schema:
+        return
+    if set(schema) - {"type", "required", "properties", "additionalProperties"}:
+        raise ValidationError("tool output schema 无效")
+    if schema.get("type") != "object":
+        raise ValidationError("tool output schema 无效")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, Mapping):
+        raise ValidationError("tool output schema 无效")
+    for name, property_schema in properties.items():
+        if not isinstance(name, str):
+            raise ValidationError("tool output schema 无效")
+        _validate_scalar_schema(property_schema)
+    required = schema.get("required", ())
+    if not isinstance(required, Sequence) or isinstance(
+        required, (str, bytes, bytearray)
+    ):
+        raise ValidationError("tool output schema 无效")
+    if (
+        any(not isinstance(name, str) or name not in properties for name in required)
+        or len(required) != len(set(required))
+    ):
+        raise ValidationError("tool output schema 无效")
+    additional = schema.get("additionalProperties", True)
+    if not isinstance(additional, bool):
+        raise ValidationError("tool output schema 无效")
+
+
+def _validate_scalar_schema(schema: object) -> None:
+    if not isinstance(schema, Mapping) or set(schema) - {"type", "enum", "pattern"}:
+        raise ValidationError("tool output property schema 无效")
+    scalar_type = schema.get("type")
+    if not isinstance(scalar_type, str) or scalar_type not in {
+        "string",
+        "integer",
+        "boolean",
+        "null",
+    }:
+        raise ValidationError("tool output property schema 无效")
+    if "enum" in schema:
+        enum = schema["enum"]
+        if (
+            not isinstance(enum, Sequence)
+            or isinstance(enum, (str, bytes, bytearray))
+            or not enum
+            or any(not _matches_scalar_type(value, scalar_type) for value in enum)
+        ):
+            raise ValidationError("tool output property schema 无效")
+    if "pattern" in schema:
+        pattern = schema["pattern"]
+        if scalar_type != "string" or not isinstance(pattern, str):
+            raise ValidationError("tool output property schema 无效")
+        try:
+            re.compile(pattern)
+        except re.error:
+            raise ValidationError("tool output property schema 无效") from None
+
+
+def _validate_bounded_output(schema: Mapping[str, object], output: object) -> None:
+    if not isinstance(output, Mapping):
+        raise ValidationError("tool output 不匹配 manifest")
+    if not schema:
+        return
+    properties = schema.get("properties", {})
+    required = schema.get("required", ())
+    if not isinstance(properties, Mapping) or not isinstance(required, Sequence):
+        raise ValidationError("tool output schema 无效")
+    if any(name not in output for name in required):
+        raise ValidationError("tool output 不匹配 manifest")
+    if schema.get("additionalProperties", True) is False and any(
+        name not in properties for name in output
+    ):
+        raise ValidationError("tool output 不匹配 manifest")
+    for name, value in output.items():
+        property_schema = properties.get(name)
+        if property_schema is None:
+            continue
+        if not isinstance(property_schema, Mapping):
+            raise ValidationError("tool output schema 无效")
+        scalar_type = property_schema.get("type")
+        if not isinstance(scalar_type, str) or not _matches_scalar_type(
+            value, scalar_type
+        ):
+            raise ValidationError("tool output 不匹配 manifest")
+        enum = property_schema.get("enum")
+        if isinstance(enum, Sequence) and not isinstance(
+            enum, (str, bytes, bytearray)
+        ) and not any(
+            type(value) is type(candidate) and value == candidate
+            for candidate in enum
+        ):
+            raise ValidationError("tool output 不匹配 manifest")
+        pattern = property_schema.get("pattern")
+        if isinstance(pattern, str) and (
+            not isinstance(value, str) or re.search(pattern, value) is None
+        ):
+            raise ValidationError("tool output 不匹配 manifest")
+
+
+def _matches_scalar_type(value: object, scalar_type: object) -> bool:
+    if scalar_type == "string":
+        return isinstance(value, str)
+    if scalar_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if scalar_type == "boolean":
+        return isinstance(value, bool)
+    return scalar_type == "null" and value is None
