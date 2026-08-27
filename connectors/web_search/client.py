@@ -11,6 +11,7 @@ from html.parser import HTMLParser
 from typing import Protocol, runtime_checkable
 
 from artifact_store.store import RawArtifactKind, RawArtifactStore
+from connectors.search_contracts import SearchCapabilities, SearchResult
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, UserId
 
@@ -31,19 +32,8 @@ class WebSearchSecretResolver(Protocol):
     def resolve(self, secret_ref: str) -> str: ...
 
 
-@dataclass(frozen=True, repr=False)
-class WebSearchResult:
-    title: str
-    url: str
-    description: str = field(repr=False)
-
-    def __post_init__(self) -> None:
-        if (
-            not _safe_text(self.title, 500)
-            or not _safe_text(self.url, 2_048)
-            or not _safe_text(self.description, 2_000, allow_empty=True)
-        ):
-            raise ValidationError("公开搜索结果无效")
+# 兼容既有导入与三参构造；新代码应使用供应商无关的 SearchResult。
+WebSearchResult = SearchResult
 
 
 @dataclass(frozen=True, repr=False)
@@ -101,6 +91,7 @@ class WebSearchConnector:
     """外部内容只经 typed DTO 返回；原 HTML 立即写不可变 Artifact。"""
 
     manifest = MANIFEST
+    capabilities = SearchCapabilities(supports_country_boost=True, maximum_results=20)
 
     def __init__(
         self,

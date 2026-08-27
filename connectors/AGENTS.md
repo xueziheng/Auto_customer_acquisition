@@ -31,6 +31,7 @@ connectors/<name>/
 | `email_verification/` | 可达性验证（硬边界 6 的执行者） | 1 |
 | `contact_enrichment/` | 联系人补全（单 Provider） | 1 |
 | `web_search/` | 公开搜索 | 1 |
+| `tavily/` | 固定 basic 的免费搜索候选；必须经后续额度门禁 | 2 |
 | `playwright/` | 浏览器操作（合规边界见 docs/architecture/08） | 1（受限） |
 | `openai/` | 结构化模型调用（统一封装、惰性取密钥） | 1 |
 | `fx/` | 汇率快照 | 1 |
