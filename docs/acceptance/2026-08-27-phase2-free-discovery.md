@@ -5,8 +5,8 @@
 
 ## 结论与边界
 
-工程实现和受控验收完成；命令结果见下表。Task1–5已完成各自独立审查及复审；
-**最终全分支审查和最新树全量复验尚待root完成，不能将本报告视为合并批准。**
+工程实现、受控验收和最新树全量复验完成。Task1–5已完成各自独立审查及复审；
+**最终全分支审查的两项Important已统一修复并通过独立复审，无未解决审查项。合并仍由用户选择，不视为已经合并或生产启用。**
 没有推送、部署、真实发信或商业数据API调用；main未改动。
 
 本批是Phase2获客增强，不是整个Phase2完成。后续寻源、成本、报价保留。
@@ -24,13 +24,14 @@ Phase1真实Campaign、客户原话/Provenance、健康发件信誉与接管SLA�
 | 浏览器人工桌面 | root以In-app Browser对真实路由+合成内存fixture作手动QA；详情见浏览器小节 |
 | 浏览器自动研究窄屏 | 正式Playwright跨源HTTP，独立context，1280×900与实际390×844；交互通过，业务fixture明确受控 |
 
-## 最终验证命令与结果
+## 实现阶段验证命令与结果（历史记录）
 
 所有Python进程显式 `PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery`，
 解释器为 `/Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3`。
 Node为 `/Users/xueziheng/.nvm/versions/node/v24.15.0/bin/node`。
 后端命令均先 `env -u TEST_DATABASE_URL`，测试自建Docker隔离Postgres，不读生产数据。
 以下省略重复前缀，不省略被测scope；前端命令工作目录为 `apps/web`。
+本表是c24e80f阶段结果；最新修复树的完整复验见下一节，历史失败不删除。
 
 | 命令 | 结果 |
 |---|---|
@@ -52,6 +53,48 @@ Node为 `/Users/xueziheng/.nvm/versions/node/v24.15.0/bin/node`。
 
 新功能前基线4007 passed/6 deselected、前端19files/151tests不是本次最终结果。
 中间专项47 passed也不与最终全量相加。初次测试失败、修复及重跑范围见下文。
+
+## 最终审查与最新修复树复验
+
+代码提交：`6b66f6b5e387929ead9d077aced9e2736318c1f0`。后续仅更新本报告与完成状态文档。
+root使用上节相同Python/Node/本树PYTHONPATH、隔离Postgres与`env -u TEST_DATABASE_URL`；
+未读取生产数据或真实凭证。当前测试总量不与历史轮次累加。
+
+| 命令 / 范围 | 最新结果 |
+|---|---|
+| `python3 -m pytest -m 'not e2e' -q` | **4231 passed / 8 deselected，593.28s** |
+| `TRADEOS_REQUIRE_E2E=1 TRADEOS_E2E_SCREENSHOTS=/tmp/tradeos-phase2-acceptance-screenshots python3 -m pytest -m e2e -q`，其他大套件结束后串行执行 | **8 passed / 4231 deselected，114.81s** |
+| `npm test` | **20 files / 187 tests passed，45.34s** |
+| `npm run typecheck` / `npm run build` | exit0；109 modules，1.88s |
+| `npm run lint` | **0 errors / 133既有warnings**，未将其当作零告警 |
+| `npm run gen:api` 后 `git diff --exit-code -- apps/web/src/api/api.d.ts` | 生成无漂移；diff在仓库根执行 |
+| `python3 -m ruff check .` | All checks passed |
+| 上节mypy命令另纳入 `apps/api/runtime_config.py apps/api/composition/runtime.py` | **28 source files，成功** |
+| `python3 scripts/check_boundaries.py` / `python3 scripts/scan_sensitive.py` / `git diff --check` | 七项结构通过；敏感扫描和diff检查exit0 |
+| 默认 `python3 scripts/accept_research_discovery.py` | `not_run/explicit_opt_in_required`，未读取真实配置或调用来源 |
+
+完整全分支审查覆盖`0fb9a48..553d1fe`全部15417行diff，发现两项Important，无Critical/新Minor：
+
+1. 空的可选`TAVILY_API_KEY_REF`使旧API启动失败。修为缺省/空值都不配置研究；非空非法引用仍拒绝，独占声明不替代密钥引用。新增解析及真实依赖装配测试，确认缺配置时研究仍fail-closed。
+2. Run深链目标不在最新50条时静默展示另一条Run。修为精确读取目标ID，404/403/未知失败不回退，路由变化清旧证据，并隔离迟到的success/error/finally；普通列表选择保留。
+
+统一修复波次先RED后GREEN：配置首次4failed/106passed；Run初始12failed/2passed，
+精确读取后再暴露竞态及无效参数，最后19passed。覆盖后端185passed；前端最终187passed。
+测试夹具缺resolver和新增fetch包装器类型错误已修正，未放宽产品断言。
+`553d1fe..6b66f6b`独立scoped复审确认两项全部关闭，无新增Critical/Important/Minor或范围外项。
+11条root裁定经全分支审查独立核对，未发现新九条硬边界违规。
+
+### 本轮E2E启动异常保留
+
+最新树首次与后端/前端/静态检查并行时，E2E为**5passed/3errors/4231deselected，106.07s**。
+三项country_policy_settings、opportunity_board、playbook_settings共享同一个测试API，
+共同在readiness的20秒等待超时，尚未进入各自业务断言；不是三处不同业务失败。
+原临时启动日志被fixture的finally自动清理，未取得足以定位瞬时原因的日志。
+同树不改代码、不放宽超时/权限/断言，待其他大套件结束后串行完整8项全部通过。
+并发启动资源竞争仅是解释之一，**根因未确定，不把重跑通过称为修复了启动问题**。
+后续若重复出现，应先保留失败前启动日志继续定位；本报告同时保留失败与最新完整通过证据。
+
+修复前553d1fe也曾完整通过4223后端、8E2E和170前端；这些不是最新修复树结果，不混用。
 
 ## Task5 TDD与实际装配修复
 
@@ -109,7 +152,7 @@ Task5首轮审查发现并修复：CLI原先将执行后异常也报not_run，�
 安全Run ID仍可供排查；未知状态不自动重试，先人工查tenant+Run/提案/ledger。
 该审查修复相关CLI/来源单元与真实集成19项通过（9.20s），ruff、相关mypy三文件、
 结构七项、敏感扫描及diff检查通过。上表全量/E2E为修复前c24e80f的实际结果；
-本轮按风险仅重跑相关scope，未重复无关全量或浏览器验收；独立复审确认原问题关闭、无新增问题。
+当时按风险仅重跑相关scope；独立复审确认原问题关闭、无新增问题。root后续完整复验见上节。
 
 ## 浏览器证据
 
@@ -133,6 +176,11 @@ fixture consumed3不是Provider消费。原跨源瞬时接收失败根因仍未�
 首张桌面截图处在刷新中间态，未作为稳定页面证据；增加刷新按钮恢复可用、三来源重新渲染、
 loading消失的条件等待后重跑两尺寸，通过并重新截图。实现者实际view_image复核稳定结果；
 窄屏摘要不挤压，四标签由自动测试逐个滚动到视口并点击，截图不声称一屏容纳全部内容。
+
+最终6b66f6b串行E2E重新生成上述两张截图；root实际查看390×844与1280×900，
+刷新完成、摘要和证据正常，无水平裁切，窄屏允许纵向滚动。
+root另在同源人工预览从雷达实际链接跳到原Run，DOM/截图中的RunID、提案和摘要一致，
+console error/warn为空；列表外、404和竞态仍以新增自动测试为证据，不冒称手动覆盖。
 
 ## 上游关键证据与限制
 
@@ -192,8 +240,10 @@ loading消失的条件等待后重跑两尺寸，通过并重新截图。实现�
 
 11. 由Task5当前实现者在预算guard边界修复真实装配互等，使用独立命名空间tenant+run事务advisory锁串行预算检查，不锁workflow主行；保留tenant/type/status/step/budget校验及已提交Tool ledger计数，engine与Gateway核心不改 — 真实handler运行时engine已持主行锁，独立session重复取锁无法完成，必须消除该锁循环 — 若新串行计数有误会超发或过度阻断，必须用真实engine→Gateway组合与并发query/page最后预算测试核实，另由Task5和最终全分支审查检查；不以弱化预算或同session假集成解围。
 
-## 待root填写
+## 最终交接状态
 
 - Task5独立审查：初审1项Important，修复1a834e5后scoped复审通过，无新增问题。
-- 最终全分支审查：pending。
-- 是否满足本地主分支集成条件：pending；本任务不合并、不推送、不部署、不发信。
+- 最终全分支审查：两项Important经唯一统一修复波次及独立scoped复审全部关闭，无新问题。
+- 最新完整验证：4231后端、8E2E、187前端通过；结构/类型/构建/敏感扫描/生成契约检查通过。133旧lint warnings及上述启动异常保留。
+- 本地集成：工程与受控验收条件满足，等待用户选择；本任务未合并、推送、部署或真实发信。main仍为本批起点0fb9a48。
+- 真实账户、三类公开页联网、真实模型及完整生产scheduler：仍为not_run，不属于本批受控结果。

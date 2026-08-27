@@ -46,7 +46,7 @@ Demand Signal → Need Hypothesis → 触达 → 回复识别 → Validated Need
 
 **要验证的假设**：系统能否用可控成本发现更多可验证的需求，并把已验证需求可靠地变成可报价的方案。
 
-### 首批：免费来源获客（工程实现与受控验收收尾）
+### 首批：免费来源获客（工程实现、受控验收与独立审查完成）
 
 本批与后续寻源、成本、报价属于同一个 Phase 2，不增加新 Phase，也不代表整个 Phase 2 完成。
 已确认规格见 `docs/superpowers/specs/2026-08-27-phase2-free-discovery.md`，逐步验收见 HANDBOOK 第九节。
@@ -62,7 +62,7 @@ Demand Signal → Need Hypothesis → 触达 → 回复识别 → Validated Need
 
 本批工程交付与受控测试不替代 Phase 1 的真实运营验收；未配置免费账户密钥引用和确认研究预算时，真实 Tavily 联网验收保持 `not_run`。
 
-实际命令、真实/受控/未运行边界及待独立审查状态见
+实际命令、真实/受控/未运行边界及独立审查结论见
 [`docs/acceptance/2026-08-27-phase2-free-discovery.md`](docs/acceptance/2026-08-27-phase2-free-discovery.md)。
 可执行的真实来源验收是显式opt-in的 `research_source_acceptance`，只验证Provider与页面证据，
 不运行模型或触达，不代表完整研究worker已生产启用。
