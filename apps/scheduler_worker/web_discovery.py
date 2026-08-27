@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Literal, cast
 
 from sqlalchemy import func, select
@@ -69,6 +70,16 @@ from workflows.engine.runner import StepStatus
 from .free_web_discovery import DisabledPageSearchTransport, build_free_search_reader
 
 _WORKFLOW_TYPE = "demand_discovery"
+_WEB_WORKFLOW_TYPES = frozenset({_WORKFLOW_TYPE, "research_source_acceptance"})
+
+
+def _require_web_workflow_type(value: str) -> str:
+    """仅组合根可选择已知研究流程，不能接受业务请求扩大权限。"""
+    if value not in _WEB_WORKFLOW_TYPES:
+        raise ValueError("公开搜索工作流类型无效")
+    return value
+
+
 _BUDGETS = {
     WEB_SEARCH_MANIFEST.tool_id: ("query_budget", 100),
     WEB_READ_PAGE_MANIFEST.tool_id: ("page_budget", 50),
@@ -100,10 +111,11 @@ class _BoundWebSecretResolver:
 
 
 class PostgresWebRunTenantReader:
-    """只承认当前租户仍在运行的 demand_discovery run。"""
+    """只承认当前租户仍在运行且属于组合根指定类型的 Run。"""
 
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, factory: async_sessionmaker[AsyncSession], *, workflow_type: str = _WORKFLOW_TYPE) -> None:
         self._factory = factory
+        self._workflow_type = _require_web_workflow_type(workflow_type)
 
     async def owns_run(self, tenant_id: TenantId, run_id: RunId) -> bool:
         async with self._factory() as session:
@@ -112,7 +124,7 @@ class PostgresWebRunTenantReader:
                     select(WorkflowRunRow.run_id).where(
                         WorkflowRunRow.tenant_id == str(tenant_id),
                         WorkflowRunRow.run_id == str(run_id),
-                        WorkflowRunRow.workflow_type == _WORKFLOW_TYPE,
+                        WorkflowRunRow.workflow_type == self._workflow_type,
                         WorkflowRunRow.status == StepStatus.RUNNING.value,
                     )
                 )
@@ -123,8 +135,9 @@ class PostgresWebRunTenantReader:
 class PostgresWebProviderQuotaGuard:
     """以已创建的 Tool ledger 行作为 durable 预算预留。"""
 
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, factory: async_sessionmaker[AsyncSession], *, workflow_type: str = _WORKFLOW_TYPE) -> None:
         self._factory = factory
+        self._workflow_type = _require_web_workflow_type(workflow_type)
 
     async def reserve(
         self,
@@ -143,17 +156,22 @@ class PostgresWebProviderQuotaGuard:
             raise ValidationError("公开搜索配额请求无效")
         budget_key, maximum = budget_spec
         async with self._factory() as session, session.begin():
+            # engine 在整个 handler 期间持 Run 行锁；此处不可用第二连接重取该锁。
+            # 独立命名空间串行预算检查；received ledger 仍是持久且保守的预留。
+            lock_key = int.from_bytes(sha256(
+                f"tradeos:web-run-budget:v1:{tenant_id}:{run_id}".encode()
+            ).digest()[:8], "big", signed=True)
+            await session.execute(select(func.pg_advisory_xact_lock(lock_key)))
             run = (
                 await session.execute(
                     select(WorkflowRunRow)
                     .where(
                         WorkflowRunRow.tenant_id == str(tenant_id),
                         WorkflowRunRow.run_id == str(run_id),
-                        WorkflowRunRow.workflow_type == _WORKFLOW_TYPE,
+                        WorkflowRunRow.workflow_type == self._workflow_type,
                         WorkflowRunRow.status == StepStatus.RUNNING.value,
                         WorkflowRunRow.current_step == "execute_search",
                     )
-                    .with_for_update()
                 )
             ).scalar_one_or_none()
             if run is None or not isinstance(run.context, dict):
@@ -232,6 +250,7 @@ def build_web_discovery_tools(
     country_policy: CountryPolicyDecisionReader,
     lease_duration: timedelta,
     now: Callable[[], datetime],
+    workflow_type: str = _WORKFLOW_TYPE,
 ) -> WebDiscoveryTools:
     """注册双工具及全部 fail-closed 检查，返回 workflow 窄适配器。"""
     search_slot = WebSearchResultSlot(new_id, maximum_batches=100)
@@ -294,8 +313,8 @@ def build_web_discovery_tools(
             and ctx.tool_id in _BUDGETS
         )
 
-    run_reader = PostgresWebRunTenantReader(factory)
-    quota: WebProviderQuotaGuard = PostgresWebProviderQuotaGuard(factory)
+    run_reader = PostgresWebRunTenantReader(factory, workflow_type=workflow_type)
+    quota: WebProviderQuotaGuard = PostgresWebProviderQuotaGuard(factory, workflow_type=workflow_type)
     checks: dict[str, CheckStage] = {
         "tenant": WebResourceTenantCheck(run_reader),
         "permission": PermissionCheck(authorize),

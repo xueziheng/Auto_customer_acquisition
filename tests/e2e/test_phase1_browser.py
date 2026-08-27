@@ -142,8 +142,8 @@ from workflows.account_discovery.flow import (
     build_account_discovery_handlers,
 )
 from workflows.demand_discovery.flow import (
-    build_demand_discovery_definition,
     build_demand_discovery_handlers,
+    register_demand_discovery,
 )
 from workflows.reply_qualification.flow import (
     build_reply_qualification_definition,
@@ -522,7 +522,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
     demand_engine = PostgresWorkflowEngine(
         stack.factory, demand_handlers, now=clock.now
     )
-    demand_engine.register(build_demand_discovery_definition())
+    register_demand_discovery(demand_engine)
 
     opportunity_actor = OpportunityActor(
         str(stack.employees.boss),
@@ -584,7 +584,15 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                 }
 
             async def proposal_route(route: Route) -> None:
-                await route.fulfill(status=200, json=_json(proposal))
+                response = await page.request.get(
+                    f"{stack.api_origin}/commands/discovery-proposals/{proposal_id}",
+                    headers={
+                        "X-Tenant-Id": str(tenant),
+                        "X-Employee-Id": str(stack.employees.boss),
+                    },
+                )
+                assert response.status == 200
+                await route.fulfill(status=200, json=await response.json())
 
             await page.route(
                 f"{stack.api_origin}/commands/discovery-proposals", proposal_route

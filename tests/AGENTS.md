@@ -58,3 +58,11 @@ evals/
 - 测试断言**行为**不断言实现（断言"推断不能晋升"，不断言内部调用了哪个方法）
 - 评估集样本只增不改——改样本等于移动球门
 - CI 顺序：unit → integration → evals（模型相关变更时）
+
+## 研究验收分层
+
+`test_research_discovery.py` 的真实Postgres研究链与 `test_phase1_closed_loop.py` 的
+受控旧触达链分别验收，研究链绝不以触达/发信结果作为成果。`test_research_acceptance.py`
+补真实多连接engine→Gateway→受控Provider/页面→Artifact，不能用同连接savepoint掩盖锁等待。
+真实搜索、页面、模型和联系人均须独立标注是否运行；fixture不等于live。
+现有六项跨源E2E保留；研究UI使用独立真实HTTP端口与新Chromium context验证实际窄屏。

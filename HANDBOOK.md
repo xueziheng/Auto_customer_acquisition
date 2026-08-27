@@ -488,6 +488,61 @@ AI 会给出一个「看起来合理」的默认值，而这些数字直接决�
 
 以上是验收要求，不是已经通过的结论；完成后以本批验收报告中的实际命令、结果和证据为准。未接入的商业贸易/目录/电商服务只保留插件扩展边界，不显示为可用。
 
+### 配置、真实来源验收与停止（2026-08-28）
+
+1. 运维在进程环境自行配置 `TAVILY_API_KEY_REF`（环境变量名引用）及其指向的密钥，
+   并且仅在账户确实独占时设置 `TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED=true`。
+   不在聊天、提案、命令参数或报告中粘贴密钥。账户不得跨部署共享；换引用/换租户不能恢复额度。
+2. API只读取这两项安全配置声明。`configured_unverified` 不代表账户已核实、余额准确或
+   scheduler已启用。缺配置时后端拒绝研究确认；旧outreach_preparation不受此新配置影响。
+3. 老板在指挥中心核对并确认仍为当前active的 `research_only` 提案，包含三线路、国家/品类、
+   排除项与查询/页面/信号/假设预算。操作者须仍是在职且实际确认该提案的老板。
+   真正生效的Playbook与精确国家政策必须通过原审批流程配置，验收脚本不会代建许可。
+4. 来源验收复用原部署Postgres（已经迁移到0040）和原账户quota；不可另起空库规避历史预留。
+   `DATABASE_URL`、tenant、HMAC key引用/版本、工具lease、S3配置与原始资料大小上限仍须齐全。
+   用户自行加载部署环境，脚本不自动读取 `.env`，不自动迁移。不要展示环境或DSN。
+5. 先停止普通scheduler推进，避免这次API确认产生的正常业务Run与来源验收同时耗用研究预算；
+   另行确认这次来源验收自身的预算消耗。下列第一条是安全默认，第二条才会访问真实来源：
+
+```bash
+PYTHONPATH="$PWD" python3 scripts/accept_research_discovery.py
+PYTHONPATH="$PWD" python3 scripts/accept_research_discovery.py \
+  --live --budget-confirmed --proposal-id "dpr_REPLACE" --actor-id "emp_REPLACE"
+```
+
+专用流程 `research_source_acceptance` 只在脚本引擎中注册；正常scheduler不会领取它。
+其真实装配是 TavilySearchApiTransport → 原Tool Gateway/持久额度 → SafePublicPageHttpTransport
+（SSRF/robots/访问墙检查）→ S3 RawArtifactStore（Postgres元数据），不是factory占位。
+页面只能来自已批准查询的搜索结果，不能以任意URL旁路读取。Source URL、UTC观察时间、hash、
+artifact引用和线路保留在专用Run，原始HTML留在Artifact Store，不向模型提供凭证。
+该入口无模型、联系人补全/验证、Campaign、发信或报价端口；输出固定 `scope=pages_only`、
+`model=not_run`、`outreach=not_run`，不得将它的完成计入Signal/Hypothesis成果。
+
+标准输出为JSON。缺显式opt-in/预算/配置时是 `not_run`；生命周期 `completed` 只表示
+此次来源检查结束，须同时检查 `reason=pages_only` 与三线路实际页面证据才算来源验收成功。
+`no_results`、`partial_sources`、预算不足和政策/Provider拒绝不当作“没有买家”或验收成功。
+`searches_used/pages_used` 是尝试计数；`consumed_credits/reserved_credits/uncertain_credits`
+按tenant+Run读持久quota，不能拿账户累计预留或网页数当本轮实际credits。
+
+脚本同提案使用固定幂等键。再次执行不会创建新的预算槽；不确定搜索不自动重试、退款或
+释放预留。用Ctrl-C停止，尽力写入取消终态；强制杀进程可能留下专用在途Run，普通scheduler
+仍不能接走。运维须核实ledger和原提案后再决定是否同键恢复，不得清表重跑。
+完整正常研究worker仍需显式 `DemandDiscoveryComposition` 与真实模型能力装配，
+仅设置API变量不完成该工作；本次没有实际模型研究启动或生产激活证据。
+
+兼容与验收：历史未带mode/lane的提案继续解释为outreach_preparation，保留v1/v2流程。
+受控三线路Signal/Hypothesis与受控旧联系人→验证→发送→回复→已验证需求→接管分别运行；
+真实来源不会执行下游。采用 `pytest -m "not e2e"` 和 `pytest -m e2e` 分开验收。
+最终记录见[本批验收报告](docs/acceptance/2026-08-27-phase2-free-discovery.md)，Phase1真实运营仍not_run。
+
+### 实际装配中的锁边界
+
+真实多连接验收复现：engine在handler期间持Run行锁，旧Web预算guard另开连接再取同一行锁，
+导致3秒测试超时且Provider零调用。此前使用假search的Postgres研究测试不覆盖这个组合缝隙。
+现用独立 `tradeos:web-run-budget:v1` tenant+run advisory transaction lock串行预算读取；
+不改engine/Gateway核心，保留type/status/execute_search/tenant/预算校验与ledger保守计数。
+锁只消除自等待，不扩大预算；两个并发最后预算请求最多一个dispatch，可能保守双拒绝。
+
 ---
 
 ## 附：常用命令

@@ -44,3 +44,15 @@ validation passed 后必须重启 singleton scheduler；Settings 只有在 match
 需求探索v1/v2同时注册；研究可以没有account_discovery/Campaign发送组合，此时不创建
 账户发现队列。仅Web工具显式provider=tavily可启用research_only，默认Brave不得借用。
 没有联系人组合的旧触达准备不能排队，不能通过降级配置绕过授权。
+
+## 来源验收入口
+
+`scripts/accept_research_discovery.py` 显式 opt-in 后装配真实 Tavily、公开页 transport、
+Artifact Store、已生效 Playbook/国家政策与持久免费额度。只在该入口注册
+`research_source_acceptance`，不得注册进普通 scheduler；其 `pages_only` 终态不代表
+Signal/Hypothesis 或业务研究完成。只接受仍在职的确认老板和当前生效的研究提案。
+默认工具组合仍仅接受 `demand_discovery`，专用类型只能由受信组合显式传入。
+
+Web预算检查用独立命名空间的 tenant+run PostgreSQL advisory transaction lock，
+不在独立连接重取engine已持有的Run行锁。已commit的received/未决/成功ledger继续
+保守计数，rejected/duplicate排除；禁止以去锁或增加预算修复等待。
