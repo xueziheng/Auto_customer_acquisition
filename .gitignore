@@ -25,7 +25,7 @@ dist/
 build/
 
 # === Node / 前端 ===
-node_modules/
+node_modules
 .vite/
 apps/web/dist/
 
