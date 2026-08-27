@@ -304,3 +304,74 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
     repeated = await handlers["demand_discovery.v2.execute_search"].execute(run)
     assert repeated[2]["signal_ids"] == run.context["signal_ids"]
     assert set(repeated[2]["hypothesis_ids"]) == set(run.context["hypothesis_ids"])
+
+
+async def test_research_iso_countries_reuse_same_domain_without_overwriting_original_country(
+    research_connection,
+):
+    import hashlib
+
+    from domains.prospecting.schemas import AccountResolveRequest
+    from domains.prospecting.service_impl import ProspectingServiceImpl
+    from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+    from shared.schemas.provenance import Provenance, SourceType
+    from tests.integration.test_phase1_closed_loop import _StableHasher
+
+    factory = async_sessionmaker(
+        research_connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    tenant = TenantId(new_id("tn"))
+    service = ProspectingServiceImpl(
+        lambda bound: SqlAlchemyProspectingUnitOfWork(factory, bound, now=lambda: NOW),
+        _StableHasher(),
+        now=lambda: NOW,
+    )
+    account_ids = []
+    for country in ("JP", "BR"):
+        text = f"We are Acme Tools, an importer of hinges. We are based in {country}."
+        evidence = ResearchEvidence.from_page(
+            proposal_id=f"proposal:{country}",
+            query=f"{country} hinges importer",
+            discovery_lane="importer",
+            query_country=country,
+            query_category="hinges",
+            text=text,
+            url="https://acme.example/about",
+        )
+        assert evidence.identity_status == "self_described"
+        page_hash = hashlib.sha256(text.encode()).hexdigest()
+        account_ids.append(
+            await service.resolve_account(
+                tenant,
+                AccountResolveRequest(
+                    entity_name=evidence.company_name,
+                    country=evidence.country,
+                    website_domain=evidence.website_domain,
+                    source_signal_refs=(f"sig:{country}",),
+                    field_provenance={
+                        field: Provenance(
+                            SourceType.WEB_PAGE,
+                            page_hash,
+                            "system:research-self-description-v1",
+                            NOW,
+                            source_url=evidence.source_url,
+                            page_hash=page_hash,
+                            source_quote=quote,
+                        )
+                        for field, quote in (
+                            ("name", evidence.identity_quote),
+                            ("country", evidence.country_quote),
+                        )
+                    },
+                ),
+            )
+        )
+    assert account_ids[0] == account_ids[1]
+    accounts = await service.list_accounts(tenant)
+    assert len(accounts) == 1
+    account = await service.get_account(tenant, account_ids[0])
+    assert account.country == "JP"
+    assert account.source_signal_refs == ("sig:JP", "sig:BR")
+    assert account.field_provenance["country"].source_quote == "We are based in JP"

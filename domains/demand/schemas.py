@@ -31,12 +31,42 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import Money
 
+# ISO 3166-1已分配alpha-2代码（2026-08-27核对），只识别来源文字，不授予市场许可。
+# 数据快照：pycountry/pycountry e974d00d5ead823a48d6944a6df1696e95e507e3
+# src/pycountry/databases/iso3166-1.json；仅取249个代码事实，不引入运行时依赖。
+_ISO_3166_ALPHA_2 = frozenset(
+    [
+        "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT",
+        "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI",
+        "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY",
+        "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN",
+        "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM",
+        "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK",
+        "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL",
+        "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM",
+        "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR",
+        "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN",
+        "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS",
+        "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK",
+        "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW",
+        "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP",
+        "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM",
+        "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW",
+        "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM",
+        "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF",
+        "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW",
+        "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
+        "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
+    ]
+)
+
 
 class ResearchEvidence(BaseModel):
     """研究来源归属；查询国家不是企业所在地，自述不是工商核验。
 
     由受信编排从确认查询和原页面计算，模型不可设置。保守支持英文第一人称
-    “We are <名称>, ...”以及同主体总部/所在地句式；不识别时保留待核验。
+    “We are <名称>, ...”以及同主体总部/所在地句式；接受全部已分配ISO2原文代码，
+    英文国名别名有限，不识别时保留待核验。代码有效不等于获准在该市场探索。
     """
 
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
@@ -106,7 +136,7 @@ class ResearchEvidence(BaseModel):
         if location is not None:
             raw_country = location.group(2).strip()
             country = aliases.get(raw_country)
-            if raw_country in set(aliases.values()):
+            if raw_country in _ISO_3166_ALPHA_2:
                 country = raw_country
         hostname = urlsplit(url).hostname
         if country is not None and hostname is not None:

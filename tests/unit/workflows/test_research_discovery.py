@@ -188,6 +188,42 @@ def test_directory_self_domain_in_footer_cannot_establish_buyer_identity():
     assert evidence.website_domain is None
 
 
+@pytest.mark.parametrize(
+    "location,country",
+    [
+        ("We are based in JP.", "JP"),
+        ("Acme Tools is headquartered in BR.", "BR"),
+        ("We are based in ZZ.", None),
+        ("We are based in jp.", None),
+        ("We are based in us.", None),
+        ("Contact us.", None),
+        ("We ship to JP.", None),
+    ],
+)
+def test_research_accepts_assigned_iso_codes_without_weakening_location_evidence(
+    location, country
+):
+    from domains.demand.schemas import ResearchEvidence
+
+    text = "We are Acme Tools, an importer of hinges. " + location
+    evidence = ResearchEvidence.from_page(
+        proposal_id="proposal:test",
+        query="JP hinges importer",
+        discovery_lane="importer",
+        query_country="JP",
+        query_category="hinges",
+        text=text,
+        url="https://acme.example/about",
+    )
+    assert evidence.country == country
+    assert evidence.identity_status == (
+        "self_described" if country else "pending_verification"
+    )
+    assert evidence.website_domain == ("acme.example" if country else None)
+    if country:
+        assert evidence.country_quote in text
+
+
 async def test_research_v2_does_not_queue_contacts_even_above_threshold():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

@@ -40,10 +40,18 @@ demand服务中禁止创建Hypothesis。官网证据充分的结果调用原reso
 
 自动核对故意保守：支持英文句首的 “We are <企业名称>, a/an/the ... .” 以及同一
 主体 “We are / <企业名称> is headquartered/based/located in <国家>”；
-名称目前仅英文ASCII字母、数字及少量公司名称符号。国家支持 US/DE/GB/CA/AU/NZ/
-FR/ES/IT/NL 及其英文全名（美国含United States of America）。其他语言、句式、
-国家名称即使目标可配置，也只保留pending_verification。配送地、分支机构、TLD、
+名称目前仅英文ASCII字母、数字及少量公司名称符号。明确所在地句式中的大写原文
+代码接受全部已分配ISO 3166-1 alpha-2；无效/保留/小写代码不接受。英文全名别名
+目前仅US/DE/GB/CA/AU/NZ/FR/ES/IT/NL（美国含United States of America）。其他语言、
+句式、未识别国家名称保留pending_verification。配送地、分支机构、TLD、
 Contact us 和搜索国家都不构成所在地证据。
+
+ISO2常量是2026-08-27核对的249个已分配国家/地区代码事实，使用
+[ISO标准说明](https://www.iso.org/iso-3166-country-codes.html)及
+[pycountry固定数据快照](https://raw.githubusercontent.com/pycountry/pycountry/e974d00d5ead823a48d6944a6df1696e95e507e3/src/pycountry/databases/iso3166-1.json)。
+只提取代码，未引入新依赖或运行时网络；国家代码与国家/站点政策授权完全分离。
+后续标准分配变化需明确更新数据快照，而不是接受任意两字母。首次实现将10个英文
+别名对应代码误当市场范围，复审已纠正，不能将该缺陷描述为已批准的保守范围。
 
 出现目录/名录/经销商定位器标记或目录路径即保守待核验，不把目录host当买家官网。
 普通官网正文不必出现域名；host与明确本企业身份/所在地自述共同作为证据。

@@ -130,8 +130,8 @@ ruff对本次全部变更Python文件check通过；最终部分新文件format�
 ## 自审与已知限制
 
 - 独立审查由根代理进行，本报告不是独立review通过声明。
-- 原页身份目前仅英文句首“We are <ASCII公司名>, a/an/the ... .”，以及同主体“We are / <公司名> is headquartered/based/located in <国家>”。国家只支持US/DE/GB/CA/AU/NZ/FR/ES/IT/NL及对应英文全名；不是全球多语言自动核验。
-- 原URL host + 本企业经营自述 + 所在地原文只是有归属的网页自述，不保证网页主体诚实，不证明工商真实性/买家需求。目录标志/目录路径保守pending；无标志、伪装自述仍可能误判，需UI标清证据等级和人工复核。已与根代理确认此能力边界。
+- 原页身份目前仅英文句首“We are <ASCII公司名>, a/an/the ... .”，以及同主体“We are / <公司名> is headquartered/based/located in <国家>”。复审后明确所在地原文接受完整已分配ISO2代码；英文全名别名暂限US/DE/GB/CA/AU/NZ/FR/ES/IT/NL，不是全球多语言自动核验。原先误将代码范围限制为10国是实现缺陷，不是已批准的市场范围，详见后续修正记录。
+- 原URL host + 本企业经营自述 + 所在地原文只是有归属的网页自述，不保证网页主体诚实，不证明工商真实性/买家需求。目录标志/目录路径保守pending；无标志、伪装自述仍可能误判，需UI标清证据等级和人工复核。
 - 不拿Contact us、TLD、配送国家、分支地址、搜索筛选或query.country补企业国家。未知身份/地点为pending信号；模型未提供有效摘录时no_supported_signals，不能称no_results。
 - 登录墙判定是有限heuristic：密码表单外公开文字不足12词且不足80字符，或明确拦截标题/禁止文字；有误拒和未识别挑战的可能，不解验证码/不登录。
 - robots实现是有界策略子集；未知格式/额外速率约束保守拒绝，严格same-origin也会漏读正常跨来源跳转。成本是漏收与多一次robots请求；不声称法规/条款自动许可。
@@ -189,3 +189,38 @@ ruff对本次全部变更Python文件check通过；最终部分新文件format�
 - tests/unit/workflows/test_research_discovery.py
 - workflows/demand_discovery/research.py
 - .superpowers/sdd/2026-08-27-phase2-free-discovery/task-3-report.md（本报告，显式force加入提交）
+
+## 收尾复审修正：完整ISO2代码识别
+
+基于78835867d833ef0d670496fbfb55ce084787c869继续修正，未触碰Task4。
+根代理指出：有限英文国名表不应限制有效ISO2代码，之前10国代码限制未经批准。
+库内检索无完整country集合，也未声明pycountry依赖；最小变更是在demand/schemas.py
+加入私有完整已分配ISO 3166-1 alpha-2常量（249个国家/地区代码），不新增依赖、
+运行时网络或框架，不修改compliance政策键、默认许可或旧记录。
+
+来源核验：2026-08-27查看[ISO官方标准说明](https://www.iso.org/iso-3166-country-codes.html)，
+并从[pycountry官方固定数据快照](https://raw.githubusercontent.com/pycountry/pycountry/e974d00d5ead823a48d6944a6df1696e95e507e3/src/pycountry/databases/iso3166-1.json)
+只取alpha_2代码事实。固定提交e974d00d5ead823a48d6944a6df1696e95e507e3；代码与该
+JSON逐项集合比对输出`ISO2 pinned-source equality verified: 249 codes`。
+快照版本语义是当时的已分配代码，不包含任意两字母或保留/非正式代码；后续标准
+分配变化需显式维护快照。国码有效只证明代码识别，不证明市场已获合规许可。
+
+保留同主体明确location句式；JP、BR正例通过，ZZ、小写jp/us、Contact us、
+shipping to JP均pending，不使用query国家填回。英文国名别名仍有限并单独说明。
+真实Postgres验证来自JP与BR的同域名研究身份仍只有一个Account，合并来源引用，
+不重写先前JP国家及其Provenance；没有改原resolve_account逻辑。
+
+TDD命令（RED与首轮GREEN相同）：
+`env -u TEST_DATABASE_URL PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/workflows/test_research_discovery.py tests/integration/test_research_discovery.py -q --tb=short`
+
+RED：`3 failed, 35 passed in 4.51s`，JP/BR国家为None及跨国测试被pending拦截。
+GREEN：`38 passed in 5.36s`。
+
+专项扩展验证命令：
+`env -u TEST_DATABASE_URL PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/workflows/test_research_discovery.py tests/unit/agent_runtime/test_demand_intelligence_agent.py tests/integration/test_research_discovery.py tests/integration/test_prospecting_repositories.py tests/unit/test_country_policy_web_gateway.py tests/evals -q --tb=short`
+
+输出：`91 passed in 6.96s`。真实部分是隔离Postgres及域服务；没有真实搜索/模型调用，
+网站访问仅开发时核实公开标准数据。未改prompt，仍跑既有与新增受控eval。
+ruff本次三个Python变更文件通过（初次SIM905格式意见已改为字面列表）；
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m mypy domains/demand/schemas.py`输出`Success: no issues found in 1 source file`；结构自检全绿。
+本修正文件为schemas.py、demand/AGENTS.md、ADR0017、研究unit/integration和本报告。

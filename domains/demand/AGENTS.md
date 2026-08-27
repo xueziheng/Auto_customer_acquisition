@@ -111,3 +111,5 @@ validated ──→ sourcing_ready ──→ handed_to_sourcing
 ResearchEvidence 是需求信号的不可变来源归属，不是新增 Lead。查询国家与真实所在地分离；
 缺官网/所在地自述证据保留 pending_verification，域服务也禁止据此创建假设。研究公开
 RFQ不算客户回复证据。旧信号没有 research_evidence 时保留历史解释，不补写证据。
+明确所在地原文中的ISO2代码按完整已分配集合校验，不能受有限英文国名别名表限制；
+代码有效不是国家合规授权，原政策门禁不变。
