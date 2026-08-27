@@ -89,6 +89,8 @@
 
 **Interfaces:** 消费前序 execution_mode/discovery_lane/来源归属/quota/structured stop metadata；API schema 为唯一类型源。查询均按 tenant 过滤，不能向另一租户泄漏绑定账户或其用量。
 
+**投影接线：** Run 公开 DTO 实际在 `workflows/engine/audit.py`，读取实现为 `infra/db/run_audit.py`；只增加白名单研究摘要，不返回完整 run.context/step.data。客户列表 DTO 在 `domains/prospecting/schemas.py`，按需要经应用层或基础设施读模型聚合信号来源，禁止域间 import。指挥中心旧 UI 使用 `max_pages_per_query`，后端实际是 `max_pages_read`，本次预算展示必须与真实契约一致。
+
 - [ ] RED：API 确认提案中必须返回模式/三线路/市场/预算；用户确认前不能执行，历史提案可读。需求雷达/客户发现/Run Center 返回证据、核验状态、额度消耗和可区分停止原因；验证跨租户读取拒绝。
 - [ ] RED：Vue 测试确认文案、缺预算/账户的禁用状态、research_only 无 Campaign 必填项、进口商候选与运输记录区别、quota exhausted 不渲染为没有买家。
   ```typescript
