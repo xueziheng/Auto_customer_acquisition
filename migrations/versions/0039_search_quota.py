@@ -18,6 +18,7 @@ def upgrade() -> None:
         "search_quota_runs",
         sa.Column("tenant_id", sa.String(40), nullable=False),
         sa.Column("run_id", sa.String(40), nullable=False),
+        sa.Column("fingerprint_version", sa.String(100)),
         sa.Column("stop_reason", sa.String(32)),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("tenant_id", "run_id", name="pk_search_quota_runs"),

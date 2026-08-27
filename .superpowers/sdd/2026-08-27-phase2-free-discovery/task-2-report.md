@@ -109,3 +109,77 @@ PYTHONPATH=<上述工作树> <上述Python> scripts/check_boundaries.py
 
 核对：不改核心管线；无凭证持久化；无 request/query/Provider payload 落额度表；固定 provider 全球唯一但读取不越租户；无月度自动释放；检查失败零账户预留；无 default query/page 预算；原每 Run 预算继续执行；旧 Brave 不使用免费账户槽；page 仍按搜索结果来源受控；无新商业工具注册。
 Doc 操作说明依据根规则撰写（仓库未存在 docs/AGENTS.md）；未增加平行 Agent 规则文件。
+
+## Fix round 1：HMAC 轮换后的 consumed 恢复去重
+
+FIX_BASE：`8a3905544b187e53b273a3a73ab5168241ab0b4f`。
+独立审查的 P2 已复现：Provider 成功并提交 consumed 后、Gateway 完成账本/交付前退出，
+重启时新 HMAC 版本产生不同 request_key，原版可以再次 dispatch。此前「运营保持 HMAC 不变」的说明不能作为保护，本轮由持久门禁取代。
+
+按 receiving-code-review 与 TDD 技能，先验证并新增真实 Postgres + 完整 Gateway 回归，再修改实现。
+
+### 修改
+
+- `search_quota_runs.fingerprint_version` 保存首次 Run 的非秘密版本；不存密钥或密钥哈希。
+- handler 将当前 fingerprint version 显式传给 run-bound factory；reader 在凭证/usage 前的 `check_available` 与账户锁内 `reserve` 两次核验。
+- 首次创建使用 insert-on-conflict-do-nothing；已有版本不可被新版本覆盖。旧 NULL 和版本不匹配固定持久化 request_uncertain，零额外预留、零 usage/search。
+- 不仅相同请求，同一旧 Run 的不同请求也会拒绝。新 Run 可采用新版本并继续使用账户剩余额度。
+- 修复此路径暴露的插件/ledger 映射不一致：业务异常的 `is_retryable=False` 与技术分类 reconciliation_required 不能直接组合为 ledger 永久失败。
+  reader 插件出口先还原通用 ToolGatewayError，让 Gateway 按既有合法技术状态完成 `failed_transient/reconciliation_required`；外层 adapter 再恢复 `FreeSearchError(request_uncertain, is_retryable=False)`。
+  持久去重门禁继续拦截再次调用，技术状态不表示授权重新搜索；未修改 Gateway core 或核心错误枚举。
+- 因 0039 仅在此隔离分支、从未部署，根代理明确允许本轮在原迁移补列；不是对已部署迁移的原地修改。
+- 本轮文件：上述 gateway/infra 实现文件、tables.py、0039、两个专项测试文件、操作说明与本报告；未扩展到 Task 3/4。
+
+### RED
+
+环境与 Python 路径同上，全部 DB 测试显式 `env -u TEST_DATABASE_URL` 使用新 testcontainers 库。
+
+```text
+env -u TEST_DATABASE_URL PYTHONPATH=<上述工作树> <上述Python> -m pytest tests/integration/test_search_quota.py -k consumed_before_delivery_crash -q --tb=short
+2 failed, 25 deselected in 6.04s
+两个参数（factory / different query）均：Failed: DID NOT RAISE FreeSearchError
+```
+
+故障注入仅包裹真实 repository.consume：先执行并提交真实 consumed，再抛 CancelledError，阻断 Gateway 完成/交付。
+初始请求已 dispatch，后续新 worker 使用 HMAC v2；回归断言不能再次 dispatch，不能再次 usage。
+
+新增版本门禁后第一次 GREEN 尝试仍为 RED：
+
+```text
+env -u TEST_DATABASE_URL PYTHONPATH=<上述工作树> <上述Python> -m pytest tests/unit/test_free_search_quota.py tests/integration/test_search_quota.py -q --tb=short
+2 failed, 35 passed in 10.13s
+shared.errors.ValidationError: 永久失败分类无效
+```
+
+按根代理确认，在插件边界修正合法 Gateway 技术状态映射；增加 ledger 终态、持久停止原因、非自动重试标志、再次调用零 dispatch、旧版本不变、新 Run 可使用 v2、NULL 失败关闭，以及 reserve 锁内二次核验断言。
+
+### GREEN
+
+初步专项：`39 passed in 9.86s`。最终含所有新增断言及迁移/handler 回归：
+
+```text
+env -u TEST_DATABASE_URL PYTHONPATH=<上述工作树> <上述Python> -m pytest tests/unit/test_free_search_quota.py tests/integration/test_search_quota.py tests/integration/test_migrations.py tests/unit/test_country_policy_web_gateway.py tests/unit/test_tool_gateway_pipeline.py tests/integration/test_tool_gateway_pipeline.py tests/unit/test_work_intake_migration_head.py tests/unit/test_alembic_appledouble.py tests/unit/test_web_search_discovery.py -q --tb=short
+151 passed in 62.35s (0:01:02)
+
+PYTHONPATH=<上述工作树> <上述Python> -m ruff check .
+All checks passed!
+
+PYTHONPATH=<上述工作树> <上述Python> -m mypy tool_gateway connectors infra/db/search_quota.py apps/scheduler_worker
+Success: no issues found in 95 source files
+
+PYTHONPATH=<上述工作树> <上述Python> scripts/check_boundaries.py
+✓ 分层与依赖方向
+✓ 金额 float
+✓ 置信度数值
+✓ 事件注册
+✓ 租户过滤
+✓ AGENTS.md 覆盖
+✓ 域结构完整
+结构自检通过。
+
+git diff --check
+exit 0（无输出）
+```
+
+实际迁移：新建隔离 Postgres 从空库 upgrade head(0039)，0039→0038→0039 往返及 ORM schema 对比均通过，包含新增 nullable fingerprint_version 列；没有升级生产库。
+自审结论：旧 Run 不会因 HMAC 版本变化得到新绑定，consumer/ledger 缝隙不再产生二次 dispatch；只保留原任务的单账户、保守额度及无对账恢复入口限制，无新增扩大范围。此轮未启动子代理。

@@ -123,7 +123,7 @@ def _reader(quota: Any, tenant: TenantId, run: RunId, transport: SearchTransport
         connector_factory=lambda: TavilySearchConnector(transport, Pages()),
         secret_resolver=Secrets(),
     )
-    return factory.for_run(tenant, run, "a" * 64)
+    return factory.for_run(tenant, run, "a" * 64, fingerprint_version="v1")
 
 
 async def test_two_runs_compete_for_last_credit_only_one_dispatch(quota) -> None:
@@ -186,7 +186,8 @@ async def test_crash_before_dispatch_keeps_reserved_and_blocks_replay(quota) -> 
     repository, factory, tenant = quota
     run = RunId(new_id("run"))
     await repository.reserve(
-        run, "a" * 64, SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE)
+        run, "a" * 64, SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE),
+        fingerprint_version="v1",
     )
     db, _ = _modules()
     rebuilt = db.PostgresSearchQuotaRepository(factory, tenant, now=lambda: NOW)
@@ -336,6 +337,7 @@ async def _workflow_run(factory, tenant, *, budget=2):
 def _composition(
     factory, tenant, transport, *, playbook=True, country=True, confirmed=True,
     secret_ref="TAVILY_API_KEY_REF",
+    fingerprints=None,
 ):
     from apps.scheduler_worker.web_discovery import (
         WebDiscoveryToolComposition,
@@ -360,7 +362,7 @@ def _composition(
         factory=factory,
         tenant_id=tenant,
         tool_user=UserId(new_id("usr")),
-        fingerprints=HmacFingerprintProvider("v1", b"x" * 32),
+        fingerprints=fingerprints or HmacFingerprintProvider("v1", b"x" * 32),
         composition=config,
         country_policy=CountryPolicy(country),
         lease_duration=timedelta(seconds=30),
@@ -460,7 +462,7 @@ async def test_pending_run_blocks_different_query_but_other_run_can_use_remainin
         repository,
         lambda: TavilySearchConnector(transport, Pages()),
         Secrets(),
-    ).for_run(tenant, run, "b" * 64)
+    ).for_run(tenant, run, "b" * 64, fingerprint_version="v1")
     with pytest.raises(ToolGatewayError):
         await other_query.search(tenant, "different query", "US", 1)
     transport.error = None
@@ -489,8 +491,8 @@ async def test_account_reservation_commit_failure_never_dispatches(quota, monkey
     run = RunId(new_id("run"))
     original = repository.reserve
 
-    async def fail_after_reserved(*args):
-        await original(*args)
+    async def fail_after_reserved(*args, **kwargs):
+        await original(*args, **kwargs)
         raise RuntimeError("synthetic-database-detail")
 
     monkeypatch.setattr(repository, "reserve", fail_after_reserved)
@@ -621,3 +623,106 @@ async def test_rotating_deployment_key_reference_does_not_create_new_free_accoun
         )
     assert failure.value.reason == "quota_exhausted"
     assert transport.calls == 1
+
+
+@pytest.mark.parametrize("recovered_query", ["factory", "different query"])
+async def test_consumed_before_delivery_crash_cannot_redispatch_after_hmac_rotation(
+    quota, monkeypatch, recovered_query
+):
+    from infra.db.search_quota import PostgresSearchQuotaRepository
+    from tool_gateway.fingerprint import HmacFingerprintProvider
+    from tool_gateway.free_search_contracts import FreeSearchError
+
+    repository, factory, tenant = quota
+    transport = SearchTransport(limit=20)
+    run = await _workflow_run(factory, tenant, budget=4)
+    first = _composition(factory, tenant, transport)
+    original_consume = PostgresSearchQuotaRepository.consume
+
+    async def crash_after_consumed(self, run_id, request_key):
+        await original_consume(self, run_id, request_key)
+        raise asyncio.CancelledError()
+
+    with monkeypatch.context() as crash:
+        crash.setattr(PostgresSearchQuotaRepository, "consume", crash_after_consumed)
+        with pytest.raises(asyncio.CancelledError):
+            await first.searcher.search(tenant, run, "factory", "US", "hinges", 1)
+    async with factory() as session:
+        statuses = (await session.execute(text(
+            "SELECT status FROM search_quota_reservations WHERE tenant_id=:tenant AND run_id=:run"
+        ), {"tenant": tenant, "run": run})).scalars().all()
+    assert statuses == ["consumed"]
+    assert transport.calls == 1
+
+    restarted = _composition(
+        factory, tenant, transport,
+        fingerprints=HmacFingerprintProvider("v2", b"y" * 32),
+    )
+    with pytest.raises(FreeSearchError) as failure:
+        await restarted.searcher.search(tenant, run, recovered_query, "US", "hinges", 1)
+    assert failure.value.reason == "request_uncertain"
+    assert failure.value.is_retryable is False
+    assert transport.calls == transport.usage_calls == 1
+    assert (await repository.run_state(run)).stop_reason == "request_uncertain"
+    async with factory() as session:
+        stored_version = await session.scalar(text(
+            "SELECT fingerprint_version FROM search_quota_runs WHERE tenant_id=:tenant AND run_id=:run"
+        ), {"tenant": tenant, "run": run})
+    assert stored_version == "v1"
+    async with factory() as session:
+        ledger = (await session.execute(text(
+            "SELECT status,error_category FROM tool_calls WHERE tenant_id=:tenant AND run_id=:run "
+            "AND fingerprint_version='v2'"
+        ), {"tenant": tenant, "run": run})).all()
+    assert ledger == [("failed_transient", "reconciliation_required")]
+    with pytest.raises(FreeSearchError) as repeated:
+        await restarted.searcher.search(tenant, run, recovered_query, "US", "hinges", 1)
+    assert repeated.value.reason == "request_uncertain"
+    assert repeated.value.is_retryable is False
+    assert transport.calls == transport.usage_calls == 1
+    new_run = await _workflow_run(factory, tenant)
+    batch = await restarted.searcher.search(tenant, new_run, "factory", "US", "hinges", 1)
+    restarted.searcher.release(batch)
+    assert transport.calls == transport.usage_calls == 2
+
+
+async def test_legacy_null_fingerprint_binding_is_not_claimed_by_restarted_worker(quota):
+    repository, factory, tenant = quota
+    run = await _workflow_run(factory, tenant)
+    async with factory() as session, session.begin():
+        await session.execute(text(
+            "INSERT INTO search_quota_runs (tenant_id,run_id,fingerprint_version,updated_at) "
+            "VALUES (:tenant,:run,NULL,:now)"
+        ), {"tenant": tenant, "run": run, "now": NOW})
+    transport = SearchTransport(limit=20)
+    with pytest.raises(ToolGatewayError) as failure:
+        await _composition(factory, tenant, transport).searcher.search(
+            tenant, run, "factory", "US", "hinges", 1
+        )
+    assert failure.value.reason == "request_uncertain"
+    assert transport.calls == transport.usage_calls == 0
+    assert (await repository.snapshot()).reservations == 0
+    async with factory() as session:
+        assert await session.scalar(text(
+            "SELECT fingerprint_version FROM search_quota_runs WHERE tenant_id=:tenant AND run_id=:run"
+        ), {"tenant": tenant, "run": run}) is None
+
+
+async def test_reserve_rechecks_version_under_account_lock_and_never_overwrites_binding(quota):
+    repository, _, _ = quota
+    run = RunId(new_id("run"))
+    await repository.check_available(run, "a" * 64, fingerprint_version="v1")
+    with pytest.raises(ToolGatewayError) as failure:
+        await repository.reserve(
+            run, "b" * 64, SearchUsage("Researcher", 20, 0, False, SearchCostStatus.FREE),
+            fingerprint_version="v2",
+        )
+    assert failure.value.reason == "request_uncertain"
+    assert (await repository.snapshot()).reservations == 0
+    assert (await repository.run_state(run)).stop_reason == "request_uncertain"
+    # 首次版本保持 v1；合法的同版本调用仍可预留，错版本没有窃取绑定。
+    await repository.reserve(
+        run, "a" * 64, SearchUsage("Researcher", 20, 0, False, SearchCostStatus.FREE),
+        fingerprint_version="v1",
+    )
+    assert (await repository.snapshot()).reservations == 1

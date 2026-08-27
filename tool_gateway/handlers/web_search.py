@@ -86,7 +86,8 @@ class RunBoundWebSearcherFactory(Protocol):
     """prepare 阶段的无 IO 插件口；把显式 Run 和 HMAC 操作指纹绑定到 reader。"""
 
     def for_run(
-        self, tenant_id: TenantId, run_id: RunId, request_key: str
+        self, tenant_id: TenantId, run_id: RunId, request_key: str,
+        *, fingerprint_version: str,
     ) -> _ProviderWebSearcher: ...
 
 
@@ -203,7 +204,9 @@ class WebSearchHandler:
         if self._reader_factory is not None:
             if ctx.run_id is None:
                 raise ValidationError("公开搜索缺少 Run 绑定")
-            reader = self._reader_factory.for_run(ctx.tenant_id, ctx.run_id, fingerprint)
+            reader = self._reader_factory.for_run(
+                ctx.tenant_id, ctx.run_id, fingerprint, fingerprint_version=version
+            )
         if not isinstance(reader, _ProviderWebSearcher):
             raise ValidationError("公开搜索 reader 绑定无效")
         return PreparedToolCall(

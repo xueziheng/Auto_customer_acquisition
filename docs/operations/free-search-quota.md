@@ -31,7 +31,10 @@ Gateway 仍强制租户、权限、Playbook、国家政策、每 Run 已确认 q
 预留先提交 `reserved`，dispatch 前再提交 `uncertain`，成功后才提交 `consumed`。
 timeout、429、未知故障、取消、结果持久化失败均不退款、不自动重试。
 同一 Run 有 reserved/uncertain 时拒绝后续任何搜索；相同 Run/请求 HMAC 的 consumed 也不能再次 dispatch。
-其他 Run 可使用剩余额度。HMAC key 配置应在在途 Run 完成前保持稳定；不得靠 key 轮换重放已成功请求。
+其他 Run 可使用剩余额度。每个 Run 首次执行时持久绑定 HMAC 指纹版本；
+后续在凭证/usage 前及账户锁内预留时都核验该版本，不匹配或旧记录为 NULL 则固定停止为 `request_uncertain`，不覆盖原版本。
+因此即使 consumed 后、结果交付前进程退出，重启并轮换 HMAC 也不能重放该 Run 的请求。
+新 Run 可以使用新版本；正常密钥轮换仍必须使用新的非秘密版本号，不允许换密钥却复用版本号。
 
 没有可靠账期，不按本机月份、Provider used 下降或额度增加清除预留。
 本批不提供人工对账/解除预留/补充额度入口，也不提供自动月度补充；不要通过清表、重建绑定或更换数据库绕过保护。
@@ -43,6 +46,8 @@ timeout、429、未知故障、取消、结果持久化失败均不退款、不�
 公开契约为 `FreeSearchStopReason`：`quota_exhausted`、`usage_unknown`、`paid_enabled`、
 `request_uncertain`、`unsupported`（供不支持的能力分支使用）。
 免费 Gateway adapter 返回 `FreeSearchError.reason` 且 `is_retryable=False`；状态查询失败也按不确定停止。
+插件内的错误先映射为 Gateway 合法技术分类，避免非重试业务标志破坏 ledger 的终态校验；
+外层 adapter 再从持久 Run 原因恢复非自动重试的业务错误。ledger 的 `failed_transient/reconciliation_required` 不构成重新搜索授权。
 Gateway core 不认识这些业务原因，仍保留原安全技术分类。任何数据库读取失败不能解释为 `no_results`。
 接口不返回原始响应、查询、凭证引用、密钥、HMAC key 或真实账户身份。
 

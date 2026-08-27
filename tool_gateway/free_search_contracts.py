@@ -74,10 +74,13 @@ class SearchReservation:
 class SearchQuotaRepository(Protocol):
     """构造时绑定受信租户和唯一部署账户槽，禁止逐请求传账户别名。"""
 
-    async def check_available(self, run_id: RunId, request_key: str) -> None: ...
+    async def check_available(
+        self, run_id: RunId, request_key: str, *, fingerprint_version: str
+    ) -> None: ...
 
     async def reserve(
-        self, run_id: RunId, request_key: str, usage: SearchUsage
+        self, run_id: RunId, request_key: str, usage: SearchUsage,
+        *, fingerprint_version: str,
     ) -> SearchReservation: ...
 
     async def record_unavailable(self, run_id: RunId) -> None: ...

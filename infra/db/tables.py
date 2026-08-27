@@ -65,7 +65,7 @@ class SearchQuotaAccountRow(Base):
 
 
 class SearchQuotaRunRow(Base):
-    """只保存每 Run 固定停止原因，不保存输入或供应商原文。"""
+    """保存不可替换的 Run 指纹版本与停止原因，不保存输入或供应商原文。"""
 
     __tablename__ = "search_quota_runs"
     __table_args__ = (
@@ -77,6 +77,7 @@ class SearchQuotaRunRow(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     run_id: Mapped[str] = mapped_column(String(40))
+    fingerprint_version: Mapped[str | None] = mapped_column(String(100))
     stop_reason: Mapped[str | None] = mapped_column(String(32))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

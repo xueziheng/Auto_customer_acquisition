@@ -97,13 +97,38 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
         ).scalar_one_or_none()
         return row is not None
 
-    async def check_available(self, run_id: RunId, request_key: str) -> None:
+    async def _bind_fingerprint_version(
+        self, session: AsyncSession, run_id: RunId, fingerprint_version: str
+    ) -> bool:
+        """账户锁内只创建首次版本；旧 NULL 或版本漂移不能猜测为可重新绑定。"""
+        if not isinstance(fingerprint_version, str) or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", fingerprint_version
+        ) is None:
+            raise ValidationError("免费搜索指纹版本无效")
+        await session.execute(
+            insert(SearchQuotaRunRow).values(
+                tenant_id=str(self._tenant_id), run_id=str(run_id),
+                fingerprint_version=fingerprint_version,
+                updated_at=self._timestamp(),
+            ).on_conflict_do_nothing()
+        )
+        row = (await session.execute(self.scoped_query(SearchQuotaRunRow).where(
+            SearchQuotaRunRow.run_id == str(run_id),
+        ))).scalar_one()
+        return row.fingerprint_version == fingerprint_version
+
+    async def check_available(
+        self, run_id: RunId, request_key: str, *, fingerprint_version: str
+    ) -> None:
         """凭证/usage 前拒绝同 Run 未决或相同操作；reserve 事务内仍需重新检查。"""
         _validate_operation(run_id, request_key)
         reason: FreeSearchStopReason | None = None
         async with self._factory() as session, session.begin():
             account = await self._locked_account(session)
-            if await self._is_replay(session, run_id, request_key):
+            version_matches = await self._bind_fingerprint_version(
+                session, run_id, fingerprint_version
+            )
+            if not version_matches or await self._is_replay(session, run_id, request_key):
                 reason = FreeSearchStopReason.REQUEST_UNCERTAIN
             elif (
                 account.ceiling is not None and account.ceiling <= account.reservations
@@ -115,7 +140,8 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
             raise FreeSearchError(reason)
 
     async def reserve(
-        self, run_id: RunId, request_key: str, usage: SearchUsage
+        self, run_id: RunId, request_key: str, usage: SearchUsage,
+        *, fingerprint_version: str,
     ) -> SearchReservation:
         """账户行锁把快照收紧与一单位额度预留原子提交，跨 Run 不共享内存计数。"""
         _validate_operation(run_id, request_key)
@@ -125,45 +151,45 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
         reason: FreeSearchStopReason | None = None
         async with self._factory() as session, session.begin():
             account = await self._locked_account(session)
-            if await self._is_replay(session, run_id, request_key):
-                await self._record_run(
-                    session, run_id, FreeSearchStopReason.REQUEST_UNCERTAIN
-                )
-                # 抛出会回滚；已有预留仍保证 run_state 可推导 request_uncertain。
-                raise FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN)
-            account.checked_at = now
-            account.cost_status = usage.cost_status.value
-            account.usage_limit = usage.limit
-            account.usage_used = usage.used
-            account.paygo_enabled = usage.paygo_enabled
-            if available is not None:
-                account.ceiling = (
-                    available
-                    if account.ceiling is None
-                    else min(account.ceiling, available)
-                )
-                if account.ceiling > account.reservations:
-                    account.reservations += 1
-                    row = SearchQuotaReservationRow(
-                        tenant_id=str(self._tenant_id),
-                        provider=_PROVIDER,
-                        run_id=str(run_id),
-                        request_key=request_key,
-                        status="reserved",
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    session.add(row)
-                    reservation = _reservation(row)
-                else:
-                    reason = FreeSearchStopReason.QUOTA_EXHAUSTED
+            version_matches = await self._bind_fingerprint_version(
+                session, run_id, fingerprint_version
+            )
+            if not version_matches or await self._is_replay(session, run_id, request_key):
+                reason = FreeSearchStopReason.REQUEST_UNCERTAIN
             else:
-                reason = (
-                    FreeSearchStopReason.PAID_ENABLED
-                    if usage.paygo_enabled is True
-                    or usage.cost_status is SearchCostStatus.PAID
-                    else FreeSearchStopReason.USAGE_UNKNOWN
-                )
+                account.checked_at = now
+                account.cost_status = usage.cost_status.value
+                account.usage_limit = usage.limit
+                account.usage_used = usage.used
+                account.paygo_enabled = usage.paygo_enabled
+                if available is not None:
+                    account.ceiling = (
+                        available
+                        if account.ceiling is None
+                        else min(account.ceiling, available)
+                    )
+                    if account.ceiling > account.reservations:
+                        account.reservations += 1
+                        row = SearchQuotaReservationRow(
+                            tenant_id=str(self._tenant_id),
+                            provider=_PROVIDER,
+                            run_id=str(run_id),
+                            request_key=request_key,
+                            status="reserved",
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(row)
+                        reservation = _reservation(row)
+                    else:
+                        reason = FreeSearchStopReason.QUOTA_EXHAUSTED
+                else:
+                    reason = (
+                        FreeSearchStopReason.PAID_ENABLED
+                        if usage.paygo_enabled is True
+                        or usage.cost_status is SearchCostStatus.PAID
+                        else FreeSearchStopReason.USAGE_UNKNOWN
+                    )
             await self._record_run(session, run_id, reason)
         # 必须在事务提交后拒绝，保留失败/耗尽的安全快照，而不是 rollback。
         if reservation is None:

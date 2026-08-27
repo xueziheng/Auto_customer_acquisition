@@ -30,6 +30,7 @@ class FreeSearchReader:
     tenant_id: TenantId
     run_id: RunId
     request_key: str
+    fingerprint_version: str
     quota: SearchQuotaRepository = field(repr=False)
     connector_factory: Callable[[], TavilySearchConnector] = field(repr=False)
     secret_resolver: TavilySecretResolver = field(repr=False)
@@ -41,7 +42,9 @@ class FreeSearchReader:
         if tenant_id != self.tenant_id:
             raise ValidationError("免费搜索租户不匹配")
         try:
-            await self.quota.check_available(self.run_id, self.request_key)
+            await self.quota.check_available(
+                self.run_id, self.request_key, fingerprint_version=self.fingerprint_version
+            )
             try:
                 connector = self.connector_factory()
                 await connector.configure(self.secret_resolver)
@@ -49,7 +52,10 @@ class FreeSearchReader:
             except Exception:  # noqa: BLE001 - Provider/凭证异常只允许固定安全分类。
                 await self.quota.record_unavailable(self.run_id)
                 raise FreeSearchError(FreeSearchStopReason.USAGE_UNKNOWN) from None
-            await self.quota.reserve(self.run_id, self.request_key, usage)
+            await self.quota.reserve(
+                self.run_id, self.request_key, usage,
+                fingerprint_version=self.fingerprint_version,
+            )
             await self.quota.mark_dispatched(self.run_id, self.request_key)
             try:
                 results = await connector.search(query, country=country, limit=limit)
@@ -57,6 +63,9 @@ class FreeSearchReader:
             except Exception:  # noqa: BLE001 - dispatch 后任何故障均不得释放或重试。
                 raise FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN) from None
             return results
+        except FreeSearchError as error:
+            # ledger 的技术状态必须遵循其分类；业务禁止重试由外层 adapter 还原。
+            raise ToolGatewayError(error.category) from None
         except ToolGatewayError:
             raise
         except Exception:  # noqa: BLE001 - DB 故障不得泄露连接信息。
@@ -83,7 +92,8 @@ class FreeSearchReaderFactory:
             raise ValidationError("免费搜索部署绑定无效")
 
     def for_run(
-        self, tenant_id: TenantId, run_id: RunId, request_key: str
+        self, tenant_id: TenantId, run_id: RunId, request_key: str,
+        *, fingerprint_version: str,
     ) -> FreeSearchReader:
         """保持现有 `.search(tenant_id, query, country, limit)` reader 形状。"""
         if tenant_id != self.tenant_id or not run_id:
@@ -92,6 +102,7 @@ class FreeSearchReaderFactory:
             tenant_id,
             run_id,
             request_key,
+            fingerprint_version,
             self.quota,
             self.connector_factory,
             self.secret_resolver,

@@ -50,7 +50,8 @@ class ReaderFactory:
     def __init__(self) -> None:
         self.calls: list[RunId] = []
 
-    def for_run(self, tenant_id, run_id, request_key):
+    def for_run(self, tenant_id, run_id, request_key, *, fingerprint_version):
+        assert fingerprint_version == "v1"
         return BoundReader(run_id, self.calls)
 
 
