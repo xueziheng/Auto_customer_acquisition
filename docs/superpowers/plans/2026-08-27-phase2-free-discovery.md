@@ -97,6 +97,8 @@
 
 **证据组件注意：** 现有 `apps/web/src/components/ProvenancePopover.vue` 标题旁固定写着「已验证事实」，不能直接用这个标签呈现新研究的企业自述或模型假设。沿用组件时须显式区分证据类别，或在研究界面使用适配的证据展示，保留既有已验证需求页面的语义。
 
+**额度投影注意：** `SearchQuotaSnapshot.remaining` 是保守安全下界，不是供应商精确余额；`reservations` 为账户总累计预留，不能标为某个 Run 的用量。现有 `run_state` 仅带停止原因与时间，Run 已消耗/预留未决计数需按 tenant + run 从持久 reservation 状态聚合，不能用 workflow 的检索尝试数代替实际消耗。
+
 - [ ] RED：API 确认提案中必须返回模式/三线路/市场/预算；用户确认前不能执行，历史提案可读。需求雷达/客户发现/Run Center 返回证据、核验状态、额度消耗和可区分停止原因；验证跨租户读取拒绝。
 - [ ] RED：Vue 测试确认文案、缺预算/账户的禁用状态、research_only 无 Campaign 必填项、进口商候选与运输记录区别、quota exhausted 不渲染为没有买家。
   ```typescript
