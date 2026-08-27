@@ -67,6 +67,8 @@
 
 **Interfaces:** `execution_mode` 为 research_only 或 outreach_preparation；历史缺省保留 outreach_preparation。新查询 discovery_lane 显式 importer/distributor/ecommerce；旧解码可空。新 workflow version=2，同时保留 v1 定义与 handler 解释。来源归属附可信查询/线路元数据，模型不能伪造；公开证据只生成 Signal/Hypothesis/待核验企业。
 
+**已核实的接线补充：** `agent_runtime/trade_manager/agent.py` 的严格 payload 与 prompt 当前要求 Campaign，必须同时更新并保留旧提案解码；补对应 agent tests/evals。`apps/scheduler_worker/runtime.py` 当前要求 demand_discovery 依赖 account_discovery，研究组合必须能在无联系人组合时启动且仍不可排队触达；API composition 同时注册 v1/v2。引擎 start 选最新版本，v2 handler 必须按确认计划模式保持历史提案的 outreach 行为，不能因最新版本默认为研究。无需为此修改引擎核心。
+
 - [ ] RED：新增确认前不生效、研究无需 Campaign、旧缺省依然要求原 Campaign/role/assessment、三线路国家品类预算/排除项、跨线路同域名复用但证据均保留、缺官网/国家不创建合格候选测试。当前模型 prompt 的修改必须重跑 evals。
 - [ ] RED：参数化 research_only 流程，spy 所有 outbound/contact/quote 边界。
   ```python
