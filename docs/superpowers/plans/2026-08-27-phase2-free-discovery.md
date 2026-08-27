@@ -69,6 +69,8 @@
 
 **已核实的接线补充：** `agent_runtime/trade_manager/agent.py` 的严格 payload 与 prompt 当前要求 Campaign，必须同时更新并保留旧提案解码；补对应 agent tests/evals。`apps/scheduler_worker/runtime.py` 当前要求 demand_discovery 依赖 account_discovery，研究组合必须能在无联系人组合时启动且仍不可排队触达；API composition 同时注册 v1/v2。引擎 start 选最新版本，v2 handler 必须按确认计划模式保持历史提案的 outreach 行为，不能因最新版本默认为研究。无需为此修改引擎核心。
 
+**企业身份风险：** 现有需求情报能力从页面 host 派生企业身份，不能照搬到行业目录/品牌经销商目录（目录站不是其列出的公司）。新研究路径须区分来源类型与企业身份，核实不到官网/国家时保存带不可变证据的待核验信号，不强行创建 ProspectAccount 或 NeedHypothesis。官网证据充分的三线路候选才沿原 resolve_account/create_hypothesis；保留旧模式行为。不要为处理待核验结果另建一套 Lead 中心；若需要新的来源/核验术语，同步 GLOSSARY。新增测试目录 host 不成为买家官网、目录跨线路命中保留证据。
+
 - [ ] RED：新增确认前不生效、研究无需 Campaign、旧缺省依然要求原 Campaign/role/assessment、三线路国家品类预算/排除项、跨线路同域名复用但证据均保留、缺官网/国家不创建合格候选测试。当前模型 prompt 的修改必须重跑 evals。
 - [ ] RED：参数化 research_only 流程，spy 所有 outbound/contact/quote 边界。
   ```python
