@@ -101,6 +101,16 @@ Node为 `/Users/xueziheng/.nvm/versions/node/v24.15.0/bin/node`。
 Ctrl-C尽力取消专用Run；硬杀进程可能留下专用在途Run与保守未决预留，普通worker仍不领取。
 恢复前运维须核实账户、ledger与原提案；不得用新key引用/新tenant/新临时DB伪造额度恢复。
 
+Task5首轮审查发现并修复：CLI原先将执行后异常也报not_run，无法证明未执行。
+现仅参数拒绝或已证明的预检拒绝使用not_run；真实入口调用后未分类异常输出固定脱敏
+`unknown/execution_status_unknown`（exit3），包括结果查询失败及资源关闭失败。
+能从engine.start取得时保留格式校验过的Run ID，不读取异常原文或不可信context猜ID。
+真实多连接集成覆盖已完成3次搜索后结果聚合查询失败，Run仍completed、已消费仍持久，
+安全Run ID仍可供排查；未知状态不自动重试，先人工查tenant+Run/提案/ledger。
+该审查修复相关CLI/来源单元与真实集成19项通过（9.20s），ruff、相关mypy三文件、
+结构七项、敏感扫描及diff检查通过。上表全量/E2E为修复前c24e80f的实际结果；
+本轮按风险仅重跑相关scope，未重复无关全量或浏览器验收，独立复审仍待root。
+
 ## 浏览器证据
 
 root手动QA使用合成`tests/research_ui_preview.py`，API8184/Vite5184；

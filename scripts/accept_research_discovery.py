@@ -27,6 +27,17 @@ def main(
         "outreach": "not_run",
     }
     exit_code = 0
+    live_invoked = False
+    safe_run_id: str | None = None
+
+    def record_run_started(run_id: str) -> None:
+        nonlocal safe_run_id
+        # 只接收组合根从engine.start取得的ID，不从异常原文或Run上下文猜测。
+        if isinstance(run_id, str) and re.fullmatch(
+            r"run_[0-9A-HJKMNP-TV-Z]{26}", run_id
+        ):
+            safe_run_id = run_id
+
     try:
         parser = _Parser(add_help=False)
         parser.add_argument("--live", action="store_true")
@@ -47,11 +58,13 @@ def main(
                     run_live_acceptance,
                 )
 
+                live_invoked = True
                 result = asyncio.run(
                     run_live_acceptance(
                         os.environ if environ is None else environ,
                         options.proposal_id,
                         options.actor_id,
+                        on_run_started=record_run_started,
                     )
                 )
                 exit_code = (
@@ -73,12 +86,16 @@ def main(
         exit_code = 3
     except Exception:  # noqa: BLE001 CLI 不能泄漏凭证、DSN 或底层异常
         result = {
-            "status": "not_run",
-            "reason": "configuration_or_input_invalid",
+            "status": "unknown" if live_invoked else "not_run",
+            "reason": "execution_status_unknown"
+            if live_invoked
+            else "configuration_or_input_invalid",
             "model": "not_run",
             "outreach": "not_run",
         }
-        exit_code = 2
+        exit_code = 3 if live_invoked else 2
+    if safe_run_id is not None:
+        result["run_id"] = safe_run_id
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return exit_code
 

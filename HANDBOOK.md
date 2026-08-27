@@ -524,6 +524,11 @@ artifact引用和线路保留在专用Run，原始HTML留在Artifact Store，不
 `searches_used/pages_used` 是尝试计数；`consumed_credits/reserved_credits/uncertain_credits`
 按tenant+Run读持久quota，不能拿账户累计预留或网页数当本轮实际credits。
 
+`not_run`只用于可证明本次尚未进入执行的拒绝。调用真实入口后未分类的异常（包括结果查询、
+连接中断、资源关闭失败）输出 `status=unknown, reason=execution_status_unknown`，exit3；
+这不证明未消耗额度。若engine已返回Run ID，输出经过格式校验的`run_id`，不从异常文字猜测。
+遇到未知状态不得自动重试、清表或换幂等键，先按tenant+Run及原提案人工核对Run和持久ledger。
+
 脚本同提案使用固定幂等键。再次执行不会创建新的预算槽；不确定搜索不自动重试、退款或
 释放预留。用Ctrl-C停止，尽力写入取消终态；强制杀进程可能留下专用在途Run，普通scheduler
 仍不能接走。运维须核实ledger和原提案后再决定是否同键恢复，不得清表重跑。

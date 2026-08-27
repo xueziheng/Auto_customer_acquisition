@@ -18,7 +18,7 @@ from apps.scheduler_worker.web_discovery import (
 from infra.db.tables import SearchQuotaReservationRow, WorkflowRunRow
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from shared.errors import ValidationError
-from shared.schemas.identifiers import EmployeeId, TenantId, UserId, new_id
+from shared.schemas.identifiers import EmployeeId, RunId, TenantId, UserId, new_id
 from tool_gateway.checks.contact_provider import CountryPolicyDecisionReader
 from tool_gateway.errors import ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
@@ -152,6 +152,7 @@ async def run_source_acceptance(
     fingerprints: HmacFingerprintProvider,
     lease_duration: timedelta,
     now: Callable[[], datetime],
+    on_run_started: Callable[[RunId], None] | None = None,
 ) -> dict[str, object]:
     """仅驱动专用类型；同提案固定幂等键，重启不重新创建可花费预算的 Run。"""
     lock_key = int.from_bytes(
@@ -216,6 +217,8 @@ async def run_source_acceptance(
             {"proposal_id": proposal_id, "acting_user_id": str(actor_id)},
             f"research-source-acceptance:{proposal_id}",
         )
+        if on_run_started is not None:
+            on_run_started(run_id)
         try:
             await engine.poll_due(tenant_id, 2)
         except BaseException:
@@ -267,7 +270,11 @@ async def run_source_acceptance(
 
 
 async def run_live_acceptance(
-    environ: Mapping[str, str], proposal_id: str, actor_id: str
+    environ: Mapping[str, str],
+    proposal_id: str,
+    actor_id: str,
+    *,
+    on_run_started: Callable[[RunId], None] | None = None,
 ) -> dict[str, object]:
     """从部署环境真实装配；缺依赖返回 not_run，不造批准、账户或模型。"""
     required = (
@@ -378,6 +385,7 @@ async def run_live_acceptance(
             fingerprints=fingerprints,
             lease_duration=timedelta(seconds=lease),
             now=lambda: datetime.now(UTC),
+            on_run_started=on_run_started,
         )
     finally:
         await engine.dispose()

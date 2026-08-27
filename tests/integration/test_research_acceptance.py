@@ -190,13 +190,15 @@ async def test_acceptance_workflow_type_is_explicit_and_default_gateway_rejects_
         await transaction.rollback()
 
 
+@pytest.mark.parametrize("fail_result_read", [False, True])
 async def test_source_acceptance_uses_gateway_snapshots_and_cannot_be_polled_by_normal_scheduler(
     integration_engine,
+    fail_result_read,
 ):
     import importlib
     from dataclasses import replace
 
-    from sqlalchemy import select
+    from sqlalchemy import event, select
 
     from apps.scheduler_worker.web_discovery import WebDiscoveryToolComposition
     from artifact_store.service_impl import RawArtifactStoreImpl
@@ -251,18 +253,58 @@ async def test_source_acceptance_uses_gateway_snapshots_and_cannot_be_polled_by_
             exclusive_account_confirmed=True,
         )
         fingerprints = HmacFingerprintProvider("v1", b"a" * 32)
-        report = await module.run_source_acceptance(
-            factory=factory,
-            tenant_id=tenant,
-            actor_id=actor,
-            proposal_id="proposal:test",
-            reader=Reader(),
-            composition=composition,
-            country_policy=CountryPolicy(),
-            fingerprints=fingerprints,
-            lease_duration=timedelta(seconds=30),
-            now=lambda: NOW,
-        )
+        observed_runs = []
+
+        async def execute_acceptance():
+            return await module.run_source_acceptance(
+                factory=factory,
+                tenant_id=tenant,
+                actor_id=actor,
+                proposal_id="proposal:test",
+                reader=Reader(),
+                composition=composition,
+                country_policy=CountryPolicy(),
+                fingerprints=fingerprints,
+                lease_duration=timedelta(seconds=30),
+                now=lambda: NOW,
+                on_run_started=observed_runs.append,
+            )
+
+        def result_read_fault(connection, cursor, statement, parameters, context, many):
+            if "GROUP BY search_quota_reservations.status" in statement:
+                raise RuntimeError("controlled result read failure")
+
+        if fail_result_read:
+            event.listen(
+                integration_engine.sync_engine,
+                "before_cursor_execute",
+                result_read_fault,
+            )
+            try:
+                with pytest.raises(
+                    RuntimeError, match="controlled result read failure"
+                ):
+                    await execute_acceptance()
+            finally:
+                event.remove(
+                    integration_engine.sync_engine,
+                    "before_cursor_execute",
+                    result_read_fault,
+                )
+            assert transport.calls == 3
+            assert len(observed_runs) == 1
+            async with factory() as session:
+                status = (
+                    await session.execute(
+                        select(WorkflowRunRow.status).where(
+                            WorkflowRunRow.tenant_id == tenant,
+                            WorkflowRunRow.run_id == observed_runs[0],
+                        )
+                    )
+                ).scalar_one()
+            assert status == "completed", "结果读取失败不能否认已执行的真实Run"
+        report = await execute_acceptance()
+        assert report["run_id"] == observed_runs[0]
         assert report["status"] == "completed", report["reason"]
         assert report["scope"] == "pages_only"
         assert report["model"] == report["outreach"] == "not_run"
