@@ -93,6 +93,8 @@
 
 **投影接线：** Run 公开 DTO 实际在 `workflows/engine/audit.py`，读取实现为 `infra/db/run_audit.py`；只增加白名单研究摘要，不返回完整 run.context/step.data。客户列表 DTO 在 `domains/prospecting/schemas.py`，按需要经应用层或基础设施读模型聚合信号来源，禁止域间 import。指挥中心旧 UI 使用 `max_pages_per_query`，后端实际是 `max_pages_read`，本次预算展示必须与真实契约一致。
 
+**首次配置状态：** quota 账户记录在实际执行时才创建，不能因首次没有 snapshot 而永久禁止首次研究。展示必须区分未配置、已配置但账户状态尚未核实、实际用量读取失败/付费开启/额度不足；受信配置存在不等于真实账户已验证或生产 scheduler 已激活。UI 的未配置禁用必须有后端依据，不能仅靠前端判断，真实 `/usage` 和预留门禁仍在每次 Gateway 执行前生效。
+
 - [ ] RED：API 确认提案中必须返回模式/三线路/市场/预算；用户确认前不能执行，历史提案可读。需求雷达/客户发现/Run Center 返回证据、核验状态、额度消耗和可区分停止原因；验证跨租户读取拒绝。
 - [ ] RED：Vue 测试确认文案、缺预算/账户的禁用状态、research_only 无 Campaign 必填项、进口商候选与运输记录区别、quota exhausted 不渲染为没有买家。
   ```typescript
