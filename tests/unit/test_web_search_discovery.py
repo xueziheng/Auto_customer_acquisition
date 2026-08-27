@@ -109,6 +109,14 @@ async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypa
     ("User-agent: *\nDisallow: /shop$\n", "/shop/products", True),
     ("User-agent: *\nCrawl-delay: 5\n", "/", False),
     ("User-agent: \nAllow: /\nUser-agent: *\nDisallow: /", "/", False),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private%2Fpublic", "/private/public", False),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private%2fpublic", "/private%2Fpublic", True),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private/%70ublic", "/private/public", True),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private/%2A", "/private/secret", False),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private/public%24", "/private/public", False),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private/%FF", "/private/secret", False),
+    ("User-agent: *\nDisallow: /private/\nAllow: /private/%GG", "/public", False),
+    ("User-agent: *\nDisallow: /private/", "/public%", False),
 ])
 def test_robots_specific_groups_and_path_restrictions(rules, path, allowed):
     from connectors.web_search.page_policy import robots_allows

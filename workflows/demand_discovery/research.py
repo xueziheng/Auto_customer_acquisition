@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from agent_runtime.base import AgentTask
@@ -29,6 +30,100 @@ from workflows.demand_discovery.steps import (
     _utc_datetime,
 )
 from workflows.engine.runner import StepHandler, WorkflowRun
+
+
+def _evidence_text(value: object) -> str:
+    """逐字证据允许LF/TAB，其他控制符拒绝；不压平或重新拼接原文。"""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 2000
+        or any((ord(c) < 32 and c not in {"\n", "\t"}) or ord(c) == 127 for c in value)
+    ):
+        raise ValidationError("研究摘录无效")
+    return value
+
+
+@dataclass
+class _PreparedSignal:
+    request: SignalCaptureRequest
+    model_indexes: list[int]
+
+
+def _source_signals(
+    signals: list[dict[str, object]],
+    pages: list[dict[str, Any]],
+) -> tuple[list[_PreparedSignal], list[ResearchEvidence]]:
+    """同原页摘录展开至每份可信查询归属，来源优先；模型索引仅用于重连假设。"""
+    candidates: dict[tuple[str, str, str], _PreparedSignal] = {}
+    trusted: list[ResearchEvidence] = []
+    by_source: dict[tuple[str, str], list[_PreparedSignal]] = {
+        (page["research_evidence"].discovery_key, page["content_hash"]): []
+        for page in pages
+    }
+    for model_index, change in enumerate(signals):
+        payload = _payload(change, "capture_signal")
+        references = [
+            page
+            for page in pages
+            if page["url"] == payload.get("source_url")
+            and page["content_hash"] == payload.get("page_hash")
+            and page["snapshot_artifact_ref"] == payload.get("snapshot_artifact_ref")
+            and page["research_evidence"].model_dump(mode="json")
+            == payload.get("research_evidence")
+        ]
+        if not references:
+            raise ValidationError("研究信号缺少受信页面与线路归属")
+        trusted.append(references[0]["research_evidence"])
+        observation = _evidence_text(payload.get("raw_observation"))
+        signal_type = _text(payload.get("signal_type"), "研究信号类型无效")
+        for page in pages:
+            if (
+                page["url"] != references[0]["url"]
+                or page["content_hash"] != references[0]["content_hash"]
+            ):
+                continue
+            if observation not in page["text"]:
+                raise ValidationError("研究摘录不属于原页面")
+            evidence = page["research_evidence"]
+            key = (evidence.discovery_key, page["content_hash"], signal_type)
+            if key in candidates:
+                candidate = candidates[key]
+                if candidate.request.raw_observation != observation:
+                    raise ValidationError("同一研究来源与信号类型存在冲突摘录")
+                if model_index not in candidate.model_indexes:
+                    candidate.model_indexes.append(model_index)
+                continue
+            candidate = _PreparedSignal(
+                SignalCaptureRequest(
+                    signal_type=signal_type,
+                    entity_name=evidence.company_name or "待核验公开来源",
+                    raw_observation=observation,
+                    possible_need=(
+                        _text(payload.get("possible_need"), "研究推断无效", maximum=500)
+                        if payload.get("possible_need") is not None
+                        else None
+                    ),
+                    observed_at=page["observed_at"],
+                    source_type="web_page",
+                    source_id=page["content_hash"],
+                    page_hash=page["content_hash"],
+                    source_url=page["url"],
+                    snapshot_artifact_ref=page["snapshot_artifact_ref"],
+                    extracted_by=_text(
+                        payload.get("extracted_by"), "研究提取者无效", maximum=64
+                    ),
+                    research_evidence=evidence,
+                ),
+                [model_index],
+            )
+            candidates[key] = candidate
+            by_source[(evidence.discovery_key, page["content_hash"])].append(candidate)
+    groups = [group for group in by_source.values() if group]
+    return [group[0] for group in groups] + [
+        item for group in groups for item in group[1:]
+    ], trusted
 
 
 class ModeDispatchStep:
@@ -117,7 +212,8 @@ class ResearchExecuteSearchStep:
             "validated_need_count": 0,
             "qualified_opportunity_count": 0,
             "queued_count": 0,
-            "discovery_lanes": ["importer", "distributor", "ecommerce"],
+            "planned_discovery_lanes": ["importer", "distributor", "ecommerce"],
+            "discovery_lanes": [],
             "signal_ids": [],
             "hypothesis_ids": [],
         }
@@ -132,6 +228,7 @@ class ResearchExecuteSearchStep:
                 if (
                     result["searches_used"] >= plan.max_search_queries
                     or result["pages_used"] >= plan.max_pages_read
+                    or len(pages) >= plan.max_signals
                 ):
                     stop_reason = "budget_exhausted"
                     break
@@ -151,7 +248,10 @@ class ResearchExecuteSearchStep:
                 try:
                     results_seen += len(batch.results)
                     for index in range(len(batch.results)):
-                        if result["pages_used"] >= plan.max_pages_read:
+                        if (
+                            result["pages_used"] >= plan.max_pages_read
+                            or len(pages) >= plan.max_signals
+                        ):
                             stop_reason = "budget_exhausted"
                             break
                         result["pages_used"] += 1
@@ -228,53 +328,21 @@ class ResearchExecuteSearchStep:
         signals, hypotheses = _split_changes(changes.changes)
         if len(signals) > plan.max_signals or len(hypotheses) > plan.max_hypotheses:
             raise ValidationError("研究变更集超过确认上限")
-        trusted: list[ResearchEvidence] = []
-        for change in signals:
-            payload = _payload(change, "capture_signal")
-            candidates = [
-                page
-                for page in pages
-                if page["url"] == payload.get("source_url")
-                and page["content_hash"] == payload.get("page_hash")
-                and page["snapshot_artifact_ref"]
-                == payload.get("snapshot_artifact_ref")
-                and page["research_evidence"].model_dump(mode="json")
-                == payload.get("research_evidence")
-            ]
-            if not candidates:
-                raise ValidationError("研究信号缺少受信页面与线路归属")
-            page = candidates[0]
-            evidence = page["research_evidence"]
-            observation = _text(
-                payload.get("raw_observation"), "研究摘录无效", maximum=2000
-            )
-            if observation not in page["text"]:
-                raise ValidationError("研究摘录不属于原页面")
+        prepared, trusted = _source_signals(signals, pages)
+        if len(prepared) > plan.max_signals:
+            stop_reason = "budget_exhausted"
+        model_signal_ids: list[list[str]] = [[] for _ in signals]
+        for candidate in prepared[: plan.max_signals]:
             signal_id = await self._demand.capture_signal(
-                run.tenant_id,
-                SignalCaptureRequest(
-                    signal_type=_text(payload.get("signal_type"), "研究信号类型无效"),
-                    entity_name=evidence.company_name or "待核验公开来源",
-                    raw_observation=observation,
-                    possible_need=(
-                        _text(payload.get("possible_need"), "研究推断无效", maximum=500)
-                        if payload.get("possible_need") is not None
-                        else None
-                    ),
-                    observed_at=page["observed_at"],
-                    source_type="web_page",
-                    source_id=page["content_hash"],
-                    page_hash=page["content_hash"],
-                    source_url=page["url"],
-                    snapshot_artifact_ref=page["snapshot_artifact_ref"],
-                    extracted_by=_text(
-                        payload.get("extracted_by"), "研究提取者无效", maximum=64
-                    ),
-                    research_evidence=evidence,
-                ),
+                run.tenant_id, candidate.request
             )
-            trusted.append(evidence)
+            assert candidate.request.research_evidence is not None
+            evidence = candidate.request.research_evidence
+            for index in candidate.model_indexes:
+                model_signal_ids[index].append(signal_id)
             result["signal_ids"].append(signal_id)
+            if evidence.discovery_lane not in result["discovery_lanes"]:
+                result["discovery_lanes"].append(evidence.discovery_lane)
             if evidence.identity_status == "pending_verification":
                 result["pending_verification_count"] += 1
         for change in hypotheses:
@@ -286,6 +354,10 @@ class ResearchExecuteSearchStep:
                 or any(type(i) is not int or not 0 <= i < len(trusted) for i in indexes)
             ):
                 raise ValidationError("研究假设信号引用无效")
+            if any(not model_signal_ids[i] for i in indexes):
+                # 模型的额外观察未分得容量时，其假设不能引用没有落库的信号。
+                stop_reason = "budget_exhausted"
+                continue
             evidence = trusted[indexes[0]]
             if evidence.identity_status != "self_described" or any(
                 trusted[i].identity_status != "self_described"
@@ -301,7 +373,11 @@ class ResearchExecuteSearchStep:
                 raise ValidationError("研究假设所在地不受原页面支持")
             if payload.get("category") not in plan.target_categories:
                 raise ValidationError("研究假设品类超出确认范围")
-            refs = tuple(result["signal_ids"][i] for i in indexes)
+            refs = tuple(
+                dict.fromkeys(
+                    signal_id for i in indexes for signal_id in model_signal_ids[i]
+                )
+            )
             source = _payload(signals[indexes[0]], "capture_signal")
 
             def provenance(

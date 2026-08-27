@@ -27,6 +27,18 @@ Run的searches_used/pages_used沿预算尝试计数语义，含被拒绝尝试�
 提案、query、lane、查询国家/品类、URL确定性产生；相同提案重放不会重复写信号。
 原Signal唯一键增加discovery_key，旧记录为空键、research_evidence为空，不回填旧身份。
 
+研究成功读取的页面来源容量同时受max_signals约束，读取失败/禁止仅消耗既有
+pages_used尝试预算。低信号预算可能在完成三线搜索前停止，明确budget_exhausted，
+不能显示三线全部完成。Run planned_discovery_lanes记录计划三线，discovery_lanes
+只列本轮实际持久化信号的线路；历史Run可能缺新增planned字段，不回填旧结果。
+
+模型可合并重复页面。应用层仅对同URL+原始hash的合法逐字摘录展开每份受信查询
+归属，不跨页面内容版本复制；每份来源优先保留一条信号，额外不同类型观察只用
+剩余预算，超出则budget_exhausted，其没有落库的模型索引不能被假设引用。
+同来源/hash/信号类型却有不同摘录，因原唯一键不能分别表示，在准备阶段失败关闭，
+不擅自拼接原文或把未存摘录的假设链接到旧信号。LF/TAB原文证据原样保存，其他
+控制符拒绝；不为此改变旧v1文本校验、DTO、唯一键或迁移。
+
 生产TradeManager的新模型输出在两种模式都强制每条query的非空lane；缺失/空值
 直接拒绝，不补猜。持久旧payload decoder及内部旧dataclass仍允许lane为空，默认
 旧outreach语义；它们用于旧提案/旧集成调用兼容，不是新模型输出的准入路径。
@@ -67,6 +79,9 @@ DNS与实际peer IP；重定向只允许原始scheme/netloc，不自动跨域或
 未提供规则。未知状态、robots读取失败/畸形/额外未实现速率限制均关闭。
 
 robots分组按TradeOS-Agent/通配符、最长路径及Allow同长优先匹配；支持*和$。
+路径比较只解码unreserved ASCII，其他百分号编码保持并规范十六进制大小写，
+字面非ASCII按UTF-8编码比较；畸形百分号编码失败关闭。编码%2F与字面路径斜杠
+不同，%2A/%24不变成规则通配符/终止符，避免扩大Allow覆盖Disallow。
 这是有界实现，不宣称完整爬虫规范/全网条款审查。参考
 [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html)：robots不是访问授权，
 Allow不等于许可证，也不能推翻Gateway国家政策。

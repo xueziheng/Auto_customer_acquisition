@@ -33,7 +33,9 @@ identity_status：self_described / pending_verification。self_described不是�
 Run研究context：
 execution_mode, completion_reason, searches_used, pages_used, signal_count, hypothesis_count,
 pending_verification_count, validated_need_count=0, qualified_opportunity_count=0, queued_count=0,
-discovery_lanes, signal_ids, hypothesis_ids；完成评分另有confidence_tiers、空queue/run id列表。
+discovery_lanes, planned_discovery_lanes, signal_ids, hypothesis_ids；完成评分另有confidence_tiers、空queue/run id列表。
+fix round1后planned_discovery_lanes是计划三线，discovery_lanes只列实际持久化信号
+线路，不可用计划线路当完成情况；历史Run可能无planned字段，不回填旧Run。
 
 searches_used/pages_used沿原预算**尝试计数**语义（含拒绝），不是计费credits；免费实际用量、是否不确定必须读取前序quota snapshot/run_state。已告知根代理，不应UI标成已消耗额度。
 
@@ -224,3 +226,85 @@ GREEN：`38 passed in 5.36s`。
 ruff本次三个Python变更文件通过（初次SIM905格式意见已改为字面列表）；
 `PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m mypy domains/demand/schemas.py`输出`Success: no issues found in 1 source file`；结构自检全绿。
 本修正文件为schemas.py、demand/AGENTS.md、ADR0017、研究unit/integration和本报告。
+
+## Task 3 初审修复 round 1
+
+FIX_BASE：2fd78e2d4f39ffb5216fda752135277612125806。三项Important均先RED后GREEN。
+没有改Gateway核心、公开DTO、数据库唯一键或迁移；没有Task4改动、真实Provider调用
+或新子代理。仅查阅公开RFC说明，不重审前序Tavily/quota。
+
+### Finding 1：robots编码保留字符
+
+connectors/web_search/page_policy.py:13的_normalized_path替换无条件unquote，
+只解码unreserved ASCII；其他编码保留并规范十六进制大小写。%2F不成为路径分隔符，
+%2A/%24不成为规则通配符/终止符；畸形%GG/不完整百分号失败关闭。字面非ASCII按
+UTF-8编码比较。不宣称完整URL解释器或更宽的站点访问权限。
+依据：[RFC9309 §2.2.2](https://www.rfc-editor.org/rfc/rfc9309.html#section-2.2.2)。
+测试覆盖原复现Disallow /private/ + Allow /private%2Fpublic拒绝/private/public，
+以及编码大小写等价、unreserved等价、编码*与$、畸形编码反例。
+
+### Finding 2：模型合并重复原页后的来源保存
+
+workflows/demand_discovery/research.py:54的_source_signals在持久化前验证所有原文
+及受信页面引用，然后只对同URL+content_hash展开每份query/lane归属，原内容不同
+hash时绝不复制。模型重复输出同一摘录会合并索引，不重复写同来源Signal；合法模型
+只返回page0时，三次命中的三份归属仍保留。假设索引重连到实际落库的Signal IDs。
+
+成功读取的页面条目容量受max_signals限制；页面失败/禁止不占该容量，但仍消耗
+pages_used尝试预算。容量不足在后续读取前停止并返回budget_exhausted，不读取3份
+再静默丢2份。每来源优先分配一条有效Signal，额外不同类型观察只有剩余容量才写；
+被省略观察的假设不能引用不存在记录。没有放宽max_pages_read/max_signals。
+
+产品代价：低max_signals可能提前结束原本三线查询；重复页面读取条目也保守占容量。
+无有效模型摘录的独立页面不臆造Signal；实际线路只按持久记录统计，不声称三线已完成。
+Task4接口补充：planned_discovery_lanes保持计划三线，discovery_lanes为本轮持久化
+证据实际覆盖的线路；未配置/无有效Signal为空数组，历史Run可无planned字段。
+
+### Finding 3：保留多行逐字证据
+
+research.py:35的_evidence_text允许原文LF和TAB，其余控制符（包括CR/NUL/VT/DEL）
+拒绝，长度/空白边界及逐字子串检查保留。不压平、重拼或改写摘录，不改v1文本规则。
+真实HTML解析器两段<p>产生换行的流程测试现在完成，Postgres raw_observation与
+解析后的原文严格相等。unit同时覆盖LF/TAB保留与其他控制符拒绝。
+
+### RED与GREEN命令/输出
+
+第一组RED命令：
+`env -u TEST_DATABASE_URL PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/test_web_search_discovery.py tests/integration/test_research_discovery.py -q --tb=short`
+
+输出：`8 failed, 33 passed in 20.20s`；5个编码反例、合并页只存1份、真实HTML换行
+Run failed、预算1却读3页均重现。
+
+第二组RED命令：
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/workflows/test_research_discovery.py -q --tb=short`
+
+输出：`18 failed, 32 passed in 1.47s`；三线路分别覆盖低预算、合并页、LF/TAB、
+额外观察超容量及不同hash不能复用摘录。GREEN后追加失败页不占成功容量与同键
+不同摘录拒绝测试，未改旧eval样本或prompt。
+
+最终专项命令（三个finding文件＋相关Agent与受控eval）：
+`env -u TEST_DATABASE_URL PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/test_web_search_discovery.py tests/unit/workflows/test_research_discovery.py tests/integration/test_research_discovery.py tests/unit/agent_runtime/test_demand_intelligence_agent.py tests/evals -q --tb=short`
+
+输出：`129 passed in 13.09s`。其中真实Postgres研究组先独立验证为`6 passed in 11.19s`；
+最终组合包括该组，不将两者相加。数据库/域服务/引擎真实，搜索和模型响应受控，
+页面HTML解析器真实；没有真实Provider/模型准确率结论，也未跑无关全库套件。
+
+静态检查：ruff检查本次两个实现文件及三个测试文件全部通过；
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m mypy workflows/demand_discovery/research.py connectors/web_search/page_policy.py`
+输出`Success: no issues found in 2 source files`。初次局部变量Optional赋值类型错误
+已通过赋值前非空断言修正。结构自检和git diff --check通过。
+
+### 保持既有唯一键的失败关闭边界与自审
+
+research.py:94：同一来源/hash/signal_type若有不同逐字摘录，在_source_signals
+准备阶段抛ValidationError，尚未调用capture_signal，不擅自拼成新原文，也不把
+未保存摘录的假设链接到已有Signal。此“冲突”是旧唯一键表示能力的冲突，不是判定
+两条原文事实彼此矛盾。对应测试：
+tests/unit/workflows/test_research_discovery.py::test_same_source_and_type_with_different_quotes_fails_before_any_persistence。
+该边界已向根代理说明，独立复审判断是否接受；本轮不扩schema。
+
+自审核对：同URL不同hash仅保留真实对应来源；三条已读同版本来源在预算3时全部
+持久化且重放幂等；预算1只读取可保存的一份并准确列实际线路；额外模型索引没有
+实际记录时不生成其假设。记录/预算行为均由确定性代码决定，未交给模型。
+规则同步到connectors/web_search/AGENTS.md、workflows/demand_discovery/AGENTS.md
+及ADR0017。此轮变更还包括两个实现文件、三个测试文件和本报告，共9文件。

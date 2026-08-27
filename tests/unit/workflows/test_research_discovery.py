@@ -188,6 +188,59 @@ def test_directory_self_domain_in_footer_cannot_establish_buyer_identity():
     assert evidence.website_domain is None
 
 
+@pytest.mark.parametrize("control", ["\r", "\x00", "\x0b", "\x7f"])
+def test_research_evidence_text_still_rejects_unsupported_controls(control):
+    from workflows.demand_discovery.research import _evidence_text
+
+    with pytest.raises(ValidationError, match="研究摘录无效"):
+        _evidence_text("Company statement." + control + "Location statement.")
+
+
+def test_same_source_and_type_with_different_quotes_fails_before_any_persistence():
+    from domains.demand.schemas import ResearchEvidence
+    from tests.unit.workflows.test_demand_discovery import ARTIFACT, HASH, NOW
+    from workflows.demand_discovery.research import _source_signals
+
+    identity = "We are Acme Tools, an importer of hinges."
+    location = "We are based in US."
+    text = identity + "\n" + location
+    evidence = ResearchEvidence.from_page(
+        proposal_id="proposal:test",
+        query="US hinges importer",
+        discovery_lane="importer",
+        query_country="US",
+        query_category="hinges",
+        text=text,
+        url="https://acme.example/about",
+    )
+    page = {
+        "text": text,
+        "url": evidence.source_url,
+        "observed_at": NOW,
+        "content_hash": HASH,
+        "snapshot_artifact_ref": str(ARTIFACT),
+        "research_evidence": evidence,
+    }
+    changes = [
+        {
+            "operation": "capture_signal",
+            "payload": {
+                "signal_type": "marketplace_seller_activity",
+                "raw_observation": quote,
+                "source_url": evidence.source_url,
+                "page_hash": HASH,
+                "snapshot_artifact_ref": str(ARTIFACT),
+                "research_evidence": evidence.model_dump(mode="json"),
+                "extracted_by": "model-v2",
+            },
+        }
+        for quote in (identity, location)
+    ]
+    # 准备阶段没有持久化端口；两条原文都有效，但旧唯一键不能分别表示它们。
+    with pytest.raises(ValidationError, match="同一研究来源与信号类型存在冲突摘录"):
+        _source_signals(changes, [page])
+
+
 @pytest.mark.parametrize(
     "location,country",
     [
@@ -284,7 +337,26 @@ async def test_research_v2_never_uses_unconfirmed_paid_provider():
 
 
 @pytest.mark.parametrize("lane", ["importer", "distributor", "ecommerce"])
-async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(lane):
+@pytest.mark.parametrize(
+    "budget,separator,extra_signal,different_version,first_disallowed",
+    [
+        (1, " ", False, False, False),
+        (3, " ", False, False, False),
+        (3, "\n", False, False, False),
+        (3, "\t", False, False, False),
+        (3, " ", True, False, False),
+        (3, " ", False, True, False),
+        (1, " ", False, False, True),
+    ],
+)
+async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(
+    lane,
+    budget,
+    separator,
+    extra_signal,
+    different_version,
+    first_disallowed,
+):
     import json
     from unittest.mock import AsyncMock
 
@@ -303,11 +375,30 @@ async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(la
     )
     from workflows.demand_discovery.flow import build_demand_discovery_handlers
 
-    text = "We are Acme Tools, an importer and distributor with an online store. We are based in US."
+    text = (
+        "We are Acme Tools, an importer and distributor with an online store."
+        + separator
+        + "We are based in US."
+    )
 
     class Pages:
+        calls = 0
+
         async def read_page(self, *args):
-            return PageSnapshot(text, "https://acme.example/about", NOW, HASH, ARTIFACT)
+            self.calls += 1
+            if first_disallowed and self.calls == 1:
+                from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+
+                raise ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT)
+            content_hash = "b" * 64 if different_version and self.calls == 3 else HASH
+            return PageSnapshot(
+                text, "https://acme.example/about", NOW, content_hash, ARTIFACT
+            )
+
+    class OneResultSearcher(_Searcher):
+        async def search(self, *args):
+            batch = await super().search(*args)
+            return replace(batch, results=batch.results[:1])
 
     class Model:
         async def analyze_pages(self, **kwargs):
@@ -315,22 +406,26 @@ async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(la
                 {
                     "signals": [
                         {
-                            "signal_type": "marketplace_seller_activity",
+                            "signal_type": "product_line_expansion"
+                            if i
+                            else "marketplace_seller_activity",
                             "source_page_index": 0,
                             "source_excerpt": text,
                             "possible_need": "hinges",
                             "evidence_level": "agent_industry_inference",
                         }
+                        for i in range(2 if extra_signal else 1)
                     ],
                     "hypotheses": [
                         {
-                            "account_name_signal_index": 0,
-                            "country_signal_index": 0,
+                            "account_name_signal_index": i,
+                            "country_signal_index": i,
                             "country": "US",
                             "category": "hinges",
-                            "signal_indexes": [0],
+                            "signal_indexes": [i],
                             "reasoning": "企业经营相关商品，可能需要铰链，值得验证",
                         }
+                        for i in range(2 if extra_signal else 1)
                     ],
                 }
             )
@@ -339,14 +434,18 @@ async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(la
     plan = research_plan()
     plan = replace(
         plan,
+        max_signals=budget,
+        max_pages_read=3,
+        max_hypotheses=2,
         queries=tuple(sorted(plan.queries, key=lambda q: q.discovery_lane != lane)),
     )
     demand, prospecting, queue = _Demand(), _Prospecting(), AsyncMock()
-    searcher = _Searcher(run)
+    searcher = OneResultSearcher(run)
+    pages = Pages()
     handlers = build_demand_discovery_handlers(
         task_reader=_Reader(plan),
         searcher=searcher,
-        page_reader=Pages(),
+        page_reader=pages,
         capability=DemandIntelligenceAgent(
             "model-v2", Model(), None, CredentialMarkerGuard()
         ),
@@ -356,13 +455,30 @@ async def test_research_run_creates_only_signals_and_hypotheses_for_each_lane(la
         free_search_enabled=True,
     )
     result = await handlers["demand_discovery.v2.execute_search"].execute(run)
-    assert result[2]["signal_count"] == result[2]["hypothesis_count"] == 1
+    expected_count = 2 if different_version else budget
+    assert result[2]["signal_count"] == expected_count
+    assert result[2]["hypothesis_count"] == 1
+    assert len(demand.requests) == expected_count
+    assert pages.calls == budget + first_disallowed
+    effective_queries = plan.queries[int(first_disallowed) :][:expected_count]
+    assert all(request.raw_observation == text for request in demand.requests)
+    assert {
+        request.research_evidence.discovery_lane for request in demand.requests
+    } == {query.discovery_lane for query in effective_queries}
+    assert set(result[2]["discovery_lanes"]) == {
+        query.discovery_lane for query in effective_queries
+    }
+    if budget == 1 or extra_signal:
+        assert result[2]["completion_reason"] == "budget_exhausted"
     assert (
         result[2]["validated_need_count"]
         == result[2]["qualified_opportunity_count"]
         == 0
     )
-    assert demand.requests[0].research_evidence.discovery_lane == lane
+    assert (
+        demand.requests[0].research_evidence.discovery_lane
+        == effective_queries[0].discovery_lane
+    )
     assert prospecting.requests[0].country == "US"
     assert prospecting.requests[0].entity_name == "Acme Tools"
     queue.start.assert_not_called()

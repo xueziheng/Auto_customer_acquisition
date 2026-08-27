@@ -4,10 +4,41 @@ from __future__ import annotations
 
 import html
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 _ROBOT_AGENT = "tradeos-agent"
 _MAX_ROBOTS_BYTES = 524_288
+
+
+def _normalized_path(value: str) -> str | None:
+    """RFC9309：只解码unreserved字节，保留%2F/%2A等与字面分隔符的区别。"""
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "%":
+            token = value[index + 1 : index + 3]
+            if len(token) != 2 or re.fullmatch(r"[0-9A-Fa-f]{2}", token) is None:
+                return None
+            decoded = chr(int(token, 16))
+            result.append(
+                decoded
+                if re.fullmatch(r"[A-Za-z0-9._~-]", decoded)
+                else "%" + token.upper()
+            )
+            index += 3
+            continue
+        if ord(character) <= 32 or ord(character) == 127:
+            return None
+        if ord(character) > 127:
+            try:
+                result.extend(f"%{byte:02X}" for byte in character.encode("utf-8"))
+            except UnicodeEncodeError:
+                return None
+        else:
+            result.append(character)
+        index += 1
+    return "".join(result)
 
 
 def is_restricted_page(body: bytes) -> bool:
@@ -95,7 +126,11 @@ def robots_allows(body: bytes, url: str) -> bool:
     ]
     selected = specific or [rules for agents, rules in groups if "*" in agents]
     parsed = urlsplit(url)
-    path = unquote(parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+    path = _normalized_path(
+        (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+    )
+    if path is None:
+        return False
     matches: list[tuple[int, bool]] = []
     for group in selected:
         for key, value in group:
@@ -104,7 +139,9 @@ def robots_allows(body: bytes, url: str) -> bool:
                 return False
             if not value:
                 continue
-            pattern = unquote(value)
+            pattern = _normalized_path(value)
+            if pattern is None or not pattern.startswith("/"):
+                return False
             end = pattern.endswith("$")
             if end:
                 pattern = pattern[:-1]

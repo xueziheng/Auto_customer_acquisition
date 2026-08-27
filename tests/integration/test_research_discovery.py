@@ -102,8 +102,20 @@ async def test_research_same_page_cross_lane_retains_evidence_but_replay_is_idem
         )
 
 
+@pytest.mark.parametrize(
+    "merge_pages,multiline,signal_budget",
+    [
+        (False, False, 3),
+        (True, False, 3),
+        (True, True, 3),
+        (True, False, 1),
+    ],
+)
 async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_across_lanes(
     research_connection,
+    merge_pages,
+    multiline,
+    signal_budget,
 ):
     import json
     from unittest.mock import AsyncMock
@@ -151,7 +163,7 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
     plan = replace(
         research_plan(),
         max_pages_read=3,
-        max_signals=3,
+        max_signals=signal_budget,
         max_hypotheses=3,
         minimum_confidence_tier="low",
     )
@@ -188,6 +200,15 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
     )
     await _seed_raw_artifact(factory, tenant)
     text = "We are Acme Tools, an importer and distributor with an online store. We are based in US."
+    if multiline:
+        from connectors.web_search.client import _VisibleTextParser
+
+        parser = _VisibleTextParser()
+        parser.feed(
+            "<p>We are Acme Tools, an importer and distributor with an online store.</p><p>We are based in US.</p>"
+        )
+        text = parser.text()
+        assert "\n" in text
 
     class Search:
         async def search(self, tenant, run_id, query, country, category, limit):
@@ -217,7 +238,7 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
 
     class Model:
         async def analyze_pages(self, *, discovery, **kwargs):
-            count = len(discovery["pages"])
+            count = 1 if merge_pages else len(discovery["pages"])
             return json.dumps(
                 {
                     "signals": [
@@ -288,7 +309,7 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
     run = engine._row_to_run(row)
     assert run.workflow_version == 2
     assert run.status.value == "completed"
-    assert run.context["signal_count"] == 3
+    assert run.context["signal_count"] == signal_budget
     assert run.context["hypothesis_count"] == 1
     assert (
         run.context["queued_count"]
@@ -299,7 +320,16 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
     queue.start.assert_not_called()
     accounts = await prospecting.list_accounts(tenant)
     assert len(accounts) == 1 and accounts[0].website_domain == "acme.example"
-    assert len(accounts[0].source_signal_refs) == 3
+    assert len(accounts[0].source_signal_refs) == signal_budget
+    signals = await demand.list_signals(tenant)
+    assert {s.research_evidence.discovery_lane for s in signals} == (
+        {"importer", "distributor", "ecommerce"} if signal_budget == 3 else {"importer"}
+    )
+    assert all(s.raw_observation == text for s in signals)
+    assert run.context["pages_used"] == signal_budget
+    if signal_budget == 1:
+        assert run.context["completion_reason"] == "budget_exhausted"
+        assert run.context["discovery_lanes"] == ["importer"]
     # 重放受控研究动作不重复写Signal或Hypothesis；真实搜索重放仍受持久quota保护。
     repeated = await handlers["demand_discovery.v2.execute_search"].execute(run)
     assert repeated[2]["signal_ids"] == run.context["signal_ids"]
