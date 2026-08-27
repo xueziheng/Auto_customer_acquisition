@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from artifact_store.store import RawArtifactStore
+from connectors.tavily.transport import TavilySearchTransport
 from connectors.web_search.client import (
     WebSearchConnector,
     WebSearchSecretResolver,
@@ -31,6 +32,8 @@ from tool_gateway.checks.web_discovery import (
     WebResourceTenantCheck,
 )
 from tool_gateway.fingerprint import HmacFingerprintProvider
+from tool_gateway.handlers.free_search import MANIFEST as FREE_SEARCH_MANIFEST
+from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_read_page import (
     MANIFEST as WEB_READ_PAGE_MANIFEST,
 )
@@ -62,6 +65,8 @@ from workflows.demand_discovery.ports import (
     WebDiscoverySearcher,
 )
 from workflows.engine.runner import StepStatus
+
+from .free_web_discovery import DisabledPageSearchTransport, build_free_search_reader
 
 _WORKFLOW_TYPE = "demand_discovery"
 _BUDGETS = {
@@ -179,10 +184,12 @@ class WebDiscoveryToolComposition:
 
     playbook: WebResearchPlaybookReader
     secret_resolver: WebSearchSecretResolver
-    secret_ref: str
-    search_transport: BraveSearchTransport
+    secret_ref: str = field(repr=False)
+    search_transport: BraveSearchTransport | TavilySearchTransport
     page_transport: PublicPageTransport
     artifacts: RawArtifactStore
+    provider: Literal["brave", "tavily"] = "brave"
+    exclusive_account_confirmed: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -191,7 +198,18 @@ class WebDiscoveryToolComposition:
             or not isinstance(self.secret_ref, str)
             or not self.secret_ref
             or self.secret_ref != self.secret_ref.strip()
-            or not isinstance(self.search_transport, BraveSearchTransport)
+            or self.provider not in {"brave", "tavily"}
+            or (
+                self.provider == "brave"
+                and not isinstance(self.search_transport, BraveSearchTransport)
+            )
+            or (
+                self.provider == "tavily"
+                and (
+                    not isinstance(self.search_transport, TavilySearchTransport)
+                    or self.exclusive_account_confirmed is not True
+                )
+            )
             or not isinstance(self.page_transport, PublicPageTransport)
             or not isinstance(self.artifacts, RawArtifactStore)
         ):
@@ -222,12 +240,26 @@ def build_web_discovery_tools(
         composition.secret_resolver,
         composition.secret_ref,
     )
+    free_reader = None
+    page_search_transport: BraveSearchTransport = DisabledPageSearchTransport()
+    if composition.provider == "tavily":
+        free_reader = build_free_search_reader(
+            factory=factory,
+            tenant_id=tenant_id,
+            search_transport=cast(TavilySearchTransport, composition.search_transport),
+            page_transport=composition.page_transport,
+            secret_resolver=composition.secret_resolver,
+            secret_ref=composition.secret_ref,
+            now=now,
+        )
+    else:
+        page_search_transport = cast(BraveSearchTransport, composition.search_transport)
 
     def connector_factory(requested_tenant: TenantId) -> WebSearchConnector:
         if requested_tenant != tenant_id:
             raise ValidationError("公开搜索 connector 租户不匹配")
         return WebSearchConnector(
-            composition.search_transport,
+            page_search_transport,
             composition.page_transport,
             composition.artifacts,
             now=now,
@@ -235,11 +267,13 @@ def build_web_discovery_tools(
 
     registry = ToolRegistry()
     registry.register(
-        WEB_SEARCH_MANIFEST,
+        WEB_SEARCH_MANIFEST if free_reader is None else FREE_SEARCH_MANIFEST,
         WebSearchHandler(
-            ConnectorWebSearcher(connector_factory, bound_secrets),
+            ConnectorWebSearcher(connector_factory, bound_secrets)
+            if free_reader is None else None,
             search_slot,
             fingerprints,
+            reader_factory=free_reader,
         ),
     )
     registry.register(
@@ -287,8 +321,11 @@ def build_web_discovery_tools(
         now=now,
         id_factory=new_id,
     )
+    searcher = ToolGatewayWebSearcher(gateway, search_slot, tool_user)
     return WebDiscoveryTools(
-        ToolGatewayWebSearcher(gateway, search_slot, tool_user),
+        searcher if free_reader is None else FreeSearchGatewaySearcher(
+            searcher, free_reader.quota, tenant_id
+        ),
         ToolGatewayWebPageReader(gateway, page_slot, tool_user),
     )
 

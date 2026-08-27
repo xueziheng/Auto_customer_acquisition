@@ -82,6 +82,15 @@ class _ProviderWebSearcher(Protocol):
 
 
 @runtime_checkable
+class RunBoundWebSearcherFactory(Protocol):
+    """prepare 阶段的无 IO 插件口；把显式 Run 和 HMAC 操作指纹绑定到 reader。"""
+
+    def for_run(
+        self, tenant_id: TenantId, run_id: RunId, request_key: str
+    ) -> _ProviderWebSearcher: ...
+
+
+@runtime_checkable
 class _ToolGatewayInvoker(Protocol):
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult: ...
 
@@ -122,6 +131,7 @@ class _WebSearchPayload:
     country: str
     category: str
     limit: int
+    reader: _ProviderWebSearcher = field(repr=False)
 
 
 class WebSearchHandler:
@@ -129,17 +139,27 @@ class WebSearchHandler:
 
     def __init__(
         self,
-        reader: _ProviderWebSearcher,
+        reader: _ProviderWebSearcher | None,
         slot: WebSearchResultSlot,
         fingerprints: HmacFingerprintProvider,
+        *,
+        reader_factory: RunBoundWebSearcherFactory | None = None,
     ) -> None:
         if (
-            not isinstance(reader, _ProviderWebSearcher)
+            (reader_factory is None and not isinstance(reader, _ProviderWebSearcher))
+            or (
+                reader_factory is not None
+                and (
+                    reader is not None
+                    or not isinstance(reader_factory, RunBoundWebSearcherFactory)
+                )
+            )
             or not isinstance(slot, WebSearchResultSlot)
             or not isinstance(fingerprints, HmacFingerprintProvider)
         ):
             raise ValidationError("公开搜索 handler 依赖无效")
         self._reader = reader
+        self._reader_factory = reader_factory
         self._slot = slot
         self._fingerprints = fingerprints
 
@@ -179,6 +199,13 @@ class WebSearchHandler:
                 str(limit).encode(),
             )
         )
+        reader = self._reader
+        if self._reader_factory is not None:
+            if ctx.run_id is None:
+                raise ValidationError("公开搜索缺少 Run 绑定")
+            reader = self._reader_factory.for_run(ctx.tenant_id, ctx.run_id, fingerprint)
+        if not isinstance(reader, _ProviderWebSearcher):
+            raise ValidationError("公开搜索 reader 绑定无效")
         return PreparedToolCall(
             fingerprint,
             version,
@@ -189,6 +216,7 @@ class WebSearchHandler:
                 country,
                 category,
                 limit,
+                reader,
             ),
         )
 
@@ -201,7 +229,7 @@ class WebSearchHandler:
         if not isinstance(payload, _WebSearchPayload) or payload.tenant_id != tenant_id:
             raise ValidationError("公开搜索 payload 无效")
         try:
-            results = await self._reader.search(
+            results = await payload.reader.search(
                 tenant_id,
                 payload.query,
                 payload.country,
@@ -337,6 +365,7 @@ def _safe_text(value: object, maximum: int) -> bool:
 __all__ = (
     "MANIFEST",
     "ConnectorWebSearcher",
+    "RunBoundWebSearcherFactory",
     "ToolGatewayWebSearcher",
     "WebSearchHandler",
     "map_web_provider_error",

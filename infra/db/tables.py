@@ -38,6 +38,72 @@ class Base(DeclarativeBase):
     """声明式基类（schema 归迁移管理）。"""
 
 
+class SearchQuotaAccountRow(Base):
+    """数据库级 Tavily 单账户槽；全局唯一防止租户或 key 引用复制额度。"""
+
+    __tablename__ = "search_quota_accounts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "provider", name="pk_search_quota_accounts"),
+        UniqueConstraint("provider", name="uq_search_quota_accounts_provider"),
+        CheckConstraint("provider = 'tavily'", name="ck_search_quota_accounts_provider"),
+        CheckConstraint("ceiling IS NULL OR ceiling >= 0", name="ck_search_quota_accounts_ceiling"),
+        CheckConstraint("reservations >= 0", name="ck_search_quota_accounts_reservations"),
+        CheckConstraint("cost_status IN ('free','paid','unknown')", name="ck_search_quota_accounts_cost_status"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_search_quota_accounts_usage_limit"),
+        CheckConstraint("usage_used IS NULL OR usage_used >= 0", name="ck_search_quota_accounts_usage_used"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    provider: Mapped[str] = mapped_column(String(16))
+    ceiling: Mapped[int | None] = mapped_column(BigInteger)
+    reservations: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    cost_status: Mapped[str] = mapped_column(String(16), server_default=text("'unknown'"))
+    usage_limit: Mapped[int | None] = mapped_column(BigInteger)
+    usage_used: Mapped[int | None] = mapped_column(BigInteger)
+    paygo_enabled: Mapped[bool | None] = mapped_column(Boolean)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SearchQuotaRunRow(Base):
+    """只保存每 Run 固定停止原因，不保存输入或供应商原文。"""
+
+    __tablename__ = "search_quota_runs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "run_id", name="pk_search_quota_runs"),
+        CheckConstraint(
+            "stop_reason IN ('quota_exhausted','usage_unknown','paid_enabled','request_uncertain','unsupported')",
+            name="ck_search_quota_runs_stop_reason",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    stop_reason: Mapped[str | None] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SearchQuotaReservationRow(Base):
+    """本地每次搜索恒为 basic 一信用额；状态只前进，不提供自动释放。"""
+
+    __tablename__ = "search_quota_reservations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "provider", "run_id", "request_key", name="pk_search_quota_reservations"),
+        ForeignKeyConstraint(
+            ["tenant_id", "provider"], ["search_quota_accounts.tenant_id", "search_quota_accounts.provider"],
+            name="fk_search_quota_reservations_account", ondelete="RESTRICT",
+        ),
+        CheckConstraint("status IN ('reserved','uncertain','consumed')", name="ck_search_quota_reservations_status"),
+        CheckConstraint("request_key ~ '^[a-f0-9]{64}$'", name="ck_search_quota_reservations_request_key"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    provider: Mapped[str] = mapped_column(String(16))
+    run_id: Mapped[str] = mapped_column(String(40))
+    request_key: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class DirectiveProposalRow(Base):
     """老板自然语言解析后的待确认提案。"""
 
