@@ -99,7 +99,7 @@ from workflows.engine.runner import WorkflowEngine
 
 from .composition.research_accounts import ResearchEvidenceReader
 from .middleware import ApiSettings
-from .research import ResearchAccessService
+from .research import DiscoveryExecutionReader, ResearchAccessService
 
 
 class EmployeeServiceScope(Protocol):
@@ -275,6 +275,7 @@ class ConfiguredApiDependencies:
     work_uploads: WorkUploadApplicationService | None = None
     run_audit: RunAuditService | None = None
     research_access: ResearchAccessService | None = None
+    research_execution: DiscoveryExecutionReader | None = None
     research_evidence: ResearchEvidenceReader | None = None
     configured: bool = True
 

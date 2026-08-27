@@ -59,6 +59,80 @@ async function settle() {
 }
 
 describe("公开研究展示", () => {
+  it.each([new TypeError("network"), new Response("{}", { status: 503 })])("摘要读取失败和空记录可区分 %s", async (failure) => {
+    const routes: Record<string, unknown> = { "/runs": failure };
+    const { root } = await mount(DemandRadar, routes);
+    expect(root.textContent).toContain("研究运行摘要读取失败");
+    expect(root.textContent).not.toContain("暂无研究 Run");
+    routes["/runs"] = [];
+    [...root.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新")!.click();
+    await settle();
+    expect(root.textContent).toContain("最近记录中暂无研究 Run 摘要");
+    expect(root.textContent).not.toContain("研究运行摘要读取失败");
+  });
+  it.each([false, true])("确认503后只读恢复启动状态，不自动重试：已有Run=%s", async (started) => {
+    const routes: Record<string, unknown> = {
+      "/commands/discovery-proposals": proposal,
+      "/commands/discovery-proposals/dpr_controlled/confirm": new Response("{}", { status: 503 }),
+      "/commands/discovery-proposals/dpr_controlled": { ...proposal, state: "confirmed", can_confirm: true },
+      "/commands/discovery-proposals/dpr_controlled/execution": { state: started ? "started" : "not_started", run_id: started ? "run_recovered" : null, can_resume: !started },
+    };
+    const { root, requests } = await mount(CommandCenter, routes);
+    const input = root.querySelector("textarea")!;
+    input.value = "只研究";
+    input.dispatchEvent(new Event("input"));
+    root.querySelector("form")!.dispatchEvent(new Event("submit"));
+    await settle();
+    [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("确认并启动"))!.click();
+    await settle();
+    [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("刷新提案状态"))!.click();
+    await settle();
+    expect(requests.filter((request) => request.endsWith("/confirm"))).toHaveLength(1);
+    if (started) {
+      expect(root.textContent).toContain("run_recovered");
+      expect(root.textContent).not.toContain("恢复启动");
+    } else {
+      expect(root.textContent).toContain("提案已确认，尚未创建 Run");
+      routes["/commands/discovery-proposals/dpr_controlled/confirm"] = { proposal_id: "dpr_controlled", directive_id: "dir_controlled", run_id: "run_recovered", workflow_type: "demand_discovery" };
+      routes["/commands/discovery-proposals/dpr_controlled/execution"] = { state: "started", run_id: "run_recovered", can_resume: false };
+      [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("恢复启动"))!.click();
+      await settle();
+      expect(root.textContent).toContain("run_recovered");
+      expect(requests.filter((request) => request.endsWith("/confirm"))).toHaveLength(2);
+    }
+  });
+  it("负面快照下明确是重新核验请求，不宣称免费已启用", async () => {
+    const { root } = await mount(CommandCenter, {
+      "/commands/discovery-proposals": { ...proposal, research_access: { ...access, state: "paid_enabled", confirmation_requires_recheck: true } },
+    });
+    const input = root.querySelector("textarea")!;
+    input.value = "只研究";
+    input.dispatchEvent(new Event("input"));
+    root.querySelector("form")!.dispatchEvent(new Event("submit"));
+    await settle();
+    expect(root.textContent).toContain("确认重新核验后研究");
+    expect(root.textContent).toContain("上次核验发现付费已开启");
+    expect(root.textContent).toContain("不代表已允许搜索");
+  });
+  it.each([DemandRadar, CustomerDiscovery])("页面刷新同步更新研究摘要，失败不当成无记录 %s", async (component) => {
+    const routes: Record<string, unknown> = {
+      "/prospects/accounts": [],
+      "/runs": [{ ...run, status: "running", research: { ...research, consumed_credits: 0, stop_reason: null, completion_reason: null } }],
+    };
+    const { root, requests } = await mount(component, routes);
+    expect(root.textContent).toContain("已消耗 0");
+    routes["/runs"] = [{ ...run, research: { ...research, consumed_credits: 3 } }];
+    const refresh = [...root.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新")!;
+    refresh.click();
+    await settle();
+    expect(root.textContent).toContain("已消耗 3");
+    routes["/runs"] = new Response("{}", { status: 503 });
+    refresh.click();
+    await settle();
+    expect(root.textContent).toContain("研究运行摘要读取失败");
+    expect(root.textContent).not.toContain("暂无研究 Run");
+    expect(requests.filter((request) => request === "GET /runs")).toHaveLength(3);
+  });
   it("研究摘要出现后数据层导航不被固定高度容器压缩，仍能切换假设", async () => {
     const { root, app } = await mount(DemandRadar, { "/demand/signals": [signal], "/runs": [run] });
     const tabs = root.querySelector<HTMLElement>('nav[aria-label="需求雷达数据层"]')!;

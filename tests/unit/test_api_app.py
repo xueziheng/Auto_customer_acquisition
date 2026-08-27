@@ -69,6 +69,7 @@ _EXPECTED_API_PATHS = {
     "/commands/discovery-proposals/{proposal_id}",
     "/commands/discovery-proposals/{proposal_id}/confirm",
     "/commands/discovery-proposals/{proposal_id}/reject",
+    "/commands/discovery-proposals/{proposal_id}/execution",
     "/commitments",
     "/commitments/overdue",
     "/commitments/{commitment_id}/confirm",

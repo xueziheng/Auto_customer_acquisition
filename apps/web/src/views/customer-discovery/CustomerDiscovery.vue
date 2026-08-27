@@ -12,6 +12,7 @@ type Account = components["schemas"]["ResearchProspectAccountView"];
 type AccountDetail = components["schemas"]["ResearchProspectAccountDetailView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const researchStatus = ref<InstanceType<typeof ResearchResultsStatus> | null>(null);
 const accounts = ref<Account[]>([]);
 const selectedId = ref<string | null>(null);
 const detail = ref<AccountDetail | null>(null);
@@ -54,9 +55,9 @@ async function loadAccounts(): Promise<void> {
   const version = ++listVersion;
   loading.value = true;
   error.value = null;
-  const { data, response } = await client.GET("/prospects/accounts", {
+  const [{ data, response }] = await Promise.all([client.GET("/prospects/accounts", {
     params: { query: { limit: 200 } },
-  });
+  }), researchStatus.value?.refresh()]);
   if (version !== listVersion) return;
   loading.value = false;
   if (response.status === 403) {
@@ -162,7 +163,7 @@ onMounted(() => void loadAccounts());
     </div>
 
 
-    <ResearchResultsStatus />
+    <ResearchResultsStatus ref="researchStatus" />
     <section
       class="safe-banner"
       aria-label="只研究入口"

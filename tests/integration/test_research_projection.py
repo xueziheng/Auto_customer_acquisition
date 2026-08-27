@@ -53,7 +53,7 @@ async def test_research_summary_whitelists_and_aggregates_only_tenant_run(
                         "completion_reason": "budget_exhausted",
                         "sensitive": "must-not-leak",
                     },
-                    idempotency_key=run,
+                    idempotency_key="demand-discovery:proposal:test",
                 )
             )
             for owner, run_id, states in [
@@ -97,6 +97,11 @@ async def test_research_summary_whitelists_and_aggregates_only_tenant_run(
         )
         assert "must-not-leak" not in detail.model_dump_json()
         assert await repo.get_run(other, run) is None
+        from infra.db.discovery_execution import PostgresDiscoveryExecutionReader
+
+        execution = PostgresDiscoveryExecutionReader(factory)
+        assert await execution.find_run(tenant, "proposal:test") == run
+        assert await execution.find_run(other, "proposal:test") is None
         await transaction.rollback()
 
 

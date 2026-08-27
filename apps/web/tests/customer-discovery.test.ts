@@ -100,9 +100,11 @@ afterEach(() => {
 describe("CustomerDiscovery", () => {
   it("shows signal, legal-basis and every verification state and submits no browser-owned identity", async () => {
     let discoveryBody: Record<string, unknown> | null = null;
+    let researchReads = 0;
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       if (!(input instanceof Request)) throw new TypeError("Request required");
       const path = new URL(input.url).pathname;
+      if (path === "/runs") { researchReads += 1; return response([]); }
       if (input.method === "GET" && path === "/prospects/accounts") return response([account]);
       if (input.method === "GET" && path === `/prospects/accounts/${account.account_id}`) return response(detail);
       if (input.method === "POST" && path === "/prospects/discoveries") {
@@ -120,6 +122,9 @@ describe("CustomerDiscovery", () => {
     app.mount(root);
     await router.replace("/prospects/accounts");
     await eventually(() => expect(root.textContent).toContain(account.name));
+    expect(researchReads).toBe(1);
+    [...root.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新")!.click();
+    await eventually(() => expect(researchReads).toBe(2));
 
     const accountButton = root.querySelector<HTMLElement>(`.account-list li[role="button"]`);
     accountButton?.click();

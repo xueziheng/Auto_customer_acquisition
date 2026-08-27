@@ -83,6 +83,60 @@ async def test_status_distinguishes_paid_unknown_exhausted_and_safe_lower_bound(
     assert result.state == state
     assert result.remaining_lower_bound == remaining
     assert "reservations" not in result.model_dump()
+    assert result.can_confirm_research is True
+    assert result.confirmation_requires_recheck is (state != "free_last_verified")
+
+
+async def test_snapshot_read_failure_stays_closed_until_read_recovers():
+    class RecoveringQuota:
+        failed = True
+
+        async def snapshot(self):
+            if self.failed:
+                raise RuntimeError("敏感存储详情")
+            return snapshot(cost_status=SearchCostStatus.UNKNOWN)
+
+    quota = RecoveringQuota()
+    service = module().ResearchAccessService(TENANT, quota, configured=True)
+    failed = await service.status(TENANT)
+    assert failed.state == "snapshot_unavailable"
+    assert failed.can_confirm_research is False
+    quota.failed = False
+    recovered = await service.status(TENANT)
+    assert recovered.can_confirm_research is True
+    assert recovered.confirmation_requires_recheck is True
+
+
+@pytest.mark.parametrize("case", ["read_failure", "not_current", "not_configured", "missing_budget"])
+async def test_execution_recovery_requires_known_absence_and_current_allowed_proposal(case):
+    from types import SimpleNamespace
+
+    class Reader:
+        async def find_run(self, tenant, proposal_id):
+            assert tenant == TENANT
+            if case == "read_failure":
+                raise RuntimeError("敏感详情")
+
+    class Directives:
+        async def get_active(self, tenant):
+            return SimpleNamespace(source_proposal_id="another" if case == "not_current" else "dpr_test")
+
+    proposal = ProposalView(
+        "dpr_test", "只研究", "推断", [], {
+            "execution_mode": "research_only",
+            **{key: "1" for key in ("max_search_queries", "max_pages_read", "max_signals", "max_hypotheses")},
+        }, "confirmed", NOW,
+    )
+    if case == "missing_budget":
+        proposal = replace(proposal, parsed_fields={"execution_mode": "research_only"})
+    result = await module().read_discovery_execution(
+        TENANT, proposal, Directives(),
+        module().ResearchAccessService(TENANT, Quota(), configured=case != "not_configured"),
+        Reader(),
+    )
+    assert result.state == ("unknown" if case == "read_failure" else "not_started")
+    assert result.can_resume is False
+    assert result.run_id is None
 
 
 async def test_status_rejects_other_tenant_and_mismatched_snapshot():
@@ -143,7 +197,8 @@ async def test_proposal_projection_requires_budget_and_does_not_require_campaign
 
 
 @pytest.mark.parametrize("configured,expected", [(False, 409), (True, 200)])
-async def test_api_confirmation_gate_is_enforced_before_start(configured, expected):
+@pytest.mark.parametrize("record", [None, snapshot(cost_status=SearchCostStatus.UNKNOWN), snapshot(paygo_enabled=True)])
+async def test_api_confirmation_gate_is_enforced_before_start(configured, expected, record):
     from types import SimpleNamespace
 
     from httpx import ASGITransport, AsyncClient
@@ -208,7 +263,7 @@ async def test_api_confirmation_gate_is_enforced_before_start(configured, expect
         workflow_engine=engine,
         employee_authorizer=Phase1EmployeeAuthorizer(TENANT),
         research_access=module().ResearchAccessService(
-            TENANT, Quota(), configured=configured
+            TENANT, Quota(record), configured=configured
         ),
     )
     async with AsyncClient(

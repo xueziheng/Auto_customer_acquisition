@@ -15,6 +15,8 @@ const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const message = ref("");
 const proposal = ref<Proposal | null>(null);
 const confirmation = ref<Confirmation | null>(null);
+const execution = ref<components["schemas"]["DiscoveryExecutionView"] | null>(null);
+const receiptRunId = computed(() => confirmation.value?.run_id ?? execution.value?.run_id);
 const submitting = ref(false);
 const deciding = ref(false);
 const decisionUncertain = ref(false);
@@ -111,6 +113,7 @@ function displayValue(key: string, value: string): string {
 function resetDraft(): void {
   proposal.value = null;
   confirmation.value = null;
+  execution.value = null;
   error.value = null;
   decisionUncertain.value = false;
   statusMessage.value = "已清空当前提案；新指令仍需确认后执行。";
@@ -124,10 +127,23 @@ async function loadProposal(proposalId: string): Promise<boolean> {
     if (result.response.status === 200 && result.data) {
       proposal.value = result.data;
       decisionUncertain.value = false;
+      if (result.data.state === "confirmed") await loadExecution(proposalId);
       return true;
     }
   } catch { /* 读取失败不撤销已经收到的 POST 成功回执。 */ }
   return false;
+}
+
+async function loadExecution(proposalId: string): Promise<void> {
+  try {
+    const result = await client.GET("/commands/discovery-proposals/{proposal_id}/execution", {
+      params: { path: { proposal_id: proposalId } },
+    });
+    execution.value = result.response.status === 200 && result.data
+      ? result.data : { state: "unknown", can_resume: false };
+  } catch {
+    execution.value = { state: "unknown", can_resume: false };
+  }
 }
 
 async function refreshProposal(): Promise<void> {
@@ -151,6 +167,7 @@ async function createProposal(): Promise<void> {
   submitting.value = true;
   proposal.value = null;
   confirmation.value = null;
+  execution.value = null;
   decisionUncertain.value = false;
   error.value = null;
   statusMessage.value = "正在把指令解释为不可变提案…";
@@ -175,7 +192,8 @@ async function createProposal(): Promise<void> {
 
 async function decide(action: "confirm" | "reject"): Promise<void> {
   const current = proposal.value;
-  if (!current || current.state !== "pending_confirmation" || deciding.value || decisionUncertain.value) return;
+  if (!current || deciding.value || decisionUncertain.value) return;
+  if (current.state !== "pending_confirmation" && !(current.state === "confirmed" && action === "confirm" && execution.value?.can_resume && !receiptRunId.value)) return;
   if (action === "confirm" && current.can_confirm !== true) return;
   deciding.value = true;
   error.value = null;
@@ -190,6 +208,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
       );
       if (result.response.status === 200 && result.data) {
         confirmation.value = result.data;
+        execution.value = { state: "started", run_id: result.data.run_id, can_resume: false };
         proposal.value = { ...current, state: "confirmed", can_confirm: false };
         const refreshed = await loadProposal(current.proposal_id);
         statusMessage.value = refreshed
@@ -387,6 +406,27 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         </p>
       </div>
 
+      <section
+        v-if="proposal.state === 'confirmed' && !receiptRunId"
+        class="research-plan"
+        aria-label="工作流启动状态"
+      >
+        <p v-if="execution?.state === 'not_started'">
+          提案已确认，尚未创建 Run；提案决定不等于工作流已启动。
+        </p>
+        <p v-else>
+          提案已确认，启动状态待核实；请只读刷新，不要重复提交。
+        </p>
+        <button
+          v-if="execution?.can_resume"
+          type="button"
+          :disabled="deciding || decisionUncertain"
+          @click="decide('confirm')"
+        >
+          {{ proposal.research_access?.confirmation_requires_recheck ? "重新核验后恢复启动" : "恢复启动（沿用原提案）" }}
+        </button>
+      </section>
+
       <footer class="decision-bar">
         <button
           type="button"
@@ -398,7 +438,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         <div>
           <strong>{{ proposal.state === "pending_confirmation" ? "确认后才会执行" : `提案${stateLabel}` }}</strong>
           <span v-if="proposal.decided_by_name">决定人：{{ proposal.decided_by_name }}</span>
-          <span v-else>未确认提案不会触发任何发现任务</span>
+          <span v-else-if="proposal.state === 'pending_confirmation'">未确认提案不会触发任何发现任务</span>
         </div>
         <div
           v-if="proposal.state === 'pending_confirmation'"
@@ -417,14 +457,14 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
             :disabled="deciding || decisionUncertain || proposal.can_confirm !== true"
             @click="decide('confirm')"
           >
-            {{ deciding ? "正在提交…" : "确认并启动" }}
+            {{ deciding ? "正在提交…" : proposal.research_access?.confirmation_requires_recheck ? "确认重新核验后研究" : "确认并启动" }}
           </button>
         </div>
       </footer>
     </section>
 
     <section
-      v-if="confirmation"
+      v-if="receiptRunId"
       class="run-receipt"
       aria-label="工作流启动回执"
     >
@@ -432,13 +472,13 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         <span class="receipt-mark">✓</span>
         <div>
           <h2>受限工作流已启动</h2>
-          <p>Run {{ confirmation.run_id }} · Directive {{ confirmation.directive_id }}</p>
+          <p>Run {{ receiptRunId }} <span v-if="confirmation">· Directive {{ confirmation.directive_id }}</span></p>
         </div>
       </div>
       <RouterLink to="/demand">
         查看需求雷达 →
       </RouterLink>
-      <RouterLink :to="{ path: '/runs', query: { run: confirmation.run_id } }">
+      <RouterLink :to="{ path: '/runs', query: { run: receiptRunId } }">
         查看本次 Run →
       </RouterLink>
     </section>

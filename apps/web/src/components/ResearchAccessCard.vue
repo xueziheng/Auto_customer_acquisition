@@ -11,6 +11,9 @@ defineProps<{ status: components["schemas"]["ResearchAccessView"] | null }>();
   >
     <h3>免费公开研究 · Tavily basic</h3>
     <strong>{{ status ? researchAccessLabels[status.state] : "研究账户状态暂不可读" }}</strong>
+    <p v-if="status?.confirmation_requires_recheck">
+      确认仅请求重新核验后研究，不代表已允许搜索；只有 Gateway 核实当前免费额度并成功预留后才可搜索，不重试不确定调用、不释放原预留。
+    </p>
     <p>运行时激活尚未证实；配置存在不代表生产调度已激活。实际执行仍须经过 Tool Gateway 用量核验与预留。</p>
     <p v-if="status?.remaining_lower_bound != null">
       账户剩余额度安全下界：{{ status.remaining_lower_bound }} credits（不是供应商精确余额）

@@ -17,6 +17,7 @@ ResearchAccessState = Literal[
     "usage_unknown",
     "paid_enabled",
     "quota_exhausted",
+    "snapshot_unavailable",
 ]
 
 
@@ -27,6 +28,7 @@ class ResearchAccessView(BaseModel):
     provider: Literal["tavily"] = "tavily"
     state: ResearchAccessState
     can_confirm_research: bool
+    confirmation_requires_recheck: bool = False
     remaining_lower_bound: int | None = None
     checked_at: datetime | None = None
     runtime_activation: Literal["not_verified"] = "not_verified"
@@ -43,6 +45,15 @@ class DiscoveryProposalView(ProposalView):
     can_confirm: bool = False
     confirmation_blocked_reason: str | None = None
     research_access: ResearchAccessView | None = None
+
+
+class DiscoveryExecutionView(BaseModel):
+    """提案决定与持久 Run 分离；unknown 时不允许猜测或自动重试。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    state: Literal["not_started", "started", "unknown"]
+    run_id: str | None = None
+    can_resume: bool = False
 
 
 @dataclass(frozen=True)

@@ -6,15 +6,53 @@ from typing import Protocol
 
 from connectors.search_contracts import SearchCostStatus
 from domains.directives.schemas import ProposalView
+from domains.directives.service import DirectiveService
 from shared.errors import PermissionDenied
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import RunId, TenantId
 from tool_gateway.free_search_contracts import SearchQuotaSnapshot
 
 from .research_schemas import (
+    DiscoveryExecutionView,
     DiscoveryProposalView,
     ResearchAccessState,
     ResearchAccessView,
 )
+
+
+class DiscoveryExecutionReader(Protocol):
+    """按 tenant 与提案幂等键精确读取所有状态 Run，不限最近 N 条。"""
+
+    async def find_run(self, tenant_id: TenantId, proposal_id: str) -> RunId | None: ...
+
+
+async def read_discovery_execution(
+    tenant_id: TenantId,
+    proposal: ProposalView,
+    directives: DirectiveService,
+    access: "ResearchAccessService",
+    reader: DiscoveryExecutionReader | None,
+) -> DiscoveryExecutionView:
+    """只读恢复已持久回执；确认但未启动时，仅当前有效提案可显式恢复。"""
+    if reader is None:
+        return DiscoveryExecutionView(state="unknown")
+    try:
+        run_id = await reader.find_run(tenant_id, proposal.proposal_id)
+    except Exception:  # noqa: BLE001 查询失败不推断没有 Run，也不泄露存储详情
+        return DiscoveryExecutionView(state="unknown")
+    if run_id is not None:
+        return DiscoveryExecutionView(state="started", run_id=str(run_id))
+    if proposal.state != "confirmed":
+        return DiscoveryExecutionView(state="not_started")
+    active = await directives.get_active(tenant_id)
+    projected = await access.proposal(tenant_id, proposal)
+    return DiscoveryExecutionView(
+        state="not_started",
+        can_resume=(
+            projected.can_confirm
+            and active is not None
+            and active.source_proposal_id == proposal.proposal_id
+        ),
+    )
 
 
 class SearchQuotaSnapshotReader(Protocol):
@@ -48,7 +86,7 @@ class ResearchAccessService:
         try:
             snapshot = await self._quota.snapshot() if self._quota is not None else None
         except Exception:  # noqa: BLE001 只读故障一律脱敏并拒绝确认，不泄露存储异常
-            return ResearchAccessView(state="usage_unknown", can_confirm_research=False)
+            return ResearchAccessView(state="snapshot_unavailable", can_confirm_research=False)
         if snapshot is None:
             return ResearchAccessView(
                 state="configured_unverified", can_confirm_research=True
@@ -72,7 +110,8 @@ class ResearchAccessService:
             state = "quota_exhausted" if remaining == 0 else "free_last_verified"
         return ResearchAccessView(
             state=state,
-            can_confirm_research=state == "free_last_verified",
+            can_confirm_research=True,
+            confirmation_requires_recheck=state != "free_last_verified",
             remaining_lower_bound=remaining,
             checked_at=snapshot.checked_at,
         )

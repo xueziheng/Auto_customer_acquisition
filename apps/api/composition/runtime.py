@@ -1225,6 +1225,7 @@ def build_phase1_dependencies(
         runtime_actor=provider_readiness_actor,
         now=now,
     )
+    from infra.db.discovery_execution import PostgresDiscoveryExecutionReader
     from infra.db.research_evidence import PostgresResearchEvidenceReader
     from infra.db.search_quota import PostgresSearchQuotaRepository
 
@@ -1269,5 +1270,6 @@ def build_phase1_dependencies(
         work_uploads=work_uploads,
         run_audit=run_audit,
         research_access=research_access,
+        research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
     )

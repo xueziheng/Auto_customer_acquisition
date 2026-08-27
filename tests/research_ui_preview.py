@@ -200,6 +200,10 @@ class Preview:
     async def snapshot(self):
         return None
 
+    async def find_run(self, tenant, proposal_id):
+        assert tenant == TENANT
+        return next((run.run_id for run in self.runs.values() if run.subject_ref == proposal_id), None)
+
     async def list_runs(self, tenant, **kwargs):
         assert tenant == TENANT
         return list(reversed(self.runs.values()))
@@ -271,6 +275,7 @@ dependencies = SimpleNamespace(
     ),
     workflow_engine=fixture,
     research_access=ResearchAccessService(TENANT, fixture, configured=True),
+    research_execution=fixture,
     research_evidence=fixture,
     demand_radar=fixture,
     prospecting=fixture,

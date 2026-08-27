@@ -15,6 +15,7 @@ type NeedCluster = components["schemas"]["NeedClusterView"];
 type RadarTab = "signals" | "hypotheses" | "needs" | "clusters";
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const researchStatus = ref<InstanceType<typeof ResearchResultsStatus> | null>(null);
 const activeTab = ref<RadarTab>("signals");
 const signals = ref<Signal[]>([]);
 const hypotheses = ref<Hypothesis[]>([]);
@@ -72,6 +73,7 @@ async function loadRadar(): Promise<void> {
       client.GET("/demand/hypotheses", { params: { query: { limit: 200 } } }),
       client.GET("/demand/needs", { params: { query: { limit: 200 } } }),
       client.GET("/demand/clusters", { params: { query: { limit: 200 } } }),
+      researchStatus.value?.refresh(),
     ]);
     const results = [signalResult, hypothesisResult, needResult, clusterResult];
     if (results.some((result) => result.response.status !== 200)) {
@@ -119,7 +121,7 @@ onMounted(() => void loadRadar());
     </div>
 
 
-    <ResearchResultsStatus />
+    <ResearchResultsStatus ref="researchStatus" />
     <section
       class="legend"
       aria-label="信息性质图例"

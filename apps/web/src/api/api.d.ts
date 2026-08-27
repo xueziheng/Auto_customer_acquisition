@@ -106,6 +106,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/commands/discovery-proposals/{proposal_id}/execution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Discovery Execution
+         * @description 读取原提案对应 Run；仅返回恢复所需的安全元数据。
+         */
+        get: operations["get_discovery_execution_commands_discovery_proposals__proposal_id__execution_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/commands/discovery-proposals/{proposal_id}/reject": {
         parameters: {
             query?: never;
@@ -2136,6 +2156,24 @@ export interface components {
             /** Workflow Type */
             workflow_type: string;
         };
+        /**
+         * DiscoveryExecutionView
+         * @description 提案决定与持久 Run 分离；unknown 时不允许猜测或自动重试。
+         */
+        DiscoveryExecutionView: {
+            /**
+             * Can Resume
+             * @default false
+             */
+            can_resume: boolean;
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "not_started" | "started" | "unknown";
+        };
         /** DiscoveryProposalBody */
         DiscoveryProposalBody: {
             /** Message */
@@ -3474,6 +3512,11 @@ export interface components {
             /** Checked At */
             checked_at?: string | null;
             /**
+             * Confirmation Requires Recheck
+             * @default false
+             */
+            confirmation_requires_recheck: boolean;
+            /**
              * Provider
              * @default tavily
              * @constant
@@ -3491,7 +3534,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "not_configured" | "configured_unverified" | "free_last_verified" | "usage_unknown" | "paid_enabled" | "quota_exhausted";
+            state: "not_configured" | "configured_unverified" | "free_last_verified" | "usage_unknown" | "paid_enabled" | "quota_exhausted" | "snapshot_unavailable";
         };
         /**
          * ResearchEvidence
@@ -4303,6 +4346,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DiscoveryConfirmationResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_discovery_execution_commands_discovery_proposals__proposal_id__execution_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryExecutionView"];
                 };
             };
             /** @description 请求参数无效 */

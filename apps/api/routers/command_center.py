@@ -20,8 +20,8 @@ from ..dependencies import (
     require_employee_action,
 )
 from ..identity import RequestIdentity
-from ..research import ResearchAccessService
-from ..research_schemas import DiscoveryProposalView
+from ..research import ResearchAccessService, read_discovery_execution
+from ..research_schemas import DiscoveryExecutionView, DiscoveryProposalView
 
 router = APIRouter()
 
@@ -147,6 +147,15 @@ async def confirm_discovery_proposal(
     directives = _directives(dependencies)
     proposal = await directives.get_proposal(identity.tenant_id, proposal_id)
     projected = await _research(dependencies, identity).proposal(identity.tenant_id, proposal)
+    if proposal.state == "confirmed" and projected.execution_mode == "research_only":
+        execution = await read_discovery_execution(
+            identity.tenant_id, proposal, directives, _research(dependencies, identity),
+            dependencies.research_execution,
+        )
+        if execution.state == "unknown":
+            raise TransientError("无法核实工作流启动状态，请先只读刷新")
+        if execution.state == "not_started" and not execution.can_resume:
+            raise InvalidStateTransition("当前提案不能恢复启动，请检查配置、预算与生效状态")
     if proposal.state == "pending_confirmation" and not projected.can_confirm:
         raise InvalidStateTransition(f"提案暂不能确认：{projected.confirmation_blocked_reason}")
     if proposal.state == "pending_confirmation":
@@ -178,6 +187,25 @@ async def confirm_discovery_proposal(
         directive_id=active.directive_id,
         run_id=str(run_id),
         workflow_type="demand_discovery",
+    )
+
+
+@router.get(
+    "/discovery-proposals/{proposal_id}/execution",
+    response_model=DiscoveryExecutionView,
+    dependencies=[_write_gate],
+)
+async def get_discovery_execution(
+    proposal_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> DiscoveryExecutionView:
+    """读取原提案对应 Run；仅返回恢复所需的安全元数据。"""
+    directives = _directives(dependencies)
+    proposal = await directives.get_proposal(identity.tenant_id, _proposal_id(proposal_id))
+    return await read_discovery_execution(
+        identity.tenant_id, proposal, directives, _research(dependencies, identity),
+        dependencies.research_execution,
     )
 
 
