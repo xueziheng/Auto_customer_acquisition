@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
@@ -20,7 +20,11 @@ const statusFilter = ref("");
 const workflowFilter = ref("");
 const listLoading = ref(true);
 const detailLoading = ref(false);
-const error = ref<string | null>(null);
+const listError = ref<string | null>(null);
+const detailError = ref<string | null>(null);
+const error = computed(() => detailError.value ?? listError.value);
+let listRequestVersion = 0;
+let detailRequestVersion = 0;
 
 const filteredRuns = computed(() => {
   const workflow = workflowFilter.value.trim().toLowerCase();
@@ -70,58 +74,81 @@ function statusLabel(status: string): string {
 }
 
 async function loadDetail(runId: string): Promise<void> {
+  const requestVersion = ++detailRequestVersion;
   selectedRunId.value = runId;
+  detail.value = null;
   detailLoading.value = true;
-  error.value = null;
+  detailError.value = null;
   try {
     const result = await client.GET("/runs/{run_id}", {
       params: { path: { run_id: runId } },
     });
+    if (requestVersion !== detailRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       detail.value = null;
-      error.value = safeError(result.response.status);
+      detailError.value = safeError(result.response.status);
       return;
     }
     detail.value = result.data;
   } catch {
+    if (requestVersion !== detailRequestVersion) return;
     detail.value = null;
-    error.value = "无法连接 Run 审计服务";
+    detailError.value = "无法连接 Run 审计服务";
   } finally {
-    detailLoading.value = false;
+    if (requestVersion === detailRequestVersion) detailLoading.value = false;
   }
 }
 
 async function loadRuns(): Promise<void> {
+  const requestVersion = ++listRequestVersion;
   listLoading.value = true;
-  error.value = null;
+  listError.value = null;
   try {
     const result = await client.GET("/runs", {
       params: { query: { limit: 50 } },
     });
+    if (requestVersion !== listRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       runs.value = [];
-      detail.value = null;
-      error.value = safeError(result.response.status);
+      listError.value = safeError(result.response.status);
       return;
     }
     runs.value = result.data;
-    const next = runs.value.find((run) => run.run_id === (selectedRunId.value ?? route.query.run))
-      ?? runs.value[0];
-    if (next) await loadDetail(next.run_id);
-    else {
-      selectedRunId.value = null;
-      detail.value = null;
+    if (selectedRunId.value === null && route.query.run === undefined && runs.value[0]) {
+      await loadDetail(runs.value[0].run_id);
     }
   } catch {
+    if (requestVersion !== listRequestVersion) return;
     runs.value = [];
-    detail.value = null;
-    error.value = "无法连接 Run 审计服务";
+    listError.value = "无法连接 Run 审计服务";
   } finally {
-    listLoading.value = false;
+    if (requestVersion === listRequestVersion) listLoading.value = false;
   }
 }
 
+async function refreshRuns(): Promise<void> {
+  await Promise.all([
+    loadRuns(),
+    selectedRunId.value ? loadDetail(selectedRunId.value) : Promise.resolve(),
+  ]);
+}
+
+watch(() => route.query.run, (runId) => {
+  detailRequestVersion += 1;
+  selectedRunId.value = null;
+  detail.value = null;
+  detailLoading.value = false;
+  detailError.value = null;
+  if (typeof runId === "string" && runId.trim()) void loadDetail(runId);
+  else if (runId !== undefined) detailError.value = "Run 链接无效，请使用单个非空 Run ID";
+  else if (runs.value[0]) void loadDetail(runs.value[0].run_id);
+}, { immediate: true });
+
 onMounted(() => void loadRuns());
+onBeforeUnmount(() => {
+  listRequestVersion += 1;
+  detailRequestVersion += 1;
+});
 </script>
 
 <template>
@@ -136,7 +163,7 @@ onMounted(() => void loadRuns());
       <button
         type="button"
         :disabled="listLoading"
-        @click="loadRuns"
+        @click="refreshRuns"
       >
         {{ listLoading ? "加载中…" : "刷新记录" }}
       </button>

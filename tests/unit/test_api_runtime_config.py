@@ -88,6 +88,30 @@ def test_tavily_configuration_is_explicit_reference_only_and_hidden_from_repr():
         Phase1RuntimeSettings.from_environ({**_VALID_ENV, "TAVILY_API_KEY_REF": "not a reference"})
 
 
+@pytest.mark.parametrize("exclusive", ["false", "true"])
+def test_empty_optional_tavily_reference_preserves_legacy_configuration(exclusive: str) -> None:
+    settings = Phase1RuntimeSettings.from_environ({
+        **_VALID_ENV,
+        "TAVILY_API_KEY_REF": "",
+        "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED": exclusive,
+    })
+
+    assert settings.tavily_api_key_ref is None
+    assert settings.tavily_exclusive_account_confirmed is (exclusive == "true")
+
+
+@pytest.mark.parametrize("reference", [" ", " SYNTHETIC_KEY", "SYNTHETIC_KEY ", "not-a-ref"])
+def test_nonempty_invalid_optional_tavily_reference_is_rejected(reference: str) -> None:
+    with pytest.raises(RuntimeConfigurationError) as exc:
+        Phase1RuntimeSettings.from_environ({
+            **_VALID_ENV,
+            "TAVILY_API_KEY_REF": reference,
+            "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED": "false",
+        })
+
+    assert exc.value.field_name == "TAVILY_API_KEY_REF"
+
+
 @pytest.mark.parametrize("name", sorted(_VALID_ENV))
 def test_every_runtime_variable_is_required_and_error_is_sanitized(name: str) -> None:
     env = dict(_VALID_ENV)

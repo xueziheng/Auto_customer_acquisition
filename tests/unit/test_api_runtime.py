@@ -129,6 +129,24 @@ def test_import_and_zero_arg_app_do_not_read_environment_or_create_engine(
     assert isinstance(app.state.dependencies, UnconfiguredApiDependencies)
 
 
+@pytest.mark.parametrize("exclusive", ["false", "true"])
+async def test_empty_tavily_reference_does_not_enable_research_in_runtime(exclusive: str) -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    settings = Phase1RuntimeSettings.from_environ({
+        **_runtime_environ("postgresql+asyncpg://db.invalid/tradeos"),
+        "TAVILY_API_KEY_REF": "",
+        "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED": exclusive,
+    })
+    dependencies = module.build_phase1_dependencies(
+        settings, object(), now=lambda: datetime.now(UTC), secret_resolver=_ManualSecrets(),
+    )
+
+    access = await dependencies.research_access.status(TenantId("tenant-runtime"))
+
+    assert access.state == "not_configured"
+    assert access.can_confirm_research is False
+
+
 def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     module = importlib.import_module("apps.api.composition.runtime")
     settings = Phase1RuntimeSettings.from_environ(

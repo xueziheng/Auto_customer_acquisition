@@ -345,7 +345,7 @@ class Phase1RuntimeSettings:
             environ.get("TRADEOS_TRADE_MANAGER_MODEL", "gpt-5-mini")
         )
         tavily_ref = None
-        if "TAVILY_API_KEY_REF" in environ:
+        if environ.get("TAVILY_API_KEY_REF"):
             tavily_ref = _read(environ, "TAVILY_API_KEY_REF", validate_environment_secret_reference)
         exclusive = environ.get("TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED", "false")
         if exclusive not in {"true", "false"}:
