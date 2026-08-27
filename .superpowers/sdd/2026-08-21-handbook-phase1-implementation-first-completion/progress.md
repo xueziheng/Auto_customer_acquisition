@@ -1,5 +1,20 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-21-handbook-phase1-implementation-first-completion.md
 
+## 当前结论（2026-08-27，本地合并复验修复）
+
+- Ruling R8：首次合并到 main 后复验得到 `3 failed / 3996 passed`。原工作树的部分脚本
+  子进程实际加载 editable 安装指向的主目录，因此历史“精确 HEAD 全绿”不能覆盖这部分
+  子进程。此结论已更正，保留历史记录但不沿用其完整性判断。
+- 修复提交 `6a0e644312983514114336d61822ed53f78fec90`：对齐正式
+  `CampaignStateChanged` 事件的严格计数；8 个演示启动器显式绑定当前 checkout，
+  不继承父进程额外环境。新增 8 项真实子进程回归先 RED 后 GREEN，相关 17 项通过。
+- 独立审查通过，无 Critical / Important / Minor。修复分支和合并后的 main 均重新执行：
+  后端 `4007 passed / 6 deselected`、前端 `151 passed`、强制浏览器 `6 passed`；
+  Ruff、mypy 394 文件、七类边界、敏感扫描、API 类型零差异、前端类型与构建均通过。
+- 用户已选择本地合并；修复已快进到 main，未 push/deploy。开发分支及工作树登记已清理；
+  简报、审查记录和目录残留均已归档保留。详情见 [修复验收报告](merge-repair-report.md)。
+- 以上仅恢复受控代码验收结论；真实 provider/model/mail 与四项运营标准仍为 `not_run`。
+
 ## Preflight
 
 | Tasks / interface | Producer → consumer | Finding |
