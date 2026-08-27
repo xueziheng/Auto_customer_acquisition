@@ -80,7 +80,7 @@ def _run_demo(
     return subprocess.run(
         [sys.executable, str(_SCRIPT)],
         cwd=_ROOT,
-        env=environment,
+        env={**environment, "PYTHONPATH": str(_ROOT)},
         capture_output=True,
         text=True,
         timeout=120,
@@ -413,7 +413,11 @@ def _summary(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
         "stopped_bounced",
         "stopped_suppressed",
     ]
-    assert value["outbox_counts"] == {"MessageSent": 2, "SuppressionAdded": 2}
+    assert value["outbox_counts"] == {
+        "CampaignStateChanged": 1,
+        "MessageSent": 2,
+        "SuppressionAdded": 2,
+    }
     assert isinstance(value["tenant_id"], str)
     assert isinstance(value["identity_id"], str)
     assert isinstance(value["campaign_id"], str)

@@ -2,7 +2,7 @@
 
 用 conftest 的 ``db_url`` fixture（隔离 testcontainers Postgres + alembic upgrade head，
 repr 脱敏），子进程运行 ``scripts/demo_opportunities.py``（``sys.executable``、仓库根、
-仅经 env 注入 DATABASE_URL）。断言退出码 0、stdout 含中文走查关键字，且 stdout/stderr
+仅经 env 注入 DATABASE_URL 和当前 checkout 的 PYTHONPATH）。断言退出码 0、stdout 含中文走查关键字，且 stdout/stderr
 **不得包含注入的完整 db_url**。
 
 RED：脚本缺失 → 子进程非零（非 Docker/fixture/语法假红）。Docker 不可用时按现有
@@ -29,12 +29,12 @@ _WALKTHROUGH_KEYWORDS = (
 )
 
 
-def test_demo_opportunities_walkthrough(db_url: str) -> None:
-    """子进程运行演示脚本：退出码 0、含全部走查关键字、不泄露完整连接串。"""
+def _run_demo(database_url: str) -> subprocess.CompletedProcess[str]:
+    """用受限环境启动真实子进程，便于独立验证 checkout 隔离。"""
     # 最小权限：不给子进程继承其余环境变量（不传父进程潜在 token/secret）。
-    # sys.executable 是绝对路径、cwd 已给，无需 PATH/HOME/PYTHONPATH。
-    env = {"DATABASE_URL": str(db_url)}
-    result = subprocess.run(
+    # 脚本模式不会将 cwd 加入 sys.path，必须显式绑定 checkout，避免 editable 安装串树。
+    env = {"DATABASE_URL": database_url, "PYTHONPATH": str(_REPO_ROOT)}
+    return subprocess.run(
         [sys.executable, "scripts/demo_opportunities.py"],
         capture_output=True,
         text=True,
@@ -43,6 +43,11 @@ def test_demo_opportunities_walkthrough(db_url: str) -> None:
         env=env,
         check=False,  # 显式：非零退出由断言处理，不抛异常
     )
+
+
+def test_demo_opportunities_walkthrough(db_url: str) -> None:
+    """子进程运行演示脚本：退出码 0、含全部走查关键字、不泄露完整连接串。"""
+    result = _run_demo(str(db_url))
     assert result.returncode == 0, "演示脚本运行失败（不输出连接内容）"
 
     for keyword in _WALKTHROUGH_KEYWORDS:

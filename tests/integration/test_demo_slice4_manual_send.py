@@ -81,7 +81,7 @@ def _run_demo(
     return subprocess.run(
         [sys.executable, "scripts/demo_slice4_manual_send.py"],
         cwd=_REPO_ROOT,
-        env=env,
+        env={**env, "PYTHONPATH": str(_REPO_ROOT)},
         capture_output=True,
         text=True,
         timeout=240,

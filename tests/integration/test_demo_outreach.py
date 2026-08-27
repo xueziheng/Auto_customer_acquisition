@@ -71,7 +71,7 @@ def _run_demo(database_url: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "scripts/demo_outreach.py"],
         cwd=_REPO_ROOT,
-        env={"DATABASE_URL": database_url},
+        env={"DATABASE_URL": database_url, "PYTHONPATH": str(_REPO_ROOT)},
         capture_output=True,
         text=True,
         timeout=120,
@@ -101,7 +101,7 @@ def _successful_run(
     assert isinstance(summary["message_attempt_id"], str)
     assert isinstance(summary["suppression_id"], str)
     assert summary["stopped_count"] == 1
-    assert summary["outbox_counts"] == {"SuppressionAdded": 1}
+    assert summary["outbox_counts"] == {"CampaignStateChanged": 1, "SuppressionAdded": 1}
 
     audit = [json.loads(line) for line in result.stderr.splitlines()]
     assert len(audit) == 7
@@ -241,7 +241,7 @@ async def _readback(
     activation = next(row for row in actions if row.action == "campaign:activate")
     assert activation.action_key.endswith(f":activate:{campaign.approval_id}")
     assert Counter(row.event_type for row in outbox) == Counter(
-        {"SuppressionAdded": 1}
+        {"CampaignStateChanged": 1, "SuppressionAdded": 1}
     )
     assert all(row.event_type != "MessageSent" for row in outbox)
     return {

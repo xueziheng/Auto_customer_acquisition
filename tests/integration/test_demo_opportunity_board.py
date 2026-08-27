@@ -58,7 +58,7 @@ def _run_demo(database_url: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         cwd=_REPO_ROOT,
-        env={"DATABASE_URL": database_url},
+        env={"DATABASE_URL": database_url, "PYTHONPATH": str(_REPO_ROOT)},
         check=False,
     )
 

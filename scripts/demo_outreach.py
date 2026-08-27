@@ -239,7 +239,7 @@ async def _summary(
         campaign is None
         or campaign.state != "active"
         or campaign.current_version != 1
-        or counts != Counter({"SuppressionAdded": 1})
+        or counts != Counter({"CampaignStateChanged": 1, "SuppressionAdded": 1})
     ):
         raise RuntimeError("演示持久化摘要不符合预期")
     return {

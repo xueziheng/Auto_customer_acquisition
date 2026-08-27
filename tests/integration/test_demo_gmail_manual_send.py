@@ -49,6 +49,7 @@ def _run_demo(database_url: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "scripts/demo_gmail_manual_send.py"],
         cwd=_REPO_ROOT,
         env={
+            "PYTHONPATH": str(_REPO_ROOT),
             "DATABASE_URL": database_url,
             "TRADEOS_GMAIL_DEMO_MODE": "controlled",
         },
