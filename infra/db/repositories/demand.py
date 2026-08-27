@@ -15,6 +15,7 @@ from domains.demand.repository import (
     DemandSignalRepository,
     SnapshotArtifactEvidenceRepository,
 )
+from domains.demand.schemas import ResearchEvidence
 from infra.db.tables import DemandSignalRow, RawArtifactRow
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
@@ -95,6 +96,10 @@ def _signal_to_row(signal: DemandSignal) -> DemandSignalRow:
         source_url=signal.provenance.source_url,
         page_hash=signal.provenance.page_hash,
         snapshot_artifact_ref=signal.snapshot_artifact_ref,
+        research_evidence=(signal.research_evidence.model_dump(mode="json")
+                           if signal.research_evidence is not None else None),
+        discovery_key=(signal.research_evidence.discovery_key
+                       if signal.research_evidence is not None else ""),
     )
 
 
@@ -113,6 +118,8 @@ def _row_to_signal(row: DemandSignalRow) -> DemandSignal:
         ),
         discard_reason=row.discard_reason,
         snapshot_artifact_ref=row.snapshot_artifact_ref,
+        research_evidence=(ResearchEvidence.model_validate(row.research_evidence)
+                           if row.research_evidence is not None else None),
         provenance=Provenance(
             source_type=SourceType(row.source_type),
             source_id=row.source_id,
@@ -159,6 +166,10 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
                 source_url=signal.provenance.source_url,
                 page_hash=signal.provenance.page_hash,
                 snapshot_artifact_ref=signal.snapshot_artifact_ref,
+                research_evidence=(signal.research_evidence.model_dump(mode="json")
+                                   if signal.research_evidence is not None else None),
+                discovery_key=(signal.research_evidence.discovery_key
+                               if signal.research_evidence is not None else ""),
             )
             .on_conflict_do_nothing(constraint="uq_demand_signals_source_identity")
         )
@@ -185,6 +196,7 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
         signal_type: str,
         source_type: str,
         source_id: str,
+        discovery_key: str = "",
     ) -> DemandSignal | None:
         self._require_tenant(tenant_id, "demand_signal_find_duplicate")
         row = (
@@ -195,6 +207,7 @@ class DemandSignalRepositoryImpl(_DemandRepository, DemandSignalRepository):
                     DemandSignalRow.signal_type == signal_type,
                     DemandSignalRow.source_type == source_type,
                     DemandSignalRow.source_id == source_id,
+                    DemandSignalRow.discovery_key == discovery_key,
                 )
             )
         ).scalar_one_or_none()

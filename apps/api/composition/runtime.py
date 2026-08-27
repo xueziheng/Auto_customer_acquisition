@@ -1177,12 +1177,14 @@ def build_phase1_dependencies(
     )
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
+    research_definition = build_demand_discovery_definition(version=2)
     playbook_definition = build_playbook_change_definition()
     country_policy_definition = build_country_policy_change_definition()
     start_only_handler = _StartOnlyWorkflowHandler()
     for step in (
         *account_definition.steps,
         *demand_definition.steps,
+        *research_definition.steps,
         *playbook_definition.steps,
         *country_policy_definition.steps,
     ):
@@ -1208,6 +1210,7 @@ def build_phase1_dependencies(
     register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
     workflow.register(account_definition)
     workflow.register(demand_definition)
+    workflow.register(research_definition)
     workflow.register(playbook_definition)
     workflow.register(country_policy_definition)
     provider_readiness_actor = ProviderReadinessActor(

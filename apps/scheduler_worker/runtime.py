@@ -572,9 +572,10 @@ class SchedulerDomainDependencies:
             raise ValidationError("scheduler account_discovery 依赖未完整配置")
         if self.demand_discovery is not None and (
             not isinstance(self.demand_discovery, DemandDiscoveryComposition)
-            or self.account_discovery is None
-            or self.demand_discovery.prospecting
-            is not self.account_discovery.prospecting
+            or (
+                self.account_discovery is not None
+                and self.demand_discovery.prospecting is not self.account_discovery.prospecting
+            )
         ):
             raise ValidationError("scheduler demand_discovery 依赖未完整配置")
 
@@ -1200,7 +1201,8 @@ class SchedulerRuntimeFactory:
                     ),
                     now=self._now,
                 )
-                account_queue = _AccountDiscoveryWorkflowQueue()
+                if self._dependencies.account_discovery is not None:
+                    account_queue = _AccountDiscoveryWorkflowQueue()
                 demand_handlers = build_demand_discovery_handlers(
                     task_reader=demand_discovery.task_reader,
                     searcher=web_tools.searcher,
@@ -1209,6 +1211,7 @@ class SchedulerRuntimeFactory:
                     demand=demand_discovery.demand,
                     prospecting=demand_discovery.prospecting,
                     account_queue=account_queue,
+                    free_search_enabled=demand_discovery.web_tools.provider == "tavily",
                 )
             workflow = PostgresWorkflowEngine(
                 factory,

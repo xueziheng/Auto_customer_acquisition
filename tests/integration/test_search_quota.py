@@ -561,7 +561,7 @@ async def test_0039_roundtrip_schema_matches_orm(db_url):
             await conn.run_sync(contract)
             assert (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0039"
+                == "0040"
             )
     finally:
         _run_alembic(db_url, "upgrade", "head")

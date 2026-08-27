@@ -2834,6 +2834,7 @@ class DemandSignalRow(Base):
             "signal_type",
             "source_type",
             "source_id",
+            "discovery_key",
             name="uq_demand_signals_source_identity",
         ),
         ForeignKeyConstraint(
@@ -2905,6 +2906,8 @@ class DemandSignalRow(Base):
     source_url: Mapped[str | None] = mapped_column(String(2000))
     page_hash: Mapped[str | None] = mapped_column(String(200))
     snapshot_artifact_ref: Mapped[str | None] = mapped_column(String(40))
+    research_evidence: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB)
+    discovery_key: Mapped[str] = mapped_column(String(64), server_default=text("''"))
 
 
 class ProspectAccountRow(Base):

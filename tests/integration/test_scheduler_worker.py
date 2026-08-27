@@ -1455,6 +1455,50 @@ async def test_hunter_disabled_builds_without_contact_tools_or_activation(
     assert transport_calls == 0
 
 
+async def test_research_scheduler_starts_without_campaign_or_contact_composition(db_url: str) -> None:
+    from dataclasses import replace
+    from unittest.mock import AsyncMock, Mock
+
+    from apps.scheduler_worker.web_discovery import WebDiscoveryToolComposition
+    from artifact_store.store import RawArtifactStore
+    from connectors.tavily.transport import TavilySearchApiTransport
+    from connectors.web_search.transport import SafePublicPageHttpTransport
+    from domains.demand.service import DemandService
+    from domains.prospecting.service import ProspectingService
+    from tool_gateway.checks.web_discovery import WebResearchPlaybookReader
+    from workflows.demand_discovery.ports import (
+        DemandDiscoveryTaskReader,
+        DemandIntelligenceCapability,
+    )
+
+    runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
+    tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNBZ")
+    class NoSecrets:
+        def resolve(self, ref):
+            raise AssertionError("研究组合启动不得解析Provider凭证")
+    web = WebDiscoveryToolComposition(
+        playbook=AsyncMock(spec=WebResearchPlaybookReader), secret_resolver=NoSecrets(),
+        secret_ref="TEST_TAVILY_REF", search_transport=TavilySearchApiTransport(),
+        page_transport=SafePublicPageHttpTransport(), artifacts=Mock(spec=RawArtifactStore),
+        provider="tavily", exclusive_account_confirmed=True,
+    )
+    discovery = runtime_module.DemandDiscoveryComposition(
+        task_reader=AsyncMock(spec=DemandDiscoveryTaskReader),
+        capability=AsyncMock(spec=DemandIntelligenceCapability), demand=AsyncMock(spec=DemandService),
+        prospecting=AsyncMock(spec=ProspectingService), web_tools=web,
+    )
+    dependencies = replace(_factory_dependencies(runtime_module, with_hunter=False),
+                           demand_discovery=discovery)
+    factory = runtime_module.SchedulerRuntimeFactory(
+        _factory_environ(db_url, tenant, hunter_enabled=False), dependencies,
+        resolver_factory=_FactoryResolver, health_server_factory=_FactoryHealthServer,
+    )
+    async with factory() as runtime:
+        assert "demand_discovery.v2.execute_search" in runtime.workflow._handlers
+        assert not any(name.startswith("account_discovery.") for name in runtime.workflow._handlers)
+        assert runtime.activation is None
+
+
 async def test_hunter_enabled_without_matching_configuration_fails_before_secrets(
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,

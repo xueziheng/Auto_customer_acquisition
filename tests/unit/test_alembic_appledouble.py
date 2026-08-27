@@ -28,7 +28,7 @@ def _valid_appledouble_sidecar() -> bytes:
 
 
 def test_project_alembic_runner_removes_appledouble_sidecar_before_listing_heads() -> None:
-    """受控入口清理 AppleDouble 后仍只能发现 0039 这个有效 head。"""
+    """受控入口清理 AppleDouble 后仍只能发现 0040 这个有效 head。"""
     sidecar = _VERSIONS / "._0036_reply_acceptance_fixes.py"
     unrelated = _VERSIONS / "._preserve-me.txt"
     sidecar.write_bytes(_valid_appledouble_sidecar())
@@ -44,7 +44,7 @@ def test_project_alembic_runner_removes_appledouble_sidecar_before_listing_heads
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "0039 (head)"
+        assert result.stdout.strip() == "0040 (head)"
         assert unrelated.exists()
     finally:
         sidecar.unlink(missing_ok=True)

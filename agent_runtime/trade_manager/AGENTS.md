@@ -23,3 +23,11 @@
 
 - 任何直接落库（一切经 ChangeSet）
 - 任何对外发送（经工作流与审批）
+
+## 研究提案
+
+明确只研究时输出research_only与三线路查询；不得要求触达Campaign，也不能据此发信。
+历史payload缺execution_mode仍按outreach_preparation解码，继续要求原触达字段。
+所有预算必须来自老板明确配置，经展示与确认才能执行。
+新模型输出的每条查询在两种模式都必须提供非空discovery_lane；只有历史持久化
+decoder允许缺线路。共享输入护栏包括Tavily前缀形状；疑似凭证不得到模型，不回显。

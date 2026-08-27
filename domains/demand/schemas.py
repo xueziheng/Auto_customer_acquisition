@@ -9,8 +9,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Literal
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
@@ -23,6 +30,92 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from shared.schemas.money import Money
+
+
+class ResearchEvidence(BaseModel):
+    """研究来源归属；查询国家不是企业所在地，自述不是工商核验。
+
+    由受信编排从确认查询和原页面计算，模型不可设置。保守支持英文第一人称
+    “We are <名称>, ...”以及同主体总部/所在地句式；不识别时保留待核验。
+    """
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    proposal_id: str = Field(min_length=1, max_length=64)
+    query: str = Field(min_length=1, max_length=400)
+    discovery_lane: Literal["importer", "distributor", "ecommerce"]
+    query_country: str = Field(pattern=r"^[A-Z]{2}$")
+    query_category: str = Field(min_length=1, max_length=100)
+    source_kind: Literal["company_self_description", "directory_listing", "unverified_public_page"]
+    identity_status: Literal["self_described", "pending_verification"]
+    company_name: str | None = None
+    website_domain: str | None = None
+    country: str | None = None
+    identity_quote: str | None = None
+    country_quote: str | None = None
+    source_url: str = Field(min_length=1, max_length=2000)
+
+    @property
+    def discovery_key(self) -> str:
+        """同一提案、查询、线路、URL重放稳定，跨线路绝不吞证据。"""
+        identity = (
+            self.proposal_id, self.query, self.discovery_lane,
+            self.query_country, self.query_category, self.source_url,
+        )
+        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+
+    @classmethod
+    def from_page(
+        cls, *, proposal_id: str, query: str, discovery_lane: str,
+        query_country: str, query_category: str, text: str, url: str,
+    ) -> ResearchEvidence:
+        """只提取受支持的自述，不从TLD、配送地、query country推断所在地。"""
+        base: dict[str, object] = {
+            "proposal_id": proposal_id, "query": query, "discovery_lane": discovery_lane,
+            "query_country": query_country, "query_category": query_category, "source_url": url,
+            "identity_status": "pending_verification", "source_kind": "unverified_public_page",
+        }
+        if re.search(
+            r"\b(?:directory|directories|dealer locator|find a dealer|dealer listings|"
+            r"business listings|brand dealers)\b|经销商目录|企业名录|行业目录",
+            text, re.IGNORECASE,
+        ) or re.search(r"/(?:directory|directories|dealers|companies)(?:/|$)", urlsplit(url).path):
+            return cls.model_validate({**base, "source_kind": "directory_listing"})
+        identity = re.search(
+            r"(?:^|[.\n]\s*)(We are ([A-Z][A-Za-z0-9 &'-]{1,100}), "
+            r"(?:an? |the )[^\n.]{1,200}[.])", text,
+        )
+        if identity is None:
+            return cls.model_validate(base)
+        name = identity.group(2)
+        base.update(source_kind="company_self_description",
+                    company_name=name, identity_quote=identity.group(1))
+        # 不接受第三方描述、目的地、分支机构地址或低写 us 等不完整证据。
+        location = re.search(
+            rf"(?:^|[.\n]\s*)((?:We are|{re.escape(name)} is) "
+            r"(?:headquartered|based|located) in (?:the )?"
+            r"([A-Za-z][A-Za-z ]{1,60})(?=[.,\n]|$))", text,
+        )
+        aliases = {
+            "United States": "US", "United States of America": "US",
+            "Germany": "DE", "United Kingdom": "GB", "Canada": "CA",
+            "Australia": "AU", "New Zealand": "NZ", "France": "FR",
+            "Spain": "ES", "Italy": "IT", "Netherlands": "NL",
+        }
+        country = None
+        if location is not None:
+            raw_country = location.group(2).strip()
+            country = aliases.get(raw_country)
+            if raw_country in set(aliases.values()):
+                country = raw_country
+        hostname = urlsplit(url).hostname
+        if country is not None and hostname is not None:
+            base.update(
+                identity_status="self_described", country=country,
+                website_domain=hostname.lower().removeprefix("www."),
+                country_quote=location.group(1) if location else None,
+            )
+        return cls.model_validate(base)
 
 
 @dataclass(frozen=True)
@@ -67,6 +160,7 @@ class DemandSignalView:
     page_hash: str | None
     snapshot_artifact_ref: str | None
     is_inference: bool = False
+    research_evidence: ResearchEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +210,7 @@ class SignalCaptureRequest:
     source_url: str | None = None
     page_hash: str | None = None
     snapshot_artifact_ref: str | None = None
+    research_evidence: ResearchEvidence | None = None
 
 
 @dataclass(frozen=True)

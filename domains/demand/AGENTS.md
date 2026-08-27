@@ -105,3 +105,9 @@ validated ──→ sourcing_ready ──→ handed_to_sourcing
 四层模型、状态机、完整度推导、证据管理全部要有。
 
 `NeedCluster` 只建模型和聚类接口，**不做聚类驱动的寻源优先级**——Phase 1 已验证需求只有个位数，聚不出东西。Phase 2 再接（见 `ROADMAP.md`）。
+
+## Phase 2 公开研究证据
+
+ResearchEvidence 是需求信号的不可变来源归属，不是新增 Lead。查询国家与真实所在地分离；
+缺官网/所在地自述证据保留 pending_verification，域服务也禁止据此创建假设。研究公开
+RFQ不算客户回复证据。旧信号没有 research_evidence 时保留历史解释，不补写证据。

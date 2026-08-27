@@ -198,6 +198,7 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
                             "country": item.country,
                             "category": item.category,
                             "limit": item.limit,
+                            "discovery_lane": item.discovery_lane,
                         }
                         for item in plan.queries
                     ],
@@ -214,6 +215,7 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
                 "max_hypotheses": str(plan.max_hypotheses),
                 "minimum_confidence_tier": plan.minimum_confidence_tier,
                 "strategy_group": plan.strategy_group,
+                "execution_mode": plan.execution_mode,
                 "campaign_id": plan.campaign_id,
                 "role_hints": ", ".join(plan.role_hints),
                 "assessment_ref": plan.assessment_ref,
@@ -311,6 +313,16 @@ def _validate_demand_discovery(config: DemandDiscoveryConfig) -> None:
     except ValueError:
         raise ValidationError("需求探索置信档位门槛无效") from None
     _text(config.strategy_group, "需求探索策略组无效", maximum=64)
+    if config.execution_mode not in {"research_only", "outreach_preparation"}:
+        raise ValidationError("需求探索执行模式无效")
+    if config.execution_mode == "research_only":
+        if (
+            len(config.queries) > config.max_search_queries
+            or {q.discovery_lane for q in config.queries}
+            != {"importer", "distributor", "ecommerce"}
+        ):
+            raise ValidationError("研究计划必须在确认预算内覆盖三线路")
+        return
     _text(config.campaign_id, "需求探索 Campaign 无效", maximum=40)
     _strings(
         config.role_hints,
@@ -397,6 +409,7 @@ class DirectiveServiceImpl:
                             country=item.country,
                             category=item.category,
                             limit=item.limit,
+                            discovery_lane=item.discovery_lane,
                         )
                         for item in plan.queries
                     ],
@@ -413,6 +426,7 @@ class DirectiveServiceImpl:
                     campaign_id=plan.campaign_id,
                     role_hints=list(plan.role_hints),
                     assessment_ref=plan.assessment_ref,
+                    execution_mode=plan.execution_mode,
                 ),
             ),
             interpretation_summary,
@@ -639,6 +653,7 @@ class DirectiveServiceImpl:
                     country=item.country,
                     category=item.category,
                     limit=item.limit,
+                    discovery_lane=item.discovery_lane,
                 )
                 for item in plan.queries
             ),
@@ -655,6 +670,7 @@ class DirectiveServiceImpl:
             campaign_id=plan.campaign_id,
             role_hints=tuple(plan.role_hints),
             assessment_ref=plan.assessment_ref,
+            execution_mode=plan.execution_mode,
         )
 
     async def list_versions(

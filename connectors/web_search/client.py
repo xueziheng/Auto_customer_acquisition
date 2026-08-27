@@ -16,8 +16,10 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, UserId
 
 from .manifest import MANIFEST
+from .page_policy import is_restricted_page
 from .transport import (
     BraveSearchTransport,
+    PublicPageRejectedError,
     PublicPageTransport,
     WebSearchAuthRequiredError,
 )
@@ -194,6 +196,8 @@ class WebSearchConnector:
         if not isinstance(observed_at, datetime) or observed_at.tzinfo is not UTC:
             raise ValidationError("公开页面观察时间无效")
         response = await self._page_transport.fetch(url)
+        if is_restricted_page(response.body):
+            raise PublicPageRejectedError()
         content_hash = hashlib.sha256(response.body).hexdigest()
         meta = await self._artifacts.put(
             tenant_id,

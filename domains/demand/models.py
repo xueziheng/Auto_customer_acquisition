@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 
+from domains.demand.schemas import ResearchEvidence
 from shared.errors import ValidationError
 from shared.schemas.evidence import EvidenceItem, EvidenceLevel
 from shared.schemas.identifiers import (
@@ -140,6 +141,7 @@ class DemandSignal:
     account_id: ProspectAccountId | None = None
     discard_reason: str | None = None
     snapshot_artifact_ref: str | None = None
+    research_evidence: ResearchEvidence | None = None
 
     @property
     def evidence_level(self) -> EvidenceLevel:
@@ -156,6 +158,8 @@ class DemandSignal:
             else str(self.signal_type)
         )
         if value in _CUSTOMER_DIRECT_SIGNAL_TYPES:
+            if self.research_evidence is not None:
+                return EvidenceLevel.PUBLIC_COMPANY_EVENT
             return EvidenceLevel.CUSTOMER_INTEREST_REPLY
         if value in _COMPANY_EVENT_SIGNAL_TYPES:
             return EvidenceLevel.PUBLIC_COMPANY_EVENT

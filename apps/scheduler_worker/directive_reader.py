@@ -36,6 +36,7 @@ class DirectiveDemandDiscoveryTaskReader:
                     country=item.country,
                     category=item.category,
                     limit=item.limit,
+                    discovery_lane=item.discovery_lane,
                 )
                 for item in plan.queries
             ),
@@ -52,6 +53,7 @@ class DirectiveDemandDiscoveryTaskReader:
             campaign_id=plan.campaign_id,
             role_hints=plan.role_hints,
             assessment_ref=plan.assessment_ref,
+            execution_mode=plan.execution_mode,
         )
 
 

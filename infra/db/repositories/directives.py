@@ -83,6 +83,7 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
                         "country": item.country,
                         "category": item.category,
                         "limit": item.limit,
+                        "discovery_lane": item.discovery_lane,
                     }
                     for item in content.demand_discovery.queries
                 ],
@@ -105,6 +106,7 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
                 "campaign_id": content.demand_discovery.campaign_id,
                 "role_hints": list(content.demand_discovery.role_hints),
                 "assessment_ref": content.demand_discovery.assessment_ref,
+                "execution_mode": content.demand_discovery.execution_mode,
             }
         ),
         "outreach": (
@@ -216,7 +218,7 @@ def _content_from_json(value: object) -> DirectiveContent:
             "role_hints",
             "assessment_ref",
         }
-        if set(item) != demand_keys:
+        if set(item) not in (demand_keys, demand_keys | {"execution_mode"}):
             raise ValidationError("需求探索计划持久化字段无效")
         query_rows = item["queries"]
         if not isinstance(query_rows, list):
@@ -224,7 +226,10 @@ def _content_from_json(value: object) -> DirectiveContent:
         queries: list[DiscoverySearchQueryConfig] = []
         for query_value in query_rows:
             query = _mapping(query_value, "demand_discovery.queries")
-            if set(query) != {"query", "country", "category", "limit"}:
+            if set(query) not in (
+                {"query", "country", "category", "limit"},
+                {"query", "country", "category", "limit", "discovery_lane"},
+            ):
                 raise ValidationError("需求探索查询持久化字段无效")
             if (
                 not isinstance(query["query"], str)
@@ -239,6 +244,7 @@ def _content_from_json(value: object) -> DirectiveContent:
                     country=query["country"],
                     category=query["category"],
                     limit=query["limit"],
+                    discovery_lane=cast(str | None, query.get("discovery_lane")),
                 )
             )
         text_fields = (
@@ -282,6 +288,7 @@ def _content_from_json(value: object) -> DirectiveContent:
             campaign_id=cast(str, item["campaign_id"]),
             role_hints=_string_list(item["role_hints"], "role_hints"),
             assessment_ref=cast(str, item["assessment_ref"]),
+            execution_mode=cast(str, item.get("execution_mode", "outreach_preparation")),
         )
 
     outreach_raw = data["outreach"]

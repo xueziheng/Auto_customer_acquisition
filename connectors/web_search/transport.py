@@ -15,6 +15,8 @@ from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 
 from shared.errors import TransientError, ValidationError
 
+from .page_policy import is_restricted_page, robots_allows
+
 _BRAVE_HOST = "api.search.brave.com"
 _BRAVE_PATH = "/res/v1/web/search"
 _MAX_SEARCH_BYTES = 1_048_576
@@ -183,7 +185,9 @@ class BraveSearchApiTransport:
 class SafePublicPageHttpTransport:
     """逐跳校验 URL/DNS/实际对端 IP；在发请求前阻断私网地址。"""
 
-    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self, *, timeout_seconds: float = 10.0, denied_hosts: frozenset[str] = frozenset(),
+    ) -> None:
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, (int, float))
@@ -191,6 +195,7 @@ class SafePublicPageHttpTransport:
         ):
             raise ValidationError("公开页面 timeout 无效")
         self._timeout_seconds = float(timeout_seconds)
+        self._denied_hosts = denied_hosts
 
     def __repr__(self) -> str:
         return "SafePublicPageHttpTransport()"
@@ -204,8 +209,16 @@ class SafePublicPageHttpTransport:
 
     def _fetch_sync(self, url: str) -> PublicPageResponse:
         current = url
+        origin = _validated_public_split(url)
+        robots = self._read_robots(origin)
         for redirect_count in range(_MAX_REDIRECTS + 1):
             parsed = _validated_public_split(current)
+            if parsed.netloc != origin.netloc or parsed.scheme != origin.scheme:
+                raise PublicPageRejectedError()
+            if parsed.hostname in self._denied_hosts:
+                raise PublicPageRejectedError()
+            if robots is not None and not robots_allows(robots, current):
+                raise PublicPageRejectedError()
             response = self._request_once(parsed)
             if response[0] in _REDIRECT_STATUSES:
                 if redirect_count == _MAX_REDIRECTS or response[1] is None:
@@ -225,7 +238,34 @@ class SafePublicPageHttpTransport:
                 if status >= 500:
                     raise TransientError("公开页面暂时不可用")
                 raise PublicPageRejectedError()
+            if is_restricted_page(body):
+                raise PublicPageRejectedError()
             return PublicPageResponse(current, body)
+        raise PublicPageRejectedError()
+
+    def _read_robots(self, origin: SplitResult) -> bytes | None:
+        """robots与正文共用逐跳DNS/peer校验；网络不确定、跨来源或限制均关闭。"""
+        if origin.hostname in self._denied_hosts:
+            raise PublicPageRejectedError()
+        current = urlunsplit((origin.scheme, origin.netloc, "/robots.txt", "", ""))
+        for count in range(_MAX_REDIRECTS + 1):
+            parsed = _validated_public_split(_validate_public_url_sync(current))
+            if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
+                raise PublicPageRejectedError()
+            status, location, content_type, encoding, body = self._request_once(parsed)
+            if status in {404, 410}:
+                return None
+            if status in _REDIRECT_STATUSES and location and count < _MAX_REDIRECTS:
+                current = _validate_public_url_sync(urljoin(current, location))
+                continue
+            if (
+                status != 200 or encoding not in {None, "", "identity"}
+                or body is None or content_type is None
+                or content_type.split(";", 1)[0].strip().casefold() != "text/plain"
+                or not robots_allows(body, urlunsplit(origin))
+            ):
+                raise PublicPageRejectedError()
+            return body
         raise PublicPageRejectedError()
 
     def _request_once(

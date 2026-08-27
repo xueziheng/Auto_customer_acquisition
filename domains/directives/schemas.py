@@ -14,6 +14,7 @@ class DiscoverySearchQueryInput:
     country: str
     category: str
     limit: int
+    discovery_lane: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class DemandDiscoveryPlanInput:
     campaign_id: str
     role_hints: tuple[str, ...]
     assessment_ref: str
+    execution_mode: str = "outreach_preparation"
 
 
 @dataclass(frozen=True)

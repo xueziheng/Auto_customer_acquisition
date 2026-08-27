@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import (
     BaseModel,
@@ -27,14 +28,19 @@ from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import ChangeSetId, new_id
 
 _MAX_OUTPUT_BYTES = 65_536
-_SYSTEM_PROMPT = """你是 TradeOS 的老板指令解析器。当前只解析 Phase 1 的需求探索指令。
+_SYSTEM_PROMPT = """你是 TradeOS 的老板指令解析器。解析需求探索指令，提案必须经老板确认。
 只输出 JSON 对象，禁止 Markdown 和额外文字。顶层键必须精确为
 interpretation_summary、expected_behavior_changes、plan、no_auto_send。
 
 plan 必须精确包含：objective、queries、target_countries、target_categories、
 excluded_countries、excluded_categories、max_search_queries、max_pages_read、
 max_signals、max_hypotheses、minimum_confidence_tier、strategy_group、campaign_id、
-role_hints、assessment_ref。queries 每项只含 query、country、category、limit。
+role_hints、assessment_ref、execution_mode。execution_mode 只能是 research_only
+或 outreach_preparation。明确只研究时使用 research_only，不要求 Campaign、role_hints、
+assessment_ref；它们可省略。触达准备模式三者仍必需。不得把“只研究”解释为触达授权。
+新 queries 每项含 query、country、category、limit、discovery_lane。
+研究计划必须在老板确认的总查询预算内覆盖 importer、distributor、ecommerce 三线路；
+不自动扩大市场或预算。查询只在确认后执行，任何模式都不直接发送或报价。
 
 所有预算、国家、品类、Campaign、置信档位门槛都必须来自用户原话；不得猜测或
 填默认值。信息不完整时不要编造字段。国家使用大写 ISO 两位代码；
@@ -50,6 +56,7 @@ class _QueryPayload(BaseModel):
     country: str = Field(pattern=r"^[A-Z]{2}$")
     category: str = Field(min_length=1, max_length=100)
     limit: StrictInt = Field(ge=1, le=20)
+    discovery_lane: Literal["importer", "distributor", "ecommerce"]
 
     @field_validator("query", "category")
     @classmethod
@@ -78,9 +85,10 @@ class _PlanPayload(BaseModel):
     max_hypotheses: StrictInt = Field(ge=1, le=100)
     minimum_confidence_tier: ConfidenceTier
     strategy_group: str = Field(min_length=1, max_length=64)
-    campaign_id: str = Field(pattern=r"^cmp_[0-7][0-9A-HJKMNP-TV-Z]{25}$")
-    role_hints: tuple[str, ...] = Field(max_length=10)
-    assessment_ref: str = Field(min_length=1, max_length=200)
+    campaign_id: str = ""
+    role_hints: tuple[str, ...] = Field(default=(), max_length=10)
+    assessment_ref: str = Field(default="", max_length=200)
+    execution_mode: Literal["research_only", "outreach_preparation"] = "outreach_preparation"
 
     @field_validator(
         "objective",
@@ -131,6 +139,18 @@ class _PlanPayload(BaseModel):
 
     @model_validator(mode="after")
     def coherent(self) -> _PlanPayload:
+        if self.execution_mode == "research_only":
+            if {q.discovery_lane for q in self.queries} != {
+                "importer", "distributor", "ecommerce"
+            }:
+                raise ValueError("research requires three lanes")
+        else:
+            if (
+                re.fullmatch(r"cmp_[0-7][0-9A-HJKMNP-TV-Z]{25}", self.campaign_id) is None
+                or not self.assessment_ref
+                or not {"campaign_id", "role_hints", "assessment_ref"} <= self.model_fields_set
+            ):
+                raise ValueError("outreach authorization fields required")
         if (
             len(self.queries) > self.max_search_queries
             or set(self.target_countries) & set(self.excluded_countries)
@@ -251,6 +271,7 @@ class TradeManagerAgent(CapabilityAgent):
                         country=item.country,
                         category=item.category,
                         limit=item.limit,
+                        discovery_lane=item.discovery_lane,
                     )
                     for item in plan.queries
                 ),
@@ -267,6 +288,7 @@ class TradeManagerAgent(CapabilityAgent):
                 campaign_id=plan.campaign_id,
                 role_hints=plan.role_hints,
                 assessment_ref=plan.assessment_ref,
+                execution_mode=plan.execution_mode,
             ),
             interpretation_summary=payload.interpretation_summary,
             expected_behavior_changes=payload.expected_behavior_changes,
@@ -297,6 +319,7 @@ class TradeManagerAgent(CapabilityAgent):
             "campaign_id": plan.campaign_id,
             "role_hints": list(plan.role_hints),
             "assessment_ref": plan.assessment_ref,
+            "execution_mode": plan.execution_mode,
         }
         return ChangeSet(
             change_set_id=ChangeSetId(new_id("cs")),

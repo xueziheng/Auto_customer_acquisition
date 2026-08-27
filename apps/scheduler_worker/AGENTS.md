@@ -38,3 +38,9 @@ validation passed 后必须重启 singleton scheduler；Settings 只有在 match
 ## 入口
 
 `main.py`：装配依赖 → 注册流程定义 → 循环。优雅停机：收到信号后完成当前批再退出，不中断在途事务。
+
+## 研究组合
+
+需求探索v1/v2同时注册；研究可以没有account_discovery/Campaign发送组合，此时不创建
+账户发现队列。仅Web工具显式provider=tavily可启用research_only，默认Brave不得借用。
+没有联系人组合的旧触达准备不能排队，不能通过降级配置绕过授权。

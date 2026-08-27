@@ -364,6 +364,7 @@ class DemandServiceImpl:
             status=SignalStatus.CAPTURED,
             possible_need=possible_need,
             snapshot_artifact_ref=snapshot_artifact_ref,
+            research_evidence=request.research_evidence,
             provenance=Provenance(
                 source_type=source_type,
                 source_id=source_id,
@@ -405,6 +406,10 @@ class DemandServiceImpl:
                 signal_type.value,
                 source_type.value,
                 source_id,
+                **(
+                    {"discovery_key": request.research_evidence.discovery_key}
+                    if request.research_evidence is not None else {}
+                ),
             )
             if winner is None:
                 raise ValidationError("信号写入竞态异常")
@@ -503,6 +508,8 @@ class DemandServiceImpl:
                     raise ValidationError("需求信号不存在")
                 if signal.status is SignalStatus.DISCARDED:
                     raise ValidationError("需求信号已丢弃")
+                if signal.research_evidence is not None and signal.research_evidence.identity_status != "self_described":
+                    raise ValidationError("待核验研究信号不能创建需求假设")
                 evidence.append(
                     EvidenceItem(
                         level=signal.evidence_level,
@@ -1076,6 +1083,7 @@ class DemandServiceImpl:
                 source_url=signal.provenance.source_url,
                 page_hash=signal.provenance.page_hash,
                 snapshot_artifact_ref=signal.snapshot_artifact_ref,
+                research_evidence=signal.research_evidence,
             )
             for signal in signals
         ]

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 from domains.demand.service import DemandService
 from domains.prospecting.service import ProspectingService
+from shared.errors import ValidationError
 from workflows.demand_discovery.ports import (
     AccountDiscoveryQueue,
     DemandDiscoveryTaskReader,
     DemandIntelligenceCapability,
     WebDiscoveryPageReader,
     WebDiscoverySearcher,
+)
+from workflows.demand_discovery.research import (
+    ModeDispatchStep,
+    ResearchExecuteSearchStep,
+    ResearchScoreStep,
 )
 from workflows.demand_discovery.steps import (
     ExecuteSearchStep,
@@ -29,8 +36,22 @@ from workflows.engine.runner import (
 WORKFLOW_TYPE = "demand_discovery"
 
 
-def build_demand_discovery_definition() -> WorkflowDefinition:
+def build_demand_discovery_definition(*, version: int = 1) -> WorkflowDefinition:
     """确认边界 → 有界搜索 → 证据检查 → 账户发现排队。"""
+    if version == 2:
+        original = build_demand_discovery_definition()
+        return replace(
+            original,
+            version=2,
+            steps=tuple(
+                replace(step, handler_ref=step.handler_ref.replace(
+                    "demand_discovery.", "demand_discovery.v2."
+                ))
+                for step in original.steps
+            ),
+        )
+    if version != 1:
+        raise ValidationError("需求探索流程版本无效")
     return WorkflowDefinition(
         workflow_type=WORKFLOW_TYPE,
         version=1,
@@ -69,9 +90,10 @@ def build_demand_discovery_handlers(
     capability: DemandIntelligenceCapability,
     demand: DemandService,
     prospecting: ProspectingService,
-    account_queue: AccountDiscoveryQueue,
+    account_queue: AccountDiscoveryQueue | None,
+    free_search_enabled: bool = False,
 ) -> dict[str, StepHandler]:
-    return {
+    handlers: dict[str, StepHandler] = {
         "demand_discovery.plan_search": PlanSearchStep(task_reader),
         "demand_discovery.execute_search": ExecuteSearchStep(
             task_reader,
@@ -88,10 +110,24 @@ def build_demand_discovery_handlers(
             account_queue,
         ),
     }
+    research_execute = ResearchExecuteSearchStep(
+        task_reader, searcher, page_reader, capability, demand, prospecting,
+        free_search_enabled=free_search_enabled,
+    )
+    for name in ("plan_search", "execute_search", "generate_hypotheses", "score_and_queue"):
+        legacy = handlers[f"demand_discovery.{name}"]
+        research: StepHandler = legacy
+        if name == "execute_search":
+            research = research_execute
+        elif name == "score_and_queue":
+            research = ResearchScoreStep(demand)
+        handlers[f"demand_discovery.v2.{name}"] = ModeDispatchStep(task_reader, legacy, research)
+    return handlers
 
 
 def register_demand_discovery(engine: WorkflowEngine) -> None:
     engine.register(build_demand_discovery_definition())
+    engine.register(build_demand_discovery_definition(version=2))
 
 
 __all__ = (

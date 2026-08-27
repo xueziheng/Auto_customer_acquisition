@@ -71,8 +71,8 @@ def test_repository_and_uow_protocol_shapes() -> None:
     """核心 Protocol 形状（独立复审 P2）：逐一精确断言参数名与协议成员。
 
     期望值全部手写（不由被测代码生成）；find_duplicate 必须精确为
-    self, tenant_id, entity_name, signal_type, source_type, source_id
-    （5 列来源身份，规格 §4；page_hash 可空 tuple 方案已否决）。
+    self, tenant_id, entity_name, signal_type, source_type, source_id, discovery_key。
+    历史5列来源身份不变；研究的可信查询键区分跨线路，缺省空串保持旧语义。
     """
     expected_params: dict[str, list[str]] = {
         "add": ["self", "signal"],
@@ -84,6 +84,7 @@ def test_repository_and_uow_protocol_shapes() -> None:
             "signal_type",
             "source_type",
             "source_id",
+            "discovery_key",
         ],
         "discard": ["self", "tenant_id", "signal_id", "reason"],
         "list_unlinked": ["self", "tenant_id", "limit"],
@@ -91,6 +92,9 @@ def test_repository_and_uow_protocol_shapes() -> None:
     for method, expected in expected_params.items():
         signature = inspect.signature(getattr(DemandSignalRepository, method))
         assert list(signature.parameters) == expected, method
+    assert inspect.signature(DemandSignalRepository.find_duplicate).parameters[
+        "discovery_key"
+    ].default == ""
 
     signature = inspect.signature(
         SnapshotArtifactEvidenceRepository.matches_web_snapshot

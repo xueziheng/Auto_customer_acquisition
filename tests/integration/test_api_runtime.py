@@ -233,6 +233,12 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         )
         assert snapshot.state is ProviderReadinessState.PROVIDER_NOT_CONFIGURED
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
+        assert {
+            definition.version
+            for definition in dependencies.workflow_engine._definitions.values()
+            if definition.workflow_type == "demand_discovery"
+        } == {1, 2}
+        assert "ResearchEvidence" in app.openapi()["components"]["schemas"]
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
         assert "country_policy_change.assemble" in dependencies.workflow_engine._handlers
         assert {

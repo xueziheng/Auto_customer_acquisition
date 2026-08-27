@@ -119,6 +119,16 @@ def _validate_plan(plan: DemandDiscoveryPlan) -> None:
         raise ValidationError("需求探索置信档位门槛无效") from None
     _text(plan.objective, "需求探索目标无效", maximum=1_000)
     _text(plan.strategy_group, "需求探索策略组无效", maximum=64)
+    if plan.execution_mode not in {"research_only", "outreach_preparation"}:
+        raise ValidationError("需求探索执行模式无效")
+    if plan.execution_mode == "research_only":
+        if (
+            len(plan.queries) > plan.max_search_queries
+            or {q.discovery_lane for q in plan.queries}
+            != {"importer", "distributor", "ecommerce"}
+        ):
+            raise ValidationError("研究计划必须在确认预算内覆盖三线路")
+        return
     _text(plan.campaign_id, "需求探索 Campaign 无效", maximum=40)
     _text(plan.assessment_ref, "需求探索评估引用无效", maximum=200)
     _string_tuple(plan.role_hints, maximum=200, limit=10, allow_empty=True)
@@ -139,6 +149,7 @@ class PlanSearchStep:
                 "signal_budget": plan.max_signals,
                 "hypothesis_budget": plan.max_hypotheses,
                 "strategy_group": plan.strategy_group,
+                "execution_mode": plan.execution_mode,
             },
         )
 
@@ -164,6 +175,8 @@ class ExecuteSearchStep:
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         plan, acting_user = await _confirmed_plan(run, self._task_reader)
+        if plan.execution_mode != "outreach_preparation":
+            raise ValidationError("旧探索处理器不能执行研究计划")
         pages: list[dict[str, object]] = []
         searches_used = 0
         pages_used = 0
@@ -458,7 +471,7 @@ class ScoreAndQueueStep:
         self,
         task_reader: DemandDiscoveryTaskReader,
         demand: DemandService,
-        queue: AccountDiscoveryQueue,
+        queue: AccountDiscoveryQueue | None,
     ) -> None:
         self._task_reader = task_reader
         self._demand = demand
@@ -466,6 +479,8 @@ class ScoreAndQueueStep:
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         plan, acting_user = await _confirmed_plan(run, self._task_reader)
+        if plan.execution_mode != "outreach_preparation" or self._queue is None:
+            raise ValidationError("研究模式或未配置联系人组合不得排队触达")
         minimum = ConfidenceTier(plan.minimum_confidence_tier)
         raw_ids = run.context.get("hypothesis_ids")
         if not isinstance(raw_ids, list):

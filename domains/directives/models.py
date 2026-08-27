@@ -63,6 +63,7 @@ class DiscoverySearchQueryConfig:
     country: str
     category: str
     limit: int
+    discovery_lane: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class DemandDiscoveryConfig:
     campaign_id: str
     role_hints: list[str]
     assessment_ref: str
+    execution_mode: str = "outreach_preparation"
 
 
 @dataclass(frozen=True)

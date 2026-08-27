@@ -67,3 +67,9 @@ Directive 新版本生效（DirectiveActivated 事件广播）
 提案/生效两阶段、版本化、回滚、探索配比配置字段、生效事件。
 
 不做：自适应分配器（Phase 2）、指令冲突自动检测（Phase 2，Phase 1 靠展示预计行为让老板自己发现冲突）。
+
+## Phase 2 研究模式
+
+execution_mode 缺省永久解释为 outreach_preparation；research_only 只在显式确认后
+执行三条研究线路，不需要 Campaign/role/assessment。查询携带 discovery_lane；预算、
+目标与排除项不能猜补。研究计划不得被解释成触达、邮箱验证、发送或报价授权。

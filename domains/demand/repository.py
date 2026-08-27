@@ -46,7 +46,7 @@ class DemandSignalRepository(Protocol):
         """来源身份冲突返回 False（不入库）；True=新插入。
 
         dedup identity = (tenant_id, entity_name, signal_type, source_type,
-        source_id)——全非空五列（规格 §4；page_hash 可空 tuple 方案已否决）。
+        source_id, discovery_key)；历史discovery_key为空，研究区分可信查询归属。
         """
         ...
 
@@ -61,8 +61,9 @@ class DemandSignalRepository(Protocol):
         signal_type: str,
         source_type: str,
         source_id: str,
+        discovery_key: str = "",
     ) -> DemandSignal | None:
-        """按来源身份 5 列查重复信号（同事务重读胜者用）。"""
+        """按来源身份与研究查询键查重复信号（同事务重读胜者用）。"""
         ...
 
     async def discard(

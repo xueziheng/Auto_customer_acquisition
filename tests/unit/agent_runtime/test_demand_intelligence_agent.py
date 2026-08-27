@@ -7,6 +7,32 @@ from datetime import UTC, datetime
 
 import pytest
 
+
+@pytest.mark.parametrize("text,status,count", [
+    ("We are Acme Tools, an importer of industrial hinges. We are based in US.", "self_described", 2),
+    ("We are Acme Tools, an importer of industrial hinges. Contact us.", "pending_verification", 1),
+    ("Distributor directory: Acme Tools is based in US and sells industrial hinges.", "pending_verification", 1),
+])
+async def test_research_agent_retains_pending_signal_without_host_or_country_inference(text, status, count):
+    from domains.demand.schemas import ResearchEvidence
+    task = _task(text=text)
+    task.inputs["execution_mode"] = "research_only"
+    task.inputs["pages"][0]["research_evidence"] = ResearchEvidence.from_page(
+        proposal_id="proposal:test", query="US hinges importer", discovery_lane="importer",
+        query_country="US", query_category="industrial hinges", text=text, url="https://example.com/news",
+    )
+    response = _response()
+    response["signals"][0]["source_excerpt"] = text
+    model = _CapturingModel(response)
+    result = await DemandIntelligenceAgent("model-v2", model, None, CredentialMarkerGuard()).run(task, None)
+    assert len(result.changes) == count
+    signal = result.changes[0]["payload"]
+    assert signal["research_evidence"]["identity_status"] == status
+    assert signal["entity_name"] != "example.com"
+    if count == 2:
+        assert result.changes[1]["payload"]["website_domain"] == "example.com"
+        assert result.changes[1]["payload"]["entity_name"] == "Acme Tools"
+
 from agent_runtime.base import AgentTask
 from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard

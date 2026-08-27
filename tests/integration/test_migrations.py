@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0039"
+_ALEMBIC_HEAD = "0040"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -3833,6 +3833,8 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         "source_url": ("VARCHAR(2000)", True, None),
         "page_hash": ("VARCHAR(200)", True, None),
         "snapshot_artifact_ref": ("VARCHAR(40)", True, None),
+        "research_evidence": ("JSONB", True, None),
+        "discovery_key": ("VARCHAR(64)", False, None),
     }
     db_column_contract = {
         name: (
@@ -3858,6 +3860,7 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
     assert db_contract["pk"] == orm_pk == ["tenant_id", "signal_id"]
     assert db_contract["unique"] == orm_unique == {
         "uq_demand_signals_source_identity": [
+            "discovery_key",
             "entity_name",
             "signal_type",
             "source_id",

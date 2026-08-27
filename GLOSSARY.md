@@ -25,6 +25,9 @@
 | **Evidence Level** | 证据等级 | 一条证据的可信度分级，从「Agent 行业推断」到「客户请求样品或正式报价」。**置信度由代码依据证据等级推导，模型不得直接输出概率值。** |
 | **Need Completeness** | 需求完整度 | 0–5 级刻度，衡量需求信息够不够进入寻源或报价。0 = 只有模糊兴趣，5 = 具备寻源或报价条件。 |
 | **Provenance** | 来源追踪 | 记录某个字段的来源类型、来源 ID、提取者、确认人、确认时间。所有影响商业决策的字段都必须带。 |
+| **Research Evidence** | 研究来源归属 | Demand Signal 的不可变公开研究元数据：确认提案、查询、线路、查询国家/品类、来源类型和企业身份/所在地原文。查询国家不是企业所在地。company_self_description 是企业自述，directory_listing 是目录观察；self_described 只表示有官网自述与所在地证据，不表示工商核实；pending_verification 表示待核验，不能据此创建企业或需求假设。 |
+| **Discovery Lane** | 研究线路 | importer（进口商）、distributor（经销商）、ecommerce（电商经营者）三类查询策略归属。是探索方法，不是客户已被证实的企业类型。 |
+| **Execution Mode** | 执行模式 | research_only 仅保存公开需求信号和有证据的需求假设，不找联系人、验证邮箱、排队触达、发信或报价；outreach_preparation 沿用原确认Campaign/role/assessment的触达准备语义。 |
 | **Loss Reason** | 失败原因 | 机会终止的结构化归因：联系不上、无回复、需求不真实、找不到供应、价格谈不下来、输给竞争对手、客户失联等。没有它，改进循环只能靠感觉。 |
 
 ---
