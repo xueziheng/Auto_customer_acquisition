@@ -4,6 +4,8 @@ import { computed, inject, onMounted, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import ResearchEvidenceCard from "../../components/ResearchEvidenceCard.vue";
+import ResearchResultsStatus from "../../components/ResearchResultsStatus.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Signal = components["schemas"]["DemandSignalView"];
@@ -23,7 +25,7 @@ const error = ref<string | null>(null);
 const loadedAt = ref<Date | null>(null);
 
 const tabs = computed(() => [
-  { id: "signals" as const, label: "需求信号", count: signals.value.length, kind: "事实" },
+  { id: "signals" as const, label: "需求信号", count: signals.value.length, kind: "来源观察" },
   { id: "hypotheses" as const, label: "需求假设", count: hypotheses.value.length, kind: "推断" },
   { id: "needs" as const, label: "已验证需求", count: needs.value.length, kind: "客户确认" },
   { id: "clusters" as const, label: "需求簇", count: clusters.value.length, kind: "聚合" },
@@ -116,6 +118,8 @@ onMounted(() => void loadRadar());
       </div>
     </div>
 
+
+    <ResearchResultsStatus />
     <section
       class="legend"
       aria-label="信息性质图例"
@@ -148,6 +152,7 @@ onMounted(() => void loadRadar());
     <nav
       class="radar-tabs"
       aria-label="需求雷达数据层"
+      style="flex-shrink: 0"
     >
       <button
         v-for="tab in tabs"
@@ -177,7 +182,7 @@ onMounted(() => void loadRadar());
 
       <template v-else-if="activeTab === 'signals'">
         <header class="section-head">
-          <div><span class="kind-badge fact">事实</span><h2>Demand Signal · 需求信号</h2></div>
+          <div><span class="kind-badge fact">来源观察</span><h2>Demand Signal · 需求信号</h2></div>
           <p>信号只是市场中发生过的观察，不等于客户会购买。</p>
         </header>
         <div
@@ -194,6 +199,7 @@ onMounted(() => void loadRadar());
               <span class="record-status">{{ signal.status }}</span>
             </header>
             <code class="record-id">Signal ID · {{ signal.signal_id }}</code>
+            <ResearchEvidenceCard :signal="signal" />
             <div class="fact-block">
               <span>原始观察</span>
               <p>{{ signal.raw_observation }}</p>

@@ -75,6 +75,19 @@ def test_runtime_settings_parse_exact_configuration_without_exposing_dsn() -> No
     assert "runtime-secret" not in repr(settings)
 
 
+def test_tavily_configuration_is_explicit_reference_only_and_hidden_from_repr():
+    settings = Phase1RuntimeSettings.from_environ({
+        **_VALID_ENV, "TAVILY_API_KEY_REF": "SYNTHETIC_TAVILY_KEY",
+        "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED": "true",
+    })
+    assert settings.tavily_api_key_ref == "SYNTHETIC_TAVILY_KEY"
+    assert settings.tavily_exclusive_account_confirmed is True
+    assert "SYNTHETIC_TAVILY_KEY" not in repr(settings)
+    assert Phase1RuntimeSettings.from_environ(_VALID_ENV).tavily_api_key_ref is None
+    with pytest.raises(RuntimeConfigurationError):
+        Phase1RuntimeSettings.from_environ({**_VALID_ENV, "TAVILY_API_KEY_REF": "not a reference"})
+
+
 @pytest.mark.parametrize("name", sorted(_VALID_ENV))
 def test_every_runtime_variable_is_required_and_error_is_sanitized(name: str) -> None:
     env = dict(_VALID_ENV)

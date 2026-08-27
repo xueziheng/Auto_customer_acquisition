@@ -1225,6 +1225,15 @@ def build_phase1_dependencies(
         runtime_actor=provider_readiness_actor,
         now=now,
     )
+    from infra.db.research_evidence import PostgresResearchEvidenceReader
+    from infra.db.search_quota import PostgresSearchQuotaRepository
+
+    from ..research import ResearchAccessService
+
+    research_access = ResearchAccessService(
+        tenant, PostgresSearchQuotaRepository(factory, tenant, now=now),
+        configured=bool(settings.tavily_api_key_ref) and settings.tavily_exclusive_account_confirmed,
+    )
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -1259,4 +1268,6 @@ def build_phase1_dependencies(
         costing=costing,
         work_uploads=work_uploads,
         run_audit=run_audit,
+        research_access=research_access,
+        research_evidence=PostgresResearchEvidenceReader(factory),
     )

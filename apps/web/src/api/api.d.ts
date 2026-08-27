@@ -1109,6 +1109,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings/research": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Research Status
+         * @description 仅读取当前租户的配置标记及持久状态；刷新页面不触发外部用量查询。
+         */
+        get: operations["research_status_settings_research_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sourcing/status": {
         parameters: {
             query?: never;
@@ -2089,6 +2109,7 @@ export interface components {
             possible_need: string | null;
             /** Raw Observation */
             raw_observation: string;
+            research_evidence?: components["schemas"]["ResearchEvidence"] | null;
             /** Signal Id */
             signal_id: string;
             /** Signal Type */
@@ -2119,6 +2140,56 @@ export interface components {
         DiscoveryProposalBody: {
             /** Message */
             message: string;
+        };
+        /**
+         * DiscoveryProposalView
+         * @description 保留历史提案字段，增加后端确认依据与计划线路（非已执行线路）。
+         */
+        DiscoveryProposalView: {
+            /**
+             * Can Confirm
+             * @default false
+             */
+            can_confirm: boolean;
+            /** Confirmation Blocked Reason */
+            confirmation_blocked_reason?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By Id */
+            decided_by_id?: string | null;
+            /** Decided By Name */
+            decided_by_name?: string | null;
+            /**
+             * Execution Mode
+             * @default outreach_preparation
+             * @enum {string}
+             */
+            execution_mode: "research_only" | "outreach_preparation";
+            /** Expected Behavior Changes */
+            expected_behavior_changes: string[];
+            /** Interpretation Summary */
+            interpretation_summary: string;
+            /** Parsed Fields */
+            parsed_fields: {
+                [key: string]: string;
+            };
+            /**
+             * Planned Discovery Lanes
+             * @default []
+             */
+            planned_discovery_lanes: string[];
+            /** Proposal Id */
+            proposal_id: string;
+            /** Raw Text */
+            raw_text: string;
+            research_access?: components["schemas"]["ResearchAccessView"] | null;
+            /** State */
+            state: string;
         };
         /** DiscoveryRejectionResponse */
         DiscoveryRejectionResponse: {
@@ -3195,85 +3266,6 @@ export interface components {
             summary: string;
         };
         /**
-         * ProposalView
-         * @description 提案视图 —— 老板确认界面的数据源。
-         *
-         *     界面必须并排展示三样东西：原话、系统的理解、预计行为变化。
-         *     只展示解析字段的确认界面发现不了误解析。
-         */
-        ProposalView: {
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Decided At */
-            decided_at?: string | null;
-            /** Decided By Id */
-            decided_by_id?: string | null;
-            /** Decided By Name */
-            decided_by_name?: string | null;
-            /** Expected Behavior Changes */
-            expected_behavior_changes: string[];
-            /** Interpretation Summary */
-            interpretation_summary: string;
-            /** Parsed Fields */
-            parsed_fields: {
-                [key: string]: string;
-            };
-            /** Proposal Id */
-            proposal_id: string;
-            /** Raw Text */
-            raw_text: string;
-            /** State */
-            state: string;
-        };
-        /**
-         * ProspectAccountDetailView
-         * @description 企业详情；来源信号、联系人和法律依据均可追溯。
-         */
-        ProspectAccountDetailView: {
-            account: components["schemas"]["ProspectAccountView"];
-            /**
-             * Contacts
-             * @default []
-             */
-            contacts: components["schemas"]["ProspectContactDetailView"][];
-        };
-        /** ProspectAccountView */
-        ProspectAccountView: {
-            /** Account Id */
-            account_id: string;
-            /** Country */
-            country: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Entity Type */
-            entity_type?: string | null;
-            /** Field Provenance */
-            field_provenance?: {
-                [key: string]: components["schemas"]["Provenance"];
-            };
-            /** Industry */
-            industry?: string | null;
-            /** Name */
-            name: string;
-            /** Size Hint */
-            size_hint?: string | null;
-            /**
-             * Source Signal Refs
-             * @default []
-             */
-            source_signal_refs: string[];
-            /** Tenant Id */
-            tenant_id: string;
-            /** Website Domain */
-            website_domain?: string | null;
-        };
-        /**
          * ProspectContactDetailView
          * @description 联系人及其联系方式；仅供已判权的内部员工视图。
          */
@@ -3473,6 +3465,130 @@ export interface components {
             window_days: number;
         };
         /**
+         * ResearchAccessView
+         * @description 只说明当前持久记录；实际执行仍须 Gateway 重新核验及预留。
+         */
+        ResearchAccessView: {
+            /** Can Confirm Research */
+            can_confirm_research: boolean;
+            /** Checked At */
+            checked_at?: string | null;
+            /**
+             * Provider
+             * @default tavily
+             * @constant
+             */
+            provider: "tavily";
+            /** Remaining Lower Bound */
+            remaining_lower_bound?: number | null;
+            /**
+             * Runtime Activation
+             * @default not_verified
+             * @constant
+             */
+            runtime_activation: "not_verified";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "not_configured" | "configured_unverified" | "free_last_verified" | "usage_unknown" | "paid_enabled" | "quota_exhausted";
+        };
+        /**
+         * ResearchEvidence
+         * @description 研究来源归属；查询国家不是企业所在地，自述不是工商核验。
+         *
+         *     由受信编排从确认查询和原页面计算，模型不可设置。保守支持英文第一人称
+         *     “We are <名称>, ...”以及同主体总部/所在地句式；接受全部已分配ISO2原文代码，
+         *     英文国名别名有限，不识别时保留待核验。代码有效不等于获准在该市场探索。
+         */
+        ResearchEvidence: {
+            /** Company Name */
+            company_name?: string | null;
+            /** Country */
+            country?: string | null;
+            /** Country Quote */
+            country_quote?: string | null;
+            /**
+             * Discovery Lane
+             * @enum {string}
+             */
+            discovery_lane: "importer" | "distributor" | "ecommerce";
+            /** Identity Quote */
+            identity_quote?: string | null;
+            /**
+             * Identity Status
+             * @enum {string}
+             */
+            identity_status: "self_described" | "pending_verification";
+            /** Proposal Id */
+            proposal_id: string;
+            /** Query */
+            query: string;
+            /** Query Category */
+            query_category: string;
+            /** Query Country */
+            query_country: string;
+            /**
+             * Source Kind
+             * @enum {string}
+             */
+            source_kind: "company_self_description" | "directory_listing" | "unverified_public_page";
+            /** Source Url */
+            source_url: string;
+            /** Website Domain */
+            website_domain?: string | null;
+        };
+        /**
+         * ResearchProspectAccountDetailView
+         * @description 沿用联系人详情，仅补企业的公开研究证据。
+         */
+        ResearchProspectAccountDetailView: {
+            account: components["schemas"]["ResearchProspectAccountView"];
+            /** Contacts */
+            contacts: components["schemas"]["ProspectContactDetailView"][];
+        };
+        /**
+         * ResearchProspectAccountView
+         * @description 应用层聚合信号来源，避免 prospecting 域直接依赖 demand。
+         */
+        ResearchProspectAccountView: {
+            /** Account Id */
+            account_id: string;
+            /** Country */
+            country: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Entity Type */
+            entity_type?: string | null;
+            /** Field Provenance */
+            field_provenance?: {
+                [key: string]: components["schemas"]["Provenance"];
+            };
+            /** Industry */
+            industry?: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Research Signals
+             * @default []
+             */
+            research_signals: components["schemas"]["DemandSignalView"][];
+            /** Size Hint */
+            size_hint?: string | null;
+            /**
+             * Source Signal Refs
+             * @default []
+             */
+            source_signal_refs: string[];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Website Domain */
+            website_domain?: string | null;
+        };
+        /**
          * RunApprovalView
          * @description 由 Run 发起的审批状态；不返回提案正文、理由或决定备注。
          */
@@ -3533,6 +3649,87 @@ export interface components {
             tool_calls: components["schemas"]["RunToolCallView"][];
         };
         /**
+         * RunResearchView
+         * @description 研究白名单摘要；尝试数与实际免费 credit 消耗严格分列。
+         */
+        RunResearchView: {
+            /** Completion Reason */
+            completion_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported") | null;
+            /**
+             * Consumed Credits
+             * @default 0
+             */
+            consumed_credits: number;
+            /**
+             * Discovery Lanes
+             * @default []
+             */
+            discovery_lanes: ("importer" | "distributor" | "ecommerce")[];
+            /**
+             * Execution Mode
+             * @default research_only
+             * @constant
+             */
+            execution_mode: "research_only";
+            /**
+             * Hypothesis Count
+             * @default 0
+             */
+            hypothesis_count: number;
+            /**
+             * Pages Used
+             * @default 0
+             */
+            pages_used: number;
+            /**
+             * Pending Verification Count
+             * @default 0
+             */
+            pending_verification_count: number;
+            /**
+             * Planned Discovery Lanes
+             * @default []
+             */
+            planned_discovery_lanes: ("importer" | "distributor" | "ecommerce")[];
+            /**
+             * Qualified Opportunity Count
+             * @default 0
+             */
+            qualified_opportunity_count: number;
+            /**
+             * Queued Count
+             * @default 0
+             */
+            queued_count: number;
+            /**
+             * Reserved Credits
+             * @default 0
+             */
+            reserved_credits: number;
+            /**
+             * Searches Used
+             * @default 0
+             */
+            searches_used: number;
+            /**
+             * Signal Count
+             * @default 0
+             */
+            signal_count: number;
+            /** Stop Reason */
+            stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported") | null;
+            /**
+             * Uncertain Credits
+             * @default 0
+             */
+            uncertain_credits: number;
+            /**
+             * Validated Need Count
+             * @default 0
+             */
+            validated_need_count: number;
+        };
+        /**
          * RunStepView
          * @description 步骤状态投影；明确排除可能包含业务正文的 ``data``。
          */
@@ -3584,6 +3781,7 @@ export interface components {
             last_error: string | null;
             /** Next Poll At */
             next_poll_at: string | null;
+            research?: components["schemas"]["RunResearchView"] | null;
             /** Retry Count */
             retry_count: number;
             /** Run Id */
@@ -4042,7 +4240,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProposalView"];
+                    "application/json": components["schemas"]["DiscoveryProposalView"];
                 };
             };
             /** @description 请求参数无效 */
@@ -4073,7 +4271,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProposalView"];
+                    "application/json": components["schemas"]["DiscoveryProposalView"];
                 };
             };
             /** @description 请求参数无效 */
@@ -5953,7 +6151,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProspectAccountView"][];
+                    "application/json": components["schemas"]["ResearchProspectAccountView"][];
                 };
             };
             /** @description 请求参数无效 */
@@ -5984,7 +6182,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProspectAccountDetailView"];
+                    "application/json": components["schemas"]["ResearchProspectAccountDetailView"];
                 };
             };
             /** @description 请求参数无效 */
@@ -6340,6 +6538,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaybookVersionStatusView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    research_status_settings_research_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchAccessView"];
                 };
             };
             /** @description 请求参数无效 */

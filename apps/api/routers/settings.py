@@ -63,6 +63,8 @@ from ..dependencies import (
 )
 from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse
+from ..research import ResearchAccessService
+from ..research_schemas import ResearchAccessView
 
 
 class _SettingsRoute(APIRoute):
@@ -316,6 +318,17 @@ def _organization_service(
     if service is None:
         raise TransientError("Settings 组织服务暂不可用")
     return service
+
+
+@router.get("/research", response_model=ResearchAccessView)
+async def research_status(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    access: Annotated[SettingsAccess, Depends(resolve_settings_access)],
+) -> ResearchAccessView:
+    """仅读取当前租户的配置标记及持久状态；刷新页面不触发外部用量查询。"""
+    service = dependencies.research_access or ResearchAccessService(identity.tenant_id, None, configured=False)
+    return await service.status(identity.tenant_id)
 
 
 def _approval_service(

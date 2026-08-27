@@ -4,10 +4,12 @@ import { computed, inject, onMounted, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import ResearchEvidenceCard from "../../components/ResearchEvidenceCard.vue";
+import ResearchResultsStatus from "../../components/ResearchResultsStatus.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
-type Account = components["schemas"]["ProspectAccountView"];
-type AccountDetail = components["schemas"]["ProspectAccountDetailView"];
+type Account = components["schemas"]["ResearchProspectAccountView"];
+type AccountDetail = components["schemas"]["ResearchProspectAccountDetailView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const accounts = ref<Account[]>([]);
@@ -158,6 +160,19 @@ onMounted(() => void loadAccounts());
       <h1>客户发现</h1>
       <span class="meta">企业消歧、法律依据、可达性验证与 Campaign 入组</span>
     </div>
+
+
+    <ResearchResultsStatus />
+    <section
+      class="safe-banner"
+      aria-label="只研究入口"
+    >
+      <p>
+        只研究公开来源：无需 Campaign，不补全联系人、不验证邮箱、不发送、不报价。<RouterLink to="/commands">
+          到指挥中心创建研究提案 →
+        </RouterLink>
+      </p>
+    </section>
 
     <section
       class="discovery-command"
@@ -313,6 +328,17 @@ onMounted(() => void loadAccounts());
             </dd>
           </dl>
 
+          <div class="account-evidence">
+            <ResearchEvidenceCard
+              v-for="signal in detail.account.research_signals"
+              :key="signal.signal_id"
+              :signal="signal"
+            />
+            <p v-if="!detail.account.research_signals?.length">
+              暂无研究来源归属；历史企业身份仍需核验。
+            </p>
+          </div>
+
           <div class="contact-ledger">
             <h3>联系人与联系方式</h3>
             <div
@@ -378,6 +404,7 @@ onMounted(() => void loadAccounts());
 .discovery-shell {
   overflow: auto;
 }
+.account-evidence { padding: 16px; }
 .discovery-command,
 .discovery-workbench {
   border: 1px solid var(--border);

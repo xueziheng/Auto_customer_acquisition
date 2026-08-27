@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Literal
 from urllib.parse import urlsplit
@@ -259,6 +259,8 @@ class Phase1RuntimeSettings:
     tool_lease: timedelta
     openai_api_key_ref: str = "OPENAI_API_KEY"
     trade_manager_model: str = "gpt-5-mini"
+    tavily_api_key_ref: str | None = field(default=None, repr=False)
+    tavily_exclusive_account_confirmed: bool = False
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Phase1RuntimeSettings:
@@ -342,6 +344,12 @@ class Phase1RuntimeSettings:
         trade_manager_model = _parse_safe_reference(
             environ.get("TRADEOS_TRADE_MANAGER_MODEL", "gpt-5-mini")
         )
+        tavily_ref = None
+        if "TAVILY_API_KEY_REF" in environ:
+            tavily_ref = _read(environ, "TAVILY_API_KEY_REF", validate_environment_secret_reference)
+        exclusive = environ.get("TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED", "false")
+        if exclusive not in {"true", "false"}:
+            raise RuntimeConfigurationError("TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED")
         return cls(
             database_url=database_url,
             tenant_id=tenant_id,
@@ -366,4 +374,6 @@ class Phase1RuntimeSettings:
             tool_lease=timedelta(seconds=tool_lease_seconds),
             openai_api_key_ref=openai_api_key_ref,
             trade_manager_model=trade_manager_model,
+            tavily_api_key_ref=tavily_ref,
+            tavily_exclusive_account_confirmed=exclusive == "true",
         )

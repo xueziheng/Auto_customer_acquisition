@@ -16,14 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domains.employees.permissions import EmployeeAction
 from domains.prospecting.schemas import (
-    ProspectAccountDetailView,
-    ProspectAccountView,
     ProspectContactDetailView,
 )
 from domains.prospecting.service import ProspectingService
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import ProspectAccountId
 
+from ..composition.research_accounts import research_accounts
 from ..dependencies import (
     ConfiguredApiDependencies,
     get_api_dependencies,
@@ -31,6 +30,10 @@ from ..dependencies import (
     require_employee_action,
 )
 from ..identity import RequestIdentity
+from ..research_schemas import (
+    ResearchProspectAccountDetailView,
+    ResearchProspectAccountView,
+)
 
 router = APIRouter()
 
@@ -71,7 +74,7 @@ def _prospecting(
 
 @router.get(
     "/accounts",
-    response_model=list[ProspectAccountView],
+    response_model=list[ResearchProspectAccountView],
     dependencies=[
         Depends(
             require_employee_action(
@@ -86,15 +89,16 @@ async def list_accounts(
         ConfiguredApiDependencies, Depends(get_api_dependencies)
     ],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-) -> list[ProspectAccountView]:
-    return await _prospecting(dependencies).list_accounts(
+) -> list[ResearchProspectAccountView]:
+    accounts = await _prospecting(dependencies).list_accounts(
         identity.tenant_id, limit=limit
     )
+    return await research_accounts(identity.tenant_id, accounts, dependencies.research_evidence)
 
 
 @router.get(
     "/accounts/{account_id}",
-    response_model=ProspectAccountDetailView,
+    response_model=ResearchProspectAccountDetailView,
     dependencies=[
         Depends(
             require_employee_action(
@@ -109,12 +113,14 @@ async def get_account(
     dependencies: Annotated[
         ConfiguredApiDependencies, Depends(get_api_dependencies)
     ],
-) -> ProspectAccountDetailView:
+) -> ResearchProspectAccountDetailView:
     if _ACCOUNT_RE.fullmatch(account_id) is None:
         raise ValidationError("潜在企业标识无效")
-    return await _prospecting(dependencies).get_account_detail(
+    detail = await _prospecting(dependencies).get_account_detail(
         identity.tenant_id, ProspectAccountId(account_id)
     )
+    accounts = await research_accounts(identity.tenant_id, [detail.account], dependencies.research_evidence)
+    return ResearchProspectAccountDetailView(account=accounts[0], contacts=detail.contacts)
 
 
 @router.get(

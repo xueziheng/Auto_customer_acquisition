@@ -3,6 +3,7 @@ import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type PlaybookOverview = components["schemas"]["PlaybookOverview"];
@@ -48,6 +49,7 @@ interface PlaybookForm {
 }
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const researchAccess = ref<components["schemas"]["ResearchAccessView"] | null>(null);
 const overview = ref<PlaybookOverview | null>(null);
 const versions = ref<PlaybookVersionStatus[]>([]);
 const loading = ref(true);
@@ -662,7 +664,14 @@ async function submitProposal(): Promise<void> {
 }
 
 async function refreshSettings(): Promise<void> {
-  await Promise.all([loadSettings(), loadCountryPolicies()]);
+  await Promise.all([loadSettings(), loadCountryPolicies(), loadResearchAccess()]);
+}
+
+async function loadResearchAccess(): Promise<void> {
+  try {
+    const result = await client.GET("/settings/research");
+    researchAccess.value = result.response.status === 200 ? result.data ?? null : null;
+  } catch { researchAccess.value = null; }
 }
 
 onMounted(() => void refreshSettings());
@@ -694,6 +703,11 @@ onMounted(() => void refreshSettings());
         </button>
       </div>
     </div>
+
+    <ResearchAccessCard
+      :status="researchAccess"
+      :style="settingsFlowItemLayout"
+    />
 
     <div
       class="safe-banner danger"

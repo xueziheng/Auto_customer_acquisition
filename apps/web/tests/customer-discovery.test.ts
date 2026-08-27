@@ -6,8 +6,8 @@ import { createApiClient } from "../src/api/client";
 import App from "../src/App.vue";
 import router from "../src/router";
 
-type Account = components["schemas"]["ProspectAccountView"];
-type AccountDetail = components["schemas"]["ProspectAccountDetailView"];
+type Account = components["schemas"]["ResearchProspectAccountView"];
+type AccountDetail = components["schemas"]["ResearchProspectAccountDetailView"];
 
 const account: Account = {
   account_id: "acc_01K39P9M5D6K4A91YEQ80EJZ0X",
@@ -18,6 +18,7 @@ const account: Account = {
   name: "Northwind Hardware",
   size_hint: "regional",
   source_signal_refs: ["sig_source_public_expansion"],
+  research_signals: [],
   tenant_id: "tn_hidden_server_identity",
   website_domain: "northwind.example",
 };

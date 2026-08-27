@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
@@ -17,6 +17,35 @@ from shared.schemas.identifiers import (
     TenantId,
     ToolCallId,
 )
+
+DiscoveryLane = Literal["importer", "distributor", "ecommerce"]
+ResearchStopReason = Literal[
+    "plan_completed", "budget_exhausted", "no_results", "page_disallowed",
+    "no_readable_pages", "pending_verification", "no_supported_signals",
+    "quota_exhausted", "usage_unknown", "paid_enabled", "request_uncertain", "unsupported",
+]
+
+
+class RunResearchView(BaseModel):
+    """研究白名单摘要；尝试数与实际免费 credit 消耗严格分列。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    execution_mode: Literal["research_only"] = "research_only"
+    planned_discovery_lanes: tuple[DiscoveryLane, ...] = ()
+    discovery_lanes: tuple[DiscoveryLane, ...] = ()
+    completion_reason: ResearchStopReason | None = None
+    stop_reason: ResearchStopReason | None = None
+    searches_used: int = Field(default=0, ge=0)
+    pages_used: int = Field(default=0, ge=0)
+    signal_count: int = Field(default=0, ge=0)
+    hypothesis_count: int = Field(default=0, ge=0)
+    pending_verification_count: int = Field(default=0, ge=0)
+    validated_need_count: int = Field(default=0, ge=0)
+    qualified_opportunity_count: int = Field(default=0, ge=0)
+    queued_count: int = Field(default=0, ge=0)
+    consumed_credits: int = Field(default=0, ge=0)
+    reserved_credits: int = Field(default=0, ge=0)
+    uncertain_credits: int = Field(default=0, ge=0)
 
 
 class RunSummaryView(BaseModel):
@@ -35,6 +64,7 @@ class RunSummaryView(BaseModel):
     next_poll_at: datetime | None
     retry_count: int
     last_error: str | None
+    research: RunResearchView | None = None
 
 
 class RunStepView(BaseModel):

@@ -4,9 +4,11 @@ import { computed, inject, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
+import { laneLabel, stopLabel } from "../../components/researchLabels";
 
 type ApiClient = ReturnType<typeof createApiClient>;
-type Proposal = components["schemas"]["ProposalView"];
+type Proposal = components["schemas"]["DiscoveryProposalView"];
 type Confirmation = components["schemas"]["DiscoveryConfirmationResponse"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
@@ -15,6 +17,7 @@ const proposal = ref<Proposal | null>(null);
 const confirmation = ref<Confirmation | null>(null);
 const submitting = ref(false);
 const deciding = ref(false);
+const decisionUncertain = ref(false);
 const error = ref<string | null>(null);
 const statusMessage = ref("输入指令后只会生成待确认提案，不会直接启动工作流。");
 
@@ -27,7 +30,8 @@ const fieldLabels: Record<string, string> = {
   target_categories: "目标品类",
   excluded_categories: "排除品类",
   max_search_queries: "最多检索式",
-  max_pages_per_query: "每个检索式最多页数",
+  max_pages_read: "总页面读取上限",
+  execution_mode: "执行模式",
   max_signals: "最多需求信号",
   max_hypotheses: "最多需求假设",
   minimum_confidence_tier: "最低置信档位",
@@ -51,7 +55,7 @@ const stateLabel = computed(() => {
 
 const capKeys = [
   "max_search_queries",
-  "max_pages_per_query",
+  "max_pages_read",
   "max_signals",
   "max_hypotheses",
 ] as const;
@@ -68,6 +72,7 @@ const scopeRows = computed(() => {
   if (!proposal.value) return [];
   return Object.entries(proposal.value.parsed_fields)
     .filter(([key]) => !capKeys.includes(key as (typeof capKeys)[number]))
+    .filter(([key]) => proposal.value?.execution_mode !== "research_only" || !["campaign_id", "role_hints", "assessment_ref"].includes(key))
     .map(([key, value]) => ({ key, label: fieldLabels[key] ?? key, value: displayValue(key, value) }));
 });
 
@@ -87,10 +92,17 @@ function safeError(response: Response): string {
 
 function displayValue(key: string, value: string): string {
   if (!value) return "未设置";
+  if (key === "execution_mode") return value === "research_only" ? "只研究" : "触达准备（原流程）";
   if (key !== "queries") return value;
   try {
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string").join("；") : value;
+    return Array.isArray(parsed) ? parsed.map((item: unknown) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && "query" in item && typeof item.query === "string") {
+        return `${"discovery_lane" in item && typeof item.discovery_lane === "string" ? laneLabel(item.discovery_lane) : "历史查询"}：${item.query}`;
+      }
+      return "查询待核验";
+    }).join("；") : value;
   } catch {
     return value;
   }
@@ -100,14 +112,37 @@ function resetDraft(): void {
   proposal.value = null;
   confirmation.value = null;
   error.value = null;
-  statusMessage.value = "已清空当前提案；尚未启动任何工作流。";
+  decisionUncertain.value = false;
+  statusMessage.value = "已清空当前提案；新指令仍需确认后执行。";
 }
 
-async function loadProposal(proposalId: string): Promise<void> {
-  const result = await client.GET("/commands/discovery-proposals/{proposal_id}", {
-    params: { path: { proposal_id: proposalId } },
-  });
-  if (result.response.status === 200 && result.data) proposal.value = result.data;
+async function loadProposal(proposalId: string): Promise<boolean> {
+  try {
+    const result = await client.GET("/commands/discovery-proposals/{proposal_id}", {
+      params: { path: { proposal_id: proposalId } },
+    });
+    if (result.response.status === 200 && result.data) {
+      proposal.value = result.data;
+      decisionUncertain.value = false;
+      return true;
+    }
+  } catch { /* 读取失败不撤销已经收到的 POST 成功回执。 */ }
+  return false;
+}
+
+async function refreshProposal(): Promise<void> {
+  if (!proposal.value || deciding.value) return;
+  deciding.value = true;
+  error.value = null;
+  const refreshed = await loadProposal(proposal.value.proposal_id);
+  statusMessage.value = refreshed ? "已重新读取提案状态。" : "状态刷新未完成；保留最近已知回执，请稍后只读刷新。";
+  deciding.value = false;
+}
+
+function markDecisionUncertain(): void {
+  decisionUncertain.value = true;
+  error.value = "提交结果待核实；请只读刷新提案状态，不要重复提交。";
+  statusMessage.value = "提交结果待核实。";
 }
 
 async function createProposal(): Promise<void> {
@@ -116,6 +151,7 @@ async function createProposal(): Promise<void> {
   submitting.value = true;
   proposal.value = null;
   confirmation.value = null;
+  decisionUncertain.value = false;
   error.value = null;
   statusMessage.value = "正在把指令解释为不可变提案…";
   try {
@@ -139,7 +175,8 @@ async function createProposal(): Promise<void> {
 
 async function decide(action: "confirm" | "reject"): Promise<void> {
   const current = proposal.value;
-  if (!current || current.state !== "pending_confirmation" || deciding.value) return;
+  if (!current || current.state !== "pending_confirmation" || deciding.value || decisionUncertain.value) return;
+  if (action === "confirm" && current.can_confirm !== true) return;
   deciding.value = true;
   error.value = null;
   statusMessage.value = action === "confirm" ? "正在确认并启动受限工作流…" : "正在拒绝提案…";
@@ -153,8 +190,15 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
       );
       if (result.response.status === 200 && result.data) {
         confirmation.value = result.data;
-        await loadProposal(current.proposal_id);
-        statusMessage.value = "提案已确认；系统只会在页面列明的范围和上限内执行。";
+        proposal.value = { ...current, state: "confirmed", can_confirm: false };
+        const refreshed = await loadProposal(current.proposal_id);
+        statusMessage.value = refreshed
+          ? "提案已确认；系统只会在页面列明的范围和上限内执行。"
+          : "确认已成功，Run 回执已保留；详情刷新未完成，可只读刷新提案状态。";
+        return;
+      }
+      if (result.response.status >= 500 || result.response.status === 200) {
+        markDecisionUncertain();
         return;
       }
       error.value = safeError(result.response);
@@ -166,16 +210,22 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         },
       );
       if (result.response.status === 200) {
-        await loadProposal(current.proposal_id);
-        statusMessage.value = "提案已拒绝；没有启动工作流。";
+        proposal.value = { ...current, state: "rejected", can_confirm: false };
+        const refreshed = await loadProposal(current.proposal_id);
+        statusMessage.value = refreshed
+          ? "提案已拒绝；没有启动工作流。"
+          : "拒绝已成功；详情刷新未完成，可只读刷新提案状态。";
+        return;
+      }
+      if (result.response.status >= 500) {
+        markDecisionUncertain();
         return;
       }
       error.value = safeError(result.response);
     }
     statusMessage.value = "决定未提交。";
   } catch {
-    error.value = "无法连接服务，请稍后重试";
-    statusMessage.value = "决定未提交。";
+    markDecisionUncertain();
   } finally {
     deciding.value = false;
   }
@@ -215,7 +265,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
           id="boss-command"
           v-model="message"
           rows="4"
-          placeholder="例如：寻找德国和荷兰的储能安装商需求，排除消费电子；最多 6 个检索式、每个 3 页、收集 80 条信号并形成 20 个假设。"
+          placeholder="例如：只研究美国铰链的进口商、分销商与电商候选，排除消费电子；最多 3 个检索式、总计读取 6 页、收集 6 条信号并形成 3 个假设。"
           :disabled="submitting || deciding"
         />
         <div class="composer-actions">
@@ -243,7 +293,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
       :class="{ danger: error }"
       role="status"
     >
-      <strong>{{ error ? "未执行" : "执行闸门" }}</strong>
+      <strong>{{ error ? "状态提示" : "执行闸门" }}</strong>
       <span>{{ error ?? statusMessage }}</span>
     </div>
 
@@ -322,7 +372,29 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         </article>
       </div>
 
+      <div
+        v-if="proposal.execution_mode === 'research_only'"
+        class="research-plan"
+      >
+        <strong>只研究 · 计划线路：{{ proposal.planned_discovery_lanes?.map(laneLabel).join(" / ") }}</strong>
+        <p>进口商候选不代表运输记录或客户采购确认；无需 Campaign，不执行联系人、邮箱验证、发送和报价。</p>
+        <ResearchAccessCard :status="proposal.research_access ?? null" />
+        <p
+          v-if="proposal.confirmation_blocked_reason"
+          role="alert"
+        >
+          {{ stopLabel(proposal.confirmation_blocked_reason) }}
+        </p>
+      </div>
+
       <footer class="decision-bar">
+        <button
+          type="button"
+          :disabled="deciding"
+          @click="refreshProposal"
+        >
+          刷新提案状态
+        </button>
         <div>
           <strong>{{ proposal.state === "pending_confirmation" ? "确认后才会执行" : `提案${stateLabel}` }}</strong>
           <span v-if="proposal.decided_by_name">决定人：{{ proposal.decided_by_name }}</span>
@@ -334,7 +406,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         >
           <button
             type="button"
-            :disabled="deciding"
+            :disabled="deciding || decisionUncertain"
             @click="decide('reject')"
           >
             拒绝，不执行
@@ -342,7 +414,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
           <button
             class="btn-primary"
             type="button"
-            :disabled="deciding"
+            :disabled="deciding || decisionUncertain || proposal.can_confirm !== true"
             @click="decide('confirm')"
           >
             {{ deciding ? "正在提交…" : "确认并启动" }}
@@ -366,12 +438,16 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
       <RouterLink to="/demand">
         查看需求雷达 →
       </RouterLink>
+      <RouterLink :to="{ path: '/runs', query: { run: confirmation.run_id } }">
+        查看本次 Run →
+      </RouterLink>
     </section>
   </div>
 </template>
 
 <style scoped>
 .command-shell { overflow: auto; }
+.research-plan { display: grid; gap: 10px; margin-top: 16px; }
 .command-head { justify-content: space-between; padding-top: var(--space3); }
 .command-head > div { display: flex; align-items: baseline; gap: var(--space3); }
 .eyebrow { color: var(--fact); font-size: 11px; font-weight: 800; letter-spacing: .16em; }

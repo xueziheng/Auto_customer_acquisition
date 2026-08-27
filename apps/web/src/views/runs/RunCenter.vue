@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import ResearchRunSummary from "../../components/ResearchRunSummary.vue";
+import { stopLabel } from "../../components/researchLabels";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type RunDetail = components["schemas"]["RunDetailView"];
 type RunSummary = components["schemas"]["RunSummaryView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
 const runs = ref<RunSummary[]>([]);
 const detail = ref<RunDetail | null>(null);
 const selectedRunId = ref<string | null>(null);
@@ -101,7 +105,7 @@ async function loadRuns(): Promise<void> {
       return;
     }
     runs.value = result.data;
-    const next = runs.value.find((run) => run.run_id === selectedRunId.value)
+    const next = runs.value.find((run) => run.run_id === (selectedRunId.value ?? route.query.run))
       ?? runs.value[0];
     if (next) await loadDetail(next.run_id);
     else {
@@ -223,6 +227,7 @@ onMounted(() => void loadRuns());
               <small :class="`state-${run.status}`">{{ statusLabel(run.status) }}</small>
             </span>
             <span>{{ run.subject_ref }}</span>
+            <span v-if="run.research">只研究 · {{ stopLabel(run.research.stop_reason) }}</span>
             <span class="run-row-meta">{{ run.current_step }} · {{ formatTime(run.last_activity_at) }}</span>
           </button>
         </div>
@@ -264,6 +269,11 @@ onMounted(() => void loadRuns());
             <div><span>重试次数</span><strong>{{ detail.summary.retry_count }}</strong></div>
             <div><span>脱敏错误</span><strong>{{ detail.summary.last_error ?? "无" }}</strong></div>
           </section>
+
+          <ResearchRunSummary
+            v-if="detail.summary.research"
+            :research="detail.summary.research"
+          />
 
           <section class="audit-section">
             <header><h3>步骤时间线</h3><span>{{ detail.steps.length }} 步</span></header>

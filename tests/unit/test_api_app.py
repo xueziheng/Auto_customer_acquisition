@@ -119,6 +119,7 @@ _EXPECTED_API_PATHS = {
     "/runs",
     "/runs/{run_id}",
     "/settings/playbook",
+    "/settings/research",
     "/settings/playbook/versions",
     "/settings/playbook/proposals",
     "/settings/country-policies",

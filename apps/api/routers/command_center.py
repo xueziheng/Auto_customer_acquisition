@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime.trade_manager import TradeManagerAgent
-from domains.directives.schemas import ProposalView
 from domains.directives.service import DirectiveService
 from domains.employees.permissions import EmployeeAction
 from shared.errors import InvalidStateTransition, TransientError, ValidationError
@@ -21,6 +20,8 @@ from ..dependencies import (
     require_employee_action,
 )
 from ..identity import RequestIdentity
+from ..research import ResearchAccessService
+from ..research_schemas import DiscoveryProposalView
 
 router = APIRouter()
 
@@ -59,6 +60,16 @@ def _services(
     return dependencies.directives, dependencies.trade_manager
 
 
+def _directives(dependencies: ConfiguredApiDependencies) -> DirectiveService:
+    if dependencies.directives is None:
+        raise TransientError("老板指令服务尚未配置")
+    return dependencies.directives
+
+
+def _research(dependencies: ConfiguredApiDependencies, identity: RequestIdentity) -> ResearchAccessService:
+    return dependencies.research_access or ResearchAccessService(identity.tenant_id, None, configured=False)
+
+
 def _proposal_id(value: str) -> str:
     if _PROPOSAL_RE.fullmatch(value) is None:
         raise ValidationError("指令提案标识无效")
@@ -75,7 +86,7 @@ _write_gate = Depends(
 
 @router.post(
     "/discovery-proposals",
-    response_model=ProposalView,
+    response_model=DiscoveryProposalView,
     dependencies=[_write_gate],
 )
 async def create_discovery_proposal(
@@ -84,7 +95,7 @@ async def create_discovery_proposal(
     dependencies: Annotated[
         ConfiguredApiDependencies, Depends(get_api_dependencies)
     ],
-) -> ProposalView:
+) -> DiscoveryProposalView:
     if body.message != body.message.strip():
         raise ValidationError("老板指令原话无效")
     directives, trade_manager = _services(dependencies)
@@ -97,12 +108,13 @@ async def create_discovery_proposal(
         list(draft.expected_behavior_changes),
         trade_manager.model,
     )
-    return await directives.get_proposal(identity.tenant_id, proposal_id)
+    proposal = await directives.get_proposal(identity.tenant_id, proposal_id)
+    return await _research(dependencies, identity).proposal(identity.tenant_id, proposal)
 
 
 @router.get(
     "/discovery-proposals/{proposal_id}",
-    response_model=ProposalView,
+    response_model=DiscoveryProposalView,
     dependencies=[_write_gate],
 )
 async def get_discovery_proposal(
@@ -111,11 +123,12 @@ async def get_discovery_proposal(
     dependencies: Annotated[
         ConfiguredApiDependencies, Depends(get_api_dependencies)
     ],
-) -> ProposalView:
-    directives, _trade_manager = _services(dependencies)
-    return await directives.get_proposal(
+) -> DiscoveryProposalView:
+    directives = _directives(dependencies)
+    proposal = await directives.get_proposal(
         identity.tenant_id, _proposal_id(proposal_id)
     )
+    return await _research(dependencies, identity).proposal(identity.tenant_id, proposal)
 
 
 @router.post(
@@ -131,8 +144,11 @@ async def confirm_discovery_proposal(
     ],
 ) -> DiscoveryConfirmationResponse:
     proposal_id = _proposal_id(proposal_id)
-    directives, _trade_manager = _services(dependencies)
+    directives = _directives(dependencies)
     proposal = await directives.get_proposal(identity.tenant_id, proposal_id)
+    projected = await _research(dependencies, identity).proposal(identity.tenant_id, proposal)
+    if proposal.state == "pending_confirmation" and not projected.can_confirm:
+        raise InvalidStateTransition(f"提案暂不能确认：{projected.confirmation_blocked_reason}")
     if proposal.state == "pending_confirmation":
         await directives.confirm_proposal(
             identity.tenant_id,
@@ -178,7 +194,7 @@ async def reject_discovery_proposal(
     ],
 ) -> DiscoveryRejectionResponse:
     proposal_id = _proposal_id(proposal_id)
-    directives, _trade_manager = _services(dependencies)
+    directives = _directives(dependencies)
     await directives.reject_proposal(
         identity.tenant_id,
         proposal_id,

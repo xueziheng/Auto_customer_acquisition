@@ -21,6 +21,7 @@ from workflows.engine.audit import (
     RunApprovalView,
     RunArtifactView,
     RunDetailView,
+    RunResearchView,
     RunStepView,
     RunSummaryView,
     RunToolCallView,
@@ -29,6 +30,8 @@ from workflows.engine.audit import (
 from .tables import (
     ApprovalPackageRow,
     GeneratedArtifactRow,
+    SearchQuotaReservationRow,
+    SearchQuotaRunRow,
     ToolCallRow,
     WorkflowRunRow,
     WorkflowStepRow,
@@ -54,6 +57,28 @@ class PostgresRunAuditRepository:
             .correlate(WorkflowRunRow)
             .scalar_subquery()
         )
+        research_keys = (
+            "execution_mode", "completion_reason", "planned_discovery_lanes", "discovery_lanes",
+            "searches_used", "pages_used", "signal_count", "hypothesis_count",
+            "pending_verification_count", "validated_need_count", "qualified_opportunity_count", "queued_count",
+        )
+        # SQL 只读取白名单 JSON 字段，不把整个 context 带入应用投影。
+        research = func.jsonb_build_object(*[
+            value for key in research_keys for value in (key, WorkflowRunRow.context[key])
+        ]).label("research_metadata")
+        counts = [
+            select(func.count()).select_from(SearchQuotaReservationRow).where(
+                SearchQuotaReservationRow.tenant_id == tenant_id,
+                SearchQuotaReservationRow.run_id == WorkflowRunRow.run_id,
+                SearchQuotaReservationRow.provider == "tavily",
+                SearchQuotaReservationRow.status == status,
+            ).correlate(WorkflowRunRow).scalar_subquery().label(f"{status}_credits")
+            for status in ("consumed", "reserved", "uncertain")
+        ]
+        stop = select(SearchQuotaRunRow.stop_reason).where(
+            SearchQuotaRunRow.tenant_id == tenant_id,
+            SearchQuotaRunRow.run_id == WorkflowRunRow.run_id,
+        ).correlate(WorkflowRunRow).scalar_subquery().label("research_stop_reason")
         return select(
             WorkflowRunRow.run_id,
             WorkflowRunRow.workflow_type,
@@ -68,6 +93,7 @@ class PostgresRunAuditRepository:
             WorkflowRunRow.next_poll_at,
             WorkflowRunRow.retry_count,
             WorkflowRunRow.last_error,
+            research, *counts, stop,
         ).where(WorkflowRunRow.tenant_id == tenant_id)
 
     @staticmethod
@@ -84,7 +110,25 @@ class PostgresRunAuditRepository:
             next_poll_at=row.next_poll_at,
             retry_count=row.retry_count,
             last_error=row.last_error,
+            research=PostgresRunAuditRepository._research(row),
         )
+
+    @staticmethod
+    def _research(row: Any) -> RunResearchView | None:
+        """未决预留优先于工作流完成摘要；只研究零下游计数由工作流提供。"""
+        metadata = getattr(row, "research_metadata", None)
+        if not isinstance(metadata, dict) or metadata.get("execution_mode") != "research_only":
+            return None
+        values = {key: value for key, value in metadata.items() if value is not None}
+        for key in ("planned_discovery_lanes", "discovery_lanes"):
+            values[key] = tuple(values.get(key, ()))
+        for status in ("consumed", "reserved", "uncertain"):
+            values[f"{status}_credits"] = getattr(row, f"{status}_credits", 0)
+        values["stop_reason"] = (
+            "request_uncertain" if values["reserved_credits"] or values["uncertain_credits"]
+            else getattr(row, "research_stop_reason", None) or values.get("completion_reason")
+        )
+        return RunResearchView(**values)
 
     async def list_runs(
         self,
