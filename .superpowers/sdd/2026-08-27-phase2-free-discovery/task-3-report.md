@@ -308,3 +308,54 @@ tests/unit/workflows/test_research_discovery.py::test_same_source_and_type_with_
 实际记录时不生成其假设。记录/预算行为均由确定性代码决定，未交给模型。
 规则同步到connectors/web_search/AGENTS.md、workflows/demand_discovery/AGENTS.md
 及ADR0017。此轮变更还包括两个实现文件、三个测试文件和本报告，共9文件。
+
+## Task 3 复审修复 round 2
+
+FIX_BASE：71fef6f2eaa8c50a3c288eba44825a5dc2dca8f9。
+本轮只修复round1新增的编码星号回归，不修改已通过的研究来源归属、多行摘录、
+DTO、迁移或Gateway核心，也没有Task4改动、子代理或真实Provider调用。
+
+### Finding：编码规则与URI字面特殊字符
+
+核对[RFC9309 §2.2.3 Figure6](https://www.rfc-editor.org/rfc/rfc9309.html#section-2.2.3)，
+规则中的%2A须匹配URI中的字面星号；%24同理匹配字面美元符号。
+page_policy.py的_normalized_path增加显式is_rule上下文：规则的裸星号保留通配语义、
+末尾裸美元符号保留终止语义，URI里的两种字面字符规范为%2A/%24。规则内部非末尾
+美元符号仍按字面匹配；编码规则不会被解成操作符。仅这两种特殊字符按上下文处理，
+%2F仍与路径斜杠严格区分，未恢复无条件unquote，也没有扩大robots访问授权。
+
+新增15个参数用例覆盖Figure6两个示例、编码大小写、编码星号不能匹配任意名字、
+编码美元符号不能当终止符、原裸星号通配、原末尾美元符号、内部字面美元符号，
+以及编码美元符号后再接终止锚点。原%2F隔离与畸形编码失败关闭用例保持通过。
+
+### RED与GREEN
+
+先新增测试、未改生产实现，运行：
+
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m pytest tests/unit/test_web_search_discovery.py -q --tb=short`
+
+RED输出：`3 failed, 47 passed in 0.70s`，三个失败均为`AssertionError: assert True is False`：
+规则/path/file-with-a-%2A.html对URI/path/file-with-a-*.html，规则/path/foo-%24
+对URI/path/foo-$，以及规则/path/foo-%24$对URI/path/foo-$。
+
+最小实现后运行同一命令，GREEN输出：`50 passed in 0.61s`。这些是受控页面传输和
+真实页面策略函数单元测试，没有真实网站/搜索调用；未重跑round1的129项业务组合。
+
+### 提交前检查与自审
+
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m ruff check connectors/web_search/page_policy.py tests/unit/test_web_search_discovery.py`
+
+输出：`All checks passed!`
+
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 -m mypy connectors/web_search/page_policy.py`
+
+输出：`Success: no issues found in 1 source file`。
+
+`PYTHONPATH=/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-free-discovery /Users/xueziheng/miniconda3/envs/tradeos-py312/bin/python3 scripts/check_boundaries.py`
+
+输出：分层与依赖方向、金额float、置信度数值、事件注册、租户过滤、AGENTS.md覆盖、
+域结构完整七项全绿，`结构自检通过。`；`git diff --check`无输出、exit0。
+
+本轮仅page_policy.py、test_web_search_discovery.py与本报告三个文件改变。
+自审无新增阻塞疑虑；仍不宣称完整自动站点条款审查，robots允许不等于法律许可。
+按TDD先验证反例、verification-before-completion读取本轮检查结果后才提交。

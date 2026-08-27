@@ -124,6 +124,35 @@ def test_robots_specific_groups_and_path_restrictions(rules, path, allowed):
 
 
 @pytest.mark.parametrize(
+    "pattern,path,allowed",
+    [
+        ("/path/file-with-a-%2A.html", "/path/file-with-a-*.html", False),
+        ("/path/file-with-a-%2A.html", "/path/file-with-a-%2a.html", False),
+        ("/path/file-with-a-%2A.html", "/path/file-with-a-name.html", True),
+        ("/path/foo-%24", "/path/foo-$", False),
+        ("/path/foo-%24", "/path/foo-%24", False),
+        ("/path/foo-%24", "/path/foo-", True),
+        ("/path/file-with-a-*.html", "/path/file-with-a-name.html", False),
+        ("/path/file-with-a-*.html", "/path/file-with-a-*.html", False),
+        ("/path/file-with-a-*.html", "/path/file-with-a-%2A.html", False),
+        ("/path/foo$", "/path/foo", False),
+        ("/path/foo$", "/path/foo$", True),
+        ("/path/foo$", "/path/foo/child", True),
+        ("/path/foo-$bar", "/path/foo-$bar", False),
+        ("/path/foo-%24$", "/path/foo-$/child", True),
+        ("/path/foo-%24$", "/path/foo-$", False),
+    ],
+)
+def test_robots_distinguishes_rule_operators_from_literal_uri_characters(
+    pattern: str, path: str, allowed: bool,
+) -> None:
+    from connectors.web_search.page_policy import robots_allows
+
+    rules = f"User-agent: *\nDisallow: {pattern}"
+    assert robots_allows(rules.encode(), "https://example.com" + path) is allowed
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "http://127.0.0.1/admin",

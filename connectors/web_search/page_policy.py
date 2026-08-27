@@ -10,8 +10,8 @@ _ROBOT_AGENT = "tradeos-agent"
 _MAX_ROBOTS_BYTES = 524_288
 
 
-def _normalized_path(value: str) -> str | None:
-    """RFC9309：只解码unreserved字节，保留%2F/%2A等与字面分隔符的区别。"""
+def _normalized_path(value: str, *, is_rule: bool) -> str | None:
+    """只解码unreserved；规则保留通配/末尾锚点，URI字面*和$按编码比较。"""
     result: list[str] = []
     index = 0
     while index < len(value):
@@ -30,7 +30,12 @@ def _normalized_path(value: str) -> str | None:
             continue
         if ord(character) <= 32 or ord(character) == 127:
             return None
-        if ord(character) > 127:
+        if character in "*$" and not (
+            is_rule and (character == "*" or index == len(value) - 1)
+        ):
+            # RFC9309 Figure6：编码规则须匹配URI字面特殊字符，不能变成操作符。
+            result.append(f"%{ord(character):02X}")
+        elif ord(character) > 127:
             try:
                 result.extend(f"%{byte:02X}" for byte in character.encode("utf-8"))
             except UnicodeEncodeError:
@@ -127,7 +132,8 @@ def robots_allows(body: bytes, url: str) -> bool:
     selected = specific or [rules for agents, rules in groups if "*" in agents]
     parsed = urlsplit(url)
     path = _normalized_path(
-        (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else ""),
+        is_rule=False,
     )
     if path is None:
         return False
@@ -139,7 +145,7 @@ def robots_allows(body: bytes, url: str) -> bool:
                 return False
             if not value:
                 continue
-            pattern = _normalized_path(value)
+            pattern = _normalized_path(value, is_rule=True)
             if pattern is None or not pattern.startswith("/"):
                 return False
             end = pattern.endswith("$")
