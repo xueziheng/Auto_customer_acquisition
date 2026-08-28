@@ -521,6 +521,8 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
+- T10 Fix1总生命周期：新增host-only tests/e2e/costing_quote_lifecycle.py及tests/unit/test_costing_quote_lifecycle.py，将integration/browser/visual固定入口放入本次独立session子进程，由父监督器在工作目录准备/build前开始300/900秒绝对deadline，并预留末45秒清理（正常工作255/855秒）；不得把同步Docker仅放thread冒充可取消。固定entry不接任意命令/路径或形成递归，原A/B与共享conftest不改、新helper不入Linux image。资源首次创建前即确定本次UUID的精确network/PG/API名字及owner标签；正常Vite→桥/exec→APIworker（验证I1成功回执/exit）→PG/network，超时TERM/短宽限/KILL并回收本次子进程，清理命令各用剩余预算并核名字+owner+实际ID，不删image/base/cache或其他任务。必须核Playwright driver/Chromium是否自建进程组，不能以父组结束推断所有子孙已退出，也不能杀用户浏览器。daemon无响应时不能保证服务端build取消或资源已删除，只能有界失败并输出固定cleanup_unknown+本次owner ID，不计GREEN；任何进程/端口/资源清理未获证实均不得打印verified。视觉仍提供真实URL和有效期限，父SIGTERM路径同样受监督。补启动卡住、部分资源创建、近deadline清理、非零/缺回执、实际本次进程/端口回收测试。代价是两测试helper与监督/清理协议维护、正常工作预算缩短和本地资源开销；若所有权/进程组判断错误会遗留或误清资源，因此失败关闭和原始证据必需，不虚构无条件daemon清理保证。
+
 - A入口执行证据细化：固定pytest仅追加-rA，输出精确模块/已知函数匹配后映射的两个预定PASSED常量，完全剥离参数、不转发未知通过行；host wrapper核首函数1次、裁剪反例2次，同时保留exit0/no skipped。补过滤器正反测试防任意正文/参数泄露，不扩用例范围、时间资源或通用日志框架。这是固定A入口裁定的验证细化。
 
 - 全量回归日志隔离补正：仅tests/integration/test_demo_outreach.py的test_demo_disposes_engine_when_composition_fails隔离_configure_safe_audit_logging，补root level/handlers不变保护，保留真实生产安全日志配置、原有子进程日志测试及报价caplog断言。最小有序RED证据为demo测试后38项日志断言失败，原因是root被留在CRITICAL；不是Alembic问题。代价是一个测试的外部状态隔离维护，错误隔离可能遮蔽日志行为，故原安全日志测试及有序报价回归仍须执行，不改生产logger。
