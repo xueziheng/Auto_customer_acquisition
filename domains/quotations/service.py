@@ -73,8 +73,11 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from shared.schemas.quote_creation import QuoteCreationCompletion, QuoteCreationIntent
+from shared.schemas.quote_document import (
+    CustomerQuoteView,
+    QuotePdfRenderError,  # noqa: F401 - 跨层同一错误的公共重导出
+)
 from shared.schemas.quote_facts import QuoteEmployeeFact
-from shared.schemas.quote_document import CustomerQuoteView, QuotePdfRenderError
 
 
 class QuotePdfRenderer(Protocol):

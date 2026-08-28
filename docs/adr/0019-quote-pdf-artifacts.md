@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2026-08-28
-- 范围：Phase 2 Task 6；不包含PDF作者、正式生成/下载装配或发送
+- 范围：Phase 2 Tasks 6–7；不包含正式生成/下载装配或发送
 
 ## 背景
 
@@ -88,3 +88,20 @@ Raw和既有EMAIL_DRAFT补偿行为保持兼容；本次不改变其恢复策略
 T6使用隔离testcontainers PostgreSQL、真实T5批准/engine身份、真实Store metadata与受控
 object transport/bytes验证恢复和绑定。没有运行PDF作者、外部Provider、生产迁移、
 正式客户授权装配或发送；不把受控scope、受控单step run当作生产七步流程已验收。
+
+## Task 7 补充：离线作者的固定边界
+
+报价域定义 `QuotePdfRenderer` Protocol，但具体 ReportLab connector 不导入 domains 或该
+Protocol；它仅接收 shared 唯一 `CustomerQuoteView`，不接收内部报价、成本、Need、actor、
+授权票据、路径或 URL。正式链仍必须是可信报价投影校验、当前授权与适用批准之后才调用，
+由 Task 8 装配。renderer 返回 bytes 不代表可生成、下载、发送或承诺。
+
+模板注册继续唯一位于 shared；当前仅 `quote_pdf_v1`。跨层渲染错误同样位于 shared，使用
+受限的 `QuotePdfRenderError` code 与固定中文消息，不携带客户文字、文件路径或原始异常。
+三个资源上限（文本 UTF-8、页面、输出 bytes）均由部署显式配置且拒绝非法值；输出 sink 的
+大小检查不构成进程 RSS 沙箱，Task 7 不伪造线程/进程隔离承诺。
+
+作者固定 A4、Vera 包内字体、稳定 metadata 与 invariant 输出；先验证 DTO/模板/文本上限，
+再加载字体并按真实 TTFont glyph 映射验证、构造已转义的可分页 flowables、在 N+1 页绘制前
+停止、最后受限输出。它不加载图片、文件、链接、附件、表单、JavaScript 或动作；对象图
+安全与字节确定性有单测，逐页视觉验收和真实授权链验收仍分别属于 Task 10 与 Task 8。

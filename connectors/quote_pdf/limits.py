@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from io import BytesIO
-from typing import Iterable
 
 from reportlab.platypus import SimpleDocTemplate
 
@@ -45,7 +45,7 @@ class LimitedSimpleDocTemplate(SimpleDocTemplate):
         super().__init__(*args, **kwargs)
         self._maximum_pages = maximum_pages
 
-    def handle_pageBegin(self) -> None:  # noqa: N802 - ReportLab hook 名称
+    def handle_pageBegin(self) -> None:
         """页模板/页脚绘制前检查，不能等解析完整 PDF 后才拒绝。"""
         if self.page >= self._maximum_pages:
             raise PageLimitExceeded

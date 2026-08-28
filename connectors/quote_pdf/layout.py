@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import reportlab
 from reportlab.lib.pagesizes import A4
@@ -141,9 +141,9 @@ def _canvas(filename: object, **_: object) -> Canvas:
     return canvas
 
 
-def _footer(canvas: Canvas, document: object) -> None:
+def _footer(canvas: Canvas, document: LimitedSimpleDocTemplate) -> None:
     """绘制单页页脚，不为总页数进行预渲染。"""
-    page = getattr(document, "page")
+    page = document.page
     canvas.setFont(_BODY_FONT, 9)
     canvas.drawRightString(A4[0] - _MARGIN, 20, f"Page {page}")
 
@@ -165,7 +165,7 @@ def render_pdf(
         raise
     except LayoutError:
         raise QuotePdfRenderError("layout_failed") from None
-    except Exception:
+    except Exception:  # noqa: BLE001 - 第三方排版异常必须脱敏为固定跨层错误
         raise QuotePdfRenderError("render_failed") from None
     content = sink.read_result()
     if not content:

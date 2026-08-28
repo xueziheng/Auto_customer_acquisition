@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from io import BytesIO
+from pathlib import Path
 from typing import get_type_hints
 
 import pytest
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject
 
 from domains.quotations import service as quotations_service
 from domains.quotations.errors import QuotationError
@@ -156,3 +160,218 @@ def test_unavailable_vera_glyph_is_rejected_without_replacement() -> None:
         )
 
     assert caught.value.code == "unsupported_glyph"
+
+
+def test_vera_mapped_non_ascii_character_renders_without_default_font() -> None:
+    """实际 Vera glyph 映射中的非 ASCII 字符可渲染，不依赖默认字体。"""
+    from connectors.quote_pdf.layout import load_fonts
+
+    body_font, _ = load_fonts()
+    character = next(
+        chr(codepoint)
+        for codepoint, glyph in body_font.face.charToGlyph.items()
+        if codepoint > 127 and glyph and chr(codepoint).isprintable()
+        and not chr(codepoint).isspace()
+    )
+    view = _customer_view(account_name=f"Buyer {character}")
+
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(BytesIO(_renderer().render(
+            view, template_version="quote_pdf_v1"
+        ))).pages
+    )
+
+    assert view.account_name in text
+
+
+def test_missing_fixed_vera_file_returns_font_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """固定包内字体缺失时失败关闭，不能 fallback 到系统或默认字体。"""
+    from connectors.quote_pdf import layout
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    monkeypatch.setattr(layout, "_font_path", lambda _: Path("/missing/Vera.ttf"))
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer().render(_customer_view(), template_version="quote_pdf_v1")
+
+    assert caught.value.code == "font_unavailable"
+
+
+def test_pdf_preserves_customer_newlines_and_consecutive_spaces() -> None:
+    """客户商业文字的换行及连续空格在真实 PDF 提取中不被静默改写。"""
+    specification = "First  line\nSecond   line"
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(BytesIO(_renderer().render(
+            _customer_view(specification=specification), template_version="quote_pdf_v1"
+        ))).pages
+    )
+
+    assert "First  line" in text
+    assert "Second   line" in text
+
+
+def test_text_limit_accepts_exact_utf8_total_and_rejects_one_less() -> None:
+    """文本限额逐字段按 UTF-8 累计，不从最终 PDF 大小倒推。"""
+    from connectors.quote_pdf.limits import customer_texts
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    view = _customer_view(approved_terms=("é", "term"))
+    total = sum(len(value.encode("utf-8")) for value in customer_texts(view))
+
+    assert _renderer(maximum_text_bytes=total).render(
+        view, template_version="quote_pdf_v1"
+    )
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer(maximum_text_bytes=total - 1).render(
+            view, template_version="quote_pdf_v1"
+        )
+
+    assert caught.value.code == "text_limit_exceeded"
+
+
+def test_page_limit_stops_before_a_second_page_is_drawn() -> None:
+    """第 N+1 页开始前必须固定拒绝，不能在最终解析页数后才判断。"""
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer(maximum_pages=1).render(
+            _customer_view(approved_terms=(("approved term " * 500) + "end",)),
+            template_version="quote_pdf_v1",
+        )
+
+    assert caught.value.code == "page_limit_exceeded"
+
+
+def test_page_limit_uses_page_begin_hook_before_second_page_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页数门禁真实运行在 ReportLab page-begin hook，不靠最终页数扫描。"""
+    from connectors.quote_pdf.limits import LimitedSimpleDocTemplate
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    original = LimitedSimpleDocTemplate.handle_pageBegin
+    calls: list[int] = []
+
+    def record_page_begin(document: LimitedSimpleDocTemplate) -> None:
+        calls.append(document.page)
+        original(document)
+
+    monkeypatch.setattr(LimitedSimpleDocTemplate, "handle_pageBegin", record_page_begin)
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer(maximum_pages=1).render(
+            _customer_view(approved_terms=(("approved term " * 500) + "end",)),
+            template_version="quote_pdf_v1",
+        )
+
+    assert caught.value.code == "page_limit_exceeded"
+    assert len(calls) == 2
+
+
+def test_byte_limit_accepts_exact_output_and_rejects_one_byte_less() -> None:
+    """输出大小以真实 bytes 边界验收；失败不会返回部分 PDF。"""
+    view = _customer_view()
+    complete = _renderer().render(view, template_version="quote_pdf_v1")
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    assert _renderer(maximum_bytes=len(complete)).render(
+        view, template_version="quote_pdf_v1"
+    ) == complete
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer(maximum_bytes=len(complete) - 1).render(
+            view, template_version="quote_pdf_v1"
+        )
+
+    assert caught.value.code == "byte_limit_exceeded"
+
+
+def test_pdf_bytes_are_deterministic_across_instances_and_a_fresh_process() -> None:
+    """固定 runtime/font/view/template 不得受实例缓存或先前文档影响。"""
+    view = _customer_view()
+    expected = _renderer().render(view, template_version="quote_pdf_v1")
+    _renderer().render(
+        _customer_view(description="Different customer text"),
+        template_version="quote_pdf_v1",
+    )
+    assert _renderer().render(view, template_version="quote_pdf_v1") == expected
+
+    program = (
+        "from connectors.quote_pdf.client import ReportLabQuotePdfRenderer;"
+        "from domains.quotations.service import project_customer;"
+        "from tests.unit.test_quotation_contracts import detail_fixture;"
+        "view=project_customer(detail_fixture());"
+        "print(ReportLabQuotePdfRenderer(1000000,10,maximum_text_bytes=100000).render(view,template_version='quote_pdf_v1').hex())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], check=True, capture_output=True, text=True,
+        env={"PYTHONPATH": str(Path.cwd()), "PYTHON_DOTENV_DISABLED": "1"},
+    )
+
+    assert bytes.fromhex(result.stdout.strip()) == expected
+
+
+def _assert_pdf_has_no_actions(reader: PdfReader) -> None:
+    """实际展开 PDF 对象图，拒绝动作、附件、链接和表单。"""
+    rejected_types = {"/Action", "/EmbeddedFile", "/Filespec", "/RichMedia"}
+    rejected_actions = {
+        "/JavaScript", "/Launch", "/URI", "/GoTo", "/GoToR", "/Named",
+        "/SubmitForm", "/ImportData",
+    }
+    seen: set[tuple[int, int] | int] = set()
+
+    def walk(value: object) -> None:
+        if isinstance(value, IndirectObject):
+            identity = (value.idnum, value.generation)
+            if identity in seen:
+                return
+            seen.add(identity)
+            walk(value.get_object())
+            return
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        if isinstance(value, DictionaryObject):
+            assert not {"/A", "/AA", "/OpenAction", "/AF", "/Annots"} & set(value)
+            assert str(value.get("/Type", "")) not in rejected_types
+            assert str(value.get("/S", "")) not in rejected_actions
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, ArrayObject):
+            for nested in value:
+                walk(nested)
+
+    walk(reader.trailer["/Root"])
+    assert reader.attachments == {}
+    assert reader.outline == []
+
+
+def test_pdf_object_safety_detector_rejects_a_nested_indirect_action() -> None:
+    """检测器先在纯内存反例上失败，避免只对安全输出空跑。"""
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    action = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Action"),
+        NameObject("/S"): NameObject("/JavaScript"),
+    }))
+    writer._root_object[NameObject("/OpenAction")] = action
+    payload = BytesIO()
+    writer.write(payload)
+
+    with pytest.raises(AssertionError):
+        _assert_pdf_has_no_actions(PdfReader(BytesIO(payload.getvalue())))
+
+
+def test_renderer_pdf_has_no_actions_attachments_or_internal_sentinel() -> None:
+    """客户文本中的 HTML/URL 只能成为文本，PDF 不暴露内部资料。"""
+    sentinel = "INTERNAL_SUPPLIER_MARGIN_SOURCE_SENTINEL"
+    view = _customer_view(description='<a href="https://invalid.example">Widget</a>')
+    reader = PdfReader(BytesIO(_renderer().render(view, template_version="quote_pdf_v1")))
+
+    _assert_pdf_has_no_actions(reader)
+    extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert '<a href="https://invalid.example">Widget</a>' in extracted
+    assert sentinel not in extracted
+    assert sentinel not in str(reader.metadata)

@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -75,7 +75,7 @@ class QuotePdfRenderError(ConnectorError):
 
     is_retryable = False
 
-    _MESSAGES: dict[QuotePdfRenderErrorCode, str] = {
+    _MESSAGES: ClassVar[dict[QuotePdfRenderErrorCode, str]] = {
         "invalid_config": "PDF配置无效",
         "invalid_input": "客户视图无效",
         "template_unsupported": "模板未注册",
