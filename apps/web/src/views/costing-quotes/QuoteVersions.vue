@@ -17,14 +17,16 @@ const files = ref<components["schemas"]["QuoteFileView"][]>([]);
 const next = ref<number | null>(null);
 const internalError = ref(""); const fileError = ref(""); const notice = ref("");
 const originalCall = ref(""); const working = ref(false); const blobUrl = ref(""); const previewing = ref(false);
+const recoveryCall = ref("");
 let recoveryGeneration = 0;
 let recovering = false;
 watch(originalCall, () => {
   recoveryGeneration += 1;
+  recoveryCall.value = "";
   if (recovering) { working.value = false; recovering = false; notice.value = "原恢复操作结果待核对；调用引用已变化，不自动重发"; }
 }, { flush: "sync" });
 function revoke(): void { if (blobUrl.value) URL.revokeObjectURL(blobUrl.value); blobUrl.value = ""; previewing.value = false; }
-function reset(): void { recovering = false; internal.value = []; customer.value = []; current.value = null; files.value = []; next.value = null; internalError.value = ""; fileError.value = ""; notice.value = ""; originalCall.value = ""; working.value = false; revoke(); }
+function reset(): void { recovering = false; internal.value = []; customer.value = []; current.value = null; files.value = []; next.value = null; internalError.value = ""; fileError.value = ""; notice.value = ""; originalCall.value = ""; recoveryCall.value = ""; working.value = false; revoke(); }
 const { begin, hasIdentity } = useQuoteRequestScope(client, () => [props.opportunityId, props.quoteId], reset);
 const stateLabels: Record<components["schemas"]["QuoteState"], string> = { draft: "草稿", pending_approval: "等待审批", approved: "已批准", expired: "已过期", superseded: "已被新版替代", rejected: "已否决", sent: "历史已发送", accepted: "历史已接受" };
 const selectedCustomer = computed(() => customer.value.find((item) => item.quote_id === props.quoteId));
@@ -77,18 +79,22 @@ async function fileAction(kind: "generate" | "reconcile"): Promise<void> {
   const recoveryVersion = recoveryGeneration;
   const valid = () => op.valid() && (kind !== "reconcile" || recoveryVersion === recoveryGeneration);
   recovering = kind === "reconcile";
-  working.value = true; fileError.value = "";
+  working.value = true; fileError.value = ""; recoveryCall.value = "";
   try {
     const result = kind === "generate"
       ? await client.POST("/costing-quotes/quotes/{quote_id}/files", { params: { path: { quote_id: props.quoteId } }, body: {}, signal: op.signal })
       : await client.POST("/costing-quotes/quotes/{quote_id}/files/reconcile", { params: { path: { quote_id: props.quoteId } }, body: { quote_id: props.quoteId, original_generation_call_id: originalCall.value }, signal: op.signal });
     if (!valid()) return;
     if (result.data) {
-      if ("outcome" in result.data) { files.value = [result.data.file]; notice.value = "仅恢复 metadata 关联；未证明文件 bytes 可读，原调用仍未决"; }
+      if ("outcome" in result.data) { files.value = [result.data.file]; recoveryCall.value = result.data.recovery_call_id; notice.value = "仅恢复 metadata 关联；未证明文件 bytes 可读，原调用仍未决"; }
       else { files.value = [result.data]; notice.value = "文件已生成；未发送"; }
     } else {
       fileError.value = quoteError(result.response.status, result.error);
-      if (result.error && "original_generation_call_id" in result.error) originalCall.value = result.error.original_generation_call_id ?? result.error.tool_call_id ?? originalCall.value;
+      if (result.error && "original_generation_call_id" in result.error) {
+        recovering = false; working.value = false;
+        originalCall.value = result.error.original_generation_call_id ?? originalCall.value;
+        if (kind === "reconcile") recoveryCall.value = result.error.tool_call_id ?? "";
+      }
     }
   } catch { if (valid()) fileError.value = "文件请求结果未知，待核对。请读取文件记录；不自动生成、不伪造原调用 ID"; }
   finally { if (valid()) { working.value = false; recovering = false; } }
@@ -243,7 +249,9 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
         </p><label>原生成调用 ID（未知结果人工核对）<input
           v-model="originalCall"
           name="original-generation-call"
-        ></label><button
+        ></label><p v-if="recoveryCall">
+          本次恢复调用 ID：{{ recoveryCall }}
+        </p><button
           :disabled="!hasIdentity || working || !originalCall"
           @click="fileAction('reconcile')"
         >

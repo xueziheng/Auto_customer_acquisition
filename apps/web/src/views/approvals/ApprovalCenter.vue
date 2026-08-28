@@ -263,6 +263,7 @@ onMounted(() => void loadApprovals());
           <div v-if="selected.can_current_user_decide">
             <label>否决原因<textarea
               v-model="rejectionReason"
+              :disabled="deciding"
               rows="2"
               placeholder="仅否决时必填；请写清需要怎样修改"
             /></label><div>

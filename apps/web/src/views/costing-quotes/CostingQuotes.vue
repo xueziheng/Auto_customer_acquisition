@@ -92,14 +92,14 @@ watch(itemScope, () => {
 watch(createScope, () => {
   if (savingKind === "create" && saving.value) { saving.value = false; savingKind = null; notice.value = "原成本表操作结果待核对；输入已变更，不自动重发"; }
 }, { flush: "sync" });
-const quoteMutation = useQuoteConfirmation(client, () => [opportunityId.value, quoteId.value, selectedSheetId.value, JSON.stringify(draft), JSON.stringify(terms.value), fxForm.ref, quoteContext.value?.context_hash, scopeConfirmation.value?.confirmation_id], () => {});
+const selectedSheet = computed(() =>
+  sheets.value.find((sheet) => sheet.cost_sheet_id === selectedSheetId.value) ?? null,
+);
+const quoteMutation = useQuoteConfirmation(client, () => [opportunityId.value, quoteId.value, selectedSheetId.value, selectedSheet.value?.content_hash, JSON.stringify(draft), JSON.stringify(terms.value), fxForm.ref, quoteContext.value?.context_hash, scopeConfirmation.value?.confirmation_id], () => {});
 const fxMutation = useQuoteConfirmation(client, () => [opportunityId.value, quoteId.value, JSON.stringify(fxForm)], () => { fx.value = null; });
 watch(() => [opportunityId.value, quoteId.value], clearBusiness, { flush: "sync" });
 watch(selectedSheetId, () => { coverage.value = null; scopeConfirmation.value = null; calculated.value = null; targetCalculated.value = null; }, { flush: "sync" });
 
-const selectedSheet = computed(() =>
-  sheets.value.find((sheet) => sheet.cost_sheet_id === selectedSheetId.value) ?? null,
-);
 const scopeCurrent = computed(() => {
   const confirmation = scopeConfirmation.value;
   return !!confirmation && confirmation.sheet_hash === selectedSheet.value?.content_hash

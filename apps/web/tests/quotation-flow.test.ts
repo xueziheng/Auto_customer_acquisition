@@ -268,6 +268,58 @@ const approval: components["schemas"]["ApprovalView"] = {
 const run: components["schemas"]["RunSummaryView"] = { created_at: "2026-08-28T00:00:00Z", current_step: "approval", last_activity_at: "2026-08-28T00:00:00Z", last_error: null, next_poll_at: null, retry_count: 0, run_id: "run-quote", status: "waiting_human", subject_ref: "quote-1", workflow_type: "quote_approval", workflow_version: 1 };
 const runDetail: components["schemas"]["RunDetailView"] = { summary: run, approvals: [{ approval_id: "approval-quote", approval_type: "quote", created_at: run.created_at, decided_at: null, expires_at: "2026-09-01T00:00:00Z", state: "pending" }], artifacts: [], steps: [], tool_calls: [] };
 
+it.each(["success", "http-error", "network-error"])("freezes the rejection reason and releases decision controls after %s", async (outcome) => {
+  const pending = deferred(); const bodies: unknown[] = [];
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path === "/approvals/pending") return json([approval]);
+    if (path === "/approvals/approval-quote") return json(approval);
+    if (path.endsWith("/decide")) { bodies.push(await input.json()); return pending.promise; }
+    return json([]);
+  }, "/approvals");
+  await eventually(() => expect(root.querySelector(".decision-panel textarea")).not.toBeNull());
+  const reason = root.querySelector<HTMLTextAreaElement>(".decision-panel textarea")!;
+  reason.value = "需要更正付款条件"; reason.dispatchEvent(new Event("input", { bubbles: true }));
+  click(root, "否决并退回"); await eventually(() => expect(bodies).toHaveLength(1));
+  const couldEditWhilePending = !reason.disabled;
+  if (couldEditWhilePending) { reason.value = "修改后的原因"; reason.dispatchEvent(new Event("input", { bubbles: true })); }
+  if (outcome === "network-error") pending.reject(new Error("controlled interruption"));
+  else pending.resolve(outcome === "success" ? json(null) : json({ code: "dependency_unavailable", message: "受控故障" }, 503));
+  await eventually(() => expect(root.querySelector<HTMLButtonElement>(".reject-button")?.disabled).toBe(false));
+  expect(couldEditWhilePending).toBe(false);
+  expect(root.querySelector<HTMLTextAreaElement>(".decision-panel textarea")?.disabled).toBe(false);
+  expect(root.textContent).not.toContain("提交中");
+  expect(bodies).toEqual([{ decision: "reject", reason: "需要更正付款条件" }]);
+  if (outcome === "http-error") expect(root.textContent).toContain("审批服务暂不可用");
+  if (outcome === "network-error") expect(root.textContent).toContain("决定结果未知");
+});
+
+it.each(["selection", "identity"])("keeps a newer approval decision busy after an old response and %s changes", async (change) => {
+  const old = deferred(); const fresh = deferred(); let calls = 0;
+  const second = { ...approval, approval_id: "approval-second", title: "第二个精确审批" };
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path === "/approvals/pending") return json([approval, second]);
+    if (path === "/approvals/approval-quote") return json(approval);
+    if (path === "/approvals/approval-second") return json(second);
+    if (path.endsWith("/decide")) { calls += 1; return calls === 1 ? old.promise : fresh.promise; }
+    return json([]);
+  }, "/approvals");
+  await eventually(() => expect(root.querySelector(".decision-panel")).not.toBeNull());
+  click(root, "批准此精确变更"); await eventually(() => expect(calls).toBe(1));
+  if (change === "identity") { configureAuthenticatedIdentity("tenant-b", "employee-b"); await nextTick(); click(root, "刷新待办"); }
+  else click(root, "第二个精确审批");
+  await eventually(() => expect(root.querySelector<HTMLButtonElement>(".reject-button")?.disabled).toBe(false));
+  click(root, "批准此精确变更"); await eventually(() => expect(calls).toBe(2));
+  old.resolve(json({ code: "state_conflict", message: "旧审批冲突" }, 409));
+  await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(root.querySelector<HTMLButtonElement>(".reject-button")?.disabled).toBe(true);
+  expect(root.textContent).not.toContain("审批已被他人决定");
+  fresh.resolve(json({ code: "dependency_unavailable", message: "当前故障" }, 503));
+  await eventually(() => expect(root.textContent).toContain("审批服务暂不可用"));
+  expect(root.querySelector<HTMLButtonElement>(".reject-button")?.disabled).toBe(false);
+});
+
 it.each(["list", "detail", "action"])("clears quote approval data and rejects late %s responses after identity switch", async (stage) => {
   const pending = deferred(); let started = false; let lists = 0;
   const root = await mount(async (input) => {
@@ -357,6 +409,91 @@ it("confirms persisted cost bindings and full scope before precise quote creatio
   expect(root.textContent).toContain("尚未批准、更未发送");
 });
 
+it.each(["target", "manual"] as const)("invalidates late %s calculations when the same sheet gets a new content hash", async (mode) => {
+  const success = deferred(); const failure = deferred(); const fresh = deferred(); const contextRefresh = deferred();
+  let activeSheet = sheet; let calls = 0; let contextReads = 0;
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error();
+    const path = new URL(input.url).pathname;
+    if (path.endsWith("/quote-context")) { contextReads += 1; return contextReads === 1 ? json(context) : contextRefresh.promise; }
+    if (path.endsWith("/cost-sheets")) return json([activeSheet]);
+    if (path.endsWith("/calculate")) { calls += 1; return [success, failure, fresh][calls - 1]!.promise; }
+    return basic(input);
+  });
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector('[name="quote-price"]')).not.toBeNull());
+  field(root, "quote-price", "0.123456789012"); field(root, "quote-currency-exact", "USD");
+  field(root, "quote-unit-places", "4"); field(root, "quote-total-places", "2"); field(root, "quote-rounding", "half_up");
+  const action = mode === "target" ? "计算目标报价" : "计算实际报价收益";
+  click(root, action); await eventually(() => expect(calls).toBe(1));
+  activeSheet = { ...sheet, content_hash: "sheet-new-1", items: [{ ...sheet.items[0]!, source_ref: "sheet-new-1" }] }; click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain("sheet-new-1"));
+  success.resolve(json({ ...calculation, inputs_hash: "old-calculation" }));
+  await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(root.textContent).not.toContain("old-calculation");
+  click(root, action); await eventually(() => expect(calls).toBe(2));
+  activeSheet = { ...sheet, content_hash: "sheet-new-2", items: [{ ...sheet.items[0]!, source_ref: "sheet-new-2" }] }; click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain("sheet-new-2"));
+  failure.resolve(json({ code: "dependency_unavailable", message: "old-calculation-error" }, 503));
+  await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(root.textContent).not.toContain("old-calculation-error");
+  click(root, action); await eventually(() => expect(calls).toBe(3));
+  fresh.resolve(json({ ...calculation, inputs_hash: "fresh-calculation" }));
+  await eventually(() => expect(root.textContent).toContain("fresh-calculation"));
+});
+
+it.each(["create", "revision"] as const)("invalidates pending quote %s on a same-ID sheet change without clearing a newer operation", async (kind) => {
+  const old = deferred(); const fresh = deferred(); const contextRefresh = deferred(); let calls = 0; let activeSheet = sheet; let contextReads = 0;
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path.endsWith("/quote-context")) { contextReads += 1; return contextReads === 1 ? json(context) : contextRefresh.promise; }
+    if (path.endsWith("/cost-sheets")) return json([activeSheet]);
+    if (path.endsWith("/coverage")) {
+      const value: components["schemas"]["CostCoveragePublicView"] = { acquisition_mode: "summary", confirmed_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", content_hash: "coverage-hash", cost_sheet_id: sheetId, coverage_id: "coverage-1", decisions: [], expected_sheet_hash: activeSheet.content_hash!, field_provenance: {} };
+      return json(value);
+    }
+    if (path.endsWith("/scope-confirmations")) {
+      const value: components["schemas"]["CostScopePublicView"] = { confirmation_id: `scope-${activeSheet.content_hash}`, content_hash: "scope-hash", cost_sheet_id: sheetId, coverage_hash: "coverage-hash", coverage_id: "coverage-1", evidence_bindings: [], need_facts_hash: "need-hash", need_id: need, opportunity_id: opp, provenance, sheet_hash: activeSheet.content_hash!, specification: "M8 steel", specification_hash: "spec-hash", terms: [], terms_hash: "terms-hash", valid_until: "2026-10-01T00:00:00Z" };
+      return json([value]);
+    }
+    if (input.method === "POST" && (path.endsWith("/quotes") || path.endsWith("/revisions"))) { calls += 1; return calls === 1 ? old.promise : fresh.promise; }
+    if (path.endsWith("/quotes/quote-1")) return json(quote);
+    return basic(input);
+  }, kind === "revision" ? "/costing-quotes/quotes/quote-1" : "/costing-quotes");
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector('[name="quote-price"]')).not.toBeNull());
+  field(root, "quote-price", "0.123456789012"); field(root, "quote-currency-exact", "USD");
+  field(root, "quote-unit-places", "4"); field(root, "quote-total-places", "2"); field(root, "quote-rounding", "half_up"); field(root, "quote-valid-until", "2026-10-01T00:00:00Z");
+  const selectScope = async (id: string): Promise<void> => {
+    click(root, "核对已保存适用清单");
+    await eventually(() => expect(root.textContent).toContain("已读取费用确认"));
+    click(root, "核对已保存适用性确认");
+    await eventually(() => expect(root.textContent).toContain(id));
+    click(root, "使用此已保存确认"); await nextTick();
+  };
+  await selectScope("scope-sheet-hash");
+  if (kind === "revision") {
+    await eventually(() => expect(root.querySelector('[name="revision-acknowledged"]')).not.toBeNull());
+    root.querySelector<HTMLInputElement>('[name="revision-acknowledged"]')!.click(); await nextTick();
+  }
+  const action = kind === "create" ? "确认创建新报价" : "确认修订此版本";
+  const quotePanel = [...root.querySelectorAll<HTMLElement>("section")].find((item) => item.querySelector("h2")?.textContent === "确认报价版本")!;
+  const button = () => [...quotePanel.querySelectorAll("button")].find((item) => item.textContent?.includes(action))!;
+  click(root, action); await eventually(() => expect(calls).toBe(1)); expect(button().disabled).toBe(true);
+  activeSheet = { ...sheet, content_hash: "sheet-new", items: [{ ...sheet.items[0]!, source_ref: "sheet-new" }] }; click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain("sheet-new"));
+  expect(quotePanel.textContent).toContain("原请求结果待核对");
+  expect(button().disabled).toBe(true); // 旧确认仍失效，不自动重确认。
+  await selectScope("scope-sheet-new");
+  expect(button().disabled).toBe(false); click(root, action); await eventually(() => expect(calls).toBe(2));
+  old.resolve(kind === "create" ? json({ ...quote, quote_id: "old-quote" }) : json({ code: "state_conflict", message: "old-revision-error" }, 409));
+  await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(router.currentRoute.value.params.quoteId).toBe(kind === "revision" ? "quote-1" : undefined);
+  expect(quotePanel.textContent).not.toContain("old-revision-error"); expect(quotePanel.textContent).toContain("提交中"); expect(button().disabled).toBe(true);
+  fresh.resolve(json({ code: "state_conflict", message: "fresh-quote-error" }, 409));
+  await eventually(() => expect(quotePanel.textContent).toContain("fresh-quote-error")); expect(button().disabled).toBe(false);
+});
+
 it("sends the selected customer quote verbatim with the current quantity CAS instead of inventing unit evidence", async () => {
   const bodies: unknown[] = [];
   const preview = { artifact_id: "artifact", page: null, profile: "rfc822-plain-v1", raw_hash: "raw", scope: { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: "message-1", text: "100 pieces", text_hash: "text" };
@@ -436,6 +573,33 @@ it("retains the real generation call id and only reconciles metadata after an ex
   await eventually(() => expect(root.textContent).toContain("原调用仍未决"));
   expect(writes[1]?.body).toEqual({ quote_id: "quote-1", original_generation_call_id: "call-actual" });
   expect(root.textContent).not.toContain("文件已生成");
+});
+
+it("preserves the original generation reference on reconcile errors and displays the recovery call separately", async () => {
+  const writes: unknown[] = [];
+  const failure: components["schemas"]["QuoteFileApiError"] = { code: "recovery_unavailable", message: "恢复暂不可用", original_generation_call_id: null, retry_after_seconds: null, tool_call_id: "recovery-call-2" };
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path.endsWith("/reconcile")) {
+      writes.push(await input.json());
+      if (writes.length === 1) return json(failure, 503);
+      return json({ checked_at: "2026-08-28T00:00:00Z", file, original_generation_call_id: "generation-call-1", original_ledger_modified: false, original_status_at_check: "executing", outcome: "metadata_recovered_original_unresolved", recovery_call_id: "recovery-call-3" });
+    }
+    if (path.endsWith("/files")) return json([]);
+    return json({ code: "permission_denied", message: "拒绝" }, 403);
+  }, "/costing-quotes/quotes/quote-1");
+  await eventually(() => expect(root.textContent).toContain("尚无已加载文件"));
+  field(root, "original-generation-call", "generation-call-1"); await nextTick(); click(root, "仅恢复原调用");
+  await eventually(() => expect(root.textContent).toContain("recovery_unavailable"));
+  expect(root.querySelector<HTMLInputElement>('[name="original-generation-call"]')?.value).toBe("generation-call-1");
+  expect(root.textContent).toContain("本次恢复调用 ID：recovery-call-2");
+  expect(root.textContent).not.toContain("调用引用已变化"); expect(writes).toHaveLength(1);
+  click(root, "仅恢复原调用"); await eventually(() => expect(root.textContent).toContain("原调用仍未决"));
+  expect(writes).toEqual([{ quote_id: "quote-1", original_generation_call_id: "generation-call-1" }, { quote_id: "quote-1", original_generation_call_id: "generation-call-1" }]);
+  expect(root.textContent).toContain("本次恢复调用 ID：recovery-call-3"); expect(root.textContent).not.toContain("recovery-call-2");
+  configureAuthenticatedIdentity("tenant-b", "employee-b"); await nextTick();
+  expect(root.textContent).not.toContain("recovery-call-3");
+  expect(root.querySelector<HTMLInputElement>('[name="original-generation-call"]')?.value).toBe("");
 });
 
 it("rejects a recovery receipt after the original-call input changes A-B-A", async () => {
