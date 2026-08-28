@@ -16,8 +16,17 @@ from domains.costing.service import (
     project_coverage,
     project_scope,
 )
-from domains.quotations.schemas import QuoteDraftCommand
-from domains.quotations.service import QuoteInternalPublicView, project_internal_quote
+from domains.quotations.errors import (
+    QuotationPermissionError,
+    QuotationUnavailableError,
+)
+from domains.quotations.schemas import QuotationActor, QuoteDraftCommand
+from domains.quotations.service import (
+    QuotationActorReader,
+    QuotationVersionService,
+    QuoteInternalPublicView,
+    project_internal_quote,
+)
 from shared.errors import ValidationError
 from shared.schemas.evidence_read import EvidenceTextResult, QuoteEvidenceError
 from shared.schemas.identifiers import (
@@ -27,10 +36,12 @@ from shared.schemas.identifiers import (
     QuoteId,
     TenantId,
 )
+from workflows.engine.runner import WorkflowEngine
 from workflows.quote_approval.application import (
     QuoteApplicationService,
     QuotePreparationApplication,
 )
+from workflows.quote_approval.flow import start_quote_approval
 from workflows.quote_approval.http_schemas import (
     EvidenceLocatorPublicView,
     EvidencePreviewPublicView,
@@ -44,6 +55,40 @@ class QuoteApprovalStarter(Protocol):
     async def start(
         self, tenant_id: TenantId, quote_id: QuoteId, *, actor_id: EmployeeId
     ) -> QuoteApprovalStartResult: ...
+
+
+class CurrentQuoteApprovalStarter:
+    """从真实当前事实构造actor，再委托唯一T5启动与持久run绑定校验。"""
+
+    def __init__(
+        self,
+        quotations: QuotationVersionService,
+        engine: WorkflowEngine,
+        actors: QuotationActorReader,
+    ) -> None:
+        self._quotes, self._engine, self._actors = quotations, engine, actors
+
+    async def start(
+        self, tenant_id: TenantId, quote_id: QuoteId, *, actor_id: EmployeeId
+    ) -> QuoteApprovalStartResult:
+        try:
+            fact = await self._actors.read_current(tenant_id, actor_id)
+        except Exception:  # noqa: BLE001 - 身份故障不泄露存储原文
+            raise QuotationUnavailableError("dependency_unavailable") from None
+        if fact is None or (fact.tenant_id, fact.employee_id, fact.is_active) != (
+            tenant_id,
+            actor_id,
+            True,
+        ):
+            raise QuotationPermissionError("permission_denied")
+        run_id = await start_quote_approval(
+            self._engine,
+            self._quotes,
+            tenant_id,
+            quote_id,
+            actor=QuotationActor(employee_id=fact.employee_id, role=fact.role),
+        )
+        return QuoteApprovalStartResult(quote_id=quote_id, run_id=run_id)
 
 
 async def confirm_coverage(

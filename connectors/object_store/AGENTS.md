@@ -29,6 +29,11 @@
 - 所有 boto3 调用在线程中执行。caller cancellation 必须等待底层调用完成再传播，保证
   Store 能确定是否需要补偿；SDK 原始异常不得穿过 connector 边界。
 
+旧上传可用DeferredS3ObjectBlobTransport延迟创建上述delegate：构造零resolver/SDK，
+先按旧规则检查key/bytes，首个合法操作（含并发）才初始化一次；失败不缓存坏delegate。
+这不是新的IO实现，旧无界get、线程取消收口与Raw/EMAIL_DRAFT补偿原样保留。
+新来源只走bounded，新QUOTE_PDF只走专属writer，不能借惰性wrapper绕过预算。
+
 ## 来源有界读取增量
 
 `S3BoundedObjectBlobTransport`只提供来源专用get_bounded，与旧adapter/取消补偿互不改变。

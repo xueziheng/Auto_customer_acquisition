@@ -1,6 +1,6 @@
 """报价单轮步骤：只保存元数据，事件或run上下文不能替代批准事实。"""
 
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from domains.quotations.errors import QuoteApprovalError, QuoteApprovalUnavailableError
 from domains.quotations.schemas import (
@@ -10,6 +10,7 @@ from domains.quotations.schemas import (
 )
 from shared.errors import TransientError
 from shared.schemas.identifiers import EmployeeId, QuoteId, RunId, TenantId
+from shared.schemas.quote_facts import fact_identity
 from workflows.engine.runner import WorkflowRun
 from workflows.quote_approval.application import QuoteApprovalApplication
 
@@ -36,14 +37,16 @@ def _identity(run: WorkflowRun) -> tuple[QuoteWorkflowExecutor, EmployeeId, Empl
     from pydantic import ValidationError
 
     try:
-        fact = QuoteWorkflowRunFact(
-            tenant_id=run.tenant_id,
-            run_id=run.run_id,
-            workflow_type=run.workflow_type,
-            workflow_version=run.workflow_version,
-            subject_ref=run.subject_ref,
-            quote_version=run.context.get("quote_version"),
-            content_hash=run.context.get("content_hash"),
+        fact = QuoteWorkflowRunFact.model_validate(
+            {
+                "tenant_id": run.tenant_id,
+                "run_id": run.run_id,
+                "workflow_type": run.workflow_type,
+                "workflow_version": run.workflow_version,
+                "subject_ref": run.subject_ref,
+                "quote_version": run.context.get("quote_version"),
+                "content_hash": run.context.get("content_hash"),
+            }
         )
         if (
             fact.workflow_type != "quote_approval"
@@ -52,16 +55,16 @@ def _identity(run: WorkflowRun) -> tuple[QuoteWorkflowExecutor, EmployeeId, Empl
         ):
             raise ValueError
         employees = tuple(run.context.get(k) for k in ("prepared_by", "initiated_by"))
-        if any(not isinstance(v, str) or not v.startswith("emp_") for v in employees):
-            raise ValueError
+        for employee in employees:
+            fact_identity(employee)
         return (
             QuoteWorkflowExecutor(
                 workflow_type="quote_approval",
                 run_id=run.run_id,
                 quote_id=QuoteId(run.subject_ref),
             ),
-            EmployeeId(employees[0]),
-            EmployeeId(employees[1]),
+            EmployeeId(cast(str, employees[0])),
+            EmployeeId(cast(str, employees[1])),
         )
     except (ValueError, TypeError, ValidationError):
         raise QuoteApprovalError("workflow_binding_invalid") from None
@@ -129,15 +132,19 @@ class QuoteApprovalStep:
                 return "fail", result.error_code or "approval_fact_invalid", patch
             return "advance", "notify", patch
         if self._name == "apply":
-            result = await app.apply(tenant, quote_id, executor=executor)
-            patch = {"outcome": result.outcome}
-            if result.outcome in {"approved", "already_applied"}:
-                return "advance", "mark_applied", patch
-            if result.outcome == "blocked":
-                return "fail", result.error_code or "approval_fact_invalid", patch
-            if result.outcome == "waiting":
-                return "advance", "wait", patch
-            return "advance", "notify", patch
+            apply_result = await app.apply(tenant, quote_id, executor=executor)
+            apply_patch = {"outcome": apply_result.outcome}
+            if apply_result.outcome in {"approved", "already_applied"}:
+                return "advance", "mark_applied", apply_patch
+            if apply_result.outcome == "blocked":
+                return (
+                    "fail",
+                    apply_result.error_code or "approval_fact_invalid",
+                    apply_patch,
+                )
+            if apply_result.outcome == "waiting":
+                return "advance", "wait", apply_patch
+            return "advance", "notify", apply_patch
         if self._name == "mark_applied":
             await app.mark_completed(tenant, quote_id, executor=executor)
             return "advance", "notify", {"outcome": "approved"}

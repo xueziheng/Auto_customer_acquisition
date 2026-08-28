@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent_runtime.qualification_agent.agent import ReplyClassifier
+from artifact_store.repository import ArtifactUnitOfWorkFactory
+from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from connectors.dns_auth.client import (
     AsyncTxtResolver,
     DnsAuthenticationConnector,
@@ -31,6 +33,10 @@ from connectors.gmail.client import (
 )
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.hunter.transport import HunterApiHttpTransport, HunterHttpTransport
+from connectors.object_store.bounded import S3BoundedObjectBlobTransport
+from connectors.object_store.config import S3ObjectStoreSettings
+from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
+from connectors.object_store.quote_pdf import S3QuotePdfObjectBlobTransport
 from domains.approvals.service import ApprovalService
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.compliance.permissions import (
@@ -89,6 +95,7 @@ from domains.sending_identity.service import (
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
+from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
@@ -102,12 +109,21 @@ from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
+from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
+from infra.db.work_intake_uow import SqlAlchemyWorkIntakeUnitOfWork
 from infra.db.workflow_engine import PostgresWorkflowEngine
+from infra.quotation_settings import from_json as quotation_from_json
+from infra.quote_document_store import (
+    GeneratedStoreDocumentAdapter,
+    GeneratedStoreDocumentMetadataReader,
+)
+from infra.quote_evidence_artifacts import RawQuoteEvidenceAdapter
+from infra.quote_file_artifacts import GeneratedStoreQuoteArtifactReader
 from infra.secrets import EnvironmentSecretResolver
 from shared.errors import ValidationError
 from shared.events.bus import EventHandler
@@ -213,6 +229,8 @@ from workflows.email_feedback.unsubscribe import (
     UnsubscribeService,
     UnsubscribeServiceImpl,
 )
+from workflows.employee_work_intake.repository import WorkIntakeUnitOfWorkFactory
+from workflows.employee_work_intake.service_impl import WorkIntakeServiceImpl
 from workflows.engine.runner import StepHandler, WorkflowEngine
 from workflows.human_handoff.flow import (
     HumanHandoffEmployeeReader,
@@ -227,6 +245,13 @@ from workflows.playbook_change import (
     build_playbook_change_handlers,
     register_playbook_change,
 )
+from workflows.quote_approval.application import QuoteApprovalApplication
+from workflows.quote_approval.flow import (
+    build_quote_approval_handlers,
+    register_quote_approval,
+)
+from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
+from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
 from workflows.reply_qualification.flow import (
     build_reply_qualification_handlers,
     register_reply_qualification,
@@ -271,6 +296,14 @@ from .notification_projection import (
     NotificationJobHandoffNotifier,
     NotificationProjectionHandler,
 )
+from .quotations import (
+    QuotationRuntimeLifecycle,
+    build_need_unit_authorizer,
+    build_quotation_domains,
+    build_quotation_evidence,
+    build_quotation_runtime,
+)
+from .quote_notifications import NotificationJobQuoteApprovalNotifier
 from .reply_events import ReplyQualificationEventHandlers
 from .web_discovery import (
     WebDiscoveryToolComposition,
@@ -504,10 +537,9 @@ class DemandDiscoveryComposition:
             (self.demand, "get_confidence"),
             (self.prospecting, "resolve_account"),
         )
-        if (
-            any(not callable(getattr(value, name, None)) for value, name in required)
-            or not isinstance(self.web_tools, WebDiscoveryToolComposition)
-        ):
+        if any(
+            not callable(getattr(value, name, None)) for value, name in required
+        ) or not isinstance(self.web_tools, WebDiscoveryToolComposition):
             raise ValidationError("scheduler demand_discovery 依赖未完整配置")
 
 
@@ -574,7 +606,8 @@ class SchedulerDomainDependencies:
             not isinstance(self.demand_discovery, DemandDiscoveryComposition)
             or (
                 self.account_discovery is not None
-                and self.demand_discovery.prospecting is not self.account_discovery.prospecting
+                and self.demand_discovery.prospecting
+                is not self.account_discovery.prospecting
             )
         ):
             raise ValidationError("scheduler demand_discovery 依赖未完整配置")
@@ -629,9 +662,7 @@ class _DnsTenantCheck:
     ) -> CheckRejection | None:
         del state
         if ctx.tenant_id != self._tenant_id:
-            return CheckRejection(
-                self.name, "tenant:mismatch", "DNS 工具租户绑定无效"
-            )
+            return CheckRejection(self.name, "tenant:mismatch", "DNS 工具租户绑定无效")
         return None
 
 
@@ -777,9 +808,7 @@ class _SchedulerUnsubscribeLinkAdapter:
     def __init__(self, service: UnsubscribeService) -> None:
         self._service = service
 
-    async def build(
-        self, tenant_id: TenantId, preflight: object
-    ) -> UnsubscribeLink:
+    async def build(self, tenant_id: TenantId, preflight: object) -> UnsubscribeLink:
         from domains.outreach.schemas import MessageSendPreflight
 
         if not isinstance(preflight, MessageSendPreflight):
@@ -848,6 +877,19 @@ class _HunterRuntimeActivation(RuntimeActivation):
         )
 
 
+@dataclass(frozen=True)
+class _QuoteRuntimeActivation:
+    """由既有持锁主循环执行，先旧激活，再探测本parser。"""
+
+    existing_activation: RuntimeActivation | None
+    quotation_lifecycle: QuotationRuntimeLifecycle
+
+    async def activate(self) -> None:
+        if self.existing_activation is not None:
+            await self.existing_activation.activate()
+        await self.quotation_lifecycle.startup()
+
+
 class SchedulerRuntimeFactory:
     """生产 composition root：只注入 typed 业务依赖，其余资源在此构造/释放。"""
 
@@ -884,12 +926,18 @@ class SchedulerRuntimeFactory:
     @asynccontextmanager
     async def _resources(self) -> AsyncIterator[SchedulerRuntime]:
         config = SchedulerWorkerConfig.from_environ(self._environ)
+        quote_settings = (
+            quotation_from_json(self._environ["TRADEOS_QUOTATION_SETTINGS_JSON"])
+            if "TRADEOS_QUOTATION_SETTINGS_JSON" in self._environ
+            else None
+        )
         health = SchedulerHealthState()
         health.mark_ready("config")
         engine = create_engine_from(config.database_url)
         health_server: SchedulerHealthServer | None = None
         health_task: asyncio.Task[None] | None = None
         primary: BaseException | None = None
+        quotation = None
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             await assert_database_schema_current(engine)
@@ -967,11 +1015,110 @@ class SchedulerRuntimeFactory:
                 t2=timedelta(seconds=config.handoff_t2_seconds),
                 now=self._now,
             )
+            secrets = EnvironmentSecretResolver(self._environ)
+            fingerprint_key = secrets.resolve(config.fingerprint_key_ref).encode(
+                "utf-8"
+            )
+            fingerprints = HmacFingerprintProvider(
+                config.fingerprint_key_version, fingerprint_key
+            )
+            engine_ref: WorkflowEngine | None = None
+            quote_domain = None
+            quote_evidence = None
+            generated_documents = None
+            generated_metadata = None
+            if quote_settings is not None and any(
+                name in self._environ
+                for name in (
+                    "S3_ENDPOINT",
+                    "S3_BUCKET_ARTIFACTS",
+                    "S3_ACCESS_KEY_REF",
+                    "S3_SECRET_KEY_REF",
+                    "S3_REGION",
+                    "RAW_ARTIFACT_MAX_BYTES",
+                    "GENERATED_ARTIFACT_MAX_BYTES",
+                )
+            ):
+                objects = S3ObjectStoreSettings.from_environ(self._environ)
+                raw_store = RawArtifactStoreImpl(
+                    cast(
+                        ArtifactUnitOfWorkFactory,
+                        lambda tenant: SqlAlchemyArtifactUnitOfWork(factory, tenant),
+                    ),
+                    DeferredS3ObjectBlobTransport(objects, secrets),
+                    objects.raw_max_bytes,
+                    self._now,
+                    new_id,
+                    bounded_transport=S3BoundedObjectBlobTransport(
+                        objects, secrets, limits=quote_settings.evidence.object_read
+                    ),
+                )
+                uploads = WorkIntakeServiceImpl(
+                    cast(
+                        WorkIntakeUnitOfWorkFactory,
+                        lambda tenant: SqlAlchemyWorkIntakeUnitOfWork(factory, tenant),
+                    ),
+                    now=self._now,
+                    id_generator=new_id,
+                )
+                artifact_reader = None
+                if quote_settings.files is not None:
+                    limits = quote_settings.files
+                    generated_store = GeneratedArtifactStoreImpl(
+                        cast(
+                            ArtifactUnitOfWorkFactory,
+                            lambda tenant: SqlAlchemyArtifactUnitOfWork(
+                                factory, tenant
+                            ),
+                        ),
+                        S3QuotePdfObjectBlobTransport(
+                            objects, secrets, limits=limits.object_write
+                        ),
+                        limits.maximum_bytes,
+                        self._now,
+                        new_id,
+                        bounded_transport=S3BoundedObjectBlobTransport(
+                            objects, secrets, limits=limits.object_read
+                        ),
+                    )
+                    generated_documents = GeneratedStoreDocumentAdapter(
+                        generated_store, generated_store
+                    )
+                    generated_metadata = GeneratedStoreDocumentMetadataReader(
+                        generated_store
+                    )
+                    artifact_reader = GeneratedStoreQuoteArtifactReader(generated_store)
+                quote_evidence = build_quotation_evidence(
+                    factory,
+                    quote_settings,
+                    tenant_id=config.tenant_id,
+                    raw=RawQuoteEvidenceAdapter(raw_store),
+                    uploads=uploads,
+                    need_authorizer=build_need_unit_authorizer(
+                        factory, quote_settings, tenant_id=config.tenant_id
+                    ),
+                    fingerprints=fingerprints,
+                    lease_duration=timedelta(seconds=config.tool_lease_seconds),
+                    lease_owner="scheduler-quote-source",
+                    now=lambda: datetime.now(UTC),
+                )
+                quote_domain = build_quotation_domains(
+                    factory,
+                    quote_settings,
+                    tenant_id=config.tenant_id,
+                    evidence=quote_evidence,
+                    run_reader=WorkflowQuoteRunReader(lambda: engine_ref),
+                    artifact_reader=artifact_reader,
+                    now=self._now,
+                )
             change_approvals = ApprovalServiceImpl(
                 lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
                     factory, requested_tenant, now=self._now
                 ),
                 now=self._now,
+                quote_access=None
+                if quote_domain is None
+                else quote_domain.approval_access,
             )
             playbook_organization = OrganizationServiceImpl(
                 lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
@@ -1035,13 +1182,6 @@ class SchedulerRuntimeFactory:
                 StandardAuditLogger(),
                 now=self._now,
             )
-            secrets = EnvironmentSecretResolver(self._environ)
-            fingerprint_key = secrets.resolve(config.fingerprint_key_ref).encode(
-                "utf-8"
-            )
-            fingerprints = HmacFingerprintProvider(
-                config.fingerprint_key_version, fingerprint_key
-            )
             connector = DnsAuthenticationConnector(
                 self._resolver_factory(), now=self._now
             )
@@ -1070,9 +1210,7 @@ class SchedulerRuntimeFactory:
             def tool_uow(tenant: TenantId) -> ToolGatewayUnitOfWork:
                 return cast(
                     ToolGatewayUnitOfWork,
-                    SqlAlchemyToolGatewayUnitOfWork(
-                        factory, tenant, now=self._now
-                    ),
+                    SqlAlchemyToolGatewayUnitOfWork(factory, tenant, now=self._now),
                 )
 
             gateway = ToolGateway(
@@ -1118,9 +1256,7 @@ class SchedulerRuntimeFactory:
             runtime_activation: RuntimeActivation | None = None
             if self._dependencies.account_discovery is not None:
                 if campaign_outreach is None:
-                    raise ValidationError(
-                        "account_discovery 必须配置 Campaign 发送链"
-                    )
+                    raise ValidationError("account_discovery 必须配置 Campaign 发送链")
                 account = self._dependencies.account_discovery
                 if account.hunter is not None:
                     if (
@@ -1196,9 +1332,7 @@ class SchedulerRuntimeFactory:
                     fingerprints=fingerprints,
                     composition=demand_discovery.web_tools,
                     country_policy=country_policy_reader,
-                    lease_duration=timedelta(
-                        seconds=config.tool_lease_seconds
-                    ),
+                    lease_duration=timedelta(seconds=config.tool_lease_seconds),
                     now=self._now,
                 )
                 if self._dependencies.account_discovery is not None:
@@ -1213,6 +1347,27 @@ class SchedulerRuntimeFactory:
                     account_queue=account_queue,
                     free_search_enabled=demand_discovery.web_tools.provider == "tavily",
                 )
+            quote_handlers: dict[str, StepHandler] = {}
+            if quote_domain is not None and quote_settings is not None:
+                quote_handlers.update(
+                    build_quote_approval_handlers(
+                        QuoteApprovalApplication(
+                            quote_domain.quotations,
+                            change_approvals,
+                            quote_domain.context_provider,
+                            CurrentQuotationActorReader(
+                                SqlAlchemyQuoteEvidenceContextReader(
+                                    factory,
+                                    statement_timeout_ms=quote_settings.core.statement_timeout_ms,
+                                )
+                            ),
+                            now=self._now,
+                        ),
+                        NotificationJobQuoteApprovalNotifier(
+                            jobs, tenant_id=config.tenant_id, now=self._now
+                        ),
+                    )
+                )
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
@@ -1224,9 +1379,11 @@ class SchedulerRuntimeFactory:
                     **demand_handlers,
                     **playbook_handlers,
                     **country_policy_handlers,
+                    **quote_handlers,
                 },
                 now=self._now,
             )
+            engine_ref = workflow
             if account_queue is not None:
                 account_queue.bind(workflow)
             outbox = OutboxDeliverer(
@@ -1244,6 +1401,24 @@ class SchedulerRuntimeFactory:
             )
             register_playbook_change(workflow, outbox, change_approvals)
             register_country_policy_change(workflow, outbox, change_approvals)
+            if (
+                quote_domain is not None
+                and quote_evidence is not None
+                and quote_settings is not None
+            ):
+                register_quote_approval(workflow, outbox, change_approvals)
+                quotation = build_quotation_runtime(
+                    quote_domain,
+                    factory=factory,
+                    approvals=change_approvals,
+                    engine=workflow,
+                    settings=quote_settings,
+                    evidence=quote_evidence,
+                    generated=generated_documents,
+                    metadata_only=generated_metadata,
+                    fingerprints=fingerprints,
+                    now=self._now,
+                )
             campaign_driver: CampaignSendDriver | None = None
             if campaign_outreach is not None:
                 register_outreach_campaign(
@@ -1316,6 +1491,10 @@ class SchedulerRuntimeFactory:
             ):
                 raise ValidationError("scheduler DNS registry 无效")
             health.mark_ready("registry")
+            if quotation is not None:
+                runtime_activation = _QuoteRuntimeActivation(
+                    runtime_activation, quotation.lifecycle
+                )
             health_server = self._health_server_factory(health, config.health_port)
             health_task = asyncio.create_task(health_server.serve())
             await asyncio.wait_for(health_server.wait_started(), timeout=10)
@@ -1337,13 +1516,19 @@ class SchedulerRuntimeFactory:
             raise
         finally:
             cleanup_error: BaseException | None = None
+            if quotation is not None:
+                try:
+                    await quotation.lifecycle.aclose()
+                except BaseException as error:  # noqa: BLE001 - preserve primary
+                    cleanup_error = error
             if health_server is not None:
                 try:
                     await health_server.close()
                     if health_task is not None:
                         await health_task
                 except BaseException as error:  # noqa: BLE001 - preserve primary
-                    cleanup_error = error
+                    if cleanup_error is None:
+                        cleanup_error = error
             try:
                 await engine.dispose()
             except BaseException as error:  # noqa: BLE001 - preserve primary
@@ -1451,8 +1636,8 @@ class SchedulerRuntimeFactory:
             actor_factory=_unsubscribe_actor,
             now=now,
         )
-        unsubscribe_links: UnsubscribeLinkProvider = (
-            _SchedulerUnsubscribeLinkAdapter(unsubscribe_service)
+        unsubscribe_links: UnsubscribeLinkProvider = _SchedulerUnsubscribeLinkAdapter(
+            unsubscribe_service
         )
         gmail = _SchedulerLazyGmailConnector(
             composition.gmail_transport,
@@ -1470,9 +1655,9 @@ class SchedulerRuntimeFactory:
         )
         campaign_registry = ToolRegistry()
         campaign_registry.register(_email_send_manifest(), handler)
-        if tuple(
-            item.tool_id for item in campaign_registry.list_manifests()
-        ) != ("email.send",):
+        if tuple(item.tool_id for item in campaign_registry.list_manifests()) != (
+            "email.send",
+        ):
             raise ValidationError("scheduler Campaign registry 无效")
         permission = SchedulerCampaignPermissionCheck(factory, tenant)
         rate_limit = RateLimitCheck(

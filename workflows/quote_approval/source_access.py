@@ -5,21 +5,72 @@ import re
 from pydantic import TypeAdapter
 
 from domains.conversations.service import require_inbound_source_access
-from domains.costing.service import require_pricing_source_access
+from domains.costing.service import PriceEvidenceView, require_pricing_source_access
 from domains.demand.service import NeedUnitAuthorizer
 from shared.errors import PermissionDenied, ValidationError
-from shared.evidence_read import QuoteEvidenceContextReader, QuoteEvidenceRawReader
+from shared.evidence_read import (
+    QuoteEvidenceAccess,
+    QuoteEvidenceContextReader,
+    QuoteEvidenceRawReader,
+)
 from shared.schemas.evidence_read import (
     AuthorizedEvidenceReference,
     EvidenceRawMeta,
     EvidenceScope,
     NeedUnitEvidenceScope,
+    PricingEvidenceScope,
     QuoteEvidenceError,
     QuoteMessageReferenceFact,
 )
 from shared.schemas.identifiers import EmployeeId, MessageId, TenantId, WorkUploadId
 from shared.schemas.quote_facts import QuoteEmployeeFact, fact_identity
 from workflows.employee_work_intake.service import WorkIntakeService
+
+
+class CurrentCostScopeSourceAccess:
+    """只重核持久依据的当前资料ACL/metadata绑定，不解析或发冻结票据。"""
+
+    def __init__(self, access: QuoteEvidenceAccess) -> None:
+        self._access = access
+
+    async def require(
+        self,
+        tenant_id: TenantId,
+        evidence: tuple[PriceEvidenceView, ...],
+        *,
+        actor_id: EmployeeId,
+    ) -> None:
+        scope = PricingEvidenceScope(purpose="pricing")
+        for value in evidence:
+            source = value.source
+            if source.tenant_id != tenant_id or source.source_ref != value.source_ref:
+                raise QuoteEvidenceError("source_integrity_failed")
+            try:
+                reference = await self._access.authorize(
+                    tenant_id, source.source_ref, actor_id=actor_id, scope=scope
+                )
+            except QuoteEvidenceError as error:
+                if error.code == "permission_denied":
+                    raise PermissionDenied("当前无权读取来源") from None
+                raise
+            if (
+                reference.tenant_id,
+                reference.actor_id,
+                reference.source_ref,
+                reference.scope,
+                reference.raw.tenant_id,
+                reference.raw.artifact_id,
+                reference.raw.content_hash,
+            ) != (
+                tenant_id,
+                actor_id,
+                source.source_ref,
+                scope,
+                tenant_id,
+                source.artifact_id,
+                source.content_hash,
+            ):
+                raise QuoteEvidenceError("source_integrity_failed")
 
 
 class QuoteEvidenceAccessImpl:

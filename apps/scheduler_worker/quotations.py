@@ -1,4 +1,4 @@
-"""本API进程的显式报价依赖束；不复用手工发送Gateway。"""
+"""本scheduler进程的显式报价依赖束；不复用手工发送Gateway。"""
 
 import asyncio
 import logging
@@ -116,10 +116,6 @@ from workflows.quote_approval.file_facts import (
     DemandQuoteFileNeedValidator,
 )
 from workflows.quote_approval.files import QuoteFilesApplication
-from workflows.quote_approval.http import (
-    CurrentQuoteApprovalStarter,
-    QuoteApprovalStarter,
-)
 from workflows.quote_approval.issuer_reader import DeferredQuoteIssuerReader
 from workflows.quote_approval.need_unit_access import CurrentNeedUnitAuthorizer
 from workflows.quote_approval.policy_reader import CostingQuoteApprovalPolicyReader
@@ -208,11 +204,10 @@ class QuotationEvidenceComposition:
 
 
 @dataclass(frozen=True)
-class QuotationHttpComposition:
-    """发布后不可替换的API能力；None只表示明确禁用的文件组。"""
+class QuotationRuntimeComposition:
+    """发布后不可替换的worker能力；None只表示明确禁用的文件组。"""
 
     domain: QuotationDomainComposition
-    approval_starter: QuoteApprovalStarter
     customer_versions: QuoteCustomerVersionsService | None
     files_application: QuoteFilesApplication | None
     evidence: QuotationEvidenceComposition
@@ -418,7 +413,7 @@ def build_quotation_domains(
     )
 
 
-def build_quotation_http(
+def build_quotation_runtime(
     domain: QuotationDomainComposition,
     *,
     factory: SessionFactory,
@@ -430,7 +425,7 @@ def build_quotation_http(
     metadata_only: GeneratedDocumentMetadataReader | None,
     fingerprints: HmacFingerprintProvider,
     now: Clock,
-) -> QuotationHttpComposition:
+) -> QuotationRuntimeComposition:
     """唯一approvals/engine发布后装配文件组；恢复只接独立metadata-only实例。"""
     core, limits = settings.core, settings.files
     actors = CurrentQuotationActorReader(
@@ -501,7 +496,7 @@ def build_quotation_http(
             limits.maximum_pages,
             maximum_text_bytes=limits.maximum_text_bytes,
         )
-        owner = "api-quote-files"
+        owner = "scheduler-quote-files"
         generate = QuoteFileGenerateHandler(
             access,
             domain.files,
@@ -581,9 +576,8 @@ def build_quotation_http(
             fingerprints,
             generate_tool_version=GENERATE_MANIFEST.version,
         )
-    return QuotationHttpComposition(
+    return QuotationRuntimeComposition(
         domain,
-        CurrentQuoteApprovalStarter(domain.quotations, engine, actors),
         customer_versions,
         files_application,
         evidence,

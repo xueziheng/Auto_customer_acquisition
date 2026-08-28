@@ -39,3 +39,12 @@ channels/
 ## Phase 1 范围
 
 事件模型、路由、站内与邮件两个渠道。企业微信与 macOS 留接口。
+
+## 报价结果窄增量
+
+quote_approval_result只接受QuoteApprovalResult固定metadata：primary为quote_id、secondary
+为run_id，reason限approved/rejected/expired/obsolete、level为空；优先级必须LOW，深链只为
+/costing-quotes/quotes/{quote_id}。沿原workflow幂等键与稳定命名空间指纹去重，不能携金额/原文。
+仅此kind可经quote_results.valid_quote_result_recipient保留ASCII safe-label<=32的持久短员工，
+拒现secret marker；notifier、模板与InApp共用此helper。旧kind canonical员工门和邮箱目录不变。
+worker需真实job→claim→模板→原router→in_app才算投递；API原structured_log不等于站内投递。

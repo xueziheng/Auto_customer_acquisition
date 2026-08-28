@@ -47,3 +47,10 @@ server-canonical/NONE操作不把客户端key当身份。空命令拒绝null和�
 文件路径拒绝未知query/body，PDF只返回后置授权成功的bytes与canonical文件名。
 本组错误局部映射，未知依赖固定503；全局400/401不改。只有真实Gateway结果保留
 QuoteFileApiError技术ID，Retry-After只取其合法显式值，不能用全局默认时长。
+
+报价runtime仅接受显式TRADEOS_QUOTATION_SETTINGS_JSON，core/evidence整体装配，files
+独立整组启用；缺组固定不可用，不借手工发送Gateway。source/domain工厂必填运行tenant，
+唯一approvals与七个handlers必须在唯一engine构造前形成；延迟issuer/run闭包只发布一次。
+lifespan先schema、同parser受信probe、再yield；退出/取消/before-yield故障先aclose再dispose，
+保留primary。普通parser能力降级仅关闭真实parse，不禁用metadata、审批或独立PDF。
+API报价结果仅经原structured_log通知出口，不宣称站内已投递，也不启动expiry后台任务。

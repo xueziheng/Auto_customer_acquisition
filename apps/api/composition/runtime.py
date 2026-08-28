@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from typing import cast
 
@@ -18,7 +18,8 @@ from agent_runtime.trade_manager import (
     StructuredTradeManagerModelPort,
     TradeManagerAgent,
 )
-from artifact_store.service_impl import RawArtifactStoreImpl
+from artifact_store.repository import ArtifactUnitOfWorkFactory
+from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from connectors.gmail.client import (
     GmailConnector,
     GmailSendRequest,
@@ -26,8 +27,10 @@ from connectors.gmail.client import (
     SecretResolver,
 )
 from connectors.gmail.transport import GmailHttpTransport
+from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
-from connectors.object_store.s3 import S3ObjectBlobTransport
+from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
+from connectors.object_store.quote_pdf import S3QuotePdfObjectBlobTransport
 from connectors.openai import OpenAIJsonModelClient
 from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
 from domains.approvals.service_impl import ApprovalServiceImpl
@@ -140,6 +143,7 @@ from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
+from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.employees import (
     EmployeeRepositoryImpl,
     OwnershipRepositoryImpl,
@@ -154,6 +158,12 @@ from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from infra.db.work_intake_uow import SqlAlchemyWorkIntakeUnitOfWork
 from infra.db.workflow_engine import PostgresWorkflowEngine
+from infra.quote_document_store import (
+    GeneratedStoreDocumentAdapter,
+    GeneratedStoreDocumentMetadataReader,
+)
+from infra.quote_evidence_artifacts import RawQuoteEvidenceAdapter
+from infra.quote_file_artifacts import GeneratedStoreQuoteArtifactReader
 from notification_gateway.channels.structured_log import StructuredLogChannel
 from notification_gateway.inbox import (
     InAppNotificationService,
@@ -223,15 +233,23 @@ from workflows.email_feedback.unsubscribe import (
     UnsubscribeService,
     UnsubscribeServiceImpl,
 )
+from workflows.employee_work_intake.repository import WorkIntakeUnitOfWorkFactory
 from workflows.employee_work_intake.service_impl import WorkIntakeServiceImpl
 from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
-from workflows.engine.runner import WorkflowRun
+from workflows.engine.runner import WorkflowEngine, WorkflowRun
 from workflows.human_handoff.flow import (
     HandoffEscalationNotice,
     build_human_handoff_step_handlers,
     register_human_handoff,
 )
 from workflows.playbook_change import build_playbook_change_definition
+from workflows.quote_approval.application import QuoteApprovalApplication
+from workflows.quote_approval.flow import (
+    build_quote_approval_handlers,
+    register_quote_approval,
+)
+from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
+from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
 
 from ..dependencies import (
     CampaignScopeResolver,
@@ -244,6 +262,13 @@ from .demand_radar import (
     AuthorizedDemandRadarService,
     ProspectingDemandAccountNames,
 )
+from .quotations import (
+    build_need_unit_authorizer,
+    build_quotation_domains,
+    build_quotation_evidence,
+    build_quotation_http,
+)
+from .quote_notifications import RuntimeQuoteApprovalNotifier
 from .work_uploads import WorkUploadApplicationServiceImpl
 
 
@@ -854,11 +879,126 @@ def build_phase1_dependencies(
         audit=opportunity_audit,
         now=now,
     )
+    resolved_secret_resolver = secret_resolver or (
+        manual_send.secret_resolver if manual_send is not None else None
+    )
+    if resolved_secret_resolver is None:
+        raise TypeError("API 退订密钥依赖未完整配置")
+    fingerprint_key = resolved_secret_resolver.resolve(
+        settings.tool_call_fingerprint_key_ref
+    )
+    if not isinstance(fingerprint_key, str):
+        raise TypeError("API 指纹依赖未完整配置")
+    fingerprint_provider = HmacFingerprintProvider(
+        settings.tool_call_fingerprint_key_version, fingerprint_key.encode("utf-8")
+    )
+    engine_ref: WorkflowEngine | None = None
+    quote_domain = None
+    quote_evidence = None
+    generated_documents = None
+    generated_metadata = None
+    work_uploads = None
+    if object_store_settings is not None:
+        object_transport = DeferredS3ObjectBlobTransport(
+            object_store_settings, resolved_secret_resolver
+        )
+        bounded_raw = (
+            None
+            if settings.quotation is None
+            else S3BoundedObjectBlobTransport(
+                object_store_settings,
+                resolved_secret_resolver,
+                limits=settings.quotation.evidence.object_read,
+            )
+        )
+        raw_artifacts = RawArtifactStoreImpl(
+            cast(
+                ArtifactUnitOfWorkFactory,
+                lambda requested_tenant: SqlAlchemyArtifactUnitOfWork(
+                    factory, requested_tenant
+                ),
+            ),
+            object_transport,
+            object_store_settings.raw_max_bytes,
+            now,
+            new_id,
+            bounded_transport=bounded_raw,
+        )
+        work_intake = WorkIntakeServiceImpl(
+            cast(
+                WorkIntakeUnitOfWorkFactory,
+                lambda requested_tenant: SqlAlchemyWorkIntakeUnitOfWork(
+                    factory, requested_tenant
+                ),
+            ),
+            now=now,
+            id_generator=new_id,
+        )
+        work_uploads = WorkUploadApplicationServiceImpl(
+            raw_artifacts, work_intake, object_store_settings.raw_max_bytes
+        )
+        if settings.quotation is not None:
+            quote_settings = settings.quotation
+            artifact_reader = None
+            if quote_settings.files is not None:
+                file_limits = quote_settings.files
+                generated_store = GeneratedArtifactStoreImpl(
+                    cast(
+                        ArtifactUnitOfWorkFactory,
+                        lambda requested_tenant: SqlAlchemyArtifactUnitOfWork(
+                            factory, requested_tenant
+                        ),
+                    ),
+                    S3QuotePdfObjectBlobTransport(
+                        object_store_settings,
+                        resolved_secret_resolver,
+                        limits=file_limits.object_write,
+                    ),
+                    file_limits.maximum_bytes,
+                    now,
+                    new_id,
+                    bounded_transport=S3BoundedObjectBlobTransport(
+                        object_store_settings,
+                        resolved_secret_resolver,
+                        limits=file_limits.object_read,
+                    ),
+                )
+                generated_documents = GeneratedStoreDocumentAdapter(
+                    generated_store, generated_store
+                )
+                generated_metadata = GeneratedStoreDocumentMetadataReader(
+                    generated_store
+                )
+                artifact_reader = GeneratedStoreQuoteArtifactReader(generated_store)
+            quote_evidence = build_quotation_evidence(
+                factory,
+                quote_settings,
+                tenant_id=tenant,
+                raw=RawQuoteEvidenceAdapter(raw_artifacts),
+                uploads=work_intake,
+                need_authorizer=build_need_unit_authorizer(
+                    factory, quote_settings, tenant_id=tenant
+                ),
+                fingerprints=fingerprint_provider,
+                lease_duration=settings.tool_lease,
+                lease_owner="api-quote-source",
+                now=lambda: datetime.now(UTC),
+            )
+            quote_domain = build_quotation_domains(
+                factory,
+                quote_settings,
+                tenant_id=tenant,
+                evidence=quote_evidence,
+                run_reader=WorkflowQuoteRunReader(lambda: engine_ref),
+                artifact_reader=artifact_reader,
+                now=now,
+            )
     approvals = ApprovalServiceImpl(
         lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
             factory, requested_tenant, now=now
         ),
         now=now,
+        quote_access=None if quote_domain is None else quote_domain.approval_access,
     )
     organization = OrganizationServiceImpl(
         lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
@@ -918,11 +1058,6 @@ def build_phase1_dependencies(
         SendingIdentityStandardAuditLogger(),
         now=now,
     )
-    resolved_secret_resolver = secret_resolver or (
-        manual_send.secret_resolver if manual_send is not None else None
-    )
-    if resolved_secret_resolver is None:
-        raise TypeError("API 退订密钥依赖未完整配置")
     unsubscribe_keys: dict[str, bytes] = {}
     for reference in settings.unsubscribe_key_refs:
         raw_key = resolved_secret_resolver.resolve(reference.secret_ref)
@@ -990,15 +1125,6 @@ def build_phase1_dependencies(
     unsubscribe_links: UnsubscribeLinkProvider = _UnsubscribeLinkAdapter(
         unsubscribe_service
     )
-    fingerprint_key = resolved_secret_resolver.resolve(
-        settings.tool_call_fingerprint_key_ref
-    )
-    if not isinstance(fingerprint_key, str):
-        raise TypeError("API 指纹依赖未完整配置")
-    fingerprint_provider = HmacFingerprintProvider(
-        settings.tool_call_fingerprint_key_version,
-        fingerprint_key.encode("utf-8"),
-    )
     prospecting = ProspectingServiceImpl(
         lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
             factory, requested_tenant, now=now
@@ -1036,35 +1162,6 @@ def build_phase1_dependencies(
         ),
         now=now,
     )
-    work_uploads = None
-    if object_store_settings is not None:
-        object_transport = S3ObjectBlobTransport(
-            object_store_settings,
-            resolved_secret_resolver,
-        )
-        raw_artifacts = RawArtifactStoreImpl(
-            lambda requested_tenant: SqlAlchemyArtifactUnitOfWork(  # type: ignore[arg-type, return-value]
-                factory,
-                requested_tenant,
-            ),
-            object_transport,
-            object_store_settings.raw_max_bytes,
-            now,
-            new_id,
-        )
-        work_intake = WorkIntakeServiceImpl(
-            lambda requested_tenant: SqlAlchemyWorkIntakeUnitOfWork(  # type: ignore[arg-type, return-value]
-                factory,
-                requested_tenant,
-            ),
-            now=now,
-            id_generator=new_id,
-        )
-        work_uploads = WorkUploadApplicationServiceImpl(
-            raw_artifacts,
-            work_intake,
-            object_store_settings.raw_max_bytes,
-        )
     employee_system_actor = EmployeeActor(
         "system:phase1-handoff",
         EmployeeScope.SYSTEM,
@@ -1189,7 +1286,26 @@ def build_phase1_dependencies(
         *country_policy_definition.steps,
     ):
         handlers[step.handler_ref] = start_only_handler
+    if quote_domain is not None and settings.quotation is not None:
+        handlers.update(
+            build_quote_approval_handlers(
+                QuoteApprovalApplication(
+                    quote_domain.quotations,
+                    approvals,
+                    quote_domain.context_provider,
+                    CurrentQuotationActorReader(
+                        SqlAlchemyQuoteEvidenceContextReader(
+                            factory,
+                            statement_timeout_ms=settings.quotation.core.statement_timeout_ms,
+                        )
+                    ),
+                    now=now,
+                ),
+                RuntimeQuoteApprovalNotifier(router, tenant_id=tenant),
+            )
+        )
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
+    engine_ref = workflow
     run_audit = RunAuditService(
         PostgresRunAuditRepository(factory),
         Phase1RunAuditAuthorizer(tenant),
@@ -1208,6 +1324,25 @@ def build_phase1_dependencies(
         max_attempts=settings.outbox_max_attempts,
     )
     register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
+    quotation = None
+    if (
+        quote_domain is not None
+        and quote_evidence is not None
+        and settings.quotation is not None
+    ):
+        register_quote_approval(workflow, outbox, approvals)
+        quotation = build_quotation_http(
+            quote_domain,
+            factory=factory,
+            approvals=approvals,
+            engine=workflow,
+            settings=settings.quotation,
+            evidence=quote_evidence,
+            generated=generated_documents,
+            metadata_only=generated_metadata,
+            fingerprints=fingerprint_provider,
+            now=now,
+        )
     workflow.register(account_definition)
     workflow.register(demand_definition)
     workflow.register(research_definition)
@@ -1232,8 +1367,10 @@ def build_phase1_dependencies(
     from ..research import ResearchAccessService
 
     research_access = ResearchAccessService(
-        tenant, PostgresSearchQuotaRepository(factory, tenant, now=now),
-        configured=bool(settings.tavily_api_key_ref) and settings.tavily_exclusive_account_confirmed,
+        tenant,
+        PostgresSearchQuotaRepository(factory, tenant, now=now),
+        configured=bool(settings.tavily_api_key_ref)
+        and settings.tavily_exclusive_account_confirmed,
     )
     return ConfiguredApiDependencies(
         opportunities=opportunities,
@@ -1272,4 +1409,5 @@ def build_phase1_dependencies(
         research_access=research_access,
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
+        quotation=quotation,
     )

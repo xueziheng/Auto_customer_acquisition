@@ -17,6 +17,7 @@ from domains.costing.errors import (
     EmptyCostSheetError,
     MissingFxSnapshotError,
 )
+from domains.costing.freeze_repository import CostingFreezeUowFactory
 from domains.costing.freeze_schemas import (
     CostingContext,
     CostScopeAccess,
@@ -74,6 +75,7 @@ from domains.costing.models import (
 )
 from domains.costing.permissions import CostingActor, CostingActorReader, CostingScope
 from domains.costing.quote_lock import cost_scope_hash
+from domains.costing.repository import CostingUnitOfWorkFactory
 from domains.costing.schemas import (
     CalculationSnapshot,
     CostCoverageCreate,
@@ -119,11 +121,13 @@ __all__ = (
     "CostingApprovalPolicyReader",
     "CostingContext",
     "CostingFreezeService",
+    "CostingFreezeUowFactory",
     "CostingPolicySelection",
     "CostingQuoteNotFoundError",
     "CostingQuoteService",
     "CostingScope",
     "CostingService",
+    "CostingUnitOfWorkFactory",
     "FrozenCostBasis",
     "NeedFactsValidator",
     "PricingEvidenceReader",

@@ -28,6 +28,12 @@ dedicated backend connection 的 scheduler 副本写入，且必须早于第一�
 锁已丢失或双工具未精确注册时一律不得写。激活失败必须释放同一把锁、零 cycle 退出，
 日志不得包含异常原文、凭证引用、配置哈希或凭证值。
 
+报价使用本进程独立composition，不导入apps.api。显式报价配置与对象端口齐备后才注册
+同一approvals/engine的七个报价步骤；缺文件预算只禁用整个文件组。来源tenant显式绑定。
+quotation startup必须在原singleton获取且backend核验后、旧activation之后、首轮cycle之前；
+未获锁零probe。resources退出先关同一parser再health/DB，启动取消保留原异常并沿原流程解锁。
+报价通知只入持久job，固定LOW，经原通知worker模板/router进入站内，不创建邮件或伪DomainEvent。
+
 验证只能由授权真人经 `provider.hunter.validate` 逐次触发，scheduler 不得代跑或自动重试。
 validation passed 后必须重启 singleton scheduler；Settings 只有在 matching
 `runtime_composed` 提交后才可显示 ready。密钥轮换、认证修复和回滚均创建新的配置版本，

@@ -22,6 +22,8 @@ from pydantic import ValidationError as PydanticValidationError
 
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service_impl import HandoffPolicy
+from infra.quotation_settings import QuotationRuntimeSettings
+from infra.quotation_settings import from_json as quotation_from_json
 from infra.secrets import validate_environment_secret_reference
 from shared.errors import ValidationError
 from shared.schemas.money import CurrencyCode, Money, WireDecimal
@@ -261,6 +263,7 @@ class Phase1RuntimeSettings:
     trade_manager_model: str = "gpt-5-mini"
     tavily_api_key_ref: str | None = field(default=None, repr=False)
     tavily_exclusive_account_confirmed: bool = False
+    quotation: QuotationRuntimeSettings | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Phase1RuntimeSettings:
@@ -346,10 +349,14 @@ class Phase1RuntimeSettings:
         )
         tavily_ref = None
         if environ.get("TAVILY_API_KEY_REF"):
-            tavily_ref = _read(environ, "TAVILY_API_KEY_REF", validate_environment_secret_reference)
+            tavily_ref = _read(
+                environ, "TAVILY_API_KEY_REF", validate_environment_secret_reference
+            )
         exclusive = environ.get("TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED", "false")
         if exclusive not in {"true", "false"}:
-            raise RuntimeConfigurationError("TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED")
+            raise RuntimeConfigurationError(
+                "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED"
+            )
         return cls(
             database_url=database_url,
             tenant_id=tenant_id,
@@ -376,4 +383,9 @@ class Phase1RuntimeSettings:
             trade_manager_model=trade_manager_model,
             tavily_api_key_ref=tavily_ref,
             tavily_exclusive_account_confirmed=exclusive == "true",
+            quotation=(
+                _read(environ, "TRADEOS_QUOTATION_SETTINGS_JSON", quotation_from_json)
+                if "TRADEOS_QUOTATION_SETTINGS_JSON" in environ
+                else None
+            ),
         )

@@ -48,3 +48,30 @@ retry提示就不加Retry-After。PDF响应只用已核quote/version/template构
 
 不增加 Phase，不启用发送，不改变金额/置信度/租户/审批硬边界，不修改 Gateway
 核心或旧工作流解释。当前文档记录决策，不声明四切片已完成或生产已部署。
+
+## 运行装配与生命周期
+
+纯infra配置拒重复JSON key、NaN、bool整数、缺预算和未知字段；core/evidence齐备才装报价，
+files显式为空则文件生成/读取/历史/恢复/客户版本页整组不可用。预算无部署默认值。
+API与worker本地组合各自构造来源独立Gateway、真实域、唯一approvals、完整handlers、唯一
+engine，最后文件Gateway；不跨apps导入、不修改原DNS registry或借手工发送Gateway。
+source/domain两个工厂显式tenant_id，复用既有HMAC且只初始化一次，提前次序不扩秘密权限。
+issuer/run延迟闭包在发布前失败关闭，只一次绑定；正式发送回执固定不可用。
+
+DeferredS3ObjectBlobTransport只延迟旧上传delegate，不改旧无界get/线程补偿。新来源始终
+有界读，新QUOTE_PDF始终B1专属writer；恢复只收独立metadata-only adapter。构造无S3密钥
+解析/SDK调用，但旧技术HMAC/退订key仍按原配置初始化，不能称全factory零resolver。
+真实lifespan先schema再同parser probe；worker仅原singleton持锁后activation。普通能力失败
+保留真实unavailable，仅parse失败关闭；异常/取消不当作平台降级。清理先parser再DB，
+保留primary，无primary时清理取消不吞成成功；不宣称能强杀SDK线程。
+
+结果通知新增quote_approval_result，固定LOW、QuoteApprovalResult、quote/run、四终态reason
+与空level、固定相对深链/costing-quotes/quotes/{quote_id}；沿workflow K与稳定指纹去重。
+API只原structured_log，worker入原job→claim→固定模板→原LOW路由→站内，零email。
+仅此kind的notifier/template/InApp共用单一ASCII safe-label<=32且无既有secret marker的短员工
+校验；旧kind canonical门、邮箱目录及全局身份长度不变。真实持久短ID同链验收在8.4。
+
+实际组合的类型端口经service公开重导出既有CostingUnitOfWorkFactory、CostingFreezeUowFactory、
+NeedUnitUnitOfWork，保持同class，不修改Protocol/UoW；不靠导入私有repository绕过依赖检查。
+T5步骤仅用同QuoteWorkflowRunFact.model_validate验证原七字段mapping、局部apply变量改名，
+保留原strict验证、错误、workflow版本与控制流，未验证输入不提前cast。

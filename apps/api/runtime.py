@@ -98,17 +98,38 @@ def create_runtime_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app
+        primary: BaseException | None = None
         try:
             await assert_database_schema_current(engine)
+            if dependencies.quotation is not None:
+                await dependencies.quotation.lifecycle.startup()
             yield
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
+            cleanup_cancellation: BaseException | None = None
+            if dependencies.quotation is not None:
+                try:
+                    await dependencies.quotation.lifecycle.aclose()
+                except BaseException as exc:  # noqa: BLE001 - 取消也不能阻断后续资源释放
+                    if not isinstance(exc, Exception):
+                        cleanup_cancellation = exc
+                    logger.error(
+                        "API runtime 报价资源释放失败",
+                        extra={"error_type": type(exc).__name__},
+                    )
             try:
                 await engine.dispose()
-            except Exception as exc:  # noqa: BLE001 清理失败不得覆盖启动/退出异常
+            except BaseException as exc:  # noqa: BLE001 清理失败不得覆盖启动/退出异常
+                if cleanup_cancellation is None and not isinstance(exc, Exception):
+                    cleanup_cancellation = exc
                 logger.error(
                     "API runtime 数据库资源释放失败",
                     extra={"error_type": type(exc).__name__},
                 )
+            if primary is None and cleanup_cancellation is not None:
+                raise cleanup_cancellation
 
     app = create_app(
         settings=ApiSettings(

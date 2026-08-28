@@ -214,9 +214,9 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
     assert type(approval_provider).__name__ == "_ServiceBackedCampaignApprovalProvider"
     assert vars(approval_provider)["_fallback"] is facts
     assert secrets.refs == [
+        "tool-fingerprint-phase1",
         "UNSUBSCRIBE_HMAC_2025",
         "UNSUBSCRIBE_HMAC_2026",
-        "tool-fingerprint-phase1",
     ]
 
     with pytest.raises(TypeError, match="API 手工发送依赖未完整配置"):

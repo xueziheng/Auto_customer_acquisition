@@ -23,6 +23,7 @@ class NotificationKind(str, Enum):
     REPUTATION_THRESHOLD_BREACHED = "reputation_threshold_breached"
     COMMITMENT_OVERDUE = "commitment_overdue"
     APPROVAL_DECIDED = "approval_decided"
+    QUOTE_APPROVAL_RESULT = "quote_approval_result"
 
 
 class NotificationJobStatus(str, Enum):

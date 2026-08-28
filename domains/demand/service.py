@@ -62,6 +62,9 @@ from domains.demand.unit_facts import (
 from domains.demand.unit_facts import (
     require_current_unit as require_current_unit,  # noqa: PLC0414
 )
+from domains.demand.unit_repository import (
+    NeedUnitUnitOfWork as NeedUnitUnitOfWork,  # noqa: PLC0414 - 真实composition只引用公共契约
+)
 from domains.demand.unit_source_validation import (
     validate_need_unit_source_text as validate_need_unit_source_text,  # noqa: PLC0414
 )

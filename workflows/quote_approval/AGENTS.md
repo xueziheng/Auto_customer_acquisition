@@ -58,3 +58,10 @@ DemandQuotePreparationProjector只调用demand.service的纯评估并转换固�
 确认后按返回hash精确读取，不用latest替代。创建/修订路径必须与原CAS命令一致；
 内部响应使用各域纯白名单，原文技术wrapper只能领取本次已授权T8A结果。
 QuoteApprovalStarter只返回真实run绑定核验后的quote/run，不把202解释为批准。
+
+运行时当前员工只能经真实QuoteEvidenceContextReader读取；成本仍用原C矩阵，单位仍用原U
+交集。CurrentCostScopeSourceAccess只重验来源授权/metadata，不读原文、不复制冻结规则。
+DeferredQuoteIssuerReader未发布时固定dependency_unavailable，发布后仅委托真实quotation。
+步骤prepared_by/initiated_by按既有fact_identity验证并保留原字符串，不要求emp_前缀，
+其他run/version/hash/当前员工/独立审批绑定不放宽。QuoteSendReceiptReader明确失败关闭，
+不能用Outreach发送、下载或PDF生成回执自证正式报价发送。

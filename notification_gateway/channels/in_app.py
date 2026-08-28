@@ -9,8 +9,14 @@ from typing import cast
 from urllib.parse import unquote, urlsplit
 
 from notification_gateway.inbox import InAppNotification, InAppNotificationStore
-from notification_gateway.jobs import NotificationContext
+from notification_gateway.jobs import NotificationContext, NotificationKind
 from notification_gateway.models import Notification, NotificationPriority
+from notification_gateway.quote_results import (
+    SOURCE_EVENT,
+    quote_result_context,
+    quote_result_link,
+    valid_quote_result_recipient,
+)
 from shared.errors import PolicyViolation, ValidationError
 from shared.schemas.identifiers import NotificationId, NotificationJobId, new_id
 
@@ -91,22 +97,50 @@ def _valid_notification(notification: object) -> bool:
         isinstance(notification.tenant_id, str)
         and _TENANT_ID.fullmatch(notification.tenant_id) is not None
         and isinstance(notification.recipient, str)
-        and _EMPLOYEE_ID.fullmatch(notification.recipient) is not None
+        and (
+            valid_quote_result_recipient(notification.recipient)
+            if isinstance(notification.context, NotificationContext)
+            and notification.context.kind is NotificationKind.QUOTE_APPROVAL_RESULT
+            else _EMPLOYEE_ID.fullmatch(notification.recipient) is not None
+        )
         and isinstance(notification.priority, NotificationPriority)
         and isinstance(notification.context, NotificationContext)
         and _valid_context(notification.context)
+        and _valid_quote_result(notification)
         and isinstance(notification.source_job_id, str)
         and _JOB_ID.fullmatch(notification.source_job_id) is not None
         and isinstance(notification.link, str)
         and _valid_relative_link(notification.link)
         and all(
-            value is None
-            or (
-                isinstance(value, str)
-                and not _credential_shaped(value)
-            )
+            value is None or (isinstance(value, str) and not _credential_shaped(value))
             for value in values
         )
+    )
+
+
+def _valid_quote_result(notification: Notification) -> bool:
+    """只收紧新kind，旧kind的员工门与渠道规则不变。"""
+    context = notification.context
+    if context.kind is not NotificationKind.QUOTE_APPROVAL_RESULT:
+        return True
+    if context.secondary_id is None or context.reason_code is None:
+        return False
+    try:
+        expected = quote_result_context(
+            notification.tenant_id,
+            notification.recipient,
+            context.primary_id,
+            context.secondary_id,
+            context.reason_code,
+            notification.dedup_key,
+        )
+    except (ValidationError, TypeError):
+        return False
+    return (
+        context == expected
+        and notification.priority is NotificationPriority.LOW
+        and notification.source_event == SOURCE_EVENT
+        and notification.link == quote_result_link(context.primary_id)
     )
 
 
