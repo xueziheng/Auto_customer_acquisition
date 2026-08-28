@@ -516,9 +516,15 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 验收必须修复并保留T4已记录的三个旧unit契约失败：迁移测试证明当前单head、0040祖先及完整链，AppleDouble测试先取合法基线再验证加sidecar不变；人工unit明确排除模型提取词表并补不能形成ChangeSet的反例。test_alembic_appledouble.py四个用例改用专用tmp迁移副本，不能向真实versions覆盖/删除固定测试名，也不能仅把0040硬改当前号码或扩大模型权限取绿。既有runner的拒删未知sidecar和混合候选原子失败断言均保留；不改生产清理器。
 
+验收还须收口B2扩大mypy发现、但由本分支T1–T3新增代码留下的36项已知静态类型问题：`domains/costing/schemas.py`的Money币种实参、`domains/costing/freeze_service.py`的DTO动态字典构造与FX币种、`infra/db/repositories/costing_freeze.py`的不同长度tuple局部变量复用、`infra/db/repositories/costing_quote.py`的泛型事实属性约束。B2用其BASE四文件shadow已证明同文存在，控制器进一步用git文件创建/行归属确认来自本分支T1/T2/T3，不能称分支外旧债。先在T10当前代码执行以下精确mypy命令保存RED，再只修这四文件的类型表达/明确DTO构造，不改业务校验、金额/hash、来源/权限/事务语义，不用Any、type:ignore或无根据cast掩盖问题；代码若另显真正行为缺陷，应先给具名失败测试并按范围处理。修复后同命令GREEN，并跑成本计算、价格依据、成本冻结的既有unit及真实PG回归，再进入全量。不扩大为全库类型重构；任何新位置错误单列归因。
+
+```bash
+python3 -m mypy --follow-imports=silent domains/costing/schemas.py domains/costing/freeze_service.py infra/db/repositories/costing_freeze.py infra/db/repositories/costing_quote.py
+```
+
 **Files**
 - Create: `tests/integration/test_costing_quote_closed_loop.py`, `tests/e2e/test_costing_quote_browser.py`, `docs/acceptance/2026-08-28-phase2-costing-quotation.md`, `docs/operations/costing-quotation.md`
-- Modify: `HANDBOOK.md`, `ROADMAP.md`, 必要模块AGENTS；`tests/e2e/conftest.py` 只增加隔离环境接线，不能降低现有就绪检测门槛。
+- Modify: `HANDBOOK.md`, `ROADMAP.md`, 必要模块AGENTS；`tests/e2e/conftest.py` 只增加隔离环境接线，不能降低现有就绪检测门槛；上述四个成本域/仓储文件只收口已归因静态类型问题。
 
 **Interfaces**
 - 使用T8真实composition。T10 fixture `quote_case` 放新integration测试文件：持有tenant/current actors、已验证需求/机会、raw artifact、显式测试policy、price evidence、完整coverage和QuoteDraftCommand；全部通过公开服务建立，只有来源bytes和对象存储transport受控。

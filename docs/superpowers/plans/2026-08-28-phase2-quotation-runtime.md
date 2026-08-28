@@ -40,7 +40,7 @@ ADR指定`docs/adr/0022-quotation-runtime-http-contracts.md`：2026-08-29控制�
 
 | 方法/路径 | 安全入参 → 安全响应；真实调用 | 门/幂等 |
 | --- | --- | --- |
-| GET `/policies?category=...` | category显式可空 → PricingPolicyPublicView；T2 get_policy | C，读 |
+| GET `/policies?category=...` | category显式可空 → PricingPolicyPublicView；T2 get_policy；无当前有效已确认政策404 | C，读 |
 | POST `/policies` | 现PricingPolicyCreate → PricingPolicyPublicView；confirm_policy | B+本人资料ACL，K；根来源`$` |
 | GET/POST `/issuer` | GET无body；POST现QuoteIssuerCreate(name/address/contact) → QuoteIssuerPublicView | GET C新guard；POST B，K；无客户端source_ref |
 | POST `/quote-fx`；GET `/quote-fx/{fx_id}` | 现QuoteFxCreate/路径ID → QuoteFxPublicView；confirm/get_quote_fx | C；POST本人资料ACL+K，`$` |
@@ -188,9 +188,21 @@ opportunity_refs: CostingOpportunityReferenceReader
 
 infra/db/repositories/costing_quote.py新增CostingOpportunityReferenceReaderImpl，复用本域tenant-bound基座，以infra.db.tables.OpportunityRow作显式tenant+opportunity的SELECT EXISTS，只返回真正bool，不投影客户/owner/Need/状态或复制权限。infra/db/costing_uow.py在同session构造opportunity_refs。list_price_evidence先按原当前员工/C读取权限核验，再在同一短UoW核exists并读取持久依据；不存在或跨tenant抛固定CostingQuoteNotFoundError，存在无依据返回空tuple。SQL失败不能当False/空集合；这是只读时点事实，无新锁/冻结/记录/来源IO，也不修改旧list_sheets等语义。
 
-新增domains/costing/errors.py::CostingQuoteNotFoundError(ValidationError)，固定code=record_not_found、固定中文“成本报价记录不存在”，从costing.service显式重导出；仅本批新增安全读取路径使用，HTTP显式映射404，不按异常文字猜分类、不挪用freeze错误消息。未知仓储失败仍沿本批HTTP固定503，不伪装缺项。旧确认/读取异常契约不在此顺改。
+新增domains/costing/errors.py::CostingQuoteNotFoundError(ValidationError)，固定code=record_not_found、固定中文“成本报价记录不存在”，从costing.service显式重导出；本批安全读取路径使用，HTTP显式映射404，不按异常文字猜分类、不挪用freeze错误消息。未知仓储失败仍沿本批HTTP固定503，不伪装缺项。除§2.2.4明确的两个只读缺项分支外，旧确认/读取异常契约不在此顺改。
 
 先测试实际同租户机会无价格→空、缺机会/跨tenant→not_found、有依据→稳定真实列表、无C权限→拒绝且不调用存在性/依据、存储故障→非not_found；PG fixture真实创建机会，不能用price外键或有无cost_sheet代替。内部Protocol/UoW与适配及这一个固定错误同步ADR0022/就近规则，原签名不新增自由HTTP参数，不扩CRM或授权范围。
+
+#### 2.2.4 既有政策/汇率只读缺项与费用确认CAS分类（实施期核对）
+
+仅将CostingQuoteServiceImpl.get_policy与get_quote_fx里真实record is None分支，从普通shared.ValidationError改为现CostingQuoteNotFoundError；签名和成功返回不变，仍为ValidationError子类，不新建第三种错误或第二套查询。两个新HTTP GET均返回固定404/record_not_found；GET当前政策没有有效记录（包括只有旧未确认margin或只有未生效新政策且无有效默认）是本次读取不存在，不是输入非法，也不返回200/null或409。原get_effective的分类/默认政策选择与当前时间判定完全保留，不能提升未确认旧政策或应用未来政策。
+
+计算/冻结的policy_missing/fx_missing等既有商业前提错误仍保持原409分类；不把GET缺项一律改成该类别。其他非法输入仍400、无权限403、仓储失败503，不用异常文字分支或宽捕获转404。旧Phase1成本router只用原CostingService，不能随此改变旧HTTP状态；直接调用上述两个T2 reader的ValidationError捕获仍兼容，但固定异常类/消息收束须在ADR0022和就近规则说明。
+
+另有旧CostingServiceImpl.get_sheet供新scope/calculate读取真实机会。其缺表分支须保留旧固定文本“成本表不存在”及ValidationError父类兼容，因此新增本域CostSheetNotFoundError(ValidationError)，固定code=record_not_found、固定该旧文本，从costing.service显式重导出；只把get_sheet的sheet is None分支改为此类，不改add_item/assess_for_quote或ID校验。新QuotationRoute按具名类映为固定404/record_not_found，旧costing_quotes router仍走原全局ValidationError处理，必须保持400及原code/message。不要用CostingQuoteNotFoundError的新文本替换旧服务消息，也不为了区分错误再查一次仓储。
+
+费用确认confirm_coverage现将成本表不存在和expected_sheet_hash已变化合并为CostCoverageConflict，此CAS失败在新HTTP明确409/coverage_stale，不误写idempotency_conflict；保留现原子确认判断，不额外查询拆分原因。相应本批新GET成本表缺失仍404；旧成本GET保持上述400兼容。UI须重新读取当前状态再由用户决定，不自动换key/重确认；不能把此确认CAS特例扩为所有读取缺项409。
+
+先补真实PG两T2 reader及get_sheet缺项/跨tenant、有效记录与原政策fallback、旧ValidationError兼容、SQL故障不伪缺项，以及新HTTP两个GET固定404、scope/calculate缺表404、原calculate政策缺失409和费用CAS非幂等分类测试。旧test_costing_service的“成本表不存在”断言须原样通过；旧成本GET用真实get_sheet缺表路径验证原400/code/message，不能只靠替身或改旧期望。保留既有旧成本router/service、成本仓储及T2政策/FX回归；仅变这三个读取缺项分支和新HTTP错误投影，不改确认/冻结业务规则、迁移、Gateway或生产配置。
 
 ### 2.3 固定错误与调用ID
 
@@ -387,6 +399,7 @@ Create `connectors/object_store/deferred.py::DeferredS3ObjectBlobTransport(setti
 
 - [ ] 先写 `tests/unit/test_quotation_router.py` 的实际ASGI请求，覆盖§2每个路径和身份矩阵、400/403/404/409/429/503、未装配能力、空body拒额外字段、Decimal字符串/日期/数组真实wire。
 - [ ] 按§2路由表调用公共服务/工作流，业务DTO不放router；表内HTTP key例外严格执行，无默认actor、布尔approved/history或客户端template/key旁路。
+- [ ] 按§2.2.4先补三个真实reader的缺项/跨租户与新旧HTTP分类测试，再窄改costing的errors.py、service.py重导出、quote_service.py两个缺项分支及service_impl.py的get_sheet缺项分支；费用CAS只改新HTTP映射。旧消息/400、政策选择、确认与冻结语义均保留；真实PG读取测试不等于下一片实际factory验收。
 - [ ] 文件错误与B1真实调用ID绑定；全局ApiErrorResponse/400契约不改，OpenAPI显式安全union与application/pdf，响应不泄body/成本/原件。只读原文预览独立授权，不让普通安全GET替代原件权限。
 - [ ] Unit可受控服务只证明wire；真正服务装配留下一组。生成OpenAPI核实际schema不含内部basis/Need原文/请求确认人，前端类型交T9生成。提交 `feat: 接入安全报价与文件HTTP契约`。
 
