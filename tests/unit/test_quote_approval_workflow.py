@@ -432,4 +432,106 @@ def test_quote_approved_outbox_has_only_safe_metadata_and_roundtrips():
     assert deserialize(QuoteApproved, payload) == event
 
 
+def test_workflow_definition_checks_wait_on_entry_and_timeout_never_approves():
+    assert importlib.util.find_spec("workflows.quote_approval.flow")
+    flow = importlib.import_module("workflows.quote_approval.flow")
+    definition = flow.build_quote_approval_definition()
+    assert definition.workflow_type == "quote_approval" and definition.version == 1
+    assert tuple(step.step_name for step in definition.steps) == (
+        "assemble",
+        "submit",
+        "wait",
+        "apply",
+        "mark_applied",
+        "notify",
+        "complete",
+    )
+    waiting = next(s for s in definition.steps if s.step_name == "wait")
+    assert waiting.run_on_entry and waiting.on_timeout == "apply"
 
+
+async def test_receipt_rejects_decider_column_not_matching_immutable_quote_send():
+    from domains.quotations.errors import QuoteApprovalUnavailableError
+
+    core, executor, context, store, _, _, _ = core_case()
+    facts = await bind_case(core, executor, context)
+    decider = QuoteEmployeeFact(
+        tenant_id=context.tenant_id,
+        employee_id=DECIDER,
+        role="boss",
+        is_active=True,
+        manager_id=None,
+        team_id=None,
+    )
+    full = q.QuoteApprovalContext(
+        business=context.model_copy(
+            update={
+                "runtime": QuoteRuntimeFacts(
+                    current_actor=decider,
+                    owner=context.runtime.owner,
+                    preparer=context.runtime.preparer,
+                )
+            }
+        ),
+        deciders=(decider,),
+    )
+    approved = tuple(
+        f.model_copy(
+            update={
+                "state": "approved",
+                "decision": "approve",
+                "decided_by": DECIDER,
+                "decided_at": context.issuer.confirmed_at,
+            }
+        )
+        for f in facts
+    )
+    async with core.open_approval(
+        context.tenant_id, QUOTE, executor=executor
+    ) as session:
+        await session.apply(approved, full)
+    store["receipt"] = store["receipt"].model_copy(
+        update={"quote_send_decider": context.prepared_by}
+    )
+    with pytest.raises(QuoteApprovalUnavailableError) as error:
+        await core.get_approval_application(context.tenant_id, QUOTE, executor=executor)
+    assert error.value.code == "storage_inconsistent"
+
+
+async def test_start_validates_same_key_returned_run_and_immutable_initial_binding():
+    assert importlib.util.find_spec("workflows.quote_approval.flow")
+    flow = importlib.import_module("workflows.quote_approval.flow")
+    core, executor, context, _, _, _, _ = core_case()
+    quotes = AsyncMock()
+    quotes.approval_snapshot.return_value = await core.approval_target(
+        context.tenant_id, QUOTE, executor=executor
+    )
+    engine = AsyncMock()
+    engine.start.return_value = RUN
+    actor = q.QuotationActor(
+        employee_id=context.prepared_by, role=context.runtime.current_actor.role
+    )
+    assert (
+        await flow.start_quote_approval(
+            engine, quotes, context.tenant_id, QUOTE, actor=actor
+        )
+        == RUN
+    )
+    initial = engine.start.await_args.args[3]
+    assert set(initial) == {
+        "quote_id",
+        "quote_version",
+        "content_hash",
+        "prepared_by",
+        "initiated_by",
+    }
+    quotes.approval_target.assert_awaited_once_with(
+        context.tenant_id, QUOTE, executor=executor
+    )
+    from domains.quotations.errors import QuoteApprovalError
+
+    quotes.approval_target.side_effect = QuoteApprovalError("workflow_binding_invalid")
+    with pytest.raises(QuoteApprovalError):
+        await flow.start_quote_approval(
+            engine, quotes, context.tenant_id, QUOTE, actor=actor
+        )

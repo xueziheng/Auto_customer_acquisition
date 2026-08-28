@@ -158,6 +158,13 @@ def upgrade() -> None:
           OR NEW.fact->>'approval_id' IS DISTINCT FROM NEW.approval_id
           OR NEW.fact->>'request_hash' IS DISTINCT FROM p.request_hash
           OR NEW.fact->>'change_set_ref' IS DISTINCT FROM p.change_set_ref
+          OR NEW.fact->>'approval_type' IS DISTINCT FROM p.approval_type
+          OR NEW.fact->>'prepared_by' IS DISTINCT FROM p.proposed_by_employee
+          OR NEW.fact->>'submitted_owner_id' IS DISTINCT FROM p.owner_employee
+          OR NEW.fact->>'proposed_by_run' IS DISTINCT FROM p.proposed_by_run
+          OR (NEW.fact->>'created_at')::timestamptz IS DISTINCT FROM p.created_at
+          OR (NEW.fact->>'expires_at')::timestamptz IS DISTINCT FROM p.expires_at
+          OR (NEW.fact->>'expires_at_limit')::timestamptz IS DISTINCT FROM p.expires_at_limit
           OR p.proposed_change->>'quote_id' IS DISTINCT FROM NEW.quote_id
           OR p.proposed_change->>'quote_version' IS DISTINCT FROM NEW.quote_version::text
           OR p.proposed_change->>'content_hash' IS DISTINCT FROM NEW.content_hash
@@ -170,7 +177,8 @@ def upgrade() -> None:
         "CREATE TRIGGER trg_quote_approval_binding_contract BEFORE INSERT ON quotation_approval_bindings FOR EACH ROW EXECUTE FUNCTION guard_quote_approval_binding()"
     )
     op.execute("""CREATE FUNCTION guard_quote_approval_receipt() RETURNS trigger AS $$
-      DECLARE q quotations%ROWTYPE; r workflow_runs%ROWTYPE; d jsonb; b quotation_approval_bindings%ROWTYPE; n integer;
+      DECLARE q quotations%ROWTYPE; r workflow_runs%ROWTYPE; p approval_packages%ROWTYPE;
+        d jsonb; b quotation_approval_bindings%ROWTYPE; n integer;
       BEGIN
         IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'immutable quote approval receipt'; END IF;
         SELECT * INTO q FROM quotations WHERE tenant_id=NEW.tenant_id AND quote_id=NEW.quote_id;
@@ -187,9 +195,15 @@ def upgrade() -> None:
         FOR d IN SELECT value FROM jsonb_array_elements(NEW.decisions) LOOP
           SELECT * INTO b FROM quotation_approval_bindings WHERE tenant_id=NEW.tenant_id AND quote_id=NEW.quote_id
             AND approval_id=d->>'approval_id' AND approval_type=d->>'approval_type';
+          SELECT * INTO p FROM approval_packages WHERE tenant_id=NEW.tenant_id AND approval_id=d->>'approval_id';
           IF b.approval_id IS NULL OR d->>'tenant_id' IS DISTINCT FROM NEW.tenant_id
             OR d->>'request_hash' IS DISTINCT FROM b.request_hash OR d->'payload' IS DISTINCT FROM b.fact->'payload'
             OR d->>'proposed_by_run' IS DISTINCT FROM NEW.approval_run_id OR d->>'decision' IS DISTINCT FROM 'approve'
+            OR p.state IS DISTINCT FROM 'approved' OR d->>'decided_by' IS DISTINCT FROM p.decided_by
+            OR (d->>'decided_at')::timestamptz IS DISTINCT FROM p.decided_at
+            OR d->>'decision_note' IS DISTINCT FROM p.decision_note
+            OR (d-ARRAY['decision','decided_by','decided_at','decision_note']) IS DISTINCT FROM
+               (b.fact-ARRAY['state','applied_at','application_error_code','decision','decided_by','decided_at','decision_note'])
             OR (d->>'approval_type'='quote_send' AND d->>'decided_by' IS DISTINCT FROM NEW.quote_send_decider)
             THEN RAISE EXCEPTION 'quote receipt binding mismatch'; END IF;
         END LOOP;

@@ -366,6 +366,26 @@ class ApprovalPackageRow(Base):
         ),
         CheckConstraint("expires_at > created_at", name="ck_approval_packages_expiry"),
         CheckConstraint(
+            """(contract_namespace IS NULL AND request_hash IS NULL AND NOT
+            (lower(btrim(coalesce(change_set_ref,''))) LIKE 'quote:%' OR
+             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'quote-approval%')) OR
+            coalesce((contract_namespace='quote-approval-v1' AND request_hash ~ '^[0-9a-f]{64}$'
+              AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
+              AND proposed_change->>'schema_version'='quote-approval-v1'
+              AND proposed_change->>'tenant_id'=tenant_id
+              AND proposed_change->>'approval_type'=approval_type
+              AND proposed_change->>'prepared_by'=proposed_by_employee
+              AND proposed_change->>'submitted_owner_id'=owner_employee
+              AND jsonb_typeof(proposed_change->'quote_version')='number'
+              AND (proposed_change->>'quote_version') ~ '^[1-9][0-9]*$'
+              AND proposed_change->>'quote_id' ~ '^quo_[0-9A-HJKMNP-TV-Z]{26}$'
+              AND proposed_change->>'content_hash' ~ '^[0-9a-f]{64}$'
+              AND approval_type IN ('quote_send','margin_floor_override','discount','delivery_commitment','payment_terms','certification_commitment')
+              AND change_set_ref='quote:'||(proposed_change->>'quote_id')||':'||
+                  (proposed_change->>'content_hash')||':'||approval_type),false)""",
+            name="ck_approval_quote_contract",
+        ),
+        CheckConstraint(
             "(state = 'pending' AND decided_at IS NULL AND decided_by IS NULL) OR "
             "(state = 'expired' AND decided_at IS NULL AND decided_by IS NULL) OR "
             "(state IN ('approved','applied','apply_failed','rejected') AND "
@@ -397,6 +417,11 @@ class ApprovalPackageRow(Base):
             "change_set_ref",
             unique=True,
             postgresql_where=text("state = 'pending' AND change_set_ref IS NOT NULL"),
+        ),
+        Index(
+            "uq_approval_quote_change_set", "tenant_id", "change_set_ref",
+            unique=True,
+            postgresql_where=text("contract_namespace='quote-approval-v1'"),
         ),
     )
 
@@ -4441,6 +4466,7 @@ class QuotationApprovalBindingRow(Base):
         ForeignKeyConstraint(['tenant_id','approval_id'],['approval_packages.tenant_id','approval_packages.approval_id'],name='fk_quotation_approval_bindings_approval',ondelete='RESTRICT'),
         ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_approval_bindings_quote',ondelete='RESTRICT'),
         CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_approval_bindings_hash'),
+        UniqueConstraint("tenant_id", "quote_id", "approval_type", name="uq_quotation_approval_type"),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     quote_id: Mapped[str] = mapped_column(String(40))

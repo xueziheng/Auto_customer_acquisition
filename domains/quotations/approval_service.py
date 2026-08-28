@@ -532,8 +532,11 @@ class QuoteApprovalSessionImpl:
                 raise QuoteApprovalError("workflow_binding_invalid")
             facts = receipt_facts(receipt)
             await self._bound(facts)
-            if quote_approval_facts_hash(facts) != receipt.facts_hash or any(
-                f.decision != "approve" for f in facts
+            if (
+                quote_approval_facts_hash(facts) != receipt.facts_hash
+                or any(f.decision != "approve" for f in facts)
+                or next(f.decided_by for f in facts if f.approval_type == "quote_send")
+                != receipt.quote_send_decider
             ):
                 raise QuoteApprovalUnavailableError("storage_inconsistent")
         return receipt

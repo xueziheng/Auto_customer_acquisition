@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import TypeAdapter
 from pydantic import ValidationError as SchemaError
 
+from domains.approvals.service import ApprovalService, ApprovalType, BlastRadius
 from domains.costing.errors import (
     CostFreezeError,
     CostFreezePermissionError,
@@ -24,10 +25,17 @@ from domains.costing.service import (
     PricingOptions,
 )
 from domains.demand.service import require_current_unit
+from domains.quotations import schemas as qa
 from domains.quotations.errors import (
     QuotationError,
     QuotationPermissionError,
     QuotationUnavailableError,
+    QuoteApprovalError,
+    QuoteApprovalErrorCode,
+    QuoteApprovalPermissionError,
+    QuoteApprovalUnavailableError,
+    QuoteContextError,
+    QuoteContextUnavailableError,
 )
 from domains.quotations.schemas import (
     Hash,
@@ -41,9 +49,18 @@ from domains.quotations.service import (
     QuotationVersionService,
     QuoteContextProvider,
     QuotePreparationPolicy,
+    quote_approval_facts_hash,
+    quote_change_set_ref,
 )
 from shared.errors import PermissionDenied, TradeOSError
-from shared.schemas.identifiers import CostSheetId, EmployeeId, OpportunityId, TenantId
+from shared.schemas.identifiers import (
+    ApprovalId,
+    CostSheetId,
+    EmployeeId,
+    OpportunityId,
+    QuoteId,
+    TenantId,
+)
 from shared.schemas.provenance import FactualField
 from shared.schemas.quote_creation import (
     QuoteCreationIntent,
@@ -52,6 +69,7 @@ from shared.schemas.quote_creation import (
     quote_creation_request_hash,
 )
 from shared.schemas.quote_facts import NeedQuoteFacts
+from workflows.quote_approval.approvals import read_quote_facts
 from workflows.quote_approval.basis_adapter import (
     pricing_options_from_intent,
     to_quote_basis,
@@ -429,6 +447,7 @@ class QuotePreparationApplication:
                 actor=actor,
             )
 
+
     async def freeze(
         self,
         tenant_id: TenantId,
@@ -457,3 +476,182 @@ class QuotePreparationApplication:
                 intent=intent,
                 actor=actor,
             )
+
+
+_APPROVAL_FAILURES: dict[QuoteApprovalErrorCode,str] = {
+    "approval_fact_invalid":"QUOTE_APPROVAL_FACT_INVALID",
+    "context_changed":"QUOTE_APPROVAL_CONTEXT_CHANGED",
+    "policy_stale":"QUOTE_APPROVAL_POLICY_STALE",
+    "evidence_invalid":"QUOTE_APPROVAL_EVIDENCE_INVALID",
+    "evidence_expired":"QUOTE_APPROVAL_EVIDENCE_EXPIRED",
+    "decider_invalid":"QUOTE_APPROVAL_DECIDER_INVALID",
+    "approval_expired":"QUOTE_APPROVAL_EXPIRED",
+}
+
+
+class QuoteApprovalApplication:
+    """单轮真实审批编排；成功receipt优先于任何fresh上下文。"""
+
+    def __init__(self, quotations: QuotationVersionService, approvals: ApprovalService,
+                 context_provider: QuoteContextProvider, actors: QuotationActorReader,
+                 *, now: Callable[[],datetime]) -> None:
+        """全部依赖来自可信composition，不暴露客户端executor构造。"""
+        self._quotes,self._approvals,self._context,self._actors,self._now = (
+            quotations,approvals,context_provider,actors,now)
+
+    def remaining_wait_seconds(self, deadline: datetime | None) -> int:
+        """只供本流程调度，真实批准仍以锁后时钟判定。"""
+        if deadline is None:
+            return 0
+        delta = deadline - self._now()
+        return max(0,delta.days*86400+delta.seconds+(1 if delta.microseconds else 0))
+
+    async def _actor(self, tenant_id: TenantId, employee_id: EmployeeId) -> QuotationActor:
+        """读取真实当前身份；四成本角色仍由报价服务唯一policy判定。"""
+        try:
+            fact = await self._actors.read_current(tenant_id,employee_id)
+        except Exception:  # noqa: BLE001 -- 员工基础设施诊断不越过应用边界
+            raise QuoteApprovalUnavailableError("dependency_unavailable") from None
+        if fact is None or fact.tenant_id != tenant_id or fact.employee_id != employee_id or not fact.is_active:
+            raise QuoteApprovalPermissionError("permission_denied")
+        return QuotationActor(employee_id=employee_id,role=fact.role)
+
+    async def submit(self, tenant_id: TenantId, quote_id: QuoteId, *, initiated_by: EmployeeId,
+                     executor: qa.QuoteWorkflowExecutor) -> qa.QuoteApprovalSubmission:
+        """原namespace恢复逐包提交，全组绑定事务不会启动第二轮。"""
+        target = await self._quotes.approval_target(tenant_id,quote_id,executor=executor)
+        actor = await self._actor(tenant_id,initiated_by)
+        await self._quotes.approval_snapshot(tenant_id,quote_id,actor=actor)
+        async with self._quotes.open_approval(tenant_id,quote_id,executor=executor) as session:
+            existing = await session.submission()
+            if existing is not None:
+                return existing
+        c = target.internal_quote.content
+        async with (
+            self._context.open(tenant_id, c.opportunity_id, initiated_by, prepared_by=c.prepared_by) as context,
+            self._quotes.open_approval(tenant_id, quote_id, executor=executor) as session,
+        ):
+            existing = await session.submission()
+            if existing is not None:
+                return existing
+            snapshot = await session.prepare_submission(context,actor=actor)
+            ids: list[ApprovalId] = []
+            for payload in snapshot.payloads:
+                kind = payload.approval_type
+                ids.append(await self._approvals.submit(tenant_id,ApprovalType(kind),
+                    f"报价审批 {quote_id} {kind}",payload.model_dump(mode="json"),
+                    f"独立确认报价版本 {quote_id} 的 {kind}",
+                    BlastRadius([str(quote_id)],"允许本报价版本进入批准态","关闭本轮报价审批",False),
+                    proposed_by_run=executor.run_id,proposed_by_employee=c.prepared_by,
+                    owner_employee=c.owner_id,
+                    evidence_refs=[f"quote-evidence:{quote_id}:{e.evidence_id}" for e in payload.evidence],
+                    change_set_ref=quote_change_set_ref(quote_id,c.content_hash,kind),
+                    expires_at_limit=snapshot.expires_at_limit))
+            facts = await read_quote_facts(self._approvals,tenant_id,tuple(ids))
+            submission = qa.QuoteApprovalSubmission(tenant_id=tenant_id,quote_id=quote_id,
+                quote_version=c.version,content_hash=c.content_hash,policy_id=c.basis.policy_id,
+                policy_hash=c.basis.policy.content_hash,required_types=snapshot.required_types,facts=facts)
+            await session.bind(submission,context,actor=actor)
+            return submission
+
+    async def poll(self, tenant_id: TenantId, quote_id: QuoteId, *,
+                   executor: qa.QuoteWorkflowExecutor) -> qa.QuoteApprovalPollResult:
+        """只从真实绑定读决定；ready不是报价批准，timeout也不能批准。"""
+        async with self._quotes.open_approval(tenant_id,quote_id,executor=executor) as session:
+            receipt = await session.receipt()
+            submission = await session.submission()
+            ids = tuple(f.approval_id for f in submission.facts) if submission else ()
+            facts = await read_quote_facts(self._approvals,tenant_id,ids)
+            deadline = min((f.expires_at for f in facts),default=None)
+            if receipt is not None:
+                if receipt.facts_hash != quote_approval_facts_hash(facts):
+                    raise QuoteApprovalError("approval_fact_invalid")
+                outcome,error = "already_applied",None
+            elif not facts:
+                outcome,error = "waiting",None
+            else:
+                if any(f.state=="applied" for f in facts):
+                    raise QuoteApprovalUnavailableError("storage_inconsistent")
+                terminated = await session.terminate(facts)
+                outcome,error = terminated.outcome,terminated.error_code
+                if outcome == "waiting":
+                    if any(f.state=="apply_failed" for f in facts):
+                        outcome,error = "blocked","approval_fact_invalid"
+                    elif all(f.state=="approved" for f in facts):
+                        outcome = "ready"
+            return qa.QuoteApprovalPollResult(outcome=outcome,approval_ids=ids,deadline=deadline,error_code=error)
+
+    async def mark_completed(self, tenant_id: TenantId, quote_id: QuoteId, *,
+                             executor: qa.QuoteWorkflowExecutor) -> qa.QuoteApprovalApplicationReceipt:
+        """receipt与决定hash匹配才逐包补记；无需当前员工/Need/policy。"""
+        receipt = await self._quotes.get_approval_application(tenant_id,quote_id,executor=executor)
+        if receipt is None:
+            raise QuoteApprovalUnavailableError("storage_inconsistent")
+        facts = await read_quote_facts(self._approvals,tenant_id,tuple(d.approval_id for d in receipt.decisions))
+        if quote_approval_facts_hash(facts) != receipt.facts_hash or any(f.state not in {"approved","applied"} for f in facts):
+            raise QuoteApprovalUnavailableError("storage_inconsistent")
+        for fact in facts:
+            await self._approvals.mark_applied(tenant_id,fact.approval_id,
+                f"quote-apply:{quote_id}:{receipt.content_hash}:{fact.approval_type}")
+        return receipt
+
+    async def _record_failure(self, tenant_id: TenantId, quote_id: QuoteId,
+                              executor: qa.QuoteWorkflowExecutor, code: QuoteApprovalErrorCode) -> qa.QuoteApprovalApplyResult:
+        """持报价机会锁先查receipt，禁止迟到失败覆盖另一执行者已成功。"""
+        receipt = None
+        async with self._quotes.open_approval(tenant_id,quote_id,executor=executor) as session:
+            receipt = await session.receipt()
+            snapshot = await session.snapshot()
+            if receipt is None:
+                submission = await session.submission()
+                if submission is None:
+                    raise QuoteApprovalError("approval_binding_conflict")
+                facts = await read_quote_facts(self._approvals,tenant_id,tuple(f.approval_id for f in submission.facts))
+                terminal = await session.terminate(facts)
+                if terminal.outcome not in {"waiting","expired"}:
+                    return terminal
+                for fact in facts:
+                    if fact.state == "approved":
+                        await self._approvals.mark_apply_failed(tenant_id,fact.approval_id,_APPROVAL_FAILURES[code])
+        if receipt is not None:
+            receipt = await self.mark_completed(tenant_id,quote_id,executor=executor)
+            return qa.QuoteApprovalApplyResult(outcome="already_applied",quote=snapshot.internal_quote,receipt=receipt,error_code=None)
+        return qa.QuoteApprovalApplyResult(outcome="blocked",quote=snapshot.internal_quote,receipt=None,error_code=code)
+
+    async def apply(self, tenant_id: TenantId, quote_id: QuoteId, *,
+                    executor: qa.QuoteWorkflowExecutor) -> qa.QuoteApprovalApplyResult:
+        """全部真实批准才进入全员工context，提交后退出lease再补记。"""
+        receipt = await self._quotes.get_approval_application(tenant_id,quote_id,executor=executor)
+        target = await self._quotes.approval_target(tenant_id,quote_id,executor=executor)
+        if receipt is not None:
+            receipt = await self.mark_completed(tenant_id,quote_id,executor=executor)
+            return qa.QuoteApprovalApplyResult(outcome="already_applied",quote=target.internal_quote,receipt=receipt,error_code=None)
+        poll = await self.poll(tenant_id,quote_id,executor=executor)
+        if poll.outcome != "ready":
+            refreshed = await self._quotes.approval_target(tenant_id,quote_id,executor=executor)
+            return qa.QuoteApprovalApplyResult(outcome=poll.outcome,quote=refreshed.internal_quote,receipt=None,error_code=poll.error_code)
+        facts = await read_quote_facts(self._approvals,tenant_id,poll.approval_ids)
+        send = next(f for f in facts if f.approval_type=="quote_send")
+        if send.decided_by is None or any(f.decided_by is None for f in facts):
+            raise QuoteApprovalError("approval_fact_invalid")
+        c = target.internal_quote.content
+        try:
+            async with (
+                self._context.open_for_approval(tenant_id, c.opportunity_id, send.decided_by, prepared_by=c.prepared_by, decider_ids=tuple(sorted({f.decided_by for f in facts}))) as context,
+                self._quotes.open_approval(tenant_id, quote_id, executor=executor) as session,
+            ):
+                current = await read_quote_facts(self._approvals,tenant_id,poll.approval_ids)
+                if quote_approval_facts_hash(current) != quote_approval_facts_hash(facts):
+                    raise QuoteApprovalError("context_changed")
+                result = await session.apply(current,context)
+        except QuoteContextUnavailableError as error:
+            raise QuoteApprovalUnavailableError(error.code) from None
+        except QuoteContextError:
+            return await self._record_failure(tenant_id,quote_id,executor,"context_changed")
+        except QuoteApprovalError as error:
+            if error.code not in _APPROVAL_FAILURES:
+                raise
+            return await self._record_failure(tenant_id,quote_id,executor,error.code)
+        if result.receipt is not None:
+            await self.mark_completed(tenant_id,quote_id,executor=executor)
+        return result

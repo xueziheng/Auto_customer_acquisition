@@ -30,6 +30,15 @@ async def test_0045_roundtrip_and_orm_columns(unit_engine):
             assert {item["name"] for item in columns} == set(
                 Base.metadata.tables[name].columns.keys()
             )
+    assert "ck_approval_quote_contract" in {
+        c.name for c in Base.metadata.tables["approval_packages"].constraints
+    }
+    assert "uq_approval_quote_change_set" in {
+        c.name for c in Base.metadata.tables["approval_packages"].indexes
+    }
+    assert "uq_quotation_approval_type" in {
+        c.name for c in Base.metadata.tables["quotation_approval_bindings"].constraints
+    }
 
 
 @pytest.mark.parametrize("marker", ["quote:invalid", " QUOTE:invalid", ""])
