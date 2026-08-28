@@ -37,6 +37,11 @@ from domains.quotations.context import (
     quote_specification,
     quote_specification_hash,
 )
+from domains.quotations.file_service import (
+    QuoteFileScopeAuthorizer,
+    QuoteFileService,
+    QuoteGeneratedArtifactReader,
+)
 from domains.quotations.models import ForbiddenAutoCommitment
 from domains.quotations.permissions import (
     QuotePreparationPolicy,
@@ -48,6 +53,9 @@ from domains.quotations.schemas import (
     QuoteBusinessContext,
     QuoteCreateRequest,
     QuoteDetailView,
+    QuoteFileApprovalFact,
+    QuoteFileView,
+    QuoteGeneratedArtifactFact,
     QuoteIssuer,
     QuoteIssuerCreate,
     QuoteSendReceipt,
@@ -104,7 +112,7 @@ class QuoteCreationSession(Protocol):
         ...
 
 
-class QuotationVersionService(Protocol):
+class QuotationVersionService(QuoteFileService, Protocol):
     """新生产候选端口，旧骨架服务不转调本实现。"""
     async def approval_snapshot(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteApprovalSnapshot:
         """当前四成本角色的审批启动快照。"""
@@ -429,6 +437,12 @@ __all__ = [
     "QuoteApprovalSession",
     "QuoteContextProvider",
     "QuoteCreationSession",
+    "QuoteFileApprovalFact",
+    "QuoteFileScopeAuthorizer",
+    "QuoteFileService",
+    "QuoteFileView",
+    "QuoteGeneratedArtifactFact",
+    "QuoteGeneratedArtifactReader",
     "QuoteIssuerReader",
     "QuotePolicySelection",
     "QuotePreparationPolicy",

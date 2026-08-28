@@ -7,10 +7,13 @@ from typing import Literal, Protocol
 
 from domains.quotations.approval_rules import (
     APPROVAL_TYPES,
+    build_quote_approval_snapshot,
     quote_approval_facts_hash,
-    quote_approval_payloads,
-    quote_change_set_ref,
     require_quote_approval_access,
+    require_quote_approval_bindings,
+    require_quote_approval_facts,
+    require_quote_approval_receipt,
+    require_quote_run_binding,
     required_quote_approvals,
 )
 from domains.quotations.approval_schemas import (
@@ -176,22 +179,7 @@ def _decisions(
     )
 
 
-def receipt_facts(
-    receipt: QuoteApprovalApplicationReceipt,
-) -> tuple[QuoteApprovalFact, ...]:
-    """只用于验证历史hash，不把此重建对象冒充approvals实时事实。"""
-    return tuple(
-        QuoteApprovalFact(
-            **{
-                name: getattr(d, name)
-                for name in QuoteApprovalDecisionSnapshot.model_fields
-            },
-            state="approved",
-            applied_at=None,
-            application_error_code=None,
-        )
-        for d in receipt.decisions
-    )
+
 
 
 class QuoteApprovalServiceImpl:
@@ -240,29 +228,9 @@ class QuoteApprovalServiceImpl:
         except Exception:  # noqa: BLE001 -- run reader基础设施异常必须脱敏且不能默认许可
             raise QuoteApprovalUnavailableError("dependency_unavailable") from None
         c = quote.content
-        if (
-            run is None
-            or executor.quote_id != c.quote_id
-            or executor.workflow_type != "quote_approval"
-            or (
-                run.tenant_id,
-                run.run_id,
-                run.workflow_type,
-                run.workflow_version,
-                run.subject_ref,
-                run.quote_version,
-                run.content_hash,
-            )
-            != (
-                tenant_id,
-                executor.run_id,
-                "quote_approval",
-                1,
-                str(c.quote_id),
-                c.version,
-                c.content_hash,
-            )
-        ):
+        require_quote_run_binding(tenant_id, c.quote_id, c.version, c.content_hash, run)
+        if (executor.quote_id != c.quote_id or executor.workflow_type != "quote_approval"
+            or run.run_id != executor.run_id):
             raise QuoteApprovalError("workflow_binding_invalid")
 
     async def _snapshot(
@@ -274,22 +242,7 @@ class QuoteApprovalServiceImpl:
         previous = next(
             (v for v in versions if v.content.version == c.version - 1), None
         )
-        if c.version > 1 and previous is None:
-            raise QuoteApprovalUnavailableError("storage_inconsistent")
-        return QuoteApprovalSnapshot(
-            internal_quote=quote,
-            required_types=required_quote_approvals(quote),
-            payloads=quote_approval_payloads(quote, previous),
-            expires_at_limit=min(
-                c.valid_until,
-                c.basis.valid_until,
-                *(
-                    e.valid_until
-                    for e in c.basis.price_evidence
-                    if e.valid_until is not None
-                ),
-            ),
-        )
+        return build_quote_approval_snapshot(quote, previous)
 
     async def approval_snapshot(
         self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor
@@ -464,57 +417,16 @@ class QuoteApprovalSessionImpl:
 
     async def _validate(self, facts: tuple[QuoteApprovalFact, ...]) -> None:
         """全类型恰一包，所有安全载荷/原limit/提议run精确相同。"""
-        snapshot = await self.snapshot()
-        c = self._quote.content
-        if len(facts) != len(snapshot.required_types) or {
-            f.approval_type for f in facts
-        } != set(snapshot.required_types):
-            raise QuoteApprovalError("approval_fact_invalid")
-        if len({f.approval_id for f in facts}) != len(facts):
-            raise QuoteApprovalError("approval_fact_invalid")
-        payloads = {p.approval_type: p for p in snapshot.payloads}
-        for f in facts:
-            p = payloads[f.approval_type]
-            if (
-                f.tenant_id != c.tenant_id
-                or f.payload != p
-                or f.change_set_ref
-                != quote_change_set_ref(c.quote_id, c.content_hash, f.approval_type)
-                or f.prepared_by != c.prepared_by
-                or f.submitted_owner_id != c.owner_id
-                or f.expires_at_limit != snapshot.expires_at_limit
-                or not f.created_at < f.expires_at <= f.expires_at_limit
-            ):
-                raise QuoteApprovalError("approval_fact_invalid")
-            if f.proposed_by_run != self._executor.run_id:
-                raise QuoteApprovalError("workflow_binding_invalid")
+        require_quote_approval_facts(
+            await self.snapshot(), facts, self._executor.run_id
+        )
 
     async def _bound(self, facts: tuple[QuoteApprovalFact, ...]) -> None:
         """实时决定必须来自原轮相同包，不接受替换新ID或请求字段。"""
         await self._validate(facts)
         c = self._quote.content
         bindings = await self._uow.quotes.approval_bindings(c.tenant_id, c.quote_id)
-        fields = (
-            "tenant_id",
-            "approval_id",
-            "approval_type",
-            "change_set_ref",
-            "request_hash",
-            "payload",
-            "created_at",
-            "expires_at",
-            "expires_at_limit",
-            "prepared_by",
-            "submitted_owner_id",
-            "proposed_by_run",
-        )
-        old = {f.approval_type: f for f in bindings}
-        if len(old) != len(facts) or any(
-            f.approval_type not in old
-            or any(getattr(f, n) != getattr(old[f.approval_type], n) for n in fields)
-            for f in facts
-        ):
-            raise QuoteApprovalError("approval_binding_conflict")
+        require_quote_approval_bindings(facts, bindings)
 
     async def receipt(self) -> QuoteApprovalApplicationReceipt | None:
         """真实成功优先，完整决定hash及run绑定仍必须一致。"""
@@ -522,29 +434,10 @@ class QuoteApprovalSessionImpl:
         c = self._quote.content
         receipt = await self._uow.quotes.approval_receipt(c.tenant_id, c.quote_id)
         if receipt is not None:
-            if (
-                receipt.tenant_id,
-                receipt.quote_id,
-                receipt.quote_version,
-                receipt.content_hash,
-                receipt.approval_run_id,
-            ) != (
-                c.tenant_id,
-                c.quote_id,
-                c.version,
-                c.content_hash,
-                self._executor.run_id,
-            ):
-                raise QuoteApprovalError("workflow_binding_invalid")
-            facts = receipt_facts(receipt)
-            await self._bound(facts)
-            if (
-                quote_approval_facts_hash(facts) != receipt.facts_hash
-                or any(f.decision != "approve" for f in facts)
-                or next(f.decided_by for f in facts if f.approval_type == "quote_send")
-                != receipt.quote_send_decider
-            ):
-                raise QuoteApprovalUnavailableError("storage_inconsistent")
+            bindings = await self._uow.quotes.approval_bindings(c.tenant_id, c.quote_id)
+            require_quote_approval_receipt(
+                await self.snapshot(), receipt, bindings, self._executor.run_id
+            )
         return receipt
 
     async def _fresh(self, context: QuoteBusinessContext) -> datetime:

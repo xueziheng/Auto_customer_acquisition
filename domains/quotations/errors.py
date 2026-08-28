@@ -15,6 +15,44 @@ from shared.errors import (
     ValidationError,
 )
 
+QuoteFileErrorCode = Literal[
+    "invalid_input", "not_found", "approval_missing", "file_conflict",
+    "metadata_mismatch", "workflow_binding_invalid", "template_unsupported",
+]
+
+
+class QuoteFileError(ValidationError):
+    """文件固定业务拒绝；仅接受定义过的code，不接受自由错误原文。"""
+
+    def __init__(self, code: QuoteFileErrorCode) -> None:
+        if code not in {"invalid_input", "not_found", "approval_missing", "file_conflict",
+            "metadata_mismatch", "workflow_binding_invalid", "template_unsupported"}:
+            raise ValueError("无效文件错误码")
+        self.code = code
+        super().__init__(f"报价文件未通过：{code}")
+
+
+class QuoteFilePermissionError(PermissionDenied):
+    """文件用途当前权限拒绝，不包含员工或机会详情。"""
+
+    def __init__(self, code: Literal["permission_denied"]) -> None:
+        if code != "permission_denied":
+            raise ValueError("无效文件错误码")
+        self.code = code
+        super().__init__("当前员工无报价文件用途权限")
+
+
+class QuoteFileUnavailableError(TradeOSError):
+    """存储/依赖固定故障；未知提交只能按原artifact恢复。"""
+
+    def __init__(self, code: Literal[
+        "dependency_unavailable", "lock_timeout", "storage_unknown", "storage_inconsistent",
+    ]) -> None:
+        if code not in {"dependency_unavailable", "lock_timeout", "storage_unknown", "storage_inconsistent"}:
+            raise ValueError("无效文件错误码")
+        self.code = code
+        super().__init__(f"报价文件暂不可用：{code}")
+
 QuoteApprovalErrorCode = Literal[
     "invalid_input",
     "quote_contract_invalid",

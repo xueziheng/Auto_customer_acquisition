@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.quotations.content import require_content_integrity
 from domains.quotations.errors import QuotationError, QuotationUnavailableError
+from domains.quotations.file_schemas import QuoteFileRecord, QuoteFileView
 from domains.quotations.schemas import (
     QuoteApprovalApplicationReceipt,
     QuoteApprovalFact,
@@ -27,6 +28,7 @@ from infra.db.tables import (
     QuotationApprovalBindingRow,
     QuotationApprovalReceiptRow,
     QuotationEvidenceRefRow,
+    QuotationFileRow,
     QuotationIssuerRow,
     QuotationLineRow,
     QuotationRow,
@@ -37,6 +39,7 @@ from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
     MessageAttemptId,
     OpportunityId,
+    QuoteFileId,
     QuoteId,
     TenantId,
     new_id,
@@ -45,6 +48,49 @@ from shared.schemas.identifiers import (
 
 class QuotationVersionRepositoryImpl(TenantScopedRepository):
     """全部查询经绑定tenant基座，所有返回内容逐次验证。"""
+
+    def _file_record(self, row: QuotationFileRow) -> QuoteFileRecord:
+        """列映射不重算业务hash；领域在每次对外返回前重验。"""
+        try:
+            return QuoteFileRecord(tenant_id=row.tenant_id, approval_run_id=row.approval_run_id,
+                view=QuoteFileView(file_id=row.file_id, quote_id=row.quote_id,
+                    quote_version=row.quote_version, artifact_id=row.artifact_id,
+                    content_hash=row.artifact_hash, quote_content_hash=row.quote_content_hash,
+                    customer_content_hash=row.customer_content_hash, template_version=row.template_version,
+                    size_bytes=row.size_bytes, generated_at=row.generated_at))
+        except (SchemaError, ValueError, TypeError):
+            raise QuotationUnavailableError("storage_inconsistent") from None
+
+    async def file_by_id(self, tenant_id: TenantId, quote_id: QuoteId, file_id: QuoteFileId) -> QuoteFileRecord | None:
+        """三个身份同时过滤，不按裸artifact或file访问其他报价。"""
+        self._tenant(tenant_id)
+        row = await self._session.scalar(self.scoped_query(QuotationFileRow).where(
+            QuotationFileRow.quote_id == quote_id, QuotationFileRow.file_id == file_id))
+        return None if row is None else self._file_record(row)
+
+    async def file_by_template(self, tenant_id: TenantId, quote_id: QuoteId, template_version: str) -> QuoteFileRecord | None:
+        """在本租户报价模板唯一约束下取原winner。"""
+        self._tenant(tenant_id)
+        row = await self._session.scalar(self.scoped_query(QuotationFileRow).where(
+            QuotationFileRow.quote_id == quote_id, QuotationFileRow.template_version == template_version))
+        return None if row is None else self._file_record(row)
+
+    async def files_for_quote(self, tenant_id: TenantId, quote_id: QuoteId) -> tuple[QuoteFileRecord, ...]:
+        """稳定顺序读取本报价全部文件，不开放跨报价列表。"""
+        self._tenant(tenant_id)
+        rows = await self._session.scalars(self.scoped_query(QuotationFileRow).where(
+            QuotationFileRow.quote_id == quote_id).order_by(QuotationFileRow.template_version, QuotationFileRow.file_id))
+        return tuple(self._file_record(row) for row in rows)
+
+    async def add_file(self, tenant_id: TenantId, record: QuoteFileRecord) -> None:
+        """同session只增，真实绑定与不可变由SQL兜底。"""
+        self._tenant(tenant_id)
+        if record.tenant_id != tenant_id:
+            raise QuotationUnavailableError("storage_inconsistent")
+        values = record.view.model_dump()
+        values["artifact_hash"] = values.pop("content_hash")
+        self._session.add(QuotationFileRow(tenant_id=tenant_id, approval_run_id=record.approval_run_id, **values))
+        await self._session.flush()
 
     def __init__(self, session: AsyncSession, tenant_id: TenantId) -> None:
         """借用UoW会话，不自行提交。"""

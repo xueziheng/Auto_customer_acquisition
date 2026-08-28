@@ -10,6 +10,7 @@ from domains.quotations.approval_schemas import (
     QuoteApprovalSubmission,
 )
 from domains.quotations.context import QuoteIssuer
+from domains.quotations.file_schemas import QuoteFileRecord
 from domains.quotations.models import QuoteState
 from domains.quotations.version_schemas import (
     QuoteDetailView,
@@ -21,6 +22,7 @@ from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     MessageAttemptId,
     OpportunityId,
+    QuoteFileId,
     QuoteId,
     TenantId,
 )
@@ -28,6 +30,22 @@ from shared.schemas.identifiers import (
 
 class QuotationVersionRepository(Protocol):
     """仅报价本域持久操作，不暴露SQL session。"""
+
+    async def file_by_id(self, tenant_id: TenantId, quote_id: QuoteId, file_id: QuoteFileId) -> QuoteFileRecord | None:
+        """精确tenant/quote/file读取原关联，不跨报价枚举。"""
+        ...
+
+    async def file_by_template(self, tenant_id: TenantId, quote_id: QuoteId, template_version: str) -> QuoteFileRecord | None:
+        """同报价模板唯一winner，不提供upsert/update/delete。"""
+        ...
+
+    async def files_for_quote(self, tenant_id: TenantId, quote_id: QuoteId) -> tuple[QuoteFileRecord, ...]:
+        """仅列本租户报价的不可变文件关联。"""
+        ...
+
+    async def add_file(self, tenant_id: TenantId, record: QuoteFileRecord) -> None:
+        """在调用方机会锁事务内只增完整关联。"""
+        ...
 
     async def approval_bindings(self, tenant_id: TenantId, quote_id: QuoteId) -> tuple[QuoteApprovalFact,...]:
         """原轮提交时快照，不以其旧state当作当前批准。"""

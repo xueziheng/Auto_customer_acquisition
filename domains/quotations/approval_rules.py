@@ -8,6 +8,7 @@ from pydantic import JsonValue
 
 from domains.quotations.approval_schemas import (
     QuoteApprovalAccessContext,
+    QuoteApprovalApplicationReceipt,
     QuoteApprovalCalculationSummary,
     QuoteApprovalCustomerSummary,
     QuoteApprovalDecisionSnapshot,
@@ -17,13 +18,19 @@ from domains.quotations.approval_schemas import (
     QuoteApprovalPackagePayload,
     QuoteApprovalPolicySummary,
     QuoteApprovalPreviousSummary,
+    QuoteApprovalSnapshot,
     QuoteApprovalSubject,
     QuoteApprovalType,
+    QuoteWorkflowRunFact,
 )
 from domains.quotations.basis_schemas import Hash
-from domains.quotations.errors import QuoteApprovalError, QuoteApprovalPermissionError
+from domains.quotations.errors import (
+    QuoteApprovalError,
+    QuoteApprovalPermissionError,
+    QuoteApprovalUnavailableError,
+)
 from domains.quotations.version_schemas import QuoteDetailView
-from shared.schemas.identifiers import QuoteId
+from shared.schemas.identifiers import QuoteId, RunId, TenantId
 from shared.schemas.quote_creation import canonical_creation_hash
 
 APPROVAL_TYPES: tuple[QuoteApprovalType, ...] = (
@@ -34,6 +41,102 @@ APPROVAL_TYPES: tuple[QuoteApprovalType, ...] = (
     "payment_terms",
     "certification_commitment",
 )
+
+
+def require_quote_run_binding(
+    tenant_id: TenantId, quote_id: QuoteId, quote_version: int,
+    quote_content_hash: str, run: QuoteWorkflowRunFact | None,
+) -> None:
+    """历史与fresh入口同核真实run，不把生命周期终态当绑定失效。"""
+    if run is None or (
+        run.tenant_id, run.workflow_type, run.workflow_version, run.subject_ref,
+        run.quote_version, run.content_hash,
+    ) != (tenant_id, "quote_approval", 1, str(quote_id), quote_version, quote_content_hash):
+        raise QuoteApprovalError("workflow_binding_invalid")
+
+
+def build_quote_approval_snapshot(
+    quote: QuoteDetailView, previous: QuoteDetailView | None,
+) -> QuoteApprovalSnapshot:
+    """按原报价及实际前一版恢复完整载荷与原limit；不读取fresh事实。"""
+    c = quote.content
+    if c.version > 1 and (previous is None or previous.content.version != c.version - 1):
+        raise QuoteApprovalUnavailableError("storage_inconsistent")
+    return QuoteApprovalSnapshot(
+        internal_quote=quote, required_types=required_quote_approvals(quote),
+        payloads=quote_approval_payloads(quote, previous),
+        expires_at_limit=min(c.valid_until, c.basis.valid_until, *(
+            e.valid_until for e in c.basis.price_evidence if e.valid_until is not None)),
+    )
+
+
+def require_quote_approval_facts(
+    snapshot: QuoteApprovalSnapshot, facts: tuple[QuoteApprovalFact, ...], run_id: RunId,
+) -> None:
+    """完整原请求组及不可变payload/owner/期限/run校验，T5与文件历史共用。"""
+    c = snapshot.internal_quote.content
+    if (len(facts) != len(snapshot.required_types)
+        or {f.approval_type for f in facts} != set(snapshot.required_types)
+        or len({f.approval_id for f in facts}) != len(facts)):
+        raise QuoteApprovalError("approval_fact_invalid")
+    payloads = {p.approval_type: p for p in snapshot.payloads}
+    for f in facts:
+        if (
+            f.tenant_id != c.tenant_id or f.payload != payloads[f.approval_type]
+            or f.change_set_ref != quote_change_set_ref(c.quote_id, c.content_hash, f.approval_type)
+            or f.prepared_by != c.prepared_by or f.submitted_owner_id != c.owner_id
+            or f.expires_at_limit != snapshot.expires_at_limit
+            or not f.created_at < f.expires_at <= f.expires_at_limit
+        ):
+            raise QuoteApprovalError("approval_fact_invalid")
+        if f.proposed_by_run != run_id:
+            raise QuoteApprovalError("workflow_binding_invalid")
+
+
+def require_quote_approval_bindings(
+    facts: tuple[QuoteApprovalFact, ...], bindings: tuple[QuoteApprovalFact, ...],
+) -> None:
+    """决定只能来自原轮相同包，逐项比较全部不可变请求字段。"""
+    fields = (
+        "tenant_id", "approval_id", "approval_type", "change_set_ref", "request_hash",
+        "payload", "created_at", "expires_at", "expires_at_limit", "prepared_by",
+        "submitted_owner_id", "proposed_by_run",
+    )
+    old = {f.approval_type: f for f in bindings}
+    if len(old) != len(facts) or any(
+        f.approval_type not in old
+        or any(getattr(f, n) != getattr(old[f.approval_type], n) for n in fields)
+        for f in facts
+    ):
+        raise QuoteApprovalError("approval_binding_conflict")
+
+
+def receipt_facts(receipt: QuoteApprovalApplicationReceipt) -> tuple[QuoteApprovalFact, ...]:
+    """仅用于历史验证，不冒充approvals实时状态事实。"""
+    return tuple(QuoteApprovalFact(**{
+        name: getattr(d, name) for name in QuoteApprovalDecisionSnapshot.model_fields
+    }, state="approved", applied_at=None, application_error_code=None) for d in receipt.decisions)
+
+
+def require_quote_approval_receipt(
+    snapshot: QuoteApprovalSnapshot, receipt: QuoteApprovalApplicationReceipt,
+    bindings: tuple[QuoteApprovalFact, ...], run_id: RunId,
+) -> None:
+    """真实成功归属、原组和决定hash全部验证，不重新批准历史报价。"""
+    c = snapshot.internal_quote.content
+    if (receipt.tenant_id, receipt.quote_id, receipt.quote_version, receipt.content_hash,
+        receipt.approval_run_id) != (c.tenant_id, c.quote_id, c.version, c.content_hash, run_id):
+        raise QuoteApprovalError("workflow_binding_invalid")
+    facts = receipt_facts(receipt)
+    require_quote_approval_facts(snapshot, facts, run_id)
+    require_quote_approval_bindings(facts, bindings)
+    if (
+        quote_approval_facts_hash(facts) != receipt.facts_hash
+        or any(f.decision != "approve" for f in facts)
+        or next(f.decided_by for f in facts if f.approval_type == "quote_send")
+        != receipt.quote_send_decider
+    ):
+        raise QuoteApprovalUnavailableError("storage_inconsistent")
 
 
 def quote_change_set_ref(

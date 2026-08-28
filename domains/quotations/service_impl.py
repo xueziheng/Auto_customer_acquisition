@@ -21,7 +21,10 @@ from domains.quotations.errors import (
     QuotationError,
     QuotationPermissionError,
     QuotationUnavailableError,
+    QuoteFileUnavailableError,
 )
+from domains.quotations.file_schemas import QuoteFileApprovalFact, QuoteFileView
+from domains.quotations.file_service import QuoteFileService
 from domains.quotations.permissions import QuotePreparationPolicy
 from domains.quotations.schemas import (
     QuotationActor,
@@ -46,8 +49,10 @@ from domains.quotations.service import (
 from domains.quotations.version_repository import QuotationUowFactory
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
     OpportunityId,
+    QuoteFileId,
     QuoteId,
     TenantId,
     new_id,
@@ -76,6 +81,7 @@ class QuotationServiceImpl:
         approval_policy_reader: QuoteApprovalPolicyReader,
         workflow_run_reader: QuoteWorkflowRunReader,
         now: Callable[[], datetime],
+        files: QuoteFileService | None = None,
     ) -> None:
         """不提供缺省角色、发送许可或业务时钟。"""
         self._uows, self._actors, self._policy, self._send_reader, self._now = (
@@ -87,6 +93,33 @@ class QuotationServiceImpl:
         )
         self._approvals = QuoteApprovalServiceImpl(uow_factory, context_provider,
             approval_policy_reader, workflow_run_reader, self._actor, now=now)
+        self._files = files
+
+    def _file_service(self) -> QuoteFileService:
+        """仅保持旧非文件构造兼容；未装配文件用途一律失败关闭。"""
+        if self._files is None:
+            raise QuoteFileUnavailableError("dependency_unavailable")
+        return self._files
+
+    async def record_file(self, tenant_id: TenantId, quote_id: QuoteId, artifact_id: ArtifactId,
+        *, actor_id: EmployeeId) -> QuoteFileView:
+        """委托独立文件用途，不使用内部四成本角色policy。"""
+        return await self._file_service().record_file(tenant_id, quote_id, artifact_id, actor_id=actor_id)
+
+    async def get_file(self, tenant_id: TenantId, quote_id: QuoteId, file_id: QuoteFileId,
+        *, actor_id: EmployeeId) -> QuoteFileView:
+        """只返回独立文件服务已核验的安全metadata。"""
+        return await self._file_service().get_file(tenant_id, quote_id, file_id, actor_id=actor_id)
+
+    async def list_files(self, tenant_id: TenantId, quote_id: QuoteId,
+        *, actor_id: EmployeeId) -> tuple[QuoteFileView, ...]:
+        """单报价文件历史同样经过当前scope。"""
+        return await self._file_service().list_files(tenant_id, quote_id, actor_id=actor_id)
+
+    async def get_file_approval(self, tenant_id: TenantId, quote_id: QuoteId,
+        *, actor_id: EmployeeId) -> QuoteFileApprovalFact | None:
+        """读取真实历史批准归属，不构造executor或当前许可。"""
+        return await self._file_service().get_file_approval(tenant_id, quote_id, actor_id=actor_id)
 
     async def approval_snapshot(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteApprovalSnapshot:
         """内部用途当前授权后生成安全审批快照。"""
