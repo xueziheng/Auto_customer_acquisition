@@ -268,12 +268,14 @@ class GeneratedArtifactStoreImpl:
         maximum_bytes: int,
         now: Callable[[], datetime],
         id_generator: Callable[[str], str],
+        *, bounded_transport: BoundedObjectBlobTransport | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._transport = transport
         self._maximum_bytes = _require_limit(maximum_bytes)
         self._now = now
         self._id_generator = id_generator
+        self._bounded_transport = bounded_transport
 
     def __repr__(self) -> str:
         return "GeneratedArtifactStoreImpl()"
@@ -368,6 +370,29 @@ class GeneratedArtifactStoreImpl:
         self, tenant_id: TenantId, artifact_id: ArtifactId
     ) -> GeneratedArtifactMeta:
         return (await self._get_record(tenant_id, artifact_id)).meta
+
+    async def get_bounded(self, tenant_id: TenantId, artifact_id: ArtifactId,
+        *, maximum_bytes: int) -> tuple[GeneratedArtifactMeta, bytes]:
+        """仅QUOTE_PDF且metadata事务已释放，实际读取最多metadata长度加一哨兵。"""
+        limit = min(_require_limit(maximum_bytes), self._maximum_bytes)
+        if self._bounded_transport is None:
+            raise ArtifactBoundedReadUnavailable()
+        record = await self._get_record(tenant_id, artifact_id)
+        if record.meta.kind is not GeneratedArtifactKind.QUOTE_PDF or record.meta.mime_type != "application/pdf":
+            raise ValidationError("派生文件绑定无效")
+        if record.meta.size_bytes > limit:
+            raise ArtifactReadLimitExceeded()
+        try:
+            content = await self._bounded_transport.get_bounded(record.object_key,
+                maximum_bytes=min(limit, record.meta.size_bytes))
+        except BlobReadLimitExceeded:
+            raise ArtifactReadLimitExceeded() from None
+        except BlobObjectNotFoundError:
+            raise ArtifactNotFoundError() from None
+        if (type(content) is not bytes or len(content) != record.meta.size_bytes
+            or _content_hash(content) != record.meta.content_hash):
+            raise _integrity_failure(tenant_id, artifact_id, record.meta.kind)
+        return record.meta, content
 
     async def get_meta_by_key(
         self, tenant_id: TenantId, idempotency_key: IdempotencyKey

@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from shared.errors import TradeOSError
+
+
+class QuotePdfBlobTransportError(TradeOSError):
+    """专用写入结果分类，禁止携带SDK原文或对象地址。"""
+
+    def __init__(self, code: Literal["invalid_input", "read_unsupported", "unavailable", "outcome_unknown"]) -> None:
+        messages = {"invalid_input": "报价文件对象输入无效", "read_unsupported": "报价文件对象须使用有界读取",
+            "unavailable": "报价文件对象传输不可用", "outcome_unknown": "报价文件对象操作结果未知"}
+        if code not in messages:
+            raise ValueError("无效报价对象错误码")
+        self.code = code
+        super().__init__(messages[code])
 
 
 class BlobReadLimitExceeded(TradeOSError):

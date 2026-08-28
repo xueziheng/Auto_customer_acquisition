@@ -283,6 +283,16 @@ class RawArtifactStore(Protocol):
 
 
 @runtime_checkable
+class BoundedGeneratedArtifactStore(Protocol):
+    """独立新增QUOTE_PDF有界端口，不迫使旧Generated调用迁移。"""
+
+    async def get_bounded(self, tenant_id: TenantId, artifact_id: ArtifactId,
+        *, maximum_bytes: int) -> tuple[GeneratedArtifactMeta, bytes]:
+        """先metadata限额、再有限读取和SHA256验证，禁止旧get回退。"""
+        ...
+
+
+@runtime_checkable
 class GeneratedArtifactStore(Protocol):
     """不可变派生产物 Store；与原始证据的 kind 和幂等语义分离。"""
 
