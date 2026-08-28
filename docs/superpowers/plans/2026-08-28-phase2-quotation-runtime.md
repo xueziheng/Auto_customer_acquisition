@@ -1,6 +1,6 @@
 # Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
-> **状态：T8B2整项首次审查发现3项Important，Fix1实施中。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3 API/worker 1b8920、8.4完整受控链7c6c061及§2.4中文展示9de7640已提交。审查前相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、Linux实际factory全链1项零skip，59生产文件mypy/Ruff/结构通过；这些未覆盖本次发现的两个负向组合，不是最终验收或整个Phase 2完成。首次整项范围585cead..9b05f70，Fix1按§9修文件整组门、轮中失锁和共享机械装配，修复范围复审通过才关门。未勾选项仍待验，T9/T10未开始。
+> **状态：T8B2工程交付与Fix1独立复审完成。** 首次整项审查范围585cead..9b05f70，三项Important由ed819c4修复，增量9b05f70..b645172复审全部关闭、无新问题。Fix1最终638定向unit、增强后70相关unit（重叠）、65隔离PG、当前Linux实际factory全链1项零skip，61生产文件mypy/Ruff/结构通过；原8.1–8.4及中文审批展示已审。下文实施清单为任务要求，具体证据以报告分组/时点为准，不把测试数相加冒充独立覆盖。T9前端/T10全量与浏览器仍待，不等于整个Phase 2完成或真实Provider验收。
 
 **Goal:** 将已验收域/文件能力接入安全HTTP、显式配置和真实API/worker，保持旧流程兼容。
 **Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；下文方法描述是规范，不独立构成验收结论。
@@ -418,36 +418,36 @@ Create `connectors/object_store/deferred.py::DeferredS3ObjectBlobTransport(setti
 
 ### 8.1 安全投影、刷新口与首次准备
 
-- [ ] 先写 `tests/unit/test_quote_http_projection.py`、`test_quote_preparation_read.py` 和 `tests/integration/test_quote_preparation_read.py`，覆盖§2全部白名单/typed wire、demand assessment、初次缺单位/issuer、合法None规格及损坏事实失败。
-- [ ] RED后实现shared只读DTO、demand纯投影、quotation新用途Protocol/只读服务/就近纯投影、workflow适配、原SQL锁租约复用；所有跨域调用只经公共service，不复制分类或以泛异常返回缺项。
-- [ ] 按§4.1先运行两个`test_need_unit_access.py`取得RED，再实现真实单位check/guard与Employee→Opportunity事实lease；GREEN须包括实际权限矩阵、独立连接锁证据、无owner/issuer/unit前置、Need内层提交及原件IO锁外。
-- [ ] 增加price/coverage/scope/issuer刷新读口及精确同hash读回，证明确认重放不会误读并发新latest。GET零确认/冻结/对象读取；原get_facts/quantity hash/require_current_unit、原context与T4创建/恢复行为不变。
-- [ ] 运行上述五个新文件与受影响旧demand/context/costing/quotation目标；保持完整数量来源hash与原context hash字节。提交 `feat: 增加安全报价准备摘要与确认资料刷新`。
+- [x] 先写 `tests/unit/test_quote_http_projection.py`、`test_quote_preparation_read.py` 和 `tests/integration/test_quote_preparation_read.py`，覆盖§2全部白名单/typed wire、demand assessment、初次缺单位/issuer、合法None规格及损坏事实失败。
+- [x] RED后实现shared只读DTO、demand纯投影、quotation新用途Protocol/只读服务/就近纯投影、workflow适配、原SQL锁租约复用；所有跨域调用只经公共service，不复制分类或以泛异常返回缺项。
+- [x] 按§4.1先运行两个`test_need_unit_access.py`取得RED，再实现真实单位check/guard与Employee→Opportunity事实lease；GREEN须包括实际权限矩阵、独立连接锁证据、无owner/issuer/unit前置、Need内层提交及原件IO锁外。
+- [x] 增加price/coverage/scope/issuer刷新读口及精确同hash读回，证明确认重放不会误读并发新latest。GET零确认/冻结/对象读取；原get_facts/quantity hash/require_current_unit、原context与T4创建/恢复行为不变。
+- [x] 运行上述五个新文件与受影响旧demand/context/costing/quotation目标；保持完整数量来源hash与原context hash字节。提交 `feat: 增加安全报价准备摘要与确认资料刷新`。
 
 ### 8.2 HTTP与OpenAPI契约
 
-- [ ] 先写 `tests/unit/test_quotation_router.py` 的实际ASGI请求，覆盖§2每个路径和身份矩阵、400/403/404/409/429/503、未装配能力、空body拒额外字段、Decimal字符串/日期/数组真实wire。
-- [ ] 按§2路由表调用公共服务/工作流，业务DTO不放router；表内HTTP key例外严格执行，无默认actor、布尔approved/history或客户端template/key旁路。
-- [ ] 按§2.2.4先补三个真实reader的缺项/跨租户与新旧HTTP分类测试，再窄改costing的errors.py、service.py重导出、quote_service.py两个缺项分支及service_impl.py的get_sheet缺项分支；费用CAS只改新HTTP映射。旧消息/400、政策选择、确认与冻结语义均保留；真实PG读取测试不等于下一片实际factory验收。
-- [ ] 文件错误与B1真实调用ID绑定；全局ApiErrorResponse/400契约不改，OpenAPI显式安全union与application/pdf，响应不泄body/成本/原件。只读原文预览独立授权，不让普通安全GET替代原件权限。
-- [ ] Unit可受控服务只证明wire；真正服务装配留下一组。生成OpenAPI核实际schema不含内部basis/Need原文/请求确认人，前端类型交T9生成。提交 `feat: 接入安全报价与文件HTTP契约`。
+- [x] 先写 `tests/unit/test_quotation_router.py` 的实际ASGI请求，覆盖§2每个路径和身份矩阵、400/403/404/409/429/503、未装配能力、空body拒额外字段、Decimal字符串/日期/数组真实wire。
+- [x] 按§2路由表调用公共服务/工作流，业务DTO不放router；表内HTTP key例外严格执行，无默认actor、布尔approved/history或客户端template/key旁路。
+- [x] 按§2.2.4先补三个真实reader的缺项/跨租户与新旧HTTP分类测试，再窄改costing的errors.py、service.py重导出、quote_service.py两个缺项分支及service_impl.py的get_sheet缺项分支；费用CAS只改新HTTP映射。旧消息/400、政策选择、确认与冻结语义均保留；真实PG读取测试不等于下一片实际factory验收。
+- [x] 文件错误与B1真实调用ID绑定；全局ApiErrorResponse/400契约不改，OpenAPI显式安全union与application/pdf，响应不泄body/成本/原件。只读原文预览独立授权，不让普通安全GET替代原件权限。
+- [x] Unit可受控服务只证明wire；真正服务装配留下一组。生成OpenAPI核实际schema不含内部basis/Need原文/请求确认人，前端类型交T9生成。提交 `feat: 接入安全报价与文件HTTP契约`。
 
 ### 8.3 显式配置与进程生命周期
 
-- [ ] 先写 `tests/unit/test_quotation_runtime_config.py`、`test_deferred_s3_transport.py`，及既有API/worker runtime测试增量；缺/错JSON、重复key/NaN/bool、全部子预算、expiry 1..1000、files关闭和parser降级必须覆盖。
-- [ ] RED后实现纯infra settings及API/worker各自环境读取，旧上传§7 wrapper；按§4顺序形成真实域/来源/文件依赖。唯一approvals实例被旧router/旧workflow与新quote共用，handlers先于engine，延迟reader只发布一次，缺依赖不默认放行。
-- [ ] 同parser实例在真实lifespan/worker activation受信probe并在DB dispose前aclose；取消、before-yield失败及singleton未获锁均验证。无同步run_until_complete、fake readiness、真实Provider或API后台expiry。
-- [ ] 证明原上传Raw/EMAIL_DRAFT、旧API readonly readiness与旧worker仍兼容。提交 `feat: 装配报价运行配置与受控生命周期`。
+- [x] 先写 `tests/unit/test_quotation_runtime_config.py`、`test_deferred_s3_transport.py`，及既有API/worker runtime测试增量；缺/错JSON、重复key/NaN/bool、全部子预算、expiry 1..1000、files关闭和parser降级必须覆盖。
+- [x] RED后实现纯infra settings及API/worker各自环境读取，旧上传§7 wrapper；按§4顺序形成真实域/来源/文件依赖。唯一approvals实例被旧router/旧workflow与新quote共用，handlers先于engine，延迟reader只发布一次，缺依赖不默认放行。
+- [x] 同parser实例在真实lifespan/worker activation受信probe并在DB dispose前aclose；取消、before-yield失败及singleton未获锁均验证。无同步run_until_complete、fake readiness、真实Provider或API后台expiry。
+- [x] 证明原上传Raw/EMAIL_DRAFT、旧API readonly readiness与旧worker仍兼容。提交 `feat: 装配报价运行配置与受控生命周期`。
 
 ### 8.4 真实链路、到期驱动与交接
 
 Linux测试装配窄扩展：现build_parser_image新增quotation专用选择，仅在chain=True且显式复用已验收base image时合法；原parser/refreshed/chain默认stage与入口保持。原A白名单之外仅取apps/__init__.py（若存在；当前apps为namespace package，无此文件，不为打包新增它）及apps/api、apps/scheduler_worker、apps/notification_worker、agent_runtime、notification_gateway的*.py；connectors/dns_auth、object_store、openai、quote_pdf、tavily、web_search的*.py与connectors/search_contracts.py，全部排除AppleDouble。额外测试仅tests/integration/test_quote_runtime.py、test_api_runtime.py、test_scheduler_worker.py、tests/unit/test_api_runtime_config.py、tests/quotation_runtime_fixtures.py及新tests/integration/quotation_runtime_linux_cases.py、quotation_runtime_linux_support.py；前述三个短文件名均在tests/integration。Dockerfile加quotation stage，只COPY该白名单tar已有文件，不复制整工作树或所有apps，不带.env/.git/宿主凭证/挂载/端口。新固定B2入口只运行指定cases，不接受外部任意测试路径或命令；原A入口不变。复用run_chain_cases的internal PG、非root/只读/无cap与已有所有预算，pytest180s、runner240s不变，不运行pip。补tar白名单与原默认入口保护；额外import缺口需具名核实，不宽泛扩目录。环境预检/Mac降级不等于B2真实同链，最终单列实际image ID、原解析器/probe与真实factory业务链结果。
 
-- [ ] `tests/integration/test_quote_runtime.py` 从实际API factory走真实PG+T2/T3B/T4/T5/T6/T8A/B1+Gateway+T7 renderer+受控对象边界；覆盖人工单位/价格/政策/FX/coverage/scope→报价→独立审批→文件、刷新和受限原文。不能把mock业务服务称真实接线。
-- [ ] 涉及真实受限解析的完整链在T8A规定Linux runtime与同一隔离PG环境运行，沿其显式资源fixture；Mac解析失败关闭另测。SDK可受控，真实业务资料、真实S3网络与发送仍未运行。
-- [ ] Worker真实singleton两连接仅持锁者expiry；expiry故障不阻其他driver，关闭/锁丢失零越权调用；真实状态事件与T4过期规则一致。
-- [ ] 重跑全部新unit/integration及既有API/runtime/worker/上传/审批兼容目标；结构自检、原配置Ruff与本批类型检查。记录精确命令、pass/fail/skip和每层受控边界。
-- [ ] 更新相关AGENTS/ADR与最小配置说明；`infra/.env.example`只注明可选配置用途及字段要求，不填测试数字或秘密。提交 `docs: 记录报价实际接线与运行边界`，整项由控制器一次独立审查。T9再进行Vue接线，T10才计最终浏览器与全量验收。
+- [x] `tests/integration/test_quote_runtime.py` 从实际API factory走真实PG+T2/T3B/T4/T5/T6/T8A/B1+Gateway+T7 renderer+受控对象边界；覆盖人工单位/价格/政策/FX/coverage/scope→报价→独立审批→文件、刷新和受限原文。不能把mock业务服务称真实接线。
+- [x] 涉及真实受限解析的完整链在T8A规定Linux runtime与同一隔离PG环境运行，沿其显式资源fixture；Mac解析失败关闭另测。SDK可受控，真实业务资料、真实S3网络与发送仍未运行。
+- [x] Worker真实singleton两连接仅持锁者expiry；expiry故障不阻其他driver，关闭/锁丢失零越权调用；真实状态事件与T4过期规则一致。
+- [x] 重跑全部新unit/integration及既有API/runtime/worker/上传/审批兼容目标；结构自检、原配置Ruff与本批类型检查。记录精确命令、pass/fail/skip和每层受控边界。
+- [x] 更新相关AGENTS/ADR与最小配置说明；`infra/.env.example`只注明可选配置用途及字段要求，不填测试数字或秘密。提交 `docs: 记录报价实际接线与运行边界`，整项由控制器一次独立审查。T9再进行Vue接线，T10才计最终浏览器与全量验收。
 
 ## 9. 整项审查 Fix1 裁定（2026-08-29）
 

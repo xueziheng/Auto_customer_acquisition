@@ -332,7 +332,7 @@ T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-g
 
 T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
 
-当前T8B2首次整项审查发现3项Important，Fix1按子计划§9修复中：文件整组关闭、轮中singleton失锁停止、API/worker共享机械装配。已有8.1（5c4799b）、8.2（1179405c）、8.3（1b8920）、8.4（7c6c061）、中文审批展示（9de7640）；审查前1844相关unit、117隔离PG、Linux全链1项及59生产文件mypy/Ruff/结构通过，但未覆盖本次负向组合，不提前勾T8B或称全库验收。首次审查范围585cead..9b05f70，修复后只复审Fix1增量；T9/T10尚未开始。实际factory/受控链不等同真实供应商资料、生产对象网络或真实发送。
+- [x] T8B2工程交付及Fix1独立复审完成：首次审查585cead..9b05f70的三项Important（文件组、轮中失锁、重复装配）由ed819c4修复，增量至b645172全部关闭、无新问题。最终638定向unit、增强后70相关unit（重叠）、65隔离PG、当前Linux全链1项零skip及61生产文件mypy/Ruff/结构通过；完整受控来源→审批→文件→通知→expiry链已接通。T9前端/T10全量与浏览器仍待；实际factory/受控链不等同真实供应商资料、生产对象网络或真实发送，不代表整个Phase2完成。
 
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`
@@ -341,7 +341,7 @@ T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation
 **Interfaces**
 - `QuoteFileAccessService.authorize(tenant_id,quote_id,*,actor_id)->QuoteFormalFileSnapshot`（async）；读取文件用途当前context、T5真实持久facts和当前政策，委托域检查。独立`authorize_history(tenant_id,quote_id,file_id,*,actor_id)->QuoteFileView`仅核已存文件和当前机会ABAC，不返回正式授权或接受history布尔值。
 - `QuoteFilesApplication.generate(tenant_id,quote_id,*,actor_id)->QuoteFileView`；`download(tenant_id,quote_id,file_id,*,actor_id)->tuple[QuoteFileView,bytes]`，无通用URL/路径。独立`reconcile(tenant_id,quote_id,original_generation_call_id,*,actor_id)->QuoteFileRecoveryResult`仅补回已有metadata的文件关联，不关闭原generation审计。
-- 真实装配分为来源依赖、域依赖及HTTP/文件依赖三个有序阶段：来源独立Gateway先于T2 reader，quotation与context/issuer reader用一次发布的受信延迟引用解环，唯一ApprovalService带quote_access后才构造handlers/engine，最后发布run reader并构造文件Gateway/HTTP。API和worker分别本层装配，不跨apps import，不向新factory传入尚不能构造的文件Gateway形成循环；精确公共签名须按T5/T6/T8A实际交付对齐。
+- 真实装配分为来源依赖、域依赖及HTTP/文件依赖三个有序阶段：来源独立Gateway先于T2 reader，quotation与context/issuer reader用一次发布的受信延迟引用解环，唯一ApprovalService带quote_access后才构造handlers/engine，最后发布run reader并构造文件Gateway/HTTP。API和worker各保留本层root并共享apps/composition_support非进程库的机械实现，不互导进程/共享运行实例，不向新factory传入尚不能构造的文件Gateway形成循环；精确公共签名按T5/T6/T8A实际交付及B2§9对齐。
 - `QuoteExpiryDriver.scan_once()->int` 调域 `expire_overdue`；SchedulerRuntime 增加可选 `quote_expiry_driver`，为None维持旧cycle行为，不新增定时进程。
 
 - [ ] 先写HTTP DTO不接受布尔授权的失败测试：
