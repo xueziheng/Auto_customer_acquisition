@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import replace
 from datetime import datetime
 from typing import Annotated, Literal, Self
 
@@ -187,6 +188,16 @@ class NeedQuantitySourceFact(DTO):
     need_id: ValidatedNeedId
     account_id: ProspectAccountId
     quantity: FactualField[int] | None = Field(repr=False, exclude=True)
+
+    @model_validator(mode="after")
+    def _provenance_times(self) -> Self:
+        if self.quantity is not None:
+            provenance = self.quantity.provenance
+            if provenance.confirmed_by is not None:
+                fact_identity(provenance.confirmed_by)
+            normalized = replace(provenance, extracted_at=fact_utc(provenance.extracted_at), confirmed_at=fact_utc(provenance.confirmed_at) if provenance.confirmed_at is not None else None)
+            object.__setattr__(self, "quantity", replace(self.quantity, provenance=normalized))
+        return self
 
 
 class AuthorizedEvidenceReference(DTO):

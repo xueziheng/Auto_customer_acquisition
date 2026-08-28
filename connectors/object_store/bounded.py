@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
 from typing import Any
@@ -95,12 +96,21 @@ class S3BoundedObjectBlobTransport:
                     if len(content) > maximum_bytes:
                         raise BlobReadLimitExceeded()
             finally:
+                primary = sys.exc_info()[0] is not None
+                close_failed = False
                 try:
                     if body is not None:
                         body.close()
+                except Exception:  # noqa: BLE001 - 清理失败不能覆盖读取主错误
+                    close_failed = True
                 finally:
-                    if client is not None:
-                        client.close()
+                    try:
+                        if client is not None:
+                            client.close()
+                    except Exception:  # noqa: BLE001 - 仍保证两个资源均尝试关闭
+                        close_failed = True
+                if close_failed and not primary:
+                    raise TransientError("Artifact 对象存储暂不可用") from None
 
         task = asyncio.create_task(asyncio.to_thread(read))
         try:

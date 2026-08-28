@@ -152,3 +152,10 @@ def test_object_limits_require_positive_strict_integers(value):
             chunk_bytes=65536,
             maximum_attempts=1,
         )
+
+
+def test_nested_quantity_provenance_requires_aware_times():
+    from shared.schemas.provenance import FactualField, Provenance, SourceType
+    provenance = Provenance(SourceType.CONVERSATION, "msg_" + ULID, "human", datetime(2026, 8, 28))  # noqa: DTZ001 - 非法来源时间
+    with pytest.raises(ValidationError):
+        e.NeedQuantitySourceFact(tenant_id=TENANT, need_id="need_" + ULID, account_id="acc_" + ULID, quantity=FactualField(50, provenance))

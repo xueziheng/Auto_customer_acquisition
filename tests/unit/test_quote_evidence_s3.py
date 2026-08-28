@@ -150,3 +150,25 @@ async def test_cancel_waits_for_thread_then_closes(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert body.closed and client.closed and len(body.requests) == 1
+
+
+@pytest.mark.parametrize("failure_at", ["body", "client", "both"])
+async def test_limit_error_survives_close_error(monkeypatch, failure_at):
+    body = FiniteBody(b"abcdef")
+    reader, _, client, _ = case(monkeypatch, body)
+
+    def close_body():
+        body.closed = True
+        raise RuntimeError("controlled-close-failure")
+
+    def close_client():
+        client.closed = True
+        raise RuntimeError("controlled-close-failure")
+
+    if failure_at in {"body", "both"}:
+        monkeypatch.setattr(body, "close", close_body)
+    if failure_at in {"client", "both"}:
+        monkeypatch.setattr(client, "close", close_client)
+    with pytest.raises(BlobReadLimitExceeded):
+        await reader.get_bounded(KEY, maximum_bytes=4)
+    assert body.closed and client.closed
