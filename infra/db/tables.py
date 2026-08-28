@@ -2787,9 +2787,8 @@ class GeneratedArtifactRow(Base):
         ),
         CheckConstraint("size_bytes > 0", name="ck_artifacts_size"),
         CheckConstraint(
-            "kind='email_draft' AND mime_type="
-            "'application/vnd.tradeos.email-draft+json'",
-            name="ck_artifacts_kind_mime",
+            "(kind='email_draft' AND mime_type='application/vnd.tradeos.email-draft+json' AND subject_ref ~ '^enr_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':' || 'draft' AND generated_by ~ '^[a-z][a-z0-9_-]{0,63}$') OR (kind='quote_pdf' AND mime_type='application/pdf' AND subject_ref ~ '^quo_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND generated_by='quote_pdf_v1' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':quote_pdf:' || generated_by)",
+            name="ck_artifacts_binding",
         ),
         CheckConstraint(
             "object_key = 'generated/' || tenant_id || '/' || artifact_id",
@@ -2799,20 +2798,7 @@ class GeneratedArtifactRow(Base):
             "workflow_run_id ~ '^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
             name="ck_artifacts_run",
         ),
-        CheckConstraint(
-            "subject_ref ~ '^enr_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
-            name="ck_artifacts_subject",
-        ),
         CheckConstraint("sequence_number > 0", name="ck_artifacts_sequence"),
-        CheckConstraint(
-            "idempotency_key = subject_ref || ':' || sequence_number::text "
-            "|| ':' || 'draft'",
-            name="ck_artifacts_idempotency",
-        ),
-        CheckConstraint(
-            "generated_by ~ '^[a-z][a-z0-9_-]{0,63}$'",
-            name="ck_artifacts_generated_by",
-        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -2827,6 +2813,36 @@ class GeneratedArtifactRow(Base):
     sequence_number: Mapped[int] = mapped_column(Integer)
     idempotency_key: Mapped[str] = mapped_column(String(200))
     generated_by: Mapped[str] = mapped_column(String(64))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class QuotationFileRow(Base):
+    """报价文件只增metadata关联，三个hash职责不混淆。"""
+
+    __tablename__ = "quotation_files"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "file_id", name="pk_quotation_files"),
+        UniqueConstraint("tenant_id", "quote_id", "template_version", name="uq_quote_file_template"),
+        ForeignKeyConstraint(["tenant_id", "quote_id"], ["quotations.tenant_id", "quotations.quote_id"], name="fk_quote_file_quote", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["artifacts.tenant_id", "artifacts.artifact_id"], name="fk_quote_file_artifact", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "quote_id"], ["quotation_approval_receipts.tenant_id", "quotation_approval_receipts.quote_id"], name="fk_quote_file_receipt", ondelete="RESTRICT"),
+        CheckConstraint("quote_version>0 AND size_bytes>0 AND isfinite(generated_at)", name="ck_quote_file_positive"),
+        CheckConstraint("template_version='quote_pdf_v1'", name="ck_quote_file_template"),
+        CheckConstraint("quote_content_hash ~ '^[0-9a-f]{64}$' AND customer_content_hash ~ '^[0-9a-f]{64}$' AND artifact_hash ~ '^[0-9a-f]{64}$'", name="ck_quote_file_hash"),
+        CheckConstraint("tenant_id ~ '^tn_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND file_id ~ '^qfl_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND quote_id ~ '^quo_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND artifact_id ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND approval_run_id ~ '^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$'", name="ck_quote_file_ids"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    file_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    quote_version: Mapped[int] = mapped_column(Integer)
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    quote_content_hash: Mapped[str] = mapped_column(String(64))
+    customer_content_hash: Mapped[str] = mapped_column(String(64))
+    artifact_hash: Mapped[str] = mapped_column(String(64))
+    template_version: Mapped[str] = mapped_column(String(64))
+    approval_run_id: Mapped[str] = mapped_column(String(40))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

@@ -1,6 +1,24 @@
 """Artifact Store 的固定、脱敏错误。"""
 
-from shared.errors import TradeOSError
+from shared.errors import TradeOSError, TransientError
+
+
+class ArtifactCommitUnknownError(TransientError):
+    """PDF对象尝试写入后结果未知，原key可核对但不得删除candidate。"""
+
+    code = "artifact_commit_unknown"
+
+    def __init__(self) -> None:
+        super().__init__("Artifact 提交状态未知")
+
+
+class ArtifactUnavailableError(TransientError):
+    """新增PDF与安全key读取的固定依赖故障，不携带SQL或对象键。"""
+
+    code = "artifact_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__("Artifact 暂不可用")
 
 
 class ArtifactConflictError(TradeOSError):

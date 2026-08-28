@@ -118,6 +118,27 @@ def _positive_int(value: object) -> int:
     return value
 
 
+def validate_generated_key(tenant_id: TenantId, key: IdempotencyKey) -> None:
+    """只读恢复使用原稳定键，拒绝任意字符串与超范围序号。"""
+    _canonical_string(tenant_id, _TENANT_ID)
+    if not isinstance(key, str):
+        raise _invalid()
+    parts = key.split(":")
+    if len(parts) not in {3, 4} or not re.fullmatch(r"[1-9][0-9]*", parts[1]):
+        raise _invalid()
+    if len(parts[1]) > 19:
+        raise _invalid()
+    _positive_int(int(parts[1]))
+    if len(parts) == 3:
+        _safe_text(parts[0], _SUBJECT_REF)
+        if parts[2] != "draft":
+            raise _invalid()
+    else:
+        _safe_text(parts[0], _QUOTE_REF)
+        if parts[2] != "quote_pdf" or parts[3] not in QUOTE_PDF_TEMPLATE_VERSIONS:
+            raise _invalid()
+
+
 def _utc_datetime(value: object) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is not UTC:
         raise _invalid()
@@ -270,3 +291,9 @@ class GeneratedArtifactStore(Protocol):
     async def get_meta(
         self, tenant_id: TenantId, artifact_id: ArtifactId
     ) -> GeneratedArtifactMeta: ...
+
+    async def get_meta_by_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> GeneratedArtifactMeta | None:
+        """原键只读恢复metadata；不存在不证明写入未执行，不读取bytes。"""
+        ...

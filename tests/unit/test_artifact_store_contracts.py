@@ -323,6 +323,12 @@ class _RawStore:
 
 
 class _GeneratedStore:
+    async def get_meta_by_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> GeneratedArtifactMeta | None:
+        del tenant_id, idempotency_key
+        return _generated_meta()
+
     async def put(
         self,
         tenant_id: TenantId,

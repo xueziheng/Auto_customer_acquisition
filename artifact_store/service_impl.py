@@ -9,9 +9,11 @@ from collections.abc import Callable
 from datetime import datetime
 
 from artifact_store.errors import (
+    ArtifactCommitUnknownError,
     ArtifactConflictError,
     ArtifactIntegrityError,
     ArtifactNotFoundError,
+    ArtifactUnavailableError,
 )
 from artifact_store.repository import (
     ArtifactInsertStatus,
@@ -24,6 +26,7 @@ from artifact_store.store import (
     GeneratedArtifactMeta,
     RawArtifactKind,
     RawArtifactMeta,
+    validate_generated_key,
 )
 from artifact_store.transport import BlobObjectNotFoundError, ObjectBlobTransport
 from shared.errors import TransientError, ValidationError
@@ -293,6 +296,12 @@ class GeneratedArtifactStoreImpl:
                 await self._transport.put(candidate.object_key, value)
                 result = await uow.generated.insert_if_absent(candidate)
         except BaseException as primary:
+            if kind is GeneratedArtifactKind.QUOTE_PDF:
+                if isinstance(primary, (asyncio.CancelledError, ArtifactConflictError)):
+                    raise
+                if put_attempted:
+                    raise ArtifactCommitUnknownError() from None
+                raise ArtifactUnavailableError() from None
             if put_attempted:
                 await _cleanup_object(
                     self._transport, candidate.object_key, primary=primary
@@ -300,9 +309,14 @@ class GeneratedArtifactStoreImpl:
             raise
         assert result is not None
         if result.status is ArtifactInsertStatus.EXISTING:
-            await _cleanup_object(
-                self._transport, candidate.object_key, primary=None
-            )
+            try:
+                await _cleanup_object(
+                    self._transport, candidate.object_key, primary=None
+                )
+            except Exception:
+                if kind is GeneratedArtifactKind.QUOTE_PDF:
+                    raise ArtifactUnavailableError() from None
+                raise
             if not _generated_matches(result.winner.meta, meta):
                 raise ArtifactConflictError()
         return result.winner.meta
@@ -328,6 +342,20 @@ class GeneratedArtifactStoreImpl:
         self, tenant_id: TenantId, artifact_id: ArtifactId
     ) -> GeneratedArtifactMeta:
         return (await self._get_record(tenant_id, artifact_id)).meta
+
+    async def get_meta_by_key(
+        self, tenant_id: TenantId, idempotency_key: IdempotencyKey
+    ) -> GeneratedArtifactMeta | None:
+        """仅读安全metadata，失败不重试、不触碰对象、不把暂未找到当未提交。"""
+        validate_generated_key(tenant_id, idempotency_key)
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                record = await uow.generated.get_by_idempotency_key(
+                    tenant_id, idempotency_key
+                )
+            return None if record is None else record.meta
+        except Exception:  # noqa: BLE001 -- 恢复读取失败必须固定脱敏
+            raise ArtifactUnavailableError() from None
 
     async def _get_record(
         self, tenant_id: TenantId, artifact_id: ArtifactId
