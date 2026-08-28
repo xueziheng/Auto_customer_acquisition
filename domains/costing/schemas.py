@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from shared.schemas.money import FxRate, Money
+from shared.schemas.money import CurrencyCode, FxRate, Money
 from shared.schemas.provenance import Provenance
 
 
@@ -251,7 +251,7 @@ class RoundingPolicy(BaseModel):
         ):
             raise ValueError("报价舍入精度必须是 0 到 12 的整数")
         try:
-            Money(Decimal(0), "USD").round_to(self.unit_places, self.strategy)
+            Money(Decimal(0), CurrencyCode("USD")).round_to(self.unit_places, self.strategy)
         except Exception as exc:
             raise ValueError("报价舍入策略无效") from exc
         return self

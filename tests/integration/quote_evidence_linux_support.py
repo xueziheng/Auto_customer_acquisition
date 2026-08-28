@@ -25,10 +25,13 @@ TARGET_MANIFEST = (
 
 
 def build_parser_image(
-    base_image: str | None = None, *, chain: bool = False, quotation: bool = False
+    base_image: str | None = None, *, chain: bool = False, quotation: bool = False,
+    costing_quote: bool = False,
 ) -> str:
     """显式构建入口，只在获准构建阶段联网获取已列依赖。"""
     root = Path(__file__).resolve().parents[2]
+    if costing_quote and (not quotation or not chain or base_image is None):
+        raise ValueError("T10必须显式复用quotation/chain和已验收image")
     if quotation and (not chain or base_image is None):
         raise ValueError("报价同链必须显式复用chain和已验收image")
     paths = [
@@ -79,7 +82,7 @@ def build_parser_image(
             "tests/integration/conftest.py",
             "tests/integration/quote_evidence_linux_support.py",
             "tests/integration/test_quote_evidence_gateway.py",
-            "tests/integration/test_quote_source_readers.py",
+            "tests/integration/quote_source_readers_linux_cases.py",
             "tests/integration/test_need_units.py",
             "tests/unit/test_quote_evidence_contracts.py",
             "tests/unit/test_quote_evidence_access.py",
@@ -122,6 +125,14 @@ def build_parser_image(
             "tests/integration/quotation_runtime_linux_support.py",
         ):
             paths.append(root / name)
+    if costing_quote:
+        for name in (
+            "tests/integration/costing_quote_case.py",
+            "tests/integration/test_costing_quote_closed_loop.py",
+            "tests/e2e/costing_quote_server.py",
+            "tests/e2e/costing_quote_relay.py",
+        ):
+            paths.append(root / name)
     paths.append(root / "tests/fixtures/quote_evidence/linux/Dockerfile")
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
@@ -134,11 +145,13 @@ def build_parser_image(
                 archive.addfile(entry, source)
     buffer.seek(0)
     client = docker.from_env()
+    phase = "base_lookup"
     try:
         if base_image is not None:
             if not base_image.startswith("sha256:") or len(base_image) != 71:
                 raise ValueError("测试基础产物必须为精确image ID")
             client.images.get(base_image)
+        phase = "docker_build"
         image, logs = client.images.build(
             fileobj=buffer,
             custom_context=True,
@@ -147,7 +160,9 @@ def build_parser_image(
                 "PYTHON_IMAGE": PYTHON_IMAGE,
                 "TEST_BASE_IMAGE": base_image or PYTHON_IMAGE,
             },
-            target="quotation"
+            target="costing_quote"
+            if costing_quote
+            else "quotation"
             if quotation
             else "chain"
             if chain
@@ -160,7 +175,14 @@ def build_parser_image(
         # 构建日志可能包含下载环境；只返回固定image ID，不打印任意底层日志。
         del logs
         return image.id
-    except Exception:  # noqa: BLE001 - 构建环境错误仅固定消息
+    except Exception as error:  # noqa: BLE001 - 构建环境错误仅固定消息
+        if costing_quote:
+            print("t10_build_failure_phase=" + phase)
+            category = type(error).__name__
+            if category not in {"BuildError", "APIError", "DockerException", "ImageNotFound",
+                                "NotFound", "ConnectionError", "ReadTimeout", "Timeout"}:
+                category = "unknown"
+            print("t10_build_failure_type=" + category)
         raise RuntimeError("来源测试镜像构建失败（不输出构建环境）") from None
     finally:
         client.close()
@@ -290,6 +312,7 @@ def run_chain_cases() -> tuple[int, str]:
         runner.with_env("TEST_DATABASE_URL", connection).with_env(
             "PYTHON_DOTENV_DISABLED", "1"
         )
+        runner.with_command(["python", "-m", "tests.integration.quote_evidence_linux_support"])
         runner.start()
         wrapped = runner.get_wrapped_container()
         wrapped.reload()
@@ -378,10 +401,11 @@ def _chain_main() -> int:
             "-c",
             str(root / "pyproject.toml"),
             "tests/unit/test_quote_source_readers.py",
-            "tests/integration/test_quote_source_readers.py",
+            "tests/integration/quote_source_readers_linux_cases.py",
             "tests/unit/test_need_units.py",
             "tests/integration/test_need_units.py",
             "-q",
+            "-rA",
             "--tb=short",
             "-p",
             "no:cacheprovider",
@@ -394,7 +418,17 @@ def _chain_main() -> int:
     )
     # 不转发可能带原件/连接的任意traceback，只输出测试身份及计数。
     for line in result.stdout.decode("utf-8", errors="replace").splitlines():
-        if line.startswith(("FAILED tests/", "ERROR tests/")):
+        if match := re.fullmatch(
+            r"PASSED tests/integration/quote_source_readers_linux_cases\.py::"
+            r"(test_actual_parser_prices_and_unit_receipt_history|"
+            r"test_clipped_source_is_rejected_by_real_linux_need_confirmation)"
+            r"(?:\[.*\])?", line,
+        ):
+            print("source_linux_case_passed=" + {
+                "test_actual_parser_prices_and_unit_receipt_history": "prices_and_unit_history",
+                "test_clipped_source_is_rejected_by_real_linux_need_confirmation": "clipped_source_rejected",
+            }[match[1]])
+        elif line.startswith(("FAILED tests/", "ERROR tests/")):
             print(line.split(" - ", 1)[0])
         elif re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line):
             print(line)

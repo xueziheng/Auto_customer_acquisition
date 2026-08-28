@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 from sqlalchemy import case, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,9 +16,11 @@ from domains.costing.quote_repository import EvidenceRecord
 from domains.costing.quote_service import provenance_fields, view_content_hash
 from domains.costing.schemas import (
     CostCoverageView,
+    ExpenseEvidenceView,
     PriceEvidenceView,
     PricingPolicyView,
     QuoteFxView,
+    SupplierPriceEvidenceView,
 )
 from infra.db.repositories.costing import _TenantBoundRepository
 from infra.db.tables import (
@@ -45,7 +47,13 @@ class CostingOpportunityReferenceReaderImpl(_TenantBoundRepository):
         return (await self._session.execute(statement)).scalar_one()
 
 
-class _EvidenceRepository[T: BaseModel](_TenantBoundRepository):
+type _ConfirmedEvidence = (
+    PricingPolicyView | SupplierPriceEvidenceView | ExpenseEvidenceView
+    | CostCoverageView | QuoteFxView
+)
+
+
+class _EvidenceRepository[T: _ConfirmedEvidence](_TenantBoundRepository):
     """SQL 只负责隔离和持久化；金额及适用性由域服务判定。"""
 
     row_type: Any

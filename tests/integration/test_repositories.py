@@ -13,7 +13,7 @@
 
 强化验收（监督复核要求 + S2-5）：
 - 同 (tenant_id, need_id) 真正并发：两个独立会话 gather，恰好一个 commit 成功。
-- ORM metadata 与 head(0002+0003) 逐表一致：十表列集合、11 索引名+列序、关键 unique/check/FK 名。
+- ORM metadata 与显式迁移快照一致：既有表列集合、全量索引名+列序、关键 unique/check/FK 名。
 - 方法 tenant_id 与绑定租户不一致：读/list/latest/backtest 返回空、条件更新 False；
   add/update 对象租户与绑定租户不一致 → ValueError（硬边界 8 写侧）。
 - 快照 add 要求 bound == method tenant == snapshot.tenant，否则 ValueError。
@@ -672,6 +672,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "expires_at", "state", "proposed_by_run", "proposed_by_employee",
             "evidence_refs", "change_set_ref", "owner_employee", "decided_at",
             "decided_by", "decision_note", "applied_at", "apply_error",
+            "contract_namespace", "request_hash", "expires_at_limit",
         },
         "approval_applications": {
             "tenant_id", "approval_id", "idempotency_key", "created_at",
@@ -862,6 +863,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "application", "material", "size_spec", "quantity", "packaging",
             "destination", "required_by", "target_price", "current_supply_issue",
             "certification_required", "confirmed_by", "cluster_id",
+            "unit", "unit_quantity_fact_hash", "unit_confirmation_id",
         },
         "prospect_accounts": {
             "tenant_id", "account_id", "name", "country", "website_domain",
@@ -955,6 +957,14 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        # 对照0043–0045迁移冻结预期，不从被测metadata生成。
+        "ix_costing_coverage_sheet_hash": (
+            "tenant_id", "cost_sheet_id", "sheet_hash", "confirmed_at", "coverage_id",
+        ),
+        "ix_quote_creation_operations_sheet": ("tenant_id", "cost_sheet_id"),
+        "uq_quote_creation_operations_pending": ("tenant_id", "cost_sheet_id"),
+        "uq_quotations_active": ("tenant_id", "opportunity_id"),
+        "uq_approval_quote_change_set": ("tenant_id", "change_set_ref"),
         "ix_costing_policies_effective": ("tenant_id", "category", "effective_from"),
         "ix_approval_packages_tenant_state_expiry": (
             "tenant_id", "state", "expires_at", "approval_id",
@@ -1089,6 +1099,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "ck_approval_packages_jsonb", "ck_approval_packages_core_nonblank",
             "ck_approval_packages_expiry", "ck_approval_packages_decision",
             "ck_approval_packages_application",
+            "ck_approval_quote_contract",
         },
         "approval_applications": {
             "pk_approval_applications", "uq_approval_applications_key",
@@ -1243,9 +1254,8 @@ def test_orm_metadata_parity_with_head() -> None:
         "artifacts": {
             "pk_artifacts", "uq_artifacts_tenant_key", "ck_artifacts_tenant",
             "ck_artifacts_id", "ck_artifacts_hash", "ck_artifacts_size",
-            "ck_artifacts_kind_mime", "ck_artifacts_object_key",
-            "ck_artifacts_run", "ck_artifacts_subject", "ck_artifacts_sequence",
-            "ck_artifacts_idempotency", "ck_artifacts_generated_by",
+            "ck_artifacts_binding", "ck_artifacts_object_key",
+            "ck_artifacts_run", "ck_artifacts_sequence",
         },
         "notification_jobs": {
             "pk_notification_jobs", "uq_notification_jobs_source_recipient_kind",
@@ -1264,7 +1274,11 @@ def test_orm_metadata_parity_with_head() -> None:
             "pk_need_cluster_members", "fk_need_cluster_members_cluster",
             "fk_need_cluster_members_need",
         },
-        "validated_needs": {"fk_validated_needs_cluster"},
+        "validated_needs": {
+            "fk_validated_needs_cluster", "ck_validated_needs_unit_binding",
+            "ck_validated_needs_unit_jsonb", "ck_validated_needs_unit_hash",
+            "fk_validated_needs_unit_confirmation",
+        },
         "prospect_accounts": {
             "pk_prospect_accounts", "ck_prospect_accounts_core_nonblank",
             "ck_prospect_accounts_optional_nonblank",

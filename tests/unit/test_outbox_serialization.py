@@ -35,6 +35,7 @@ from shared.events.catalog import (
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
+    QuoteApproved,
     ReputationThresholdBreached,
     SendingIdentityActivated,
     SendingIdentitySuspended,
@@ -49,6 +50,7 @@ from shared.schemas.identifiers import (
     HandoffId,
     MessageId,
     OpportunityId,
+    QuoteId,
     RunId,
     SendingIdentityId,
     TenantId,
@@ -80,6 +82,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
     EVENT_REGISTRY = _load("EVENT_REGISTRY")
     assert set(EVENT_REGISTRY) == {
         "ApprovalDecided",
+        "QuoteApproved",
         "OpportunityQualified",
         "OpportunityLost",
         "OpportunityWon",
@@ -108,6 +111,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedValidated",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
+    assert EVENT_REGISTRY["QuoteApproved"] is QuoteApproved
     assert EVENT_REGISTRY["MessageSent"] is MessageSent
     assert EVENT_REGISTRY["SuppressionAdded"] is SuppressionAdded
     assert EVENT_REGISTRY["ContactPointVerified"] is ContactPointVerified
@@ -119,6 +123,20 @@ def test_event_registry_is_explicit_whitelist() -> None:
     )
     assert event_type is not None, "RED：AuthenticationCheckRequested 尚未创建"
     assert EVENT_REGISTRY["AuthenticationCheckRequested"] is event_type
+
+
+def test_quote_approved_roundtrip_contains_only_safe_ids() -> None:
+    """审批成功事件只传租户/报价/审批人/运行标识，不携带价格或原文。"""
+    event = QuoteApproved(
+        tenant_id=TenantId(new_id("tn")), occurred_at=_NOW,
+        run_id=RunId(new_id("run")), quote_id=QuoteId(new_id("quo")),
+        approved_by=EmployeeId(new_id("emp")),
+    )
+    payload = _load("serialize")(event)
+    assert set(payload) == {
+        "tenant_id", "occurred_at", "run_id", "quote_id", "approved_by",
+    }
+    assert _load("deserialize")(QuoteApproved, payload) == event
 
 
 def test_authentication_check_requested_roundtrip_contains_only_safe_ids() -> None:

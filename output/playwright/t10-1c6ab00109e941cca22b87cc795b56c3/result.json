@@ -1,0 +1,38 @@
+{
+  "tenant": "tn_01M156N7V4M7VGRSM3PXJP5J5T",
+  "opportunity": "opp_01M156NE1RSXTDG2YFZ76ZT21D",
+  "need": "need_01M156NE02DJQ10N5NTC196ARC",
+  "source": "upload:upl_01M156NE23DNQH5R3PM95BE12E",
+  "message": "msg_01M156NDZMJC5A2BSJ262A8TBC",
+  "policy_source": "upload:upl_01M156NE250S9VZE23YCCX8ZF5",
+  "actor": "emp_00000000000000000000000002",
+  "boss": "emp_00000000000000000000000001",
+  "decider": "emp_00000000000000000000000003",
+  "statement": "Quoted unit price: USD 2.00 for 50 pieces.",
+  "now": "2026-08-29T08:00:00+00:00",
+  "origins": {
+    "boss": "http://127.0.0.1:49188",
+    "actor": "http://127.0.0.1:49189",
+    "decider": "http://127.0.0.1:49190"
+  },
+  "api_origin": "http://127.0.0.1:49302",
+  "quote_id": "quo_01M156NT1Y3Y0KJCBY1Y48P86D",
+  "older_quote_id": "quo_01M156NQ9R565QFPD1G550XCPW",
+  "quote_url": "http://127.0.0.1:49188/costing-quotes/quotes/quo_01M156NT1Y3Y0KJCBY1Y48P86D",
+  "file": {
+    "file_id": "qfl_01M156NZ8T6GHXBVQBAV747YVX",
+    "quote_id": "quo_01M156NT1Y3Y0KJCBY1Y48P86D",
+    "quote_version": 2,
+    "artifact_id": "art_01M156NZ5J0CZ43M78TG5T8FFC",
+    "content_hash": "24ac8ffa80fb8340b6b68dfcba9c036543f20a599b854fc1a7e5079e22da7ef2",
+    "quote_content_hash": "c1a0419a39da75142f50952335d03543f0874dabdc9e40d00f428584db60f340",
+    "customer_content_hash": "ca6ad09e699ce6b58d79b9d810f585b83ba5ef4b60c761c648159145d496aaed",
+    "template_version": "quote_pdf_v1",
+    "size_bytes": 42047,
+    "generated_at": "2026-08-29T08:00:00Z"
+  },
+  "pdf_pages": 1,
+  "pdf_metadata": "{'/Author': '(anonymous)', '/CreationDate': \"D:20000101000000+00'00'\", '/Creator': '(unspecified)', '/Keywords': '', '/ModDate': \"D:20000101000000+00'00'\", '/Producer': 'ReportLab PDF Library - (opensource)', '/Subject': '(unspecified)', '/Title': '(anonymous)', '/Trapped': '/False'}",
+  "pdf_sha256": "24ac8ffa80fb8340b6b68dfcba9c036543f20a599b854fc1a7e5079e22da7ef2",
+  "image": "sha256:80727840105266cdf3236a1b6a31cdbd9a6f062d7c9ecc99748f91a7699dc189"
+}

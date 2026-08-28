@@ -8,4 +8,7 @@ def test_real_linux_gateway_and_domain_services():
     assert status == 0, summary
     assert "skipped" not in summary
     assert "passed" in summary
+    lines = summary.splitlines()
+    assert lines.count("source_linux_case_passed=prices_and_unit_history") == 1
+    assert lines.count("source_linux_case_passed=clipped_source_rejected") == 2
     print(summary)

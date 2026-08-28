@@ -36,7 +36,10 @@ async function readPreview(): Promise<void> {
 }
 function selectText(event: Event): void {
   const element = event.target; if (!(element instanceof HTMLTextAreaElement) || !preview.value) return;
-  try { selection.value = utf16SelectionToCodepoints(preview.value.text, element.selectionStart, element.selectionEnd); }
+  try {
+    const next = utf16SelectionToCodepoints(preview.value.text, element.selectionStart, element.selectionEnd);
+    if (selection.value?.[0] !== next[0] || selection.value?.[1] !== next[1]) selection.value = next;
+  }
   catch { selection.value = null; locator.value = null; rawError.value = "请选择完整的原文字符"; }
 }
 async function locate(): Promise<void> {

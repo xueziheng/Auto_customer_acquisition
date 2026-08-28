@@ -507,7 +507,12 @@ async def test_account_reservation_commit_failure_never_dispatches(quota, monkey
     assert (await rebuilt.run_state(run)).stop_reason == "request_uncertain"
 
 
-async def test_0039_roundtrip_schema_matches_orm(db_url):
+async def test_0039_roundtrip_schema_matches_orm(db_url, tmp_path):
+    from pathlib import Path
+    from shutil import copytree
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
     from sqlalchemy import (
         CheckConstraint,
         ForeignKeyConstraint,
@@ -519,6 +524,18 @@ async def test_0039_roundtrip_schema_matches_orm(db_url):
     from infra.db.tables import Base
     from tests.integration.test_migrations import _run_alembic
 
+    clean_scripts = tmp_path / "migrations"
+    copytree(
+        Path(__file__).resolve().parents[2] / "migrations", clean_scripts,
+        ignore=lambda _directory, names: [
+            name for name in names if name.startswith("._") or name == "__pycache__"
+        ],
+    )
+    config = Config()
+    config.set_main_option("script_location", str(clean_scripts))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1
+    current_head = heads[0]
     tables = ("search_quota_accounts", "search_quota_reservations", "search_quota_runs")
     engine = create_engine_from(db_url)
 
@@ -551,6 +568,10 @@ async def test_0039_roundtrip_schema_matches_orm(db_url):
 
     try:
         async with engine.connect() as conn:
+            assert (
+                await conn.scalar(text("SELECT version_num FROM alembic_version"))
+                == current_head
+            )
             await conn.run_sync(contract)
         _run_alembic(db_url, "downgrade", "0038")
         async with engine.connect() as conn:
@@ -561,7 +582,7 @@ async def test_0039_roundtrip_schema_matches_orm(db_url):
             await conn.run_sync(contract)
             assert (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0040"
+                == current_head
             )
     finally:
         _run_alembic(db_url, "upgrade", "head")

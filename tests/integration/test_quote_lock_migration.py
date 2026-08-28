@@ -2,8 +2,9 @@
 
 from sqlalchemy import inspect
 
-from tests.integration.test_need_units import migrate
-from tests.integration.test_need_units import unit_engine as unit_engine
+from tests.integration.test_need_units import migrate, unit_engine
+
+__all__ = ["unit_engine"]
 
 
 async def test_empty_quote_lock_migration_roundtrip(unit_engine) -> None:

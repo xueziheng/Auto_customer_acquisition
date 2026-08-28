@@ -525,7 +525,25 @@ def test_need_field_vocabulary_matches_demand_factual_contract() -> None:
             factual.add(name)
     from agent_runtime.qualification_agent.agent import NEED_FIELD_NAMES
 
-    assert NEED_FIELD_NAMES == frozenset(factual)
+    assert "unit" in factual
+    assert "unit" not in NEED_FIELD_NAMES
+    assert NEED_FIELD_NAMES == frozenset(factual - {"unit"})
+
+
+async def test_model_unit_candidate_cannot_enter_need_changeset() -> None:
+    """人工报价单位是事实字段，但即使逐字出现也不授权模型确认单位。"""
+    message = {
+        "message_id": "msg_unit_boundary", "subject": "Specification",
+        "body": "We need 100 pieces.",
+    }
+    agent = _agent(_FakePort([json.dumps({
+        "category": "provides_specification",
+        "candidate_fields": [{"field": "unit", "value": "pieces", "quote": "pieces"}],
+    })]))
+    result = await agent.classify(message=message)
+    assert result.candidate_fields == ()
+    changeset = await agent.run(_task(message), None)
+    assert all(change.get("operation") != "update_need_fields" for change in changeset.changes)
 
 
 def test_agent_module_imports_only_allowed_layers() -> None:

@@ -368,7 +368,7 @@ class CostingFreezeRepositoryImpl(_TenantBoundRepository):
         require_basis_integrity(basis)
         require_operation_integrity(operation)
         self._binding(operation, basis)
-        fields = (
+        basis_fields = (
             "tenant_id",
             "basis_id",
             "operation_id",
@@ -384,12 +384,12 @@ class CostingFreezeRepositoryImpl(_TenantBoundRepository):
         )
         await self._session.execute(
             insert(CostingQuoteBasisRow).values(
-                **{name: getattr(basis, name) for name in fields},
+                **{name: getattr(basis, name) for name in basis_fields},
                 scope_confirmation_id=basis.scope_confirmation.confirmation_id,
                 payload=basis.model_dump(mode="json"),
             )
         )
-        fields = (
+        operation_fields = (
             "tenant_id",
             "operation_id",
             "idempotency_key",
@@ -401,7 +401,7 @@ class CostingFreezeRepositoryImpl(_TenantBoundRepository):
         )
         await self._session.execute(
             insert(QuoteCreationOperationRow).values(
-                **{name: getattr(operation, name) for name in fields},
+                **{name: getattr(operation, name) for name in operation_fields},
                 cost_sheet_id=operation.intent.cost_sheet_id,
                 intent=operation.intent.model_dump(mode="json"),
                 completion=None,

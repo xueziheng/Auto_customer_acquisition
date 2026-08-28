@@ -28,6 +28,9 @@ COPY notification_gateway ./notification_gateway
 USER 65534:65534
 CMD ["python", "-m", "tests.integration.quotation_runtime_linux_support"]
 
+FROM quotation AS costing_quote
+CMD ["python", "-m", "tests.e2e.costing_quote_server", "--mode", "integration"]
+
 FROM ${TEST_BASE_IMAGE} AS refreshed
 USER 0:0
 COPY pyproject.toml /opt/tradeos/pyproject.toml

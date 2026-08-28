@@ -15,6 +15,7 @@ it("keeps precise money text without Number coercion", () => {
 
 const opp = "opp_01M0PWRX23T9DP9ENM9PW5GFC8";
 const need = "need_01M0PWRX23T9DP9ENM9PW5GFC8";
+const messageId = "msg_01M0PWRX23T9DP9ENM9PW5GFC8";
 const sheetId = "cost_01M0PWSK0GJTR12HTQC29BSDBG";
 const provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"] = {
   source_type: "employee_input", source_id: "source-1", extracted_by: "human", extracted_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", confirmed_at: "2026-08-28T00:00:00Z",
@@ -245,6 +246,69 @@ it("uses backend preview hashes and codepoint coordinates, then discards locator
   expect(root.textContent).not.toContain("server-locator");
   const submit = [...root.querySelectorAll("button")].find((item) => item.textContent?.includes("确认价格依据"));
   expect(submit?.disabled).toBe(true);
+});
+
+it.each(["price", "unit"] as const)("does not abort a pending %s locator for repeated native events of the same selection", async (kind) => {
+  const pending = deferred(); let locatorRequest: Request | null = null;
+  const preview = { artifact_id: "artifact", page: kind === "price" ? 1 : null, profile: kind === "price" ? "pdf-text-v1" : "rfc822-plain-v1", raw_hash: "raw-hash", scope: kind === "price" ? { purpose: "pricing" } : { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: kind === "price" ? "source-a" : `message:${messageId}`, text: "100 pieces", text_hash: "text-hash" };
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error();
+    const path = new URL(input.url).pathname;
+    if (path.endsWith("/evidence/preview")) return json(preview);
+    if (path.endsWith("/evidence/locator")) { locatorRequest = input; return pending.promise; }
+    return basic(input);
+  });
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector(`[name="${kind}-source"]`)).not.toBeNull());
+  field(root, `${kind}-source`, kind === "price" ? "source-a" : messageId);
+  if (kind === "price") field(root, "price-page", "1");
+  await nextTick(); click(root, kind === "price" ? "预览价格原文" : "预览客户消息");
+  await eventually(() => expect(root.querySelector(`[name="${kind}-preview"]`)).not.toBeNull());
+  const area = root.querySelector<HTMLTextAreaElement>(`[name="${kind}-preview"]`)!;
+  area.setSelectionRange(0, 3); area.dispatchEvent(new Event("select")); await nextTick();
+  click(root, kind === "price" ? "定位价格选区" : "定位客户单位原话");
+  await eventually(() => expect(locatorRequest).not.toBeNull());
+  for (const event of ["select", "keyup", "mouseup"]) area.dispatchEvent(new Event(event));
+  await nextTick();
+  expect(locatorRequest!.signal.aborted).toBe(false);
+  pending.resolve(json({ ...preview, start: 0, end: 3, excerpt: "100", excerpt_hash: "excerpt", locator: "repeat-locator" }));
+  await eventually(() => expect(root.textContent).toContain("repeat-locator"));
+  for (const event of ["select", "keyup", "mouseup"]) area.dispatchEvent(new Event(event));
+  await nextTick();
+  expect(root.textContent).toContain("repeat-locator");
+  area.setSelectionRange(0, 4); area.dispatchEvent(new Event("select")); await nextTick();
+  expect(root.textContent).not.toContain("repeat-locator");
+});
+
+it.each([
+  ["price", "selection"], ["price", "source"], ["price", "identity"],
+  ["unit", "selection"], ["unit", "source"], ["unit", "identity"],
+] as const)("still discards a late %s locator after a real %s change", async (kind, change) => {
+  const pending = deferred(); let request: Request | null = null;
+  const preview = { artifact_id: "artifact", page: kind === "price" ? 1 : null, profile: kind === "price" ? "pdf-text-v1" : "rfc822-plain-v1", raw_hash: "raw", scope: kind === "price" ? { purpose: "pricing" } : { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: kind === "price" ? "source-a" : `message:${messageId}`, text: "100 pieces", text_hash: "text" };
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error();
+    const path = new URL(input.url).pathname;
+    if (path.endsWith("/evidence/preview")) return json(preview);
+    if (path.endsWith("/evidence/locator")) { request = input; return pending.promise; }
+    return basic(input);
+  });
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector(`[name="${kind}-source"]`)).not.toBeNull());
+  field(root, `${kind}-source`, kind === "price" ? "source-a" : messageId); if (kind === "price") field(root, "price-page", "1");
+  await nextTick(); click(root, kind === "price" ? "预览价格原文" : "预览客户消息");
+  await eventually(() => expect(root.querySelector(`[name="${kind}-preview"]`)).not.toBeNull());
+  const area = root.querySelector<HTMLTextAreaElement>(`[name="${kind}-preview"]`)!;
+  area.setSelectionRange(0, 3); area.dispatchEvent(new Event("select")); await nextTick();
+  click(root, kind === "price" ? "定位价格选区" : "定位客户单位原话");
+  await eventually(() => expect(request).not.toBeNull());
+  if (change === "selection") { area.setSelectionRange(0, 4); area.dispatchEvent(new Event("select")); }
+  else if (change === "source") field(root, `${kind}-source`, "source-b");
+  else configureAuthenticatedIdentity("tenant-a", "employee-b");
+  await nextTick(); expect(request!.signal.aborted).toBe(true);
+  pending.resolve(json({ ...preview, start: 0, end: 3, excerpt: "100", excerpt_hash: "excerpt", locator: "late-locator-must-not-show" }));
+  await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(root.textContent).not.toContain("late-locator-must-not-show");
 });
 
 it("shows the full scope and requires explicit coverage classification instead of treating zero as missing", async () => {
@@ -495,23 +559,52 @@ it.each(["create", "revision"] as const)("invalidates pending quote %s on a same
 });
 
 it("sends the selected customer quote verbatim with the current quantity CAS instead of inventing unit evidence", async () => {
-  const bodies: unknown[] = [];
-  const preview = { artifact_id: "artifact", page: null, profile: "rfc822-plain-v1", raw_hash: "raw", scope: { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: "message-1", text: "100 pieces", text_hash: "text" };
+  const bodies: unknown[] = []; const previews: unknown[] = [];
+  const preview = { artifact_id: "artifact", page: null, profile: "rfc822-plain-v1", raw_hash: "raw", scope: { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: `message:${messageId}`, text: "100 pieces", text_hash: "text" };
   const root = await mount(async (input) => {
     if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
-    if (path.endsWith("/evidence/preview")) return json(preview);
+    if (path.endsWith("/evidence/preview")) { previews.push(await input.json()); return json(preview); }
     if (path.endsWith("/evidence/locator")) return json({ ...preview, start: 0, end: 10, excerpt: "100 pieces", excerpt_hash: "excerpt", locator: "server-unit-locator" });
     if (path.endsWith("/unit-confirmations")) { bodies.push(await input.json()); return json({ artifact_id: "artifact", confirmation_id: "unit-confirmed", confirmed_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", content_hash: "unit-hash", need_id: need, observed_at: "2026-08-28T00:00:00Z", quantity_fact_hash: "quantity-hash", source_message_id: "message-1", unit: "piece", unit_origin: provenance }); }
     return basic(input);
   });
   field(root, "opportunity-id", opp); click(root, "读取成本版本");
   await eventually(() => expect(root.querySelector('[name="unit-source"]')).not.toBeNull());
-  field(root, "unit-source", "message-1"); field(root, "unit-value", "piece"); await nextTick(); click(root, "预览客户消息");
+  field(root, "unit-source", messageId); field(root, "unit-value", "piece"); await nextTick(); click(root, "预览客户消息");
   await eventually(() => expect(root.querySelector('[name="unit-preview"]')).not.toBeNull());
   const area = root.querySelector<HTMLTextAreaElement>('[name="unit-preview"]')!; area.setSelectionRange(0, 10); area.dispatchEvent(new Event("select")); await nextTick(); click(root, "定位客户单位原话");
   await eventually(() => expect(root.textContent).toContain("server-unit-locator")); click(root, "确认客户单位");
   await eventually(() => expect(root.textContent).toContain("unit-confirmed"));
-  expect(bodies).toEqual([{ expected_quantity_fact_hash: "quantity-hash", expected_unit_confirmation_id: null, locator: "server-unit-locator", source_message_id: "message-1", source_quote: "100 pieces", unit: "piece" }]);
+  expect(previews).toEqual([expect.objectContaining({ source_ref: `message:${messageId}` })]);
+  expect(bodies).toEqual([{ expected_quantity_fact_hash: "quantity-hash", expected_unit_confirmation_id: null, locator: "server-unit-locator", source_message_id: messageId, source_quote: "100 pieces", unit: "piece" }]);
+});
+
+it.each([`upload:${messageId}`, `message:${messageId}`, `message:message:${messageId}`])("rejects non-bare customer message input %s before preview", async (source) => {
+  let previews = 0;
+  const root = await mount(async (input) => { if (!(input instanceof Request)) throw new Error(); if (new URL(input.url).pathname.endsWith("/evidence/preview")) previews += 1; return basic(input); });
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector('[name="unit-source"]')).not.toBeNull());
+  field(root, "unit-source", source); await nextTick(); click(root, "预览客户消息"); await nextTick();
+  expect(previews).toBe(0); expect(root.textContent).toContain("请输入裸客户消息 ID");
+});
+
+it.each([`upload:${messageId}`, `message:message:${messageId}`, "message:msg_01M0PWRX23T9DP9ENM9PW5GFC9"])("rejects mismatched customer locator %s instead of confirming it", async (wrongSource) => {
+  const preview = { artifact_id: "artifact", page: null, profile: "rfc822-plain-v1", raw_hash: "raw", scope: { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: `message:${messageId}`, text: "100 pieces", text_hash: "text" };
+  let confirmed = 0;
+  const root = await mount(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path.endsWith("/evidence/preview")) return json(preview);
+    if (path.endsWith("/evidence/locator")) return json({ ...preview, source_ref: wrongSource, start: 0, end: 10, excerpt: "100 pieces", excerpt_hash: "excerpt", locator: "wrong-source-locator" });
+    if (path.endsWith("/unit-confirmations")) confirmed += 1;
+    return basic(input);
+  });
+  field(root, "opportunity-id", opp); click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelector('[name="unit-source"]')).not.toBeNull());
+  field(root, "unit-source", messageId); field(root, "unit-value", "pieces"); await nextTick(); click(root, "预览客户消息");
+  await eventually(() => expect(root.querySelector('[name="unit-preview"]')).not.toBeNull());
+  const area = root.querySelector<HTMLTextAreaElement>('[name="unit-preview"]')!; area.setSelectionRange(0, 10); area.dispatchEvent(new Event("select")); await nextTick(); click(root, "定位客户单位原话");
+  await eventually(() => expect(root.textContent).toContain("定位结果与当前客户消息不一致"));
+  click(root, "确认客户单位"); await nextTick(); expect(confirmed).toBe(0);
 });
 
 it("keeps form input for fresh objects of one identity and unregisters every page subscriber on unmount", async () => {

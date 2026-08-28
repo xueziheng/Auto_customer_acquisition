@@ -289,7 +289,11 @@ def test_demo_invalid_dsn_is_fixed_and_does_not_leak_marker() -> None:
 async def test_demo_disposes_engine_when_composition_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import logging
+
     demo = importlib.import_module("scripts.demo_outreach")
+    root_logger = logging.getLogger()
+    logging_before = (root_logger.level, tuple(root_logger.handlers))
 
     class DisposableEngine:
         def __init__(self) -> None:
@@ -300,6 +304,7 @@ async def test_demo_disposes_engine_when_composition_fails(
 
     engine = DisposableEngine()
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://unused")
+    monkeypatch.setattr(demo, "_configure_safe_audit_logging", lambda: None)
     monkeypatch.setattr(demo, "create_engine_from", lambda _url: engine)
 
     def fail_factory(*_args: object, **_kwargs: object) -> object:
@@ -309,6 +314,7 @@ async def test_demo_disposes_engine_when_composition_fails(
     with pytest.raises(RuntimeError, match="composition-marker"):
         await demo.main()
     assert engine.disposed
+    assert (root_logger.level, tuple(root_logger.handlers)) == logging_before
 
 
 def test_outreach_agent_rules_lock_the_exact_campaign_graph() -> None:

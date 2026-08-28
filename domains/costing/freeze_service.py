@@ -58,7 +58,7 @@ from domains.costing.service import (
 from shared.errors import PermissionDenied
 from shared.errors import ValidationError as DomainValidationError
 from shared.schemas.identifiers import CostSheetId, EmployeeId, TenantId, new_id
-from shared.schemas.money import FxRate
+from shared.schemas.money import CurrencyCode, FxRate
 from shared.schemas.provenance import Provenance, SourceType
 from shared.schemas.quote_creation import (
     QuoteCreationCompletion,
@@ -278,7 +278,24 @@ class CostingFreezeServiceImpl:
                 "provenance": provenance,
             }
             result = CostScopeConfirmationView(
-                **values, content_hash=scope_content_hash(values)
+                tenant_id=tenant_id,
+                confirmation_id=identity,
+                opportunity_id=context.opportunity_id,
+                need_id=context.need_id,
+                cost_sheet_id=cost_sheet_id,
+                sheet_hash=command.expected_sheet_hash,
+                coverage_id=command.coverage_id,
+                coverage_hash=command.expected_coverage_hash,
+                need_facts=context.need_facts,
+                need_facts_hash=context.need_facts_hash,
+                specification=context.specification,
+                specification_hash=context.specification_hash,
+                terms=command.terms,
+                terms_hash=quote_terms_hash(command.terms),
+                valid_until=command.valid_until,
+                evidence_bindings=command.evidence_bindings,
+                provenance=provenance,
+                content_hash=scope_content_hash(values),
             )
             await uow.freezes.add_scope(
                 tenant_id,
@@ -352,8 +369,8 @@ class CostingFreezeServiceImpl:
             if value.confirmed_at > now or value.observed_at > now:
                 raise CostFreezeError("fx_missing")
             rate = FxRate(
-                base=value.base_currency,
-                quote=value.quote_currency,
+                base=CurrencyCode(value.base_currency),
+                quote=CurrencyCode(value.quote_currency),
                 rate=value.rate,
                 observed_at=value.observed_at,
                 source=value.source_ref,
@@ -587,9 +604,10 @@ class CostingFreezeServiceImpl:
                 ):
                     raise CostFreezeError("revision_conflict")
             operation_id = new_id("qco")
+            basis_id = new_id("qcb")
             values = {
                 "tenant_id": tenant_id,
-                "basis_id": new_id("qcb"),
+                "basis_id": basis_id,
                 "operation_id": operation_id,
                 "request_hash": request_hash,
                 "opportunity_id": context.opportunity_id,
@@ -613,7 +631,33 @@ class CostingFreezeServiceImpl:
                 "valid_until": intent.valid_until,
                 "frozen_at": now,
             }
-            basis = FrozenCostBasis(**values, basis_hash=basis_content_hash(values))
+            basis = FrozenCostBasis(
+                tenant_id=tenant_id,
+                basis_id=basis_id,
+                operation_id=operation_id,
+                request_hash=request_hash,
+                opportunity_id=context.opportunity_id,
+                cost_sheet_id=cost_sheet_id,
+                context_hash=context.context_hash,
+                sheet_hash=sheet_hash,
+                policy_id=policy.policy_id,
+                quantity=context.quantity,
+                specification=context.specification,
+                unit=context.unit,
+                destination=context.destination,
+                need_facts=context.need_facts,
+                scope_confirmation=scope,
+                policy=policy,
+                coverage=coverage.value,
+                calculation=calculation,
+                price_evidence=evidence,
+                pricing_options=resolved,
+                cost_fx_rates=sheet.fx_rates,
+                quote_fx=fx,
+                valid_until=intent.valid_until,
+                frozen_at=now,
+                basis_hash=basis_content_hash(values),
+            )
             operation = QuoteCreationOperationView(
                 tenant_id=tenant_id,
                 operation_id=operation_id,

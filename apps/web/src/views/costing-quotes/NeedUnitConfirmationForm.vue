@@ -14,6 +14,7 @@ const receipt = ref<components["schemas"]["NeedUnitConfirmationPublicView"] | nu
 const preview = ref<components["schemas"]["EvidencePreviewPublicView"] | null>(null);
 const locator = ref<components["schemas"]["EvidenceLocatorPublicView"] | null>(null);
 const selection = ref<readonly [number, number] | null>(null);
+const messageIdPattern = /^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 function clearRaw(): void { preview.value = null; locator.value = null; selection.value = null; rawError.value = ""; }
 const rawGate = useQuoteRequestScope(client, () => [props.needId, source.value, selection.value?.[0], selection.value?.[1]], clearRaw);
 watch(() => [props.needId, source.value], clearRaw, { flush: "sync" });
@@ -30,16 +31,20 @@ async function read(): Promise<void> {
   } catch { if (op.valid()) message.value = "客户单位核对失败"; }
 }
 async function readPreview(): Promise<void> {
+  if (!messageIdPattern.test(source.value)) { clearRaw(); rawError.value = "请输入裸客户消息 ID（msg_…），不要填写来源前缀"; return; }
   clearRaw(); const op = rawGate.begin("preview"); if (!op?.valid()) return;
   try {
-    const result = await client.POST("/costing-quotes/evidence/preview", { signal: op.signal, body: { operation: "preview", scope: { purpose: "need_unit", action: "confirm", need_id: props.needId }, source_ref: source.value, profile: "rfc822-plain-v1", page: null } });
+    const result = await client.POST("/costing-quotes/evidence/preview", { signal: op.signal, body: { operation: "preview", scope: { purpose: "need_unit", action: "confirm", need_id: props.needId }, source_ref: `message:${source.value}`, profile: "rfc822-plain-v1", page: null } });
     if (!op.valid()) return;
     if (result.data) preview.value = result.data; else rawError.value = quoteError(result.response.status, result.error);
   } catch { if (op.valid()) rawError.value = "客户消息读取失败；没有消息读取权不能确认单位"; }
 }
 function selectText(event: Event): void {
   const element = event.target; if (!(element instanceof HTMLTextAreaElement) || !preview.value) return;
-  try { selection.value = utf16SelectionToCodepoints(preview.value.text, element.selectionStart, element.selectionEnd); }
+  try {
+    const next = utf16SelectionToCodepoints(preview.value.text, element.selectionStart, element.selectionEnd);
+    if (selection.value?.[0] !== next[0] || selection.value?.[1] !== next[1]) selection.value = next;
+  }
   catch { selection.value = null; locator.value = null; rawError.value = "请选择完整的客户原文字符"; }
 }
 async function locate(): Promise<void> {
@@ -49,12 +54,16 @@ async function locate(): Promise<void> {
   try {
     const result = await client.POST("/costing-quotes/evidence/locator", { signal: op.signal, body: { operation: "locate", scope: p.scope, source_ref: p.source_ref, profile: p.profile, page: p.page, expected_raw_hash: p.raw_hash, expected_text_hash: p.text_hash, start: selection.value[0], end: selection.value[1] } });
     if (!op.valid()) return;
-    if (result.data) locator.value = result.data; else rawError.value = quoteError(result.response.status, result.error);
+    if (result.data) {
+      if (!messageIdPattern.test(source.value) || result.data.source_ref !== `message:${source.value}`) { locator.value = null; rawError.value = "定位结果与当前客户消息不一致"; return; }
+      locator.value = result.data;
+    } else rawError.value = quoteError(result.response.status, result.error);
   } catch { if (op.valid()) rawError.value = "客户原文定位失败"; }
 }
 async function save(): Promise<void> {
   if (!locator.value || !current.value?.quantity_fact_hash) return;
-  const body: components["schemas"]["NeedUnitConfirmationCommand"] = { unit: unit.value, source_message_id: locator.value.source_ref, source_quote: locator.value.excerpt, locator: locator.value.locator, expected_quantity_fact_hash: current.value.quantity_fact_hash, expected_unit_confirmation_id: current.value.unit_confirmation_id };
+  if (!messageIdPattern.test(source.value) || locator.value.source_ref !== `message:${source.value}`) { message.value = "请重新核对当前客户消息来源"; return; }
+  const body: components["schemas"]["NeedUnitConfirmationCommand"] = { unit: unit.value, source_message_id: locator.value.source_ref.slice("message:".length), source_quote: locator.value.excerpt, locator: locator.value.locator, expected_quantity_fact_hash: current.value.quantity_fact_hash, expected_unit_confirmation_id: current.value.unit_confirmation_id };
   await confirm(body, (id, signal) => client.POST("/costing-quotes/needs/{need_id}/unit-confirmations", { params: { path: { need_id: props.needId }, header: { "Idempotency-Key": id } }, body, signal }), (data) => { receipt.value = data; emit("saved"); });
 }
 watch(() => props.needId, () => void read(), { immediate: true });
