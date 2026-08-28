@@ -306,6 +306,16 @@ async def test_no_receipt_is_none_for_history_and_missing_for_record():
     c.reader.read.assert_not_awaited()
 
 
+async def test_missing_real_run_is_rejected_before_metadata_or_file_link():
+    c = await file_case()
+    c.runs.read.return_value = None
+    with pytest.raises(Exception) as error:
+        await c.service.record_file(c.tenant, QUOTE, c.meta.artifact_id, actor_id=c.actor_id)
+    assert error.value.code == "workflow_binding_invalid"
+    c.reader.read.assert_not_awaited()
+    assert not c.files
+
+
 @pytest.mark.parametrize(
     "field", ["content_hash", "customer_content_hash", "quote_content_hash"]
 )

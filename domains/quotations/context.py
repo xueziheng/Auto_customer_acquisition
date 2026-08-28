@@ -80,9 +80,15 @@ class QuoteSpecificationFacts(QuoteDTO):
 
 def quote_specification(facts: NeedQuoteFacts) -> QuoteSpecificationFacts:
     """逐字段确定性投影，不以机会摘要覆盖客户事实。"""
-    return QuoteSpecificationFacts(**{name: getattr(facts, name).value
-        if getattr(facts, name) is not None else None
-        for name in QuoteSpecificationFacts.model_fields})
+    return QuoteSpecificationFacts(
+        product_category=facts.product_category.value,
+        application=facts.application.value if facts.application is not None else None,
+        material=facts.material.value if facts.material is not None else None,
+        size_spec=facts.size_spec.value if facts.size_spec is not None else None,
+        packaging=facts.packaging.value if facts.packaging is not None else None,
+        certification_required=(facts.certification_required.value
+            if facts.certification_required is not None else None),
+    )
 
 
 def canonical_quote_specification(spec: QuoteSpecificationFacts) -> str:
@@ -150,7 +156,7 @@ class QuoteBusinessContext(QuoteDTO):
             raise QuoteContextError("facts_corrupt")
         return self
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]  # Pydantic只读computed property
     @property
     def context_hash(self) -> str:
         """只读派生，不允许临时伪hash作为构造参数。"""

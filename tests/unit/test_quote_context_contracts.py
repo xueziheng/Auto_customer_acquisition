@@ -283,3 +283,21 @@ def test_context_rejects_facts_scalar_mismatch(change: dict[str, object]) -> Non
     from domains.quotations.errors import QuoteContextError
     with pytest.raises((ValidationError, QuoteContextError)):
         business_context(**change)
+
+
+@pytest.mark.parametrize("name", ["product_category", "application", "material", "size_spec", "packaging", "certification_required"])
+def test_specification_preserves_all_six_fields_and_explicit_none(name):
+    from domains.quotations import service
+
+    values = {"product_category": "hinges", "application": "Door  indoor", "material": "Steel A",
+        "size_spec": "50 mm", "packaging": "Box  A", "certification_required": "CE"}
+    facts = bound_facts(**{key: field(value) for key, value in values.items()})
+    original = service.quote_specification(facts)
+    assert original.model_dump() == values
+    changed = service.quote_specification(facts.model_copy(update={name: field("Changed  value")}))
+    assert changed.model_dump() == values | {name: "Changed  value"}
+    assert service.quote_specification_hash(changed) != service.quote_specification_hash(original)
+    if name != "product_category":
+        missing = service.quote_specification(facts.model_copy(update={name: None}))
+        assert missing.model_dump() == values | {name: None}
+        assert service.quote_specification_hash(missing) != service.quote_specification_hash(original)

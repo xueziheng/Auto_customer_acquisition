@@ -130,3 +130,17 @@ record先scope→原quote/receipt/run→锁外metadata→T4同机会advisory→�
 get/list逐次重投影客户hash并重核真实metadata/receipt/run。历史quote过期或终态可读不等于
 当前正式使用许可；T8还须当前context/适用批准及Store.get bytes完整性校验。未装配files时
 四个文件入口全部dependency_unavailable，不以安全metadata/FK存在替代正式生成或下载授权。
+
+## Phase 2 Task8B1文件用途增量
+
+`ContextQuoteFileScopeAuthorizer`已提供真实sales本人/owner直属manager/boss scope端口，实际
+API/worker接线仍留B2。`QuoteFileAccessService`正式用途独立于actor=send_decider的旧apply门；
+一次锁齐actor、owner、存在的preparer及全部deciders再锁机会/Need，复用同域T5纯规则，
+重验当前context、policy、quoted依据、所有批准及有效期。scope历史用途不查Need/抬头/policy。
+snapshot等值只排除checked_at，不缓存许可；外部IO不持业务锁，交付前必须重新真实授权。
+
+客户版本页只提供安全版本信息、文件metadata及固定业务blocker，不含价格/成本或完整客户DTO；
+依赖失败/不可变损坏不能降为blocker。
+无文件业务状态写、无新增批准、无自动history fallback、无把下载记sent。域员工DTO仍沿
+40字符事实校验；现Employee持久表与Gateway ledger有更窄32字符/safe-label限制，域不复制
+该限制、不截断ID，应用使用真实Gateway拒绝。ADR0021记录完整边界与受控验证范围。

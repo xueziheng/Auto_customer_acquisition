@@ -10,7 +10,8 @@
 - boto3 只能在本目录的 concrete adapter 中导入；`artifact_store/`、`infra/db/`、
   domains 与 workflows 均不得接触 SDK。
 - 配置只保存 access/secret 的环境变量引用名。凭证原值只在 adapter 构造时由注入的
-  resolver 解析，不进入参数 DTO、返回值、属性 repr、日志或异常。
+  resolver 解析（此为旧S3ObjectBlobTransport行为；新增bounded reader/报价writer在执行期解析），
+  不进入参数 DTO、返回值、属性 repr、日志或异常。
 - endpoint、bucket、object key 与底层 SDK 异常文本同样禁止进入日志、异常和 repr。
 
 ## 错误分类
@@ -37,3 +38,12 @@
 例外，必须保留，不转换为TransientError。其他SDK错误仍按旧固定分类。
 取消置每调用stop标记，有限SDK等待返回后停止流并关闭body/client，线程收口后才传播取消。
 不声称Python可以强杀SDK线程；连接/读取timeout和有限attempts是阻塞等待边界。
+
+## 报价PDF单次writer增量
+
+`S3QuotePdfObjectBlobTransport`构造仅保存settings/resolver/显式QuotePdfWriteLimits，零取密钥、
+零SDK初始化；每次put/delete执行期才创建专用client，须在Gateway授权及EXECUTING提交后调用。
+只允许有限connect/read/total与attempts=1的单次SDK请求，无multipart/自动重试；get固定
+read_unsupported，实际下载只经独立bounded reader。开始对象写后的SDK/close/deadline未知
+固定outcome_unknown，不把取消当作未写；线程收口后传播取消。adapter不判winner、不删除
+未知candidate、不改metadata补偿规则，安全错误不含endpoint/bucket/key/SDK原文。见ADR0021。

@@ -5,14 +5,17 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from domains.quotations.approval_rules import (
     build_quote_approval_snapshot,
     require_quote_approval_receipt,
     require_quote_run_binding,
 )
-from domains.quotations.approval_schemas import QuoteApprovalApplicationReceipt
+from domains.quotations.approval_schemas import (
+    QuoteApprovalApplicationReceipt,
+    QuoteWorkflowRunFact,
+)
 from domains.quotations.approval_service import QuoteWorkflowRunReader
 from domains.quotations.content import project_customer, require_content_integrity
 from domains.quotations.errors import (
@@ -243,6 +246,7 @@ class QuoteFileServiceImpl:
             require_quote_run_binding(
                 c.tenant_id, c.quote_id, c.version, c.content_hash, run
             )
+            run = cast(QuoteWorkflowRunFact, run)
             if run.run_id != receipt.approval_run_id:
                 raise QuoteFileError("workflow_binding_invalid")
         return receipt

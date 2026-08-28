@@ -155,7 +155,23 @@ ledger；未命中继续保持人工对账；provider reference 不一致固定�
 只有 Connector 明确给出 `definitely_not_sent` 的临时失败，才可在 lease 到期后重新跑
 当前事实；此时新增抑制、回复、身份或额度变化都可以停止重试。
 
-## Phase 1 范围
+## Phase 2 报价文件插件
+
+`quotation.file.generate/read/history.read/reconcile`只注册各自固定manifest、check和handler，
+不改核心管线。正式用途逐次调用报价域当前授权；历史入口独立、不能作正式失败的fallback。
+所有output仅provider_ref，bytes/恢复/固定失败共用容量一的task-owned槽；bytes/恢复只有真实
+SUCCEEDED和严格对应typed分支才能交付。generate成功空槽再T6重读metadata，DUPLICATE另核
+真实ledger版本/key/HMAC/provider_ref后重读；异常和取消清槽。
+
+按ADR0021，generate的rate_limit可独立持久化技术预留，commit/close未知不放行、不退款；
+这是现CheckStage“仅幂等占位写”注释之外的窄插件事实，不可推广为检查阶段业务写权限。
+MEDIUM/NONE的reconcile是内部幂等metadata关联写；新requested审计必须先确定提交，原生成
+ledger/events完全只读。恢复不意味着原调用成功、不保证对象bytes存在，也没有新fencing。
+核心output.status仅validation_passed，不把恢复outcome塞入该字段或伪报它；恢复语义仅从
+专用工具、新requested审计与成功后严格核验的受信wrapper取得。身份沿真实ledger safe-label
+限制失败关闭，不截断/散列域员工ID。实际factory/HTTP/进程生命周期由B2接线。
+
+## Phase 1 已有范围
 
 manifest 注册表、两种显式 HIGH stage profile、固定 stage 编排、Postgres canonical
 ledger、append-only event、`email.send` 客户邮件 handler、`notification.email.send` 内部

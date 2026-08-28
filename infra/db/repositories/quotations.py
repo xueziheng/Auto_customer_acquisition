@@ -37,10 +37,12 @@ from infra.db.tables import (
 )
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
+    ArtifactId,
     MessageAttemptId,
     OpportunityId,
     QuoteFileId,
     QuoteId,
+    RunId,
     TenantId,
     new_id,
 )
@@ -52,9 +54,9 @@ class QuotationVersionRepositoryImpl(TenantScopedRepository):
     def _file_record(self, row: QuotationFileRow) -> QuoteFileRecord:
         """列映射不重算业务hash；领域在每次对外返回前重验。"""
         try:
-            return QuoteFileRecord(tenant_id=row.tenant_id, approval_run_id=row.approval_run_id,
-                view=QuoteFileView(file_id=row.file_id, quote_id=row.quote_id,
-                    quote_version=row.quote_version, artifact_id=row.artifact_id,
+            return QuoteFileRecord(tenant_id=TenantId(row.tenant_id), approval_run_id=RunId(row.approval_run_id),
+                view=QuoteFileView(file_id=QuoteFileId(row.file_id), quote_id=QuoteId(row.quote_id),
+                    quote_version=row.quote_version, artifact_id=ArtifactId(row.artifact_id),
                     content_hash=row.artifact_hash, quote_content_hash=row.quote_content_hash,
                     customer_content_hash=row.customer_content_hash, template_version=row.template_version,
                     size_bytes=row.size_bytes, generated_at=row.generated_at))

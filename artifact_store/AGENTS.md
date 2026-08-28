@@ -46,6 +46,12 @@ PostgreSQL metadata 只由 `infra/db/` 实现。本目录只依赖两个窄 Prot
 None不证明未写入；实际读取仍必须`get`重算bytes hash与length。此窄接口不对HTTP开放。
 当前正式生成/下载、历史用途授权和全部bytes Gateway编排由T8装配，本任务未提供许可。
 
+Task8B1新增独立`BoundedGeneratedArtifactStore`端口，不要求旧Generated消费者实现它，旧get
+保持兼容。QUOTE_PDF新下载必须先读metadata并结束事务，再按调用/Store/meta上限交集进行
+实际bounded读取（最多一个哨兵），核长度/SHA；缺bounded依赖失败，不fallback旧get。
+中立文件adapter在infra，恢复仅注入独立metadata-only对象；Store仍不判断业务审批或员工。
+ADR0021的有限恢复只补metadata关联，不保证对象bytes存在，后续下载仍须完整性校验。
+
 ## Phase 1 范围
 
 真实 PostgreSQL metadata、S3/MinIO bytes、租户隔离、不可变幂等与完整性校验。内容理解、
