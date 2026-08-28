@@ -1,13 +1,54 @@
 """新版报价namespace及审批本域请求身份，完整载荷验证由注入适配器完成。"""
 
+import json
 import re
 
 from pydantic import JsonValue
 from pydantic import ValidationError as PydanticValidationError
 
 from domains.approvals.errors import QuoteContractError
+from domains.approvals.models import ApprovalPackage
 from domains.approvals.schemas import ApprovalQuoteSubject
 from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId
+from shared.schemas.quote_creation import (
+    canonical_creation_hash,
+    canonical_creation_value,
+)
+
+
+def quote_request_hash(package: ApprovalPackage) -> str:
+    """原始请求身份含原limit与完整安全载荷，不受生成ID或重试时钟影响。"""
+    value = {
+        "version": "quote-approval-submit-v1",
+        **{
+            name: getattr(package, name)
+            for name in (
+                "tenant_id",
+                "approval_type",
+                "title",
+                "proposed_change",
+                "reason",
+                "blast_radius",
+                "proposed_by_run",
+                "proposed_by_employee",
+                "owner_employee",
+                "evidence_refs",
+                "change_set_ref",
+                "expires_at_limit",
+            )
+        },
+    }
+    rendered = json.dumps(
+        canonical_creation_value(value),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(rendered.encode("utf-8")) > 64_000:
+        raise QuoteContractError("quote_contract_invalid")
+    return canonical_creation_hash(value)
+
 
 _TYPES = (
     "quote_send",

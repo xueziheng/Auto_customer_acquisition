@@ -136,6 +136,10 @@ class WorkflowEngine(Protocol):
 
     def register(self, definition: WorkflowDefinition) -> None: ...
 
+    async def get_run(self, tenant_id: TenantId, run_id: RunId) -> WorkflowRun | None:
+        """受信workflow内部只读快照，含终态；不扩老板审计HTTP权限。"""
+        ...
+
     async def start(
         self,
         tenant_id: TenantId,
@@ -200,6 +204,4 @@ class WorkflowEngine(Protocol):
         """查询同租户/type/subject 是否已有同一事件的 durable 指纹证据。"""
         ...
 
-    async def cancel(
-        self, tenant_id: TenantId, run_id: RunId, reason: str
-    ) -> None: ...
+    async def cancel(self, tenant_id: TenantId, run_id: RunId, reason: str) -> None: ...

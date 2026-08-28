@@ -15,6 +15,29 @@ from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId
 
 @runtime_checkable
 class ApprovalRepository(Protocol):
+    async def lock_quote_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> None:
+        """新版报价提交的tenant+change_set事务锁，不锁其他审批namespace。"""
+        ...
+
+    async def find_quote_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalPackage | None:
+        """读取新namespace跨状态唯一包。"""
+        ...
+
+    async def list_quote_pending_candidates(
+        self,
+        tenant_id: TenantId,
+        *,
+        scan_started_at: datetime,
+        after: tuple[datetime, ApprovalId] | None,
+        limit: int,
+    ) -> tuple[ApprovalPackage, ...]:
+        """稳定游标含本人起草包，当前权限由专用guard筛选。"""
+        ...
+
     async def add(self, package: ApprovalPackage) -> None: ...
 
     async def get(

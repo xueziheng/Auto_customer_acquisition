@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text, tuple_
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
@@ -116,6 +116,9 @@ def _row_to_package(row: ApprovalPackageRow) -> ApprovalPackage:
         decision_note=row.decision_note,
         applied_at=row.applied_at,
         apply_error=row.apply_error,
+        contract_namespace=row.contract_namespace,
+        request_hash=row.request_hash,
+        expires_at_limit=row.expires_at_limit,
     )
 
 
@@ -162,6 +165,9 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
                 decision_note=package.decision_note,
                 applied_at=package.applied_at,
                 apply_error=package.apply_error,
+                contract_namespace=package.contract_namespace,
+                request_hash=package.request_hash,
+                expires_at_limit=package.expires_at_limit,
             )
         )
         await self._session.flush()
@@ -223,6 +229,62 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
             )
         ).scalar_one_or_none()
         return _row_to_package(row) if row is not None else None
+
+    async def lock_quote_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> None:
+        """全状态首次提交串行，锁名与旧pending-only路径分离。"""
+        self._require_tenant(tenant_id, "approval_quote_lock")
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+            {"key": f"approval-quote-submit-v1:{tenant_id}:{change_set_ref}"},
+        )
+
+    async def find_quote_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalPackage | None:
+        """数据库唯一索引兜底，不捕获冲突冒认成功。"""
+        self._require_tenant(tenant_id, "approval_quote_find")
+        row = (
+            await self._session.execute(
+                select(ApprovalPackageRow).where(
+                    ApprovalPackageRow.tenant_id == tenant_id,
+                    ApprovalPackageRow.change_set_ref == change_set_ref,
+                    ApprovalPackageRow.contract_namespace == "quote-approval-v1",
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_package(row) if row is not None else None
+
+    async def list_quote_pending_candidates(
+        self,
+        tenant_id: TenantId,
+        *,
+        scan_started_at: datetime,
+        after: tuple[datetime, ApprovalId] | None,
+        limit: int,
+    ) -> tuple[ApprovalPackage, ...]:
+        """固定扫描时点与到期/ID游标，不能先排除本人起草/负责。"""
+        self._require_tenant(tenant_id, "approval_quote_candidates")
+        stmt = select(ApprovalPackageRow).where(
+            ApprovalPackageRow.tenant_id == tenant_id,
+            ApprovalPackageRow.contract_namespace == "quote-approval-v1",
+            ApprovalPackageRow.state == "pending",
+            ApprovalPackageRow.created_at <= scan_started_at,
+        )
+        if after is not None:
+            stmt = stmt.where(
+                tuple_(ApprovalPackageRow.expires_at, ApprovalPackageRow.approval_id)
+                > after
+            )
+        rows = (
+            await self._session.execute(
+                stmt.order_by(
+                    ApprovalPackageRow.expires_at, ApprovalPackageRow.approval_id
+                ).limit(limit)
+            )
+        ).scalars()
+        return tuple(_row_to_package(row) for row in rows)
 
     async def find_by_change_set(
         self, tenant_id: TenantId, change_set_ref: str

@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 
-from domains.approvals.schemas import ApprovalView
+from domains.approvals.schemas import ApprovalReaderIdentity, ApprovalView
 from shared.errors import PermissionDenied, TransientError, ValidationError
 from shared.schemas.identifiers import ApprovalId
 
@@ -67,9 +67,12 @@ async def list_pending_approvals(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[ApprovalView]:
-    _require_approver(identity)
-    return await _approval_service(dependencies).list_pending_for(
-        identity.tenant_id, identity.employee.employee_id, limit
+    return await _approval_service(dependencies).list_for_reader(
+        identity.tenant_id,
+        limit=limit,
+        reader=ApprovalReaderIdentity(
+            employee_id=identity.employee.employee_id, role=identity.employee.role
+        ),
     )
 
 
@@ -83,11 +86,12 @@ async def get_approval(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> ApprovalView:
-    _require_approver(identity)
-    return await _approval_service(dependencies).get(
+    return await _approval_service(dependencies).get_for_reader(
         identity.tenant_id,
         _approval_id(approval_id),
-        current_employee=identity.employee.employee_id,
+        reader=ApprovalReaderIdentity(
+            employee_id=identity.employee.employee_id, role=identity.employee.role
+        ),
     )
 
 
@@ -114,8 +118,10 @@ async def decide_approval(
         identity.employee.employee_id,
         body.reason,
     )
-    return await service.get(
+    return await service.get_for_reader(
         identity.tenant_id,
         typed_id,
-        current_employee=identity.employee.employee_id,
+        reader=ApprovalReaderIdentity(
+            employee_id=identity.employee.employee_id, role=identity.employee.role
+        ),
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
@@ -18,9 +19,7 @@ TENANT = TenantId("tenant-playbook-approval")
 PROPOSER = EmployeeId("emp_01K00000000000000000000000")
 APPROVER = EmployeeId("emp_01K00000000000000000000001")
 CHANGE_SET = "playbook:pbv_01K00000000000000000000000:" + "a" * 64
-COUNTRY_POLICY_CHANGE_SET = (
-    "country_policy:cpp_01K00000000000000000000000:" + "b" * 64
-)
+COUNTRY_POLICY_CHANGE_SET = "country_policy:cpp_01K00000000000000000000000:" + "b" * 64
 
 
 class _Bus:
@@ -89,6 +88,39 @@ class _Approvals:
         self._store.application_keys[approval_id] = idempotency_key
         return True
 
+    async def lock_quote_change_set(self, tenant_id, change_set_ref):
+        """单线程纯服务测试；并发唯一由真实PG组覆盖。"""
+        del tenant_id, change_set_ref
+
+    async def find_quote_by_change_set(self, tenant_id, change_set_ref):
+        return await self.find_by_change_set(tenant_id, change_set_ref)
+
+    async def list_quote_pending_candidates(
+        self, tenant_id, *, scan_started_at, after, limit
+    ):
+        values = sorted(
+            (
+                p
+                for p in self._store.packages.values()
+                if p.tenant_id == tenant_id
+                and p.contract_namespace == "quote-approval-v1"
+                and p.created_at <= scan_started_at
+                and p.state.value == "pending"
+                and (after is None or (p.expires_at, p.approval_id) > after)
+            ),
+            key=lambda p: (p.expires_at, p.approval_id),
+        )
+        return tuple(values[:limit])
+
+    async def list_pending_for_employee(self, tenant_id, employee_id, limit):
+        return [
+            p
+            for p in self._store.packages.values()
+            if p.tenant_id == tenant_id
+            and p.state.value == "pending"
+            and employee_id not in {p.proposed_by_employee, p.owner_employee}
+        ][:limit]
+
 
 class _Uow:
     def __init__(self, store: _Store) -> None:
@@ -118,6 +150,214 @@ class _Factory:
 
 def _service() -> ApprovalServiceImpl:
     return ApprovalServiceImpl(_Factory(), now=lambda: NOW)
+
+
+class QuoteAccessCase:
+    """只替代跨域当前员工存储，完整载荷用真实解析器验证。"""
+
+    def __init__(self):
+        self.role = "finance"
+        self.held = False
+        self.allowed = True
+
+    def subject(self, fact):
+        from domains.approvals.quote_contract import quote_contract_subject
+        from domains.quotations.service import parse_quote_approval_payload
+
+        parse_quote_approval_payload(fact.proposed_change)
+        return quote_contract_subject(
+            tenant_id=fact.tenant_id,
+            approval_id=fact.approval_id,
+            approval_type=fact.approval_type,
+            change_set_ref=fact.change_set_ref,
+            proposed_change=fact.proposed_change,
+            proposed_by_employee=fact.proposed_by_employee,
+            owner_employee=fact.owner_employee,
+        )
+
+    @asynccontextmanager
+    async def guard(self, subject, *, actor_id, action):
+        from domains.approvals.schemas import ApprovalAccessResult
+        from shared.errors import PermissionDenied
+
+        del subject, actor_id, action
+        if not self.allowed:
+            raise PermissionDenied("拒绝当前授权")
+        self.held = True
+        try:
+            yield ApprovalAccessResult(can_decide=False, current_role=self.role)
+        finally:
+            self.held = False
+
+
+def quote_service_case():
+    import inspect
+
+    assert "quote_access" in inspect.signature(ApprovalServiceImpl).parameters, (
+        "缺少报价guard依赖"
+    )
+    guard = QuoteAccessCase()
+    factory = _Factory()
+    from tests.unit.test_quotation_contracts import basis_case
+
+    clock = [basis_case()[3]]
+    svc = ApprovalServiceImpl(factory, quote_access=guard, now=lambda: clock[0])
+    return svc, factory, guard, clock
+
+
+async def submit_quote(svc, *, limit=None, title="正式报价审批"):
+    import json
+
+    from domains.quotations.service import quote_approval_payloads, quote_change_set_ref
+    from tests.unit.test_quote_approval_contracts import RUN, quote_case
+
+    payload = quote_approval_payloads(quote_case(), None)[0]
+    approval_id = await svc.submit(
+        payload.tenant_id,
+        ApprovalType.QUOTE_SEND,
+        title,
+        json.loads(payload.model_dump_json()),
+        "人工核实商业条款",
+        BlastRadius([str(payload.quote_id)], "仅批准本版本", "关闭本轮", False),
+        proposed_by_run=RUN,
+        proposed_by_employee=payload.prepared_by,
+        owner_employee=payload.submitted_owner_id,
+        change_set_ref=quote_change_set_ref(
+            payload.quote_id, payload.content_hash, "quote_send"
+        ),
+        expires_at_limit=limit or payload.customer.valid_until,
+    )
+    return payload, approval_id
+
+
+@pytest.mark.parametrize("operation", ["get", "list"])
+async def test_new_reader_role_change_between_readable_roles_is_rejected(operation):
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    svc, _, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    reader = ApprovalReaderIdentity(employee_id=payload.prepared_by, role="manager")
+    guard.role = "finance"
+    with pytest.raises(PermissionDenied):
+        if operation == "get":
+            await svc.get_for_reader(payload.tenant_id, approval_id, reader=reader)
+        else:
+            await svc.list_for_reader(payload.tenant_id, reader=reader)
+    reader = ApprovalReaderIdentity(employee_id=payload.prepared_by, role="finance")
+    if operation == "get":
+        result = await svc.get_for_reader(payload.tenant_id, approval_id, reader=reader)
+        assert not result.can_current_user_decide
+    else:
+        result = await svc.list_for_reader(payload.tenant_id, reader=reader)
+        assert [item.approval_id for item in result] == [approval_id]
+
+
+async def test_new_namespace_replay_uses_original_limit_after_clock_expiry():
+    from domains.approvals.errors import QuoteContractError
+    from domains.approvals.service import ApprovalState
+
+    svc, factory, _, clock = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    original = await svc.read_fact(payload.tenant_id, approval_id)
+    factory.store.packages[approval_id].state = ApprovalState.APPROVED
+    factory.store.packages[approval_id].decided_by = APPROVER
+    factory.store.packages[approval_id].decided_at = clock[0]
+    clock[0] += timedelta(days=20)
+    assert (await submit_quote(svc))[1] == approval_id
+    restored = await svc.read_fact(payload.tenant_id, approval_id)
+    assert restored.request_hash == original.request_hash
+    assert restored.expires_at_limit == payload.customer.valid_until
+    with pytest.raises(QuoteContractError) as error:
+        await submit_quote(svc, title="更改不可变请求")
+    assert error.value.code == "quote_request_conflict"
+
+
+async def test_new_namespace_does_not_trust_persisted_hash_column():
+    from domains.approvals.errors import QuoteContractError
+
+    svc, factory, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    factory.store.packages[approval_id].title = "tampered"
+    with pytest.raises(QuoteContractError):
+        await svc.read_fact(payload.tenant_id, approval_id)
+
+
+async def test_new_namespace_without_access_dependency_fails_closed():
+    from shared.errors import PermissionDenied
+
+    svc, factory, _, clock = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    missing = ApprovalServiceImpl(factory, now=lambda: clock[0])
+    with pytest.raises(PermissionDenied):
+        await missing.get(
+            payload.tenant_id, approval_id, current_employee=payload.prepared_by
+        )
+    with pytest.raises(PermissionDenied):
+        await missing.get(payload.tenant_id, approval_id)
+
+
+async def test_new_decision_requires_current_guard_before_package_lock():
+    from shared.errors import PermissionDenied
+
+    svc, factory, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    guard.allowed = False
+    with pytest.raises(PermissionDenied):
+        await svc.decide(payload.tenant_id, approval_id, True, APPROVER)
+    assert factory.store.packages[approval_id].state.value == "pending"
+
+
+async def test_new_decision_clock_is_sampled_after_access_wait():
+    from domains.approvals.errors import ApprovalExpiredError
+    from domains.approvals.schemas import ApprovalAccessResult
+
+    svc, factory, guard, clock = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+
+    @asynccontextmanager
+    async def delayed(subject, *, actor_id, action):
+        del subject, actor_id, action
+        clock[0] = payload.customer.valid_until
+        yield ApprovalAccessResult(can_decide=True, current_role="boss")
+
+    guard.guard = delayed
+    with pytest.raises(ApprovalExpiredError):
+        await svc.decide(payload.tenant_id, approval_id, True, APPROVER)
+    assert factory.store.packages[approval_id].state.value == "pending"
+
+
+async def test_legacy_wrappers_do_not_expand_visibility():
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    svc = _service()
+    approval_id = await _submit(svc)
+    assert hasattr(svc, "get_for_reader"), "缺少新旧隔离读取端口"
+    with pytest.raises(PermissionDenied):
+        await svc.get_for_reader(
+            TENANT,
+            approval_id,
+            reader=ApprovalReaderIdentity(employee_id=PROPOSER, role="finance"),
+        )
+
+
+async def test_router_own_quote_read_uses_new_wrapper_not_global_approver_gate():
+    from types import SimpleNamespace
+
+    from apps.api.routers.approvals import get_approval, list_pending_approvals
+
+    svc, _, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    identity = SimpleNamespace(
+        tenant_id=payload.tenant_id,
+        employee=SimpleNamespace(employee_id=payload.prepared_by, role="finance"),
+    )
+    dependencies = SimpleNamespace(approvals=svc)
+    view = await get_approval(str(approval_id), identity, dependencies)
+    assert view.approval_id == approval_id
+    assert not view.can_current_user_decide
+    assert len(await list_pending_approvals(identity, dependencies, 50)) == 1
 
 
 async def _submit(

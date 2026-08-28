@@ -141,6 +141,9 @@ class ApprovalPackage:
     decision_note: str | None = None
     applied_at: datetime | None = None
     apply_error: str | None = None
+    contract_namespace: str | None = None
+    request_hash: str | None = None
+    expires_at_limit: datetime | None = None
 
     def can_be_decided_by(self, employee: EmployeeId) -> bool:
         """自批禁止的判定。

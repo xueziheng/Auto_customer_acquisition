@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from contextlib import AbstractAsyncContextManager
+from datetime import datetime
+from typing import Literal, Protocol, runtime_checkable
 
 from domains.approvals.models import ApprovalState, ApprovalType, BlastRadius
-from domains.approvals.schemas import ApprovalView
+from domains.approvals.schemas import (
+    ApprovalAccessResult,
+    ApprovalFactView,
+    ApprovalQuoteSubject,
+    ApprovalReaderIdentity,
+    ApprovalView,
+)
 from shared.schemas.identifiers import ApprovalId, EmployeeId, RunId, TenantId
+
+
+class QuoteApprovalAccess(Protocol):
+    """报价专用当前授权；通过workflow适配，不直接依赖其他域。"""
+
+    def subject(self, fact: ApprovalFactView) -> ApprovalQuoteSubject:
+        """严格解码安全payload并匹配全部不可变身份。"""
+        ...
+
+    def guard(
+        self,
+        subject: ApprovalQuoteSubject,
+        *,
+        actor_id: EmployeeId,
+        action: Literal["read", "decide"],
+    ) -> AbstractAsyncContextManager[ApprovalAccessResult]:
+        """保持员工和机会锁到决定提交或视图投影结束。"""
+        ...
 
 
 def requires_approval(action_type: str) -> bool:
@@ -24,6 +50,28 @@ def requires_approval(action_type: str) -> bool:
 class ApprovalService(Protocol):
     """审批服务。"""
 
+    async def read_fact(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> ApprovalFactView:
+        """受信workflow事实读取，重新校验原始请求hash，不作HTTP出口。"""
+        ...
+
+    async def get_for_reader(
+        self,
+        tenant_id: TenantId,
+        approval_id: ApprovalId,
+        *,
+        reader: ApprovalReaderIdentity,
+    ) -> ApprovalView:
+        """新包当前guard，旧包保持boss/manager门。"""
+        ...
+
+    async def list_for_reader(
+        self, tenant_id: TenantId, *, reader: ApprovalReaderIdentity, limit: int = 50
+    ) -> list[ApprovalView]:
+        """新包稳定游标过滤，旧包保留原可见范围。"""
+        ...
+
     async def submit(
         self,
         tenant_id: TenantId,
@@ -38,6 +86,7 @@ class ApprovalService(Protocol):
         evidence_refs: list[str] | None = None,
         change_set_ref: str | None = None,
         owner_employee: EmployeeId | None = None,
+        expires_at_limit: datetime | None = None,
     ) -> ApprovalId:
         """提交审批。
 
@@ -125,5 +174,6 @@ __all__ = (
     "ApprovalState",
     "ApprovalType",
     "BlastRadius",
+    "QuoteApprovalAccess",
     "requires_approval",
 )
