@@ -4300,3 +4300,150 @@ class QuoteCreationOperationRow(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     intent: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
     completion: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB(none_as_null=True),nullable=True)
+
+
+class QuotationIssuerRow(Base):
+    """quotation_issuers只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_issuers"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','issuer_id',name='pk_quotation_issuers'),
+        UniqueConstraint('tenant_id','version',name='uq_quotation_issuers_version'),
+        UniqueConstraint('tenant_id','idempotency_key',name='uq_quotation_issuers_key'),
+        ForeignKeyConstraint(['tenant_id','confirmed_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_issuers_employee',ondelete='RESTRICT'),
+        CheckConstraint("version>0 AND idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name='ck_quotation_issuers_input'),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_issuers_hash'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    issuer_id: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+
+
+class QuotationRow(Base):
+    """quotations只增或受审计状态持久映射。"""
+    __tablename__ = "quotations"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','quote_id',name='pk_quotations'),
+        UniqueConstraint('tenant_id','opportunity_id','version',name='uq_quotations_version'),
+        UniqueConstraint('tenant_id','operation_id',name='uq_quotations_operation'),
+        ForeignKeyConstraint(['tenant_id','opportunity_id'],['opportunities.tenant_id','opportunities.opportunity_id'],name='fk_quotations_opportunity_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','operation_id'],['quote_creation_operations.tenant_id','quote_creation_operations.operation_id'],name='fk_quotations_operation_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','basis_id'],['costing_quote_bases.tenant_id','costing_quote_bases.basis_id'],name='fk_quotations_basis_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','cost_sheet_id'],['cost_sheets.tenant_id','cost_sheets.cost_sheet_id'],name='fk_quotations_cost_sheet_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','issuer_id'],['quotation_issuers.tenant_id','quotation_issuers.issuer_id'],name='fk_quotations_issuer_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','prepared_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_prepared_by',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','owner_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_owner_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','replaces_quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotations_replaces_quote_id',ondelete='RESTRICT'),
+        CheckConstraint("version>0 AND isfinite(valid_until) AND isfinite(created_at) AND valid_until>created_at",name='ck_quotations_time'),
+        CheckConstraint("(replaces_quote_id IS NULL AND replaced_quote_version IS NULL) OR (replaces_quote_id IS NOT NULL AND replaced_quote_version>0)",name='ck_quotations_revision'),
+        CheckConstraint("state IN ('draft','pending_approval','approved','sent','accepted','rejected','expired','superseded')",name='ck_quotations_state'),
+        Index('uq_quotations_active','tenant_id','opportunity_id',unique=True,postgresql_where=text("state IN ('draft','pending_approval','approved','sent')")),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotations_hash'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    opportunity_id: Mapped[str] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20))
+    operation_id: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    basis_id: Mapped[str] = mapped_column(String(64))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    issuer_id: Mapped[str] = mapped_column(String(40))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    prepared_by: Mapped[str] = mapped_column(String(40))
+    owner_id: Mapped[str] = mapped_column(String(40))
+    replaces_quote_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    replaced_quote_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    content: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+
+
+class QuotationLineRow(Base):
+    """quotation_lines只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_lines"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','quote_id','line_number',name='pk_quotation_lines'),
+        CheckConstraint('line_number=1',name='ck_quotation_lines_one'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_lines_quote',ondelete='RESTRICT'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    line_number: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+
+
+class QuotationEvidenceRefRow(Base):
+    """quotation_evidence_refs只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_evidence_refs"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','quote_id','evidence_id',name='pk_quotation_evidence_refs'),
+        ForeignKeyConstraint(['tenant_id','evidence_id'],['costing_price_evidence.tenant_id','costing_price_evidence.evidence_id'],name='fk_quotation_evidence_refs_evidence',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_evidence_refs_quote',ondelete='RESTRICT'),
+        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_evidence_refs_hash'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    evidence_id: Mapped[str] = mapped_column(String(64))
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(24))
+
+
+class QuotationStateEventRow(Base):
+    """quotation_state_events只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_state_events"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','event_id',name='pk_quotation_state_events'),
+        ForeignKeyConstraint(['tenant_id','actor_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_state_events_employee',ondelete='RESTRICT'),
+        UniqueConstraint('tenant_id','quote_id','to_state',name='uq_quotation_state_events_target'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_state_events_quote',ondelete='RESTRICT'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    event_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    from_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(20))
+    actor_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    reason: Mapped[str] = mapped_column(String(32))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reference_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class QuotationApprovalBindingRow(Base):
+    """quotation_approval_bindings只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_approval_bindings"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','quote_id','approval_type','approval_id',name='pk_quotation_approval_bindings'),
+        ForeignKeyConstraint(['tenant_id','approval_id'],['approval_packages.tenant_id','approval_packages.approval_id'],name='fk_quotation_approval_bindings_approval',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_approval_bindings_quote',ondelete='RESTRICT'),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_approval_bindings_hash'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    approval_type: Mapped[str] = mapped_column(String(64))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    quote_version: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class QuotationSendReceiptRow(Base):
+    """quotation_send_receipts只增或受审计状态持久映射。"""
+    __tablename__ = "quotation_send_receipts"
+    __table_args__ = (
+        PrimaryKeyConstraint('tenant_id','attempt_id',name='pk_quotation_send_receipts'),
+        ForeignKeyConstraint(['tenant_id','attempt_id'],['outreach_message_attempts.tenant_id','outreach_message_attempts.attempt_id'],name='fk_quotation_send_receipts_attempt',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_send_receipts_quote',ondelete='RESTRICT'),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_send_receipts_hash'),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    attempt_id: Mapped[str] = mapped_column(String(40))
+    quote_id: Mapped[str] = mapped_column(String(40))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -5,6 +5,7 @@ from decimal import Context, localcontext
 
 from domains.quotations.basis_schemas import QuoteBasis, QuoteEvidenceConfirmation, QuoteSupplierEvidence
 from domains.quotations.context import QuoteBusinessContext, QuoteSpecificationFacts, quote_specification
+from domains.quotations.context import QuoteIssuer
 from domains.quotations.errors import QuotationError, QuotationUnavailableError
 from domains.quotations.version_schemas import QuoteContentLine, QuoteContentSnapshot
 from shared.schemas.identifiers import QuoteId
@@ -56,6 +57,12 @@ def require_content_integrity(content: QuoteContentSnapshot) -> None:
     """每次读取/写入验证存储内容，不把frozen误解为嵌套dict不可变。"""
     if quote_content_hash(content) != content.content_hash:
         raise QuotationUnavailableError("storage_inconsistent")
+
+
+def quote_issuer_hash(issuer: QuoteIssuer) -> str:
+    """抬头hash完整绑定三字段与人工来源确认，不包含自身hash。"""
+    return canonical_creation_hash({"version":"quote-issuer-v1", "issuer":
+        {n:getattr(issuer,n) for n in type(issuer).model_fields if n!="content_hash"}})
 
 
 def validate_terms(intent: QuoteCreationIntent) -> None:

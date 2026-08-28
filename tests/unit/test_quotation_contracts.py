@@ -185,3 +185,40 @@ def test_second_gate_requires_quoted_quantity_unit(change):
     b=b.model_copy(update={"price_evidence":(b.price_evidence[0].model_copy(update=change),)})
     with pytest.raises(QuotationError):
         public.validate_quote_basis(i,b,c,now=now)
+
+
+def frozen_fixture():
+    """将受控领域值组成完整上游DTO；不冒充真实持久冻结。"""
+    from domains.costing.schemas import FrozenCostBasis
+    from domains.costing.service import cost_item_type_values
+    i,b,c,now=basis_case()
+    raw=json.loads(b.model_dump_json())
+    raw["policy"]["cost_groups"]={k:"goods" if k=="product_purchase" else "fixed" for k in cost_item_type_values()}
+    raw["coverage"]["decisions"] += [dict(item_type=k,applicable=False,reason="not applicable",item_bindings=[])
+        for k in cost_item_type_values() if k!="product_purchase"]
+    for price in raw["price_evidence"]:
+        price.pop("tenant_id")
+        price["currency"]=price["amount"]["currency"]
+        price["amount"]=price["amount"]["amount"]
+    return FrozenCostBasis.model_validate_json(json.dumps(raw))
+
+
+def test_basis_adapter_copies_complete_upstream_and_cost_fx():
+    assert importlib.util.find_spec("workflows.quote_approval.basis_adapter"), "缺少完整冻结适配器"
+    from shared.schemas.money import FxRate
+    from workflows.quote_approval.basis_adapter import to_quote_basis
+    frozen=frozen_fixture()
+    fx=FxRate("EUR","USD",Decimal("1.125"),frozen.frozen_at,"cost fx source")
+    frozen=frozen.model_copy(update={"cost_fx_rates":(fx,)})
+    mapped=to_quote_basis(frozen)
+    assert set(type(mapped).model_fields)==set(type(frozen).model_fields)
+    for name in type(frozen).model_fields:
+        if name!="price_evidence":
+            left=json.loads(mapped.model_dump_json())[name]
+            right=json.loads(frozen.model_dump_json())[name]
+            assert left==right, name
+    assert mapped.price_evidence[0].amount==Money(Decimal("1.25"),"USD")
+    assert mapped.price_evidence[0].specification=="Supplier free text"
+    assert mapped.cost_fx_rates==(fx,)
+    frozen.policy.cost_groups["product_purchase"]="fixed"
+    assert mapped.policy.cost_groups["product_purchase"]=="goods"
