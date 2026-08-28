@@ -35,6 +35,8 @@ ADR指定`docs/adr/0022-quotation-runtime-http-contracts.md`：2026-08-29控制�
 
 派发前核实的同链兼容修复：`workflows/quote_approval/steps.py::_identity`目前仍对prepared_by/initiated_by要求`startswith("emp_")`，会拒绝服务已允许的合法短旧员工编号。B2仅将这两个值的格式校验改为调用现`fact_identity`并保留原字符串；该函数只校验且返回None，不能把返回值当ID。其余run/quote/version/hash绑定、实际当前员工和审批独立性检查全部保留，不改workflow版本或既有run数据。先用真实步骤验证非emp_旧编号的行为RED，补非法/空/非字符串拒绝与canonical编号保护测试；§8.4用实际factory、真实持久旧编号走submit→步骤→独立审批→文件，不能只证明HTTP202即称同链兼容。原错误仍固定workflow_binding_invalid，不增加通用身份规则或改Gateway safe-label限制。
 
+本片类型门的窄例外：steps.py已触及，扩大mypy发现同分支T5既有的两项QuoteWorkflowRunFact入参可空类型错误与一次poll/apply局部变量类型复用，B2一起修正，不能排除该文件宣称类型通过。将同一七字段原值映射交给现QuoteWorkflowRunFact.model_validate，沿其原strict/frozen/extra-forbid及全部validator，不先cast未经校验的quote_version/content_hash为int/str、不做转换/默认值、model_construct或ignore；apply分支result/patch局部变量仅分别改名apply_result/apply_patch。原workflow_binding_invalid映射、身份原文、版本/hash/流程行为均不变。先保存已观察静态RED；新增或复用真实step对缺/None/bool/0/字符串版本、非法hash与合法输入的保护测试（改前已GREEN就如实记回归），改后原19文件及本片新增公共出口完整mypy及原报价审批unit/相关真实PG回归通过。此修正限这三项，不扩大为通用WorkflowRun上下文重构。
+
 下表路径均相对`/costing-quotes`。C=当前在职四成本角色；B=boss且当前在职；U=原NeedUnitAuthorizer的Need/机会权限，依T3A§1明确为C **并且**现有机会访问权，涉及消息原件或历史receipt时再叠加T8A现boss-only入站消息ACL；F=当前机会ABAC：sales本人/manager当前直属owner/boss租户，绝不自动包含四成本角色。现有机会矩阵中C与机会访问权交集只有boss，不能让U自动等于F或为其他成本角色增加CRM权限。
 所有路径先可信RequestIdentity；tenant与actor只来自认证，服务再读当前员工。跨tenant/缺对象统一404；真实拒权403；缺依赖503，不伪装空列表。K=必填`Idempotency-Key`，按既有QuoteKey/各域原校验绑定，原样传给对应公共服务，重放不换key；不新增通用幂等表。请求不能自证confirmed_by/at、tenant、role、owner、prepared_by、locked/approved或operation_id。
 
@@ -324,6 +326,8 @@ async def test_unit_guard_preserves_unassigned_opportunity_access(unit_access_ca
 fixture新建于该组，三个并发断言用独立连接、NOWAIT或pg_stat_activity锁等待证据；不靠固定sleep。补失活/未知/跨tenant、各角色交集、owner失活但boss原读权仍有效、无opportunity、错account、返回陈旧actor/错Need、SQL超时/取消清理；真实NeedUnitService确认在内层提交后才释放授权锁，来源reader断言所有锁外执行。先运行这两个新文件取得RED，最小实现后同组GREEN，再纳入§8.1旧Need/context回归及§8.4真实API/worker同链；无新迁移、没有新部署默认值。
 
 ### 4.2 实际组合与发布顺序
+
+本层装配的静态类型从公共service获取：costing.service仅重导出现有CostingUnitOfWorkFactory与CostingFreezeUowFactory，demand.service仅重导出现有NeedUnitUnitOfWork，保留同class与原Protocol/实现/事务语义，不另造重复协议。API/worker两个composition不得直接导入域repository来做类型cast；同class/独立导入契约及结构自检通过后保留此公开出口，ADR0022记录。只是现有注入契约的可用公开路径，不增加业务能力或HTTP字段。
 
 已替换主计划原示意`build_quotation_composition(..., tool_gateway, ...)`的一步式签名：它要求先有Gateway，但新handlers/readers又依赖quotation。采用本进程两个明确阶段，来源Gateway独立，文件Gateway后建；不修改ToolGateway/WorkflowEngine核心，不把新工具塞入旧email/DNS注册表。
 
