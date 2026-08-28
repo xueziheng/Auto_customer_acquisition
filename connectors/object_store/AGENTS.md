@@ -27,3 +27,13 @@
   无默认 endpoint、bucket、凭证或生产回退值。
 - 所有 boto3 调用在线程中执行。caller cancellation 必须等待底层调用完成再传播，保证
   Store 能确定是否需要补偿；SDK 原始异常不得穿过 connector 边界。
+
+## 来源有界读取增量
+
+`S3BoundedObjectBlobTransport`只提供来源专用get_bounded，与旧adapter/取消补偿互不改变。
+构造仅保存settings与resolver，执行阶段才解析凭证并创建专用client；该操作须由Gateway
+完成授权与EXECUTING提交后触发。显式connect/read/total deadline、有限attempts及有限read(n)，
+累计最多上限加一哨兵，忽略不可信ContentLength。typed BlobReadLimitExceeded是新增非重试
+例外，必须保留，不转换为TransientError。其他SDK错误仍按旧固定分类。
+取消置每调用stop标记，有限SDK等待返回后停止流并关闭body/client，线程收口后才传播取消。
+不声称Python可以强杀SDK线程；连接/读取timeout和有限attempts是阻塞等待边界。
