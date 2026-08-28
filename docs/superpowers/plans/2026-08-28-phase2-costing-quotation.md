@@ -402,6 +402,7 @@ if runtime.quote_expiry_driver is not None:
 
 **Interfaces**
 - 仅使用生成 `components['schemas'][...]`，不手写DTO；组件Props/Emits为UI组合类型。
+- 类型生成兼容补正：当前OpenAPI出现机会域与shared两个不同ProvenanceSummary，生成器为它们输出不同限定名。仅将ProvenancePopover.vue、crm/HandoffPacketView.vue、crm/OpportunityDetail.vue、tests/handoff-queue.test.ts、tests/opportunity-list.test.ts的旧类型别名改为components['schemas']['domains__opportunities__schemas__ProvenanceSummary']；五处都实际消费OpportunityView.provenance（含field_name/page_hash/source_url），不得换成无URL的shared版、做union/手写DTO、改后端或放宽validator。保留五处TS2339静态RED，修后typecheck与两个旧测试完整回归，运行时字段/来源URL安全/旧断言不变。代价是五处静态别名适应生成器名称消歧，未来schema命名再变仍需同步；不是新增业务来源能力。
 - 报价页显示后端 `allowed_actions`、`blockers`、版本/hash、审批和file状态；最终权限仍在后端。
 - `api/client.ts`沿同一个WebIdentityProvider增量提供身份版本与订阅，不能另读环境/存储或推断role。现runtime provider的configure/clear同步推进generation并通知所有订阅者；即使A→B→A或同身份重新配置，也废弃旧请求。开发fallback每次返回新对象不因此推进generation。provider新增两必填方法，现四个受控provider用显式静态generation/空订阅适配；当前身份头覆盖/缺生产身份零fetch/无身份剥离头/上传行为保持。
 
