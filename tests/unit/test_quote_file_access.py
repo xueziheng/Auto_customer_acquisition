@@ -51,6 +51,11 @@ def test_only_current_file_scope_can_pass(role, actor):
     assert require_quote_file_scope(scope(role, actor=actor)) is None
 
 
+def test_scope_preserves_original_opportunity_id():
+    facts = scope()
+    assert (facts.tenant_id, facts.opportunity_id, facts.actor.employee_id) == ("tn_00000000000000000000000001", "opp_existing", "emp_owner")
+
+
 @pytest.mark.parametrize(
     "options",
     [

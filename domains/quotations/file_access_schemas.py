@@ -10,7 +10,7 @@ from domains.quotations.models import QuoteState
 from shared.schemas.identifiers import OpportunityId, QuoteId, RunId, TenantId
 from shared.schemas.quote_creation import QuoteDTO
 from shared.schemas.quote_document import CustomerQuoteView
-from shared.schemas.quote_facts import QuoteEmployeeFact, fact_identity
+from shared.schemas.quote_facts import QuoteEmployeeFact, fact_text
 
 QuoteFileAction = Literal["generate", "download_current", "read_history"]
 QuoteFileBlockerCode = Literal[
@@ -31,7 +31,7 @@ class QuoteFileScopeFacts(QuoteDTO):
     """仅当前员工/机会范围，不含Need或原起草人许可。"""
 
     tenant_id: TenantId = Field(pattern=rf"^tn_{_ULID}$")
-    opportunity_id: Annotated[OpportunityId, AfterValidator(fact_identity)]
+    opportunity_id: Annotated[OpportunityId, Field(max_length=40), AfterValidator(fact_text)]
     actor: QuoteEmployeeFact
     owner: QuoteEmployeeFact
 
