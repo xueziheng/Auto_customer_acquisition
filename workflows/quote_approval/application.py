@@ -2,7 +2,9 @@
 
 from collections.abc import Callable
 from datetime import datetime
-from pydantic import TypeAdapter, ValidationError as SchemaError
+
+from pydantic import TypeAdapter
+from pydantic import ValidationError as SchemaError
 
 from domains.costing.errors import (
     CostFreezeError,
@@ -22,25 +24,25 @@ from domains.costing.service import (
     PricingOptions,
 )
 from domains.demand.service import require_current_unit
-from domains.quotations.schemas import (
-    QuoteBusinessContext,
-    QuoteDraftCommand,
-    QuoteDetailView,
-    QuotationActor,
-    Hash,
-)
-from domains.quotations.service import (
-    QuoteContextProvider,
-    QuotePreparationPolicy,
-    QuotationVersionService,
-    QuotationActorReader,
-)
 from domains.quotations.errors import (
     QuotationError,
     QuotationPermissionError,
     QuotationUnavailableError,
 )
-from shared.errors import TradeOSError, PermissionDenied
+from domains.quotations.schemas import (
+    Hash,
+    QuotationActor,
+    QuoteBusinessContext,
+    QuoteDetailView,
+    QuoteDraftCommand,
+)
+from domains.quotations.service import (
+    QuotationActorReader,
+    QuotationVersionService,
+    QuoteContextProvider,
+    QuotePreparationPolicy,
+)
+from shared.errors import PermissionDenied, TradeOSError
 from shared.schemas.identifiers import CostSheetId, EmployeeId, OpportunityId, TenantId
 from shared.schemas.provenance import FactualField
 from shared.schemas.quote_creation import (
@@ -51,8 +53,8 @@ from shared.schemas.quote_creation import (
 )
 from shared.schemas.quote_facts import NeedQuoteFacts
 from workflows.quote_approval.basis_adapter import (
-    to_quote_basis,
     pricing_options_from_intent,
+    to_quote_basis,
 )
 
 
@@ -112,7 +114,7 @@ class QuoteApplicationService:
         """四角色policy通过后才显式构造成本tenant身份，不给任意员工默认scope。"""
         try:
             fact = await self._actors.read_current(tenant_id, actor_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- 当前身份依赖的诊断不得透出应用边界
             raise QuotationUnavailableError("dependency_unavailable") from None
         if (
             fact is None
@@ -226,7 +228,7 @@ class QuoteApplicationService:
         try:
             TypeAdapter(QuoteKey).validate_python(idempotency_key, strict=True)
             if not isinstance(command, QuoteDraftCommand):
-                raise ValueError("输入类型无效")
+                raise TypeError("输入类型无效")
             command = QuoteDraftCommand(
                 **{n: getattr(command, n) for n in QuoteDraftCommand.model_fields}
             )
@@ -274,6 +276,8 @@ class QuoteApplicationService:
                     intent, operation_id=operation.operation_id if operation else None
                 )
                 if quote:
+                    if operation is None:
+                        raise QuotationUnavailableError("storage_inconsistent")
                     self._quote_binding(operation, quote)
                 else:
                     if operation and operation.state == "completed":

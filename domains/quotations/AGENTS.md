@@ -73,3 +73,23 @@ prepare/read_internal只开放当前在职boss/product/sourcing/finance，不借
 业务hash绑定完整Need来源、负责人、原起草人和抬头版本；不含本次actor、runtime或正常机会状态。
 完整规格保留material/packaging等维度及None，供应商自由文本不能与canonical JSON猜测等价。
 context lease按员工→机会→Need取SHARE，直到内部持久事务完成；外部bytes读取不得进入锁区间。
+
+## Phase 2 不可变版本与内部入口
+
+新入口是`QuotationVersionService`/`QuotationServiceImpl`；旧`QuotationService`和旧DTO只保留兼容，
+不得把旧布尔审批/mark_sent接口转接为新路径的许可。`QuoteApplicationService`在上层编排真实冻结。
+调用`open_creation`必须持有可信context lease：报价机会advisory锁在freeze之前取得，直到本次quote
+显式提交；不能把Opportunity升级为FOR UPDATE。完整内容与line/证据引用只增，state变化须同事务审计。
+
+active为draft/pending_approval/approved/sent，全部按有效期过期。修订必须精确引用latest版本；
+到期active只落expired，latest expired按显式E2创建下一版，不能改成superseded。accepted/rejected
+不接受replaces；无active时可用新成本表/新scope/新key创建新事实，旧终态不变。
+
+老板`confirm_issuer`只作本次三字段人工确认，不宣称原件机器核验；抬头按版本只增，旧报价保留原快照。
+`get_confirmed_issuer`只供可信reader，`expire_overdue`只供租户后台作业，不是免鉴权HTTP入口。
+完成receipt只从真实持久报价投影；同key历史恢复仍检查当前内部读取权，但不追逐最新Need或有效期。
+
+`project_customer`是共享唯一CustomerQuoteView的纯白名单投影，`approved_terms`字段名不是批准证明。
+生成正式客户文件还须独立机会ABAC、全部适用审批、有效期及当前context门禁；不得返回内部成本DTO。
+`record_verified_send`只接受可信reader的实际发送精确receipt，并要求当前未过期approved；下载不是发送。
+Task4未装配T5审批/T8 Gateway及发送reader，无生产自动发送、人工accepted/rejected或HTTP状态改写入口。

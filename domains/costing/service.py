@@ -21,8 +21,7 @@ from domains.costing.models import (
     CostSheet,
     CostSheetVersion,
 )
-from domains.costing.permissions import CostingActor, CostingActorReader
-from domains.costing.permissions import CostingScope as CostingScope
+from domains.costing.permissions import CostingActor, CostingActorReader, CostingScope
 from domains.costing.quote_lock import cost_scope_hash
 from domains.costing.schemas import (
     CalculationSnapshot,
@@ -63,10 +62,10 @@ __all__ = (
     "CostScopeSourceAccess",
     "CostingActor",
     "CostingActorReader",
-    "CostingScope",
     "CostingContext",
     "CostingFreezeService",
     "CostingQuoteService",
+    "CostingScope",
     "CostingService",
     "FrozenCostBasis",
     "NeedFactsValidator",

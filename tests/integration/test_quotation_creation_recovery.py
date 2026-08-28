@@ -8,19 +8,26 @@ from datetime import timedelta
 import pytest
 import pytest_asyncio
 
-from domains.quotations import schemas as q, service as public
+from domains.quotations import schemas as q
+from domains.quotations import service as public
 from tests.integration.test_quotations import NoSend
 from tests.integration.test_quotations import (
-    quotation_case as quotation_case,
-    prepared_quote as prepared_quote,
+    context_case as context_case,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
 )
 from tests.integration.test_quotations import (
-    freeze_case as freeze_case,
-    context_case as context_case,
+    freeze_case as freeze_case,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
 )
 from tests.integration.test_quotations import (
-    unit_engine as unit_engine,
-    unit_db_case as unit_db_case,
+    prepared_quote as prepared_quote,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
+)
+from tests.integration.test_quotations import (
+    quotation_case as quotation_case,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
+)
+from tests.integration.test_quotations import (
+    unit_db_case as unit_db_case,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
+)
+from tests.integration.test_quotations import (
+    unit_engine as unit_engine,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
 )
 
 
@@ -45,12 +52,12 @@ class RecoveryCase:
         )
 
     def rebuild(self, *, forbid_context=False):
+        from infra.db.quote_context import SqlAlchemyQuoteContextProvider
         from workflows.quote_approval.application import QuoteApplicationService
         from workflows.quote_approval.completion_reader import (
             PersistentQuoteCreationCompletionReader,
         )
         from workflows.quote_approval.issuer_reader import PersistentQuoteIssuerReader
-        from infra.db.quote_context import SqlAlchemyQuoteContextProvider
 
         c, f = self.quotation, self.freeze
         c.service = type(c.service)(
@@ -170,6 +177,16 @@ async def test_frozen_before_quote_failure_resumes_same_key(recovery_case, monke
     assert await r.freeze.locked_at() is not None
     monkeypatch.setattr(repo, "add", original)
     r.rebuild()
+    from domains.costing.errors import CostFreezeError
+
+    with pytest.raises(CostFreezeError) as error:
+        await r.app.create(
+            r.quotation.tenant,
+            r.command,
+            actor_id=r.quotation.actor.employee_id,
+            idempotency_key="changed-key",
+        )
+    assert error.value.code == "operation_pending"
     quote = await r.create()
     assert quote.content.operation_id == operation.operation_id
     assert (await r.operation()).state == "completed"
@@ -224,10 +241,12 @@ async def test_same_key_both_initially_missing_recheck_after_opportunity_lock(
 
 async def new_command(r, key, *, previous=None):
     """每个竞争者有真实独立cost sheet/coverage/scope，绝不复制假父行。"""
-    from domains.costing import schemas as cost, service as cost_public
+    from decimal import Decimal
+
+    from domains.costing import schemas as cost
+    from domains.costing import service as cost_public
     from domains.costing.permissions import Phase1CostingAuthorizer
     from shared.schemas.identifiers import CostSheetId
-    from decimal import Decimal
 
     c, f = r.quotation, r.freeze
     old = importlib.import_module("domains.costing.service_impl").CostingServiceImpl(
@@ -321,8 +340,9 @@ async def new_command(r, key, *, previous=None):
 async def test_losing_sheet_has_not_frozen_at_first_or_revision_race(
     recovery_case, revision
 ):
-    from domains.quotations.errors import QuotationError
     from sqlalchemy import text
+
+    from domains.quotations.errors import QuotationError
 
     r = recovery_case
     previous = await r.create("original") if revision else None
@@ -507,3 +527,25 @@ async def test_revision_transaction_rolls_back_previous_state_and_new_content(
         == 1
     )
     assert (await r.operation("rollback-revision")).state == "frozen"
+
+
+async def test_expiry_races_revision_without_overwriting_new_active(recovery_case):
+    r = recovery_case
+    old = await r.create()
+    r.quotation.clock[0] = old.content.valid_until + timedelta(seconds=1)
+    command = await new_command(r, "expiry-race", previous=old)
+    quote, expired = await asyncio.gather(
+        r.app.create(
+            r.quotation.tenant,
+            command,
+            actor_id=r.quotation.actor.employee_id,
+            idempotency_key="expiry-race",
+        ),
+        r.quotation.service.expire_overdue(r.quotation.tenant, limit=10),
+    )
+    assert expired in (0, 1)
+    versions = await r.quotation.service.list_versions(
+        r.quotation.tenant, old.content.opportunity_id, actor=r.quotation.actor
+    )
+    assert [v.state for v in versions] == [q.QuoteState.DRAFT, q.QuoteState.EXPIRED]
+    assert versions[0] == quote and versions[0].content.version == 2

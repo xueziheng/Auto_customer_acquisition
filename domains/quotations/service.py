@@ -4,115 +4,181 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Protocol, runtime_checkable, AsyncContextManager
+from contextlib import AbstractAsyncContextManager
+from typing import Protocol, runtime_checkable
 
 from domains.quotations.context import (
-    QuoteContextProvider as QuoteContextProvider,
-)
-from domains.quotations.context import (
-    QuoteIssuerReader as QuoteIssuerReader,
-)
-from domains.quotations.context import (
-    canonical_quote_specification as canonical_quote_specification,
-)
-from domains.quotations.context import (
-    quote_context_hash as quote_context_hash,
-)
-from domains.quotations.context import (
-    quote_specification as quote_specification,
-)
-from domains.quotations.context import (
-    quote_specification_hash as quote_specification_hash,
+    QuoteContextProvider,
+    QuoteIssuerReader,
+    canonical_quote_specification,
+    quote_context_hash,
+    quote_specification,
+    quote_specification_hash,
 )
 from domains.quotations.models import ForbiddenAutoCommitment
 from domains.quotations.permissions import (
-    QuotePreparationPolicy as QuotePreparationPolicy,
+    QuotePreparationPolicy,
+    StrictQuotePreparationPolicy,
 )
-from domains.quotations.permissions import (
-    StrictQuotePreparationPolicy as StrictQuotePreparationPolicy,
+from domains.quotations.schemas import (
+    QuotationActor,
+    QuoteBasis,
+    QuoteBusinessContext,
+    QuoteCreateRequest,
+    QuoteDetailView,
+    QuoteIssuer,
+    QuoteIssuerCreate,
+    QuoteSendReceipt,
+    QuoteView,
 )
-from domains.quotations.schemas import QuoteCreateRequest, QuoteView
+from domains.quotations.version_repository import (
+    QuotationUowFactory,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
+    MessageAttemptId,
     OpportunityId,
     QuoteId,
     TenantId,
-    MessageAttemptId,
 )
+from shared.schemas.quote_creation import QuoteCreationCompletion, QuoteCreationIntent
 from shared.schemas.quote_facts import QuoteEmployeeFact
-from shared.schemas.quote_creation import QuoteCreationIntent, QuoteCreationCompletion
-from domains.quotations.schemas import (QuoteBusinessContext, QuotationActor, QuoteBasis, QuoteDetailView,
-    QuoteIssuer, QuoteIssuerCreate, QuoteSendReceipt)
-from domains.quotations.version_repository import QuotationUowFactory as QuotationUowFactory
 
 
 class QuotationActorReader(Protocol):
     """可信当前员工事实读取，不接受客户端角色自证。"""
-    async def read_current(self, tenant_id: TenantId, employee_id: EmployeeId) -> QuoteEmployeeFact | None:
+
+    async def read_current(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> QuoteEmployeeFact | None:
         """读取当前租户的在职与角色事实。"""
         ...
 
 
 class QuoteSendReceiptReader(Protocol):
     """锁外读取真实发送记录；未装配不默认成功。"""
-    async def read(self, tenant_id: TenantId, attempt_id: MessageAttemptId, *, actor_id: EmployeeId) -> QuoteSendReceipt | None:
+
+    async def read(
+        self, tenant_id: TenantId, attempt_id: MessageAttemptId, *, actor_id: EmployeeId
+    ) -> QuoteSendReceipt | None:
         """返回实际发送的精确内容绑定，不是PDF下载。"""
         ...
 
 
 class QuoteCreationSession(Protocol):
     """外层context lease内、freeze前打开的同事务创建会话。"""
-    async def preflight(self, intent: QuoteCreationIntent, *, operation_id: str | None) -> QuoteDetailView | None:
+
+    async def preflight(
+        self, intent: QuoteCreationIntent, *, operation_id: str | None
+    ) -> QuoteDetailView | None:
         """机会锁后先回放历史，再校验CAS；未通过不得freeze。"""
         ...
-    async def create_from_basis(self, intent: QuoteCreationIntent, basis: QuoteBasis, *, operation_id: str) -> QuoteDetailView:
+
+    async def create_from_basis(
+        self, intent: QuoteCreationIntent, basis: QuoteBasis, *, operation_id: str
+    ) -> QuoteDetailView:
         """预检完全同载荷才能在当前session写入。"""
         ...
 
 
 class QuotationVersionService(Protocol):
     """新生产候选端口，旧骨架服务不转调本实现。"""
-    def open_creation(self, tenant_id: TenantId, opportunity_id: OpportunityId, context: QuoteBusinessContext,
-        *, actor: QuotationActor) -> AsyncContextManager[QuoteCreationSession]:
+
+    def open_creation(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        context: QuoteBusinessContext,
+        *,
+        actor: QuotationActor,
+    ) -> AbstractAsyncContextManager[QuoteCreationSession]:
         """保持报价机会锁跨成本freeze直到本事务提交。"""
         ...
-    async def create_from_basis(self, tenant_id: TenantId, intent: QuoteCreationIntent, basis: QuoteBasis,
-        context: QuoteBusinessContext, *, operation_id: str, actor: QuotationActor) -> QuoteDetailView:
+
+    async def create_from_basis(
+        self,
+        tenant_id: TenantId,
+        intent: QuoteCreationIntent,
+        basis: QuoteBasis,
+        context: QuoteBusinessContext,
+        *,
+        operation_id: str,
+        actor: QuotationActor,
+    ) -> QuoteDetailView:
         """可信已持context lease调用方的便利入口，共用同一session规则。"""
         ...
-    async def get(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteDetailView:
+
+    async def get(
+        self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor
+    ) -> QuoteDetailView:
         """当前内部授权后读历史，不重建最新事实。"""
         ...
-    async def list_versions(self, tenant_id: TenantId, opportunity_id: OpportunityId, *, actor: QuotationActor) -> tuple[QuoteDetailView, ...]:
+
+    async def list_versions(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: QuotationActor,
+    ) -> tuple[QuoteDetailView, ...]:
         """当前内部授权后版本降序读取。"""
         ...
-    async def get_by_operation(self, tenant_id: TenantId, operation_id: str, *, actor: QuotationActor) -> QuoteDetailView | None:
+
+    async def get_by_operation(
+        self, tenant_id: TenantId, operation_id: str, *, actor: QuotationActor
+    ) -> QuoteDetailView | None:
         """当前内部授权后读操作唯一真实报价。"""
         ...
-    async def creation_completion(self, tenant_id: TenantId, operation_id: str, *, actor: QuotationActor) -> QuoteCreationCompletion | None:
+
+    async def creation_completion(
+        self, tenant_id: TenantId, operation_id: str, *, actor: QuotationActor
+    ) -> QuoteCreationCompletion | None:
         """只从持久内容投影真实完成事实。"""
         ...
-    async def confirm_issuer(self, tenant_id: TenantId, command: QuoteIssuerCreate, *, actor: QuotationActor, idempotency_key: str) -> QuoteIssuer:
+
+    async def confirm_issuer(
+        self,
+        tenant_id: TenantId,
+        command: QuoteIssuerCreate,
+        *,
+        actor: QuotationActor,
+        idempotency_key: str,
+    ) -> QuoteIssuer:
         """当前老板逐字段手工确认抬头。"""
         ...
+
     async def get_confirmed_issuer(self, tenant_id: TenantId) -> QuoteIssuer:
         """可信context reader专用，不注册无授权HTTP。"""
         ...
+
     async def expire_overdue(self, tenant_id: TenantId, *, limit: int) -> int:
         """租户后台作业逐机会短事务过期。"""
         ...
-    async def record_verified_send(self, tenant_id: TenantId, quote_id: QuoteId, receipt: QuoteSendReceipt, *, actor: QuotationActor) -> QuoteDetailView:
+
+    async def record_verified_send(
+        self,
+        tenant_id: TenantId,
+        quote_id: QuoteId,
+        receipt: QuoteSendReceipt,
+        *,
+        actor: QuotationActor,
+    ) -> QuoteDetailView:
         """真实reader回执+approved门禁后原子记录发送。"""
         ...
-from shared.schemas.quote_creation import (
-    quote_creation_request_hash as quote_creation_request_hash,
-)
+
+
 from domains.quotations.content import (
-    build_quote_content as build_quote_content,
-    format_quote_specification as format_quote_specification,
-    quote_content_hash as quote_content_hash,
-    validate_quote_basis as validate_quote_basis,
+    build_quote_content,
+    format_quote_specification,
+    project_customer,
+    quote_content_hash,
+    to_legacy_quote_view,
+    validate_customer_projection,
+    validate_quote_basis,
+)
+from shared.schemas.quote_creation import (
+    quote_creation_request_hash,
 )
 
 
@@ -299,9 +365,7 @@ class QuotationService(Protocol):
         """
         ...
 
-    async def get(
-        self, tenant_id: TenantId, quote_id: QuoteId
-    ) -> QuoteView: ...
+    async def get(self, tenant_id: TenantId, quote_id: QuoteId) -> QuoteView: ...
 
     async def list_versions(
         self, tenant_id: TenantId, opportunity_id: OpportunityId
@@ -309,3 +373,30 @@ class QuotationService(Protocol):
         """一个机会的全部报价版本。**含 SUPERSEDED**——
         「我们给这家客户先后报过什么价」是谈判的重要背景。"""
         ...
+
+
+__all__ = [
+    "QuotationActorReader",
+    "QuotationService",
+    "QuotationUowFactory",
+    "QuotationVersionService",
+    "QuoteContextProvider",
+    "QuoteCreationSession",
+    "QuoteIssuerReader",
+    "QuotePreparationPolicy",
+    "QuoteSendReceiptReader",
+    "StrictQuotePreparationPolicy",
+    "build_quote_content",
+    "canonical_quote_specification",
+    "contains_forbidden_commitment",
+    "format_quote_specification",
+    "project_customer",
+    "quote_content_hash",
+    "quote_context_hash",
+    "quote_creation_request_hash",
+    "quote_specification",
+    "quote_specification_hash",
+    "to_legacy_quote_view",
+    "validate_customer_projection",
+    "validate_quote_basis",
+]

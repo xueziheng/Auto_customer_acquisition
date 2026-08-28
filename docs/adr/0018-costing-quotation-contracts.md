@@ -156,3 +156,31 @@ T3B完成回执只证明旧创建事实；当前active或latest expired版本的
 事实编码或全局Money。成本域calculate/freeze的人工原始单价在请求hash与成本事务前复用
 既有Numeric(28,12)无损输入边界，并要求正值；越界固定invalid_input，无新增持久效果。
 T1的50位确定性计算与派生快照精度保持不变，shared不套28位商业金额限制。
+
+## Task 4：真实不可变报价版本与恢复
+
+新增`QuotationVersionService`及0044七表，保留旧报价构造和旧Protocol。完整quote内容保存真实operation、
+basis、人工scope、政策/计算、采购及费用证据、成本FX与报价FX、原起草人/owner、老板抬头和单产品行。
+金额JSON为十进制字符串；内容hash排除created_at和自身hash，其他嵌套字段全部绑定。读取重验hash，
+SQL绑定同租户真实父行和operation/basis完整载荷；内容/子行不可修改删除，state变更与事件原子落库。
+非空降级拒绝，不删除报价商业历史。
+
+创建顺序是外层员工→机会→Need SHARE lease，内层报价机会advisory→preflight→真实freeze→quote写入及
+显式commit。Opportunity不能升级写锁，避免与外层lease自等待。机会版本/active唯一约束与同事务CAS
+令不同成本表的并发输方在freeze前拒绝，不占其成本表。到期active保持expired；latest expired需显式E2。
+accepted/rejected不能被替换，但新成本表/新scope/新key可在无active时建立下一版事实，不修改旧终态。
+
+同key先按原prepared_by/scope_hash重建完整意图比对，再寻找真实quote；存在即在无业务锁时完成原operation。
+当前Need/抬头/期限变化不阻断历史恢复，当前内部读取权仍必须有效。quote未写时成本冻结仍pending，
+写后complete失败或提交回包未知只按原key恢复。真实completion reader精确返回持久版本及首次CAS替换版本；
+成本有expected才检查expected+1，无replaces不能假设version永远为1，其顺序由真实报价机会锁和reader证明。
+所有tenant/operation/request/basis/replaces绑定及已完成receipt精确等值约束不变。
+
+老板抬头采用租户锁和连续版本，只确认本次name/address/contact原输入，完整逐字段Provenance绑定老板。
+新确认不撤销旧记录，创建使用该次context选定的真实版本，不追逐latest，不影响历史报价。正式客户文件
+仍由后续当前context门禁处理新抬头差异。
+
+共享`CustomerQuoteView`是唯一客户白名单；纯投影不证明权限、批准或可发送，旧内部视图未知姓名保持None。
+后台expiry覆盖四active状态。发送记录必须有可信reader精确实际receipt、真实attempt FK且当前未过期approved，
+receipt/sent/event同事务，重复receipt只返回当前状态。测试中的审批状态/发送reader受控，T5真实审批/outbox、
+T8 Gateway/客户文件ABAC/HTTP及生产装配均未完成，本决策不授予自动承诺或发送权限。

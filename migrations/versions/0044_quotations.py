@@ -1,6 +1,17 @@
 """不可变报价版本及人工抬头。Revision0044，前序0043。"""
+
 from alembic import op
-from sqlalchemy import Column, String, Integer, DateTime, PrimaryKeyConstraint, UniqueConstraint, ForeignKeyConstraint, CheckConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKeyConstraint,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects import postgresql
 
 revision = "0044"
@@ -11,7 +22,8 @@ depends_on = None
 
 def upgrade() -> None:
     """建立tenant复合FK和不可变内容；不回改旧迁移。"""
-    op.create_table("quotation_issuers",
+    op.create_table(
+        "quotation_issuers",
         Column("tenant_id", String(40), nullable=False),
         Column("issuer_id", String(40), nullable=False),
         Column("version", Integer, nullable=False),
@@ -21,14 +33,28 @@ def upgrade() -> None:
         Column("confirmed_by", String(40), nullable=False),
         Column("confirmed_at", DateTime(timezone=True), nullable=False),
         Column("payload", postgresql.JSONB, nullable=False),
-        PrimaryKeyConstraint('tenant_id','issuer_id',name='pk_quotation_issuers'),
-        UniqueConstraint('tenant_id','version',name='uq_quotation_issuers_version'),
-        UniqueConstraint('tenant_id','idempotency_key',name='uq_quotation_issuers_key'),
-        ForeignKeyConstraint(['tenant_id','confirmed_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_issuers_employee',ondelete='RESTRICT'),
-        CheckConstraint("version>0 AND idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name='ck_quotation_issuers_input'),
-        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_issuers_hash'),
+        PrimaryKeyConstraint("tenant_id", "issuer_id", name="pk_quotation_issuers"),
+        UniqueConstraint("tenant_id", "version", name="uq_quotation_issuers_version"),
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_quotation_issuers_key"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "confirmed_by"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_quotation_issuers_employee",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "version>0 AND idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",
+            name="ck_quotation_issuers_input",
+        ),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_quotation_issuers_hash",
+        ),
     )
-    op.create_table("quotations",
+    op.create_table(
+        "quotations",
         Column("tenant_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
         Column("opportunity_id", String(40), nullable=False),
@@ -47,43 +73,124 @@ def upgrade() -> None:
         Column("valid_until", DateTime(timezone=True), nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
         Column("content", postgresql.JSONB, nullable=False),
-        PrimaryKeyConstraint('tenant_id','quote_id',name='pk_quotations'),
-        UniqueConstraint('tenant_id','opportunity_id','version',name='uq_quotations_version'),
-        UniqueConstraint('tenant_id','operation_id',name='uq_quotations_operation'),
-        ForeignKeyConstraint(['tenant_id','opportunity_id'],['opportunities.tenant_id','opportunities.opportunity_id'],name='fk_quotations_opportunity_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','operation_id'],['quote_creation_operations.tenant_id','quote_creation_operations.operation_id'],name='fk_quotations_operation_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','basis_id'],['costing_quote_bases.tenant_id','costing_quote_bases.basis_id'],name='fk_quotations_basis_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','cost_sheet_id'],['cost_sheets.tenant_id','cost_sheets.cost_sheet_id'],name='fk_quotations_cost_sheet_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','issuer_id'],['quotation_issuers.tenant_id','quotation_issuers.issuer_id'],name='fk_quotations_issuer_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','prepared_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_prepared_by',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','owner_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_owner_id',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','replaces_quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotations_replaces_quote_id',ondelete='RESTRICT'),
-        CheckConstraint("version>0 AND isfinite(valid_until) AND isfinite(created_at) AND valid_until>created_at",name='ck_quotations_time'),
-        CheckConstraint("(replaces_quote_id IS NULL AND replaced_quote_version IS NULL) OR (replaces_quote_id IS NOT NULL AND replaced_quote_version>0)",name='ck_quotations_revision'),
-        CheckConstraint("state IN ('draft','pending_approval','approved','sent','accepted','rejected','expired','superseded')",name='ck_quotations_state'),
-        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotations_hash'),
+        PrimaryKeyConstraint("tenant_id", "quote_id", name="pk_quotations"),
+        UniqueConstraint(
+            "tenant_id", "opportunity_id", "version", name="uq_quotations_version"
+        ),
+        UniqueConstraint("tenant_id", "operation_id", name="uq_quotations_operation"),
+        ForeignKeyConstraint(
+            ["tenant_id", "opportunity_id"],
+            ["opportunities.tenant_id", "opportunities.opportunity_id"],
+            name="fk_quotations_opportunity_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "operation_id"],
+            [
+                "quote_creation_operations.tenant_id",
+                "quote_creation_operations.operation_id",
+            ],
+            name="fk_quotations_operation_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "basis_id"],
+            ["costing_quote_bases.tenant_id", "costing_quote_bases.basis_id"],
+            name="fk_quotations_basis_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "cost_sheet_id"],
+            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
+            name="fk_quotations_cost_sheet_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "issuer_id"],
+            ["quotation_issuers.tenant_id", "quotation_issuers.issuer_id"],
+            name="fk_quotations_issuer_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "prepared_by"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_quotations_prepared_by",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner_id"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_quotations_owner_id",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "replaces_quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotations_replaces_quote_id",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "version>0 AND isfinite(valid_until) AND isfinite(created_at) AND valid_until>created_at",
+            name="ck_quotations_time",
+        ),
+        CheckConstraint(
+            "(replaces_quote_id IS NULL AND replaced_quote_version IS NULL) OR (replaces_quote_id IS NOT NULL AND replaced_quote_version>0)",
+            name="ck_quotations_revision",
+        ),
+        CheckConstraint(
+            "state IN ('draft','pending_approval','approved','sent','accepted','rejected','expired','superseded')",
+            name="ck_quotations_state",
+        ),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_quotations_hash",
+        ),
     )
-    op.create_table("quotation_lines",
+    op.create_table(
+        "quotation_lines",
         Column("tenant_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
         Column("line_number", Integer, nullable=False),
         Column("payload", postgresql.JSONB, nullable=False),
-        PrimaryKeyConstraint('tenant_id','quote_id','line_number',name='pk_quotation_lines'),
-        CheckConstraint('line_number=1',name='ck_quotation_lines_one'),
-        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_lines_quote',ondelete='RESTRICT'),
+        PrimaryKeyConstraint(
+            "tenant_id", "quote_id", "line_number", name="pk_quotation_lines"
+        ),
+        CheckConstraint("line_number=1", name="ck_quotation_lines_one"),
+        ForeignKeyConstraint(
+            ["tenant_id", "quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotation_lines_quote",
+            ondelete="RESTRICT",
+        ),
     )
-    op.create_table("quotation_evidence_refs",
+    op.create_table(
+        "quotation_evidence_refs",
         Column("tenant_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
         Column("evidence_id", String(64), nullable=False),
         Column("evidence_hash", String(64), nullable=False),
         Column("kind", String(24), nullable=False),
-        PrimaryKeyConstraint('tenant_id','quote_id','evidence_id',name='pk_quotation_evidence_refs'),
-        ForeignKeyConstraint(['tenant_id','evidence_id'],['costing_price_evidence.tenant_id','costing_price_evidence.evidence_id'],name='fk_quotation_evidence_refs_evidence',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_evidence_refs_quote',ondelete='RESTRICT'),
-        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_evidence_refs_hash'),
+        PrimaryKeyConstraint(
+            "tenant_id", "quote_id", "evidence_id", name="pk_quotation_evidence_refs"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "evidence_id"],
+            ["costing_price_evidence.tenant_id", "costing_price_evidence.evidence_id"],
+            name="fk_quotation_evidence_refs_evidence",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotation_evidence_refs_quote",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_quotation_evidence_refs_hash"
+        ),
     )
-    op.create_table("quotation_state_events",
+    op.create_table(
+        "quotation_state_events",
         Column("tenant_id", String(40), nullable=False),
         Column("event_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
@@ -93,12 +200,25 @@ def upgrade() -> None:
         Column("reason", String(32), nullable=False),
         Column("at", DateTime(timezone=True), nullable=False),
         Column("reference_id", String(64), nullable=True),
-        PrimaryKeyConstraint('tenant_id','event_id',name='pk_quotation_state_events'),
-        ForeignKeyConstraint(['tenant_id','actor_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_state_events_employee',ondelete='RESTRICT'),
-        UniqueConstraint('tenant_id','quote_id','to_state',name='uq_quotation_state_events_target'),
-        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_state_events_quote',ondelete='RESTRICT'),
+        PrimaryKeyConstraint("tenant_id", "event_id", name="pk_quotation_state_events"),
+        ForeignKeyConstraint(
+            ["tenant_id", "actor_id"],
+            ["employees.tenant_id", "employees.employee_id"],
+            name="fk_quotation_state_events_employee",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "tenant_id", "quote_id", "to_state", name="uq_quotation_state_events_target"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotation_state_events_quote",
+            ondelete="RESTRICT",
+        ),
     )
-    op.create_table("quotation_approval_bindings",
+    op.create_table(
+        "quotation_approval_bindings",
         Column("tenant_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
         Column("approval_type", String(64), nullable=False),
@@ -106,24 +226,68 @@ def upgrade() -> None:
         Column("quote_version", Integer, nullable=False),
         Column("content_hash", String(64), nullable=False),
         Column("bound_at", DateTime(timezone=True), nullable=False),
-        PrimaryKeyConstraint('tenant_id','quote_id','approval_type','approval_id',name='pk_quotation_approval_bindings'),
-        ForeignKeyConstraint(['tenant_id','approval_id'],['approval_packages.tenant_id','approval_packages.approval_id'],name='fk_quotation_approval_bindings_approval',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_approval_bindings_quote',ondelete='RESTRICT'),
-        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_approval_bindings_hash'),
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "quote_id",
+            "approval_type",
+            "approval_id",
+            name="pk_quotation_approval_bindings",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "approval_id"],
+            ["approval_packages.tenant_id", "approval_packages.approval_id"],
+            name="fk_quotation_approval_bindings_approval",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotation_approval_bindings_quote",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_quotation_approval_bindings_hash",
+        ),
     )
-    op.create_table("quotation_send_receipts",
+    op.create_table(
+        "quotation_send_receipts",
         Column("tenant_id", String(40), nullable=False),
         Column("attempt_id", String(40), nullable=False),
         Column("quote_id", String(40), nullable=False),
         Column("content_hash", String(64), nullable=False),
         Column("sent_at", DateTime(timezone=True), nullable=False),
-        PrimaryKeyConstraint('tenant_id','attempt_id',name='pk_quotation_send_receipts'),
-        ForeignKeyConstraint(['tenant_id','attempt_id'],['outreach_message_attempts.tenant_id','outreach_message_attempts.attempt_id'],name='fk_quotation_send_receipts_attempt',ondelete='RESTRICT'),
-        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_send_receipts_quote',ondelete='RESTRICT'),
-        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_send_receipts_hash'),
+        PrimaryKeyConstraint(
+            "tenant_id", "attempt_id", name="pk_quotation_send_receipts"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "attempt_id"],
+            [
+                "outreach_message_attempts.tenant_id",
+                "outreach_message_attempts.attempt_id",
+            ],
+            name="fk_quotation_send_receipts_attempt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "quote_id"],
+            ["quotations.tenant_id", "quotations.quote_id"],
+            name="fk_quotation_send_receipts_quote",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'", name="ck_quotation_send_receipts_hash"
+        ),
     )
-    op.create_index("uq_quotations_active","quotations",["tenant_id","opportunity_id"],unique=True,
-        postgresql_where=text("state IN ('draft','pending_approval','approved','sent')"))
+    op.create_index(
+        "uq_quotations_active",
+        "quotations",
+        ["tenant_id", "opportunity_id"],
+        unique=True,
+        postgresql_where=text(
+            "state IN ('draft','pending_approval','approved','sent')"
+        ),
+    )
     _triggers()
 
 
@@ -131,10 +295,18 @@ def _triggers() -> None:
     """SQL绕过不能修改历史内容或制造无审计状态。"""
     op.execute("""CREATE FUNCTION reject_quotation_mutation() RETURNS trigger AS $$
         BEGIN RAISE EXCEPTION 'immutable quotation record'; END; $$ LANGUAGE plpgsql""")
-    for table in ("quotation_issuers","quotation_lines","quotation_evidence_refs","quotation_state_events",
-                  "quotation_approval_bindings","quotation_send_receipts"):
-        op.execute(f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table} "
-                   "FOR EACH ROW EXECUTE FUNCTION reject_quotation_mutation()")
+    for table in (
+        "quotation_issuers",
+        "quotation_lines",
+        "quotation_evidence_refs",
+        "quotation_state_events",
+        "quotation_approval_bindings",
+        "quotation_send_receipts",
+    ):
+        op.execute(
+            f"CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table} "
+            "FOR EACH ROW EXECUTE FUNCTION reject_quotation_mutation()"
+        )
     op.execute("""CREATE FUNCTION guard_quotation_write() RETURNS trigger AS $$
       DECLARE operation quote_creation_operations%ROWTYPE; basis costing_quote_bases%ROWTYPE;
         issuer quotation_issuers%ROWTYPE; mapped jsonb; prices jsonb; field text;
@@ -187,8 +359,10 @@ def _triggers() -> None:
         IF mapped IS DISTINCT FROM NEW.content->'basis' THEN RAISE EXCEPTION 'quotation basis mismatch'; END IF;
         RETURN NEW;
       END; $$ LANGUAGE plpgsql""")
-    op.execute("CREATE TRIGGER trg_quotations_guard BEFORE INSERT OR UPDATE OR DELETE ON quotations "
-        "FOR EACH ROW EXECUTE FUNCTION guard_quotation_write()")
+    op.execute(
+        "CREATE TRIGGER trg_quotations_guard BEFORE INSERT OR UPDATE OR DELETE ON quotations "
+        "FOR EACH ROW EXECUTE FUNCTION guard_quotation_write()"
+    )
     op.execute("""CREATE FUNCTION audit_quotation_write() RETURNS trigger AS $$
       DECLARE old_state text; n integer;
       BEGIN
@@ -206,8 +380,10 @@ def _triggers() -> None:
         END IF;
         RETURN NULL;
       END; $$ LANGUAGE plpgsql""")
-    op.execute("CREATE CONSTRAINT TRIGGER trg_quotations_audit AFTER INSERT OR UPDATE ON quotations "
-        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION audit_quotation_write()")
+    op.execute(
+        "CREATE CONSTRAINT TRIGGER trg_quotations_audit AFTER INSERT OR UPDATE ON quotations "
+        "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION audit_quotation_write()"
+    )
     op.execute("""CREATE FUNCTION guard_quotation_child() RETURNS trigger AS $$
       DECLARE quote quotations%ROWTYPE; price costing_price_evidence%ROWTYPE; evidence jsonb;
       BEGIN
@@ -233,14 +409,36 @@ def _triggers() -> None:
         END IF;
         RETURN NEW;
       END; $$ LANGUAGE plpgsql""")
-    for table in ("quotation_lines","quotation_evidence_refs","quotation_state_events",
-                  "quotation_approval_bindings","quotation_send_receipts"):
-        op.execute(f"CREATE TRIGGER trg_{table}_binding BEFORE INSERT ON {table} "
-            "FOR EACH ROW EXECUTE FUNCTION guard_quotation_child()")
+    for table in (
+        "quotation_lines",
+        "quotation_evidence_refs",
+        "quotation_state_events",
+        "quotation_approval_bindings",
+        "quotation_send_receipts",
+    ):
+        op.execute(
+            f"CREATE TRIGGER trg_{table}_binding BEFORE INSERT ON {table} "
+            "FOR EACH ROW EXECUTE FUNCTION guard_quotation_child()"
+        )
 
 
 def downgrade() -> None:
     """隔离迁移往返；删除商业历史须由运维另行获得授权。"""
+    for table in (
+        "quotation_issuers",
+        "quotations",
+        "quotation_lines",
+        "quotation_evidence_refs",
+        "quotation_state_events",
+        "quotation_approval_bindings",
+        "quotation_send_receipts",
+    ):
+        if (
+            op.get_bind()
+            .execute(text(f"SELECT EXISTS (SELECT 1 FROM {table})"))
+            .scalar()
+        ):
+            raise RuntimeError("存在不可变报价历史，拒绝降级")
     op.drop_table("quotation_send_receipts")
     op.drop_table("quotation_approval_bindings")
     op.drop_table("quotation_state_events")

@@ -1,16 +1,23 @@
 """workflow显式等值适配两个域公开DTO；不透传Any、不改写证据语义。"""
+
 from domains.costing import schemas as cost
 from domains.quotations import schemas as quote
 from domains.quotations.errors import QuotationError
-from shared.schemas.identifiers import TenantId
-from shared.schemas.money import Money
+from shared.schemas.identifiers import (
+    CostSheetId,
+    EmployeeId,
+    OpportunityId,
+    TenantId,
+    ValidatedNeedId,
+)
+from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.quote_creation import QuoteCreationIntent, QuoteRoundingInput
 
 
 def _source(value: cost.SourceEvidence) -> quote.QuoteEvidenceSource:
     """逐字段保留SourceEvidence所有值，不以同名dict透传。"""
     return quote.QuoteEvidenceSource(
-        tenant_id=value.tenant_id,
+        tenant_id=TenantId(value.tenant_id),
         source_ref=value.source_ref,
         artifact_id=value.artifact_id,
         content_hash=value.content_hash,
@@ -32,7 +39,7 @@ def _policy(value: cost.PricingPolicyView) -> quote.QuotePolicySnapshot:
         cost_groups=value.cost_groups,
         effective_from=value.effective_from,
         source_ref=value.source_ref,
-        confirmed_by=value.confirmed_by,
+        confirmed_by=EmployeeId(value.confirmed_by),
         confirmed_at=value.confirmed_at,
         source=_source(value.source) if value.source is not None else None,
         field_provenance=value.field_provenance,
@@ -66,15 +73,17 @@ def _coverage(value: cost.CostCoverageView) -> quote.QuoteCoverageSnapshot:
         decisions=tuple(_decision(item) for item in value.decisions),
         acquisition_mode=value.acquisition_mode,
         coverage_id=value.coverage_id,
-        cost_sheet_id=value.cost_sheet_id,
+        cost_sheet_id=CostSheetId(value.cost_sheet_id),
         content_hash=value.content_hash,
-        confirmed_by=value.confirmed_by,
+        confirmed_by=EmployeeId(value.confirmed_by),
         confirmed_at=value.confirmed_at,
         field_provenance=value.field_provenance,
     )
 
 
-def _scope_binding(value: cost.CostScopeEvidenceBinding) -> quote.QuoteScopeEvidenceBinding:
+def _scope_binding(
+    value: cost.CostScopeEvidenceBinding,
+) -> quote.QuoteScopeEvidenceBinding:
     """逐字段保留CostScopeEvidenceBinding所有值，不以同名dict透传。"""
     return quote.QuoteScopeEvidenceBinding(
         evidence_id=value.evidence_id,
@@ -101,7 +110,9 @@ def _scope(value: cost.CostScopeConfirmationView) -> quote.QuoteScopeConfirmatio
         terms=value.terms,
         terms_hash=value.terms_hash,
         valid_until=value.valid_until,
-        evidence_bindings=tuple(_scope_binding(item) for item in value.evidence_bindings),
+        evidence_bindings=tuple(
+            _scope_binding(item) for item in value.evidence_bindings
+        ),
         content_hash=value.content_hash,
         provenance=value.provenance,
     )
@@ -125,7 +136,7 @@ def _metrics(value: cost.ProfitMetrics) -> quote.QuoteProfitMetrics:
 def _calculation(value: cost.CalculationSnapshot) -> quote.QuoteCalculationSnapshot:
     """逐字段保留CalculationSnapshot所有值，不以同名dict透传。"""
     return quote.QuoteCalculationSnapshot(
-        cost_sheet_id=value.cost_sheet_id,
+        cost_sheet_id=CostSheetId(value.cost_sheet_id),
         policy_id=value.policy_id,
         inputs_hash=value.inputs_hash,
         context_hash=value.context_hash,
@@ -145,7 +156,11 @@ def _options(value: cost.PricingOptions) -> quote.QuotePricingOptions:
     return quote.QuotePricingOptions(
         mode=value.mode,
         unit_price=value.unit_price,
-        rounding=QuoteRoundingInput(unit_places=value.rounding.unit_places, total_places=value.rounding.total_places, strategy=value.rounding.strategy),
+        rounding=QuoteRoundingInput(
+            unit_places=value.rounding.unit_places,
+            total_places=value.rounding.total_places,
+            strategy=value.rounding.strategy,
+        ),
         quote_fx=value.quote_fx,
         algorithm_version=value.algorithm_version,
     )
@@ -156,7 +171,7 @@ def _fx(value: cost.QuoteFxView) -> quote.QuoteFxSnapshot:
     return quote.QuoteFxSnapshot(
         source=_source(value.source),
         field_provenance=value.field_provenance,
-        confirmed_by=value.confirmed_by,
+        confirmed_by=EmployeeId(value.confirmed_by),
         confirmed_at=value.confirmed_at,
         fx_id=value.fx_id,
         content_hash=value.content_hash,
@@ -190,7 +205,9 @@ def to_quote_basis(value: cost.FrozenCostBasis) -> quote.QuoteBasis:
         policy=_policy(value.policy),
         coverage=_coverage(value.coverage),
         calculation=_calculation(value.calculation),
-        price_evidence=tuple(_price(item, value.tenant_id) for item in value.price_evidence),
+        price_evidence=tuple(
+            _price(item, value.tenant_id) for item in value.price_evidence
+        ),
         pricing_options=_options(value.pricing_options),
         cost_fx_rates=value.cost_fx_rates,
         quote_fx=_fx(value.quote_fx) if value.quote_fx is not None else None,
@@ -199,25 +216,27 @@ def to_quote_basis(value: cost.FrozenCostBasis) -> quote.QuoteBasis:
     )
 
 
-def _price(value: cost.PriceEvidenceView, tenant_id: TenantId) -> quote.QuotePriceEvidence:
+def _price(
+    value: cost.PriceEvidenceView, tenant_id: TenantId
+) -> quote.QuotePriceEvidence:
     """两个真实证据分支各自完整构造，原币种与金额合为Money。"""
     if value.source.tenant_id != tenant_id:
         raise QuotationError("basis_mismatch")
     if isinstance(value, cost.SupplierPriceEvidenceView):
         return quote.QuoteSupplierEvidence(
             tenant_id=tenant_id,
-            amount=Money(value.amount, value.currency),
+            amount=Money(value.amount, CurrencyCode(value.currency)),
             source=_source(value.source),
             kind=value.kind,
-            opportunity_id=value.opportunity_id,
+            opportunity_id=OpportunityId(value.opportunity_id),
             evidence_id=value.evidence_id,
             evidence_hash=value.evidence_hash,
             source_ref=value.source_ref,
             locator=value.locator,
             field_provenance=value.field_provenance,
-            confirmed_by=value.confirmed_by,
+            confirmed_by=EmployeeId(value.confirmed_by),
             confirmed_at=value.confirmed_at,
-            need_id=value.need_id,
+            need_id=ValidatedNeedId(value.need_id),
             supplier_ref=value.supplier_ref,
             specification=value.specification,
             unit=value.unit,
@@ -232,16 +251,16 @@ def _price(value: cost.PriceEvidenceView, tenant_id: TenantId) -> quote.QuotePri
     if isinstance(value, cost.ExpenseEvidenceView):
         return quote.QuoteExpenseEvidence(
             tenant_id=tenant_id,
-            amount=Money(value.amount, value.currency),
+            amount=Money(value.amount, CurrencyCode(value.currency)),
             source=_source(value.source),
             kind=value.kind,
-            opportunity_id=value.opportunity_id,
+            opportunity_id=OpportunityId(value.opportunity_id),
             evidence_id=value.evidence_id,
             evidence_hash=value.evidence_hash,
             source_ref=value.source_ref,
             locator=value.locator,
             field_provenance=value.field_provenance,
-            confirmed_by=value.confirmed_by,
+            confirmed_by=EmployeeId(value.confirmed_by),
             confirmed_at=value.confirmed_at,
             item_type=value.item_type,
             allocation_scope=value.allocation_scope,
@@ -256,6 +275,14 @@ def _price(value: cost.PriceEvidenceView, tenant_id: TenantId) -> quote.QuotePri
 
 def pricing_options_from_intent(intent: QuoteCreationIntent) -> cost.PricingOptions:
     """人工报价选项只引用intent，报价FX由冻结域按独立ref解析。"""
-    return cost.PricingOptions(mode="manual",unit_price=intent.unit_price,
-        rounding=cost.RoundingPolicy(unit_places=intent.rounding.unit_places,total_places=intent.rounding.total_places,
-            strategy=intent.rounding.strategy),quote_fx=None,algorithm_version="costing-v1")
+    return cost.PricingOptions(
+        mode="manual",
+        unit_price=intent.unit_price,
+        rounding=cost.RoundingPolicy(
+            unit_places=intent.rounding.unit_places,
+            total_places=intent.rounding.total_places,
+            strategy=intent.rounding.strategy,
+        ),
+        quote_fx=None,
+        algorithm_version="costing-v1",
+    )

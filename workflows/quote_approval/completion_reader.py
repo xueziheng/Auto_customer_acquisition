@@ -1,11 +1,11 @@
 """成本完成reader只调用报价公开持久查询，不循环调用创建应用。"""
 
-from domains.quotations.schemas import QuotationActor
-from domains.quotations.service import QuotationActorReader, QuotationVersionService
 from domains.quotations.errors import (
     QuotationPermissionError,
     QuotationUnavailableError,
 )
+from domains.quotations.schemas import QuotationActor
+from domains.quotations.service import QuotationActorReader, QuotationVersionService
 from shared.schemas.identifiers import EmployeeId, TenantId
 from shared.schemas.quote_creation import QuoteCreationCompletion
 
@@ -25,7 +25,7 @@ class PersistentQuoteCreationCompletionReader:
         """锁外读取当前身份，再由报价域执行内部读取授权和完整性校验。"""
         try:
             actor = await self._actors.read_current(tenant_id, actor_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- 读取依赖异常不能变成成功receipt或泄露原文
             raise QuotationUnavailableError("dependency_unavailable") from None
         if (
             actor is None

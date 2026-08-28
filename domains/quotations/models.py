@@ -79,8 +79,17 @@ class QuoteState(str, Enum):
 
 
 ALLOWED_TRANSITIONS: dict[QuoteState, set[QuoteState]] = {
-    QuoteState.DRAFT: {QuoteState.PENDING_APPROVAL, QuoteState.EXPIRED, QuoteState.SUPERSEDED},
-    QuoteState.PENDING_APPROVAL: {QuoteState.APPROVED, QuoteState.REJECTED, QuoteState.EXPIRED, QuoteState.SUPERSEDED},
+    QuoteState.DRAFT: {
+        QuoteState.PENDING_APPROVAL,
+        QuoteState.EXPIRED,
+        QuoteState.SUPERSEDED,
+    },
+    QuoteState.PENDING_APPROVAL: {
+        QuoteState.APPROVED,
+        QuoteState.REJECTED,
+        QuoteState.EXPIRED,
+        QuoteState.SUPERSEDED,
+    },
     QuoteState.APPROVED: {QuoteState.SENT, QuoteState.SUPERSEDED, QuoteState.EXPIRED},
     QuoteState.SENT: {
         QuoteState.ACCEPTED,
@@ -148,9 +157,7 @@ class QuoteLine:
         ):
             raise ValidationError("价格快照引用不能为空")
         if self.moq is not None and (
-            isinstance(self.moq, bool)
-            or not isinstance(self.moq, int)
-            or self.moq <= 0
+            isinstance(self.moq, bool) or not isinstance(self.moq, int) or self.moq <= 0
         ):
             raise ValidationError("MOQ 必须为正整数")
         if self.lead_time_days is not None and (

@@ -1,12 +1,14 @@
 """新报价版本服务门面；旧骨架create/布尔审批/mark_sent从未转调此处。"""
 
-from collections.abc import Callable
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Literal
-from pydantic import TypeAdapter, ValidationError as SchemaError
 
+from pydantic import TypeAdapter
+from pydantic import ValidationError as SchemaError
+
+from domains.quotations.creation import ACTIVE_STATES, CreationSessionImpl
 from domains.quotations.errors import (
     QuotationError,
     QuotationPermissionError,
@@ -15,27 +17,33 @@ from domains.quotations.errors import (
 from domains.quotations.permissions import QuotePreparationPolicy
 from domains.quotations.schemas import (
     QuotationActor,
+    QuoteBasis,
+    QuoteBusinessContext,
     QuoteDetailView,
     QuoteIssuer,
     QuoteIssuerCreate,
+    QuoteSendReceipt,
+    QuoteState,
+    QuoteStateEvent,
     StoredQuoteIssuer,
 )
-from domains.quotations.schemas import QuoteBusinessContext, QuoteBasis
-from domains.quotations.creation import CreationSessionImpl
 from domains.quotations.service import QuotationActorReader, QuoteSendReceiptReader
 from domains.quotations.version_repository import QuotationUowFactory
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
-    EmployeeId,
     OpportunityId,
     QuoteId,
     TenantId,
     new_id,
 )
-from shared.schemas.quote_facts import QuoteEmployeeFact, fact_utc
-from shared.schemas.quote_creation import QuoteKey, canonical_creation_hash
-from shared.schemas.quote_creation import QuoteCreationIntent, QuoteCreationCompletion
 from shared.schemas.provenance import Provenance, SourceType
+from shared.schemas.quote_creation import (
+    QuoteCreationCompletion,
+    QuoteCreationIntent,
+    QuoteKey,
+    canonical_creation_hash,
+)
+from shared.schemas.quote_facts import QuoteEmployeeFact, fact_utc
 
 
 class QuotationServiceImpl:
@@ -69,7 +77,7 @@ class QuotationServiceImpl:
         """每次入口和锁后重读tenant/在职/role，并与调用方声明严格相合。"""
         try:
             fact = await self._actors.read_current(tenant_id, actor.employee_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- 身份依赖异常只输出固定错误，不能泄露底层数据
             raise QuotationUnavailableError("dependency_unavailable") from None
         if (
             fact is None
@@ -196,6 +204,116 @@ class QuotationServiceImpl:
             raise QuotationError("issuer_not_found")
         return issuer
 
+    async def expire_overdue(self, tenant_id: TenantId, *, limit: int) -> int:
+        """先读候选机会，逐机会锁后重读时钟/状态；不先锁报价行而反转锁序。"""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise QuotationError("invalid_input")
+        async with self._uows(tenant_id) as uow:
+            opportunities = await uow.quotes.overdue_opportunities(
+                tenant_id, now=fact_utc(self._now()), limit=limit
+            )
+        changed = 0
+        for opportunity_id in opportunities:
+            async with self._uows(tenant_id) as uow:
+                await uow.quotes.lock_opportunity(tenant_id, opportunity_id)
+                now = fact_utc(self._now())
+                for quote in await uow.quotes.list_versions(tenant_id, opportunity_id):
+                    if (
+                        quote.state not in ACTIVE_STATES
+                        or quote.content.valid_until > now
+                    ):
+                        continue
+                    event = QuoteStateEvent(
+                        event_id=new_id("qse"),
+                        quote_id=quote.content.quote_id,
+                        from_state=quote.state,
+                        to_state=QuoteState.EXPIRED,
+                        actor_id=None,
+                        reason="expiry",
+                        at=now,
+                        reference_id=None,
+                    )
+                    if not await uow.quotes.transition(
+                        tenant_id,
+                        quote.content.quote_id,
+                        quote.state,
+                        QuoteState.EXPIRED,
+                        event,
+                    ):
+                        raise QuotationError("invalid_state")
+                    changed += 1
+                await uow.commit()
+        return changed
+
+    async def record_verified_send(
+        self,
+        tenant_id: TenantId,
+        quote_id: QuoteId,
+        receipt: QuoteSendReceipt,
+        *,
+        actor: QuotationActor,
+    ) -> QuoteDetailView:
+        """可信reader核实实际发送，锁后只将未过期approved与回执/事件原子记为sent。"""
+        quote = await self.get(tenant_id, quote_id, actor=actor)
+        try:
+            receipt = QuoteSendReceipt(
+                **{n: getattr(receipt, n) for n in QuoteSendReceipt.model_fields}
+            )
+        except (SchemaError, ValueError, TypeError, AttributeError):
+            raise QuotationError("receipt_invalid") from None
+        try:
+            actual = await self._send_reader.read(
+                tenant_id, receipt.attempt_id, actor_id=actor.employee_id
+            )
+        except Exception:  # noqa: BLE001 -- 发送reader异常不能透传原文或被当成验证成功
+            raise QuotationUnavailableError("dependency_unavailable") from None
+        now = fact_utc(self._now())
+        if (
+            actual != receipt
+            or receipt.tenant_id != tenant_id
+            or receipt.quote_id != quote_id
+            or receipt.content_hash != quote.content.content_hash
+            or not quote.content.created_at <= receipt.sent_at <= now
+        ):
+            raise QuotationError("receipt_invalid")
+        async with self._uows(tenant_id) as uow:
+            await uow.quotes.lock_opportunity(tenant_id, quote.content.opportunity_id)
+            await self._actor(tenant_id, actor, action="read_internal")
+            current = await uow.quotes.get(tenant_id, quote_id, for_update=True)
+            now = fact_utc(self._now())
+            if (
+                current is None
+                or current.content != quote.content
+                or not current.content.created_at <= receipt.sent_at <= now
+            ):
+                raise QuotationError("receipt_invalid")
+            existing = await uow.quotes.send_receipt(tenant_id, receipt.attempt_id)
+            if existing is not None:
+                if existing != receipt:
+                    raise QuotationError("idempotency_conflict")
+                return current
+            if current.content.valid_until <= now:
+                raise QuotationError("quote_expired")
+            if current.state != QuoteState.APPROVED:
+                raise QuotationError("approval_missing")
+            await uow.quotes.add_send_receipt(tenant_id, receipt)
+            event = QuoteStateEvent(
+                event_id=new_id("qse"),
+                quote_id=quote_id,
+                from_state=QuoteState.APPROVED,
+                to_state=QuoteState.SENT,
+                actor_id=actor.employee_id,
+                reason="verified_send",
+                at=now,
+                reference_id=receipt.attempt_id,
+            )
+            if not await uow.quotes.transition(
+                tenant_id, quote_id, QuoteState.APPROVED, QuoteState.SENT, event
+            ):
+                raise QuotationError("invalid_state")
+            await uow.commit()
+            return current.model_copy(update={"state": QuoteState.SENT})
+
     async def confirm_issuer(
         self,
         tenant_id: TenantId,
@@ -248,21 +366,23 @@ class QuotationServiceImpl:
                 )
                 for name in ("name", "address", "contact")
             }
-            values = dict(
-                issuer_id=issuer_id,
-                name=command.name,
-                address=command.address,
-                contact=command.contact,
-                source_ref=issuer_id,
-                confirmed_by=actor.employee_id,
-                confirmed_at=now,
-                field_provenance=provenance,
-            )
-            issuer = QuoteIssuer(
-                **values,
-                content_hash=canonical_creation_hash(
-                    {"version": "quote-issuer-v1", "issuer": values}
-                ),
+            values = {
+                "issuer_id": issuer_id,
+                "name": command.name,
+                "address": command.address,
+                "contact": command.contact,
+                "source_ref": issuer_id,
+                "confirmed_by": actor.employee_id,
+                "confirmed_at": now,
+                "field_provenance": provenance,
+            }
+            issuer = QuoteIssuer.model_validate(
+                values
+                | {
+                    "content_hash": canonical_creation_hash(
+                        {"version": "quote-issuer-v1", "issuer": values}
+                    )
+                },
             )
             await uow.quotes.add_issuer(
                 tenant_id,

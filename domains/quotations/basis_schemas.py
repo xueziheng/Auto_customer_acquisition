@@ -5,11 +5,28 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from shared.schemas.identifiers import CostSheetId, EmployeeId, OpportunityId, TenantId, ValidatedNeedId
+from shared.schemas.identifiers import (
+    CostSheetId,
+    EmployeeId,
+    OpportunityId,
+    TenantId,
+    ValidatedNeedId,
+)
 from shared.schemas.money import FxRate, Money, WireDecimal
 from shared.schemas.provenance import Provenance
-from shared.schemas.quote_creation import QuoteDTO, QuoteRoundingInput, QuoteTerm, QuoteText, QuoteTime
-from shared.schemas.quote_facts import FactHash, NeedQuoteFacts, fact_identity, fact_text
+from shared.schemas.quote_creation import (
+    QuoteDTO,
+    QuoteRoundingInput,
+    QuoteTerm,
+    QuoteText,
+    QuoteTime,
+)
+from shared.schemas.quote_facts import (
+    FactHash,
+    NeedQuoteFacts,
+    fact_identity,
+    fact_text,
+)
 
 Hash = FactHash
 Positive = Annotated[int, Field(gt=0)]
@@ -23,7 +40,9 @@ class BasisDTO(QuoteDTO):
         """保持T3B身份形状，同时不保留调用方dict引用。"""
         for name in type(self).model_fields:
             value = getattr(self, name)
-            if value is not None and (name.endswith("_id") or name in {"prepared_by", "confirmed_by"}):
+            if value is not None and (
+                name.endswith("_id") or name in {"prepared_by", "confirmed_by"}
+            ):
                 if name == "coverage_id":
                     fact_text(value)
                     if len(value) > 64:
@@ -36,18 +55,22 @@ class BasisDTO(QuoteDTO):
 
 class QuoteEvidenceSource(BasisDTO):
     """来源事实不是对原件访问的授权。"""
+
     tenant_id: TenantId
     source_ref: QuoteText
     artifact_id: str
     content_hash: Hash
     locator: QuoteText
     observed_at: QuoteTime
-    source_type: Literal["upload", "conversation", "web_page", "employee_input", "external_api"]
+    source_type: Literal[
+        "upload", "conversation", "web_page", "employee_input", "external_api"
+    ]
     source_url: QuoteText | None
 
 
 class QuoteEvidenceConfirmation(BasisDTO):
     """逐字段原始确认事实，不伪造来源。"""
+
     source: QuoteEvidenceSource
     field_provenance: dict[str, Provenance]
     confirmed_by: EmployeeId
@@ -56,6 +79,7 @@ class QuoteEvidenceConfirmation(BasisDTO):
 
 class QuoteSupplierEvidence(QuoteEvidenceConfirmation):
     """供应商具体规格与数量档实报价。"""
+
     kind: Literal["supplier_price"]
     tenant_id: TenantId
     opportunity_id: OpportunityId
@@ -79,6 +103,7 @@ class QuoteSupplierEvidence(QuoteEvidenceConfirmation):
 
 class QuoteExpenseEvidence(QuoteEvidenceConfirmation):
     """费用真实凭证不冒充供应商报价。"""
+
     kind: Literal["confirmed_expense"]
     tenant_id: TenantId
     opportunity_id: OpportunityId
@@ -96,11 +121,14 @@ class QuoteExpenseEvidence(QuoteEvidenceConfirmation):
     valid_until: QuoteTime | None
 
 
-QuotePriceEvidence = Annotated[QuoteSupplierEvidence | QuoteExpenseEvidence, Field(discriminator="kind")]
+QuotePriceEvidence = Annotated[
+    QuoteSupplierEvidence | QuoteExpenseEvidence, Field(discriminator="kind")
+]
 
 
 class QuoteFxSnapshot(QuoteEvidenceConfirmation):
     """报价汇率与成本内核算汇率分开保存。"""
+
     fx_id: str
     content_hash: Hash
     base_currency: QuoteText
@@ -112,6 +140,7 @@ class QuoteFxSnapshot(QuoteEvidenceConfirmation):
 
 class QuotePolicySnapshot(BasisDTO):
     """完整人工政策，不从来源文本推断权限。"""
+
     policy_id: str
     content_hash: Hash
     category: QuoteText | None
@@ -128,6 +157,7 @@ class QuotePolicySnapshot(BasisDTO):
 
 class QuoteCostItemBinding(BasisDTO):
     """每项成本的原文与分摊范围绑定。"""
+
     item_sequence: Positive
     evidence_id: str
     source_line_ref: QuoteText
@@ -136,6 +166,7 @@ class QuoteCostItemBinding(BasisDTO):
 
 class QuoteCoverageDecision(BasisDTO):
     """保持全部适用/不适用决定和理由。"""
+
     item_type: QuoteText
     applicable: bool
     reason: QuoteText
@@ -144,6 +175,7 @@ class QuoteCoverageDecision(BasisDTO):
 
 class QuoteCoverageSnapshot(BasisDTO):
     """人工完整性确认原快照。"""
+
     expected_sheet_hash: Hash
     decisions: tuple[QuoteCoverageDecision, ...]
     acquisition_mode: Literal["summary", "detail"]
@@ -157,6 +189,7 @@ class QuoteCoverageSnapshot(BasisDTO):
 
 class QuoteScopeEvidenceBinding(BasisDTO):
     """人工规格语义适用性说明，不比较供应商自由文本相等。"""
+
     evidence_id: str
     evidence_hash: Hash
     applicability_note: QuoteText
@@ -164,6 +197,7 @@ class QuoteScopeEvidenceBinding(BasisDTO):
 
 class QuoteScopeConfirmation(BasisDTO):
     """完整Need、条款、期限和证据的人工确认。"""
+
     tenant_id: TenantId
     confirmation_id: str
     opportunity_id: OpportunityId
@@ -186,6 +220,7 @@ class QuoteScopeConfirmation(BasisDTO):
 
 class QuoteProfitMetrics(BasisDTO):
     """成本域确定性计算结果；报价域不重算利润。"""
+
     unit_full_cost: WireDecimal
     minimum_price: WireDecimal
     target_price: WireDecimal
@@ -199,6 +234,7 @@ class QuoteProfitMetrics(BasisDTO):
 
 class QuoteCalculationSnapshot(BasisDTO):
     """完整计算身份及展示金额。"""
+
     cost_sheet_id: CostSheetId
     policy_id: str
     inputs_hash: Hash
@@ -215,6 +251,7 @@ class QuoteCalculationSnapshot(BasisDTO):
 
 class QuotePricingOptions(BasisDTO):
     """人工售价和明确舍入规则原样保存。"""
+
     mode: Literal["target", "manual"]
     unit_price: Money | None
     rounding: QuoteRoundingInput
@@ -224,6 +261,7 @@ class QuotePricingOptions(BasisDTO):
 
 class QuoteBasis(BasisDTO):
     """冻结全字段等值投影，真实性由冻结操作与持久绑定证明。"""
+
     tenant_id: TenantId
     basis_id: str
     operation_id: str

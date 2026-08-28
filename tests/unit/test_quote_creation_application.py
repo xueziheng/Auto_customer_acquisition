@@ -5,10 +5,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from domains.quotations import schemas as q, service as public
+from domains.quotations import schemas as q
+from domains.quotations import service as public
 from shared.schemas.quote_creation import (
-    QuoteCreationOperationView,
     QuoteCreationCompletion,
+    QuoteCreationOperationView,
 )
 from tests.unit.test_quotation_contracts import basis_case
 from tests.unit.test_quote_context_contracts import employee
@@ -83,7 +84,7 @@ def application_case():
 
 
 async def test_recovery_returns_persisted_content_before_any_context_or_freeze():
-    app, command, operation, detail, costing, quotations, actors = application_case()
+    app, command, operation, detail, costing, _quotations, _actors = application_case()
     value = await app.create(
         operation.tenant_id,
         command,
@@ -108,7 +109,7 @@ async def test_recovery_returns_persisted_content_before_any_context_or_freeze()
 async def test_same_key_cannot_change_any_original_intent(changes):
     from domains.quotations.errors import QuotationError
 
-    app, command, operation, detail, costing, quotations, actors = application_case()
+    app, command, operation, _detail, costing, _quotations, _actors = application_case()
     with pytest.raises(QuotationError) as e:
         await app.create(
             operation.tenant_id,
@@ -123,7 +124,7 @@ async def test_same_key_cannot_change_any_original_intent(changes):
 async def test_completed_operation_without_real_quote_is_not_success():
     from domains.quotations.errors import QuotationUnavailableError
 
-    app, command, operation, detail, costing, quotations, actors = application_case()
+    app, command, operation, _detail, costing, quotations, _actors = application_case()
     costing.get_creation.return_value = costing.complete_creation.return_value
     quotations.get_by_operation.return_value = None
     with pytest.raises(QuotationUnavailableError) as e:
@@ -139,7 +140,7 @@ async def test_completed_operation_without_real_quote_is_not_success():
 async def test_other_current_cost_role_may_recover_but_not_finish_unwritten_quote():
     from domains.quotations.errors import QuotationPermissionError
 
-    app, command, operation, detail, costing, quotations, actors = application_case()
+    app, command, operation, _detail, _costing, quotations, actors = application_case()
     actors.read_current.return_value = employee("finance", employee_id="emp_finance")
     recovered = await app.create(
         operation.tenant_id, command, actor_id="emp_finance", idempotency_key="key"
