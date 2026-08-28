@@ -2021,6 +2021,21 @@ class ValidatedNeedRow(Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "need_id", name="pk_validated_needs"),
         ForeignKeyConstraint(
+            ["tenant_id", "need_id", "unit_confirmation_id"],
+            ["need_unit_confirmations.tenant_id", "need_unit_confirmations.need_id",
+             "need_unit_confirmations.confirmation_id"],
+            name="fk_validated_needs_unit_confirmation", use_alter=True,
+        ),
+        CheckConstraint(
+            "(unit IS NULL AND unit_quantity_fact_hash IS NULL AND unit_confirmation_id IS NULL) OR "
+            "(unit IS NOT NULL AND unit_quantity_fact_hash IS NOT NULL AND unit_confirmation_id IS NOT NULL)",
+            name="ck_validated_needs_unit_binding",
+        ),
+        CheckConstraint("unit IS NULL OR jsonb_typeof(unit) = 'object'",
+                        name="ck_validated_needs_unit_jsonb"),
+        CheckConstraint("unit_quantity_fact_hash IS NULL OR unit_quantity_fact_hash ~ '^[0-9a-f]{64}$'",
+                        name="ck_validated_needs_unit_hash"),
+        ForeignKeyConstraint(
             ["tenant_id", "cluster_id"],
             ["need_clusters.tenant_id", "need_clusters.cluster_id"],
             name="fk_validated_needs_cluster",
@@ -2125,6 +2140,46 @@ class ValidatedNeedRow(Base):
     )
     confirmed_by: Mapped[str | None] = mapped_column(String(40))
     cluster_id: Mapped[str | None] = mapped_column(String(40))
+
+    unit: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
+    unit_quantity_fact_hash: Mapped[str | None] = mapped_column(String(64))
+    unit_confirmation_id: Mapped[str | None] = mapped_column(String(40))
+
+
+class NeedUnitConfirmationRow(Base):
+    """客户单位不可变确认；与Need、原件均以tenant复合外键绑定。"""
+
+    __tablename__ = "need_unit_confirmations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "confirmation_id", name="pk_need_unit_confirmations"),
+        UniqueConstraint("tenant_id", "need_id", "confirmation_id", name="uq_need_unit_confirmations_need_id"),
+        UniqueConstraint("tenant_id", "need_id", "idempotency_key", name="uq_need_unit_confirmations_key"),
+        ForeignKeyConstraint(["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_need_unit_confirmations_need"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_need_unit_confirmations_artifact"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND quantity_fact_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_need_unit_confirmations_hash"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_need_unit_confirmations_payload"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmation_id) <> '' AND "
+            "btrim(need_id) <> '' AND btrim(artifact_id) <> '' AND btrim(source_message_id) <> '' "
+            "AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> ''",
+            name="ck_need_unit_confirmations_nonblank"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    confirmation_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    artifact_id: Mapped[str] = mapped_column(String(40))
+    source_message_id: Mapped[str] = mapped_column(String(40))
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    quantity_fact_hash: Mapped[str] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
 
 
 class ValidatedNeedFieldHistoryRow(Base):

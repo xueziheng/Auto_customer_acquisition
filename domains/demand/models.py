@@ -288,6 +288,10 @@ class ValidatedNeed:
     confirmed_by: EmployeeId | None = None
     cluster_id: NeedClusterId | None = None
 
+    unit: FactualField[str] | None = None
+    unit_quantity_fact_hash: str | None = None
+    unit_confirmation_id: str | None = None
+
     @property
     def completeness(self) -> int:
         """需求完整度 0–5。**由字段推导，不可手动设置。**

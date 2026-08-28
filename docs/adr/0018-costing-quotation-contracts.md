@@ -78,3 +78,33 @@ T8 须装配真实员工服务；本轮受控 reader 验证不能替代生产装
 所以追加成本令旧清单失效，而单纯锁定不改变原内容身份。旧 API 与 readiness 仍保留原含义。
 PricingPolicyView 可兼容纯计算 fixture 的缺来源形状，但正式仓储读写均验证来源、所有叶字段
 Provenance、确认人/时间与内容 hash 一致；缺确认事实不能作为当前有效政策。
+
+## Task 3A：客户数量单位事实契约
+
+客户数量与供应商计价单位不是可互相推断的事实。为ValidatedNeed增加可空`unit`事实、
+`unit_quantity_fact_hash`、`unit_confirmation_id`，不回填默认单位、不修改旧完整度或模型
+可提取/可更新字段词表。窄的`NeedUnitService`按当前员工身份人工确认单位，不确认数量，
+也不代替任何价格、交期等审批。`NeedQuoteFacts`是带完整Provenance的公开事实投影。
+
+`quantity_fact_hash`使用`need-quantity-fact-v1`，覆盖tenant、Need、严格整数数量和全部
+Provenance（含None）；来源或确认时间变化即使数量同值也失效。`need_quote_facts_hash`
+使用`need-quote-facts-v1`覆盖全部事实/绑定；canonical JSON键排序、紧凑分隔、UTF-8、
+时间统一UTC、Decimal字符串和date ISO表示，无读取时间。历史0数量可读/hash但不能确认单位。
+
+确认顺序固定为当前权限check→短读事务→零锁客户原件核验→权限guard→锁Need→重验
+当前数量来源/旧确认ID/客户/状态→插receipt/写三列/追加旧history→提交→退出guard。
+来源reader按真实客户入站消息核对原件hash、定位、逐字摘录和数量单位关系；任何不匹配
+不写入。guard不能只返回过时allowed，而必须保护当前在职/权限及机会范围直至内层提交。
+
+持久幂等请求hash以`need-unit-confirm-request-v1`绑定tenant、Need、actor、command全部
+字段，不含时间/reader输出/幂等键。相同键只返回首次receipt，数量变化后重放也不恢复旧
+单位。重放/历史读取额外在锁外重验当前来源阅读权；并发同expected ID最多一次成功。
+
+0042新增只增`need_unit_confirmations`，tenant复合外键约束Need/原件/当前确认；触发器
+核对三单位列与receipt一致。旧数量更新保留单位三列，以hash差异派生stale。所有失败
+回滚三个写入；未知提交返回`storage_unknown`，只用原键核对，不声称未写入或自动换键。
+有确认业务记录时迁移拒绝降级；必须取得授权并归档处理，不能无声删除原始商业证据。
+
+本切片仅验证真实隔离Postgres和受控权限/来源端口；真实Gateway原文、员工/机会锁适配、
+HTTP/UI及生产装配不在T3A中。后续冻结应在自己持锁连接投影完整facts，不另调用get_facts
+产生旁路连接；成本/报价通过上层转换DTO，不能跨域读取demand私有模型。

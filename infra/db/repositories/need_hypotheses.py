@@ -413,6 +413,9 @@ def _need_to_row(need: ValidatedNeed) -> ValidatedNeedRow:
         "created_at": need.created_at,
         "confirmed_by": str(need.confirmed_by) if need.confirmed_by else None,
         "cluster_id": str(need.cluster_id) if need.cluster_id else None,
+        "unit": _factual_to_json(need.unit),
+        "unit_quantity_fact_hash": need.unit_quantity_fact_hash,
+        "unit_confirmation_id": need.unit_confirmation_id,
     }
     for field_name in _FIELD_KINDS:
         values[field_name] = _factual_to_json(getattr(need, field_name))
@@ -463,6 +466,9 @@ def _row_to_need(row: ValidatedNeedRow) -> ValidatedNeed:
         cluster_id=(
             NeedClusterId(row.cluster_id) if row.cluster_id is not None else None
         ),
+        unit=_json_to_factual(row.unit, "str"),
+        unit_quantity_fact_hash=row.unit_quantity_fact_hash,
+        unit_confirmation_id=row.unit_confirmation_id,
     )
 
 

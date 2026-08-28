@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
 from domains.demand.schemas import (
@@ -16,9 +17,25 @@ from domains.demand.schemas import (
     HypothesisDiscoveryView,
     HypothesisView,
     NeedClusterView,
+    NeedQuoteFacts,
+    NeedUnitAccess,
+    NeedUnitAction,
+    NeedUnitConfirmationCommand,
+    NeedUnitConfirmationView,
+    NeedUnitEvidenceQuery,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
+    VerifiedNeedUnitEvidence,
+)
+from domains.demand.unit_facts import (
+    need_quote_facts_hash as need_quote_facts_hash,  # noqa: PLC0414
+)
+from domains.demand.unit_facts import (
+    quantity_fact_hash as quantity_fact_hash,  # noqa: PLC0414
+)
+from domains.demand.unit_facts import (
+    require_current_unit as require_current_unit,  # noqa: PLC0414
 )
 from shared.schemas.evidence import ConfidenceResult
 from shared.schemas.identifiers import (
@@ -30,6 +47,55 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+
+
+class NeedUnitAuthorizer(Protocol):
+    """当前员工与机会授权；guard保护授权行直至内层Need事务提交。"""
+
+    async def check(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                    actor_id: EmployeeId, *, action: NeedUnitAction) -> NeedUnitAccess:
+        """来源IO前即时核验，完整事实读取也须授权。"""
+        ...
+
+    def guard(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+              actor_id: EmployeeId, *, action: NeedUnitAction
+              ) -> AbstractAsyncContextManager[NeedUnitAccess]:
+        """持授权保护后方可锁Need；不可只返回过时allowed。"""
+        ...
+
+
+class NeedUnitEvidenceReader(Protocol):
+    """上层通过Gateway核验客户消息，不以供应商口径推断客户单位。"""
+
+    async def read_verified(self, query: NeedUnitEvidenceQuery) -> VerifiedNeedUnitEvidence:
+        """零锁读取原件，核验真实消息、hash、定位、摘录及数量单位关系。"""
+        ...
+
+    async def authorize_reference(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                                  actor_id: EmployeeId, source: VerifiedNeedUnitEvidence) -> None:
+        """历史receipt输出前仅用元数据重验当前来源阅读权，不取原文。"""
+        ...
+
+
+class NeedUnitService(Protocol):
+    """窄的人工单位事实入口，不批准价格、交期或其他商业承诺。"""
+
+    async def confirm(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                      command: NeedUnitConfirmationCommand, *, actor_id: EmployeeId,
+                      idempotency_key: str) -> NeedUnitConfirmationView:
+        """同键持久恢复；绑定/receipt/历史原子，不重新激活旧单位。"""
+        ...
+
+    async def get_facts(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                        *, actor_id: EmployeeId) -> NeedQuoteFacts:
+        """授权后读取完整事实及当前绑定，不宣称单位一定有效。"""
+        ...
+
+    async def get_confirmation(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                               confirmation_id: str, *, actor_id: EmployeeId
+                               ) -> NeedUnitConfirmationView:
+        """重验当前需求和来源阅读权后读取不可变历史。"""
+        ...
 
 
 @runtime_checkable

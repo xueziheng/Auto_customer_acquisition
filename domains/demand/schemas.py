@@ -12,24 +12,214 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Literal
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
+    ArtifactId,
     ContactPointId,
+    EmployeeId,
     EnrollmentId,
     MessageId,
     NeedHypothesisId,
+    OpportunityId,
     OutboundMessageId,
     ProspectAccountId,
     TenantId,
+    ValidatedNeedId,
 )
 from shared.schemas.money import Money
+from shared.schemas.provenance import FactualField, SourceType
+
+NeedUnitAction = Literal["read", "confirm"]
+NeedUnitErrorCode = Literal[
+    "invalid_input", "unit_unspecified", "quantity_invalid", "source_mismatch",
+    "source_unsupported", "need_not_found", "confirmation_not_found", "need_terminal",
+    "quantity_changed", "unit_changed", "idempotency_conflict", "unit_missing",
+    "unit_stale", "fact_unconfirmed", "permission_denied", "source_unavailable",
+    "dependency_unavailable", "lock_timeout", "storage_unknown", "facts_corrupt",
+]
+
+
+def _unit_text(value: str) -> str:
+    """输入不静默去空白或控制字符，摘录单独允许换行。"""
+    if value != value.strip() or not value or any(
+        ord(c) < 32 or 127 <= ord(c) < 160 for c in value
+    ):
+        raise ValueError("字符串必须非空且不含首尾空白或控制字符")
+    return value
+
+
+def _unit_quote(value: str) -> str:
+    """摘录仅放行换行，保留逐字内容。"""
+    _unit_text(value.replace("\n", " "))
+    if value != value.strip():
+        raise ValueError("摘录不能有首尾空白")
+    return value
+
+
+def _unit_utc(value: datetime) -> datetime:
+    """时间必须带时区，持久与哈希统一UTC。"""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("时间必须带时区")
+    return value.astimezone(UTC)
+
+
+_UnitText = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_unit_text)]
+_UnitLocator = Annotated[str, Field(min_length=1, max_length=256), AfterValidator(_unit_text)]
+_UnitQuote = Annotated[str, Field(min_length=1, max_length=4096), AfterValidator(_unit_quote)]
+_UnitHash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+_UnitTime = Annotated[datetime, AfterValidator(_unit_utc)]
+_UnitId = Annotated[str, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+
+
+class _NeedUnitDTO(BaseModel):
+    """新单位契约严格、不可变，不放宽旧DTO。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def _metadata(self) -> Self:
+        """全部强类型ID同样约束长度；完整Provenance时间统一UTC。"""
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if value is not None and (name.endswith("_id") or name == "confirmed_by"):
+                if type(value) is not str or len(value) > 40:
+                    raise ValueError("标识必须为不超过40字符的字符串")
+                _unit_text(value)
+            if isinstance(value, FactualField):
+                provenance = value.provenance
+                updated = replace(provenance,
+                    extracted_at=_unit_utc(provenance.extracted_at),
+                    confirmed_at=_unit_utc(provenance.confirmed_at) if provenance.confirmed_at else None)
+                object.__setattr__(self, name, replace(value, provenance=updated))
+        return self
+
+
+class NeedUnitConfirmationCommand(_NeedUnitDTO):
+    """人工明确口径，确认身份只能由服务端绑定。"""
+
+    unit: _UnitText
+    source_message_id: Annotated[MessageId, Field(min_length=1, max_length=40),
+                                 AfterValidator(_unit_text)]
+    locator: _UnitLocator
+    source_quote: _UnitQuote
+    expected_quantity_fact_hash: _UnitHash
+    expected_unit_confirmation_id: _UnitId | None
+
+
+class NeedUnitAccess(_NeedUnitDTO):
+    """当前员工与机会范围授权，不存可伪造allowed标记。"""
+
+    tenant_id: Annotated[TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    need_id: Annotated[ValidatedNeedId, Field(min_length=1, max_length=40),
+                       AfterValidator(_unit_text)]
+    opportunity_id: Annotated[OpportunityId, Field(min_length=1, max_length=40),
+                              AfterValidator(_unit_text)]
+    account_id: Annotated[ProspectAccountId, Field(min_length=1, max_length=40),
+                          AfterValidator(_unit_text)]
+    actor_id: Annotated[EmployeeId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    authorization_ref: Annotated[str, Field(min_length=1), AfterValidator(_unit_text)]
+
+
+class NeedUnitEvidenceQuery(_NeedUnitDTO):
+    """来源reader须核实当前quantity与所指单位之间的真实关系。"""
+
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    account_id: ProspectAccountId
+    actor_id: EmployeeId
+    quantity: FactualField[int]
+    quantity_fact_hash: _UnitHash
+    unit: _UnitText
+    source_message_id: MessageId
+    locator: _UnitLocator
+    source_quote: _UnitQuote
+
+
+class VerifiedNeedUnitEvidence(_NeedUnitDTO):
+    """可信reader输出客户入站消息的核验元数据，不含原始对象键。"""
+
+    tenant_id: Annotated[TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    need_id: Annotated[ValidatedNeedId, Field(min_length=1, max_length=40),
+                       AfterValidator(_unit_text)]
+    account_id: Annotated[ProspectAccountId, Field(min_length=1, max_length=40),
+                          AfterValidator(_unit_text)]
+    source_message_id: Annotated[MessageId, Field(min_length=1, max_length=40),
+                                 AfterValidator(_unit_text)]
+    artifact_id: Annotated[ArtifactId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    content_hash: _UnitHash
+    locator: _UnitLocator
+    source_quote: _UnitQuote
+    unit: _UnitText
+    quantity_fact_hash: _UnitHash
+    observed_at: _UnitTime
+
+
+class NeedUnitConfirmationView(_NeedUnitDTO):
+    """永久确认receipt，读取历史不表示当前绑定有效。"""
+
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    confirmation_id: _UnitId
+    quantity_fact_hash: _UnitHash
+    unit: FactualField[str]
+    source: VerifiedNeedUnitEvidence
+    confirmed_by: EmployeeId
+    confirmed_at: _UnitTime
+
+    @model_validator(mode="after")
+    def _receipt_binding(self) -> Self:
+        """确认receipt不能自相矛盾：单位、消息、人工身份与时间必须一致。"""
+        provenance = self.unit.provenance
+        if (self.source.tenant_id, self.source.need_id, self.source.quantity_fact_hash,
+            self.source.unit, self.source.source_message_id, self.source.source_quote) != (
+            self.tenant_id, self.need_id, self.quantity_fact_hash,
+            self.unit.value, provenance.source_id, provenance.source_quote,
+        ) or (provenance.source_type, provenance.extracted_by, provenance.confirmed_by,
+              provenance.extracted_at, provenance.confirmed_at) != (
+            SourceType.CONVERSATION, self.confirmed_by, self.confirmed_by,
+            self.confirmed_at, self.confirmed_at,
+        ):
+            raise ValueError("单位确认receipt的事实与来源绑定不一致")
+        return self
+
+
+class NeedQuoteFacts(_NeedUnitDTO):
+    """完整Need事实投影，不用展示摘要补造Provenance。"""
+
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    account_id: ProspectAccountId
+    status: str
+    product_category: FactualField[str]
+    application: FactualField[str] | None
+    material: FactualField[str] | None
+    size_spec: FactualField[str] | None
+    packaging: FactualField[str] | None
+    destination: FactualField[str] | None
+    current_supply_issue: FactualField[str] | None
+    certification_required: FactualField[str] | None
+    unit: FactualField[str] | None
+    quantity: FactualField[int] | None
+    required_by: FactualField[date] | None
+    target_price: FactualField[Money] | None
+    unit_quantity_fact_hash: _UnitHash | None
+    unit_confirmation_id: _UnitId | None
+
+
+class NeedUnitStoredConfirmation(_NeedUnitDTO):
+    """内部操作记录，不将请求正文持久化或挂HTTP。"""
+
+    view: NeedUnitConfirmationView
+    idempotency_key: Annotated[str, Field(min_length=1, max_length=128),
+                              AfterValidator(_unit_text)]
+    request_hash: _UnitHash
 
 # ISO 3166-1已分配alpha-2代码（2026-08-27核对），只识别来源文字，不授予市场许可。
 # 数据快照：pycountry/pycountry e974d00d5ead823a48d6944a6df1696e95e507e3
