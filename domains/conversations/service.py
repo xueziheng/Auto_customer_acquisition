@@ -24,6 +24,9 @@ from domains.conversations.schemas import (
     ReplyWorkActionView,
     ReplyWorkStatus,
 )
+from domains.conversations.source_access import (
+    require_inbound_source_access as require_inbound_source_access,  # noqa: PLC0414 - 显式公开纯权限端口
+)
 
 #: 域公共 API 复出口（outreach/sending_identity 同款先例）：apps 侧
 #: 组合只能经 service 引用事务边界类型，不得直接 import repository。

@@ -43,6 +43,7 @@ from domains.costing.schemas import (
     QuoteReadiness,
     SourceEvidence,
 )
+from domains.costing.source_access import require_pricing_source_access
 from shared.schemas.identifiers import (
     CostSheetId,
     EmployeeId,
@@ -83,6 +84,7 @@ __all__ = (
     "cost_item_type_values",
     "cost_scope_hash",
     "cost_sheet_content_hash",
+    "require_pricing_source_access",
 )
 
 
