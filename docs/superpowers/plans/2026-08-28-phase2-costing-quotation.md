@@ -509,6 +509,7 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 - [ ] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
 - [ ] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
 - [ ] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
+- [ ] 报价结果通知使用固定相对深链`/costing-quotes/quotes/{quote_id}`，同CostingQuotes页面显式声明`/costing-quotes/quotes/:quoteId`路由，按path参数加载指定版本；不跳最新，不要求通知附带OpportunityId，不解析自由正文。补实际通知链接的router匹配、指定版本加载及身份/页面scope失效测试；通知LOW只进worker站内，API旧出口仅日志，不新增外发按钮或客户端通知权限。
 - [ ] 同步成本报价路由与页面的旧Phase1-only说明，准确描述本批Phase2成本/报价能力且不声称整个Phase2完成；真实启用/可执行仍看后端配置与allowed_actions。information-architecture.test.ts将成本报价与仍为Phase1人工的products/sourcing分开断言，保留其他路由与Phase3禁用约束，不删断言取绿。
 - [ ] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。
 
