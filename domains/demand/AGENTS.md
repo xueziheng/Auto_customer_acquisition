@@ -134,3 +134,11 @@ T3A受控reader/authorizer不注册生产，真实适配与HTTP/UI由后续装�
 
 T3B将`NeedQuoteFacts`纯DTO迁至shared并保持原公开名称同class重导出；旧字节hash和错误码不变。
 单位有效性/确认规则仍仅在demand，报价准备内部guard不能被解释为绕过T3A人工确认来源权限。
+
+## Phase 2 安全单位准备读取
+
+`assess_quote_preparation`仅本域分类正常缺项，并保留原数量/完整事实hash字节。
+损坏typed事实必须facts_corrupt，不伪装待补单位；历史零数量仍有真实hash但不可报价。
+HTTP仅输出白名单值及ProvenanceSummary，receipt原文/locator仍须独立来源ACL。
+NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交集授权在上层组合，
+其Employee→Opportunity SHARE不能提前锁Need，不要求owner、issuer或unit已存在。

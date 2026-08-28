@@ -11,7 +11,11 @@ from domains.costing.approval_policy import (
     CostingPolicySelection,
 )
 from domains.costing.calculation import canonical_pricing_hash, compute_breakdown
-from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
+from domains.costing.errors import (
+    CostingQuoteNotFoundError,
+    EmptyCostSheetError,
+    MissingFxSnapshotError,
+)
 from domains.costing.freeze_schemas import (
     CostingContext,
     CostScopeAccess,
@@ -19,6 +23,48 @@ from domains.costing.freeze_schemas import (
     CostScopeConfirmationView,
     CostScopeEvidenceBinding,
     FrozenCostBasis,
+)
+from domains.costing.http_projection import (
+    project_coverage as project_coverage,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.costing.http_projection import (
+    project_policy as project_policy,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.costing.http_projection import (
+    project_price_evidence as project_price_evidence,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.costing.http_projection import (
+    project_quote_fx as project_quote_fx,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.costing.http_projection import (
+    project_scope as project_scope,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.costing.http_schemas import (
+    CostCalculationCommand as CostCalculationCommand,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    CostCoveragePublicView as CostCoveragePublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    CostScopePublicView as CostScopePublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    ExpenseEvidencePublicView as ExpenseEvidencePublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    PriceEvidencePublicView as PriceEvidencePublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    PricingPolicyPublicView as PricingPolicyPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    PricingSourceSummary as PricingSourceSummary,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    QuoteFxPublicView as QuoteFxPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.costing.http_schemas import (
+    SupplierPriceEvidencePublicView as SupplierPriceEvidencePublicView,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.models import (
     CostItemType,
@@ -30,6 +76,7 @@ from domains.costing.quote_lock import cost_scope_hash
 from domains.costing.schemas import (
     CalculationSnapshot,
     CostCoverageCreate,
+    CostCoverageView,
     CostItemCreate,
     CostSheetCreate,
     CostSheetView,
@@ -71,6 +118,7 @@ __all__ = (
     "CostingContext",
     "CostingFreezeService",
     "CostingPolicySelection",
+    "CostingQuoteNotFoundError",
     "CostingQuoteService",
     "CostingScope",
     "CostingService",
@@ -289,6 +337,16 @@ class PricingEvidenceReader(Protocol):
 class CostingQuoteService(Protocol):
     """新报价路径的人工确认契约；不执行报价、冻结或客户发送。"""
 
+    async def list_price_evidence(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        *, actor: CostingActor) -> tuple[PriceEvidenceView, ...]:
+        """先核当前C，存在但无依据返回空；缺对象/跨租户抛固定错误。"""
+        ...
+
+    async def get_coverage(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        *, actor: CostingActor, content_hash: str | None = None) -> CostCoverageView | None:
+        """按原hash恢复确认，未指定则读最近确认；不补写或冻结。"""
+        ...
+
     async def confirm_policy(
         self,
         tenant_id: TenantId,
@@ -381,6 +439,11 @@ class QuoteCreationCompletionReader(Protocol):
 
 class CostingFreezeService(Protocol):
     """scope、确定性计算及可恢复冻结，不负责报价CRUD或审批。"""
+
+    async def list_scopes(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        *, actor: CostingActor) -> tuple[CostScopeConfirmationView, ...]:
+        """当前成本角色只读发现同表历史scope，不等于当前适用。"""
+        ...
 
     async def prepare_scope_access(
         self,

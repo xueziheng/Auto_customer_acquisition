@@ -19,6 +19,12 @@ from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from domains.demand.http_schemas import (
+    NeedUnitConfirmationPublicView as NeedUnitConfirmationPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.demand.http_schemas import (
+    NeedUnitPreparationView as NeedUnitPreparationView,  # noqa: PLC0414 - 同类型公开重导出
+)
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -35,7 +41,20 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import Money
 from shared.schemas.provenance import FactualField, SourceType
-from shared.schemas.quote_facts import NeedQuoteFacts as NeedQuoteFacts
+from shared.schemas.quote_facts import NeedFactDTO, QuoteEmployeeFact
+from shared.schemas.quote_facts import (
+    NeedQuoteFacts as NeedQuoteFacts,  # noqa: PLC0414 - 保持公开类型或测试fixture身份
+)
+
+
+class NeedUnitScopeFacts(NeedFactDTO):
+    """单位用途的锁内事实，不附带文件scope或owner在职前置。"""
+
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    opportunity_id: OpportunityId
+    account_id: ProspectAccountId
+    actor: QuoteEmployeeFact
 
 NeedUnitAction = Literal["read", "confirm"]
 NeedUnitErrorCode = Literal[

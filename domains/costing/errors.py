@@ -15,6 +15,16 @@ from shared.errors import (
     ValidationError,
 )
 
+
+class CostingQuoteNotFoundError(ValidationError):
+    """新增安全读取的固定缺对象类型，不改变旧确认/冻结错误契约。"""
+
+    code = "record_not_found"
+
+    def __init__(self) -> None:
+        super().__init__("成本报价记录不存在")
+
+
 CostFreezeErrorCode = Literal[
     "invalid_input",
     "context_changed",

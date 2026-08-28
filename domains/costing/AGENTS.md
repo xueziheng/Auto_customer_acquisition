@@ -87,3 +87,11 @@ ACTUAL      实际发生。事后核算用
 业务category重新选择，不能只锁历史政策行或用历史global.category掩盖新specific政策。
 报价机会锁后才取得政策租约；报价commit/rollback完成后才关闭。政策确认仍用同集合独占锁。
 缺政策/不同id或hash由报价固定policy_stale阻断，不能补默认政策或重算已确认的旧报价数字。
+
+## Phase 2 安全资料刷新
+
+新增安全读取仍先核当前C；价格集合用同UoW的opportunity_refs.exists区分真实空集合
+和缺对象/跨租户，内部bool事实口不授予CRM权限、不投影客户字段。SQL故障不变False。
+新增安全缺对象错误为CostingQuoteNotFoundError，不改变旧确认/读取错误语义。
+coverage按精确原hash恢复或读取最新；scope按确认时间/ID发现只增历史，刷新不补确认。
+public DTO逐值白名单投影，不含完整Need、来源原文或locator；安全摘要不代表原件读权。

@@ -39,6 +39,14 @@ from shared.schemas.quote_creation import (
 class CostingFreezeRepositoryImpl(_TenantBoundRepository):
     """只增事实，同session完成scope/成本锁定/operation效果。"""
 
+    async def list_scopes(self, tenant_id: TenantId, cost_sheet_id: CostSheetId) -> tuple[CostScopeConfirmationView, ...]:
+        """持久列与payload逐条核验，不能把损坏历史当空列表。"""
+        self._require_tenant(tenant_id, "quote_scope_list")
+        rows = await self._session.scalars(select(CostScopeConfirmationRow).where(
+            CostScopeConfirmationRow.tenant_id == tenant_id, CostScopeConfirmationRow.cost_sheet_id == cost_sheet_id)
+            .order_by(CostScopeConfirmationRow.confirmed_at, CostScopeConfirmationRow.confirmation_id))
+        return tuple(self._scope(row).view for row in rows)
+
     async def lock_key(
         self, tenant_id: TenantId, kind: Literal["scope", "creation"], key: str
     ) -> None:

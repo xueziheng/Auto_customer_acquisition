@@ -26,10 +26,23 @@ from infra.db.tables import (
     CostingPolicyRow,
     CostingPriceEvidenceRow,
     CostingQuoteFxRow,
+    OpportunityRow,
     RawArtifactRow,
 )
 from shared.errors import IdempotencyConflict
-from shared.schemas.identifiers import CostSheetId, TenantId
+from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId
+
+
+class CostingOpportunityReferenceReaderImpl(_TenantBoundRepository):
+    """不投影客户事实、不加锁；只提供同租户机会存在的时点事实。"""
+
+    async def exists(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> bool:
+        self._require_tenant(tenant_id, "costing_opportunity_reference")
+        statement = select(select(OpportunityRow.opportunity_id).where(
+            OpportunityRow.tenant_id == self._tenant_id,
+            OpportunityRow.opportunity_id == opportunity_id,
+        ).exists())
+        return (await self._session.execute(statement)).scalar_one()
 
 
 class _EvidenceRepository[T: BaseModel](_TenantBoundRepository):
@@ -287,11 +300,27 @@ class PriceEvidenceRepositoryImpl(_EvidenceRepository[PriceEvidenceView]):
     )
     hash_field = "evidence_hash"
 
+    async def list_by_opportunity(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> tuple[EvidenceRecord[PriceEvidenceView], ...]:
+        self._require_tenant(tenant_id, "costing_price_list")
+        rows = (await self._session.scalars(select(CostingPriceEvidenceRow).where(
+            CostingPriceEvidenceRow.tenant_id == self._tenant_id,
+            CostingPriceEvidenceRow.opportunity_id == opportunity_id,
+        ).order_by(CostingPriceEvidenceRow.confirmed_at, CostingPriceEvidenceRow.evidence_id))).all()
+        return tuple(self._record(row) for row in rows)
+
 
 class CostCoverageRepositoryImpl(_EvidenceRepository[CostCoverageView]):
     """完整性清单以内容 hash 为可恢复身份。"""
 
     row_type, value_type, id_field = CostingCoverageRow, CostCoverageView, "coverage_id"
+
+    async def get_latest(self, tenant_id: TenantId, cost_sheet_id: CostSheetId) -> EvidenceRecord[CostCoverageView] | None:
+        """读取历史最近确认，不为刷新补写清单或重确认适用性。"""
+        self._require_tenant(tenant_id, "costing_coverage_latest")
+        row = await self._session.scalar(select(CostingCoverageRow).where(
+            CostingCoverageRow.tenant_id == tenant_id, CostingCoverageRow.cost_sheet_id == cost_sheet_id)
+            .order_by(CostingCoverageRow.confirmed_at.desc(), CostingCoverageRow.coverage_id.desc()).limit(1))
+        return self._record(row) if row else None
 
     async def get_for_sheet_hash(
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId, sheet_hash: str

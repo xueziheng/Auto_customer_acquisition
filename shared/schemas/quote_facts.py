@@ -102,6 +102,21 @@ class NeedQuoteFacts(NeedFactDTO):
     unit_confirmation_id: FactId | None
 
 
+NeedQuantityPreparationStatus = Literal["missing", "non_positive", "unconfirmed", "current"]
+NeedUnitPreparationStatus = Literal["blocked_by_quantity", "missing", "unconfirmed", "stale", "current"]
+
+
+class NeedQuotePreparationAssessment(NeedFactDTO):
+    """准备页面的只读评估契约；状态分类只由需求域实现。"""
+
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    need_facts_hash: FactHash
+    quantity_fact_hash: FactHash | None
+    quantity_status: NeedQuantityPreparationStatus
+    unit_status: NeedUnitPreparationStatus
+
+
 class QuoteEmployeeFact(NeedFactDTO):
     """本次读取的员工事实，不代表任何用途授权。"""
 

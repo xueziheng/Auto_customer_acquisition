@@ -9,7 +9,12 @@ from typing import Literal, cast
 from pydantic import BaseModel
 
 from domains.costing.calculation import canonical_pricing_hash
-from domains.costing.errors import CostCoverageConflict, InvalidPricingEvidenceError
+from domains.costing.errors import (
+    CostCoverageConflict,
+    CostFreezeError,
+    CostingQuoteNotFoundError,
+    InvalidPricingEvidenceError,
+)
 from domains.costing.models import CostSheet
 from domains.costing.permissions import (
     CostingAction,
@@ -36,7 +41,13 @@ from domains.costing.schemas import (
 )
 from domains.costing.service import PricingEvidenceReader, cost_sheet_content_hash
 from shared.errors import IdempotencyConflict, PermissionDenied, ValidationError
-from shared.schemas.identifiers import CostSheetId, EmployeeId, TenantId, new_id
+from shared.schemas.identifiers import (
+    CostSheetId,
+    EmployeeId,
+    OpportunityId,
+    TenantId,
+    new_id,
+)
 from shared.schemas.provenance import Provenance, SourceType
 
 
@@ -354,6 +365,30 @@ class CostingQuoteServiceImpl:
                 raise InvalidPricingEvidenceError("费用确认依据不存在")
             evidence.append(record.value)
         validate_cost_coverage(sheet, command, tuple(evidence), now=self._clock())
+
+    async def list_price_evidence(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        *, actor: CostingActor) -> tuple[PriceEvidenceView, ...]:
+        """先核当前C，再以同一短事务区分缺机会与空依据。"""
+        await self._require(tenant_id, actor, CostingAction.SHEET_READ)
+        async with self._factory(tenant_id) as uow:
+            if not await uow.opportunity_refs.exists(tenant_id, opportunity_id):
+                raise CostingQuoteNotFoundError()
+            return tuple(record.value for record in await uow.prices.list_by_opportunity(tenant_id, opportunity_id))
+
+    async def get_coverage(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        *, actor: CostingActor, content_hash: str | None = None) -> CostCoverageView | None:
+        """精确hash优先；无hash仅读持久最近确认，不用当前sheet内容替换历史回执。"""
+        await self._require(tenant_id, actor, CostingAction.SHEET_READ)
+        async with self._factory(tenant_id) as uow:
+            if await uow.sheets.get(tenant_id, cost_sheet_id) is None:
+                raise CostingQuoteNotFoundError()
+            record = (await uow.coverage.get(tenant_id, content_hash) if content_hash is not None
+                else await uow.coverage.get_latest(tenant_id, cost_sheet_id))
+            if record is None or record.value.cost_sheet_id != cost_sheet_id:
+                return None
+            if content_hash is not None and record.value.content_hash != content_hash:
+                raise CostFreezeError("facts_corrupt")
+            return record.value
 
     async def confirm_coverage(
         self,

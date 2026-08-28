@@ -25,6 +25,8 @@ from domains.quotations.errors import (
 )
 from domains.quotations.file_schemas import QuoteFileApprovalFact, QuoteFileView
 from domains.quotations.file_service import QuoteFileService
+from domains.quotations.http_projection import project_issuer
+from domains.quotations.http_schemas import QuoteIssuerPublicView
 from domains.quotations.permissions import QuotePreparationPolicy
 from domains.quotations.schemas import (
     QuotationActor,
@@ -275,6 +277,13 @@ class QuotationServiceImpl:
             replaces_quote_id=c.replaces_quote_id,
             replaced_quote_version=c.replaced_quote_version,
         )
+
+    async def get_issuer(self, tenant_id: TenantId, *, actor: QuotationActor) -> QuoteIssuerPublicView | None:
+        """带当前内部角色门的安全抬头读取，只有真实缺少记录返回None。"""
+        await self._actor(tenant_id, actor, action="read_internal")
+        async with self._uows(tenant_id) as uow:
+            issuer = await uow.quotes.current_issuer(tenant_id)
+        return project_issuer(issuer) if issuer is not None else None
 
     async def get_confirmed_issuer(self, tenant_id: TenantId) -> QuoteIssuer:
         """仅可信内部context reader使用，不装配为无鉴权HTTP。"""

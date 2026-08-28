@@ -90,6 +90,7 @@ class _Uow:
         self.prices = _UnusedQuoteRepository()
         self.coverage = _UnusedQuoteRepository()
         self.quote_fx = _UnusedQuoteRepository()
+        self.opportunity_refs = _UnusedQuoteRepository()
 
     async def __aenter__(self) -> Self:
         return self

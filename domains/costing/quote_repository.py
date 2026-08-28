@@ -12,7 +12,15 @@ from domains.costing.schemas import (
     PricingPolicyView,
     QuoteFxView,
 )
-from shared.schemas.identifiers import CostSheetId, TenantId
+from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId
+
+
+class CostingOpportunityReferenceReader(Protocol):
+    """同租户机会存在性事实，不是CRM授权票据。"""
+
+    async def exists(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> bool:
+        """只读真实bool，SQL故障不能伪装不存在。"""
+        ...
 
 
 @dataclass(frozen=True)
@@ -67,9 +75,17 @@ class PricingPolicyRepository(EvidenceRepository[PricingPolicyView], Protocol):
 class PriceEvidenceRepository(EvidenceRepository[PriceEvidenceView], Protocol):
     """供应商单价与实际费用保留各自事实语义。"""
 
+    async def list_by_opportunity(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> tuple[EvidenceRecord[PriceEvidenceView], ...]:
+        """同租户机会的持久依据，按确认时间及ID稳定排序。"""
+        ...
+
 
 class CostCoverageRepository(EvidenceRepository[CostCoverageView], Protocol):
     """完整性确认按内容 hash 定位，过期清单不会自动更新。"""
+
+    async def get_latest(self, tenant_id: TenantId, cost_sheet_id: CostSheetId) -> EvidenceRecord[CostCoverageView] | None:
+        """持久最近确认按confirmed_at/ID稳定排序，不隐式要求当前sheet hash。"""
+        ...
 
     async def get_for_sheet_hash(
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId, sheet_hash: str

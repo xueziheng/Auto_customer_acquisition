@@ -11,6 +11,7 @@ from domains.costing.errors import (
     CostFreezeError,
     CostFreezePermissionError,
     CostFreezeUnavailableError,
+    CostingQuoteNotFoundError,
     InvalidPricingEvidenceError,
 )
 from domains.costing.freeze_repository import CostingFreezeUow, CostingFreezeUowFactory
@@ -297,6 +298,15 @@ class CostingFreezeServiceImpl:
             if result is None:
                 raise CostFreezeError("record_not_found")
             return result
+
+    async def list_scopes(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        *, actor: CostingActor) -> tuple[CostScopeConfirmationView, ...]:
+        """仅当前内部成本角色发现同表历史ID，不宣称当前适用。"""
+        await self._require(tenant_id, actor, CostingAction.QUOTE_OPERATION_READ)
+        async with self._factory(tenant_id) as uow:
+            if await uow.sheets.get(tenant_id, cost_sheet_id) is None:
+                raise CostingQuoteNotFoundError()
+            return await uow.freezes.list_scopes(tenant_id, cost_sheet_id)
 
     def _clock(self) -> datetime:
         """只在本轮全部成本锁取得后读取一次明确时钟。"""

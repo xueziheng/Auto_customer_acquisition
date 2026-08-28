@@ -601,20 +601,35 @@ class CostCoverageView(CostCoverageCreate):
 PricingPolicyView.model_rebuild()
 
 from domains.costing.freeze_schemas import (
-    CostingContext as CostingContext,
+    CostingContext as CostingContext,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.freeze_schemas import (
-    CostScopeAccess as CostScopeAccess,
+    CostScopeAccess as CostScopeAccess,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.freeze_schemas import (
-    CostScopeConfirmationCommand as CostScopeConfirmationCommand,
+    CostScopeConfirmationCommand as CostScopeConfirmationCommand,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.freeze_schemas import (
-    CostScopeConfirmationView as CostScopeConfirmationView,
+    CostScopeConfirmationView as CostScopeConfirmationView,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.freeze_schemas import (
-    CostScopeEvidenceBinding as CostScopeEvidenceBinding,
+    CostScopeEvidenceBinding as CostScopeEvidenceBinding,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.costing.freeze_schemas import (
-    FrozenCostBasis as FrozenCostBasis,
+    FrozenCostBasis as FrozenCostBasis,  # noqa: PLC0414 - 同类型公开重导出
 )
+
+_HTTP_PUBLIC_EXPORTS = frozenset({
+    "CostCalculationCommand", "CostCoveragePublicView", "CostScopePublicView",
+    "ExpenseEvidencePublicView", "PriceEvidencePublicView", "PricingPolicyPublicView",
+    "PricingSourceSummary", "QuoteFxPublicView", "SupplierPriceEvidencePublicView",
+})
+
+
+def __getattr__(name: str) -> object:
+    """显式延迟重导出，避免HTTP复用原商业类型时产生schemas循环。"""
+    if name in _HTTP_PUBLIC_EXPORTS:
+        from domains.costing import http_schemas
+
+        return getattr(http_schemas, name)
+    raise AttributeError(name)

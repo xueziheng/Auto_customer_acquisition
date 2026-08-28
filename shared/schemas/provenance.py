@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from pydantic import AwareDatetime, BaseModel, ConfigDict, field_validator
+
 from shared.errors import ValidationError
 from shared.schemas.evidence import EvidenceItem
 from shared.schemas.identifiers import EmployeeId
@@ -109,6 +111,43 @@ class Provenance:
         进客户可见报价。
         """
         return self.confirmed_by is not None
+
+
+class ProvenanceSummary(BaseModel):
+    """来源的安全HTTP形状；不包含原文、URL、定位或原件读权。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    source_type: SourceType
+    source_id: str
+    extracted_by: str
+    extracted_at: AwareDatetime
+    confirmed_by: EmployeeId | None
+    confirmed_at: AwareDatetime | None
+
+    @field_validator("extracted_at", "confirmed_at")
+    @classmethod
+    def _summary_utc(cls, value: datetime | None) -> datetime | None:
+        """只统一安全摘要的时区，不改变原Provenance契约。"""
+        from shared.schemas.quote_facts import fact_utc
+
+        return fact_utc(value) if value is not None else None
+
+    @field_validator("confirmed_by")
+    @classmethod
+    def _summary_identity(cls, value: EmployeeId | None) -> EmployeeId | None:
+        """保留现员工身份形状；摘要不授予访问原件的能力。"""
+        from shared.schemas.quote_facts import fact_identity
+
+        if value is not None:
+            fact_identity(value)
+        return value
+
+
+def summarize_provenance(value: Provenance) -> ProvenanceSummary:
+    """显式白名单，不递归转储完整来源后再做排除。"""
+    return ProvenanceSummary(source_type=value.source_type, source_id=value.source_id,
+        extracted_by=value.extracted_by, extracted_at=value.extracted_at,
+        confirmed_by=value.confirmed_by, confirmed_at=value.confirmed_at)
 
 
 @dataclass(frozen=True)

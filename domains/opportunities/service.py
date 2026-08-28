@@ -7,6 +7,15 @@ from typing import Protocol, runtime_checkable
 
 from domains.opportunities.models import LossReason, OpportunityState
 from domains.opportunities.permissions import Actor, OpportunityScope
+from domains.opportunities.permissions import (
+    OpportunityAction as OpportunityAction,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.opportunities.permissions import (
+    OpportunityAuthorizer as OpportunityAuthorizer,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.opportunities.permissions import (
+    ScopeLevel as ScopeLevel,  # noqa: PLC0414 - 同类型公开重导出
+)
 from domains.opportunities.schemas import (
     HandoffCreateRequest,
     HandoffPacketView,

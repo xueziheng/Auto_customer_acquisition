@@ -46,3 +46,10 @@ poll_due/deliver_event跨handler的Run锁为NO KEY UPDATE，允许独立报价�
 
 notifier只接受metadata及稳定幂等键，实际通知与API/worker装配由T8负责；T5不调用外部provider、
 不生成PDF/发邮件、不用成功receipt替代当前文件actor及原件ACL。
+
+## Phase 2 安全准备适配
+
+DemandQuotePreparationProjector只调用demand.service的纯评估并转换固定错误，
+不复制数量/单位规则、不用未知错误制造普通缺项。CurrentNeedUnitAuthorizer
+固定原C与OPPORTUNITY_READ交集，使用真实当前员工role和TENANT scope，
+初检与锁内同样核权，不提高角色；原件IO在授权锁外，guard保护到内层事务提交。

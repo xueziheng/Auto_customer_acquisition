@@ -37,9 +37,18 @@ from domains.quotations.context import (
     quote_specification,
     quote_specification_hash,
 )
+from domains.quotations.context import (
+    QuotePreparationFacts as QuotePreparationFacts,  # noqa: PLC0414 - 同类型公开重导出
+)
 from domains.quotations.customer_versions import (
     QuoteCustomerVersionsService,
     QuoteCustomerVersionsServiceImpl,
+)
+from domains.quotations.errors import (
+    QuoteContextError as QuoteContextError,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.errors import (
+    QuoteContextUnavailableError as QuoteContextUnavailableError,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.quotations.file_access import (
     ContextQuoteFileScopeAuthorizer,
@@ -54,10 +63,43 @@ from domains.quotations.file_service import (
     QuoteFileService,
     QuoteGeneratedArtifactReader,
 )
+from domains.quotations.http_projection import (
+    project_internal_quote as project_internal_quote,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.quotations.http_projection import (
+    project_issuer as project_issuer,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.quotations.http_projection import (
+    project_need as project_need,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.quotations.http_schemas import (
+    QuoteEmptyCommand as QuoteEmptyCommand,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteInternalPublicView as QuoteInternalPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteIssuerPublicView as QuoteIssuerPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteNeedPublicSummary as QuoteNeedPublicSummary,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuotePreparationPublicView as QuotePreparationPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
 from domains.quotations.models import ForbiddenAutoCommitment
 from domains.quotations.permissions import (
     QuotePreparationPolicy,
     StrictQuotePreparationPolicy,
+)
+from domains.quotations.preparation_read import (
+    QuoteNeedPreparationProjector as QuoteNeedPreparationProjector,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.preparation_read import (
+    QuotePreparationReadService as QuotePreparationReadService,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.preparation_read import (
+    QuotePreparationReadServiceImpl as QuotePreparationReadServiceImpl,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.quotations.schemas import (
     QuotationActor,
@@ -95,6 +137,15 @@ from shared.schemas.quote_creation import QuoteCreationCompletion, QuoteCreation
 from shared.schemas.quote_document import (
     CustomerQuoteView,
     QuotePdfRenderError,  # noqa: F401 - 跨层同一错误的公共重导出
+)
+from shared.schemas.quote_facts import (
+    NeedQuantityPreparationStatus as NeedQuantityPreparationStatus,  # noqa: PLC0414 - 同类型公开重导出
+)
+from shared.schemas.quote_facts import (
+    NeedQuotePreparationAssessment as NeedQuotePreparationAssessment,  # noqa: PLC0414 - 同类型公开重导出
+)
+from shared.schemas.quote_facts import (
+    NeedUnitPreparationStatus as NeedUnitPreparationStatus,  # noqa: PLC0414 - 同类型公开重导出
 )
 from shared.schemas.quote_facts import QuoteEmployeeFact
 
@@ -145,6 +196,9 @@ class QuoteCreationSession(Protocol):
 
 class QuotationVersionService(QuoteFileService, Protocol):
     """新生产候选端口，旧骨架服务不转调本实现。"""
+    async def get_issuer(self, tenant_id: TenantId, *, actor: QuotationActor) -> QuoteIssuerPublicView | None:
+        """按当前内部角色授权后投影抬头，不扩大原件读权。"""
+        ...
     async def approval_snapshot(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteApprovalSnapshot:
         """当前四成本角色的审批启动快照。"""
         ...

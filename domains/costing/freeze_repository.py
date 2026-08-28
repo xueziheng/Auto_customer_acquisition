@@ -19,6 +19,10 @@ from shared.schemas.quote_creation import (
 class CostingFreezeRepository(Protocol):
     """全部查询与写入绑定tenant且在调用UoW的同session内执行。"""
 
+    async def list_scopes(self, tenant_id: TenantId, cost_sheet_id: CostSheetId) -> tuple[CostScopeConfirmationView, ...]:
+        """同表历史确认按确认时间与ID稳定升序，不覆写旧scope。"""
+        ...
+
     async def lock_key(
         self, tenant_id: TenantId, kind: Literal["scope", "creation"], key: str
     ) -> None:

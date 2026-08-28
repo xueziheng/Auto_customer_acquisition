@@ -29,6 +29,7 @@ from domains.quotations.schemas import (
 )
 from domains.quotations.service import (
     QuoteIssuerReader,
+    QuotePreparationFacts,
     canonical_quote_specification,
     quote_specification,
     quote_specification_hash,
@@ -69,6 +70,15 @@ class SqlAlchemyQuoteContextProvider:
             raise QuoteContextError("invalid_input")
         self._factory, self._issuer = session_factory, issuer_reader
         self._lock_timeout, self._statement_timeout = lock_timeout_ms, statement_timeout_ms
+
+    @asynccontextmanager
+    async def open_preparation_facts(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId) -> AsyncIterator[QuotePreparationFacts]:
+        """复用原锁序与清理；只允许真实缺项，不执行任何确认或对象IO。"""
+        async with self._open(tenant_id, opportunity_id, actor_id, prepared_by=prepared_by,
+            preparation=True) as result:
+            assert isinstance(result, QuotePreparationFacts)
+            yield result
 
     @asynccontextmanager
     async def open_file_scope(self, tenant_id: TenantId, opportunity_id: OpportunityId,
@@ -125,8 +135,8 @@ class SqlAlchemyQuoteContextProvider:
     async def _open(self, tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId,
         *, prepared_by: EmployeeId | None, submitted_owner_id: EmployeeId | None = None,
         decider_ids: tuple[EmployeeId, ...] | None = None, file_scope: bool = False,
-        file_current: bool = False,
-    ) -> AsyncIterator[QuoteBusinessContext | QuoteApprovalAccessContext | QuoteApprovalContext | QuoteFileScopeFacts | QuoteFileCurrentFacts]:
+        file_current: bool = False, preparation: bool = False,
+    ) -> AsyncIterator[QuoteBusinessContext | QuoteApprovalAccessContext | QuoteApprovalContext | QuoteFileScopeFacts | QuoteFileCurrentFacts | QuotePreparationFacts]:
         """租约内持锁，异常/取消尽力回滚关闭；不升级为FOR UPDATE。"""
         consumer_error: BaseException | None = None
         primary_cancel: asyncio.CancelledError | None = None
@@ -152,9 +162,12 @@ class SqlAlchemyQuoteContextProvider:
             except (QuoteContextError, QuoteContextUnavailableError):
                 raise
             except QuotationError as exc:
-                if file_current and exc.code == "issuer_not_found":
+                if preparation and exc.code == "issuer_not_found":
+                    issuer = None
+                elif file_current and exc.code == "issuer_not_found":
                     raise QuoteContextError("context_changed") from None
-                raise QuoteContextUnavailableError("dependency_unavailable") from None
+                else:
+                    raise QuoteContextUnavailableError("dependency_unavailable") from None
             except QuotationUnavailableError:
                 if file_current:
                     raise
@@ -213,6 +226,19 @@ class SqlAlchemyQuoteContextProvider:
                         raise QuoteContextError("facts_corrupt")
                     facts = NeedQuoteFacts.model_validate_json(json.dumps({
                         name: getattr(need, name) for name in NeedQuoteFacts.model_fields}))
+                    if preparation:
+                        try:
+                            yield QuotePreparationFacts(tenant_id=tenant_id, opportunity_id=opportunity_id,
+                                account_id=facts.account_id, owner_id=EmployeeId(opportunity.owner),
+                                prepared_by=prepared_by, account_name=opportunity.account_name,
+                                country=opportunity.country, opportunity_state=opportunity.state,
+                                need_facts=facts, issuer=issuer,
+                                runtime=QuoteRuntimeFacts(current_actor=employees[actor_id],
+                                    owner=employees[opportunity.owner], preparer=employees.get(prepared_by)))
+                        except BaseException as exc:
+                            consumer_error = exc
+                            raise
+                        return
                     if facts.quantity is None or facts.destination is None:
                         raise QuoteContextError("facts_missing")
                     if facts.unit is None:

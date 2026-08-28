@@ -14,6 +14,7 @@ from infra.db.repositories.costing import (
 )
 from infra.db.repositories.costing_quote import (
     CostCoverageRepositoryImpl,
+    CostingOpportunityReferenceReaderImpl,
     PriceEvidenceRepositoryImpl,
     PricingPolicyRepositoryImpl,
     QuoteFxRepositoryImpl,
@@ -35,6 +36,7 @@ class SqlAlchemyCostingUnitOfWork:
 
     async def __aenter__(self) -> Self:
         self._session = self._factory()
+        self.opportunity_refs = CostingOpportunityReferenceReaderImpl(self._session, self._tenant_id)
         self.sheets = CostSheetRepositoryImpl(self._session, self._tenant_id)
         self.margin_rules = MarginRuleRepositoryImpl(
             self._session, self._tenant_id, now=self._now

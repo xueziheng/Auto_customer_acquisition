@@ -20,6 +20,18 @@ from domains.demand.errors import (
 from domains.demand.errors import (
     NeedUnitUnavailableError as NeedUnitUnavailableError,  # noqa: PLC0414
 )
+from domains.demand.http_projection import (
+    project_need_unit_confirmation as project_need_unit_confirmation,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.demand.http_projection import (
+    project_need_unit_preparation as project_need_unit_preparation,  # noqa: PLC0414 - 公共纯投影
+)
+from domains.demand.http_schemas import (
+    NeedUnitConfirmationPublicView as NeedUnitConfirmationPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.demand.http_schemas import (
+    NeedUnitPreparationView as NeedUnitPreparationView,  # noqa: PLC0414 - 同类型公开重导出
+)
 from domains.demand.schemas import (
     CustomerReplyEvidenceClaim,
     DemandSignalView,
@@ -32,10 +44,14 @@ from domains.demand.schemas import (
     NeedUnitConfirmationCommand,
     NeedUnitConfirmationView,
     NeedUnitEvidenceQuery,
+    NeedUnitScopeFacts,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
     VerifiedNeedUnitEvidence,
+)
+from domains.demand.unit_facts import (
+    assess_quote_preparation as assess_quote_preparation,  # noqa: PLC0414
 )
 from domains.demand.unit_facts import (
     need_quote_facts_hash as need_quote_facts_hash,  # noqa: PLC0414
@@ -59,6 +75,24 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+from shared.schemas.quote_facts import (
+    NeedQuantityPreparationStatus as NeedQuantityPreparationStatus,  # noqa: PLC0414 - 同类型公开重导出
+)
+from shared.schemas.quote_facts import (
+    NeedQuotePreparationAssessment as NeedQuotePreparationAssessment,  # noqa: PLC0414 - 同类型公开重导出
+)
+from shared.schemas.quote_facts import (
+    NeedUnitPreparationStatus as NeedUnitPreparationStatus,  # noqa: PLC0414 - 同类型公开重导出
+)
+
+
+class NeedUnitScopeReader(Protocol):
+    """只读锁内员工、Need/机会/account绑定，不作业务角色判断。"""
+
+    def open(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+        actor_id: EmployeeId) -> AbstractAsyncContextManager[NeedUnitScopeFacts]:
+        """Employee→Opportunity SHARE保持至内层Need事务退出。"""
+        ...
 
 
 class NeedUnitAuthorizer(Protocol):

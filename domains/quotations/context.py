@@ -176,6 +176,12 @@ def quote_context_hash(context: QuoteBusinessContext) -> str:
 class QuoteContextProvider(Protocol):
     """保持当前员工/机会/Need事实直到调用者事务完成。"""
 
+    def open_preparation_facts(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId
+    ) -> AbstractAsyncContextManager[QuotePreparationFacts]:
+        """新准备读取允许真实缺项，不放宽原完整context用途。"""
+        ...
+
     def open_file_scope(self, tenant_id: TenantId, opportunity_id: OpportunityId,
         actor_id: EmployeeId) -> AbstractAsyncContextManager[QuoteFileScopeFacts]:
         """仅排序锁actor/owner再锁机会；不读Need/抬头/政策。"""
@@ -211,3 +217,19 @@ class QuoteIssuerReader(Protocol):
     async def get_confirmed(self, tenant_id: TenantId) -> QuoteIssuer:
         """缺真实确认必须失败，不能返回样例抬头。"""
         ...
+
+
+class QuotePreparationFacts(QuoteDTO):
+    """准备用途的内部租约事实；包含原文，不得直接HTTP序列化。"""
+
+    tenant_id: TenantId
+    opportunity_id: OpportunityId
+    account_id: ProspectAccountId
+    owner_id: EmployeeId
+    prepared_by: EmployeeId
+    account_name: str
+    country: str
+    opportunity_state: str
+    need_facts: NeedQuoteFacts
+    runtime: QuoteRuntimeFacts
+    issuer: QuoteIssuer | None

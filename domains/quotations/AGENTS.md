@@ -152,3 +152,11 @@ snapshot等值只排除checked_at，不缓存许可；外部IO不持业务锁，
 无文件业务状态写、无新增批准、无自动history fallback、无把下载记sent。域员工DTO仍沿
 40字符事实校验；现Employee持久表与Gateway ledger有更窄32字符/safe-label限制，域不复制
 该限制、不截断ID，应用使用真实Gateway拒绝。ADR0021记录完整边界与受控验证范围。
+
+## Phase 2 安全准备摘要
+
+open_preparation_facts不要求unit/issuer已具备，不能替代正式open的完整事实门。
+同lease先核当前C，再委托注入的需求纯评估，核tenant/need及完整事实hash绑定；
+正常缺项按固定顺序返回blockers，损坏规格/typed事实固定失败关闭。
+规格和hash仍用原公共纯函数；仅全部完整时构造原context并返回原context_hash。
+internal public投影不带basis/intent/Need原文/runtime，不是客户文件许可。

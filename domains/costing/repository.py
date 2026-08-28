@@ -10,6 +10,7 @@ from typing import Protocol, Self, runtime_checkable
 from domains.costing.models import CostSheet, MarginRule
 from domains.costing.quote_repository import (
     CostCoverageRepository,
+    CostingOpportunityReferenceReader,
     PriceEvidenceRepository,
     PricingPolicyRepository,
     QuoteFxRepository,
@@ -66,6 +67,7 @@ class MarginRuleRepository(Protocol):
 
 @runtime_checkable
 class CostingUnitOfWork(Protocol):
+    opportunity_refs: CostingOpportunityReferenceReader
     sheets: CostSheetRepository
     margin_rules: MarginRuleRepository
     policies: PricingPolicyRepository

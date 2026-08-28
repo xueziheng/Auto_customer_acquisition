@@ -70,6 +70,21 @@ from domains.quotations.file_schemas import (
     QuoteFileView,
     QuoteGeneratedArtifactFact,
 )
+from domains.quotations.http_schemas import (
+    QuoteEmptyCommand as QuoteEmptyCommand,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteInternalPublicView as QuoteInternalPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteIssuerPublicView as QuoteIssuerPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuoteNeedPublicSummary as QuoteNeedPublicSummary,  # noqa: PLC0414 - 同类型公开重导出
+)
+from domains.quotations.http_schemas import (
+    QuotePreparationPublicView as QuotePreparationPublicView,  # noqa: PLC0414 - 同类型公开重导出
+)
 from domains.quotations.models import QuoteState
 from domains.quotations.version_schemas import (
     QuotationActor,
