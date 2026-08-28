@@ -138,6 +138,19 @@ afterEach(() => {
 });
 
 describe("NotificationCenter", () => {
+  it("renders the quote-result notification in Chinese with the fixed exact-version link", async () => {
+    const item = notification("ntf-quote-result", { priority: "low", title: "报价审批结果", relative_link: "/costing-quotes/quotes/quote-1", context: { kind: "quote_approval_result", primary_id: "quote-1", secondary_id: null, reason_code: "approved", level: null } });
+    const { fetch } = makeNotificationFetch({ items: [item] });
+    const { root, app } = await mountInbox(fetch);
+    await eventually(() => expect(root.textContent).toContain("ntf-quote-result"));
+    await selectInboxRow(root, "ntf-quote-result");
+    expect(root.textContent).toContain("报价审批结果");
+    expect(root.textContent).toContain("类型报价审批结果（quote_approval_result）");
+    const link = [...root.querySelectorAll("a")].find((entry) => entry.textContent?.includes("前往处理"));
+    expect(link?.getAttribute("href")).toBe("/costing-quotes/quotes/quote-1");
+    expect(router.resolve(link!.getAttribute("href")!).params.quoteId).toBe("quote-1");
+    app.unmount();
+  });
   it("keeps the badge in a safe stale state when the request itself throws", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("network unavailable");

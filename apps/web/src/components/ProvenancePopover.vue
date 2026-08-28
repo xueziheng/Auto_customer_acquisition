@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import type { components } from "../api/api";
 
-type ProvenanceSummary = components["schemas"]["ProvenanceSummary"];
+type ProvenanceSummary = components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"];
 
 const props = defineProps<{
   fieldLabel: string;

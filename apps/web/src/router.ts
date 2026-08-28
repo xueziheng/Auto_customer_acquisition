@@ -79,7 +79,13 @@ const router = createRouter({
       path: "/costing-quotes",
       name: "costing-quotes",
       component: () => import("./views/costing-quotes/CostingQuotes.vue"),
-      meta: { phase: "phase1-manual", operation: "costing-quotes" },
+      meta: { phase: "phase2-costing-quotation", operation: "costing-quotes" },
+    },
+    {
+      path: "/costing-quotes/quotes/:quoteId",
+      name: "costing-quote-version",
+      component: () => import("./views/costing-quotes/CostingQuotes.vue"),
+      meta: { phase: "phase2-costing-quotation", operation: "costing-quotes" },
     },
     {
       path: "/team",

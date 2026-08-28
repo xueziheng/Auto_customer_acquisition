@@ -6,7 +6,7 @@ import ProvenancePopover from "../../components/ProvenancePopover.vue";
 
 type HandoffPacketView = components["schemas"]["HandoffPacketView"];
 type OpportunityView = components["schemas"]["OpportunityView"];
-type ProvenanceSummary = components["schemas"]["ProvenanceSummary"];
+type ProvenanceSummary = components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"];
 
 const props = defineProps<{
   opportunity: OpportunityView;

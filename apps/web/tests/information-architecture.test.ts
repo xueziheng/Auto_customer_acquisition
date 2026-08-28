@@ -31,12 +31,17 @@ describe("Phase 1 information architecture", () => {
     expect([...paths].some((path) => path.includes("whatsapp"))).toBe(false);
   });
 
-  it("marks product, sourcing and costing routes as manual Phase 1 work", () => {
-    for (const path of ["/products", "/sourcing", "/costing-quotes"]) {
+  it("keeps products and sourcing manual while costing has its bounded Phase 2 entry", () => {
+    for (const path of ["/products", "/sourcing"]) {
       const route = router.getRoutes().find((candidate) => candidate.path === path);
       expect(route?.meta.phase).toBe("phase1-manual");
       expect(route?.meta.operation).toBeTruthy();
     }
+    expect(router.resolve("/costing-quotes").meta.phase).toBe("phase2-costing-quotation");
+    const quote = router.resolve("/costing-quotes/quotes/quote-notification-version");
+    expect(quote.matched).toHaveLength(1);
+    expect(quote.params.quoteId).toBe("quote-notification-version");
+    expect(quote.meta.phase).toBe("phase2-costing-quotation");
   });
 
   it("keeps billing visibly disabled until Phase 3", () => {

@@ -262,6 +262,179 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/costing-quotes/cost-sheets/{sheet_id}/calculate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Calculate */
+        post: operations["calculate_costing_quotes_cost_sheets__sheet_id__calculate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/cost-sheets/{sheet_id}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Coverage */
+        get: operations["get_coverage_costing_quotes_cost_sheets__sheet_id__coverage_get"];
+        put?: never;
+        /** Confirm Coverage */
+        post: operations["confirm_coverage_costing_quotes_cost_sheets__sheet_id__coverage_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/cost-sheets/{sheet_id}/scope-confirmations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Scopes */
+        get: operations["list_scopes_costing_quotes_cost_sheets__sheet_id__scope_confirmations_get"];
+        put?: never;
+        /** Confirm Scope */
+        post: operations["confirm_scope_costing_quotes_cost_sheets__sheet_id__scope_confirmations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/cost-sheets/{sheet_id}/scope-confirmations/{confirmation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Scope */
+        get: operations["get_scope_costing_quotes_cost_sheets__sheet_id__scope_confirmations__confirmation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/evidence/locator": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Locator */
+        post: operations["locator_costing_quotes_evidence_locator_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/evidence/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview */
+        post: operations["preview_costing_quotes_evidence_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/issuer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Issuer */
+        get: operations["get_issuer_costing_quotes_issuer_get"];
+        put?: never;
+        /** Confirm Issuer */
+        post: operations["confirm_issuer_costing_quotes_issuer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/needs/{need_id}/unit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Unit */
+        get: operations["get_unit_costing_quotes_needs__need_id__unit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/needs/{need_id}/unit-confirmations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Unit */
+        post: operations["confirm_unit_costing_quotes_needs__need_id__unit_confirmations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/needs/{need_id}/unit-confirmations/{confirmation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Unit Confirmation */
+        get: operations["get_unit_confirmation_costing_quotes_needs__need_id__unit_confirmations__confirmation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/costing-quotes/opportunities/{opportunity_id}/cost-sheets": {
         parameters: {
             query?: never;
@@ -274,6 +447,264 @@ export interface paths {
         put?: never;
         /** Create Cost Sheet */
         post: operations["create_cost_sheet_costing_quotes_opportunities__opportunity_id__cost_sheets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/opportunities/{opportunity_id}/customer-quote-versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Customer Versions */
+        get: operations["customer_versions_costing_quotes_opportunities__opportunity_id__customer_quote_versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/opportunities/{opportunity_id}/price-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Prices */
+        get: operations["list_prices_costing_quotes_opportunities__opportunity_id__price_evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/opportunities/{opportunity_id}/quote-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Context */
+        get: operations["get_context_costing_quotes_opportunities__opportunity_id__quote_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/opportunities/{opportunity_id}/quotes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Quotes */
+        get: operations["list_quotes_costing_quotes_opportunities__opportunity_id__quotes_get"];
+        put?: never;
+        /** Create Quote */
+        post: operations["create_quote_costing_quotes_opportunities__opportunity_id__quotes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Policy */
+        get: operations["get_policy_costing_quotes_policies_get"];
+        put?: never;
+        /** Confirm Policy */
+        post: operations["confirm_policy_costing_quotes_policies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/price-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Price */
+        post: operations["confirm_price_costing_quotes_price_evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quote-fx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Fx */
+        post: operations["confirm_fx_costing_quotes_quote_fx_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quote-fx/{fx_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Fx */
+        get: operations["get_fx_costing_quotes_quote_fx__fx_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Quote */
+        get: operations["get_quote_costing_quotes_quotes__quote_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Files */
+        get: operations["list_files_costing_quotes_quotes__quote_id__files_get"];
+        put?: never;
+        /** Generate File */
+        post: operations["generate_file_costing_quotes_quotes__quote_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/files/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile File */
+        post: operations["reconcile_file_costing_quotes_quotes__quote_id__files_reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download File */
+        get: operations["download_file_costing_quotes_quotes__quote_id__files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/files/{file_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History File */
+        get: operations["history_file_costing_quotes_quotes__quote_id__files__file_id__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revise Quote */
+        post: operations["revise_quote_costing_quotes_quotes__quote_id__revisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/costing-quotes/quotes/{quote_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Quote */
+        post: operations["submit_quote_costing_quotes_quotes__quote_id__submit_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1469,6 +1900,35 @@ export interface components {
          */
         AuthenticationFixInstruction: "configure_spf" | "configure_dkim" | "configure_dmarc" | "fix_alignment" | "strengthen_policy" | "retry_lookup";
         /**
+         * CalculationSnapshot
+         * @description 一次可重现计算的不可变输出快照。
+         */
+        CalculationSnapshot: {
+            /** Base Currency */
+            base_currency: string;
+            /**
+             * Computed At
+             * Format: date-time
+             */
+            computed_at: string;
+            /** Context Hash */
+            context_hash: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            displayed_total: components["schemas"]["Money"];
+            displayed_unit_price: components["schemas"]["Money"];
+            effective_unit_revenue: components["schemas"]["Money"];
+            /** Inputs Hash */
+            inputs_hash: string;
+            metrics: components["schemas"]["ProfitMetrics"];
+            /** Policy Id */
+            policy_id: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Version Number */
+            version_number: number;
+        };
+        /**
          * CampaignBoundaryBody
          * @description 完整 Campaign 边界；修改必须提交全量新版本。
          */
@@ -1805,6 +2265,101 @@ export interface components {
             required_actions: string[];
         };
         /**
+         * CostCalculationCommand
+         * @description HTTP只能选择持久FX引用，不能提交客户端FxRate或计算结果。
+         */
+        CostCalculationCommand: {
+            /**
+             * Algorithm Version
+             * @constant
+             */
+            algorithm_version: "costing-v1";
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "target" | "manual";
+            /** Quote Fx Ref */
+            quote_fx_ref: string | null;
+            rounding: components["schemas"]["RoundingPolicy"];
+            unit_price: components["schemas"]["Money"] | null;
+        };
+        /**
+         * CostCoverageCreate
+         * @description 绑定当前成本内容的完整场景确认，不改变旧 readiness 语义。
+         */
+        CostCoverageCreate: {
+            /**
+             * Acquisition Mode
+             * @enum {string}
+             */
+            acquisition_mode: "summary" | "detail";
+            /** Decisions */
+            decisions: components["schemas"]["CostCoverageDecision"][];
+            /** Expected Sheet Hash */
+            expected_sheet_hash: string;
+        };
+        /**
+         * CostCoverageDecision
+         * @description 每类费用必须明确适用且有金额，或明确不适用且有理由。
+         */
+        CostCoverageDecision: {
+            /** Applicable */
+            applicable: boolean;
+            /** Item Bindings */
+            item_bindings: components["schemas"]["CostItemBinding"][];
+            /** Item Type */
+            item_type: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * CostCoveragePublicView
+         * @description 完整确认身份与全部22类决策，不包含来源原文。
+         */
+        CostCoveragePublicView: {
+            /**
+             * Acquisition Mode
+             * @enum {string}
+             */
+            acquisition_mode: "summary" | "detail";
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            /** Coverage Id */
+            coverage_id: string;
+            /** Decisions */
+            decisions: components["schemas"]["CostCoverageDecision"][];
+            /** Expected Sheet Hash */
+            expected_sheet_hash: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+        };
+        /**
+         * CostItemBinding
+         * @description 绑定持久明细身份与原文费用行，不能按浏览器数组位置猜测。
+         */
+        CostItemBinding: {
+            /** Allocation Scope */
+            allocation_scope: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Item Sequence */
+            item_sequence: number;
+            /** Source Line Ref */
+            source_line_ref: string;
+        };
+        /**
          * CostItemCreate
          * @description 人工确认成本项；金额在 JSON 边界必须是十进制字符串。
          */
@@ -1840,6 +2395,8 @@ export interface components {
             is_per_unit: boolean;
             /** Item Label */
             item_label: string;
+            /** Item Sequence */
+            item_sequence?: number | null;
             /** Item Type */
             item_type: string;
             /** Note */
@@ -1848,6 +2405,81 @@ export interface components {
             price_basis: string;
             /** Source Ref */
             source_ref?: string | null;
+        };
+        /**
+         * CostScopeConfirmationCommand
+         * @description 人工确认完整Need、条款、期限与每一项成本来源映射。
+         */
+        CostScopeConfirmationCommand: {
+            /** Coverage Id */
+            coverage_id: string;
+            /** Evidence Bindings */
+            evidence_bindings: components["schemas"]["CostScopeEvidenceBinding"][];
+            /** Expected Coverage Hash */
+            expected_coverage_hash: string;
+            /** Expected Need Facts Hash */
+            expected_need_facts_hash: string;
+            /** Expected Sheet Hash */
+            expected_sheet_hash: string;
+            /** Terms */
+            terms: components["schemas"]["QuoteTerm"][];
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+        };
+        /**
+         * CostScopeEvidenceBinding
+         * @description 人工说明该持久依据如何对应当前完整需求，不冒充供应商原话。
+         */
+        CostScopeEvidenceBinding: {
+            /** Applicability Note */
+            applicability_note: string;
+            /** Evidence Hash */
+            evidence_hash: string;
+            /** Evidence Id */
+            evidence_id: string;
+        };
+        /**
+         * CostScopePublicView
+         * @description 历史适用性确认摘要，不能凭此宣称当前需求仍适用。
+         */
+        CostScopePublicView: {
+            /** Confirmation Id */
+            confirmation_id: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            /** Coverage Hash */
+            coverage_hash: string;
+            /** Coverage Id */
+            coverage_id: string;
+            /** Evidence Bindings */
+            evidence_bindings: components["schemas"]["CostScopeEvidenceBinding"][];
+            /** Need Facts Hash */
+            need_facts_hash: string;
+            /** Need Id */
+            need_id: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            /** Sheet Hash */
+            sheet_hash: string;
+            /** Specification */
+            specification: string;
+            /** Specification Hash */
+            specification_hash: string;
+            /** Terms */
+            terms: components["schemas"]["QuoteTerm"][];
+            /** Terms Hash */
+            terms_hash: string;
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
         };
         /**
          * CostSheetCreate
@@ -1884,6 +2516,11 @@ export interface components {
         CostSheetView: {
             /** Base Currency */
             base_currency: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
             /**
@@ -2343,6 +2980,118 @@ export interface components {
          */
         EvidenceLevel: "agent_industry_inference" | "public_company_event" | "employee_guess" | "customer_interest_reply" | "customer_specification" | "customer_quantity_and_timing" | "customer_sample_or_quote_request";
         /**
+         * EvidenceLocateRequest
+         * @description 以原件及完整正文hash防止对旧预览定位。
+         */
+        EvidenceLocateRequest: {
+            /** End */
+            end: number;
+            /** Expected Raw Hash */
+            expected_raw_hash: string;
+            /** Expected Text Hash */
+            expected_text_hash: string;
+            /**
+             * Operation
+             * @constant
+             */
+            operation: "locate";
+            /** Page */
+            page: number | null;
+            /**
+             * Profile
+             * @enum {string}
+             */
+            profile: "pdf-text-v1" | "rfc822-plain-v1";
+            /** Scope */
+            scope: components["schemas"]["PricingEvidenceScope"] | components["schemas"]["NeedUnitEvidenceScope"];
+            /** Source Ref */
+            source_ref: string;
+            /** Start */
+            start: number;
+        };
+        /**
+         * EvidenceLocatorPublicView
+         * @description 本次原件与正文hash绑定的已核验选区。
+         */
+        EvidenceLocatorPublicView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** End */
+            end: number;
+            /** Excerpt */
+            excerpt: string;
+            /** Excerpt Hash */
+            excerpt_hash: string;
+            /** Locator */
+            locator: string;
+            /** Page */
+            page: number | null;
+            /**
+             * Profile
+             * @enum {string}
+             */
+            profile: "pdf-text-v1" | "rfc822-plain-v1";
+            /** Raw Hash */
+            raw_hash: string;
+            /** Scope */
+            scope: components["schemas"]["PricingEvidenceScope"] | components["schemas"]["NeedUnitEvidenceScope"];
+            /** Source Ref */
+            source_ref: string;
+            /** Start */
+            start: number;
+            /** Text */
+            text: string;
+            /** Text Hash */
+            text_hash: string;
+        };
+        /**
+         * EvidencePreviewPublicView
+         * @description 仅授权原文端点允许领取正文，不含对象地址或自由metadata。
+         */
+        EvidencePreviewPublicView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Page */
+            page: number | null;
+            /**
+             * Profile
+             * @enum {string}
+             */
+            profile: "pdf-text-v1" | "rfc822-plain-v1";
+            /** Raw Hash */
+            raw_hash: string;
+            /** Scope */
+            scope: components["schemas"]["PricingEvidenceScope"] | components["schemas"]["NeedUnitEvidenceScope"];
+            /** Source Ref */
+            source_ref: string;
+            /** Text */
+            text: string;
+            /** Text Hash */
+            text_hash: string;
+        };
+        /**
+         * EvidencePreviewRequest
+         * @description 只指定受限页或正文，不接受客户端抽字。
+         */
+        EvidencePreviewRequest: {
+            /**
+             * Operation
+             * @constant
+             */
+            operation: "preview";
+            /** Page */
+            page: number | null;
+            /**
+             * Profile
+             * @enum {string}
+             */
+            profile: "pdf-text-v1" | "rfc822-plain-v1";
+            /** Scope */
+            scope: components["schemas"]["PricingEvidenceScope"] | components["schemas"]["NeedUnitEvidenceScope"];
+            /** Source Ref */
+            source_ref: string;
+        };
+        /**
          * EvidenceSummary
          * @description 证据摘要，供界面展示"为什么这么判断"。
          *
@@ -2367,6 +3116,100 @@ export interface components {
             source_url?: string | null;
             /** Summary */
             summary: string;
+        };
+        /**
+         * ExpenseEvidenceCreate
+         * @description 费用依据不伪造产品 MOQ，也不把实际凭证重标为 quoted。
+         */
+        ExpenseEvidenceCreate: {
+            /** Allocation Scope */
+            allocation_scope: string;
+            /** Amount */
+            amount: string;
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "quoted" | "actual";
+            /** Currency */
+            currency: string;
+            /** Is Per Unit */
+            is_per_unit: boolean;
+            /** Item Type */
+            item_type: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "confirmed_expense";
+            /** Locator */
+            locator: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quantity */
+            quantity: number;
+            /** Source Ref */
+            source_ref: string;
+            /** Valid Until */
+            valid_until: string | null;
+        };
+        /**
+         * ExpenseEvidencePublicView
+         * @description 费用依据保留actual和可空有效期，不伪造采购单位。
+         */
+        ExpenseEvidencePublicView: {
+            /** Allocation Scope */
+            allocation_scope: string;
+            /** Amount */
+            amount: string;
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "quoted" | "actual";
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Currency */
+            currency: string;
+            /** Evidence Hash */
+            evidence_hash: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /** Is Per Unit */
+            is_per_unit: boolean;
+            /** Item Type */
+            item_type: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "confirmed_expense";
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quantity */
+            quantity: number;
+            source: components["schemas"]["PricingSourceSummary"];
+            /** Valid Until */
+            valid_until: string | null;
         };
         /** ExtractedCommitment */
         ExtractedCommitment: {
@@ -2921,6 +3764,105 @@ export interface components {
             value: string;
         };
         /**
+         * NeedUnitConfirmationCommand
+         * @description 人工明确口径，确认身份只能由服务端绑定。
+         */
+        NeedUnitConfirmationCommand: {
+            /** Expected Quantity Fact Hash */
+            expected_quantity_fact_hash: string;
+            /** Expected Unit Confirmation Id */
+            expected_unit_confirmation_id: string | null;
+            /** Locator */
+            locator: string;
+            /** Source Message Id */
+            source_message_id: string;
+            /** Source Quote */
+            source_quote: string;
+            /** Unit */
+            unit: string;
+        };
+        /**
+         * NeedUnitConfirmationPublicView
+         * @description 不可变receipt的安全摘要；来源原文及locator需独立授权。
+         */
+        NeedUnitConfirmationPublicView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Confirmation Id */
+            confirmation_id: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Need Id */
+            need_id: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Quantity Fact Hash */
+            quantity_fact_hash: string;
+            /** Source Message Id */
+            source_message_id: string;
+            /** Unit */
+            unit: string;
+            unit_origin: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+        };
+        /**
+         * NeedUnitEvidenceScope
+         * @description 精确绑定Need及操作的原文读取用途。
+         */
+        NeedUnitEvidenceScope: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "read" | "confirm";
+            /** Need Id */
+            need_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            purpose: "need_unit";
+        };
+        /**
+         * NeedUnitPreparationView
+         * @description 展示当前事实与失效状态，不把历史单位值宣称为报价许可。
+         */
+        NeedUnitPreparationView: {
+            /** Account Id */
+            account_id: string;
+            /** Need Id */
+            need_id: string;
+            /** Quantity */
+            quantity: number | null;
+            /** Quantity Fact Hash */
+            quantity_fact_hash: string | null;
+            quantity_origin: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"] | null;
+            /**
+             * Quantity Status
+             * @enum {string}
+             */
+            quantity_status: "missing" | "non_positive" | "unconfirmed" | "current";
+            /** Unit */
+            unit: string | null;
+            /** Unit Confirmation Id */
+            unit_confirmation_id: string | null;
+            unit_origin: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"] | null;
+            /**
+             * Unit Status
+             * @enum {string}
+             */
+            unit_status: "blocked_by_quantity" | "missing" | "unconfirmed" | "stale" | "current";
+        };
+        /**
          * NotificationContext
          * @description 只携带固定 typed ID 与等级，禁止通知承载自由文本或凭证形态。
          */
@@ -2939,7 +3881,7 @@ export interface components {
          * NotificationKind
          * @enum {string}
          */
-        NotificationKind: "handoff_escalation" | "handoff_queue_backlogged" | "sending_identity_suspended" | "reputation_threshold_breached" | "commitment_overdue" | "approval_decided";
+        NotificationKind: "handoff_escalation" | "handoff_queue_backlogged" | "sending_identity_suspended" | "reputation_threshold_breached" | "commitment_overdue" | "approval_decided" | "quote_approval_result";
         /**
          * NotificationPriority
          * @enum {string}
@@ -3131,7 +4073,7 @@ export interface components {
             /** Product Category */
             product_category: string;
             /** Provenance */
-            provenance?: components["schemas"]["ProvenanceSummary"][];
+            provenance?: components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"][];
             /** Quantity */
             quantity?: number | null;
             /** Required By */
@@ -3296,6 +4238,123 @@ export interface components {
             /** Version Number */
             version_number: number;
         };
+        /**
+         * PricingEvidenceScope
+         * @description 内部价格依据的用途，不批准任何业务写入。
+         */
+        PricingEvidenceScope: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            purpose: "pricing";
+        };
+        /**
+         * PricingPolicyCreate
+         * @description 老板确认的版本化核算和利润政策输入。
+         */
+        PricingPolicyCreate: {
+            /** Category */
+            category: string | null;
+            /** Cost Groups */
+            cost_groups: {
+                [key: string]: "goods" | "variable" | "fixed";
+            };
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /** Minimum Margin Rate */
+            minimum_margin_rate: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Target Margin Rate */
+            target_margin_rate: string;
+        };
+        /**
+         * PricingPolicyPublicView
+         * @description 确认政策的原值与来源摘要，不改变历史政策可读性。
+         */
+        PricingPolicyPublicView: {
+            /** Category */
+            category: string | null;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Cost Groups */
+            cost_groups: {
+                [key: string]: "goods" | "variable" | "fixed";
+            };
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /** Minimum Margin Rate */
+            minimum_margin_rate: string;
+            /** Policy Id */
+            policy_id: string;
+            source: components["schemas"]["PricingSourceSummary"] | null;
+            /** Target Margin Rate */
+            target_margin_rate: string;
+        };
+        /**
+         * PricingSourceSummary
+         * @description 来源身份及hash，不含原文、URL或locator。
+         */
+        PricingSourceSummary: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Source Ref */
+            source_ref: string;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "upload" | "conversation" | "web_page" | "employee_input" | "external_api";
+        };
+        /**
+         * ProfitMetrics
+         * @description 指定客户单价下的确定性利润指标。
+         */
+        ProfitMetrics: {
+            /** Additional Acquisition Headroom */
+            additional_acquisition_headroom: string;
+            /** Contribution Profit */
+            contribution_profit: string;
+            /** Discount Headroom */
+            discount_headroom: string;
+            /** Full Cost Profit */
+            full_cost_profit: string;
+            /** Gross Profit */
+            gross_profit: string;
+            /** Margin Rate */
+            margin_rate: string;
+            /** Minimum Price */
+            minimum_price: string;
+            /** Target Price */
+            target_price: string;
+            /** Unit Full Cost */
+            unit_full_cost: string;
+        };
         /** ProgressNote */
         ProgressNote: {
             /** Evidence Quotes */
@@ -3391,31 +4450,528 @@ export interface components {
             source_url: string | null;
         };
         /**
-         * ProvenanceSummary
-         * @description 字段来源的公共稳定摘要，不暴露内部 Enum、强类型 ID 或 ORM。
+         * QuoteApprovalStartResult
+         * @description 只表示真实工作流已启动并完成绑定核验，不表示批准。
          */
-        ProvenanceSummary: {
-            /** Confirmed At */
-            confirmed_at: string | null;
-            /** Confirmed By */
-            confirmed_by: string | null;
+        QuoteApprovalStartResult: {
+            /** Quote Id */
+            quote_id: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * QuoteCalculationSnapshot
+         * @description 完整计算身份及展示金额。
+         */
+        QuoteCalculationSnapshot: {
+            /** Base Currency */
+            base_currency: string;
             /**
-             * Extracted At
+             * Computed At
              * Format: date-time
              */
-            extracted_at: string;
-            /** Extracted By */
-            extracted_by: string;
-            /** Field Name */
-            field_name: string;
-            /** Page Hash */
-            page_hash: string | null;
-            /** Source Id */
-            source_id: string;
-            /** Source Type */
-            source_type: string;
-            /** Source Url */
-            source_url: string | null;
+            computed_at: string;
+            /** Context Hash */
+            context_hash: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            displayed_total: components["schemas"]["Money"];
+            displayed_unit_price: components["schemas"]["Money"];
+            effective_unit_revenue: components["schemas"]["Money"];
+            /** Inputs Hash */
+            inputs_hash: string;
+            metrics: components["schemas"]["QuoteProfitMetrics"];
+            /** Policy Id */
+            policy_id: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Version Number */
+            version_number: number;
+        };
+        /**
+         * QuoteContentLine
+         * @description 单产品展示价×数量按显式规则舍入，不沿用旧行的未舍入约束。
+         */
+        QuoteContentLine: {
+            /** Description */
+            description: string;
+            /** Line Number */
+            line_number: number;
+            line_total: components["schemas"]["Money"];
+            /** Quantity */
+            quantity: number;
+            rounding: components["schemas"]["QuoteRoundingInput"];
+            /** Specification */
+            specification: string;
+            /** Unit */
+            unit: string;
+            unit_price: components["schemas"]["Money"];
+        };
+        /**
+         * QuoteCustomerFileEntry
+         * @description 仅安全关联及当时允许的动作提示。
+         */
+        QuoteCustomerFileEntry: {
+            /** Allowed Actions */
+            allowed_actions: ("generate" | "download_current" | "read_history")[];
+            file: components["schemas"]["QuoteFileView"];
+        };
+        /**
+         * QuoteCustomerVersionPage
+         * @description 降序游标仅在实际还有下一页时提供。
+         */
+        QuoteCustomerVersionPage: {
+            /** Items */
+            items: components["schemas"]["QuoteCustomerVersionView"][];
+            /** Next Before Version */
+            next_before_version: number | null;
+        };
+        /**
+         * QuoteCustomerVersionView
+         * @description 无金额、成本、Need、Provenance和审批载荷。
+         */
+        QuoteCustomerVersionView: {
+            /** Allowed Actions */
+            allowed_actions: ("generate" | "download_current" | "read_history")[];
+            /** Blockers */
+            blockers: components["schemas"]["QuoteFileActionBlocker"][];
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Files */
+            files: components["schemas"]["QuoteCustomerFileEntry"][];
+            /** Is Past Valid Until */
+            is_past_valid_until: boolean;
+            /** Quote Id */
+            quote_id: string;
+            state: components["schemas"]["QuoteState"];
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * QuoteDraftCommand
+         * @description 外部创建输入不接收任何确认、锁定或审批自证字段。
+         */
+        QuoteDraftCommand: {
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            /** Expected Context Hash */
+            expected_context_hash: string;
+            /** Expected Quote Version */
+            expected_quote_version: number | null;
+            /** Expected Sheet Hash */
+            expected_sheet_hash: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quote Fx Ref */
+            quote_fx_ref: string | null;
+            /** Replaces Quote Id */
+            replaces_quote_id: string | null;
+            rounding: components["schemas"]["QuoteRoundingInput"];
+            /** Scope Confirmation Id */
+            scope_confirmation_id: string;
+            /** Terms */
+            terms: components["schemas"]["QuoteTerm"][];
+            unit_price: components["schemas"]["Money"];
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+        };
+        /**
+         * QuoteEmptyCommand
+         * @description 需要显式空body的操作；额外控制字段一律拒绝。
+         */
+        QuoteEmptyCommand: Record<string, never>;
+        /**
+         * QuoteFileActionBlocker
+         * @description 确定性商业阻断；基础设施故障不能降格为此DTO。
+         */
+        QuoteFileActionBlocker: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "generate" | "download_current" | "read_history";
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "quote_inactive" | "quote_expired" | "approval_missing" | "approval_invalid" | "approval_expired" | "decider_invalid" | "context_changed" | "policy_stale" | "basis_invalid";
+        };
+        /**
+         * QuoteFileApiError
+         * @description 错误消息只能使用固定表，不收任意底层异常文本。
+         */
+        QuoteFileApiError: {
+            /** Code */
+            code: ("quote_inactive" | "quote_expired" | "approval_missing" | "approval_invalid" | "approval_expired" | "decider_invalid" | "context_changed" | "policy_stale" | "basis_invalid") | ("permission_denied" | "not_found" | "invalid_input" | "storage_inconsistent" | "dependency_unavailable" | "lock_timeout" | "read_limit" | "reconciliation_required" | "idempotency_conflict" | "rate_limited" | "original_not_found" | "original_binding_invalid" | "original_state_changed" | "metadata_not_found" | "recovery_unavailable" | "recovery_audit_binding_invalid" | "recovery_audit_unavailable" | "recovery_audit_unknown" | "invalid_config" | "template_unsupported" | "text_limit_exceeded" | "page_limit_exceeded" | "byte_limit_exceeded" | "font_unavailable" | "unsupported_glyph" | "layout_failed" | "render_failed");
+            /** Message */
+            message: string;
+            /** Original Generation Call Id */
+            original_generation_call_id: string | null;
+            /** Retry After Seconds */
+            retry_after_seconds: number | null;
+            /** Tool Call Id */
+            tool_call_id: string | null;
+        };
+        /**
+         * QuoteFileRecoveryCommand
+         * @description 显式恢复只接受原调用ID，不接自由key。
+         */
+        QuoteFileRecoveryCommand: {
+            /** Original Generation Call Id */
+            original_generation_call_id: string;
+            /** Quote Id */
+            quote_id: string;
+        };
+        /**
+         * QuoteFileRecoveryResult
+         * @description 只找回metadata，旧调用仍待自行完成。
+         */
+        QuoteFileRecoveryResult: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            file: components["schemas"]["QuoteFileView"];
+            /** Original Generation Call Id */
+            original_generation_call_id: string;
+            /**
+             * Original Ledger Modified
+             * @constant
+             */
+            original_ledger_modified: false;
+            /**
+             * Original Status At Check
+             * @constant
+             */
+            original_status_at_check: "executing";
+            /**
+             * Outcome
+             * @constant
+             */
+            outcome: "metadata_recovered_original_unresolved";
+            /** Recovery Call Id */
+            recovery_call_id: string;
+        };
+        /**
+         * QuoteFileView
+         * @description 三个hash各自来自原报价、客户投影及产物bytes，不可互换。
+         */
+        QuoteFileView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Customer Content Hash */
+            customer_content_hash: string;
+            /** File Id */
+            file_id: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Quote Content Hash */
+            quote_content_hash: string;
+            /** Quote Id */
+            quote_id: string;
+            /** Quote Version */
+            quote_version: number;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Template Version */
+            template_version: string;
+        };
+        /**
+         * QuoteFxCreate
+         * @description 独立的核算币种到报价币种直连汇率，绝不改写旧成本汇率。
+         */
+        QuoteFxCreate: {
+            /** Base Currency */
+            base_currency: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Rate */
+            rate: string;
+            /** Source Ref */
+            source_ref: string;
+        };
+        /**
+         * QuoteFxPublicView
+         * @description 人工直连报价汇率及原方向，不重新计算。
+         */
+        QuoteFxPublicView: {
+            /** Base Currency */
+            base_currency: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /** Fx Id */
+            fx_id: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Quote Currency */
+            quote_currency: string;
+            /** Rate */
+            rate: string;
+            source: components["schemas"]["PricingSourceSummary"];
+        };
+        /**
+         * QuoteInternalPublicView
+         * @description 已授权内部版本摘要，不包含完整basis/intent/Need/runtime。
+         */
+        QuoteInternalPublicView: {
+            /** Account Name */
+            account_name: string;
+            /** Basis Hash */
+            basis_hash: string;
+            /** Basis Id */
+            basis_id: string;
+            calculation: components["schemas"]["QuoteCalculationSnapshot"];
+            /** Content Hash */
+            content_hash: string;
+            /** Cost Sheet Id */
+            cost_sheet_id: string;
+            /** Country */
+            country: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            issuer: components["schemas"]["QuoteIssuerPublicView"];
+            /** Lines */
+            lines: components["schemas"]["QuoteContentLine"][];
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Owner Id */
+            owner_id: string;
+            /** Prepared By */
+            prepared_by: string;
+            /** Quote Id */
+            quote_id: string;
+            /** Replaced Quote Version */
+            replaced_quote_version: number | null;
+            /** Replaces Quote Id */
+            replaces_quote_id: string | null;
+            /** Request Hash */
+            request_hash: string;
+            /** Scope Confirmation Id */
+            scope_confirmation_id: string;
+            state: components["schemas"]["QuoteState"];
+            /** Terms */
+            terms: components["schemas"]["QuoteTerm"][];
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * QuoteIssuerCreate
+         * @description 老板手工确认的原始三字段，不设公司样例默认值。
+         */
+        QuoteIssuerCreate: {
+            /** Address */
+            address: string;
+            /** Contact */
+            contact: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * QuoteIssuerPublicView
+         * @description 老板直接确认的抬头，不带原件展开许可。
+         */
+        QuoteIssuerPublicView: {
+            /** Address */
+            address: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Contact */
+            contact: string;
+            /** Content Hash */
+            content_hash: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /** Issuer Id */
+            issuer_id: string;
+            /** Name */
+            name: string;
+            /** Source Ref */
+            source_ref: string;
+        };
+        /**
+         * QuoteNeedPublicSummary
+         * @description 仅保留需求值与安全来源摘要，禁止完整FactualField外泄。
+         */
+        QuoteNeedPublicSummary: {
+            /** Account Id */
+            account_id: string;
+            /** Application */
+            application: string | null;
+            /** Certification Required */
+            certification_required: string | null;
+            /** Current Supply Issue */
+            current_supply_issue: string | null;
+            /** Destination */
+            destination: string | null;
+            /** Material */
+            material: string | null;
+            /** Need Id */
+            need_id: string;
+            /** Origins */
+            origins: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /** Packaging */
+            packaging: string | null;
+            /** Product Category */
+            product_category: string;
+            /** Quantity */
+            quantity: number | null;
+            /** Required By */
+            required_by: string | null;
+            /** Size Spec */
+            size_spec: string | null;
+            /** Status */
+            status: string;
+            target_price: components["schemas"]["Money"] | null;
+            /** Unit */
+            unit: string | null;
+            /** Unit Confirmation Id */
+            unit_confirmation_id: string | null;
+            /** Unit Quantity Fact Hash */
+            unit_quantity_fact_hash: string | null;
+        };
+        /**
+         * QuotePreparationBlocker
+         * @description 用途专属固定字段/原因配对，不接任意异常消息。
+         */
+        QuotePreparationBlocker: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "facts_missing" | "quantity_invalid" | "fact_unconfirmed" | "unit_missing" | "unit_stale" | "issuer_missing";
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "quantity" | "unit" | "destination" | "specification" | "issuer";
+        };
+        /**
+         * QuotePreparationPublicView
+         * @description 缺项仍可显示真实规格/hash；完整业务hash仅在全部事实可用时提供。
+         */
+        QuotePreparationPublicView: {
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Blockers */
+            blockers: components["schemas"]["QuotePreparationBlocker"][];
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Context Hash */
+            context_hash: string | null;
+            /** Country */
+            country: string;
+            issuer: components["schemas"]["QuoteIssuerPublicView"] | null;
+            need: components["schemas"]["QuoteNeedPublicSummary"];
+            /** Need Facts Hash */
+            need_facts_hash: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Owner Id */
+            owner_id: string;
+            /** Prepared By */
+            prepared_by: string;
+            /** Quantity Fact Hash */
+            quantity_fact_hash: string | null;
+            /**
+             * Quantity Status
+             * @enum {string}
+             */
+            quantity_status: "missing" | "non_positive" | "unconfirmed" | "current";
+            specification: components["schemas"]["QuoteSpecificationFacts"];
+            /** Specification Hash */
+            specification_hash: string;
+            /**
+             * Unit Status
+             * @enum {string}
+             */
+            unit_status: "blocked_by_quantity" | "missing" | "unconfirmed" | "stale" | "current";
+        };
+        /**
+         * QuoteProfitMetrics
+         * @description 成本域确定性计算结果；报价域不重算利润。
+         */
+        QuoteProfitMetrics: {
+            /** Additional Acquisition Headroom */
+            additional_acquisition_headroom: string;
+            /** Contribution Profit */
+            contribution_profit: string;
+            /** Discount Headroom */
+            discount_headroom: string;
+            /** Full Cost Profit */
+            full_cost_profit: string;
+            /** Gross Profit */
+            gross_profit: string;
+            /** Margin Rate */
+            margin_rate: string;
+            /** Minimum Price */
+            minimum_price: string;
+            /** Target Price */
+            target_price: string;
+            /** Unit Full Cost */
+            unit_full_cost: string;
         };
         /**
          * QuoteReadiness
@@ -3444,6 +5000,54 @@ export interface components {
         QuoteReadinessCheck: {
             /** Expected Item Types */
             expected_item_types: string[];
+        };
+        /**
+         * QuoteRoundingInput
+         * @description 显式舍入输入，不设货币精度默认值。
+         */
+        QuoteRoundingInput: {
+            /** Strategy */
+            strategy: string;
+            /** Total Places */
+            total_places: number;
+            /** Unit Places */
+            unit_places: number;
+        };
+        /**
+         * QuoteSpecificationFacts
+         * @description 保留全部规格维度，不把缺失推断为不适用。
+         */
+        QuoteSpecificationFacts: {
+            /** Application */
+            application: string | null;
+            /** Certification Required */
+            certification_required: string | null;
+            /** Material */
+            material: string | null;
+            /** Packaging */
+            packaging: string | null;
+            /** Product Category */
+            product_category: string;
+            /** Size Spec */
+            size_spec: string | null;
+        };
+        /**
+         * QuoteState
+         * @enum {string}
+         */
+        QuoteState: "draft" | "pending_approval" | "approved" | "sent" | "accepted" | "rejected" | "expired" | "superseded";
+        /**
+         * QuoteTerm
+         * @description 支持的条款类型；类型与文本的商业一致性由报价域核验。
+         */
+        QuoteTerm: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "discount" | "delivery_commitment" | "payment_terms" | "certification_commitment";
+            /** Text */
+            text: string;
         };
         /**
          * RawArtifactKind
@@ -3630,6 +5234,18 @@ export interface components {
             tenant_id: string;
             /** Website Domain */
             website_domain?: string | null;
+        };
+        /**
+         * RoundingPolicy
+         * @description 客户展示单价与总额的显式舍入规则。
+         */
+        RoundingPolicy: {
+            /** Strategy */
+            strategy: string;
+            /** Total Places */
+            total_places: number;
+            /** Unit Places */
+            unit_places: number;
         };
         /**
          * RunApprovalView
@@ -3950,6 +5566,122 @@ export interface components {
          */
         SubjectType: "legal_entity" | "sole_trader" | "natural_person";
         /**
+         * SupplierPriceEvidenceCreate
+         * @description 采购价格按具体规格、计价单位、数量档和有效期确认。
+         */
+        SupplierPriceEvidenceCreate: {
+            /** Amount */
+            amount: string;
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "quoted" | "indicative";
+            /** Currency */
+            currency: string;
+            /** Destination */
+            destination: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "supplier_price";
+            /** Locator */
+            locator: string;
+            /** Moq */
+            moq: number;
+            /** Need Id */
+            need_id: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quantity Max */
+            quantity_max: number;
+            /** Quantity Min */
+            quantity_min: number;
+            /**
+             * Quoted At
+             * Format: date-time
+             */
+            quoted_at: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Specification */
+            specification: string;
+            /** Supplier Ref */
+            supplier_ref: string;
+            /** Unit */
+            unit: string;
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+        };
+        /**
+         * SupplierPriceEvidencePublicView
+         * @description 供应商自由规格与真实数量档保持原值。
+         */
+        SupplierPriceEvidencePublicView: {
+            /** Amount */
+            amount: string;
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "quoted" | "indicative";
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /** Currency */
+            currency: string;
+            /** Destination */
+            destination: string;
+            /** Evidence Hash */
+            evidence_hash: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Field Provenance */
+            field_provenance: {
+                [key: string]: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "supplier_price";
+            /** Moq */
+            moq: number;
+            /** Need Id */
+            need_id: string;
+            /** Opportunity Id */
+            opportunity_id: string;
+            /** Quantity Max */
+            quantity_max: number;
+            /** Quantity Min */
+            quantity_min: number;
+            /**
+             * Quoted At
+             * Format: date-time
+             */
+            quoted_at: string;
+            source: components["schemas"]["PricingSourceSummary"];
+            /** Specification */
+            specification: string;
+            /** Supplier Ref */
+            supplier_ref: string;
+            /** Unit */
+            unit: string;
+            /**
+             * Valid Until
+             * Format: date-time
+             */
+            valid_until: string;
+        };
+        /**
          * TerritoryAssignmentView
          * @description Territory Matrix 规则公共视图。
          */
@@ -4130,6 +5862,53 @@ export interface components {
             tenant_id: string;
             /** Upload Id */
             upload_id: string;
+        };
+        /**
+         * ProvenanceSummary
+         * @description 字段来源的公共稳定摘要，不暴露内部 Enum、强类型 ID 或 ORM。
+         */
+        domains__opportunities__schemas__ProvenanceSummary: {
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /**
+             * Extracted At
+             * Format: date-time
+             */
+            extracted_at: string;
+            /** Extracted By */
+            extracted_by: string;
+            /** Field Name */
+            field_name: string;
+            /** Page Hash */
+            page_hash: string | null;
+            /** Source Id */
+            source_id: string;
+            /** Source Type */
+            source_type: string;
+            /** Source Url */
+            source_url: string | null;
+        };
+        /**
+         * ProvenanceSummary
+         * @description 来源的安全HTTP形状；不包含原文、URL、定位或原件读权。
+         */
+        shared__schemas__provenance__ProvenanceSummary: {
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /**
+             * Extracted At
+             * Format: date-time
+             */
+            extracted_at: string;
+            /** Extracted By */
+            extracted_by: string;
+            /** Source Id */
+            source_id: string;
+            source_type: components["schemas"]["SourceType"];
         };
     };
     responses: never;
@@ -4705,6 +6484,1026 @@ export interface operations {
             };
         };
     };
+    calculate_costing_quotes_cost_sheets__sheet_id__calculate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCalculationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalculationSnapshot"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_coverage_costing_quotes_cost_sheets__sheet_id__coverage_get: {
+        parameters: {
+            query?: {
+                content_hash?: string | null;
+            };
+            header?: never;
+            path: {
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCoveragePublicView"] | null;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_coverage_costing_quotes_cost_sheets__sheet_id__coverage_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCoverageCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCoveragePublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_scopes_costing_quotes_cost_sheets__sheet_id__scope_confirmations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostScopePublicView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_scope_costing_quotes_cost_sheets__sheet_id__scope_confirmations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sheet_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostScopeConfirmationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostScopePublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_scope_costing_quotes_cost_sheets__sheet_id__scope_confirmations__confirmation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sheet_id: string;
+                confirmation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostScopePublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    locator_costing_quotes_evidence_locator_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvidenceLocateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceLocatorPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    preview_costing_quotes_evidence_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvidencePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidencePreviewPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_issuer_costing_quotes_issuer_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteIssuerPublicView"] | null;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_issuer_costing_quotes_issuer_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteIssuerCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteIssuerPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_unit_costing_quotes_needs__need_id__unit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                need_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedUnitPreparationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_unit_costing_quotes_needs__need_id__unit_confirmations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                need_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NeedUnitConfirmationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedUnitConfirmationPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_unit_confirmation_costing_quotes_needs__need_id__unit_confirmations__confirmation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                need_id: string;
+                confirmation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedUnitConfirmationPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     list_cost_sheets_costing_quotes_opportunities__opportunity_id__cost_sheets_get: {
         parameters: {
             query?: never;
@@ -4780,6 +7579,1415 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    customer_versions_costing_quotes_opportunities__opportunity_id__customer_quote_versions_get: {
+        parameters: {
+            query: {
+                limit: number;
+                before_version?: number | null;
+            };
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteCustomerVersionPage"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    list_prices_costing_quotes_opportunities__opportunity_id__price_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": (components["schemas"]["SupplierPriceEvidencePublicView"] | components["schemas"]["ExpenseEvidencePublicView"])[];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_context_costing_quotes_opportunities__opportunity_id__quote_context_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotePreparationPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_quotes_costing_quotes_opportunities__opportunity_id__quotes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteInternalPublicView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_quote_costing_quotes_opportunities__opportunity_id__quotes_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                opportunity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteDraftCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteInternalPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_policy_costing_quotes_policies_get: {
+        parameters: {
+            query?: {
+                category?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PricingPolicyPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_policy_costing_quotes_policies_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PricingPolicyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PricingPolicyPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_price_costing_quotes_price_evidence_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupplierPriceEvidenceCreate"] | components["schemas"]["ExpenseEvidenceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierPriceEvidencePublicView"] | components["schemas"]["ExpenseEvidencePublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_fx_costing_quotes_quote_fx_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteFxCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteFxPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_fx_costing_quotes_quote_fx__fx_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fx_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteFxPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_quote_costing_quotes_quotes__quote_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteInternalPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_files_costing_quotes_quotes__quote_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteFileView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    generate_file_costing_quotes_quotes__quote_id__files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["QuoteEmptyCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteFileView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    reconcile_file_costing_quotes_quotes__quote_id__files_reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteFileRecoveryCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteFileRecoveryResult"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    download_file_costing_quotes_quotes__quote_id__files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    history_file_costing_quotes_quotes__quote_id__files__file_id__history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["QuoteFileApiError"];
+                };
+            };
+        };
+    };
+    revise_quote_costing_quotes_quotes__quote_id__revisions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuoteDraftCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteInternalPublicView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    submit_quote_costing_quotes_quotes__quote_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                quote_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["QuoteEmptyCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteApprovalStartResult"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { computed, inject, ref } from "vue";
+import { computed, inject, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import PricingPolicyForm from "./PricingPolicyForm.vue";
+import QuoteIssuerForm from "./QuoteIssuerForm.vue";
+import PriceEvidenceForm from "./PriceEvidenceForm.vue";
+import NeedUnitConfirmationForm from "./NeedUnitConfirmationForm.vue";
+import CostCoverageForm from "./CostCoverageForm.vue";
+import CostScopeConfirmationForm from "./CostScopeConfirmationForm.vue";
+import QuoteVersions from "./QuoteVersions.vue";
+import { createQuotePriceBody, profitMetricLabels } from "./quote-input";
+import { quoteError, useQuoteConfirmation, useQuoteRequestScope } from "./quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type CostItemCreate = components["schemas"]["CostItemCreate"];
@@ -11,20 +21,24 @@ type CostSheet = components["schemas"]["CostSheetView"];
 type Readiness = components["schemas"]["QuoteReadiness"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
+const router = useRouter();
+const quoteId = computed(() => typeof route.params.quoteId === "string" ? route.params.quoteId : "");
 const opportunityId = ref("");
 const sheets = ref<CostSheet[]>([]);
 const selectedSheetId = ref("");
 const loading = ref(false);
 const saving = ref(false);
+let savingKind: "create" | "item" | null = null;
 const checking = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const readiness = ref<Readiness | null>(null);
 
 const versionType = ref("estimated");
-const quantity = ref("100");
-const baseCurrency = ref("USD");
-const quoteCurrency = ref("USD");
+const quantity = ref("");
+const baseCurrency = ref("");
+const quoteCurrency = ref("");
 const fxSnapshotId = ref("");
 
 const itemType = ref("product_purchase");
@@ -35,10 +49,69 @@ const isPerUnit = ref(true);
 const itemSource = ref("");
 const itemNote = ref("");
 const expectedItems = ref("product_purchase");
+const requestedOpportunity = ref("");
+const quoteContext = ref<components["schemas"]["QuotePreparationPublicView"] | null>(null);
+const contextError = ref("");
+const evidence = ref<(components["schemas"]["SupplierPriceEvidencePublicView"] | components["schemas"]["ExpenseEvidencePublicView"])[]>([]);
+const coverage = ref<components["schemas"]["CostCoveragePublicView"] | null>(null);
+const scopeConfirmation = ref<components["schemas"]["CostScopePublicView"] | null>(null);
+const selectedQuote = ref<components["schemas"]["QuoteInternalPublicView"] | null>(null);
+const calculated = ref<components["schemas"]["CalculationSnapshot"] | null>(null);
+const targetCalculated = ref<components["schemas"]["CalculationSnapshot"] | null>(null);
+const fx = ref<components["schemas"]["QuoteFxPublicView"] | null>(null);
+const fxForm = reactive({ base: "", quote: "", rate: "", source: "", observed: "", ref: "" });
+const draft = reactive({ amount: "", currency: "", unitPlaces: "", totalPlaces: "", strategy: "", valid: "", revisionAcknowledged: false });
+const termDrafts = reactive<Record<components["schemas"]["QuoteTerm"]["kind"], string>>({ discount: "", delivery_commitment: "", payment_terms: "", certification_commitment: "" });
+const terms = computed<components["schemas"]["QuoteTerm"][]>(() => {
+  const result: components["schemas"]["QuoteTerm"][] = [];
+  for (const kind of ["discount", "delivery_commitment", "payment_terms", "certification_commitment"] as const) if (termDrafts[kind].trim()) result.push({ kind, text: termDrafts[kind] });
+  return result;
+});
+function clearBusiness(): void {
+  requestedOpportunity.value = ""; sheets.value = []; selectedSheetId.value = ""; readiness.value = null;
+  quoteContext.value = null; contextError.value = ""; evidence.value = []; coverage.value = null; scopeConfirmation.value = null; selectedQuote.value = null;
+  calculated.value = null; targetCalculated.value = null; fx.value = null; error.value = null; notice.value = null;
+  loading.value = false; saving.value = false; savingKind = null; checking.value = false;
+}
+function resetIdentity(): void {
+  clearBusiness(); opportunityId.value = ""; quantity.value = ""; baseCurrency.value = ""; quoteCurrency.value = ""; fxSnapshotId.value = "";
+  itemAmount.value = ""; itemSource.value = ""; itemNote.value = ""; itemCurrency.value = "";
+  Object.assign(fxForm, { base: "", quote: "", rate: "", source: "", observed: "", ref: "" });
+  Object.assign(draft, { amount: "", currency: "", unitPlaces: "", totalPlaces: "", strategy: "", valid: "", revisionAcknowledged: false });
+  for (const kind of Object.keys(termDrafts) as (keyof typeof termDrafts)[]) termDrafts[kind] = "";
+}
+const pageGate = useQuoteRequestScope(client, () => [opportunityId.value, quoteId.value], resetIdentity);
+const itemScope = () => [opportunityId.value, quoteId.value, selectedSheetId.value, itemAmount.value, itemCurrency.value, itemSource.value, itemNote.value, itemType.value, priceBasis.value, isPerUnit.value, expectedItems.value];
+const createScope = () => [opportunityId.value, quoteId.value, quantity.value, baseCurrency.value, quoteCurrency.value, versionType.value, fxSnapshotId.value];
+const itemGate = useQuoteRequestScope(client, itemScope, () => {});
+const createGate = useQuoteRequestScope(client, createScope, () => {});
+watch(itemScope, () => {
+  if (savingKind === "item" && saving.value) { saving.value = false; savingKind = null; notice.value = "原成本项操作结果待核对；输入已变更，不自动重发"; }
+  checking.value = false;
+}, { flush: "sync" });
+watch(createScope, () => {
+  if (savingKind === "create" && saving.value) { saving.value = false; savingKind = null; notice.value = "原成本表操作结果待核对；输入已变更，不自动重发"; }
+}, { flush: "sync" });
+const quoteMutation = useQuoteConfirmation(client, () => [opportunityId.value, quoteId.value, selectedSheetId.value, JSON.stringify(draft), JSON.stringify(terms.value), fxForm.ref, quoteContext.value?.context_hash, scopeConfirmation.value?.confirmation_id], () => {});
+const fxMutation = useQuoteConfirmation(client, () => [opportunityId.value, quoteId.value, JSON.stringify(fxForm)], () => { fx.value = null; });
+watch(() => [opportunityId.value, quoteId.value], clearBusiness, { flush: "sync" });
+watch(selectedSheetId, () => { coverage.value = null; scopeConfirmation.value = null; calculated.value = null; targetCalculated.value = null; }, { flush: "sync" });
 
 const selectedSheet = computed(() =>
   sheets.value.find((sheet) => sheet.cost_sheet_id === selectedSheetId.value) ?? null,
 );
+const scopeCurrent = computed(() => {
+  const confirmation = scopeConfirmation.value;
+  return !!confirmation && confirmation.sheet_hash === selectedSheet.value?.content_hash
+    && confirmation.need_facts_hash === quoteContext.value?.need_facts_hash
+    && confirmation.coverage_hash === coverage.value?.content_hash
+    && new Date(confirmation.valid_until).getTime() === new Date(draft.valid).getTime()
+    && JSON.stringify(confirmation.terms) === JSON.stringify(terms.value)
+    && confirmation.evidence_bindings.every((binding) => evidence.value.some((item) => item.evidence_id === binding.evidence_id && item.evidence_hash === binding.evidence_hash));
+});
+watch(() => [JSON.stringify(draft), JSON.stringify(terms.value), fxForm.ref, selectedSheet.value?.content_hash, quoteContext.value?.context_hash], () => {
+  calculated.value = null; targetCalculated.value = null;
+}, { flush: "sync" });
 
 const itemTypes = [
   ["product_purchase", "产品采购"],
@@ -82,6 +155,10 @@ function validOpportunity(): boolean {
 
 async function loadVersions(): Promise<void> {
   if (!validOpportunity()) return;
+  requestedOpportunity.value = opportunityId.value.trim();
+  void loadQuoteContext();
+  void loadEvidence();
+  const op = pageGate.begin("legacy-list"); if (!op?.valid()) return;
   loading.value = true;
   error.value = null;
   notice.value = null;
@@ -89,8 +166,9 @@ async function loadVersions(): Promise<void> {
   try {
     const result = await client.GET(
       "/costing-quotes/opportunities/{opportunity_id}/cost-sheets",
-      { params: { path: { opportunity_id: opportunityId.value.trim() } } },
+      { params: { path: { opportunity_id: opportunityId.value.trim() } }, signal: op.signal },
     );
+    if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
       return;
@@ -100,9 +178,9 @@ async function loadVersions(): Promise<void> {
       selectedSheetId.value = sheets.value[0]?.cost_sheet_id ?? "";
     }
   } catch {
-    error.value = "无法连接成本服务";
+    if (op.valid()) error.value = "无法连接成本服务";
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
@@ -126,6 +204,8 @@ async function createSheet(): Promise<void> {
     return;
   }
   saving.value = true;
+  savingKind = "create";
+  const op = createGate.begin("legacy-create"); if (!op?.valid()) { saving.value = false; return; }
   error.value = null;
   try {
     const result = await client.POST(
@@ -133,19 +213,21 @@ async function createSheet(): Promise<void> {
       {
         params: { path: { opportunity_id: opportunityId.value.trim() } },
         body,
+        signal: op.signal,
       },
     );
+    if (!op.valid()) return;
     if (result.response.status !== 201 || !result.data) {
       error.value = safeError(result.response.status);
       return;
     }
     selectedSheetId.value = result.data.cost_sheet_id;
     await loadVersions();
-    notice.value = "成本表版本已创建";
+    if (op.valid()) notice.value = "成本表版本已创建";
   } catch {
-    error.value = "成本表未创建，请稍后重试";
+    if (op.valid()) error.value = "成本表创建结果未知，请先核对成本版本";
   } finally {
-    saving.value = false;
+    if (op.valid()) saving.value = false;
   }
 }
 
@@ -165,6 +247,8 @@ async function saveItem(): Promise<void> {
     source_ref: itemSource.value.trim(),
   };
   saving.value = true;
+  savingKind = "item";
+  const op = itemGate.begin("legacy-item"); if (!op?.valid()) { saving.value = false; return; }
   error.value = null;
   try {
     const result = await client.POST(
@@ -172,21 +256,20 @@ async function saveItem(): Promise<void> {
       {
         params: { path: { cost_sheet_id: selectedSheet.value.cost_sheet_id } },
         body,
+        signal: op.signal,
       },
     );
+    if (!op.valid()) return;
     if (result.response.status !== 204) {
       error.value = safeError(result.response.status);
       return;
     }
-    itemAmount.value = "";
-    itemSource.value = "";
-    itemNote.value = "";
     await loadVersions();
-    notice.value = "成本项已保存，来源与录入人已留痕";
+    if (op.valid()) { notice.value = "成本项已保存，来源与录入人已留痕"; saving.value = false; itemAmount.value = ""; itemSource.value = ""; itemNote.value = ""; }
   } catch {
-    error.value = "成本项未保存，请稍后重试";
+    if (op.valid()) error.value = "成本项保存结果未知，请先核对成本表";
   } finally {
-    saving.value = false;
+    if (op.valid()) saving.value = false;
   }
 }
 
@@ -197,6 +280,7 @@ async function checkReadiness(): Promise<void> {
     .map((value) => value.trim())
     .filter((value, index, values) => value && values.indexOf(value) === index);
   checking.value = true;
+  const op = itemGate.begin("readiness"); if (!op?.valid()) { checking.value = false; return; }
   error.value = null;
   try {
     const result = await client.POST(
@@ -204,18 +288,79 @@ async function checkReadiness(): Promise<void> {
       {
         params: { path: { cost_sheet_id: selectedSheet.value.cost_sheet_id } },
         body: { expected_item_types: expected },
+        signal: op.signal,
       },
     );
+    if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
       return;
     }
     readiness.value = result.data;
   } catch {
-    error.value = "报价就绪检查未完成，请稍后重试";
+    if (op.valid()) error.value = "报价就绪检查未完成，请稍后重试";
   } finally {
-    checking.value = false;
+    if (op.valid()) checking.value = false;
   }
+}
+
+async function loadQuoteContext(): Promise<void> {
+  if (!requestedOpportunity.value) return;
+  const op = pageGate.begin("context"); if (!op?.valid()) return;
+  try {
+    const result = await client.GET("/costing-quotes/opportunities/{opportunity_id}/quote-context", { params: { path: { opportunity_id: requestedOpportunity.value } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.data) { quoteContext.value = result.data; contextError.value = ""; }
+    else contextError.value = quoteError(result.response.status, result.error);
+  } catch { if (op.valid()) contextError.value = "报价准备事实读取失败"; }
+}
+async function loadEvidence(): Promise<void> {
+  if (!requestedOpportunity.value) return;
+  const op = pageGate.begin("evidence"); if (!op?.valid()) return;
+  try {
+    const result = await client.GET("/costing-quotes/opportunities/{opportunity_id}/price-evidence", { params: { path: { opportunity_id: requestedOpportunity.value } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.data) evidence.value = result.data; else contextError.value = quoteError(result.response.status, result.error);
+  } catch { if (op.valid()) contextError.value = "价格依据摘要读取失败"; }
+}
+async function saveFx(): Promise<void> {
+  const body: components["schemas"]["QuoteFxCreate"] = { base_currency: fxForm.base.trim(), quote_currency: fxForm.quote.trim(), rate: fxForm.rate.trim(), source_ref: fxForm.source.trim(), observed_at: fxForm.observed.trim() };
+  await fxMutation.confirm(body, (id, signal) => client.POST("/costing-quotes/quote-fx", { params: { header: { "Idempotency-Key": id } }, body, signal }), (data) => { fx.value = data; });
+}
+async function readFx(): Promise<void> {
+  const op = fxMutation.begin("read"); if (!op?.valid() || !fxForm.ref) return;
+  try {
+    const result = await client.GET("/costing-quotes/quote-fx/{fx_id}", { params: { path: { fx_id: fxForm.ref } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.data) fx.value = result.data; else fxMutation.message.value = quoteError(result.response.status, result.error);
+  } catch { if (op.valid()) fxMutation.message.value = "汇率记录读取失败"; }
+}
+function rounding(): components["schemas"]["QuoteRoundingInput"] | null {
+  if (!draft.unitPlaces.trim() || !draft.totalPlaces.trim() || !draft.strategy.trim()) { quoteMutation.message.value = "请人工配置单价、整单精度和舍入策略"; return null; }
+  return { unit_places: Number(draft.unitPlaces), total_places: Number(draft.totalPlaces), strategy: draft.strategy };
+}
+async function calculate(mode: "target" | "manual"): Promise<void> {
+  if (!selectedSheet.value) return;
+  const rules = rounding(); if (!rules) return;
+  const op = quoteMutation.begin(`calculate-${mode}`); if (!op?.valid()) return;
+  try {
+    const body: components["schemas"]["CostCalculationCommand"] = { algorithm_version: "costing-v1", mode, rounding: rules, quote_fx_ref: fxForm.ref || null, unit_price: mode === "manual" ? createQuotePriceBody(draft.amount, draft.currency) : null };
+    const result = await client.POST("/costing-quotes/cost-sheets/{sheet_id}/calculate", { params: { path: { sheet_id: selectedSheet.value.cost_sheet_id } }, body, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.data) { if (mode === "target") targetCalculated.value = result.data; else calculated.value = result.data; }
+    else quoteMutation.message.value = quoteError(result.response.status, result.error);
+  } catch { if (op.valid()) quoteMutation.message.value = "计算未完成，请核对输入与服务状态"; }
+}
+async function createQuote(revision = false): Promise<void> {
+  if (!selectedSheet.value || !quoteContext.value?.context_hash || !scopeConfirmation.value || !scopeCurrent.value) return;
+  if (revision && (!selectedQuote.value || !draft.revisionAcknowledged)) { quoteMutation.message.value = "请确认修订会停用旧版"; return; }
+  const rules = rounding(); if (!rules) return;
+  let unit_price: components["schemas"]["Money"];
+  try { unit_price = createQuotePriceBody(draft.amount, draft.currency); } catch { quoteMutation.message.value = "请填写报价单价和币种"; return; }
+  const body: components["schemas"]["QuoteDraftCommand"] = { opportunity_id: requestedOpportunity.value, cost_sheet_id: selectedSheet.value.cost_sheet_id, expected_context_hash: quoteContext.value.context_hash, expected_sheet_hash: selectedSheet.value.content_hash, expected_quote_version: revision ? selectedQuote.value!.version : null, replaces_quote_id: revision ? selectedQuote.value!.quote_id : null, rounding: rules, quote_fx_ref: fxForm.ref || null, scope_confirmation_id: scopeConfirmation.value.confirmation_id, terms: terms.value.map((term) => ({ ...term })), unit_price, valid_until: draft.valid };
+  await quoteMutation.confirm(body, (id, signal) => revision
+    ? client.POST("/costing-quotes/quotes/{quote_id}/revisions", { params: { path: { quote_id: selectedQuote.value!.quote_id }, header: { "Idempotency-Key": id } }, body, signal })
+    : client.POST("/costing-quotes/opportunities/{opportunity_id}/quotes", { params: { path: { opportunity_id: requestedOpportunity.value }, header: { "Idempotency-Key": id } }, body, signal }), (data) => { notice.value = `已保存报价 ${data.quote_id}，尚未审批或发送`; void router.push(`/costing-quotes/quotes/${data.quote_id}`); });
 }
 
 function formatDate(value: string): string {
@@ -234,11 +379,11 @@ function formatDate(value: string): string {
           DETERMINISTIC COSTING
         </p><h1>成本与报价</h1>
       </div>
-      <span class="status manual-status">Phase 1 · 人工录入</span>
+      <span class="status manual-status">Phase 2 · 成本与报价</span>
     </div>
     <div class="safe-banner">
       <span aria-hidden="true">i</span>
-      <div>金额只以 Decimal 字符串提交；本页只保存人工成本和检查阻断项，不生成客户报价。</div>
+      <div>金额、比例与汇率只以 Decimal 字符串提交，由后端确定性计算。本批支持成本确认、报价审批与文件交付，批准不发送；不代表整个 Phase 2 完成。实际能力和权限由后端配置与 allowed_actions 决定。</div>
     </div>
     <div
       v-if="error"
@@ -272,6 +417,46 @@ function formatDate(value: string): string {
       </button>
     </section>
 
+    <QuoteVersions
+      :opportunity-id="requestedOpportunity"
+      :quote-id="quoteId"
+      @selected="selectedQuote = $event"
+    />
+    <details class="panel">
+      <summary>老板配置：定价政策与本公司抬头</summary><PricingPolicyForm /><QuoteIssuerForm @saved="loadQuoteContext" />
+    </details>
+    <p
+      v-if="contextError"
+      role="alert"
+    >
+      报价准备：{{ contextError }}
+    </p>
+    <section
+      v-if="quoteContext"
+      class="panel"
+    >
+      <h2>报价准备事实</h2><p>{{ quoteContext.account_name }} · {{ quoteContext.country }} · {{ quoteContext.specification.product_category }}</p><p>单位状态 {{ quoteContext.unit_status }} · 需求 hash {{ quoteContext.need_facts_hash }} · context {{ quoteContext.context_hash ?? '尚不完整' }}</p><p
+        v-for="blocker in quoteContext.blockers"
+        :key="`${blocker.field}-${blocker.code}`"
+      >
+        {{ blocker.field }}：{{ blocker.code }}
+      </p><button @click="loadQuoteContext">
+        核对最新需求事实
+      </button>
+    </section>
+    <NeedUnitConfirmationForm
+      v-if="quoteContext"
+      :key="`unit-${requestedOpportunity}`"
+      :need-id="quoteContext.need.need_id"
+      @saved="loadQuoteContext"
+    />
+    <PriceEvidenceForm
+      v-if="quoteContext"
+      :key="`price-${requestedOpportunity}`"
+      :opportunity-id="requestedOpportunity"
+      :need-id="quoteContext.need.need_id"
+      @saved="loadEvidence"
+    />
     <section class="workspace-grid">
       <article class="panel">
         <header>
@@ -466,51 +651,192 @@ function formatDate(value: string): string {
         <dl><div><dt>单位完整成本</dt><dd>{{ selectedSheet.unit_full_cost ? `${selectedSheet.unit_full_cost.amount} ${selectedSheet.unit_full_cost.currency}` : "尚不可计算" }}</dd></div><div><dt>汇率快照</dt><dd>{{ selectedSheet.fx_snapshot_id ?? "未绑定" }}</dd></div><div><dt>创建时间</dt><dd>{{ formatDate(selectedSheet.created_at) }}</dd></div></dl>
       </aside>
     </section>
+    <template v-if="selectedSheet && quoteContext">
+      <CostCoverageForm
+        :key="selectedSheet.cost_sheet_id"
+        :sheet="selectedSheet"
+        @saved="coverage = $event"
+      />
+      <section class="panel">
+        <h2>报价汇率与精确输入</h2><p>人工填写核算币种 → 报价币种的直连汇率及来源；不推算倒数、不复用旧方向。</p>
+        <div class="field-grid">
+          <label>核算币种<input
+            v-model="fxForm.base"
+            name="fx-base"
+          ></label><label>报价币种<input
+            v-model="fxForm.quote"
+            name="fx-quote"
+          ></label><label>汇率（十进制字符串）<input
+            v-model="fxForm.rate"
+            name="fx-rate"
+          ></label><label>汇率来源<input
+            v-model="fxForm.source"
+            name="fx-source"
+          ></label><label>观察时间（含时区）<input
+            v-model="fxForm.observed"
+            name="fx-observed"
+          ></label>
+        </div>
+        <button
+          :disabled="!fxMutation.hasIdentity.value || fxMutation.pending.value"
+          @click="saveFx"
+        >
+          确认直连报价汇率
+        </button><p role="status">
+          {{ fxMutation.message.value }} <code>{{ fxMutation.key.value }}</code>
+        </p>
+        <label>用于报价的已确认汇率 ID（同币种可空）<input
+          v-model="fxForm.ref"
+          name="quote-fx-ref"
+        ></label><button @click="readFx">
+          核对已保存汇率
+        </button><p v-if="fx">
+          {{ fx.fx_id }} · {{ fx.base_currency }} → {{ fx.quote_currency }} = {{ fx.rate }} · {{ fx.source.source_ref }} · {{ fx.confirmed_by }} · {{ fx.confirmed_at }}
+        </p>
+        <div class="field-grid">
+          <label>客户报价单价<input
+            v-model="draft.amount"
+            name="quote-price"
+          ></label><label>报价币种<input
+            v-model="draft.currency"
+            name="quote-currency-exact"
+          ></label><label>单价小数位<input
+            v-model="draft.unitPlaces"
+            name="quote-unit-places"
+          ></label><label>整单小数位<input
+            v-model="draft.totalPlaces"
+            name="quote-total-places"
+          ></label><label>舍入策略<input
+            v-model="draft.strategy"
+            name="quote-rounding"
+            placeholder="由业务明确配置"
+          ></label><label>报价有效期（含时区）<input
+            v-model="draft.valid"
+            name="quote-valid-until"
+          ></label>
+          <label>折扣条款（英文）<textarea
+            v-model="termDrafts.discount"
+            name="term-discount"
+          /></label><label>交期承诺（英文）<textarea
+            v-model="termDrafts.delivery_commitment"
+            name="term-delivery"
+          /></label><label>付款条件（英文）<textarea
+            v-model="termDrafts.payment_terms"
+            name="term-payment"
+          /></label><label>认证承诺（英文）<textarea
+            v-model="termDrafts.certification_commitment"
+            name="term-certification"
+          /></label>
+        </div><button @click="calculate('target')">
+          计算目标报价
+        </button><button @click="calculate('manual')">
+          计算实际报价收益
+        </button>
+        <div class="workspace-grid">
+          <article
+            v-for="[label, result] in [['目标报价', targetCalculated], ['实际报价', calculated]] as const"
+            :key="label"
+          >
+            <h3>{{ label }}</h3><template v-if="result">
+              <p>客户单价 {{ result.displayed_unit_price.amount }} {{ result.displayed_unit_price.currency }} / 整单 {{ result.displayed_total.amount }} {{ result.displayed_total.currency }}</p><p>核算有效单价 {{ result.effective_unit_revenue.amount }} {{ result.effective_unit_revenue.currency }}</p><dl>
+                <div
+                  v-for="(value, name) in result.metrics"
+                  :key="name"
+                >
+                  <dt>{{ profitMetricLabels[name] ?? name }}</dt><dd>{{ value }}</dd>
+                </div>
+              </dl><p>输入 hash {{ result.inputs_hash }} · 政策 {{ result.policy_id }}</p>
+            </template><p v-else>
+              尚未计算
+            </p>
+          </article>
+        </div>
+      </section>
+      <CostScopeConfirmationForm
+        :key="`scope-${selectedSheet.cost_sheet_id}`"
+        :context="quoteContext"
+        :sheet="selectedSheet"
+        :coverage="coverage"
+        :terms="terms"
+        :valid-until="draft.valid"
+        :evidence="evidence"
+        @selected="scopeConfirmation = $event"
+      />
+      <section class="panel">
+        <h2>确认报价版本</h2><p>数量 {{ selectedSheet.quantity }} · 需求单位 {{ quoteContext.need.unit ?? '缺失' }} · 成本版本 {{ selectedSheet.version_number }} · 适用性确认 {{ scopeConfirmation?.confirmation_id ?? '尚未选择' }}</p>
+        <button
+          :disabled="!quoteMutation.hasIdentity.value || quoteMutation.pending.value || !scopeCurrent || !quoteContext.context_hash"
+          @click="createQuote()"
+        >
+          确认创建新报价
+        </button>
+        <template v-if="selectedQuote">
+          <p>修订前版 {{ selectedQuote.quote_id }} / V{{ selectedQuote.version }} / 成本 {{ selectedQuote.cost_sheet_id }}；修订将停用旧版，旧成本引用保留。</p><label><input
+            v-model="draft.revisionAcknowledged"
+            type="checkbox"
+            name="revision-acknowledged"
+          >我确认修订会停用旧版</label><button
+            :disabled="!quoteMutation.hasIdentity.value || quoteMutation.pending.value || !scopeCurrent || !draft.revisionAcknowledged"
+            @click="createQuote(true)"
+          >
+            确认修订此版本
+          </button>
+        </template>
+        <p role="status">
+          {{ quoteMutation.message.value }} <code>{{ quoteMutation.key.value }}</code>
+        </p><p>结果未知时请使用上方“核对报价与文件记录”；不自动新建，不保证恢复丢失的客户端键。</p>
+      </section>
+    </template>
   </div>
 </template>
 
-<style scoped>
+<style>
 .costing-shell { overflow: auto; }
-.costing-head { justify-content: space-between; padding-top: var(--space3); }
-.panel { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: var(--space4); }
-.panel > header { display: flex; justify-content: space-between; gap: var(--space3); align-items: start; }
-.opportunity-bar { display: flex; gap: var(--space3); align-items: end; }
-.opportunity-bar label { flex: 1; }
-label { display: grid; gap: var(--space1); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
-input, select { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: white; padding: 9px 10px; color: var(--text-primary); }
-button { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 13px; background: white; cursor: pointer; }
-.btn-primary { border-color: var(--action); background: var(--action); color: white; }
-button:disabled { cursor: not-allowed; opacity: .55; }
-.workspace-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space4); }
-.detail-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .7fr); gap: var(--space4); }
-.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space3); margin: var(--space4) 0; }
-.field-grid .wide { grid-column: 1 / -1; }
-.versions-panel { display: grid; align-content: start; gap: var(--space2); }
-.version-row { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; }
-.version-row.selected { border-color: var(--action); box-shadow: 0 0 0 1px var(--action); }
-.version-row span:first-child { display: grid; gap: 3px; }
-small, .muted { color: var(--text-secondary); overflow-wrap: anywhere; }
-.state-pill { border-radius: 999px; background: var(--fact-soft); color: var(--fact); padding: 3px 8px; font-size: 10px; font-weight: 800; }
-.item-list { display: grid; gap: var(--space2); margin-top: var(--space3); }
-.item-row { display: grid; grid-template-columns: 1fr auto minmax(170px, .8fr); gap: var(--space3); align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); }
-.item-row > div { display: grid; gap: 3px; }
-.amount { font-variant-numeric: tabular-nums; font-weight: 800; }
-.source span { color: var(--text-secondary); font-size: 10px; }
-.source strong { overflow-wrap: anywhere; font-size: 11px; }
-.item-form { border-top: 1px solid var(--border); padding-top: var(--space4); }
-.check { display: flex; align-items: center; gap: var(--space2); }
-.check input { width: auto; }
-.readiness-panel { align-self: start; display: grid; gap: var(--space3); }
-.readiness-result { border-left: 4px solid var(--danger); background: var(--danger-soft); padding: var(--space3); }
-.readiness-result.ready { border-left-color: var(--success); background: var(--success-soft); }
-.readiness-result ul { padding-left: 18px; }
-.readiness-result div { display: flex; flex-wrap: wrap; gap: var(--space1); margin-top: var(--space2); }
-code { border-radius: 4px; background: rgba(255,255,255,.7); padding: 2px 5px; }
-dl { display: grid; gap: var(--space2); margin: 0; }
-dl div { display: grid; grid-template-columns: 90px 1fr; gap: var(--space2); }
-dt { color: var(--text-secondary); font-size: 11px; }
-dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
-.empty { display: grid; min-height: 120px; place-items: center; color: var(--text-secondary); }
-@media (max-width: 960px) { .workspace-grid, .detail-grid { grid-template-columns: 1fr; } }
-@media (max-width: 640px) { .opportunity-bar { align-items: stretch; flex-direction: column; } .field-grid, .item-row { grid-template-columns: 1fr; } .field-grid .wide { grid-column: auto; } }
+.costing-shell > section, .costing-shell > details { margin-bottom: var(--space4); }
+.costing-shell textarea { width: 100%; box-sizing: border-box; min-height: 60px; border: 1px solid var(--border); padding: 8px; }
+.costing-shell code, .costing-shell p, .costing-shell dd { overflow-wrap: anywhere; }
+.costing-shell .coverage-row { border-top: 1px solid var(--border); padding-top: var(--space3); }
+.costing-shell .pdf-preview { width: 100%; height: 600px; border: 1px solid var(--border); background: white; }
+.costing-shell .costing-head { justify-content: space-between; padding-top: var(--space3); }
+.costing-shell .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: var(--space4); }
+.costing-shell .panel > header { display: flex; justify-content: space-between; gap: var(--space3); align-items: start; }
+.costing-shell .opportunity-bar { display: flex; gap: var(--space3); align-items: end; }
+.costing-shell .opportunity-bar label { flex: 1; }
+.costing-shell label { display: grid; gap: var(--space1); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+.costing-shell input, .costing-shell select { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: white; padding: 9px 10px; color: var(--text-primary); }
+.costing-shell button { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 13px; background: white; cursor: pointer; }
+.costing-shell .btn-primary { border-color: var(--action); background: var(--action); color: white; }
+.costing-shell button:disabled { cursor: not-allowed; opacity: .55; }
+.costing-shell .workspace-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space4); }
+.costing-shell .detail-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, .7fr); gap: var(--space4); }
+.costing-shell .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space3); margin: var(--space4) 0; }
+.costing-shell .field-grid .wide { grid-column: 1 / -1; }
+.costing-shell .versions-panel { display: grid; align-content: start; gap: var(--space2); }
+.costing-shell .version-row { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; }
+.costing-shell .version-row.selected { border-color: var(--action); box-shadow: 0 0 0 1px var(--action); }
+.costing-shell .version-row span:first-child { display: grid; gap: 3px; }
+.costing-shell small, .costing-shell .muted { color: var(--text-secondary); overflow-wrap: anywhere; }
+.costing-shell .state-pill { border-radius: 999px; background: var(--fact-soft); color: var(--fact); padding: 3px 8px; font-size: 10px; font-weight: 800; }
+.costing-shell .item-list { display: grid; gap: var(--space2); margin-top: var(--space3); }
+.costing-shell .item-row { display: grid; grid-template-columns: 1fr auto minmax(170px, .8fr); gap: var(--space3); align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); }
+.costing-shell .item-row > div { display: grid; gap: 3px; }
+.costing-shell .amount { font-variant-numeric: tabular-nums; font-weight: 800; }
+.costing-shell .source span { color: var(--text-secondary); font-size: 10px; }
+.costing-shell .source strong { overflow-wrap: anywhere; font-size: 11px; }
+.costing-shell .item-form { border-top: 1px solid var(--border); padding-top: var(--space4); }
+.costing-shell .check { display: flex; align-items: center; gap: var(--space2); }
+.costing-shell .check input { width: auto; }
+.costing-shell .readiness-panel { align-self: start; display: grid; gap: var(--space3); }
+.costing-shell .readiness-result { border-left: 4px solid var(--danger); background: var(--danger-soft); padding: var(--space3); }
+.costing-shell .readiness-result.ready { border-left-color: var(--success); background: var(--success-soft); }
+.costing-shell .readiness-result ul { padding-left: 18px; }
+.costing-shell .readiness-result div { display: flex; flex-wrap: wrap; gap: var(--space1); margin-top: var(--space2); }
+.costing-shell code { border-radius: 4px; background: rgba(255,255,255,.7); padding: 2px 5px; }
+.costing-shell dl { display: grid; gap: var(--space2); margin: 0; }
+.costing-shell dl div { display: grid; grid-template-columns: 90px 1fr; gap: var(--space2); }
+.costing-shell dt { color: var(--text-secondary); font-size: 11px; }
+.costing-shell dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.costing-shell .empty { display: grid; min-height: 120px; place-items: center; color: var(--text-secondary); }
+@media (max-width: 960px) { .costing-shell .workspace-grid, .costing-shell .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .costing-shell .opportunity-bar { align-items: stretch; flex-direction: column; } .costing-shell .field-grid, .costing-shell .item-row { grid-template-columns: 1fr; } .costing-shell .field-grid .wide { grid-column: auto; } }
 </style>

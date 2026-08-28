@@ -6,6 +6,7 @@ import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import ResearchRunSummary from "../../components/ResearchRunSummary.vue";
 import { stopLabel } from "../../components/researchLabels";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type RunDetail = components["schemas"]["RunDetailView"];
@@ -25,6 +26,12 @@ const detailError = ref<string | null>(null);
 const error = computed(() => detailError.value ?? listError.value);
 let listRequestVersion = 0;
 let detailRequestVersion = 0;
+const identityGate = useQuoteRequestScope(client, () => [], () => {
+  listRequestVersion += 1; detailRequestVersion += 1;
+  runs.value = []; detail.value = null; selectedRunId.value = null;
+  listLoading.value = false; detailLoading.value = false; listError.value = null; detailError.value = null;
+  statusFilter.value = ""; workflowFilter.value = "";
+});
 
 const filteredRuns = computed(() => {
   const workflow = workflowFilter.value.trim().toLowerCase();
@@ -74,6 +81,7 @@ function statusLabel(status: string): string {
 }
 
 async function loadDetail(runId: string): Promise<void> {
+  const op = identityGate.begin("detail"); if (!op?.valid()) return;
   const requestVersion = ++detailRequestVersion;
   selectedRunId.value = runId;
   detail.value = null;
@@ -82,8 +90,9 @@ async function loadDetail(runId: string): Promise<void> {
   try {
     const result = await client.GET("/runs/{run_id}", {
       params: { path: { run_id: runId } },
+      signal: op.signal,
     });
-    if (requestVersion !== detailRequestVersion) return;
+    if (!op.valid() || requestVersion !== detailRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       detail.value = null;
       detailError.value = safeError(result.response.status);
@@ -91,23 +100,25 @@ async function loadDetail(runId: string): Promise<void> {
     }
     detail.value = result.data;
   } catch {
-    if (requestVersion !== detailRequestVersion) return;
+    if (!op.valid() || requestVersion !== detailRequestVersion) return;
     detail.value = null;
     detailError.value = "无法连接 Run 审计服务";
   } finally {
-    if (requestVersion === detailRequestVersion) detailLoading.value = false;
+    if (op.valid() && requestVersion === detailRequestVersion) detailLoading.value = false;
   }
 }
 
 async function loadRuns(): Promise<void> {
+  const op = identityGate.begin("list"); if (!op?.valid()) return;
   const requestVersion = ++listRequestVersion;
   listLoading.value = true;
   listError.value = null;
   try {
     const result = await client.GET("/runs", {
       params: { query: { limit: 50 } },
+      signal: op.signal,
     });
-    if (requestVersion !== listRequestVersion) return;
+    if (!op.valid() || requestVersion !== listRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       runs.value = [];
       listError.value = safeError(result.response.status);
@@ -118,11 +129,11 @@ async function loadRuns(): Promise<void> {
       await loadDetail(runs.value[0].run_id);
     }
   } catch {
-    if (requestVersion !== listRequestVersion) return;
+    if (!op.valid() || requestVersion !== listRequestVersion) return;
     runs.value = [];
     listError.value = "无法连接 Run 审计服务";
   } finally {
-    if (requestVersion === listRequestVersion) listLoading.value = false;
+    if (op.valid() && requestVersion === listRequestVersion) listLoading.value = false;
   }
 }
 
@@ -171,7 +182,7 @@ onBeforeUnmount(() => {
 
     <div class="safe-banner">
       <span aria-hidden="true">i</span>
-      <div>本页只展示 Workflow、步骤、工具、产物和审批的安全元数据；不会返回 context、步骤 data、客户正文、PII 或凭证。</div>
+      <div>本页只展示 Workflow、步骤、工具、产物和审批的安全元数据；不会返回 context、步骤 data、客户正文、PII 或凭证。报价 Run 只显示安全摘要，审批完成不代表发送。</div>
     </div>
     <div
       v-if="error"

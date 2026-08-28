@@ -10,7 +10,7 @@ type HandoffPacketView = components["schemas"]["HandoffPacketView"];
 type HandoffQueueItemView = components["schemas"]["HandoffQueueItemView"];
 type Money = components["schemas"]["Money"];
 type OpportunityView = components["schemas"]["OpportunityView"];
-type ProvenanceSummary = components["schemas"]["ProvenanceSummary"];
+type ProvenanceSummary = components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"];
 type ScoreExplanation = components["schemas"]["ScoreExplanation"];
 type SortKey = components["schemas"]["SortKey"];
 

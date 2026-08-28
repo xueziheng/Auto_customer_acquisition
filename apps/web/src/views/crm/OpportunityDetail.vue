@@ -9,7 +9,7 @@ type Money = components["schemas"]["Money"];
 type OpportunityMarkLostBody = components["schemas"]["OpportunityMarkLostBody"];
 type OpportunityState = components["schemas"]["OpportunityState"];
 type OpportunityView = components["schemas"]["OpportunityView"];
-type ProvenanceSummary = components["schemas"]["ProvenanceSummary"];
+type ProvenanceSummary = components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"];
 
 const props = defineProps<{
   actionStatus: string;

@@ -4,6 +4,7 @@ import { computed, inject, onMounted, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Approval = components["schemas"]["ApprovalView"];
@@ -16,6 +17,13 @@ const detailLoading = ref(false);
 const deciding = ref(false);
 const error = ref<string | null>(null);
 const rejectionReason = ref("");
+const selectedId = ref("");
+const pageGate = useQuoteRequestScope(client, () => [], () => {
+  approvals.value = []; selected.value = null; selectedId.value = ""; rejectionReason.value = "";
+  loading.value = false; detailLoading.value = false; deciding.value = false; error.value = null;
+});
+const detailGate = useQuoteRequestScope(client, () => [selectedId.value], () => {});
+const actionGate = useQuoteRequestScope(client, () => [selectedId.value, rejectionReason.value], () => {});
 
 const expiryLabel = computed(() => {
   const seconds = selected.value?.seconds_until_expiry;
@@ -49,43 +57,52 @@ function safeError(status: number): string {
 }
 
 async function loadApprovals(): Promise<void> {
+  const op = pageGate.begin("list"); if (!op?.valid()) return;
   loading.value = true;
   error.value = null;
   try {
     const result = await client.GET("/approvals/pending", {
       params: { query: { limit: 100 } },
+      signal: op.signal,
     });
+    if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
       return;
     }
     approvals.value = result.data;
-    const current = selected.value?.approval_id;
+    const current = selectedId.value;
     const retained = current && result.data.some((item) => item.approval_id === current)
       ? current
       : result.data[0]?.approval_id;
     if (retained) await loadDetail(retained);
     else selected.value = null;
   } catch {
-    error.value = "无法连接服务，请稍后重试";
+    if (op.valid()) error.value = "无法连接服务，请稍后重试";
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
 async function loadDetail(approvalId: string): Promise<void> {
+  selectedId.value = approvalId;
+  selected.value = null;
+  deciding.value = false;
+  const op = detailGate.begin("detail"); if (!op?.valid()) return;
   detailLoading.value = true;
   rejectionReason.value = "";
   try {
     const result = await client.GET("/approvals/{approval_id}", {
       params: { path: { approval_id: approvalId } },
+      signal: op.signal,
     });
+    if (!op.valid()) return;
     if (result.response.status === 200 && result.data) selected.value = result.data;
     else error.value = safeError(result.response.status);
   } catch {
-    error.value = "审批详情加载失败";
+    if (op.valid()) error.value = "审批详情加载失败";
   } finally {
-    detailLoading.value = false;
+    if (op.valid()) detailLoading.value = false;
   }
 }
 
@@ -96,6 +113,7 @@ async function decide(decision: "approve" | "reject"): Promise<void> {
     return;
   }
   deciding.value = true;
+  const op = actionGate.begin("decide"); if (!op?.valid()) { deciding.value = false; return; }
   error.value = null;
   try {
     const result = await client.POST("/approvals/{approval_id}/decide", {
@@ -104,16 +122,18 @@ async function decide(decision: "approve" | "reject"): Promise<void> {
         decision,
         reason: decision === "reject" ? rejectionReason.value.trim() : undefined,
       },
+      signal: op.signal,
     });
+    if (!op.valid()) return;
     if (result.response.status !== 200) {
       error.value = safeError(result.response.status);
       return;
     }
     await loadApprovals();
   } catch {
-    error.value = "决定未提交，请稍后重试";
+    if (op.valid()) error.value = "决定结果未知，请先刷新核对审批状态";
   } finally {
-    deciding.value = false;
+    if (op.valid()) deciding.value = false;
   }
 }
 
@@ -138,7 +158,7 @@ onMounted(() => void loadApprovals());
     </div>
 
     <div class="approval-rule">
-      <strong>一分钟内完成决定</strong><span>审批包必须自带完整变更、理由、证据和影响；系统不提供默认批准、强制覆盖或过期补批。</span>
+      <strong>一分钟内完成决定</strong><span>审批包必须自带完整变更、理由、证据和影响；系统不提供默认批准、强制覆盖或过期补批。报价批准不发送；金额、比例、前版与汇率口径均为服务端投影，页面不重算。</span>
     </div>
     <div
       v-if="error"

@@ -32,9 +32,34 @@ export interface WebRequestIdentity {
 
 export interface WebIdentityProvider {
   current(): WebRequestIdentity | null;
+  generation(): number;
+  subscribe(listener: () => void): () => void;
+}
+
+export interface WebIdentitySnapshot {
+  readonly identity: Readonly<WebRequestIdentity> | null;
+  readonly generation: number;
+}
+
+export interface ApiIdentityReader {
+  identitySnapshot(): WebIdentitySnapshot;
+  subscribeIdentity(listener: () => void): () => void;
 }
 
 let authenticatedIdentity: WebRequestIdentity | null = null;
+let identityGeneration = 0;
+const identityListeners = new Set<() => void>();
+
+function publishIdentity(identity: WebRequestIdentity | null): void {
+  if (!Number.isSafeInteger(identityGeneration + 1)) throw new WebIdentityError("identity_generation_invalid");
+  authenticatedIdentity = identity;
+  identityGeneration += 1;
+  let failed = false;
+  for (const listener of [...identityListeners]) {
+    try { listener(); } catch { failed = true; }
+  }
+  if (failed) throw new WebIdentityError("identity_notification_failed");
+}
 
 function exactIdentity(value: string, field: string): string {
   if (!value || value !== value.trim() || value.length > 128) {
@@ -47,18 +72,23 @@ export function configureAuthenticatedIdentity(
   tenantId: string,
   employeeId: string,
 ): void {
-  authenticatedIdentity = Object.freeze({
+  publishIdentity(Object.freeze({
     employeeId: exactIdentity(employeeId, "employee_identity"),
     mode: "authenticated",
     tenantId: exactIdentity(tenantId, "tenant_identity"),
-  });
+  }));
 }
 
 export function clearAuthenticatedIdentity(): void {
-  authenticatedIdentity = null;
+  publishIdentity(null);
 }
 
 const runtimeIdentityProvider: WebIdentityProvider = {
+  generation: () => identityGeneration,
+  subscribe(listener) {
+    identityListeners.add(listener);
+    return () => { identityListeners.delete(listener); };
+  },
   current(): WebRequestIdentity | null {
     if (authenticatedIdentity) return authenticatedIdentity;
     const tenantId = import.meta.env.VITE_TENANT_ID;
@@ -142,7 +172,28 @@ export function createApiClient(
     return { data, response };
   }
 
-  return Object.assign(client, { uploadWorkArtifact });
+  function identitySnapshot(): WebIdentitySnapshot {
+    try {
+      const generation = identityProvider.generation();
+      if (!Number.isSafeInteger(generation) || generation < 0) throw new Error();
+      const current = identityProvider.current();
+      if (current && current.mode !== "authenticated" && current.mode !== "fixed-dev") throw new Error();
+      const identity = current ? Object.freeze({
+        employeeId: exactIdentity(current.employeeId, "employee_identity"),
+        tenantId: exactIdentity(current.tenantId, "tenant_identity"),
+        mode: current.mode,
+      }) : null;
+      return Object.freeze({ identity, generation });
+    } catch {
+      throw new WebIdentityError("identity_snapshot_invalid");
+    }
+  }
+
+  return Object.assign(client, {
+    uploadWorkArtifact,
+    identitySnapshot,
+    subscribeIdentity: (listener: () => void) => identityProvider.subscribe(listener),
+  });
 }
 
 export const apiClient = createApiClient();

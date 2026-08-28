@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   WebIdentityError,
   createApiClient,
+  configureAuthenticatedIdentity,
+  clearAuthenticatedIdentity,
   type WebIdentityProvider,
 } from "../src/api/client";
+import { sameIdentitySnapshot } from "../src/views/costing-quotes/quote-request-scope";
+
+const unsubscribers: (() => void)[] = [];
+afterEach(() => {
+  unsubscribers.splice(0).forEach((unsubscribe) => unsubscribe());
+  clearAuthenticatedIdentity();
+});
 
 const uploadView = {
   account_id: null,
@@ -37,6 +46,8 @@ describe("API request identity", () => {
       return response();
     });
     const identity: WebIdentityProvider = {
+      generation: () => 0,
+      subscribe: () => () => {},
       current: () => ({
         employeeId: "emp-authenticated",
         mode: "authenticated",
@@ -62,6 +73,8 @@ describe("API request identity", () => {
   it("fails before fetch when a production identity provider has no session", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const identity: WebIdentityProvider = {
+      generation: () => 0,
+      subscribe: () => () => {},
       current: () => {
         throw new WebIdentityError("authenticated_identity_missing");
       },
@@ -86,7 +99,7 @@ describe("API request identity", () => {
     });
     const client = createApiClient(
       { baseUrl: "https://tradeos.test", fetch },
-      { current: () => null },
+      { current: () => null, generation: () => 0, subscribe: () => () => {} },
     );
 
     await client.GET("/notifications", {
@@ -115,6 +128,8 @@ describe("API raw work upload", () => {
     const client = createApiClient(
       { baseUrl: "https://tradeos.test", fetch: transport },
       {
+        generation: () => 0,
+        subscribe: () => () => {},
         current: () => ({
           employeeId: uploadView.employee_id,
           mode: "authenticated",
@@ -145,5 +160,85 @@ describe("API raw work upload", () => {
     expect(url.searchParams.get("source_kind")).toBe("pdf_text");
     expect(url.searchParams.get("customer_timezone")).toBe("Asia/Shanghai");
     expect(url.searchParams.get("occurred_at")).toBe("2026-08-23T07:30:00Z");
+  });
+});
+
+describe("identity snapshots and invalidation", () => {
+  it("invalidates A-B-A and same-identity reconfiguration synchronously", () => {
+    const client = createApiClient({ baseUrl: "https://tradeos.test" });
+    configureAuthenticatedIdentity("a", "a");
+    const before = client.identitySnapshot();
+    expect(sameIdentitySnapshot(before, client.identitySnapshot())).toBe(true);
+    const seen: number[] = [];
+    unsubscribers.push(client.subscribeIdentity(() => seen.push(client.identitySnapshot().generation)));
+    configureAuthenticatedIdentity("b", "b");
+    configureAuthenticatedIdentity("a", "a");
+    expect(sameIdentitySnapshot(before, client.identitySnapshot())).toBe(false);
+    const again = client.identitySnapshot();
+    configureAuthenticatedIdentity("a", "a");
+    expect(sameIdentitySnapshot(again, client.identitySnapshot())).toBe(false);
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen).size).toBe(3);
+    expect(Object.isFrozen(before)).toBe(true);
+    expect(Object.isFrozen(before.identity)).toBe(true);
+  });
+
+  it("compares values rather than newly returned provider objects", () => {
+    const client = createApiClient({}, {
+      current: () => ({ tenantId: "t", employeeId: "e", mode: "fixed-dev" }),
+      generation: () => 0,
+      subscribe: () => () => {},
+    });
+    expect(sameIdentitySnapshot(client.identitySnapshot(), client.identitySnapshot())).toBe(true);
+  });
+
+  it.each([-1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid generation %s with a fixed error", (generation) => {
+    const client = createApiClient({}, {
+      current: () => null, generation: () => generation, subscribe: () => () => {},
+    });
+    expect(() => client.identitySnapshot()).toThrowError(new WebIdentityError("identity_snapshot_invalid"));
+  });
+
+  it("sanitizes provider errors and invalid identity snapshots", () => {
+    for (const current of [
+      () => { throw new Error("sensitive-provider-content"); },
+      () => ({ tenantId: " t", employeeId: "e", mode: "authenticated" as const }),
+    ]) {
+      const client = createApiClient({}, { current, generation: () => 0, subscribe: () => () => {} });
+      expect(() => client.identitySnapshot()).toThrowError(new WebIdentityError("identity_snapshot_invalid"));
+    }
+  });
+
+  it("notifies every subscriber despite errors and unsubscribes without client-construction leaks", () => {
+    const client = createApiClient();
+    let called = 0;
+    unsubscribers.push(client.subscribeIdentity(() => { throw new Error("private"); }));
+    const unsubscribe = client.subscribeIdentity(() => { called += 1; });
+    unsubscribers.push(unsubscribe);
+    expect(() => configureAuthenticatedIdentity("t", "e")).toThrowError(new WebIdentityError("identity_notification_failed"));
+    expect(called).toBe(1);
+    expect(client.identitySnapshot().identity?.employeeId).toBe("e");
+    unsubscribe();
+    expect(() => clearAuthenticatedIdentity()).toThrowError(new WebIdentityError("identity_notification_failed"));
+    expect(called).toBe(1);
+  });
+
+  it("uses central short identity on typed PDF GET and preserves classified JSON errors", async () => {
+    configureAuthenticatedIdentity("t", "e");
+    const requests: Request[] = [];
+    const client = createApiClient({ baseUrl: "https://tradeos.test", fetch: async (input) => {
+      if (!(input instanceof Request)) throw new Error("Request required");
+      requests.push(input);
+      return new Response(JSON.stringify({ detail: { code: "file_expired", message: "已过期" } }), {
+        status: 409, headers: { "content-type": "application/json" },
+      });
+    } });
+    const result = await client.GET("/costing-quotes/quotes/{quote_id}/files/{file_id}", {
+      params: { path: { quote_id: "q", file_id: "f" } }, parseAs: "blob",
+      headers: { "X-Tenant-Id": "forged", "X-Employee-Id": "forged" },
+    });
+    expect(requests[0]?.headers.get("X-Tenant-Id")).toBe("t");
+    expect(requests[0]?.headers.get("X-Employee-Id")).toBe("e");
+    expect(result.error).toEqual({ detail: { code: "file_expired", message: "已过期" } });
   });
 });

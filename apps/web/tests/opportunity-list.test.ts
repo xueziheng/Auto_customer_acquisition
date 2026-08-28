@@ -7,7 +7,7 @@ import App from "../src/App.vue";
 import router from "../src/router";
 
 type OpportunityView = components["schemas"]["OpportunityView"];
-type ProvenanceSummary = components["schemas"]["ProvenanceSummary"];
+type ProvenanceSummary = components["schemas"]["domains__opportunities__schemas__ProvenanceSummary"];
 
 const firstProvenance: ProvenanceSummary = {
   confirmed_at: "2026-08-09T02:06:00Z",

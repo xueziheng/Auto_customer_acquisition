@@ -33,6 +33,7 @@ const kindLabels: Record<string, string> = {
   reputation_threshold_breached: "信誉阈值触发",
   commitment_overdue: "承诺处理已到期",
   approval_decided: "审批已决定",
+  quote_approval_result: "报价审批结果",
 };
 
 function isValidRelativeLink(value: string | null): boolean {
