@@ -92,6 +92,10 @@ ACTUAL      实际发生。事后核算用
 
 新增安全读取仍先核当前C；价格集合用同UoW的opportunity_refs.exists区分真实空集合
 和缺对象/跨租户，内部bool事实口不授予CRM权限、不投影客户字段。SQL故障不变False。
-新增安全缺对象错误为CostingQuoteNotFoundError，不改变旧确认/读取错误语义。
+新增安全缺对象错误为CostingQuoteNotFoundError。T2 get_policy/get_quote_fx仅真实无记录
+分支使用此ValidationError子类；当前有效政策选择/默认fallback/确认逻辑不变。
+旧get_sheet缺表用CostSheetNotFoundError并保留“成本表不存在”文本及ValidationError兼容；
+只有新报价HTTP映射404，旧成本HTTP保持400。add_item/readiness不改。费用确认合并的
+缺表/变更CAS仍CostCoverageConflict，新HTTP为409 coverage_stale，不拆查询或误称幂等冲突。
 coverage按精确原hash恢复或读取最新；scope按确认时间/ID发现只增历史，刷新不补确认。
 public DTO逐值白名单投影，不含完整Need、来源原文或locator；安全摘要不代表原件读权。

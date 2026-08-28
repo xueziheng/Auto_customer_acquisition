@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
+from domains.costing.errors import (
+    CostSheetNotFoundError,
+    EmptyCostSheetError,
+    MissingFxSnapshotError,
+)
 from domains.costing.models import CostItem, CostItemType, CostSheet, CostSheetVersion
 from domains.costing.permissions import (
     CostingAction,
@@ -262,7 +266,7 @@ class CostingServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             sheet = await uow.sheets.get(tenant_id, cost_sheet_id)
             if sheet is None:
-                raise ValidationError("成本表不存在")
+                raise CostSheetNotFoundError()
             return _view(sheet)
 
     async def list_versions(

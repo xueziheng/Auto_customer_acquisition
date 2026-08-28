@@ -335,7 +335,7 @@ class CostingQuoteServiceImpl:
                 tenant_id, category, self._clock()
             )
             if record is None:
-                raise ValidationError("已确认利润政策未配置")
+                raise CostingQuoteNotFoundError()
             return record.value
 
     async def get_quote_fx(
@@ -346,7 +346,7 @@ class CostingQuoteServiceImpl:
         async with self._factory(tenant_id) as uow:
             record = await uow.quote_fx.get(tenant_id, fx_id)
             if record is None:
-                raise ValidationError("已确认报价汇率不存在")
+                raise CostingQuoteNotFoundError()
             return record.value
 
     async def _validate_coverage(

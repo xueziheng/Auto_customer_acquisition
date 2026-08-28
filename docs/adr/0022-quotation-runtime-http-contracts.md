@@ -29,5 +29,22 @@ typed摘要保留原金额、字段可空性、真实规格及完整hash；不�
 
 ## 边界
 
+HTTP采用独立router及局部错误转换，不修改旧成本或全局400/401。输入复用原DTO的
+JSON语义，Decimal字符串/数组/日期无损，禁止float金额；确认key原样传递并显式入OpenAPI。
+内部报价只显式投影真实content/basis字段，普通GET不输出原件或完整冻结依据。
+文件403/404/409/429/503声明flat与技术错误union，只有真实结果保留call ID；无合法
+retry提示就不加Retry-After。PDF响应只用已核quote/version/template构造attachment文件名，
+固定private,no-store与nosniff，不提供base64或永久URL。
+三个frozen本地composition束明确公共端口与独立文件组，实际工厂/生命周期在后续切片
+完成；wire替身测试不证明真实PG、Gateway、解析器或Provider接线。
+
+实施期核对批准三个旧读取缺项的最窄类型增量：T2 get_policy/get_quote_fx仅record=None
+改为现CostingQuoteNotFoundError；新GET都是404，原政策有效期/默认fallback不动。
+旧CostingService.get_sheet仅sheet=None改为CostSheetNotFoundError，保持原固定文本
+“成本表不存在”及ValidationError父类，旧HTTP仍400/validation_error/请求参数无效；
+新scope/calculate路径按具名类404。无额外查库，不动add_item/readiness或其ID规则。
+原计算/冻结policy_missing/fx_missing仍409；费用确认缺表或sheet变化的原合并CAS
+为409/coverage_stale，不是幂等冲突，也不拆分原子判断。
+
 不增加 Phase，不启用发送，不改变金额/置信度/租户/审批硬边界，不修改 Gateway
 核心或旧工作流解释。当前文档记录决策，不声明四切片已完成或生产已部署。

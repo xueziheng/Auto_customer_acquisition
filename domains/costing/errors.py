@@ -16,6 +16,15 @@ from shared.errors import (
 )
 
 
+class CostSheetNotFoundError(ValidationError):
+    """旧get_sheet缺表保持原文本，供新HTTP按类型区分404。"""
+
+    code = "record_not_found"
+
+    def __init__(self) -> None:
+        super().__init__("成本表不存在")
+
+
 class CostingQuoteNotFoundError(ValidationError):
     """新增安全读取的固定缺对象类型，不改变旧确认/冻结错误契约。"""
 

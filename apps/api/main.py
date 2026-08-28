@@ -51,6 +51,7 @@ from .routers.health import ReadinessProbe, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.products import router as products_router
+from .routers.quotation_actions import router as quotation_actions_router
 from .routers.runs import router as runs_router
 from .routers.sending_identities import router as sending_identities_router
 from .routers.settings import router as settings_router
@@ -173,6 +174,7 @@ def create_app(
     app.include_router(products_router, prefix="/products")
     app.include_router(sourcing_router, prefix="/sourcing")
     app.include_router(costing_quotes_router, prefix="/costing-quotes")
+    app.include_router(quotation_actions_router, prefix="/costing-quotes")
     app.include_router(team_router, prefix="/team")
     app.include_router(work_uploads_router, prefix="/work-uploads")
     app.include_router(commitments_router, prefix="/commitments")

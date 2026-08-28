@@ -36,3 +36,14 @@
 ## 入口
 
 `main.py`：FastAPI 实例、依赖注入装配、中间件（租户上下文、审计、错误转换——把域错误映射为结构化 HTTP 响应，`is_retryable` 转 Retry-After）。
+
+## Phase 2 安全报价 HTTP
+
+`quotation_actions`与旧成本router共用前缀但不改旧CRUD/readiness。只接受域公开命令与
+安全投影；来源原文仅在独立授权preview/locator返回。C、U、F用途不能互相替代，
+身份仅来自现RequestIdentity，域仍重读当前员工。
+确认路径必填原Idempotency-Key并在OpenAPI声明；calculate/preview/locator/submit与文件
+server-canonical/NONE操作不把客户端key当身份。空命令拒绝null和额外控制字段，
+文件路径拒绝未知query/body，PDF只返回后置授权成功的bytes与canonical文件名。
+本组错误局部映射，未知依赖固定503；全局400/401不改。只有真实Gateway结果保留
+QuoteFileApiError技术ID，Retry-After只取其合法显式值，不能用全局默认时长。

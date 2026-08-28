@@ -97,6 +97,7 @@ from workflows.employee_work_intake.schemas import (
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
 
+from .composition.quotations import QuotationHttpComposition
 from .composition.research_accounts import ResearchEvidenceReader
 from .middleware import ApiSettings
 from .research import DiscoveryExecutionReader, ResearchAccessService
@@ -277,6 +278,7 @@ class ConfiguredApiDependencies:
     research_access: ResearchAccessService | None = None
     research_execution: DiscoveryExecutionReader | None = None
     research_evidence: ResearchEvidenceReader | None = None
+    quotation: QuotationHttpComposition | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

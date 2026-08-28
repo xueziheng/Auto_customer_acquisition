@@ -53,3 +53,8 @@ DemandQuotePreparationProjector只调用demand.service的纯评估并转换固�
 不复制数量/单位规则、不用未知错误制造普通缺项。CurrentNeedUnitAuthorizer
 固定原C与OPPORTUNITY_READ交集，使用真实当前员工role和TENANT scope，
 初检与锁内同样核权，不提高角色；原件IO在授权锁外，guard保护到内层事务提交。
+
+`http`仅适配公开服务：scope/calculate的机会由真实costing.get_sheet读取；coverage
+确认后按返回hash精确读取，不用latest替代。创建/修订路径必须与原CAS命令一致；
+内部响应使用各域纯白名单，原文技术wrapper只能领取本次已授权T8A结果。
+QuoteApprovalStarter只返回真实run绑定核验后的quote/run，不把202解释为批准。

@@ -13,6 +13,7 @@ from domains.costing.approval_policy import (
 from domains.costing.calculation import canonical_pricing_hash, compute_breakdown
 from domains.costing.errors import (
     CostingQuoteNotFoundError,
+    CostSheetNotFoundError,
     EmptyCostSheetError,
     MissingFxSnapshotError,
 )
@@ -112,6 +113,7 @@ __all__ = (
     "CostScopeConfirmationView",
     "CostScopeEvidenceBinding",
     "CostScopeSourceAccess",
+    "CostSheetNotFoundError",
     "CostingActor",
     "CostingActorReader",
     "CostingApprovalPolicyReader",
