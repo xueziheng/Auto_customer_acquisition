@@ -1,5 +1,7 @@
 """新报价版本服务门面；旧骨架create/布尔审批/mark_sent从未转调此处。"""
 from collections.abc import Callable
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Literal
 from pydantic import TypeAdapter, ValidationError as SchemaError
@@ -7,12 +9,15 @@ from pydantic import TypeAdapter, ValidationError as SchemaError
 from domains.quotations.errors import QuotationError, QuotationPermissionError, QuotationUnavailableError
 from domains.quotations.permissions import QuotePreparationPolicy
 from domains.quotations.schemas import QuotationActor, QuoteDetailView, QuoteIssuer, QuoteIssuerCreate, StoredQuoteIssuer
+from domains.quotations.schemas import QuoteBusinessContext, QuoteBasis
+from domains.quotations.creation import CreationSessionImpl
 from domains.quotations.service import QuotationActorReader, QuoteSendReceiptReader
 from domains.quotations.version_repository import QuotationUowFactory
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, OpportunityId, QuoteId, TenantId, new_id
 from shared.schemas.quote_facts import QuoteEmployeeFact, fact_utc
 from shared.schemas.quote_creation import QuoteKey, canonical_creation_hash
+from shared.schemas.quote_creation import QuoteCreationIntent
 from shared.schemas.provenance import Provenance, SourceType
 
 
@@ -40,6 +45,33 @@ class QuotationServiceImpl:
         except PermissionDenied:
             raise QuotationPermissionError("permission_denied") from None
         return fact
+
+    @asynccontextmanager
+    async def open_creation(self, tenant_id: TenantId, opportunity_id: OpportunityId, context: QuoteBusinessContext,
+        *, actor: QuotationActor) -> AsyncIterator[CreationSessionImpl]:
+        """调用者须保持context lease；报价机会锁跨freeze持至显式commit成功。"""
+        await self._actor(tenant_id,actor,action="prepare")
+        async with self._uows(tenant_id) as uow:
+            await uow.quotes.lock_opportunity(tenant_id,opportunity_id)
+            fact=await self._actor(tenant_id,actor,action="prepare")
+            if fact!=context.runtime.current_actor:
+                raise QuotationPermissionError("permission_denied")
+            session=CreationSessionImpl(tenant_id,opportunity_id,context,actor,uow.quotes,
+                lambda:self._actor(tenant_id,actor,action="prepare"),now=self._now)
+            try:
+                yield session
+                await uow.commit()
+            finally:
+                session.close()
+
+    async def create_from_basis(self, tenant_id: TenantId, intent: QuoteCreationIntent, basis: QuoteBasis,
+        context: QuoteBusinessContext, *, operation_id: str, actor: QuotationActor) -> QuoteDetailView:
+        """便利入口仅委托同一session预检/创建，无第二套规则。"""
+        async with self.open_creation(tenant_id,intent.opportunity_id,context,actor=actor) as session:
+            existing=await session.preflight(intent,operation_id=operation_id)
+            if existing:
+                return existing
+            return await session.create_from_basis(intent,basis,operation_id=operation_id)
 
     async def get(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteDetailView:
         """先授权再判断存在性，历史读取不依赖最新上下文或当前期限。"""

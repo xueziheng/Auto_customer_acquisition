@@ -142,12 +142,10 @@ async def test_issuer_tenant_keys_are_isolated(quotation_case):
 
 
 @pytest_asyncio.fixture
-async def persisted_quote(quotation_case,freeze_case):
-    """真实boss抬头→真实context/freeze→报价仓储；无假FK或假receipt。"""
+async def prepared_quote(quotation_case,freeze_case):
+    """真实boss抬头接入context provider，来源reader仍受控。"""
     from infra.db.quote_context import SqlAlchemyQuoteContextProvider
     from workflows.quote_approval.application import QuotePreparationApplication
-    from workflows.quote_approval.basis_adapter import to_quote_basis
-    from shared.schemas.identifiers import QuoteId,new_id
     c,f=quotation_case,freeze_case
     await c.issuer()
     class IssuerReader:
@@ -156,6 +154,15 @@ async def persisted_quote(quotation_case,freeze_case):
     f.context.provider=SqlAlchemyQuoteContextProvider(c.context.unit.sessions,IssuerReader(),lock_timeout_ms=1500,
         statement_timeout_ms=3000)
     f.application=QuotePreparationApplication(f.provider,f.service,public.StrictQuotePreparationPolicy(),f.application._actors)
+    return c,f
+
+
+@pytest_asyncio.fixture
+async def persisted_quote(prepared_quote):
+    """真实boss抬头→真实context/freeze→报价仓储；无假FK或假receipt。"""
+    from workflows.quote_approval.basis_adapter import to_quote_basis
+    from shared.schemas.identifiers import QuoteId,new_id
+    c,f=prepared_quote
     i=await f.intent()
     b=await f.freeze(key="stored-quote",intent=i)
     async with f.provider.open(c.tenant,c.context.opportunity_id,c.actor.employee_id,prepared_by=c.actor.employee_id) as context:
@@ -187,3 +194,60 @@ async def test_sql_cannot_mutate_quote_or_skip_state_event(persisted_quote,state
     with pytest.raises(DBAPIError):
         async with c.context.unit.sessions.begin() as session:
             await session.execute(text(statement+" WHERE tenant_id=:tenant"),{"tenant":c.tenant})
+
+
+async def session_create(c,f,intent,key,*,after_freeze=None):
+    """真实lease/机会锁/freezer/报价提交顺序；尚不调用T4应用恢复。"""
+    from workflows.quote_approval.application import costing_context
+    from workflows.quote_approval.basis_adapter import to_quote_basis,pricing_options_from_intent
+    async with f.provider.open(c.tenant,c.context.opportunity_id,c.actor.employee_id,prepared_by=c.actor.employee_id) as context:
+        async with c.service.open_creation(c.tenant,c.context.opportunity_id,context,actor=c.actor) as session:
+            await session.preflight(intent,operation_id=None)
+            frozen=await f.service.freeze(c.tenant,intent.cost_sheet_id,pricing_options_from_intent(intent),costing_context(context),
+                idempotency_key=key,intent=intent,actor=f.actor)
+            if after_freeze:
+                await after_freeze()
+            return await session.create_from_basis(intent,to_quote_basis(frozen),operation_id=frozen.operation_id)
+
+
+async def test_session_real_context_share_does_not_self_wait(prepared_quote):
+    import asyncio
+    c,f=prepared_quote
+    assert hasattr(c.service,"open_creation"), "缺少真实同事务session"
+    quote=await asyncio.wait_for(session_create(c,f,await f.intent(),"session-create"),4)
+    assert (await c.service.get(c.tenant,quote.content.quote_id,actor=c.actor))==quote
+    assert await f.locked_at() is not None
+
+
+async def test_session_keeps_employee_lease_until_commit(prepared_quote):
+    import asyncio
+    c,f=prepared_quote
+    assert hasattr(c.service,"open_creation"), "缺少真实同事务session"
+    writers=[]
+    async def during():
+        task=asyncio.create_task(c.context.update_employee(c.actor.employee_id,is_active=False))
+        writers.append(task)
+        await c.context.wait_for_blocked_writer(task)
+    quote=await session_create(c,f,await f.intent(),"lease",after_freeze=during)
+    await writers[0]
+    assert quote.content.version==1
+    from domains.quotations.errors import QuotationPermissionError
+    with pytest.raises(QuotationPermissionError):
+        await c.service.get(c.tenant,quote.content.quote_id,actor=c.actor)
+
+
+async def test_quote_commit_failure_preserves_frozen_pending_operation(prepared_quote,monkeypatch):
+    c,f=prepared_quote
+    assert hasattr(c.service,"open_creation"), "缺少真实同事务session"
+    repo=importlib.import_module("infra.db.repositories.quotations").QuotationVersionRepositoryImpl
+    original=repo.add
+    async def fail_after_write(self,*args):
+        await original(self,*args)
+        raise RuntimeError("controlled before commit")
+    monkeypatch.setattr(repo,"add",fail_after_write)
+    with pytest.raises(RuntimeError):
+        await session_create(c,f,await f.intent(),"rollback")
+    operation=await f.service.get_creation(c.tenant,"rollback",actor=f.actor)
+    assert operation.state=="frozen"
+    assert await c.service.get_by_operation(c.tenant,operation.operation_id,actor=c.actor) is None
+    assert await f.locked_at() is not None
