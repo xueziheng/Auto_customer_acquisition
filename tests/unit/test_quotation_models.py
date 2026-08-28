@@ -58,6 +58,30 @@ def test_quote_transition_follows_approval_state_machine_without_bypass() -> Non
     assert terminal.can_transition_to(QuoteState.SUPERSEDED) is False
 
 
+@pytest.mark.parametrize(
+    "state", [QuoteState.DRAFT, QuoteState.PENDING_APPROVAL, QuoteState.APPROVED]
+)
+def test_quote_public_transitions_allow_expiry_and_revision_for_active_drafts(
+    state: QuoteState,
+) -> None:
+    """T4.1既有新状态边迁入旧模型回归，通过公开行为而非读取内部状态表验收。"""
+    quote = _quote(state=state)
+    assert quote.can_transition_to(QuoteState.EXPIRED) is True
+    assert quote.can_transition_to(QuoteState.SUPERSEDED) is True
+
+
+def test_legacy_line_constructor_does_not_adopt_new_quote_display_rounding() -> None:
+    with pytest.raises(ValidationError, match="报价行总额"):
+        QuoteLine(
+            1,
+            "Part",
+            3,
+            Money(Decimal("1.235"), CurrencyCode("USD")),
+            Money(Decimal("3.71"), CurrencyCode("USD")),
+            "price",
+        )
+
+
 def test_quote_expires_when_validity_instant_is_reached() -> None:
     quote = _quote()
 

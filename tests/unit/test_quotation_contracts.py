@@ -14,6 +14,96 @@ from shared.schemas.money import Money
 from shared.schemas.quote_creation import QuoteRoundingInput
 from tests.unit.test_quote_context_contracts import business_context, intent
 
+COST_TYPES = (
+    "product_purchase",
+    "sample_fee",
+    "mold_fee",
+    "customization_fee",
+    "logo_printing",
+    "packaging",
+    "quality_inspection",
+    "wastage",
+    "domestic_freight",
+    "international_freight",
+    "insurance",
+    "customs_clearance",
+    "duties_and_taxes",
+    "destination_freight",
+    "warehousing",
+    "payment_fees",
+    "sales_commission",
+    "customer_acquisition",
+    "contact_data_cost",
+    "ad_allocation",
+    "agent_api_allocation",
+    "returns_reserve",
+)
+SUPPLIER_FIELDS = (
+    "opportunity_id",
+    "amount",
+    "currency",
+    "source_ref",
+    "locator",
+    "kind",
+    "need_id",
+    "supplier_ref",
+    "specification",
+    "unit",
+    "destination",
+    "basis",
+    "quantity_min",
+    "quantity_max",
+    "moq",
+    "quoted_at",
+    "valid_until",
+)
+EXPENSE_FIELDS = (
+    "opportunity_id",
+    "amount",
+    "currency",
+    "source_ref",
+    "locator",
+    "kind",
+    "item_type",
+    "allocation_scope",
+    "is_per_unit",
+    "quantity",
+    "basis",
+    "observed_at",
+    "valid_until",
+)
+FX_FIELDS = ("base_currency", "quote_currency", "source_ref", "rate", "observed_at")
+POLICY_FIELDS = (
+    "category",
+    "minimum_margin_rate",
+    "target_margin_rate",
+    "effective_from",
+    "source_ref",
+)
+
+
+def coverage_provenance(decisions, provenance):
+    """合成fixture按已读上游确认输入补齐叶字段，不调用报价门禁的实现。"""
+    keys = {"expected_sheet_hash", "acquisition_mode", "cost_sheet_id"}
+    for index, decision in enumerate(decisions):
+        prefix = f"decisions.{index}"
+        keys.update(
+            f"{prefix}.{name}" for name in ("item_type", "applicable", "reason")
+        )
+        if not decision.item_bindings:
+            keys.add(f"{prefix}.item_bindings")
+        for binding_index in range(len(decision.item_bindings)):
+            keys.update(
+                f"{prefix}.item_bindings.{binding_index}.{name}"
+                for name in (
+                    "item_sequence",
+                    "evidence_id",
+                    "source_line_ref",
+                    "allocation_scope",
+                )
+            )
+    return {key: provenance for key in keys}
+
 
 def contracts():
     assert hasattr(q, "QuoteContentLine"), "缺少不可变报价内容契约"
@@ -40,17 +130,12 @@ def line(**changes):
     )
 
 
-def test_new_line_rounds_without_weakening_legacy_line():
+def test_new_line_rounding_and_shared_customer_projection_contract():
     value = line()
     assert value.line_total.amount == Decimal("3.71")
     from shared.schemas.quote_document import CustomerQuoteView
 
     assert q.CustomerQuoteView is CustomerQuoteView
-    old = importlib.import_module("domains.quotations.models")
-    from shared.errors import ValidationError as DomainError
-
-    with pytest.raises(DomainError):
-        old.QuoteLine(1, "Part", 3, value.unit_price, value.line_total, "price")
 
 
 @pytest.mark.parametrize(
@@ -120,18 +205,6 @@ def test_specification_uses_all_confirmed_dimensions_in_fixed_order():
     )
 
 
-def test_new_states_do_not_open_approval_bypass():
-    m = importlib.import_module("domains.quotations.models")
-    for state in (
-        m.QuoteState.DRAFT,
-        m.QuoteState.PENDING_APPROVAL,
-        m.QuoteState.APPROVED,
-    ):
-        assert m.QuoteState.EXPIRED in m.ALLOWED_TRANSITIONS[state]
-        assert m.QuoteState.SUPERSEDED in m.ALLOWED_TRANSITIONS[state]
-    assert m.QuoteState.SENT not in m.ALLOWED_TRANSITIONS[m.QuoteState.DRAFT]
-
-
 def basis_case():
     """完整受控快照用于纯规则；真实冻结真实性在集成测试验证。"""
     from dataclasses import replace
@@ -197,7 +270,10 @@ def basis_case():
         category="hinges",
         minimum_margin_rate=Decimal("0.1"),
         target_margin_rate=Decimal("0.2"),
-        cost_groups={"product_purchase": "goods"},
+        cost_groups={
+            name: "goods" if name == "product_purchase" else "fixed"
+            for name in COST_TYPES
+        },
         effective_from=NOW,
         source_ref="artifact_test",
         source=source,
@@ -205,14 +281,7 @@ def basis_case():
         confirmed_at=NOW,
         field_provenance={
             k: p
-            for k in (
-                "category",
-                "minimum_margin_rate",
-                "target_margin_rate",
-                "cost_groups",
-                "effective_from",
-                "source_ref",
-            )
+            for k in (*POLICY_FIELDS, *(f"cost_groups.{name}" for name in COST_TYPES))
         },
     )
     coverage = q.QuoteCoverageSnapshot(
@@ -231,6 +300,16 @@ def basis_case():
                     ),
                 ),
             ),
+        )
+        + tuple(
+            q.QuoteCoverageDecision(
+                item_type=name,
+                applicable=False,
+                reason="not applicable",
+                item_bindings=(),
+            )
+            for name in COST_TYPES
+            if name != "product_purchase"
         ),
         acquisition_mode="detail",
         coverage_id="a" * 64,
@@ -238,7 +317,10 @@ def basis_case():
         content_hash="a" * 64,
         confirmed_by=i.prepared_by,
         confirmed_at=NOW,
-        field_provenance={"decisions": p},
+        field_provenance={},
+    )
+    coverage = coverage.model_copy(
+        update={"field_provenance": coverage_provenance(coverage.decisions, p)}
     )
     scope = q.QuoteScopeConfirmation(
         tenant_id=c.tenant_id,
@@ -421,24 +503,9 @@ def test_second_gate_requires_quoted_quantity_unit(change):
 def frozen_fixture():
     """将受控领域值组成完整上游DTO；不冒充真实持久冻结。"""
     from domains.costing.schemas import FrozenCostBasis
-    from domains.costing.service import cost_item_type_values
 
     _i, b, _c, _now = basis_case()
     raw = json.loads(b.model_dump_json())
-    raw["policy"]["cost_groups"] = {
-        k: "goods" if k == "product_purchase" else "fixed"
-        for k in cost_item_type_values()
-    }
-    raw["coverage"]["decisions"] += [
-        {
-            "item_type": k,
-            "applicable": False,
-            "reason": "not applicable",
-            "item_bindings": [],
-        }
-        for k in cost_item_type_values()
-        if k != "product_purchase"
-    ]
     for price in raw["price_evidence"]:
         price.pop("tenant_id")
         price["currency"] = price["amount"]["currency"]
@@ -490,14 +557,15 @@ def expense_case():
         observed_at=now,
         valid_until=None,
         source=supplier.source.model_copy(update={"locator": "line:2"}),
-        field_provenance=supplier.field_provenance,
+        field_provenance={
+            name: supplier.field_provenance["basis"] for name in EXPENSE_FIELDS
+        },
         confirmed_by=supplier.confirmed_by,
         confirmed_at=supplier.confirmed_at,
     )
     coverage = b.coverage.model_copy(
         update={
-            "decisions": b.coverage.decisions
-            + (
+            "decisions": tuple(
                 q.QuoteCoverageDecision(
                     item_type="domestic_freight",
                     applicable=True,
@@ -510,7 +578,17 @@ def expense_case():
                             allocation_scope=price.allocation_scope,
                         ),
                     ),
-                ),
+                )
+                if decision.item_type == "domestic_freight"
+                else decision
+                for decision in b.coverage.decisions
+            )
+        }
+    )
+    coverage = coverage.model_copy(
+        update={
+            "field_provenance": coverage_provenance(
+                coverage.decisions, supplier.field_provenance["basis"]
             )
         }
     )
@@ -571,6 +649,219 @@ def test_actual_expense_retains_own_basis_and_requires_exact_applicability(varia
             )
 
 
+def quote_fx_case():
+    """有效的独立报价FX样例，只为完整确认门禁提供真实形状。"""
+    from shared.schemas.money import FxRate
+    from shared.schemas.quote_creation import quote_creation_request_hash
+
+    i, b, c, now = basis_case()
+    supplier = b.price_evidence[0]
+    i = i.model_copy(update={"quote_fx_ref": "quote_fx"})
+    fx = q.QuoteFxSnapshot(
+        fx_id="quote_fx",
+        content_hash="a" * 64,
+        base_currency="EUR",
+        quote_currency="USD",
+        rate=Decimal("1.125"),
+        observed_at=now,
+        source_ref=supplier.source_ref,
+        source=supplier.source,
+        confirmed_by=supplier.confirmed_by,
+        confirmed_at=now,
+        field_provenance={
+            name: supplier.field_provenance["basis"] for name in FX_FIELDS
+        },
+    )
+    return (
+        i,
+        b.model_copy(
+            update={
+                "request_hash": quote_creation_request_hash(i),
+                "quote_fx": fx,
+                "pricing_options": b.pricing_options.model_copy(
+                    update={
+                        "quote_fx": FxRate("EUR", "USD", fx.rate, now, fx.source_ref)
+                    }
+                ),
+                "calculation": b.calculation.model_copy(
+                    update={
+                        "base_currency": "EUR",
+                        "effective_unit_revenue": Money(Decimal("2.00"), "EUR"),
+                    }
+                ),
+            }
+        ),
+        c,
+        now,
+    )
+
+
+MISSING_CONFIRMATION_FIELDS = (
+    [("supplier", name) for name in SUPPLIER_FIELDS]
+    + [("expense", name) for name in EXPENSE_FIELDS]
+    + [("fx", name) for name in FX_FIELDS]
+    + [
+        ("policy", name)
+        for name in (*POLICY_FIELDS, *(f"cost_groups.{kind}" for kind in COST_TYPES))
+    ]
+    + [
+        ("coverage", name)
+        for name in ("cost_sheet_id", "expected_sheet_hash", "acquisition_mode")
+    ]
+    + [
+        ("coverage", f"decisions.{index}.{name}")
+        for index in range(22)
+        for name in ("item_type", "applicable", "reason")
+    ]
+    + [("coverage", f"decisions.{index}.item_bindings") for index in range(1, 22)]
+    + [
+        ("coverage", f"decisions.0.item_bindings.0.{name}")
+        for name in (
+            "item_sequence",
+            "evidence_id",
+            "source_line_ref",
+            "allocation_scope",
+        )
+    ]
+)
+
+
+@pytest.mark.parametrize("kind,missing", MISSING_CONFIRMATION_FIELDS)
+def test_second_gate_rejects_nonempty_confirmation_missing_any_required_leaf(
+    kind, missing
+):
+    """少查任一确认键会让对应删除样例被错误接受；预期不来自生产字段生成器。"""
+    from domains.quotations.errors import QuotationError
+
+    i, b, c, now = (
+        expense_case()
+        if kind == "expense"
+        else quote_fx_case()
+        if kind == "fx"
+        else basis_case()
+    )
+    assert public.validate_quote_basis(i, b, c, now=now) is None
+    value = (
+        b.price_evidence[0]
+        if kind == "supplier"
+        else b.price_evidence[1]
+        if kind == "expense"
+        else b.quote_fx
+        if kind == "fx"
+        else getattr(b, kind)
+    )
+    incomplete = {key: p for key, p in value.field_provenance.items() if key != missing}
+    assert incomplete and missing in value.field_provenance
+    changed = value.model_copy(update={"field_provenance": incomplete})
+    if kind in {"supplier", "expense"}:
+        b = b.model_copy(
+            update={
+                "price_evidence": tuple(
+                    changed if p.evidence_id == value.evidence_id else p
+                    for p in b.price_evidence
+                )
+            }
+        )
+    else:
+        b = b.model_copy(update={"quote_fx" if kind == "fx" else kind: changed})
+    with pytest.raises(QuotationError) as error:
+        public.validate_quote_basis(i, b, c, now=now)
+    assert error.value.code == "evidence_invalid"
+
+
+@pytest.mark.parametrize("kind", ["supplier", "expense"])
+def test_second_gate_uses_original_amount_currency_confirmation_keys_not_money_paths(
+    kind,
+):
+    from domains.quotations.errors import QuotationError
+
+    i, b, c, now = expense_case() if kind == "expense" else basis_case()
+    position = 1 if kind == "expense" else 0
+    value = b.price_evidence[position]
+    changed = {
+        key: p
+        for key, p in value.field_provenance.items()
+        if key not in {"amount", "currency"}
+    }
+    changed.update(
+        {
+            "amount.amount": value.field_provenance["amount"],
+            "amount.currency": value.field_provenance["currency"],
+        }
+    )
+    price = value.model_copy(update={"field_provenance": changed})
+    b = b.model_copy(
+        update={
+            "price_evidence": tuple(
+                price if n == position else p for n, p in enumerate(b.price_evidence)
+            )
+        }
+    )
+    with pytest.raises(QuotationError) as error:
+        public.validate_quote_basis(i, b, c, now=now)
+    assert error.value.code == "evidence_invalid"
+
+
+@pytest.mark.parametrize(
+    "missing", ["item_sequence", "evidence_id", "source_line_ref", "allocation_scope"]
+)
+def test_second_gate_checks_every_binding_not_only_first(missing):
+    from domains.quotations.errors import QuotationError
+
+    i, b, c, now = basis_case()
+    original = b.coverage.decisions[0]
+    second = original.item_bindings[0].model_copy(
+        update={"item_sequence": 2, "allocation_scope": "order:two"}
+    )
+    decisions = (
+        original.model_copy(
+            update={"item_bindings": original.item_bindings + (second,)}
+        ),
+    ) + b.coverage.decisions[1:]
+    provenance = coverage_provenance(
+        decisions, b.price_evidence[0].field_provenance["basis"]
+    )
+    coverage = b.coverage.model_copy(
+        update={"decisions": decisions, "field_provenance": provenance}
+    )
+    b = b.model_copy(update={"coverage": coverage})
+    assert public.validate_quote_basis(i, b, c, now=now) is None
+    incomplete = {
+        key: p
+        for key, p in provenance.items()
+        if key != f"decisions.0.item_bindings.1.{missing}"
+    }
+    with pytest.raises(QuotationError) as error:
+        public.validate_quote_basis(
+            i,
+            b.model_copy(
+                update={
+                    "coverage": coverage.model_copy(
+                        update={"field_provenance": incomplete}
+                    )
+                }
+            ),
+            c,
+            now=now,
+        )
+    assert error.value.code == "evidence_invalid"
+
+
+def test_second_gate_rejects_supplier_with_only_basis_confirmation():
+    from domains.quotations.errors import QuotationError
+
+    i, b, c, now = basis_case()
+    price = b.price_evidence[0]
+    price = price.model_copy(
+        update={"field_provenance": {"basis": price.field_provenance["basis"]}}
+    )
+    with pytest.raises(QuotationError) as error:
+        public.validate_quote_basis(
+            i, b.model_copy(update={"price_evidence": (price,)}), c, now=now
+        )
+    assert error.value.code == "evidence_invalid"
+
+
 def test_adapter_expense_and_independent_quote_fx_copy_every_field():
     from domains.costing.schemas import FrozenCostBasis
     from workflows.quote_approval.basis_adapter import to_quote_basis
@@ -595,7 +886,9 @@ def test_adapter_expense_and_independent_quote_fx_copy_every_field():
         rate=Decimal("1.125"),
         observed_at=now,
         source=supplier.source,
-        field_provenance=supplier.field_provenance,
+        field_provenance={
+            name: supplier.field_provenance["basis"] for name in FX_FIELDS
+        },
         confirmed_by=supplier.confirmed_by,
         confirmed_at=now,
     )
@@ -629,7 +922,9 @@ def test_second_gate_rejects_quote_fx_currency_pair_different_from_calculation()
         rate=Decimal("1.1"),
         observed_at=now,
         source=supplier.source,
-        field_provenance=supplier.field_provenance,
+        field_provenance={
+            name: supplier.field_provenance["basis"] for name in FX_FIELDS
+        },
         confirmed_by=supplier.confirmed_by,
         confirmed_at=now,
     )

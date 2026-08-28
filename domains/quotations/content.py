@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 from domains.quotations.basis_schemas import (
     QuoteBasis,
+    QuoteCoverageSnapshot,
     QuoteEvidenceConfirmation,
+    QuoteExpenseEvidence,
+    QuoteFxSnapshot,
     QuotePolicySnapshot,
     QuoteSupplierEvidence,
 )
@@ -222,6 +225,106 @@ def validate_terms(intent: QuoteCreationIntent) -> None:
             raise QuotationError("unsupported_term")
 
 
+_COST_ITEM_TYPES = frozenset(
+    {
+        "product_purchase",
+        "sample_fee",
+        "mold_fee",
+        "customization_fee",
+        "logo_printing",
+        "packaging",
+        "quality_inspection",
+        "wastage",
+        "domestic_freight",
+        "international_freight",
+        "insurance",
+        "customs_clearance",
+        "duties_and_taxes",
+        "destination_freight",
+        "warehousing",
+        "payment_fees",
+        "sales_commission",
+        "customer_acquisition",
+        "contact_data_cost",
+        "ad_allocation",
+        "agent_api_allocation",
+        "returns_reserve",
+    }
+)
+
+
+def _confirmation_fields(
+    value: QuoteEvidenceConfirmation | QuotePolicySnapshot,
+) -> set[str]:
+    """报价本域确认契约：Money合并值不改变上游amount/currency两个确认键。"""
+    price_fields = {
+        "opportunity_id",
+        "currency",
+        "source_ref",
+        "locator",
+        "amount",
+        "kind",
+    }
+    if isinstance(value, QuoteSupplierEvidence):
+        return price_fields | {
+            "need_id",
+            "supplier_ref",
+            "specification",
+            "unit",
+            "destination",
+            "basis",
+            "quantity_min",
+            "quantity_max",
+            "moq",
+            "quoted_at",
+            "valid_until",
+        }
+    if isinstance(value, QuoteExpenseEvidence):
+        return price_fields | {
+            "item_type",
+            "allocation_scope",
+            "is_per_unit",
+            "quantity",
+            "basis",
+            "observed_at",
+            "valid_until",
+        }
+    if isinstance(value, QuoteFxSnapshot):
+        return {"base_currency", "quote_currency", "source_ref", "rate", "observed_at"}
+    if isinstance(value, QuotePolicySnapshot):
+        return {
+            "category",
+            "minimum_margin_rate",
+            "target_margin_rate",
+            "effective_from",
+            "source_ref",
+        } | {f"cost_groups.{item_type}" for item_type in _COST_ITEM_TYPES}
+    raise QuotationError("evidence_invalid")
+
+
+def _coverage_fields(coverage: QuoteCoverageSnapshot) -> set[str]:
+    """逐decision和每个持久绑定的叶路径；空绑定元组本身仍是必须确认的字段。"""
+    fields = {"expected_sheet_hash", "acquisition_mode", "cost_sheet_id"}
+    for index, decision in enumerate(coverage.decisions):
+        prefix = f"decisions.{index}"
+        fields.update(
+            f"{prefix}.{name}" for name in ("item_type", "applicable", "reason")
+        )
+        if not decision.item_bindings:
+            fields.add(f"{prefix}.item_bindings")
+        for binding_index in range(len(decision.item_bindings)):
+            fields.update(
+                f"{prefix}.item_bindings.{binding_index}.{name}"
+                for name in (
+                    "item_sequence",
+                    "evidence_id",
+                    "source_line_ref",
+                    "allocation_scope",
+                )
+            )
+    return fields
+
+
 def _confirmation(
     value: QuoteEvidenceConfirmation | QuotePolicySnapshot,
     tenant_id: str,
@@ -234,7 +337,7 @@ def _confirmation(
         or source.tenant_id != tenant_id
         or source.observed_at > now
         or value.confirmed_at > now
-        or not value.field_provenance
+        or set(value.field_provenance) != _confirmation_fields(value)
         or (source.source_type == "web_page" and not source.source_url)
     ):
         raise QuotationError("evidence_invalid")
@@ -351,7 +454,7 @@ def validate_quote_basis(
     if (
         basis.policy.source is None
         or basis.policy.source_ref != basis.policy.source.source_ref
-        or not coverage.field_provenance
+        or set(coverage.field_provenance) != _coverage_fields(coverage)
         or any(
             not p.is_human_confirmed
             or p.confirmed_by != coverage.confirmed_by
