@@ -8,7 +8,22 @@
 
 from __future__ import annotations
 
-from shared.errors import PolicyViolation
+from typing import Literal
+
+from shared.errors import PolicyViolation, ValidationError
+
+
+class QuoteContractError(ValidationError):
+    """新版报价namespace错误不回退legacy，消息固定脱敏。"""
+
+    def __init__(
+        self,
+        code: Literal[
+            "quote_contract_invalid", "quote_request_conflict", "quote_limit_invalid"
+        ],
+    ) -> None:
+        self.code = code
+        super().__init__(f"报价审批契约无效：{code}")
 
 
 class SelfApprovalError(PolicyViolation):

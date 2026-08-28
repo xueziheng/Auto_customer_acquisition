@@ -1,0 +1,263 @@
+"""报价审批唯一业务规则：安全白名单、版本化hash与当前ABAC。"""
+
+import json
+import re
+from typing import Literal
+
+from pydantic import JsonValue
+
+from domains.quotations.approval_schemas import (
+    QuoteApprovalAccessContext,
+    QuoteApprovalCalculationSummary,
+    QuoteApprovalCustomerSummary,
+    QuoteApprovalDecisionSnapshot,
+    QuoteApprovalEvidenceSummary,
+    QuoteApprovalFact,
+    QuoteApprovalFxSummary,
+    QuoteApprovalPackagePayload,
+    QuoteApprovalPolicySummary,
+    QuoteApprovalPreviousSummary,
+    QuoteApprovalSubject,
+    QuoteApprovalType,
+)
+from domains.quotations.basis_schemas import Hash
+from domains.quotations.errors import QuoteApprovalError, QuoteApprovalPermissionError
+from domains.quotations.version_schemas import QuoteDetailView
+from shared.schemas.identifiers import QuoteId
+from shared.schemas.quote_creation import canonical_creation_hash
+
+APPROVAL_TYPES: tuple[QuoteApprovalType, ...] = (
+    "quote_send",
+    "margin_floor_override",
+    "discount",
+    "delivery_commitment",
+    "payment_terms",
+    "certification_commitment",
+)
+
+
+def quote_change_set_ref(
+    quote_id: QuoteId, content_hash: Hash, approval_type: QuoteApprovalType
+) -> str:
+    """精确namespace，不接受大小写、空白或半个标记。"""
+    if (
+        not re.fullmatch(r"quo_[0-9A-HJKMNP-TV-Z]{26}", quote_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", content_hash)
+        or approval_type not in APPROVAL_TYPES
+    ):
+        raise QuoteApprovalError("quote_contract_invalid")
+    return f"quote:{quote_id}:{content_hash}:{approval_type}"
+
+
+def required_quote_approvals(quote: QuoteDetailView) -> tuple[QuoteApprovalType, ...]:
+    """按冻结利润和条款集合决定所需类型，不用模型概率或隐含承诺。"""
+    required = {"quote_send", *(term.kind for term in quote.content.terms)}
+    basis = quote.content.basis
+    if basis.calculation.metrics.margin_rate < basis.policy.minimum_margin_rate:
+        required.add("margin_floor_override")
+    return tuple(kind for kind in APPROVAL_TYPES if kind in required)
+
+
+def _customer(quote: QuoteDetailView) -> QuoteApprovalCustomerSummary:
+    """逐字段白名单，禁止自动dump整份报价。"""
+    c = quote.content
+    return QuoteApprovalCustomerSummary(
+        issuer_name=c.issuer.name,
+        issuer_address=c.issuer.address,
+        issuer_contact=c.issuer.contact,
+        account_name=c.account_name,
+        country=c.country,
+        line=c.lines[0],
+        valid_until=c.valid_until,
+        terms=c.terms,
+    )
+
+
+def _calculation(quote: QuoteDetailView) -> QuoteApprovalCalculationSummary:
+    """成本FX保留原顺序；独立报价FX不混用字段，不补虚构汇率。"""
+    basis = quote.content.basis
+    c, fx = basis.calculation, basis.quote_fx
+    return QuoteApprovalCalculationSummary(
+        base_currency=c.base_currency,
+        quote_currency=c.quote_currency,
+        effective_unit_revenue=c.effective_unit_revenue,
+        displayed_unit_price=c.displayed_unit_price,
+        displayed_total=c.displayed_total,
+        metrics=c.metrics,
+        cost_fx_rates=tuple(
+            QuoteApprovalFxSummary(
+                source_currency=r.base,
+                target_currency=r.quote,
+                rate=r.rate,
+                observed_at=r.observed_at,
+                reference_id=basis.cost_sheet_id,
+            )
+            for r in basis.cost_fx_rates
+        ),
+        quote_fx=None
+        if fx is None
+        else QuoteApprovalFxSummary(
+            source_currency=fx.base_currency,
+            target_currency=fx.quote_currency,
+            rate=fx.rate,
+            observed_at=fx.observed_at,
+            reference_id=fx.fx_id,
+        ),
+    )
+
+
+def _policy(quote: QuoteDetailView) -> QuoteApprovalPolicySummary:
+    """政策只展示身份、阈值和生效时间，不携带来源。"""
+    p = quote.content.basis.policy
+    return QuoteApprovalPolicySummary(
+        policy_id=p.policy_id,
+        content_hash=p.content_hash,
+        category=p.category,
+        minimum_margin_rate=p.minimum_margin_rate,
+        target_margin_rate=p.target_margin_rate,
+        effective_from=p.effective_from,
+    )
+
+
+def quote_approval_payloads(
+    quote: QuoteDetailView, previous: QuoteDetailView | None
+) -> tuple[QuoteApprovalPackagePayload, ...]:
+    """每类独立绑定同版本与完整安全载荷，不复制内部basis/Need/Provenance。"""
+    c = quote.content
+    required = required_quote_approvals(quote)
+    historical = (
+        None
+        if previous is None
+        else QuoteApprovalPreviousSummary(
+            quote_id=previous.content.quote_id,
+            version=previous.content.version,
+            content_hash=previous.content.content_hash,
+            customer=_customer(previous),
+            calculation=_calculation(previous),
+            policy=_policy(previous),
+        )
+    )
+    evidence = tuple(
+        QuoteApprovalEvidenceSummary(
+            evidence_id=e.evidence_id,
+            evidence_hash=e.evidence_hash,
+            kind=e.kind,
+            basis=e.basis,
+            amount=e.amount,
+            valid_until=e.valid_until,
+            confirmed_by=e.confirmed_by,
+            confirmed_at=e.confirmed_at,
+        )
+        for e in c.basis.price_evidence
+    )
+    result = tuple(
+        QuoteApprovalPackagePayload(
+            schema_version="quote-approval-v1",
+            tenant_id=c.tenant_id,
+            quote_id=c.quote_id,
+            quote_version=c.version,
+            opportunity_id=c.opportunity_id,
+            content_hash=c.content_hash,
+            context_hash=c.basis.context_hash,
+            basis_id=c.basis.basis_id,
+            basis_hash=c.basis.basis_hash,
+            prepared_by=c.prepared_by,
+            submitted_owner_id=c.owner_id,
+            approval_type=kind,
+            required_types=required,
+            policy=_policy(quote),
+            customer=_customer(quote),
+            calculation=_calculation(quote),
+            evidence=evidence,
+            previous=historical,
+        )
+        for kind in required
+    )
+    for payload in result:
+        _check_payload_size(payload.model_dump_json())
+    return result
+
+
+def _check_payload_size(value: str) -> None:
+    """持久JSON资源限制与旧审批上限一致。"""
+    if len(value.encode("utf-8")) > 64_000:
+        raise QuoteApprovalError("invalid_input")
+
+
+def parse_quote_approval_payload(
+    value: dict[str, JsonValue],
+) -> QuoteApprovalPackagePayload:
+    """唯一JSON适配边界，严格解码Decimal字符串/时间/tuple且不删额外字段。"""
+    rendered = json.dumps(
+        value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    )
+    _check_payload_size(rendered)
+    payload = QuoteApprovalPackagePayload.model_validate_json(rendered)
+    expected = tuple(kind for kind in APPROVAL_TYPES if kind in payload.required_types)
+    if (
+        payload.required_types != expected
+        or "quote_send" not in expected
+        or payload.approval_type not in expected
+    ):
+        raise QuoteApprovalError("quote_contract_invalid")
+    quote_change_set_ref(payload.quote_id, payload.content_hash, payload.approval_type)
+    return payload
+
+
+def quote_approval_payload_hash(payload: QuoteApprovalPackagePayload) -> Hash:
+    """全部安全信息含实际FX、None和有序重复条款均进入hash。"""
+    return canonical_creation_hash(
+        {"version": "quote-approval-payload-v1", "payload": payload}
+    )
+
+
+def quote_approval_facts_hash(facts: tuple[QuoteApprovalFact, ...]) -> Hash:
+    """仅独立决定快照参与；APPROVED→APPLIED不改变成功身份。"""
+    if len({f.approval_type for f in facts}) != len(facts):
+        raise QuoteApprovalError("approval_fact_invalid")
+    snapshots = tuple(
+        QuoteApprovalDecisionSnapshot(
+            **{
+                name: getattr(f, name)
+                for name in QuoteApprovalDecisionSnapshot.model_fields
+            }
+        )
+        for f in sorted(facts, key=lambda f: APPROVAL_TYPES.index(f.approval_type))
+    )
+    return canonical_creation_hash(
+        {"version": "quote-approval-facts-v1", "decisions": snapshots}
+    )
+
+
+def require_quote_approval_access(
+    subject: QuoteApprovalSubject,
+    context: QuoteApprovalAccessContext,
+    *,
+    action: Literal["read", "decide", "apply"],
+) -> None:
+    """当前直属manager或boss可独立决定；本人起草/负责仅增加读权。"""
+    actor, owner = context.actor, context.owner
+    if (
+        subject.tenant_id != context.tenant_id
+        or actor.tenant_id != subject.tenant_id
+        or owner.tenant_id != subject.tenant_id
+        or not actor.is_active
+        or subject.opportunity_id != context.opportunity_id
+        or subject.prepared_by != context.prepared_by
+        or subject.submitted_owner_id != context.submitted_owner_id
+    ):
+        raise QuoteApprovalPermissionError("permission_denied")
+    responsible = {subject.prepared_by, subject.submitted_owner_id, owner.employee_id}
+    jurisdiction = actor.role == "boss" or (
+        actor.role == "manager"
+        and owner.is_active
+        and owner.manager_id == actor.employee_id
+    )
+    if action == "read":
+        allowed = jurisdiction or actor.employee_id in responsible
+    elif action in {"decide", "apply"}:
+        allowed = jurisdiction and actor.employee_id not in responsible
+    else:
+        allowed = False
+    if not allowed:
+        raise QuoteApprovalPermissionError("permission_denied")

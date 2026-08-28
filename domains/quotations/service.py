@@ -7,6 +7,15 @@ import unicodedata
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
+from domains.quotations.approval_rules import (
+    parse_quote_approval_payload,
+    quote_approval_facts_hash,
+    quote_approval_payload_hash,
+    quote_approval_payloads,
+    quote_change_set_ref,
+    require_quote_approval_access,
+    required_quote_approvals,
+)
 from domains.quotations.context import (
     QuoteContextProvider,
     QuoteIssuerReader,
@@ -390,12 +399,19 @@ __all__ = [
     "canonical_quote_specification",
     "contains_forbidden_commitment",
     "format_quote_specification",
+    "parse_quote_approval_payload",
     "project_customer",
+    "quote_approval_facts_hash",
+    "quote_approval_payload_hash",
+    "quote_approval_payloads",
+    "quote_change_set_ref",
     "quote_content_hash",
     "quote_context_hash",
     "quote_creation_request_hash",
     "quote_specification",
     "quote_specification_hash",
+    "require_quote_approval_access",
+    "required_quote_approvals",
     "to_legacy_quote_view",
     "validate_customer_projection",
     "validate_quote_basis",

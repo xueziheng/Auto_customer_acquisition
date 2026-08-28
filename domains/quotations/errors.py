@@ -15,6 +15,56 @@ from shared.errors import (
     ValidationError,
 )
 
+QuoteApprovalErrorCode = Literal[
+    "invalid_input",
+    "quote_contract_invalid",
+    "idempotency_conflict",
+    "approval_binding_conflict",
+    "approval_round_closed",
+    "approval_fact_invalid",
+    "approval_expired",
+    "context_changed",
+    "policy_stale",
+    "evidence_invalid",
+    "evidence_expired",
+    "decider_invalid",
+    "quote_inactive",
+    "workflow_binding_invalid",
+]
+
+
+class QuoteApprovalError(ValidationError):
+    """单轮报价审批固定错误，禁止携带业务原文。"""
+
+    def __init__(self, code: QuoteApprovalErrorCode) -> None:
+        self.code = code
+        super().__init__(f"报价审批未通过：{code}")
+
+
+class QuoteApprovalPermissionError(PermissionDenied):
+    """报价审批当前授权拒绝，不泄露报价或员工详情。"""
+
+    def __init__(self, code: Literal["permission_denied"]) -> None:
+        self.code = code
+        super().__init__("当前员工无报价审批用途权限")
+
+
+class QuoteApprovalUnavailableError(TradeOSError):
+    """报价审批依赖不可用，未知状态不可转为成功或永久失败。"""
+
+    def __init__(
+        self,
+        code: Literal[
+            "dependency_unavailable",
+            "lock_timeout",
+            "storage_unknown",
+            "storage_inconsistent",
+        ],
+    ) -> None:
+        self.code = code
+        super().__init__(f"报价审批暂不可用：{code}")
+
+
 QuotationErrorCode = Literal[
     "invalid_input",
     "unsupported_term",

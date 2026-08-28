@@ -4,8 +4,82 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
-from shared.schemas.identifiers import EmployeeId
+from pydantic import JsonValue
+
+from domains.approvals.models import ApprovalState, BlastRadius
+from shared.schemas.identifiers import (
+    ApprovalId,
+    EmployeeId,
+    OpportunityId,
+    QuoteId,
+    RunId,
+    TenantId,
+)
+from shared.schemas.quote_creation import QuoteDTO, QuoteTime
+from shared.schemas.quote_facts import FactHash
+
+
+class ApprovalFactView(QuoteDTO):
+    """受信workflow专用持久事实，不注册HTTP响应模型。"""
+
+    tenant_id: TenantId
+    approval_id: ApprovalId
+    approval_type: str
+    state: ApprovalState
+    title: str
+    proposed_change: dict[str, JsonValue]
+    reason: str
+    blast_radius: BlastRadius
+    proposed_by_run: RunId | None
+    proposed_by_employee: EmployeeId | None
+    owner_employee: EmployeeId | None
+    evidence_refs: tuple[str, ...]
+    change_set_ref: str | None
+    created_at: QuoteTime
+    expires_at: QuoteTime
+    expires_at_limit: QuoteTime | None
+    request_hash: FactHash | None
+    contract_namespace: Literal["quote-approval-v1"] | None
+    decided_by_employee: EmployeeId | None
+    decided_at: QuoteTime | None
+    decision_note: str | None
+    applied_at: QuoteTime | None
+    application_error_code: str | None
+
+
+class ApprovalQuoteSubject(QuoteDTO):
+    """审批域本地最小对象，不导入报价域类型。"""
+
+    tenant_id: TenantId
+    approval_id: ApprovalId | None
+    approval_type: str
+    change_set_ref: str
+    quote_id: QuoteId
+    quote_version: int
+    content_hash: FactHash
+    opportunity_id: OpportunityId
+    prepared_by: EmployeeId
+    submitted_owner_id: EmployeeId
+
+
+class ApprovalAccessResult(QuoteDTO):
+    """当前lease中的事实，不作为可缓存授权token。"""
+
+    can_decide: bool
+    current_role: Literal[
+        "boss", "manager", "sales", "sourcing", "product", "finance", "viewer"
+    ]
+
+
+class ApprovalReaderIdentity(QuoteDTO):
+    """来自可信RequestIdentity，当前role仍由guard二次核对。"""
+
+    employee_id: EmployeeId
+    role: Literal[
+        "boss", "manager", "sales", "sourcing", "product", "finance", "viewer"
+    ]
 
 
 @dataclass(frozen=True)
