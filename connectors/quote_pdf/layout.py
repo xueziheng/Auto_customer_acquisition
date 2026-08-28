@@ -101,13 +101,18 @@ def _validate_font(values: Iterable[str], font: TTFont) -> None:
 
 def _escaped_line(line: str) -> str:
     """保留行首/行尾及连续空白，同时留出内部首空格作为确定性换行点。"""
-    def replace(match: re.Match[str]) -> str:
+    escaped: list[str] = []
+    previous_end = 0
+    for match in re.finditer(r" +", line):
+        escaped.append(html.escape(line[previous_end:match.start()], quote=False))
         spaces = match.group()
         if match.start() == 0 or match.end() == len(line):
-            return "&nbsp;" * len(spaces)
-        return " " + "&nbsp;" * (len(spaces) - 1)
-
-    return re.sub(r" +", replace, html.escape(line, quote=False))
+            escaped.append("&nbsp;" * len(spaces))
+        else:
+            escaped.append(" " + "&nbsp;" * (len(spaces) - 1))
+        previous_end = match.end()
+    escaped.append(html.escape(line[previous_end:], quote=False))
+    return "".join(escaped)
 
 
 def _text_flowables(value: str, style: ParagraphStyle) -> tuple[object, ...]:

@@ -327,6 +327,20 @@ def test_pdf_preserves_leading_trailing_indented_and_blank_line_whitespace() -> 
     assert sum(isinstance(item, Spacer) for item in build_story(view)) == baseline_spacers + 1
 
 
+def test_pdf_preserves_whitespace_next_to_escaped_customer_characters() -> None:
+    """HTML 特殊字符转义不得改变客户字段的首尾或连续空格。"""
+    specification = "<tag> \n  & < >   "
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(BytesIO(_renderer().render(
+            _customer_view(specification=specification), template_version="quote_pdf_v1"
+        ))).pages
+    )
+
+    assert "<tag> " in text
+    assert "  & < >   " in text
+
+
 def test_text_limit_accepts_exact_utf8_total_and_rejects_one_less() -> None:
     """文本限额逐字段按 UTF-8 累计，不从最终 PDF 大小倒推。"""
     from connectors.quote_pdf.limits import customer_texts
