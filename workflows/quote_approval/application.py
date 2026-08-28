@@ -1,5 +1,9 @@
 """可信内部报价准备应用：零锁来源授权→context lease→成本提交；不是HTTP接口。"""
 
+from collections.abc import Callable
+from datetime import datetime
+from pydantic import TypeAdapter, ValidationError as SchemaError
+
 from domains.costing.errors import (
     CostFreezeError,
     CostFreezePermissionError,
@@ -11,19 +15,284 @@ from domains.costing.service import (
     CostingActorReader,
     CostingContext,
     CostingFreezeService,
+    CostingScope,
     CostScopeConfirmationCommand,
     CostScopeConfirmationView,
     FrozenCostBasis,
     PricingOptions,
 )
 from domains.demand.service import require_current_unit
-from domains.quotations.schemas import QuoteBusinessContext
-from domains.quotations.service import QuoteContextProvider, QuotePreparationPolicy
-from shared.errors import TradeOSError
+from domains.quotations.schemas import (
+    QuoteBusinessContext,
+    QuoteDraftCommand,
+    QuoteDetailView,
+    QuotationActor,
+    Hash,
+)
+from domains.quotations.service import (
+    QuoteContextProvider,
+    QuotePreparationPolicy,
+    QuotationVersionService,
+    QuotationActorReader,
+)
+from domains.quotations.errors import (
+    QuotationError,
+    QuotationPermissionError,
+    QuotationUnavailableError,
+)
+from shared.errors import TradeOSError, PermissionDenied
 from shared.schemas.identifiers import CostSheetId, EmployeeId, OpportunityId, TenantId
 from shared.schemas.provenance import FactualField
-from shared.schemas.quote_creation import QuoteCreationIntent
+from shared.schemas.quote_creation import (
+    QuoteCreationIntent,
+    QuoteCreationOperationView,
+    QuoteKey,
+    quote_creation_request_hash,
+)
 from shared.schemas.quote_facts import NeedQuoteFacts
+from workflows.quote_approval.basis_adapter import (
+    to_quote_basis,
+    pricing_options_from_intent,
+)
+
+
+def creation_intent(
+    tenant_id: TenantId,
+    command: QuoteDraftCommand,
+    *,
+    prepared_by: EmployeeId,
+    scope_hash: Hash,
+) -> QuoteCreationIntent:
+    """只逐字段构造完整意图；起草人和scope身份必须从可信当前/持久记录取得。"""
+    return QuoteCreationIntent(
+        tenant_id=tenant_id,
+        prepared_by=prepared_by,
+        opportunity_id=command.opportunity_id,
+        cost_sheet_id=command.cost_sheet_id,
+        expected_context_hash=command.expected_context_hash,
+        expected_sheet_hash=command.expected_sheet_hash,
+        valid_until=command.valid_until,
+        unit_price=command.unit_price,
+        rounding=command.rounding,
+        quote_fx_ref=command.quote_fx_ref,
+        terms=command.terms,
+        replaces_quote_id=command.replaces_quote_id,
+        expected_quote_version=command.expected_quote_version,
+        scope_confirmation_id=command.scope_confirmation_id,
+        scope_confirmation_hash=scope_hash,
+    )
+
+
+class QuoteApplicationService:
+    """真实创建/恢复编排；不接客户端operation、冻结或完成自证。"""
+
+    def __init__(
+        self,
+        context_provider: QuoteContextProvider,
+        costing: CostingFreezeService,
+        quotations: QuotationVersionService,
+        actors: QuotationActorReader,
+        policy: QuotePreparationPolicy,
+        *,
+        now: Callable[[], datetime],
+    ) -> None:
+        """来源和当前员工/数据库均由可信composition注入，不设后备许可。"""
+        (
+            self._context,
+            self._costing,
+            self._quotes,
+            self._actors,
+            self._policy,
+            self._now,
+        ) = (context_provider, costing, quotations, actors, policy, now)
+
+    async def _actor(
+        self, tenant_id: TenantId, actor_id: EmployeeId
+    ) -> tuple[QuotationActor, CostingActor]:
+        """四角色policy通过后才显式构造成本tenant身份，不给任意员工默认scope。"""
+        try:
+            fact = await self._actors.read_current(tenant_id, actor_id)
+        except Exception:
+            raise QuotationUnavailableError("dependency_unavailable") from None
+        if (
+            fact is None
+            or fact.employee_id != actor_id
+            or fact.tenant_id != tenant_id
+            or not fact.is_active
+        ):
+            raise QuotationPermissionError("permission_denied")
+        try:
+            self._policy.require(tenant_id, fact, action="read_internal")
+        except PermissionDenied:
+            raise QuotationPermissionError("permission_denied") from None
+        return QuotationActor(
+            employee_id=fact.employee_id, role=fact.role
+        ), CostingActor(
+            actor_id=fact.employee_id, role=fact.role, scope=CostingScope.TENANT
+        )
+
+    def _bound_intent(
+        self,
+        tenant_id: TenantId,
+        command: QuoteDraftCommand,
+        operation: QuoteCreationOperationView,
+    ) -> QuoteCreationIntent:
+        """重放用原prepared_by/scope_hash构造候选；所有None和条款顺序都绑定。"""
+        candidate = creation_intent(
+            tenant_id,
+            command,
+            prepared_by=operation.intent.prepared_by,
+            scope_hash=operation.intent.scope_confirmation_hash,
+        )
+        try:
+            digest = quote_creation_request_hash(candidate)
+        except (ValueError, ArithmeticError, TypeError):
+            raise QuotationError("invalid_input") from None
+        if (
+            operation.tenant_id != tenant_id
+            or operation.intent != candidate
+            or operation.request_hash != digest
+        ):
+            raise QuotationError("idempotency_conflict")
+        return candidate
+
+    async def _complete(
+        self, tenant_id: TenantId, quote: QuoteDetailView, actor: CostingActor
+    ) -> QuoteDetailView:
+        """必须在context/报价锁外完成；失败保留可重试，不报告完整创建成功。"""
+        c = quote.content
+        operation = await self._costing.complete_creation(
+            tenant_id, c.operation_id, actor=actor
+        )
+        receipt = operation.completion
+        if (
+            operation.state != "completed"
+            or receipt is None
+            or (
+                receipt.tenant_id,
+                receipt.operation_id,
+                receipt.request_hash,
+                receipt.basis_id,
+                receipt.quote_id,
+                receipt.quote_version,
+                receipt.quote_content_hash,
+                receipt.replaces_quote_id,
+                receipt.replaced_quote_version,
+            )
+            != (
+                tenant_id,
+                c.operation_id,
+                c.request_hash,
+                c.basis.basis_id,
+                c.quote_id,
+                c.version,
+                c.content_hash,
+                c.replaces_quote_id,
+                c.replaced_quote_version,
+            )
+        ):
+            raise QuotationUnavailableError("storage_inconsistent")
+        return quote
+
+    def _quote_binding(
+        self, operation: QuoteCreationOperationView, quote: QuoteDetailView
+    ) -> None:
+        """持久成功记录必须来自同一操作/依据/原意图，不能以另一个报价冒充。"""
+        c = quote.content
+        if (
+            c.tenant_id,
+            c.operation_id,
+            c.request_hash,
+            c.basis.basis_id,
+            c.intent,
+        ) != (
+            operation.tenant_id,
+            operation.operation_id,
+            operation.request_hash,
+            operation.basis_id,
+            operation.intent,
+        ):
+            raise QuotationUnavailableError("storage_inconsistent")
+
+    async def create(
+        self,
+        tenant_id: TenantId,
+        command: QuoteDraftCommand,
+        *,
+        actor_id: EmployeeId,
+        idempotency_key: str,
+    ) -> QuoteDetailView:
+        """先查历史成功，再scope/context/session；成本冻结后报价同会话提交，锁外complete。"""
+        try:
+            TypeAdapter(QuoteKey).validate_python(idempotency_key, strict=True)
+            if not isinstance(command, QuoteDraftCommand):
+                raise ValueError("输入类型无效")
+            command = QuoteDraftCommand(
+                **{n: getattr(command, n) for n in QuoteDraftCommand.model_fields}
+            )
+        except (SchemaError, ValueError, TypeError):
+            raise QuotationError("invalid_input") from None
+        actor, cost_actor = await self._actor(tenant_id, actor_id)
+        operation = await self._costing.get_creation(
+            tenant_id, idempotency_key, actor=cost_actor
+        )
+        intent = None
+        if operation:
+            intent = self._bound_intent(tenant_id, command, operation)
+            quote = await self._quotes.get_by_operation(
+                tenant_id, operation.operation_id, actor=actor
+            )
+            if quote:
+                self._quote_binding(operation, quote)
+                return await self._complete(tenant_id, quote, cost_actor)
+            if operation.state == "completed":
+                raise QuotationUnavailableError("storage_inconsistent")
+            if intent.prepared_by != actor_id:
+                raise QuotationPermissionError("permission_denied")
+        scope = await self._costing.get_scope(
+            tenant_id, command.scope_confirmation_id, actor=cost_actor
+        )
+        if intent is None:
+            intent = creation_intent(
+                tenant_id, command, prepared_by=actor_id, scope_hash=scope.content_hash
+            )
+        async with self._context.open(
+            tenant_id, command.opportunity_id, actor_id, prepared_by=intent.prepared_by
+        ) as context:
+            self._policy.require(
+                tenant_id, context.runtime.current_actor, action="prepare"
+            )
+            async with self._quotes.open_creation(
+                tenant_id, command.opportunity_id, context, actor=actor
+            ) as session:
+                operation = await self._costing.get_creation(
+                    tenant_id, idempotency_key, actor=cost_actor
+                )
+                if operation:
+                    intent = self._bound_intent(tenant_id, command, operation)
+                quote = await session.preflight(
+                    intent, operation_id=operation.operation_id if operation else None
+                )
+                if quote:
+                    self._quote_binding(operation, quote)
+                else:
+                    if operation and operation.state == "completed":
+                        raise QuotationUnavailableError("storage_inconsistent")
+                    if intent.prepared_by != actor_id:
+                        raise QuotationPermissionError("permission_denied")
+                    basis = await self._costing.freeze(
+                        tenant_id,
+                        command.cost_sheet_id,
+                        pricing_options_from_intent(intent),
+                        costing_context(context),
+                        idempotency_key=idempotency_key,
+                        intent=intent,
+                        actor=cost_actor,
+                    )
+                    quote = await session.create_from_basis(
+                        intent, to_quote_basis(basis), operation_id=basis.operation_id
+                    )
+        return await self._complete(tenant_id, quote, cost_actor)
 
 
 class DemandNeedFactsValidator:

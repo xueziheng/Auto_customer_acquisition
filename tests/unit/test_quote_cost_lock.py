@@ -39,7 +39,6 @@ def operation():
         {"operation_id": "other"},
         {"request_hash": "f" * 64},
         {"basis_id": "other"},
-        {"quote_version": 2},
         {"replaces_quote_id": "old", "replaced_quote_version": 1},
     ],
 )
@@ -67,7 +66,8 @@ def test_receipt_rejects_every_wrong_binding(changes):
     assert error.value.code == "revision_conflict"
 
 
-def test_receipt_accepts_exact_first_creation():
+@pytest.mark.parametrize("version", [1, 2])
+def test_receipt_accepts_exact_non_replacement_creation(version):
     assert hasattr(quote_lock, "require_completion"), "缺少完整回执绑定守卫"
     op = operation()
     receipt = QuoteCreationCompletion(
@@ -76,12 +76,59 @@ def test_receipt_accepts_exact_first_creation():
         request_hash=op.request_hash,
         basis_id=op.basis_id,
         quote_id="quote_test",
-        quote_version=1,
+        quote_version=version,
         quote_content_hash="a" * 64,
         replaces_quote_id=None,
         replaced_quote_version=None,
     )
     assert quote_lock.require_completion(op, receipt) is None
+
+
+@pytest.mark.parametrize("version", [1, 3])
+def test_revision_receipt_still_rejects_wrong_successor_version(version):
+    op = operation()
+    revised = op.intent.model_copy(
+        update={"replaces_quote_id": "old", "expected_quote_version": 1}
+    )
+    op = op.model_copy(
+        update={"intent": revised, "request_hash": quote_creation_request_hash(revised)}
+    )
+    receipt = QuoteCreationCompletion(
+        tenant_id=op.tenant_id,
+        operation_id=op.operation_id,
+        request_hash=op.request_hash,
+        basis_id=op.basis_id,
+        quote_id="new",
+        quote_version=version,
+        quote_content_hash="a" * 64,
+        replaces_quote_id="old",
+        replaced_quote_version=1,
+    )
+    with pytest.raises(CostFreezeError) as error:
+        quote_lock.require_completion(op, receipt)
+    assert error.value.code == "revision_conflict"
+
+
+def test_completed_operation_requires_same_receipt_even_without_replacement():
+    op = operation()
+    receipt = QuoteCreationCompletion(
+        tenant_id=op.tenant_id,
+        operation_id=op.operation_id,
+        request_hash=op.request_hash,
+        basis_id=op.basis_id,
+        quote_id="new",
+        quote_version=2,
+        quote_content_hash="a" * 64,
+        replaces_quote_id=None,
+        replaced_quote_version=None,
+    )
+    op = op.model_copy(
+        update={"state": "completed", "completion": receipt, "completed_at": NOW}
+    )
+    with pytest.raises(CostFreezeError):
+        quote_lock.require_completion(
+            op, receipt.model_copy(update={"quote_version": 3})
+        )
 
 
 def test_frozen_basis_requires_distinct_cost_fx_snapshot():

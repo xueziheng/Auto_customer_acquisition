@@ -288,7 +288,6 @@ def require_completion(
         receipt.basis_id,
         receipt.replaces_quote_id,
         receipt.replaced_quote_version,
-        receipt.quote_version,
     ) != (
         operation.tenant_id,
         operation.operation_id,
@@ -296,7 +295,12 @@ def require_completion(
         operation.basis_id,
         intent.replaces_quote_id,
         intent.expected_quote_version,
-        (intent.expected_quote_version or 0) + 1,
+    ):
+        raise CostFreezeError("revision_conflict")
+    # 无替换的新事实可接在终态之后；真实报价机会锁负责其全局版本顺序。
+    if (
+        intent.expected_quote_version is not None
+        and receipt.quote_version != intent.expected_quote_version + 1
     ):
         raise CostFreezeError("revision_conflict")
     if operation.completion is not None and operation.completion != receipt:
@@ -341,13 +345,22 @@ def require_basis_integrity(basis: FrozenCostBasis) -> None:
 
     require_scope_integrity(basis.scope_confirmation)
     s = basis.scope_confirmation
-    evidence={item.evidence_id:item.evidence_hash for item in basis.price_evidence}
-    if (len(evidence)!=len(basis.price_evidence) or evidence!={b.evidence_id:b.evidence_hash for b in s.evidence_bindings}
-        or basis.policy.content_hash!=view_content_hash(basis.policy)
-        or basis.coverage.content_hash!=view_content_hash(basis.coverage)
-        or any(item.evidence_hash!=view_content_hash(item) for item in basis.price_evidence)
-        or (basis.quote_fx is not None and basis.quote_fx.content_hash!=view_content_hash(basis.quote_fx))
-        or basis.pricing_options.mode!="manual"):
+    evidence = {item.evidence_id: item.evidence_hash for item in basis.price_evidence}
+    if (
+        len(evidence) != len(basis.price_evidence)
+        or evidence != {b.evidence_id: b.evidence_hash for b in s.evidence_bindings}
+        or basis.policy.content_hash != view_content_hash(basis.policy)
+        or basis.coverage.content_hash != view_content_hash(basis.coverage)
+        or any(
+            item.evidence_hash != view_content_hash(item)
+            for item in basis.price_evidence
+        )
+        or (
+            basis.quote_fx is not None
+            and basis.quote_fx.content_hash != view_content_hash(basis.quote_fx)
+        )
+        or basis.pricing_options.mode != "manual"
+    ):
         raise CostFreezeError("facts_corrupt")
     if (
         basis.basis_hash != frozen_basis_hash(basis)

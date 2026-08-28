@@ -22,6 +22,7 @@ from domains.costing.models import (
     CostSheetVersion,
 )
 from domains.costing.permissions import CostingActor, CostingActorReader
+from domains.costing.permissions import CostingScope as CostingScope
 from domains.costing.quote_lock import cost_scope_hash
 from domains.costing.schemas import (
     CalculationSnapshot,
@@ -62,6 +63,7 @@ __all__ = (
     "CostScopeSourceAccess",
     "CostingActor",
     "CostingActorReader",
+    "CostingScope",
     "CostingContext",
     "CostingFreezeService",
     "CostingQuoteService",
@@ -207,7 +209,6 @@ class CostingService(Protocol):
         """
         ...
 
-
     async def add_item(
         self,
         tenant_id: TenantId,
@@ -258,6 +259,7 @@ class CostingService(Protocol):
         """一个机会的全部成本表版本，按类型和版本号排序。"""
         ...
 
+
 class PricingEvidenceReader(Protocol):
     """可信 reader 必须核验租户、不可变内容 hash 和原文定位；不能仅返回 URL。
 
@@ -265,7 +267,14 @@ class PricingEvidenceReader(Protocol):
     政策/汇率使用固定根定位 `$`；人工逐字段确认不代表模型验证价款真实性。
     """
 
-    async def read_verified(self, tenant_id: TenantId, source_ref: str, locator: str, *, actor_id: EmployeeId) -> SourceEvidence:
+    async def read_verified(
+        self,
+        tenant_id: TenantId,
+        source_ref: str,
+        locator: str,
+        *,
+        actor_id: EmployeeId,
+    ) -> SourceEvidence:
         """返回经核验的安全来源投影，未知来源或不可读取时拒绝。"""
         ...
 
@@ -273,33 +282,67 @@ class PricingEvidenceReader(Protocol):
 class CostingQuoteService(Protocol):
     """新报价路径的人工确认契约；不执行报价、冻结或客户发送。"""
 
-    async def confirm_policy(self, tenant_id: TenantId, command: PricingPolicyCreate, *, actor: CostingActor, idempotency_key: str) -> PricingPolicyView:
+    async def confirm_policy(
+        self,
+        tenant_id: TenantId,
+        command: PricingPolicyCreate,
+        *,
+        actor: CostingActor,
+        idempotency_key: str,
+    ) -> PricingPolicyView:
         """只允许当前在职老板追加已确认政策。"""
         ...
 
-    async def get_policy(self, tenant_id: TenantId, category: str | None, *, actor: CostingActor) -> PricingPolicyView:
+    async def get_policy(
+        self, tenant_id: TenantId, category: str | None, *, actor: CostingActor
+    ) -> PricingPolicyView:
         """读取当前已确认政策，绝不把旧 margin_rules 当作确认事实。"""
         ...
 
-    async def confirm_price(self, tenant_id: TenantId, command: PriceEvidenceCreate, *, actor: CostingActor, idempotency_key: str) -> PriceEvidenceView:
+    async def confirm_price(
+        self,
+        tenant_id: TenantId,
+        command: PriceEvidenceCreate,
+        *,
+        actor: CostingActor,
+        idempotency_key: str,
+    ) -> PriceEvidenceView:
         """区分供应商价格和实际费用，逐字段保存来源。"""
         ...
 
-    async def confirm_coverage(self, tenant_id: TenantId, cost_sheet_id: CostSheetId, command: CostCoverageCreate, *, actor: CostingActor, idempotency_key: str) -> str:
+    async def confirm_coverage(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        command: CostCoverageCreate,
+        *,
+        actor: CostingActor,
+        idempotency_key: str,
+    ) -> str:
         """确认全部费用类型与真实明细绑定，返回不可变清单内容 hash。"""
         ...
 
-    async def confirm_quote_fx(self, tenant_id: TenantId, command: QuoteFxCreate, *, actor: CostingActor, idempotency_key: str) -> QuoteFxView:
+    async def confirm_quote_fx(
+        self,
+        tenant_id: TenantId,
+        command: QuoteFxCreate,
+        *,
+        actor: CostingActor,
+        idempotency_key: str,
+    ) -> QuoteFxView:
         """确认独立报价换算方向，不更改已有成本汇率。"""
         ...
 
-    async def get_quote_fx(self, tenant_id: TenantId, fx_id: str, *, actor: CostingActor) -> QuoteFxView:
+    async def get_quote_fx(
+        self, tenant_id: TenantId, fx_id: str, *, actor: CostingActor
+    ) -> QuoteFxView:
         """按当前身份和租户读取已确认报价汇率。"""
         ...
 
 
 class NeedFactsValidator(Protocol):
     """上层适配demand的公共纯校验，不复制单位有效性规则。"""
+
     def require_current_unit(self, facts: NeedQuoteFacts) -> FactualField[str]:
         """返回有效客户单位，拒绝缺失、未确认或旧数量来源绑定。"""
         ...
@@ -307,54 +350,103 @@ class NeedFactsValidator(Protocol):
 
 class CostScopeSourceAccess(Protocol):
     """仅核实本次员工可读持久来源，不决定商业适用性。"""
-    async def require(self, tenant_id: TenantId, evidence: tuple[PriceEvidenceView, ...],
-                      *, actor_id: EmployeeId) -> None:
+
+    async def require(
+        self,
+        tenant_id: TenantId,
+        evidence: tuple[PriceEvidenceView, ...],
+        *,
+        actor_id: EmployeeId,
+    ) -> None:
         """在所有context/成本锁外核验当前员工阅读全部持久依据的权限。"""
         ...
 
 
 class QuoteCreationCompletionReader(Protocol):
     """只接受真实持久quote到receipt的可信投影，T3B仅受控实现。"""
-    async def read(self, tenant_id: TenantId, operation_id: str,
-                   *, actor_id: EmployeeId) -> QuoteCreationCompletion | None:
+
+    async def read(
+        self, tenant_id: TenantId, operation_id: str, *, actor_id: EmployeeId
+    ) -> QuoteCreationCompletion | None:
         """零锁读取真实报价完成事实；不存在返回None，不接收客户自证回执。"""
         ...
 
 
 class CostingFreezeService(Protocol):
     """scope、确定性计算及可恢复冻结，不负责报价CRUD或审批。"""
-    async def prepare_scope_access(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
-        command: CostScopeConfirmationCommand, *, actor: CostingActor) -> CostScopeAccess:
+
+    async def prepare_scope_access(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        command: CostScopeConfirmationCommand,
+        *,
+        actor: CostingActor,
+    ) -> CostScopeAccess:
         """短读事务结束后做来源授权，返回仅限本次调用的精确绑定。"""
         ...
-    async def confirm_scope(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
-        command: CostScopeConfirmationCommand, context: CostingContext, *, actor: CostingActor,
-        idempotency_key: str, source_access: CostScopeAccess) -> CostScopeConfirmationView:
+
+    async def confirm_scope(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        command: CostScopeConfirmationCommand,
+        context: CostingContext,
+        *,
+        actor: CostingActor,
+        idempotency_key: str,
+        source_access: CostScopeAccess,
+    ) -> CostScopeConfirmationView:
         """在外层lease内重验并持久人工适用性，旧确认永不改写。"""
         ...
-    async def get_scope(self, tenant_id: TenantId, confirmation_id: str,
-                         *, actor: CostingActor) -> CostScopeConfirmationView:
+
+    async def get_scope(
+        self, tenant_id: TenantId, confirmation_id: str, *, actor: CostingActor
+    ) -> CostScopeConfirmationView:
         """按当前成本读取权限返回内部历史确认。"""
         ...
-    async def calculate(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
-        options: PricingOptions, context: CostingContext, *, quote_fx_ref: str | None,
-        actor: CostingActor) -> CalculationSnapshot:
+
+    async def calculate(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        options: PricingOptions,
+        context: CostingContext,
+        *,
+        quote_fx_ref: str | None,
+        actor: CostingActor,
+    ) -> CalculationSnapshot:
         """当前完整事实测算，不写locked_at或创建操作。"""
         ...
-    async def freeze(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
-        options: PricingOptions, context: CostingContext, *, idempotency_key: str,
-        intent: QuoteCreationIntent, actor: CostingActor) -> FrozenCostBasis:
+
+    async def freeze(
+        self,
+        tenant_id: TenantId,
+        cost_sheet_id: CostSheetId,
+        options: PricingOptions,
+        context: CostingContext,
+        *,
+        idempotency_key: str,
+        intent: QuoteCreationIntent,
+        actor: CostingActor,
+    ) -> FrozenCostBasis:
         """原子冻结完整意图和依据，同键可恢复，新键不能越过pending。"""
         ...
-    async def get_frozen(self, tenant_id: TenantId, basis_id: str,
-                         *, actor: CostingActor) -> FrozenCostBasis:
+
+    async def get_frozen(
+        self, tenant_id: TenantId, basis_id: str, *, actor: CostingActor
+    ) -> FrozenCostBasis:
         """历史内部读取不代表当前报价可用，禁止直接HTTP序列化。"""
         ...
-    async def get_creation(self, tenant_id: TenantId, idempotency_key: str,
-                           *, actor: CostingActor) -> QuoteCreationOperationView | None:
+
+    async def get_creation(
+        self, tenant_id: TenantId, idempotency_key: str, *, actor: CostingActor
+    ) -> QuoteCreationOperationView | None:
         """按原键恢复完整意图、依据身份和首次完成状态。"""
         ...
-    async def complete_creation(self, tenant_id: TenantId, operation_id: str,
-                                *, actor: CostingActor) -> QuoteCreationOperationView:
+
+    async def complete_creation(
+        self, tenant_id: TenantId, operation_id: str, *, actor: CostingActor
+    ) -> QuoteCreationOperationView:
         """从锁外可信reader核验回执后首次完结，不接受调用者手写报价ID。"""
         ...
