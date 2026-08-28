@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import reportlab
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.ttfonts import TTFError, TTFont
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph, Spacer
 from reportlab.platypus.doctemplate import LayoutError
@@ -29,6 +30,23 @@ _MARGIN = 36
 _BODY_SIZE = 10
 _BODY_LEADING = 14
 _TITLE_SIZE = 14
+_DOCUMENT_TITLE = "Customer quotation"
+_FIELD_LABELS = (
+    "Issuer",
+    "Issuer address",
+    "Issuer contact",
+    "Customer",
+    "Description",
+    "Specification",
+    "Unit",
+    "Quantity",
+    "Unit price",
+    "Total",
+    "Currency",
+    "Valid until",
+)
+_TERMS_LABEL = "Approved terms"
+_FOOTER_GLYPHS = "Page 0123456789"
 
 
 def _font_path(filename: str) -> Path:
@@ -48,7 +66,7 @@ def _registered_font(name: str, filename: str) -> TTFont:
             font = TTFont(name, str(path))
             pdfmetrics.registerFont(font)
             return font
-        except (OSError, ValueError):
+        except (OSError, TTFError, ValueError):
             raise QuotePdfRenderError("font_unavailable") from None
     except OSError:
         raise QuotePdfRenderError("font_unavailable") from None
@@ -64,21 +82,40 @@ def load_fonts() -> tuple[TTFont, TTFont]:
     )
 
 
-def validate_glyphs(values: Iterable[str], fonts: Iterable[TTFont]) -> None:
-    """以实际 TTFont glyph 映射验证可见字符，绝不使用系统 fallback。"""
-    text = tuple(all_visible_text(values))
-    for font in fonts:
-        mapping = font.face.charToGlyph
-        if any(mapping.get(ord(character), 0) == 0 for value in text for character in value):
-            raise QuotePdfRenderError("unsupported_glyph")
+def validate_glyphs(values: Iterable[str], fonts: tuple[TTFont, TTFont]) -> None:
+    """以最终呈现所用正文/标题字体分别验证全部可见字符。"""
+    body_font, title_font = fonts
+    _validate_font(
+        (*all_visible_text(values), "Quote ", " / Version ", _FOOTER_GLYPHS),
+        body_font,
+    )
+    _validate_font((*_FIELD_LABELS, _DOCUMENT_TITLE, _TERMS_LABEL), title_font)
 
 
-def _escaped(value: str) -> str:
-    """只把原客户字符串转义为可换行文本，保留换行和连续空白。"""
-    escaped = html.escape(value, quote=False).replace("\n", "<br/>")
-    while "  " in escaped:
-        escaped = escaped.replace("  ", " &nbsp;")
-    return escaped
+def _validate_font(values: Iterable[str], font: TTFont) -> None:
+    """验证一个实际输出字体的完整文本集合，不将其扩大到另一种字体。"""
+    mapping = font.face.charToGlyph
+    if any(mapping.get(ord(character), 0) == 0 for value in values for character in value):
+        raise QuotePdfRenderError("unsupported_glyph")
+
+
+def _escaped_line(line: str) -> str:
+    """保留行首/行尾及连续空白，同时留出内部首空格作为确定性换行点。"""
+    def replace(match: re.Match[str]) -> str:
+        spaces = match.group()
+        if match.start() == 0 or match.end() == len(line):
+            return "&nbsp;" * len(spaces)
+        return " " + "&nbsp;" * (len(spaces) - 1)
+
+    return re.sub(r" +", replace, html.escape(line, quote=False))
+
+
+def _text_flowables(value: str, style: ParagraphStyle) -> tuple[object, ...]:
+    """逐行生成可分页文字；空行由同等行距 spacer 保留视觉空白。"""
+    return tuple(
+        Paragraph(_escaped_line(line), style) if line else Spacer(1, style.leading)
+        for line in value.split("\n")
+    )
 
 
 def _styles() -> tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle]:
@@ -101,33 +138,33 @@ def build_story(view: CustomerQuoteView) -> list[object]:
     """构造可分页 flowables；空文本不额外生成 flowable。"""
     body, label, title = _styles()
     story: list[object] = [
-        Paragraph("Customer quotation", title),
-        Paragraph(_escaped(f"Quote {view.quote_id} / Version {view.version}"), body),
+        Paragraph(_DOCUMENT_TITLE, title),
+        *_text_flowables(f"Quote {view.quote_id} / Version {view.version}", body),
         Spacer(1, 8),
     ]
     fields = (
-        ("Issuer", view.issuer_name),
-        ("Issuer address", view.issuer_address),
-        ("Issuer contact", view.issuer_contact),
-        ("Customer", view.account_name),
-        ("Description", view.description),
-        ("Specification", view.specification),
-        ("Unit", view.unit),
-        ("Quantity", view.quantity_display),
-        ("Unit price", view.unit_price_display),
-        ("Total", view.total_display),
-        ("Currency", view.currency),
-        ("Valid until", view.valid_until_display),
+        (_FIELD_LABELS[0], view.issuer_name),
+        (_FIELD_LABELS[1], view.issuer_address),
+        (_FIELD_LABELS[2], view.issuer_contact),
+        (_FIELD_LABELS[3], view.account_name),
+        (_FIELD_LABELS[4], view.description),
+        (_FIELD_LABELS[5], view.specification),
+        (_FIELD_LABELS[6], view.unit),
+        (_FIELD_LABELS[7], view.quantity_display),
+        (_FIELD_LABELS[8], view.unit_price_display),
+        (_FIELD_LABELS[9], view.total_display),
+        (_FIELD_LABELS[10], view.currency),
+        (_FIELD_LABELS[11], view.valid_until_display),
     )
     for field_name, value in fields:
         if value:
-            story.extend((Paragraph(field_name, label), Paragraph(_escaped(value), body)))
+            story.extend((Paragraph(field_name, label), *_text_flowables(value, body)))
     if view.approved_terms:
         story.append(Spacer(1, 6))
-        story.append(Paragraph("Approved terms", label))
+        story.append(Paragraph(_TERMS_LABEL, label))
         for term in view.approved_terms:
             if term:
-                story.append(Paragraph(_escaped(term), body))
+                story.extend(_text_flowables(term, body))
     return story
 
 

@@ -33,7 +33,7 @@ class ReportLabQuotePdfRenderer:
         """仅核固定本地字体可用，不生成 PDF、访问网络或读取密钥。"""
         try:
             load_fonts()
-        except QuotePdfRenderError:
+        except Exception:  # noqa: BLE001 - 离线健康检查只返回依赖可用性
             return False
         return True
 
@@ -46,7 +46,12 @@ class ReportLabQuotePdfRenderer:
         values = validate_customer_text(
             view, maximum_text_bytes=self._maximum_text_bytes
         )
-        fonts = load_fonts()
+        try:
+            fonts = load_fonts()
+        except QuotePdfRenderError:
+            raise
+        except Exception:  # noqa: BLE001 - 字体以外异常固定脱敏，系统退出不在 Exception 内
+            raise QuotePdfRenderError("render_failed") from None
         validate_glyphs(values, fonts)
         return render_pdf(
             view, maximum_bytes=self._maximum_bytes, maximum_pages=self._maximum_pages

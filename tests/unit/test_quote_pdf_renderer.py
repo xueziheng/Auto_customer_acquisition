@@ -10,7 +10,13 @@ from typing import get_type_hints
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject
+from pypdf.generic import (
+    ArrayObject,
+    DictionaryObject,
+    IndirectObject,
+    NameObject,
+    StreamObject,
+)
 
 from domains.quotations import service as quotations_service
 from domains.quotations.errors import QuotationError
@@ -185,6 +191,64 @@ def test_vera_mapped_non_ascii_character_renders_without_default_font() -> None:
     assert view.account_name in text
 
 
+def _font_without(font: object, character: str) -> object:
+    """受控字体映射副本；只用于验证 renderer 的 glyph 分配边界。"""
+    from types import SimpleNamespace
+
+    mapping = dict(font.face.charToGlyph)  # type: ignore[attr-defined]
+    mapping.pop(ord(character), None)
+    return SimpleNamespace(face=SimpleNamespace(charToGlyph=mapping))
+
+
+def _glyph_isolation_view() -> CustomerQuoteView:
+    """不含静态标签字符的最小客户投影，隔离实际字体职责。"""
+    return _customer_view(
+        quote_id="q", issuer_name="x", issuer_address="x", issuer_contact="x",
+        account_name="x", description="x", specification="x", unit="x",
+        quantity_display="1", unit_price_display="1", total_display="1",
+        currency="x", valid_until_display="1", approved_terms=(),
+    )
+
+
+@pytest.mark.parametrize(("font_index", "character"), ((0, "P"), (1, "C")))
+def test_static_footer_and_title_glyphs_are_checked_by_their_actual_font(
+    monkeypatch: pytest.MonkeyPatch, font_index: int, character: str,
+) -> None:
+    """页脚/标题不在客户 DTO 中，仍必须分别通过正文/标题字体核验。"""
+    from connectors.quote_pdf import client, layout
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    fonts = list(layout.load_fonts())
+    fonts[font_index] = _font_without(fonts[font_index], character)
+    monkeypatch.setattr(client, "load_fonts", lambda: tuple(fonts))
+
+    with pytest.raises(QuotePdfRenderError) as caught:
+        _renderer().render(_glyph_isolation_view(), template_version="quote_pdf_v1")
+
+    assert caught.value.code == "unsupported_glyph"
+
+
+def test_customer_body_glyph_is_not_unnecessarily_required_by_title_font(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正文客户字符只检查正文 Vera，标题字体缺该字符不能误拒绝。"""
+    from connectors.quote_pdf import client, layout
+
+    body, title = layout.load_fonts()
+    character = next(
+        chr(codepoint)
+        for codepoint, glyph in body.face.charToGlyph.items()
+        if codepoint > 127 and glyph and chr(codepoint).isprintable()
+        and not chr(codepoint).isspace()
+    )
+    monkeypatch.setattr(client, "load_fonts", lambda: (body, _font_without(title, character)))
+
+    assert _renderer().render(
+        _glyph_isolation_view().model_copy(update={"account_name": character}),
+        template_version="quote_pdf_v1",
+    )
+
+
 def test_missing_fixed_vera_file_returns_font_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,6 +263,33 @@ def test_missing_fixed_vera_file_returns_font_unavailable(
     assert caught.value.code == "font_unavailable"
 
 
+def test_corrupt_fixed_vera_font_maps_to_fixed_error_and_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """锁定 ReportLab 的 TTFError 不得泄露出 render 或 health_check。"""
+    import asyncio
+
+    from reportlab.pdfbase.ttfonts import TTFError
+
+    from connectors.quote_pdf import layout
+    from shared.schemas.quote_document import QuotePdfRenderError
+
+    def missing_registered_font(_: str) -> object:
+        raise KeyError
+
+    def corrupt_font(*_: object, **__: object) -> object:
+        raise TTFError("corrupt internal path")
+
+    monkeypatch.setattr(layout.pdfmetrics, "getFont", missing_registered_font)
+    monkeypatch.setattr(layout, "TTFont", corrupt_font)
+    renderer = _renderer()
+    with pytest.raises(QuotePdfRenderError) as caught:
+        renderer.render(_customer_view(), template_version="quote_pdf_v1")
+
+    assert caught.value.code == "font_unavailable"
+    assert asyncio.run(renderer.health_check()) is False
+
+
 def test_pdf_preserves_customer_newlines_and_consecutive_spaces() -> None:
     """客户商业文字的换行及连续空格在真实 PDF 提取中不被静默改写。"""
     specification = "First  line\nSecond   line"
@@ -211,6 +302,29 @@ def test_pdf_preserves_customer_newlines_and_consecutive_spaces() -> None:
 
     assert "First  line" in text
     assert "Second   line" in text
+
+
+def test_pdf_preserves_leading_trailing_indented_and_blank_line_whitespace() -> None:
+    """客户字段原值的首尾空格、行首缩进和空白行不能被 Paragraph 修剪。"""
+    specification = " leading and trailing \n  indented line\n\nnext line"
+    from reportlab.platypus import Spacer
+
+    from connectors.quote_pdf.layout import build_story
+
+    view = _customer_view(specification=specification)
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in PdfReader(BytesIO(_renderer().render(
+            view, template_version="quote_pdf_v1"
+        ))).pages
+    )
+
+    assert " leading and trailing " in text
+    assert "  indented line" in text
+    baseline_spacers = sum(
+        isinstance(item, Spacer) for item in build_story(_customer_view())
+    )
+    assert sum(isinstance(item, Spacer) for item in build_story(view)) == baseline_spacers + 1
 
 
 def test_text_limit_accepts_exact_utf8_total_and_rejects_one_less() -> None:
@@ -319,6 +433,10 @@ def _assert_pdf_has_no_actions(reader: PdfReader) -> None:
         "/JavaScript", "/Launch", "/URI", "/GoTo", "/GoToR", "/Named",
         "/SubmitForm", "/ImportData",
     }
+    rejected_keys = {
+        "/A", "/AA", "/AcroForm", "/AF", "/Annots", "/OpenAction",
+        "/EmbeddedFiles", "/JavaScript",
+    }
     seen: set[tuple[int, int] | int] = set()
 
     def walk(value: object) -> None:
@@ -334,7 +452,7 @@ def _assert_pdf_has_no_actions(reader: PdfReader) -> None:
             return
         seen.add(identity)
         if isinstance(value, DictionaryObject):
-            assert not {"/A", "/AA", "/OpenAction", "/AF", "/Annots"} & set(value)
+            assert not rejected_keys & set(value)
             assert str(value.get("/Type", "")) not in rejected_types
             assert str(value.get("/S", "")) not in rejected_actions
             for nested in value.values():
@@ -356,7 +474,8 @@ def test_pdf_object_safety_detector_rejects_a_nested_indirect_action() -> None:
         NameObject("/Type"): NameObject("/Action"),
         NameObject("/S"): NameObject("/JavaScript"),
     }))
-    writer._root_object[NameObject("/OpenAction")] = action
+    nested = writer._add_object(DictionaryObject({NameObject("/Action"): action}))
+    writer._root_object[NameObject("/PieceInfo")] = nested
     payload = BytesIO()
     writer.write(payload)
 
@@ -364,14 +483,145 @@ def test_pdf_object_safety_detector_rejects_a_nested_indirect_action() -> None:
         _assert_pdf_has_no_actions(PdfReader(BytesIO(payload.getvalue())))
 
 
-def test_renderer_pdf_has_no_actions_attachments_or_internal_sentinel() -> None:
-    """客户文本中的 HTML/URL 只能成为文本，PDF 不暴露内部资料。"""
-    sentinel = "INTERNAL_SUPPLIER_MARGIN_SOURCE_SENTINEL"
+@pytest.mark.parametrize("forbidden_key", ("/AcroForm", "/JavaScript", "/EmbeddedFiles"))
+def test_pdf_object_safety_detector_rejects_acroform_and_name_tree_entries(
+    forbidden_key: str,
+) -> None:
+    """AcroForm 及 /Names 下脚本/附件键必须被明确拒绝。"""
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    if forbidden_key == "/AcroForm":
+        writer._root_object[NameObject(forbidden_key)] = writer._add_object(
+            DictionaryObject()
+        )
+    else:
+        writer._root_object[NameObject("/Names")] = writer._add_object(
+            DictionaryObject({NameObject(forbidden_key): ArrayObject()})
+        )
+    payload = BytesIO()
+    writer.write(payload)
+
+    with pytest.raises(AssertionError):
+        _assert_pdf_has_no_actions(PdfReader(BytesIO(payload.getvalue())))
+
+
+def test_renderer_pdf_has_no_actions_attachments_or_html_link() -> None:
+    """客户 HTML/URL 只能成为文本，不能变成 PDF 动作或附件。"""
     view = _customer_view(description='<a href="https://invalid.example">Widget</a>')
     reader = PdfReader(BytesIO(_renderer().render(view, template_version="quote_pdf_v1")))
 
     _assert_pdf_has_no_actions(reader)
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert '<a href="https://invalid.example">Widget</a>' in extracted
-    assert sentinel not in extracted
-    assert sentinel not in str(reader.metadata)
+
+
+def _detail_with_internal_sentinel(sentinel: str):
+    """构造内容 hash 完整的真实内部报价；客户投影不应携带其 basis/source。"""
+    detail = detail_fixture()
+    evidence = detail.content.basis.price_evidence[0]
+    source = evidence.source.model_copy(
+        update={"source_ref": sentinel, "artifact_id": sentinel, "locator": sentinel}
+    )
+    updated_evidence = evidence.model_copy(
+        update={"source": source, "source_ref": sentinel, "supplier_ref": sentinel}
+    )
+    basis = detail.content.basis.model_copy(update={"price_evidence": (updated_evidence,)})
+    line = detail.content.lines[0].model_copy(
+        update={'description': '<img src="https://invalid.example/pixel">Widget</img>'}
+    )
+    unsigned_content = detail.content.model_copy(
+        update={"basis": basis, "lines": (line,), "content_hash": "0" * 64}
+    )
+    content = unsigned_content.model_copy(
+        update={"content_hash": quotations_service.quote_content_hash(unsigned_content)}
+    )
+    return detail.model_copy(update={"content": content})
+
+
+def _pdf_strings_and_streams(reader: PdfReader) -> tuple[tuple[str, ...], tuple[bytes, ...]]:
+    """从 Catalog 展开全部字典/数组/间接对象，并收集字符串与相关 stream。"""
+    strings: list[str] = []
+    streams: list[bytes] = []
+    seen: set[tuple[int, int] | int] = set()
+
+    def walk(value: object) -> None:
+        if isinstance(value, IndirectObject):
+            identity = (value.idnum, value.generation)
+            if identity in seen:
+                return
+            seen.add(identity)
+            walk(value.get_object())
+            return
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        if isinstance(value, StreamObject):
+            streams.append(value.get_data())
+        if isinstance(value, DictionaryObject):
+            for key, nested in value.items():
+                strings.append(str(key))
+                walk(nested)
+        elif isinstance(value, ArrayObject):
+            for nested in value:
+                walk(nested)
+        elif isinstance(value, str):
+            strings.append(value)
+
+    walk(reader.trailer["/Root"])
+    metadata = reader.metadata
+    if metadata is not None:
+        strings.extend(str(value) for value in metadata.values())
+    return tuple(strings), tuple(streams)
+
+
+def test_pdf_sentinel_scanner_reads_recursive_metadata_and_streams() -> None:
+    """泄漏扫描器先在内存 sentinel 反例中证明会读取 metadata 和 stream。"""
+    sentinel = "INTERNAL_SENTINEL_COUNTEREXAMPLE"
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.add_metadata({"/Title": sentinel})
+    stream = StreamObject()
+    stream.set_data(sentinel.encode("utf-8"))
+    writer._root_object[NameObject("/PieceInfo")] = writer._add_object(stream)
+    payload = BytesIO()
+    writer.write(payload)
+
+    strings, streams = _pdf_strings_and_streams(PdfReader(BytesIO(payload.getvalue())))
+
+    assert sentinel in strings
+    assert any(sentinel.encode("utf-8") in stream for stream in streams)
+
+
+def test_projected_pdf_does_not_leak_internal_basis_and_never_opens_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实 project_customer 链只呈现白名单字段，HTML 图片只是文本且不联网。"""
+    import socket
+
+    sentinel = "INTERNAL_SUPPLIER_MARGIN_SOURCE_SENTINEL"
+    detail = _detail_with_internal_sentinel(sentinel)
+    evidence = detail.content.basis.price_evidence[0]
+    assert sentinel in (evidence.source.source_ref, evidence.source.artifact_id, evidence.source_ref)
+    assert quotations_service.quote_content_hash(detail.content) == detail.content.content_hash
+    view = quotations_service.project_customer(detail)
+    assert sentinel not in view.model_dump_json()
+
+    calls: list[tuple[object, ...]] = []
+
+    def deny_network(*args: object, **kwargs: object) -> object:
+        calls.append((*args, *kwargs.values()))
+        raise AssertionError("renderer must not access network")
+
+    monkeypatch.setattr(socket, "socket", deny_network)
+    monkeypatch.setattr(socket, "create_connection", deny_network)
+    content = _renderer().render(view, template_version="quote_pdf_v1")
+
+    reader = PdfReader(BytesIO(content))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    strings, streams = _pdf_strings_and_streams(reader)
+    assert calls == []
+    assert '<img src="https://invalid.example/pixel">Widget</img>' in text
+    assert sentinel not in text
+    assert all(sentinel not in value for value in strings)
+    assert all(sentinel.encode("utf-8") not in stream for stream in streams)
