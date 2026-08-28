@@ -74,6 +74,15 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.quote_creation import QuoteCreationCompletion, QuoteCreationIntent
 from shared.schemas.quote_facts import QuoteEmployeeFact
+from shared.schemas.quote_document import CustomerQuoteView, QuotePdfRenderError
+
+
+class QuotePdfRenderer(Protocol):
+    """客户报价 PDF 离线渲染端口，不承担授权、存储或发送许可。"""
+
+    def render(self, view: CustomerQuoteView, *, template_version: str) -> bytes:
+        """将唯一客户白名单投影渲染为 PDF bytes。"""
+        ...
 
 
 class QuotationActorReader(Protocol):

@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from shared.errors import ConnectorError
 
 
 class CustomerQuoteView(BaseModel):
@@ -51,3 +54,43 @@ def customer_quote_hash(view: CustomerQuoteView) -> str:
         sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+QuotePdfRenderErrorCode = Literal[
+    "invalid_config",
+    "invalid_input",
+    "template_unsupported",
+    "text_limit_exceeded",
+    "page_limit_exceeded",
+    "byte_limit_exceeded",
+    "font_unavailable",
+    "unsupported_glyph",
+    "layout_failed",
+    "render_failed",
+]
+
+
+class QuotePdfRenderError(ConnectorError):
+    """PDF 渲染跨层固定错误，不携带客户内容、路径或运行时异常。"""
+
+    is_retryable = False
+
+    _MESSAGES: dict[QuotePdfRenderErrorCode, str] = {
+        "invalid_config": "PDF配置无效",
+        "invalid_input": "客户视图无效",
+        "template_unsupported": "模板未注册",
+        "text_limit_exceeded": "客户文本超限",
+        "page_limit_exceeded": "PDF页数超限",
+        "byte_limit_exceeded": "PDF字节超限",
+        "font_unavailable": "PDF字体不可用",
+        "unsupported_glyph": "字体不支持客户字符",
+        "layout_failed": "PDF排版失败",
+        "render_failed": "PDF渲染失败",
+    }
+
+    def __init__(self, code: QuotePdfRenderErrorCode) -> None:
+        """以受限错误码构造，不允许调用方注入任意错误文本。"""
+        if code not in self._MESSAGES:
+            raise ValueError("无效PDF渲染错误码")
+        self.code = code
+        super().__init__(self._MESSAGES[code])

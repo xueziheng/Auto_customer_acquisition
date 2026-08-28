@@ -20,6 +20,8 @@ dependencies = [
     "openai",
     "dnspython==2.8.0",
     "tldextract==5.3.1",
+    "reportlab==5.0.1",
+    "pypdf==6.16.2",
 ]
 
 [project.optional-dependencies]
