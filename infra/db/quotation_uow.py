@@ -1,5 +1,7 @@
 """报价专用事务边界：显式commit，失败/取消回滚且关闭连接。"""
 
+import asyncio
+import logging
 from typing import Self
 
 from sqlalchemy import text
@@ -10,6 +12,8 @@ from domains.quotations.errors import QuotationError, QuotationUnavailableError
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.quotations import QuotationVersionRepositoryImpl
 from shared.schemas.identifiers import TenantId
+
+logger = logging.getLogger(__name__)
 
 
 def _failure(exc: BaseException) -> QuotationUnavailableError:
@@ -63,7 +67,7 @@ class SqlAlchemyQuotationUow:
             self.bus = PostgresEventBus(self._session, self._tenant_id)
             return self
         except BaseException as exc:
-            await self._cleanup()
+            await self._cleanup(primary=exc)
             if isinstance(exc, SQLAlchemyError):
                 raise _failure(exc) from None
             raise
@@ -83,8 +87,20 @@ class SqlAlchemyQuotationUow:
         except SQLAlchemyError as exc:
             raise _failure(exc) from None
 
-    async def _cleanup(self) -> None:
+    async def _cleanup(self, *, primary: BaseException | None = None) -> None:
         """包括取消在内都尽力回滚并关闭，不让池连接持锁。"""
+        if isinstance(primary, asyncio.CancelledError):
+            cleanups = (
+                (self._session.close,)
+                if self._committed
+                else (self._session.rollback, self._session.close)
+            )
+            for cleanup in cleanups:
+                try:
+                    await cleanup()
+                except BaseException:  # noqa: BLE001 -- 仅原取消分支；二次故障不可覆盖取消
+                    logger.warning("报价事务取消后的清理失败")
+            return
         try:
             try:
                 if not self._committed:
@@ -101,6 +117,6 @@ class SqlAlchemyQuotationUow:
         tb: object,
     ) -> None:
         """无隐式commit；正常但未提交也回滚。"""
-        await self._cleanup()
+        await self._cleanup(primary=exc)
         if isinstance(exc, SQLAlchemyError):
             raise _failure(exc) from None

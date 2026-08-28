@@ -400,6 +400,49 @@ async def test_metadata_failure_and_cancellation_never_fallback_or_insert():
     assert c.scope.depth == 0 and not c.files
 
 
+@pytest.mark.parametrize("failing", [("rollback",), ("close",), ("rollback", "close")])
+async def test_record_cancellation_survives_real_uow_cleanup_and_releases_scope(
+    failing: tuple[str, ...],
+) -> None:
+    import asyncio
+
+    from tests.unit.test_quotation_uow_cleanup import cleanup_case
+
+    c = await file_case()
+    primary = asyncio.CancelledError("private-record-detail")
+    sessions: list[tuple[AsyncMock, list[str], list[str]]] = []
+
+    @asynccontextmanager
+    async def factory(tenant):
+        assert tenant == c.tenant
+        active_failures: list[str] = []
+        uow, session, order = cleanup_case(active_failures, tenant_id=tenant)
+        sessions.append((session, order, active_failures))
+        async with uow:
+            uow.quotes = c.uow.quotes
+            yield uow
+
+    async def cancel_at_write_lock(*args):
+        assert c.scope.depth == 1
+        assert c.order[-1] == "metadata"
+        sessions[-1][2].extend(failing)
+        raise primary
+
+    c.service._uows = factory
+    c.uow.quotes.lock_opportunity.side_effect = cancel_at_write_lock
+    with pytest.raises(asyncio.CancelledError) as error:
+        await c.service.record_file(
+            c.tenant, QUOTE, c.meta.artifact_id, actor_id=c.actor_id
+        )
+    assert error.value is primary
+    assert c.scope.depth == 0 and c.order[-1] == "release"
+    assert not c.files
+    assert sessions[-1][1] == ["rollback", "close"]
+    for session, _, _ in sessions:
+        session.commit.assert_not_awaited()
+        session.close.assert_awaited_once()
+
+
 async def test_missing_file_and_artifact_use_fixed_not_found():
     c = await file_case()
     c.reader.fact = None
