@@ -7,6 +7,7 @@ import unicodedata
 from contextlib import AbstractAsyncContextManager
 from typing import Literal, Protocol, runtime_checkable
 
+from domains.quotations.approval_display import project_quote_approval_display
 from domains.quotations.approval_rules import (
     parse_quote_approval_payload,
     quote_approval_facts_hash,
@@ -555,6 +556,7 @@ __all__ = [
     "format_quote_specification",
     "parse_quote_approval_payload",
     "project_customer",
+    "project_quote_approval_display",
     "quote_approval_facts_hash",
     "quote_approval_payload_hash",
     "quote_approval_payloads",

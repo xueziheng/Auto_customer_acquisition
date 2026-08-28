@@ -15,6 +15,7 @@ from domains.quotations.schemas import QuoteApprovalFact, QuoteApprovalSubject
 from domains.quotations.service import (
     QuotationVersionService,
     parse_quote_approval_payload,
+    project_quote_approval_display,
     quote_change_set_ref,
 )
 from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId
@@ -62,6 +63,13 @@ class QuotationApprovalAccess:
         """纯解析全载荷后等值投影安全身份。"""
         return _subject(fact)
 
+    def display(self, fact: ApprovalFactView) -> dict[str, str]:
+        """复用完整不可变绑定校验，纯投影不额外查询或扩大权限。"""
+        _subject(fact)
+        return project_quote_approval_display(
+            parse_quote_approval_payload(fact.proposed_change)
+        )
+
     @asynccontextmanager
     async def guard(
         self,
@@ -71,16 +79,18 @@ class QuotationApprovalAccess:
         action: Literal["read", "decide"],
     ) -> AsyncIterator[ApprovalAccessResult]:
         """当前角色从真实报价lease返回，不由请求声明填充。"""
-        mapped = QuoteApprovalSubject(
-            tenant_id=subject.tenant_id,
-            approval_id=subject.approval_id,
-            approval_type=subject.approval_type,
-            quote_id=subject.quote_id,
-            quote_version=subject.quote_version,
-            content_hash=subject.content_hash,
-            opportunity_id=subject.opportunity_id,
-            prepared_by=subject.prepared_by,
-            submitted_owner_id=subject.submitted_owner_id,
+        mapped = QuoteApprovalSubject.model_validate(
+            {
+                "tenant_id": subject.tenant_id,
+                "approval_id": subject.approval_id,
+                "approval_type": subject.approval_type,
+                "quote_id": subject.quote_id,
+                "quote_version": subject.quote_version,
+                "content_hash": subject.content_hash,
+                "opportunity_id": subject.opportunity_id,
+                "prepared_by": subject.prepared_by,
+                "submitted_owner_id": subject.submitted_owner_id,
+            }
         )
         async with self._quotes.open_approval_access(
             subject.tenant_id, mapped, actor_id=actor_id, action=action
@@ -119,26 +129,28 @@ async def read_quote_facts(
         ):
             raise QuoteApprovalError("approval_fact_invalid")
         result.append(
-            QuoteApprovalFact(
-                tenant_id=fact.tenant_id,
-                approval_id=approval_id,
-                approval_type=subject.approval_type,
-                change_set_ref=subject.change_set_ref,
-                request_hash=fact.request_hash,
-                payload=parse_quote_approval_payload(fact.proposed_change),
-                created_at=fact.created_at,
-                expires_at=fact.expires_at,
-                expires_at_limit=fact.expires_at_limit,
-                prepared_by=subject.prepared_by,
-                submitted_owner_id=subject.submitted_owner_id,
-                proposed_by_run=fact.proposed_by_run,
-                state=state,
-                decision=decision,
-                decided_by=fact.decided_by_employee,
-                decided_at=fact.decided_at,
-                decision_note=fact.decision_note,
-                applied_at=fact.applied_at,
-                application_error_code=fact.application_error_code,
+            QuoteApprovalFact.model_validate(
+                {
+                    "tenant_id": fact.tenant_id,
+                    "approval_id": approval_id,
+                    "approval_type": subject.approval_type,
+                    "change_set_ref": subject.change_set_ref,
+                    "request_hash": fact.request_hash,
+                    "payload": parse_quote_approval_payload(fact.proposed_change),
+                    "created_at": fact.created_at,
+                    "expires_at": fact.expires_at,
+                    "expires_at_limit": fact.expires_at_limit,
+                    "prepared_by": subject.prepared_by,
+                    "submitted_owner_id": subject.submitted_owner_id,
+                    "proposed_by_run": fact.proposed_by_run,
+                    "state": state,
+                    "decision": decision,
+                    "decided_by": fact.decided_by_employee,
+                    "decided_at": fact.decided_at,
+                    "decision_note": fact.decision_note,
+                    "applied_at": fact.applied_at,
+                    "application_error_code": fact.application_error_code,
+                }
             )
         )
     return tuple(result)

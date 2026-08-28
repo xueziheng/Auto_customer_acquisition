@@ -160,3 +160,10 @@ open_preparation_facts不要求unit/issuer已具备，不能替代正式open的�
 正常缺项按固定顺序返回blockers，损坏规格/typed事实固定失败关闭。
 规格和hash仍用原公共纯函数；仅全部完整时构造原context并返回原context_hash。
 internal public投影不带basis/intent/Need原文/runtime，不是客户文件许可。
+
+`project_quote_approval_display`只将已验证QuoteApprovalPackagePayload逐字段投影中文纯文本，
+通过service公开；不递归dump模型、不读原件、不作权限判断或金额/差额计算。Money保留原
+Decimal字符串和币种，利润/最低目标售价/额外获客空间明确单件核算币种；margin_rate与
+discount_headroom及政策阈值是比例（1=100%），不得当金额或乘百分数。整单仅展示持久合计，
+前版仅展示其原customer/calculation/policy；有序重复条款、FX、证据按索引保留。引用非原件链接，
+批准不自动发送；没有完整Need、basis、来源原文/URL/locator或供应商身份字段。

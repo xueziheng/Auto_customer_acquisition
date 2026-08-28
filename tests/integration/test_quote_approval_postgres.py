@@ -200,6 +200,30 @@ async def bind_real_approvals(c):
     return tuple(ids)
 
 
+async def test_real_approval_reads_project_chinese_display_under_current_guard(approval_case):
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from domains.quotations.service import project_quote_approval_display
+    from shared.errors import PermissionDenied
+
+    c = approval_case
+    ids = await bind_real_approvals(c)
+    tenant = c.quotation.tenant
+    actor = c.quotation.actor.employee_id
+    reader = ApprovalReaderIdentity(employee_id=actor, role="boss")
+    view = await c.approvals.get_for_reader(tenant, ids[0], reader=reader)
+    fact = await c.approvals.read_fact(tenant, ids[0])
+    from domains.quotations.service import parse_quote_approval_payload
+
+    assert view.proposed_change_display == project_quote_approval_display(parse_quote_approval_payload(fact.proposed_change))
+    assert view.proposed_change_display["报价编号"] == c.quote.content.quote_id
+    assert view.can_current_user_decide is False
+    listed = await c.approvals.list_for_reader(tenant, reader=reader)
+    assert next(item for item in listed if item.approval_id == ids[0]).proposed_change_display == view.proposed_change_display
+    await c.quotation.context.update_employee(actor, is_active=False)
+    with pytest.raises(PermissionDenied):
+        await c.approvals.get_for_reader(tenant, ids[0], reader=reader)
+
+
 async def test_real_quote_all_approvals_event_and_receipt_commit_once(approval_case):
     from domains.quotations.schemas import QuoteState
     from workflows.quote_approval.approvals import read_quote_facts

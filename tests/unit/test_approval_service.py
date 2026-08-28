@@ -176,6 +176,14 @@ class QuoteAccessCase:
             owner_employee=fact.owner_employee,
         )
 
+    def display(self, fact):
+        from domains.quotations.service import (
+            parse_quote_approval_payload,
+            project_quote_approval_display,
+        )
+
+        return project_quote_approval_display(parse_quote_approval_payload(fact.proposed_change))
+
     @asynccontextmanager
     async def guard(self, subject, *, actor_id, action):
         from domains.approvals.schemas import ApprovalAccessResult
@@ -326,6 +334,91 @@ async def test_short_quote_decider_does_not_bypass_current_guard():
     with pytest.raises(PermissionDenied):
         await svc.decide(payload.tenant_id, approval_id, True, "independent-boss")
     assert factory.store.packages[approval_id].state.value == "pending"
+
+
+@pytest.mark.parametrize("operation", ["get", "get_for_reader", "list_pending_for", "list_for_reader"])
+async def test_quote_display_runs_only_inside_existing_read_lease(operation):
+    from domains.approvals.schemas import ApprovalReaderIdentity
+
+    svc, _, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    seen = []
+
+    def display(fact):
+        assert guard.held, "展示必须在现有read租约内"
+        seen.append(fact.approval_id)
+        return {"受控中文标签": "纯文本"}
+
+    guard.display = display
+    reader = ApprovalReaderIdentity(employee_id=APPROVER, role=guard.role)
+    if operation == "get":
+        view = await svc.get(payload.tenant_id, approval_id, current_employee=APPROVER)
+    elif operation == "get_for_reader":
+        view = await svc.get_for_reader(payload.tenant_id, approval_id, reader=reader)
+    elif operation == "list_pending_for":
+        view = (await svc.list_pending_for(payload.tenant_id, APPROVER))[0]
+    else:
+        view = (await svc.list_for_reader(payload.tenant_id, reader=reader))[0]
+    assert view.proposed_change_display == {"受控中文标签": "纯文本"}
+    assert seen == [approval_id] and not guard.held
+
+
+@pytest.mark.parametrize("failure", ["guard", "role", "corrupt", "half_namespace", "missing_guard"])
+@pytest.mark.parametrize("operation", ["get", "list"])
+async def test_quote_display_never_runs_for_denied_or_corrupt_read(failure, operation):
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import TradeOSError
+
+    svc, factory, guard, clock = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    calls = []
+    guard.display = lambda fact: calls.append(fact) or {"禁止": "不能到达"}
+    role = guard.role
+    if failure == "guard":
+        guard.allowed = False
+    elif failure == "role":
+        role = "product"
+    elif failure == "corrupt":
+        factory.store.packages[approval_id].title = "changed"
+    elif failure == "half_namespace":
+        factory.store.packages[approval_id].proposed_change["schema_version"] = "quote-approval-incomplete"
+    else:
+        svc = ApprovalServiceImpl(factory, now=lambda: clock[0])
+    reader = ApprovalReaderIdentity(employee_id=APPROVER, role=role)
+    if failure == "guard" and operation == "list":
+        assert await svc.list_for_reader(payload.tenant_id, reader=reader) == []
+    else:
+        with pytest.raises(TradeOSError):
+            if operation == "get":
+                await svc.get_for_reader(payload.tenant_id, approval_id, reader=reader)
+            else:
+                await svc.list_for_reader(payload.tenant_id, reader=reader)
+    assert calls == []
+
+
+async def test_quote_display_missing_dependency_fails_closed_without_json_fallback(monkeypatch):
+    monkeypatch.delattr(QuoteAccessCase, "display")
+    svc, _, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    with pytest.raises(AttributeError):
+        await svc.get(payload.tenant_id, approval_id, current_employee=APPROVER)
+
+
+@pytest.mark.parametrize("kind", [ApprovalType.PLAYBOOK_CHANGE, ApprovalType.COUNTRY_POLICY_CHANGE])
+async def test_legacy_display_remains_exact_original_nested_json_strings(kind):
+    import json
+
+    from workflows.country_policy_change.steps import _approval_display
+
+    svc = _service()
+    change = {"文本": "原值", "before": {"list": ["one", "two"], "value": None}, "after": [1, False]}
+    approval_id = await svc.submit(TENANT, kind, "旧审批", change, "人工确认",
+        BlastRadius(["old"], "批准", "拒绝", False), proposed_by_employee=PROPOSER,
+        owner_employee=PROPOSER, change_set_ref="legacy:display")
+    view = await svc.get(TENANT, approval_id)
+    expected = {key: value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        for key, value in change.items()}
+    assert view.proposed_change_display == expected == _approval_display(change)
 
 
 @pytest.mark.parametrize("operation", ["get", "list"])

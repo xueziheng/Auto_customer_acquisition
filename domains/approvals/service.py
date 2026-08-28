@@ -24,6 +24,10 @@ class QuoteApprovalAccess(Protocol):
         """严格解码安全payload并匹配全部不可变身份。"""
         ...
 
+    def display(self, fact: ApprovalFactView) -> dict[str, str]:
+        """仅在当前read租约内投影已严格绑定的中文纯文本，不读取原件。"""
+        ...
+
     def guard(
         self,
         subject: ApprovalQuoteSubject,

@@ -68,3 +68,8 @@ DeferredQuoteIssuerReader未发布时固定dependency_unavailable，发布后仅
 
 QuoteExpiryDriver只委托既有QuotationVersionService.expire_overdue，tenant与limit必须由
 受信装配显式传入；不创建actor、run、审批回执、定时进程或新的业务到期规则。
+
+QuotationApprovalAccess.display先复用_subject完整绑定校验，再经quotation.service的
+parse_quote_approval_payload与project_quote_approval_display纯委托；无额外IO或跨域私有导入。
+审批域只在原read租约内调用，不以展示替代guard。guard与read_quote_facts的同类model_validate
+逐字段映射保持原strict规则、异常与state/decision推导，不提前cast、补默认或改审批回执。

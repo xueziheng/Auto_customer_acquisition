@@ -264,6 +264,7 @@ class ApprovalServiceImpl:
             )
             return replace(
                 view,
+                proposed_change_display=access.display(fact),
                 can_current_user_decide=view.can_current_user_decide
                 and result.can_decide,
             )
@@ -337,6 +338,7 @@ class ApprovalServiceImpl:
                     result.append(
                         replace(
                             view,
+                            proposed_change_display=access.display(fact),
                             can_current_user_decide=view.can_current_user_decide
                             and current.can_decide,
                         )

@@ -410,6 +410,56 @@ async def test_approval_adapter_reads_persistent_fact_and_maps_guard_role():
         assert result.current_role == "finance"
 
 
+@pytest.mark.parametrize("changes", [{"approval_type": "unknown"}, {"quote_version": None},
+    {"quote_version": True}, {"quote_version": "1"}, {"quote_version": 0}])
+async def test_approval_guard_adapter_keeps_strict_subject_validation(changes):
+    from pydantic import ValidationError
+
+    from tests.unit.test_approval_service import quote_service_case, submit_quote
+    from workflows.quote_approval.approvals import QuotationApprovalAccess
+
+    service, _, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(service)
+    access = QuotationApprovalAccess(object())
+    subject = access.subject(await service.read_fact(payload.tenant_id, approval_id)).model_copy(update=changes)
+    with pytest.raises(ValidationError):
+        async with access.guard(subject, actor_id=payload.prepared_by, action="read"):
+            pytest.fail("非法subject不得进入真实权限端口")
+
+
+@pytest.mark.parametrize("field", ["request_hash", "expires_at_limit"])
+async def test_approval_fact_adapter_keeps_missing_binding_rejection(field):
+    from domains.quotations.errors import QuoteApprovalError
+    from tests.unit.test_approval_service import quote_service_case, submit_quote
+    from workflows.quote_approval.approvals import read_quote_facts
+
+    service, _, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(service)
+    fact = (await service.read_fact(payload.tenant_id, approval_id)).model_copy(update={field: None})
+    source = AsyncMock()
+    source.read_fact.return_value = fact
+    with pytest.raises(QuoteApprovalError) as error:
+        await read_quote_facts(source, payload.tenant_id, (approval_id,))
+    assert error.value.code == "quote_contract_invalid"
+
+
+async def test_approval_fact_adapter_keeps_invalid_state_literal_rejection():
+    from types import SimpleNamespace
+
+    from pydantic import ValidationError
+
+    from tests.unit.test_approval_service import quote_service_case, submit_quote
+    from workflows.quote_approval.approvals import read_quote_facts
+
+    service, _, _, _ = quote_service_case()
+    payload, approval_id = await submit_quote(service)
+    fact = (await service.read_fact(payload.tenant_id, approval_id)).model_copy(update={"state": SimpleNamespace(value="unknown")})
+    source = AsyncMock()
+    source.read_fact.return_value = fact
+    with pytest.raises(ValidationError):
+        await read_quote_facts(source, payload.tenant_id, (approval_id,))
+
+
 def test_quote_approved_outbox_has_only_safe_metadata_and_roundtrips():
     from infra.db.outbox import EVENT_REGISTRY, deserialize, serialize
     from shared.events.catalog import QuoteApproved

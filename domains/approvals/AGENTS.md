@@ -104,3 +104,8 @@ decide顺序为员工/机会guard→审批行UPDATE锁→新时钟→决定及ou
 legacy继续执行emp_前缀校验。decide在现短读/namespace识别之后，真报价用fact_identity，
 legacy保持原前缀规则；非法新版员工固定ValidationError，不增查询、不改变当前guard/锁序/
 自批禁令。该短读意味着非法legacy员工可能先遇缺失或损坏审批，不承诺原错误优先级。
+
+QuoteApprovalAccess.display只用于真报价namespace，在已有当前read租约内覆盖
+ApprovalView.proposed_change_display；中文稳定标签/纯文本值，缺依赖失败关闭，不退回嵌套JSON。
+通用_view及legacy原字典值完全不变（国家政策流程有精确等值依赖）；不新增HTTP字段/端点。
+新版展示键的变更不是存储/审批规则变化，不授权原件或客户文件。

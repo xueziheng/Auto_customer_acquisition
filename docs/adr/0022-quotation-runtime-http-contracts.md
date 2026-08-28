@@ -80,7 +80,7 @@ T5步骤仅用同QuoteWorkflowRunFact.model_validate验证原七字段mapping、
 
 同链发现共享ApprovalServiceImpl仍对新版报价起草人、owner、决定人要求emp_前缀。仅在
 quote_contract_subject成功返回严格subject后跳过submit的两项legacy前缀校验；身份由原
-QuoteDTO.fact_identity原样验证。decide保留ApprovalId/approved/note门，员工格式判断移入
+QuoteDTO调用既有fact_identity原样验证。decide保留ApprovalId/approved/note门，员工格式判断移入
 原_decision_guard短读和namespace识别之后：legacy仍原_optional_id，真报价fact_identity，
 ValueError固定转ValidationError。半namespace/损坏不能回退，无新增SQL、转换、默认身份或
 当前权限/独立审批/锁序/回执变化。代价是非法legacy决定员工可能先遇缺失/损坏package，
@@ -92,5 +92,23 @@ singleton时在campaign之后/workflow之前调用，普通错误不阻其他dri
 
 Linux完整装配测试使用quotation专用白名单stage与固定入口，复用已验收依赖和internal PG、
 非root/read-only/no-cap/无挂载无端口与原预算；SDK网络边界受控，不代表真实S3或客户发送。
-审批HTTP仍为原ApprovalView.proposed_change_display字串字典，不是typed报价载荷；T9展示
-边界另行裁定，本批不新增审批DTO或让UI自行解析自由JSON。
+审批HTTP仍为原ApprovalView.proposed_change_display字串字典，不是typed报价载荷；新版
+中文展示按下节收口，本批不新增审批DTO或让UI自行解析自由JSON。
+
+## 审批中文平面展示收口
+
+报价域公开project_quote_approval_display(QuoteApprovalPackagePayload)->dict[str,str]，显式
+白名单包含本版与前版完整安全customer/calculation/policy、依据身份和确认摘要。所有值是
+纯文本，Money/汇率/metrics仅原Decimal字符串，利润等明确单件核算币种；利润率、折扣空间
+及政策阈值明确比例1=100%，不乘100、不量化、不重算整单利润/前版差额或底线判断。
+重复条款/FX/证据按原顺序索引保留；原件字段、完整Need/basis/Provenance不进入展示。
+
+QuoteApprovalAccess新增纯display，真实workflow adapter先_subject完整绑定，再经两个域
+公共出口解析/投影；审批服务只在两个原当前read lease的replace内覆盖display。原_view、
+HTTP DTO/端点、legacy展示字典（包括country_policy精确等值消费者）、guard/锁/决定与回执
+全部不变。缺display不退JSON，半namespace/损坏/拒权不得投影。代价是新版display键由机器
+字段改为中文稳定标签，未知按旧键解析新版包的消费者须适配；UI只消费生成类型的平面文本。
+
+本次触及adapter发现六项既有类型表达缺陷，仅将原QuoteApprovalSubject九字段及
+QuoteApprovalFact原完整字段构造改为同类model_validate原值mapping；原strict模型和全部
+校验保留，无提前cast/转换/默认、忽略错误或业务分支变化，不转交T10规避该文件类型门。

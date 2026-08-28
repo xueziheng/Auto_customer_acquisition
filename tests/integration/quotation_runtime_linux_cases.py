@@ -364,6 +364,18 @@ async def test_actual_linux_api_worker_quote_approval_file_chain(
                 print("runtime_package_count=" + str(len(packages)))
             assert len(packages) == 1
             package_id = packages[0].approval_id
+            readable = await case.client.get(
+                f"/approvals/{package_id}",
+                headers={"X-Employee-Id": case.actor, "X-Tenant-Id": case.tenant},
+            )
+            assert readable.status_code == 200
+            display = readable.json()["proposed_change_display"]
+            assert display["报价编号"] == quote_id and display["起草员工"] == case.actor
+            assert display["本版本·客户整单合计"] == "200.00 EUR"
+            assert "比例，1=100%" in display["本版本·折扣空间"]
+            assert all(isinstance(value, str) for value in display.values())
+            assert "customer" not in display and "calculation" not in display
+            assert "Private provenance marker" not in json.dumps(display)
             response = await case.client.post(
                 f"/approvals/{package_id}/decide",
                 json={"decision": "approve", "reason": None},
@@ -406,6 +418,7 @@ async def test_actual_linux_api_worker_quote_approval_file_chain(
                 headers={"X-Employee-Id": case.decider, "X-Tenant-Id": case.tenant},
             )
             assert response.status_code == 200
+            assert response.json()["proposed_change_display"] == display
             for _ in range(7):
                 await cycle(runtime)
             final = await runtime_request(case, "GET", f"/quotes/{quote_id}")
