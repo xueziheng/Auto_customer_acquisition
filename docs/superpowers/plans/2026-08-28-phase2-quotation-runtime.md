@@ -27,6 +27,8 @@
 
 ## 2. HTTP映射与身份/幂等
 
+可信当前员工ID沿T6与T8A/B1的fact_identity既有契约，不要求emp_ULID或迁移旧员工；身份仍只来自真实请求依赖，body/query不得自报actor/role。实际factory/ASGI覆盖合法旧员工ID的授权成功及不存在、失活、撤权拒绝，不把格式合法当许可；其余资源ID按对应公开DTO严格规则处理。
+
 下表路径均相对`/costing-quotes`。C=当前在职四成本角色；B=boss且当前在职；U=原NeedUnitAuthorizer的Need/机会权限，涉及消息原件或历史receipt时再叠加T8A现boss-only入站消息ACL；F=当前机会ABAC：sales本人/manager当前直属owner/boss租户，绝不自动包含四成本角色。
 所有路径先可信RequestIdentity；tenant与actor只来自认证，服务再读当前员工。跨tenant/缺对象统一404；真实拒权403；缺依赖503，不伪装空列表。K=必填`Idempotency-Key`，按既有QuoteKey/各域原校验绑定，原样传给对应公共服务，重放不换key；不新增通用幂等表。请求不能自证confirmed_by/at、tenant、role、owner、prepared_by、locked/approved或operation_id。
 

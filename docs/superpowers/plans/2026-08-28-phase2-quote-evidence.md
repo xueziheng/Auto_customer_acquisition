@@ -37,7 +37,9 @@ shared现无protocols目录，端口固定放`shared/evidence_read.py`，下文�
 
 ## 2. 精确共享契约
 
-全部DTO为`BaseModel(strict=True,frozen=True,extra='forbid')`；所有可选字段仍必填None，无静默trim/coerce。ID使用现有NewType且验证canonical前缀/ULID；Hash为64位小写hex；aware时间规范成UTC。原文/bytes字段`repr=False`且不进入普通model_dump；若IPC需要序列化必须白名单显式取字段。
+全部DTO为`BaseModel(strict=True,frozen=True,extra='forbid')`；所有可选字段仍必填None，无静默trim/coerce。ID使用现有NewType且验证canonical前缀/ULID；唯一身份兼容例外是actor_id/EmployeeId：沿T6及QuoteEmployeeFact复用shared.schemas.quote_facts.fact_identity，严格str、非空、无首尾空白/C0-C1控制、最多40字符，不新增emp_ULID要求。格式合法不授予权限，仍须真实reader核tenant/实际ID/在职及当前用途ACL。Hash为64位小写hex；aware时间规范成UTC。原文/bytes字段`repr=False`且不进入普通model_dump；若IPC需要序列化必须白名单显式取字段。
+
+身份兼容测试除canonical正常样例外，增加真实存在的合法旧员工ID经过authorize→AuthorizedEvidenceReference→Gateway结果成功，以及不存在/失活/错tenant/撤权仍拒绝；空值、空白、bool、超40字符/控制字符在资料IO前拒绝。其他新来源/Need/tenant/消息/Artifact ID的严格格式不放松，不迁移或重写员工记录。
 
 ```python
 class DTO(BaseModel):  # 本文件内部严格基座，不作为通用框架导出
@@ -413,7 +415,7 @@ async def test_history_reauth_does_not_read_or_reconfirm(history_case):
 Dockerfile显式ARG PYTHON_IMAGE输入上述固定index，不用mutable tag；构建记录目标manifest、最终产物image ID和所有解析后包版本。实际T8A实施已获准仅在专用构建阶段获取该官方image及当前项目已列runtime/dev测试依赖；不安装全局环境、不取生产配置。未锁上限依赖不能宣称完全可复现；运行阶段不联网安装。
 
 控制器后续已pull上述固定官方index，镜像缓存保留；未安装或构建项目。纯OS临时容器使用network none/read-only/uid65534/cap_drop ALL/no-new-privileges、32PID/256MiB无swap/1CPU，无宿主挂载/端口，结束自动移除。实测Linux aarch64 CPython(3,12,14)，child RLIMIT_AS=32MiB后48MiB bytearray被MemoryError阻断（exit0）；CPU soft1s/hard2s、有限父5s期限下由SIGXCPU结束（returncode -24）；两个stderr均0，命令exit0。
-该记录只证明目标OS限额的环境可行性，未运行新client/worker/probe/profile/原件/PG链，不替代T8A真实实现验收，也不改变下面fixture预算。未创建PDF，T7作者marker仍未运行；本次文档代理未执行任何镜像/代码。
+该记录只证明目标OS限额的环境可行性，未运行新client/worker/probe/profile/原件/PG链，不替代T8A真实实现验收，也不改变下面fixture预算。该OS预检当时未创建PDF；后续T7首个实际PDF作者命令前，控制器已成功执行本批marker恰一次，后续T8/T10不得重复。记录见本计划进度账本。
 
 ### 显式测试fixture预算（不是部署默认）
 

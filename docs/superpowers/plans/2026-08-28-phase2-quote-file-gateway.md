@@ -43,6 +43,7 @@
 ## 2. 既有消费契约与新文件域契约
 
 以下T6公共签名是前置目标，需核真实交付：
+T6最终已保留既有EmployeeId身份形状：actor_id用shared.schemas.quote_facts.fact_identity（严格str、非空、无首尾空白/C0-C1控制、最多40字符），不新增emp_ULID门。新文件域、Gateway应用和技术DTO中由同一员工ID包装的user_id保持该兼容；仍核真实tenant/ID/在职/当前权限，格式本身不是授权。quote/file/artifact/run/ToolCallId等本批严格ID不变，增加合法旧员工ID及非法/不存在/撤权零IO反例。
 
 ```python
 class QuoteFileService(Protocol):
@@ -463,4 +464,3 @@ B1不触真实发送；T4未装配QuoteSendReceiptReader的现实仍保持，下
 2. T8A实际BoundedObjectBlobTransport错误及S3实现是否接受已验证generated键、支持累计上限+哨兵与资源关闭；仅可做同目录窄复用，不退回旧get。§8.2具体异常断言按真实契约选择，不凭空引用类。
 3. T7真实QuotePdfRenderer/错误/唯一模板已交付且合法投影可真实渲染；未交付只能保留RED/阻断，不能用受控bytes冒充整链renderer验收。
 4. 为本次ADR分配未占号路径；保留原ToolCallId位置和四工具窄manifest裁定，不借实现增新迁移、全局stage或fencing。除此之外无新增业务裁定请求。
-

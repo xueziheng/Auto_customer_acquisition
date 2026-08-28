@@ -304,13 +304,13 @@ T4/T5实际交付后核对quote/receipt/run reader及构造依赖再派发；不
 完整接口与三个TDD提交以 [离线PDF子计划](2026-08-28-phase2-quote-pdf-renderer.md) 为准。
 T4客户投影验证、T6shared模板实际交付后再派发；首次实际PDF作者命令前按已读PDF技能执行marker，T10另做逐页视觉验收。
 
-- [ ] QuotePdfRenderer Protocol在quotations.service；connector仅消费shared唯一CustomerQuoteView，固定错误跨层同class，不导入域。
-- [ ] runtime固定reportlab==5.0.1与pypdf==6.16.2；离线本地Vera，实际glyph缺字失败，不替换已批准文字。
-- [ ] 必填maximum_bytes/maximum_pages/maximum_text_bytes；文本在story前、页数在下一页绘制前、bytes在有界sink拒超限，无生产默认值。
-- [ ] 正式客户DTO由真实quote唯一投影并逐字段验证；renderer不重算或修正金额，不自授批准/访问权。
-- [ ] 固定模板/invariant/metadata，全字段及有序条款、可分页长文；无URL图片/附件/动作。
-- [ ] 同实例/新实例/其他文档后/新进程bytes一致；实际PDF对象图/反例检查，不靠IndirectObject字符串声称安全。
-- [ ] 真实ReportLab+pypdf受控测试与结构检查；不把文本提取当布局验收，也不把输出大小限制称为硬内存沙箱。
+- [x] QuotePdfRenderer Protocol在quotations.service；connector仅消费shared唯一CustomerQuoteView，固定错误跨层同class，不导入域。
+- [x] runtime固定reportlab==5.0.1与pypdf==6.16.2；离线本地Vera，实际glyph缺字失败，不替换已批准文字。
+- [x] 必填maximum_bytes/maximum_pages/maximum_text_bytes；文本在story前、页数在下一页绘制前、bytes在有界sink拒超限，无生产默认值。
+- [x] 正式客户DTO由真实quote唯一投影并逐字段验证；renderer不重算或修正金额，不自授批准/访问权。
+- [x] 固定模板/invariant/metadata，全字段及有序条款、可分页长文；无URL图片/附件/动作。
+- [x] 同实例/新实例/其他文档后/新进程bytes一致；实际PDF对象图/反例检查，不靠IndirectObject字符串声称安全。
+- [x] 真实ReportLab+pypdf受控测试与结构检查；不把文本提取当布局验收，也不把输出大小限制称为硬内存沙箱。
 
 ## Task 8：Gateway 文件插件、API 和 scheduler 实际装配
 
