@@ -279,8 +279,15 @@ def test_breakdown_uses_grouped_costs_and_rounded_customer_revenue() -> None:
     assert result.computed_at == datetime(2026, 8, 28, 9, tzinfo=UTC)
 
 
-def test_breakdown_blocks_manual_price_below_the_margin_floor() -> None:
-    """没有例外审批输入时，低于底线的正式客户价不能生成报价快照。"""
+@pytest.mark.parametrize(
+    ("unit_price", "full_cost_profit"),
+    [(D(9), D(1)), (D(7), D(-1))],
+)
+def test_breakdown_preserves_below_floor_and_loss_metrics(
+    unit_price: D,
+    full_cost_profit: D,
+) -> None:
+    """低于底线和亏损仍是待审批报价的事实，不能在计算阶段被隐藏。"""
     sheet = CostSheet(
         cost_sheet_id=CostSheetId("sheet-floor"),
         tenant_id=TenantId("tenant-1"),
@@ -310,23 +317,28 @@ def test_breakdown_blocks_manual_price_below_the_margin_floor() -> None:
         effective_from=datetime(2026, 8, 28, 8, tzinfo=UTC),
     )
 
-    with pytest.raises(ValidationError, match="低于最低可售价"):
-        compute_breakdown(
-            sheet,
-            margin_rule,
-            policy=_pricing_policy(),
-            options=PricingOptions(
-                mode="manual",
-                unit_price=Money(D(9), CurrencyCode("USD")),
-                rounding=RoundingPolicy(
-                    unit_places=2,
-                    total_places=2,
-                    strategy="ROUND_HALF_UP",
-                ),
-                quote_fx=None,
-                algorithm_version="costing-v1",
+    result = compute_breakdown(
+        sheet,
+        margin_rule,
+        policy=_pricing_policy(),
+        options=PricingOptions(
+            mode="manual",
+            unit_price=Money(unit_price, CurrencyCode("USD")),
+            rounding=RoundingPolicy(
+                unit_places=2,
+                total_places=2,
+                strategy="ROUND_HALF_UP",
             ),
-            coverage_hash="coverage-hash",
-            context_hash="context-hash",
-            now=datetime(2026, 8, 28, 9, tzinfo=UTC),
-        )
+            quote_fx=None,
+            algorithm_version="costing-v1",
+        ),
+        coverage_hash="coverage-hash",
+        context_hash="context-hash",
+        now=datetime(2026, 8, 28, 9, tzinfo=UTC),
+    )
+
+    assert result.metrics.minimum_price == D(10)
+    assert result.metrics.full_cost_profit == full_cost_profit
+    assert result.metrics.margin_rate < D("0.20")
+    assert result.metrics.discount_headroom == D(0)
+    assert result.metrics.additional_acquisition_headroom == D(0)

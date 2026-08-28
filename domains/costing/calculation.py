@@ -356,8 +356,6 @@ def compute_breakdown(
             policy.target_margin_rate,
             effective_base_revenue.amount,
         )
-        if effective_base_revenue.amount < metrics.minimum_price:
-            raise ValidationError("正式售价低于最低可售价，必须先取得独立例外审批")
         return CalculationSnapshot(
             cost_sheet_id=str(sheet.cost_sheet_id),
             policy_id=policy.policy_id,
