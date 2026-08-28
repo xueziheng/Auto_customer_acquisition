@@ -47,7 +47,7 @@ class ControlledActors:
         self.tenant = tenant
         self.actors = {BOSS.actor_id: BOSS, FINANCE.actor_id: FINANCE}
 
-    async def read_current(self, tenant_id: TenantId, actor_id: str):
+    async def read_current(self, tenant_id: TenantId, actor_id: EmployeeId):
         return self.actors.get(actor_id) if tenant_id == self.tenant else None
 
 

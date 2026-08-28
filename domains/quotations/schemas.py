@@ -7,6 +7,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from shared.schemas.money import Money
+from shared.schemas.quote_creation import QuoteRoundingInput as QuoteRoundingInput
+from shared.schemas.quote_creation import QuoteTerm as QuoteTerm
 
 
 @dataclass(frozen=True)

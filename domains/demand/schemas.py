@@ -35,6 +35,7 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.money import Money
 from shared.schemas.provenance import FactualField, SourceType
+from shared.schemas.quote_facts import NeedQuoteFacts as NeedQuoteFacts
 
 NeedUnitAction = Literal["read", "confirm"]
 NeedUnitErrorCode = Literal[
@@ -195,29 +196,6 @@ class NeedUnitConfirmationView(_NeedUnitDTO):
         ):
             raise ValueError("单位确认receipt的事实与来源绑定不一致")
         return self
-
-
-class NeedQuoteFacts(_NeedUnitDTO):
-    """完整Need事实投影，不用展示摘要补造Provenance。"""
-
-    tenant_id: TenantId
-    need_id: ValidatedNeedId
-    account_id: ProspectAccountId
-    status: str
-    product_category: FactualField[str]
-    application: FactualField[str] | None
-    material: FactualField[str] | None
-    size_spec: FactualField[str] | None
-    packaging: FactualField[str] | None
-    destination: FactualField[str] | None
-    current_supply_issue: FactualField[str] | None
-    certification_required: FactualField[str] | None
-    unit: FactualField[str] | None
-    quantity: FactualField[int] | None
-    required_by: FactualField[date] | None
-    target_price: FactualField[Money] | None
-    unit_quantity_fact_hash: _UnitHash | None
-    unit_confirmation_id: _UnitId | None
 
 
 class NeedUnitStoredConfirmation(_NeedUnitDTO):

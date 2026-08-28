@@ -15,6 +15,7 @@ from shared.schemas.identifiers import (
     QuoteId,
     TenantId,
 )
+from shared.schemas.quote_creation import quote_creation_request_hash as quote_creation_request_hash
 
 
 def contains_forbidden_commitment(text: str) -> list[ForbiddenAutoCommitment]:

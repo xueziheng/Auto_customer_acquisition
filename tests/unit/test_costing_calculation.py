@@ -82,6 +82,21 @@ def _rate(base: str, quote: str, value: str) -> FxRate:
     )
 
 
+@pytest.mark.parametrize("mode", ["target", "manual"])
+def test_same_currency_does_not_accept_unrelated_identity_fx(mode: str) -> None:
+    """汇率值为一不代表其币种对适用于本成本表。"""
+    from types import SimpleNamespace
+
+    calc = importlib.import_module("domains.costing.calculation")
+    sheet = SimpleNamespace(base_currency="USD", quote_currency="USD")
+    options = SimpleNamespace(quote_fx=_rate("EUR", "CNY", "1"))
+    with pytest.raises(ValidationError):
+        if mode == "target":
+            calc._base_to_quote_price(Decimal("2"), sheet=sheet, options=options)
+        else:
+            calc._quote_to_base_revenue(Money(Decimal("2"), "USD"), sheet=sheet, options=options)
+
+
 def test_unit_full_cost_distributes_order_cost_and_ignores_unconfirmed_suggestions() -> None:
     sheet = _sheet(
         _item("1.25", "USD", per_unit=True),

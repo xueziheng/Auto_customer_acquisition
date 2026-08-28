@@ -182,7 +182,11 @@ def _quote_to_base_revenue(
     if quote_revenue.currency != quote_currency:
         raise ValidationError("客户单价币种必须与成本表报价币种一致")
     if base_currency == quote_currency:
-        if options.quote_fx is not None and options.quote_fx.rate != Decimal(1):
+        if options.quote_fx is not None and (
+            options.quote_fx.rate != Decimal(1)
+            or options.quote_fx.base != base_currency
+            or options.quote_fx.quote != quote_currency
+        ):
             raise ValidationError("同币种报价汇率必须为 1")
         return Money(quote_revenue.amount, base_currency)
     quote_fx = options.quote_fx
@@ -203,7 +207,11 @@ def _base_to_quote_price(
     base_currency = CurrencyCode(sheet.base_currency)
     quote_currency = CurrencyCode(sheet.quote_currency)
     if base_currency == quote_currency:
-        if options.quote_fx is not None and options.quote_fx.rate != Decimal(1):
+        if options.quote_fx is not None and (
+            options.quote_fx.rate != Decimal(1)
+            or options.quote_fx.base != base_currency
+            or options.quote_fx.quote != quote_currency
+        ):
             raise ValidationError("同币种报价汇率必须为 1")
         return Money(base_price, quote_currency)
     quote_fx = options.quote_fx

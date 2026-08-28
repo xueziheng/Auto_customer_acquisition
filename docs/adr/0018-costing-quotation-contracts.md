@@ -108,3 +108,14 @@ Provenance（含None）；来源或确认时间变化即使数量同值也失效
 本切片仅验证真实隔离Postgres和受控权限/来源端口；真实Gateway原文、员工/机会锁适配、
 HTTP/UI及生产装配不在T3A中。后续冻结应在自己持锁连接投影完整facts，不另调用get_facts
 产生旁路连接；成本/报价通过上层转换DTO，不能跨域读取demand私有模型。
+
+## Task 3B：共享事实与创建意图
+
+`NeedQuoteFacts`唯一类迁至`shared/schemas/quote_facts.py`，demand原名同class重导出；
+字段、确认人ID校验、UTC规则及旧事实hash字节均保留。数量正整数、人工单位绑定有效性
+和旧错误码仍由demand公共函数决定，shared只包含中立形状与编码，不承载业务规则。
+
+`QuoteCreationIntent`以`quote-create-request-v1`绑定完整请求，包括原起草人、条款原顺序
+与重复项、期限、scope确认及显式修订版本。其Decimal规范化不依赖运行时精度，且与保留
+尾零的T3A事实编码隔离；不能为了统一格式而改变历史事实身份。operation/completion为
+中立内部DTO，不接受客户端自证完成；真实报价存在性仍须由后续可信报价reader证明。

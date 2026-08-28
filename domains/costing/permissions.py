@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from shared.errors import PermissionDenied, ValidationError
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import EmployeeId, TenantId
 
 
 class CostingAction(str, Enum):
@@ -85,7 +85,7 @@ class Phase1CostingAuthorizer:
 class CostingActorReader(Protocol):
     """由员工公共服务投影当前在职身份；不存在/离职返回 None。"""
 
-    async def read_current(self, tenant_id: TenantId, actor_id: str) -> CostingActor | None:
+    async def read_current(self, tenant_id: TenantId, actor_id: EmployeeId) -> CostingActor | None:
         """按租户读取当前角色与范围，不接受请求体角色自证。"""
         ...
 

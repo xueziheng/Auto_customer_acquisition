@@ -126,7 +126,7 @@ class CostingQuoteServiceImpl:
     ) -> None:
         """当前身份与服务端传入身份必须一致，离职和角色变化默认拒绝。"""
         try:
-            current = await self._actors.read_current(tenant_id, actor.actor_id)
+            current = await self._actors.read_current(tenant_id, EmployeeId(actor.actor_id))
         except Exception as exc:
             raise PermissionDenied("无法核验当前员工身份") from exc
         if current is None or current != actor:
