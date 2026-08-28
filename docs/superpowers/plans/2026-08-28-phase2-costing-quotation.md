@@ -521,6 +521,16 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
+- A入口执行证据细化：固定pytest仅追加-rA，输出精确模块/已知函数匹配后映射的两个预定PASSED常量，完全剥离参数、不转发未知通过行；host wrapper核首函数1次、裁剪反例2次，同时保留exit0/no skipped。补过滤器正反测试防任意正文/参数泄露，不扩用例范围、时间资源或通用日志框架。这是固定A入口裁定的验证细化。
+
+- 全量回归日志隔离补正：仅tests/integration/test_demo_outreach.py的test_demo_disposes_engine_when_composition_fails隔离_configure_safe_audit_logging，补root level/handlers不变保护，保留真实生产安全日志配置、原有子进程日志测试及报价caplog断言。最小有序RED证据为demo测试后38项日志断言失败，原因是root被留在CRITICAL；不是Alembic问题。代价是一个测试的外部状态隔离维护，错误隔离可能遮蔽日志行为，故原安全日志测试及有序报价回归仍须执行，不改生产logger。
+
+- Linux来源用例归属补正：tests/integration/test_quote_source_readers.py纯机械改名quote_source_readers_linux_cases.py，同步quote_evidence_linux_support的构建白名单和固定子pytest路径；原三项测试体、Linux断言、真实parser/PG/Gateway链及180/240秒预算不变。host test_quote_source_readers_linux.py仍默认收集并必须执行，不用skip或全局collect_ignore掩盖Mac失败。代价是显式用例路径维护，若漏接runner会静默丢覆盖，须固定路径断言与真实Linux三项执行证据。
+
+- 显式旧契约快照补正：仅tests/integration/test_repositories.py按独立0042–0046迁移更新显式列/索引/约束预期；test_search_quota.py在干净tmp迁移副本核single head/实际数据库版本并保持0038→head完整往返，不把0040简单换成0046；tests/unit/test_outbox_serialization.py明确加入QuoteApproved同class/安全ID往返，保留未知事件拒绝。新增允许编辑这些测试文件，不把它们加入Linux镜像白名单，不改迁移/业务schema或从被测ORM动态生成自身预期。代价是显式快照维护与实际PG回归时间；错误预期可能隐藏schema/事件漂移，须独立迁移对照及旧新artifact/审批/单位/quota测试。
+
+- A runner固定入口补正：run_chain_cases显式with_command(["python", "-m", "tests.integration.quote_evidence_linux_support"])，与原A Dockerfile入口一致；不开放任意命令、不改资源/网络/180与240秒预算。新增具名RED证明此前调用次数为0，再核固定命令及最新镜像内原三来源用例真实执行。此前使用T10 target镜像时继承其CMD而实际运行T10链，旧wrapper passed不能当A覆盖；显式command的resource runner不受影响。代价是入口契约维护及新镜像重验；若路径不对仍可能生成假验收，须实际测试身份/数量证据而非只搜passed。保留原44 failed完整输出，定向通过后再跑当前源码完整门。
+
 - 验收产物保留：仅最终output/pdf/t10-controlled-approved-quote.pdf，以及output/playwright/t10-1c6ab00109e941cca22b87cc795b56c3/下quote-1280.png、quote-390.png、approval-1280.png、result.json五件受控产物纳入提交，确保验收链接克隆后可读。主控已核无凭证/真实客户资料；逐路径stage，不把整个output、日志、旧样例或tmp纳入，不删本地产物。代价是二进制体积及快照维护；其中端口/ID是历史测试上下文，不代表已启用服务。
 
 - T10资格夹具自审补正：HistoricalEligibility不得硬编码qualified_categories。仅在测试helper保存已由公开create_hypothesis返回的ID/同一Demand服务，get_contact_eligibility每次通过公开get_hypothesis同租户读取，精确核企业归属及inferred/contacting后投影真实category；缺失、错企业或非活跃态失败关闭，保留原联系人/合法依据/国家/类型公开事实。不新增生产provider方法，不把假设当ValidatedNeed；先补硬编码误接受的具名RED与实际类别/错企业/状态反例，再跑真实Linux闭环、整DOM、结构/Ruff与当前源码完整回归。代价是测试前置多一次公开读取与再次全量的本地资源/时间；若映射错误会让历史触达资格失真，不能沿用旧helper结果冒充最终验收。
