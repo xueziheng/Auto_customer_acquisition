@@ -21,6 +21,22 @@ from shared.schemas.identifiers import (
 from shared.schemas.money import FxRate, Money, PriceBasis
 
 
+def _require_numeric_precision(
+    value: Decimal,
+    *,
+    precision: int,
+    scale: int,
+    field: str,
+) -> None:
+    """拒绝会被既有 Numeric 列静默舍入或溢出的原始业务输入。"""
+    sign, digits, exponent = value.as_tuple()
+    del sign
+    fractional_digits = max(-exponent, 0)
+    integer_digits = max(len(digits) + exponent, 0)
+    if fractional_digits > scale or integer_digits > precision - scale:
+        raise ValidationError(f"{field}超出存储精度")
+
+
 class CostItemType(str, Enum):
     """成本项类型。设计稿第 18 节的完整清单。
 
@@ -101,6 +117,12 @@ class CostItem:
             raise ValidationError("成本项类型无效")
         if not isinstance(self.amount, Money) or self.amount.amount < 0:
             raise ValidationError("成本项金额不能为负")
+        _require_numeric_precision(
+            self.amount.amount,
+            precision=28,
+            scale=12,
+            field="成本项金额",
+        )
         if self.price_basis not in {
             PriceBasis.INDICATIVE,
             PriceBasis.QUOTED,
@@ -190,6 +212,12 @@ class CostSheet:
             raise ValidationError("成本表汇率快照无效")
         rate_bases: set[str] = set()
         for rate in self.fx_rates:
+            _require_numeric_precision(
+                rate.rate,
+                precision=28,
+                scale=12,
+                field="汇率",
+            )
             if rate.quote != self.base_currency:
                 raise ValidationError("汇率快照目标币种必须是成本表核算币种")
             if rate.base in rate_bases:
@@ -213,8 +241,7 @@ class CostSheet:
         （硬边界 7）。
         """
         return any(
-            item.entered_by is not None
-            and item.price_basis == PriceBasis.INDICATIVE
+            item.entered_by is not None and item.price_basis == PriceBasis.INDICATIVE
             for item in self.items
         )
 
@@ -321,10 +348,15 @@ class MarginRule:
         if not isinstance(self.tenant_id, str) or not self.tenant_id.strip():
             raise ValidationError("利润规则租户无效")
         rates = (self.minimum_margin_rate, self.target_margin_rate)
-        if any(
-            not isinstance(rate, Decimal) or not rate.is_finite() for rate in rates
-        ):
+        if any(not isinstance(rate, Decimal) or not rate.is_finite() for rate in rates):
             raise ValidationError("利润率必须是有限 Decimal")
+        for rate in rates:
+            _require_numeric_precision(
+                rate,
+                precision=18,
+                scale=12,
+                field="利润率",
+            )
         if not (
             Decimal(0)
             <= self.minimum_margin_rate

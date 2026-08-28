@@ -14,7 +14,7 @@ from shared.schemas.identifiers import (
     OpportunityId,
     TenantId,
 )
-from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.money import CurrencyCode, FxRate, Money
 
 _models = importlib.import_module("domains.costing.models")
 CostItem = _models.CostItem
@@ -167,3 +167,40 @@ def test_margin_rule_accepts_explicit_decimal_policy_without_defaults() -> None:
 
     assert rule.minimum_margin_rate == Decimal("0.15")
     assert rule.target_margin_rate == Decimal("0.25")
+
+
+def test_cost_inputs_reject_values_that_numeric_storage_would_round() -> None:
+    """成本和利润规则的原始输入不能依靠数据库静默量化。"""
+    with pytest.raises(ValidationError, match="存储精度"):
+        CostItem(
+            item_type=CostItemType.PRODUCT_PURCHASE,
+            amount=Money(Decimal("0.1234567890123"), CurrencyCode("USD")),
+            price_basis="quoted",
+            is_per_unit=True,
+            source_ref="supplier-quote",
+            entered_by=EmployeeId("employee-one"),
+        )
+    with pytest.raises(ValidationError, match="存储精度"):
+        MarginRule(
+            tenant_id=TenantId("tenant-one"),
+            minimum_margin_rate=Decimal("0.1234567890123"),
+            target_margin_rate=Decimal("0.25"),
+            effective_from=datetime(2026, 8, 21, 10, tzinfo=UTC),
+        )
+
+
+def test_cost_sheet_rejects_fx_rate_that_existing_storage_would_round() -> None:
+    """锁定汇率也属于原始输入，不能由 Numeric(28,12) 偷偷改值。"""
+    values = vars(_sheet(_item(CostItemType.PRODUCT_PURCHASE))).copy()
+    values["fx_rates"] = (
+        FxRate(
+            base=CurrencyCode("CNY"),
+            quote=CurrencyCode("USD"),
+            rate=Decimal("0.1234567890123"),
+            observed_at=datetime(2026, 8, 21, 10, tzinfo=UTC),
+            source="manual-fx",
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="存储精度"):
+        CostSheet(**values)

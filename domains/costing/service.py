@@ -5,13 +5,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from domains.costing.calculation import compute_breakdown
 from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
 from domains.costing.models import (
-    CostBreakdown,
     CostItemType,
     CostSheet,
     CostSheetVersion,
-    MarginRule,
 )
 from domains.costing.permissions import CostingActor
 from domains.costing.schemas import (
@@ -26,6 +25,14 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from shared.schemas.money import CurrencyCode, Money, PriceBasis, convert
+
+__all__ = (
+    "CostingService",
+    "assess_quote_readiness",
+    "compute_breakdown",
+    "compute_unit_full_cost",
+    "cost_item_type_values",
+)
 
 
 def cost_item_type_values() -> tuple[str, ...]:
@@ -127,26 +134,6 @@ def compute_unit_full_cost(sheet: CostSheet) -> Money:
             amount = amount.multiply(Decimal(1) / Decimal(sheet.quantity))
         total = total.add(amount)
     return total
-
-
-def compute_breakdown(
-    sheet: CostSheet, margin_rule: MarginRule
-) -> CostBreakdown:
-    """确定性成本计算。**纯函数，模块级，不在 Protocol 里。**
-
-    放在服务接口之外是刻意的：计算不依赖任何 IO，测试直接构造
-    CostSheet 就能验证每个数字。这是硬边界 2 的执行点。
-
-    实现要求：
-    - 全程 Decimal，任何中间值出现 float 都是缺陷
-    - 单件成本 = 逐项换算到 base_currency 后按 is_per_unit 折算再合计
-    - 换算用 sheet 绑定的汇率快照，**不查当前汇率**
-    - 舍入只在最终展示值上做，中间值保留精度
-    - ``inputs_hash`` 覆盖全部输入（成本项、数量、汇率、规则），
-      用于验证可复现性
-    - 成本项为空时抛错，不返回零成本——零成本的报价是事故
-    """
-    raise NotImplementedError
 
 
 @runtime_checkable
