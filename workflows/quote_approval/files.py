@@ -351,22 +351,16 @@ class QuoteFilesApplication:
                 },
                 snapshot=snapshot,
             )
-            if (
-                not isinstance(payload, QuoteFileRecoveryPayload)
-                or (
-                    payload.recovery_call_id,
-                    payload.original_generation_call_id,
-                    payload.file.quote_id,
-                    payload.file.file_id,
-                )
-                != (
-                    result.tool_call_id,
-                    original_generation_call_id,
-                    quote_id,
-                    (result.output or {}).get("provider_ref"),
-                )
-                or (result.output or {}).get("status")
-                != "metadata_recovered_original_unresolved"
+            if not isinstance(payload, QuoteFileRecoveryPayload) or (
+                payload.recovery_call_id,
+                payload.original_generation_call_id,
+                payload.file.quote_id,
+                payload.file.file_id,
+            ) != (
+                result.tool_call_id,
+                original_generation_call_id,
+                quote_id,
+                (result.output or {}).get("provider_ref"),
             ):
                 raise self._error("storage_inconsistent", result)
             return QuoteFileRecoveryResult(

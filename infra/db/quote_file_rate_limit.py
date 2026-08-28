@@ -191,6 +191,8 @@ class PostgresQuoteFileGenerationRateLimiter:
                 committing = True
             return decision
         except QuoteFileRateError:
+            if committing:
+                raise QuoteFileRateError("commit_unknown") from None
             raise
         except ValidationError:
             raise QuoteFileRateError(

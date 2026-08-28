@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from domains.quotations.schemas import QuoteFileView
 from shared.errors import TradeOSError
@@ -33,6 +33,14 @@ class QuoteFileRecoveryResult(FileDTO):
     original_status_at_check: Literal["executing"]
     original_ledger_modified: Literal[False]
     checked_at: Annotated[datetime, AfterValidator(fact_utc)]
+
+    @field_validator("original_ledger_modified", mode="before")
+    @classmethod
+    def unchanged(cls, value: object) -> object:
+        """Literal的数值相等性不能把0伪装成技术布尔事实。"""
+        if value is not False:
+            raise ValueError("原调用账本修改标记无效")
+        return value
 
 
 class QuoteFileApiError(FileDTO):

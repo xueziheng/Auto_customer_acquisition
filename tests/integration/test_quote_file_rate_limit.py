@@ -516,7 +516,9 @@ async def test_executing_is_not_reclaimed_after_lease_expiry(
         await old
 
 
-@pytest.mark.parametrize("failure", ["close", "close_validation", "commit", "cancel"])
+@pytest.mark.parametrize(
+    "failure", ["close", "close_validation", "close_rate_error", "commit", "cancel"]
+)
 async def test_reservation_unknown_or_cancel_never_enters_renderer(rate_case, failure):
     from shared.errors import ValidationError
 
@@ -547,6 +549,10 @@ async def test_reservation_unknown_or_cancel_never_enters_renderer(rate_case, fa
         async def __aexit__(self, *args):
             await self.real.__aexit__(*args)
             if failure.startswith("close") and args[0] is None:
+                if failure == "close_rate_error":
+                    from tool_gateway.file_rate_limit import QuoteFileRateError
+
+                    raise QuoteFileRateError("claim_invalid")
                 raise (
                     ValidationError("controlled-close-response")
                     if failure == "close_validation"

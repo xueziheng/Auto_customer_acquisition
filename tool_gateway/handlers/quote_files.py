@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Annotated, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, cast
 
 from pydantic import AfterValidator, Field
 from pydantic import ValidationError as ModelValidationError
@@ -61,11 +61,14 @@ from tool_gateway.manifest import (
     CostClass,
     IdempotencyRequirement,
     RiskLevel,
-    ToolHandler,
     ToolManifest,
     ToolRegistry,
 )
 from tool_gateway.pipeline import PreparedToolCall, ToolCallContext
+from tool_gateway.quote_file_ledger import QuoteRecoveryAuditError
+
+if TYPE_CHECKING:
+    from tool_gateway.handlers.quote_file_recovery import QuoteFileRecoveryHandler
 
 QuoteFileFailureCode = (
     QuoteFileBlockerCode
@@ -300,6 +303,8 @@ def quote_file_failure_code(
     error: Exception, *, write_attempted: bool = False
 ) -> QuoteFileFailureCode:
     """只识别明确typed异常；未知错误不读取str或任意code属性。"""
+    if isinstance(error, QuoteRecoveryAuditError):
+        return error.code
     if isinstance(error, (QuoteFileAccessPermissionError, QuoteFilePermissionError)):
         return "permission_denied"
     if isinstance(error, QuoteFileAccessError):
@@ -512,11 +517,6 @@ def _manifest(
     output: dict[str, object] = {
         "provider_ref": {"type": "string", "pattern": rf"^qfl_{ULID}$"}
     }
-    if recovery:
-        output["status"] = {
-            "type": "string",
-            "enum": ["metadata_recovered_original_unresolved"],
-        }
     params = (
         ("quote_id",)
         if generate
@@ -917,7 +917,7 @@ def register_quote_file_tools(
     generate: QuoteFileGenerateHandler,
     read: QuoteFileReadHandler,
     history: QuoteFileReadHandler,
-    recovery: ToolHandler,
+    recovery: QuoteFileRecoveryHandler,
 ) -> None:
     """只注册四固定实例，不触旧email/DNS工具集合。"""
     for manifest, handler in (
