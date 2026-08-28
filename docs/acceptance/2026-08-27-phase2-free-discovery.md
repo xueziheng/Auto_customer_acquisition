@@ -1,13 +1,13 @@
 # Phase 2 首批免费来源获客验收
 
 实际验收日期：2026-08-28（Asia/Shanghai）。文件名沿用2026-08-27计划日期。
-工作分支：`codex/phase2-free-discovery`；Task5起点：`cdcd6522985213f00b13fa413944bb955f499849`。
+开发分支：`codex/phase2-free-discovery`（已按用户选择本地合并）；Task5起点：`cdcd6522985213f00b13fa413944bb955f499849`。
 
 ## 结论与边界
 
 工程实现、受控验收和最新树全量复验完成。Task1–5已完成各自独立审查及复审；
-**最终全分支审查的两项Important已统一修复并通过独立复审，无未解决审查项。合并仍由用户选择，不视为已经合并或生产启用。**
-没有推送、部署、真实发信或商业数据API调用；main未改动。
+**最终全分支审查的两项Important已统一修复并通过独立复审，无未解决审查项。用户选择本地合并后，main已从0fb9a48快进到6ee2613，无冲突；合并后完整复验通过，结果见末节。**
+没有推送、部署、真实发信或商业数据API调用；本地合并不等于生产启用。
 
 本批是Phase2获客增强，不是整个Phase2完成。后续寻源、成本、报价保留。
 Phase1真实Campaign、客户原话/Provenance、健康发件信誉与接管SLA运营验收仍为 `not_run`。
@@ -245,5 +245,31 @@ console error/warn为空；列表外、404和竞态仍以新增自动测试为�
 - Task5独立审查：初审1项Important，修复1a834e5后scoped复审通过，无新增问题。
 - 最终全分支审查：两项Important经唯一统一修复波次及独立scoped复审全部关闭，无新问题。
 - 最新完整验证：4231后端、8E2E、187前端通过；结构/类型/构建/敏感扫描/生成契约检查通过。133旧lint warnings及上述启动异常保留。
-- 本地集成：工程与受控验收条件满足，等待用户选择；本任务未合并、推送、部署或真实发信。main仍为本批起点0fb9a48。
+- 本地集成：已按用户选择无冲突快进到6ee2613，合并后复验通过；未推送、部署或真实发信。已清理本批开发分支和工作树，全部提交保留在main；其他工作树未动。
 - 真实账户、三类公开页联网、真实模型及完整生产scheduler：仍为not_run，不属于本批受控结果。
+
+## 本地main合并后验证（2026-08-28）
+
+用户明确选择本地合并；只合入已审查分支，没有拉取其他远端改动、推送或部署。
+本节所有命令在`/Volumes/T7/Company/Auto_customer_acquisition`（前端在其`apps/web`）执行，
+Python和Node版本与前文相同；Python显式`PYTHONPATH`改为该主工作区，后端仍使用
+`env -u TEST_DATABASE_URL`及测试自建隔离数据库，没有改业务代码或生产配置。
+
+首次后端复验为3487passed/738skipped/8deselected/6errors（69.91s），不能当全量通过。
+已定位本机Docker Desktop未运行、配置socket不存在；CLI与Python Docker SDK都无法连接。
+通过`docker desktop start`启动既有测试运行时后，`docker info`和SDK ping均成功；
+不改代码/断言/数据库配置，在相同main代码上重新运行，结果如下：
+
+| 合并后命令 | 结果 |
+|---|---|
+| `python3 -m pytest -m 'not e2e' -q --tb=short` | **4231 passed / 8 deselected，284.66s**；无失败或跳过 |
+| `TRADEOS_REQUIRE_E2E=1 TRADEOS_E2E_SCREENSHOTS=/tmp/tradeos-phase2-merge-screenshots python3 -m pytest -m e2e -q --tb=short` | **8 passed / 4231 deselected，51.31s**；后端全量结束后单独运行 |
+| `npm test` | **20 files / 187 tests passed，12.75s** |
+| `npm run build`（含`vue-tsc --noEmit`） | exit0；109 modules，865ms |
+| `npm run lint` | 0 errors / 133既有warnings |
+| `npm run gen:api`后`git diff --exit-code -- apps/web/src/api/api.d.ts`（diff在仓库根） | 无生成漂移 |
+| `python3 scripts/check_boundaries.py`、`python3 -m ruff check .`、`python3 scripts/scan_sensitive.py` | 七项结构通过；Ruff和敏感扫描exit0 |
+
+验证后仅补充HANDBOOK与本报告的集成状态。安全删除已合并分支及其开发工作树；
+主工作区依赖、其他工作树、真实服务配置均未清理。原临时审查资料仍保留在此前的可恢复废纸篓归档。
+这些合并后结果不取代前述真实联网not_run及既有风险记录，也不意味着整个Phase2完成。
