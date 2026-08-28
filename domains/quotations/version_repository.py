@@ -4,6 +4,11 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol
 
+from domains.quotations.approval_schemas import (
+    QuoteApprovalApplicationReceipt,
+    QuoteApprovalFact,
+    QuoteApprovalSubmission,
+)
 from domains.quotations.context import QuoteIssuer
 from domains.quotations.models import QuoteState
 from domains.quotations.version_schemas import (
@@ -12,6 +17,7 @@ from domains.quotations.version_schemas import (
     QuoteStateEvent,
     StoredQuoteIssuer,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     MessageAttemptId,
     OpportunityId,
@@ -22,6 +28,22 @@ from shared.schemas.identifiers import (
 
 class QuotationVersionRepository(Protocol):
     """仅报价本域持久操作，不暴露SQL session。"""
+
+    async def approval_bindings(self, tenant_id: TenantId, quote_id: QuoteId) -> tuple[QuoteApprovalFact,...]:
+        """原轮提交时快照，不以其旧state当作当前批准。"""
+        ...
+
+    async def add_approval_bindings(self, tenant_id: TenantId, submission: QuoteApprovalSubmission) -> None:
+        """同事务只增全组，唯一type不得替换。"""
+        ...
+
+    async def approval_receipt(self, tenant_id: TenantId, quote_id: QuoteId) -> QuoteApprovalApplicationReceipt | None:
+        """真实不可变成功记录，不以审批APPLIED推导。"""
+        ...
+
+    async def add_approval_receipt(self, tenant_id: TenantId, receipt: QuoteApprovalApplicationReceipt) -> None:
+        """状态事件和QuoteApproved同事务新增。"""
+        ...
 
     async def lock_opportunity(
         self, tenant_id: TenantId, opportunity_id: OpportunityId
@@ -115,6 +137,7 @@ class QuotationUnitOfWork(AbstractAsyncContextManager, Protocol):
     """退出未commit事务一律回滚。"""
 
     quotes: QuotationVersionRepository
+    bus: EventBus
 
     async def commit(self) -> None:
         """明确提交；失败视为未知状态，不能报告未写入。"""

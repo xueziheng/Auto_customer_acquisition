@@ -7,6 +7,7 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.quotations.errors import QuotationError, QuotationUnavailableError
+from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.quotations import QuotationVersionRepositoryImpl
 from shared.schemas.identifiers import TenantId
 
@@ -59,6 +60,7 @@ class SqlAlchemyQuotationUow:
                 {"value": f"{self._statement_timeout}ms"},
             )
             self.quotes = QuotationVersionRepositoryImpl(self._session, self._tenant_id)
+            self.bus = PostgresEventBus(self._session, self._tenant_id)
             return self
         except BaseException as exc:
             await self._cleanup()

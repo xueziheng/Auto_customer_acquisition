@@ -275,7 +275,7 @@ class ApprovalServiceImpl:
         if reader.role in {"boss", "manager"}:
             async with self._uow_factory(tenant_id) as uow:
                 legacy = await uow.approvals.list_pending_for_employee(
-                    tenant_id, reader.employee_id, limit
+                    tenant_id, reader.employee_id, limit, legacy_only=True
                 )
             for package in legacy:
                 if not self._marker(package):

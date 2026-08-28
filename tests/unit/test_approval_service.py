@@ -112,12 +112,13 @@ class _Approvals:
         )
         return tuple(values[:limit])
 
-    async def list_pending_for_employee(self, tenant_id, employee_id, limit):
+    async def list_pending_for_employee(self, tenant_id, employee_id, limit, *, legacy_only=False):
         return [
             p
             for p in self._store.packages.values()
             if p.tenant_id == tenant_id
             and p.state.value == "pending"
+            and (not legacy_only or p.contract_namespace is None)
             and employee_id not in {p.proposed_by_employee, p.owner_employee}
         ][:limit]
 
@@ -485,3 +486,16 @@ async def test_country_policy_public_apply_failure_codes_are_allowlisted(
     await service.mark_apply_failed(TENANT, approval_id, code)
 
     assert (await service.get(TENANT, approval_id)).application_error_code == code
+
+
+async def test_new_invisible_candidates_do_not_consume_legacy_list_limit():
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    svc,_,guard,_ = quote_service_case()
+    payload,_ = await submit_quote(svc)
+    legacy = await svc.submit(payload.tenant_id,ApprovalType.PLAYBOOK_CHANGE,"旧审批",
+        {"version":"old"},"旧申请",BlastRadius(["old"],"批准","不变",False),
+        proposed_by_employee=payload.prepared_by,owner_employee=payload.prepared_by)
+    guard.allowed = False
+    result = await svc.list_for_reader(payload.tenant_id,
+        reader=ApprovalReaderIdentity(employee_id=APPROVER,role="boss"),limit=1)
+    assert [item.approval_id for item in result] == [legacy]

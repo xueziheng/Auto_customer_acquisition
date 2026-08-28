@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domains.quotations.content import require_content_integrity
 from domains.quotations.errors import QuotationError, QuotationUnavailableError
 from domains.quotations.schemas import (
+    QuoteApprovalApplicationReceipt,
+    QuoteApprovalFact,
+    QuoteApprovalSubmission,
     QuoteContentSnapshot,
     QuoteDetailView,
     QuoteIssuer,
@@ -18,8 +21,11 @@ from domains.quotations.schemas import (
     QuoteStateEvent,
     StoredQuoteIssuer,
 )
+from domains.quotations.service import quote_approval_payload_hash
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    QuotationApprovalBindingRow,
+    QuotationApprovalReceiptRow,
     QuotationEvidenceRefRow,
     QuotationIssuerRow,
     QuotationLineRow,
@@ -49,6 +55,62 @@ class QuotationVersionRepositoryImpl(TenantScopedRepository):
         """写入和读取参数不能越过构造时租户。"""
         if tenant_id != self._tenant_id:
             raise TenantIsolationViolation("报价仓储租户不匹配")
+
+    async def approval_bindings(self, tenant_id: TenantId, quote_id: QuoteId) -> tuple[QuoteApprovalFact,...]:
+        """读原提交事实并核验列与安全payload，不重建当前决定。"""
+        self._tenant(tenant_id)
+        rows = await self._session.scalars(self.scoped_query(QuotationApprovalBindingRow).where(
+            QuotationApprovalBindingRow.quote_id == quote_id).order_by(QuotationApprovalBindingRow.approval_type))
+        facts = []
+        try:
+            for row in rows:
+                fact = QuoteApprovalFact.model_validate_json(json.dumps(row.fact))
+                if (fact.tenant_id,fact.approval_id,fact.approval_type,fact.request_hash,
+                    fact.payload.quote_id,fact.payload.quote_version,fact.payload.content_hash,
+                    quote_approval_payload_hash(fact.payload)) != (tenant_id,row.approval_id,
+                    row.approval_type,row.request_hash,quote_id,row.quote_version,row.content_hash,row.payload_hash):
+                    raise QuotationUnavailableError("storage_inconsistent")
+                facts.append(fact)
+            return tuple(facts)
+        except (SchemaError,ValueError,TypeError,ValidationError):
+            raise QuotationUnavailableError("storage_inconsistent") from None
+
+    async def add_approval_bindings(self, tenant_id: TenantId, submission: QuoteApprovalSubmission) -> None:
+        """一次新增唯一轮全部包，SQL验证同quote及原包绑定。"""
+        self._tenant(tenant_id)
+        if submission.tenant_id != tenant_id:
+            raise QuotationUnavailableError("storage_inconsistent")
+        for fact in submission.facts:
+            self._session.add(QuotationApprovalBindingRow(tenant_id=tenant_id,quote_id=submission.quote_id,
+                approval_type=fact.approval_type,approval_id=fact.approval_id,
+                quote_version=submission.quote_version,content_hash=submission.content_hash,
+                bound_at=fact.created_at,request_hash=fact.request_hash,
+                payload_hash=quote_approval_payload_hash(fact.payload),fact=fact.model_dump(mode="json")))
+        await self._session.flush()
+
+    async def approval_receipt(self, tenant_id: TenantId, quote_id: QuoteId) -> QuoteApprovalApplicationReceipt | None:
+        """只返回数据库真实成功快照，完整业务绑定仍由报价域校验。"""
+        self._tenant(tenant_id)
+        row = await self._session.scalar(self.scoped_query(QuotationApprovalReceiptRow).where(
+            QuotationApprovalReceiptRow.quote_id == quote_id))
+        if row is None:
+            return None
+        try:
+            values = {name:getattr(row,name) for name in QuoteApprovalApplicationReceipt.model_fields}
+            values["applied_at"] = row.applied_at.isoformat()
+            return QuoteApprovalApplicationReceipt.model_validate_json(json.dumps(values))
+        except (SchemaError,ValueError,TypeError):
+            raise QuotationUnavailableError("storage_inconsistent") from None
+
+    async def add_approval_receipt(self, tenant_id: TenantId, receipt: QuoteApprovalApplicationReceipt) -> None:
+        """同session只增，成功前任何故障均随报价事务回滚。"""
+        self._tenant(tenant_id)
+        if receipt.tenant_id != tenant_id:
+            raise QuotationUnavailableError("storage_inconsistent")
+        values = receipt.model_dump(mode="json")
+        values["applied_at"] = receipt.applied_at
+        self._session.add(QuotationApprovalReceiptRow(**values))
+        await self._session.flush()
 
     async def lock_opportunity(
         self, tenant_id: TenantId, opportunity_id: OpportunityId

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 from contextlib import AbstractAsyncContextManager
-from typing import Annotated, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Protocol, Self
+
+if TYPE_CHECKING:
+    from domains.quotations.approval_schemas import (
+        QuoteApprovalAccessContext,
+        QuoteApprovalContext,
+    )
 
 from pydantic import AfterValidator, Field, computed_field, model_validator
 
@@ -159,6 +165,18 @@ def quote_context_hash(context: QuoteBusinessContext) -> str:
 
 class QuoteContextProvider(Protocol):
     """保持当前员工/机会/Need事实直到调用者事务完成。"""
+
+    def open_approval_access(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId, submitted_owner_id: EmployeeId
+    ) -> AbstractAsyncContextManager[QuoteApprovalAccessContext]:
+        """历史读取只锁员工与机会，不读取Need单位/抬头/政策。"""
+        ...
+
+    def open_for_approval(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId, decider_ids: tuple[EmployeeId, ...]
+    ) -> AbstractAsyncContextManager[QuoteApprovalContext]:
+        """锁前一次排序全部决策人；机会锁后不追加员工锁。"""
+        ...
 
     def open(self, tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId,
              *, prepared_by: EmployeeId) -> AbstractAsyncContextManager[QuoteBusinessContext]:

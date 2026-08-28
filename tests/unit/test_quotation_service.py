@@ -1,15 +1,48 @@
 """服务门面当前身份与单一创建session规则；存储仅为受控端口。"""
 
 import importlib
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
 
 from domains.quotations import schemas as q
 from domains.quotations import service as public
+from shared.schemas.identifiers import EmployeeId, OpportunityId, RunId, TenantId
 from tests.unit.test_need_units import ACTOR, NOW, TENANT
 from tests.unit.test_quote_context_contracts import employee
+
+
+class UnusedApprovalContext:
+    """T4非审批路径专用fail-on-use依赖，不能当审批真实provider。"""
+
+    def open(self, tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId,
+             *, prepared_by: EmployeeId) -> AbstractAsyncContextManager[q.QuoteBusinessContext]:
+        raise AssertionError("T4路径不得读取审批context")
+
+    def open_approval_access(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId, submitted_owner_id: EmployeeId
+    ) -> AbstractAsyncContextManager[q.QuoteApprovalAccessContext]:
+        raise AssertionError("T4路径不得读取审批access")
+
+    def open_for_approval(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId, decider_ids: tuple[EmployeeId, ...]
+    ) -> AbstractAsyncContextManager[q.QuoteApprovalContext]:
+        raise AssertionError("T4路径不得读取审批决策人")
+
+
+class UnusedApprovalPolicy:
+    """T4非审批路径不触发当前政策审批租约。"""
+
+    def open(self, tenant_id: TenantId, category: str | None) -> AbstractAsyncContextManager[public.QuotePolicySelection]:
+        raise AssertionError("T4路径不得读取审批政策")
+
+
+class UnusedWorkflowRunReader:
+    """T4非审批路径无技术executor，不给任何默认run。"""
+
+    async def read(self, tenant_id: TenantId, run_id: RunId) -> q.QuoteWorkflowRunFact | None:
+        raise AssertionError("T4路径不得读取审批run")
 
 
 def service_case(*, fact=None):
@@ -38,6 +71,9 @@ def service_case(*, fact=None):
         actors,
         public.StrictQuotePreparationPolicy(),
         AsyncMock(),
+        context_provider=UnusedApprovalContext(),
+        approval_policy_reader=UnusedApprovalPolicy(),
+        workflow_run_reader=UnusedWorkflowRunReader(),
         now=lambda: NOW,
     )
     return svc, actors, quotes

@@ -56,6 +56,7 @@ from shared.events.catalog import (
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
+    QuoteApproved,
     ReplyReceived,
     ReputationThresholdBreached,
     SendingIdentityActivated,
@@ -67,6 +68,7 @@ from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.money import CurrencyCode, Money
 
 EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
+    "QuoteApproved": QuoteApproved,
     "ApprovalDecided": ApprovalDecided,
     "AuthenticationCheckRequested": AuthenticationCheckRequested,
     "OpportunityQualified": OpportunityQualified,

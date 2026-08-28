@@ -55,26 +55,11 @@ class CostingPolicyRow(_CostingEvidenceColumns, Base):
     __tablename__ = "costing_policies"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "policy_id", name="pk_costing_policies"),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_costing_policies_key"
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_costing_policies_hash",
-        ),
-        CheckConstraint(
-            "btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'",
-            name="ck_costing_policies_confirmation",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "artifact_id"],
-            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
-            name="fk_costing_policies_artifact",
-            ondelete="RESTRICT",
-        ),
-        Index(
-            "ix_costing_policies_effective", "tenant_id", "category", "effective_from"
-        ),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_policies_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_policies_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_policies_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_policies_artifact", ondelete="RESTRICT"),
+        Index("ix_costing_policies_effective", "tenant_id", "category", "effective_from"),
     )
 
     policy_id: Mapped[str] = mapped_column(String(64))
@@ -89,32 +74,12 @@ class CostingPriceEvidenceRow(_CostingEvidenceColumns, Base):
 
     __tablename__ = "costing_price_evidence"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "evidence_id", name="pk_costing_price_evidence"
-        ),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_costing_price_evidence_key"
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_costing_price_evidence_hash",
-        ),
-        CheckConstraint(
-            "btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'",
-            name="ck_costing_price_evidence_confirmation",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "artifact_id"],
-            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
-            name="fk_costing_price_evidence_artifact",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "opportunity_id"],
-            ["opportunities.tenant_id", "opportunities.opportunity_id"],
-            name="fk_costing_price_evidence_opportunity",
-            ondelete="RESTRICT",
-        ),
+        PrimaryKeyConstraint("tenant_id", "evidence_id", name="pk_costing_price_evidence"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_price_evidence_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_price_evidence_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_price_evidence_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_price_evidence_artifact", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "opportunity_id"], ["opportunities.tenant_id", "opportunities.opportunity_id"], name="fk_costing_price_evidence_opportunity", ondelete="RESTRICT"),
     )
 
     evidence_id: Mapped[str] = mapped_column(String(64))
@@ -129,34 +94,12 @@ class CostingCoverageRow(_CostingEvidenceColumns, Base):
     __tablename__ = "costing_coverage"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "coverage_id", name="pk_costing_coverage"),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_costing_coverage_key"
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_costing_coverage_hash",
-        ),
-        CheckConstraint(
-            "btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'",
-            name="ck_costing_coverage_confirmation",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "cost_sheet_id"],
-            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
-            name="fk_costing_coverage_sheet",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "sheet_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_sheet_hash"
-        ),
-        Index(
-            "ix_costing_coverage_sheet_hash",
-            "tenant_id",
-            "cost_sheet_id",
-            "sheet_hash",
-            "confirmed_at",
-            "coverage_id",
-        ),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_coverage_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_coverage_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "cost_sheet_id"], ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"], name="fk_costing_coverage_sheet", ondelete="RESTRICT"),
+        CheckConstraint("sheet_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_sheet_hash"),
+        Index("ix_costing_coverage_sheet_hash","tenant_id","cost_sheet_id","sheet_hash","confirmed_at","coverage_id"),
     )
 
     coverage_id: Mapped[str] = mapped_column(String(64))
@@ -171,23 +114,10 @@ class CostingQuoteFxRow(_CostingEvidenceColumns, Base):
     __tablename__ = "costing_quote_fx"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "fx_id", name="pk_costing_quote_fx"),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_costing_quote_fx_key"
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_costing_quote_fx_hash",
-        ),
-        CheckConstraint(
-            "btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'",
-            name="ck_costing_quote_fx_confirmation",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "artifact_id"],
-            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
-            name="fk_costing_quote_fx_artifact",
-            ondelete="RESTRICT",
-        ),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_quote_fx_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_quote_fx_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_quote_fx_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_quote_fx_artifact", ondelete="RESTRICT"),
     )
 
     fx_id: Mapped[str] = mapped_column(String(64))
@@ -202,36 +132,19 @@ class SearchQuotaAccountRow(Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "provider", name="pk_search_quota_accounts"),
         UniqueConstraint("provider", name="uq_search_quota_accounts_provider"),
-        CheckConstraint(
-            "provider = 'tavily'", name="ck_search_quota_accounts_provider"
-        ),
-        CheckConstraint(
-            "ceiling IS NULL OR ceiling >= 0", name="ck_search_quota_accounts_ceiling"
-        ),
-        CheckConstraint(
-            "reservations >= 0", name="ck_search_quota_accounts_reservations"
-        ),
-        CheckConstraint(
-            "cost_status IN ('free','paid','unknown')",
-            name="ck_search_quota_accounts_cost_status",
-        ),
-        CheckConstraint(
-            "usage_limit IS NULL OR usage_limit >= 0",
-            name="ck_search_quota_accounts_usage_limit",
-        ),
-        CheckConstraint(
-            "usage_used IS NULL OR usage_used >= 0",
-            name="ck_search_quota_accounts_usage_used",
-        ),
+        CheckConstraint("provider = 'tavily'", name="ck_search_quota_accounts_provider"),
+        CheckConstraint("ceiling IS NULL OR ceiling >= 0", name="ck_search_quota_accounts_ceiling"),
+        CheckConstraint("reservations >= 0", name="ck_search_quota_accounts_reservations"),
+        CheckConstraint("cost_status IN ('free','paid','unknown')", name="ck_search_quota_accounts_cost_status"),
+        CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_search_quota_accounts_usage_limit"),
+        CheckConstraint("usage_used IS NULL OR usage_used >= 0", name="ck_search_quota_accounts_usage_used"),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(40))
     provider: Mapped[str] = mapped_column(String(16))
     ceiling: Mapped[int | None] = mapped_column(BigInteger)
     reservations: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
-    cost_status: Mapped[str] = mapped_column(
-        String(16), server_default=text("'unknown'")
-    )
+    cost_status: Mapped[str] = mapped_column(String(16), server_default=text("'unknown'"))
     usage_limit: Mapped[int | None] = mapped_column(BigInteger)
     usage_used: Mapped[int | None] = mapped_column(BigInteger)
     paygo_enabled: Mapped[bool | None] = mapped_column(Boolean)
@@ -261,13 +174,7 @@ class SearchQuotaReservationRow(Base):
 
     __tablename__ = "search_quota_reservations"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id",
-            "provider",
-            "run_id",
-            "request_key",
-            name="pk_search_quota_reservations",
-        ),
+        PrimaryKeyConstraint("tenant_id", "provider", "run_id", "request_key", name="pk_search_quota_reservations"),
         ForeignKeyConstraint(
             ["tenant_id", "provider"],
             ["search_quota_accounts.tenant_id", "search_quota_accounts.provider"],
@@ -298,7 +205,9 @@ class DirectiveProposalRow(Base):
 
     __tablename__ = "directive_proposals"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "proposal_id", name="pk_directive_proposals"),
+        PrimaryKeyConstraint(
+            "tenant_id", "proposal_id", name="pk_directive_proposals"
+        ),
         CheckConstraint(
             "state IN ('pending_confirmation','confirmed','rejected','expired')",
             name="ck_directive_proposals_state",
@@ -352,7 +261,9 @@ class DirectiveVersionRow(Base):
 
     __tablename__ = "directive_versions"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "directive_id", name="pk_directive_versions"),
+        PrimaryKeyConstraint(
+            "tenant_id", "directive_id", name="pk_directive_versions"
+        ),
         UniqueConstraint(
             "tenant_id", "version", name="uq_directive_versions_tenant_version"
         ),
@@ -550,7 +461,9 @@ class ToolCallRow(Base):
     __tablename__ = "tool_calls"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "tool_call_id", name="pk_tool_calls"),
-        UniqueConstraint("tenant_id", "tool_call_id", name="uq_tool_calls_tenant_call"),
+        UniqueConstraint(
+            "tenant_id", "tool_call_id", name="uq_tool_calls_tenant_call"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "duplicate_of"],
             ["tool_calls.tenant_id", "tool_calls.tool_call_id"],
@@ -1666,7 +1579,9 @@ class UnsubscribeTokenRow(Base):
 
     __tablename__ = "unsubscribe_tokens"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "nonce_sha256", name="pk_unsubscribe_tokens"),
+        PrimaryKeyConstraint(
+            "tenant_id", "nonce_sha256", name="pk_unsubscribe_tokens"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "message_attempt_id"],
             [
@@ -1966,7 +1881,8 @@ class ProvenanceRecordRow(Base):
 
 _HYPOTHESIS_STATUSES = "'inferred','contacting','validated','rejected'"
 _NEED_STATUSES = (
-    "'validated','sourcing_ready','handed_to_sourcing','fulfilled','withdrawn','lost'"
+    "'validated','sourcing_ready','handed_to_sourcing',"
+    "'fulfilled','withdrawn','lost'"
 )
 
 
@@ -2044,7 +1960,8 @@ class NeedClusterRow(Base):
             name="ck_need_clusters_core_nonblank",
         ),
         CheckConstraint(
-            "jsonb_typeof(keywords) = 'array' AND jsonb_typeof(countries) = 'array'",
+            "jsonb_typeof(keywords) = 'array' AND "
+            "jsonb_typeof(countries) = 'array'",
             name="ck_need_clusters_arrays_jsonb",
         ),
         CheckConstraint(
@@ -2116,27 +2033,19 @@ class ValidatedNeedRow(Base):
         PrimaryKeyConstraint("tenant_id", "need_id", name="pk_validated_needs"),
         ForeignKeyConstraint(
             ["tenant_id", "need_id", "unit_confirmation_id"],
-            [
-                "need_unit_confirmations.tenant_id",
-                "need_unit_confirmations.need_id",
-                "need_unit_confirmations.confirmation_id",
-            ],
-            name="fk_validated_needs_unit_confirmation",
-            use_alter=True,
+            ["need_unit_confirmations.tenant_id", "need_unit_confirmations.need_id",
+             "need_unit_confirmations.confirmation_id"],
+            name="fk_validated_needs_unit_confirmation", use_alter=True,
         ),
         CheckConstraint(
             "(unit IS NULL AND unit_quantity_fact_hash IS NULL AND unit_confirmation_id IS NULL) OR "
             "(unit IS NOT NULL AND unit_quantity_fact_hash IS NOT NULL AND unit_confirmation_id IS NOT NULL)",
             name="ck_validated_needs_unit_binding",
         ),
-        CheckConstraint(
-            "unit IS NULL OR jsonb_typeof(unit) = 'object'",
-            name="ck_validated_needs_unit_jsonb",
-        ),
-        CheckConstraint(
-            "unit_quantity_fact_hash IS NULL OR unit_quantity_fact_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_validated_needs_unit_hash",
-        ),
+        CheckConstraint("unit IS NULL OR jsonb_typeof(unit) = 'object'",
+                        name="ck_validated_needs_unit_jsonb"),
+        CheckConstraint("unit_quantity_fact_hash IS NULL OR unit_quantity_fact_hash ~ '^[0-9a-f]{64}$'",
+                        name="ck_validated_needs_unit_hash"),
         ForeignKeyConstraint(
             ["tenant_id", "cluster_id"],
             ["need_clusters.tenant_id", "need_clusters.cluster_id"],
@@ -2213,10 +2122,18 @@ class ValidatedNeedRow(Base):
     application: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(none_as_null=True)
     )
-    material: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
-    size_spec: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
-    quantity: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
-    packaging: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
+    material: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    size_spec: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    quantity: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
+    packaging: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
     destination: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(none_as_null=True)
     )
@@ -2245,45 +2162,22 @@ class NeedUnitConfirmationRow(Base):
 
     __tablename__ = "need_unit_confirmations"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "confirmation_id", name="pk_need_unit_confirmations"
-        ),
-        UniqueConstraint(
-            "tenant_id",
-            "need_id",
-            "confirmation_id",
-            name="uq_need_unit_confirmations_need_id",
-        ),
-        UniqueConstraint(
-            "tenant_id",
-            "need_id",
-            "idempotency_key",
-            name="uq_need_unit_confirmations_key",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "need_id"],
+        PrimaryKeyConstraint("tenant_id", "confirmation_id", name="pk_need_unit_confirmations"),
+        UniqueConstraint("tenant_id", "need_id", "confirmation_id", name="uq_need_unit_confirmations_need_id"),
+        UniqueConstraint("tenant_id", "need_id", "idempotency_key", name="uq_need_unit_confirmations_key"),
+        ForeignKeyConstraint(["tenant_id", "need_id"],
             ["validated_needs.tenant_id", "validated_needs.need_id"],
-            name="fk_need_unit_confirmations_need",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "artifact_id"],
+            name="fk_need_unit_confirmations_need"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"],
             ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
-            name="fk_need_unit_confirmations_artifact",
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND quantity_fact_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_need_unit_confirmations_hash",
-        ),
-        CheckConstraint(
-            "jsonb_typeof(payload) = 'object'",
-            name="ck_need_unit_confirmations_payload",
-        ),
-        CheckConstraint(
-            "btrim(tenant_id) <> '' AND btrim(confirmation_id) <> '' AND "
+            name="fk_need_unit_confirmations_artifact"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND quantity_fact_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_need_unit_confirmations_hash"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_need_unit_confirmations_payload"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmation_id) <> '' AND "
             "btrim(need_id) <> '' AND btrim(artifact_id) <> '' AND btrim(source_message_id) <> '' "
             "AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> ''",
-            name="ck_need_unit_confirmations_nonblank",
-        ),
+            name="ck_need_unit_confirmations_nonblank"),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(40))
@@ -2364,8 +2258,12 @@ class ConversationRow(Base):
     account_id: Mapped[str] = mapped_column(String(32))
     channel: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_outbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_outbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 class MessageRow(Base):
@@ -2509,27 +2407,11 @@ class NotificationJobRow(Base):
 
     __tablename__ = "notification_jobs"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "notification_job_id", name="pk_notification_jobs"
-        ),
-        UniqueConstraint(
-            "tenant_id",
-            "source_event_fingerprint",
-            "recipient_employee_id",
-            "context_kind",
-            name="uq_notification_jobs_source_recipient_kind",
-        ),
-        CheckConstraint(
-            "status IN ('pending','processing','completed','rejected')",
-            name="ck_notification_jobs_status",
-        ),
-        CheckConstraint(
-            "priority IN ('urgent','normal','low')",
-            name="ck_notification_jobs_priority",
-        ),
-        CheckConstraint(
-            "attempt_count >= 0", name="ck_notification_jobs_attempt_count"
-        ),
+        PrimaryKeyConstraint("tenant_id", "notification_job_id", name="pk_notification_jobs"),
+        UniqueConstraint("tenant_id", "source_event_fingerprint", "recipient_employee_id", "context_kind", name="uq_notification_jobs_source_recipient_kind"),
+        CheckConstraint("status IN ('pending','processing','completed','rejected')", name="ck_notification_jobs_status"),
+        CheckConstraint("priority IN ('urgent','normal','low')", name="ck_notification_jobs_priority"),
+        CheckConstraint("attempt_count >= 0", name="ck_notification_jobs_attempt_count"),
         Index("ix_notification_jobs_tenant_due", "tenant_id", "status", "available_at"),
     )
 
@@ -2561,29 +2443,11 @@ class InAppNotificationRow(Base):
 
     __tablename__ = "in_app_notifications"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "notification_id", name="pk_in_app_notifications"
-        ),
-        UniqueConstraint(
-            "tenant_id", "source_job_id", name="uq_in_app_notifications_source_job"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "source_job_id"],
-            ["notification_jobs.tenant_id", "notification_jobs.notification_job_id"],
-            ondelete="RESTRICT",
-            name="fk_in_app_notifications_job",
-        ),
-        CheckConstraint(
-            "priority IN ('urgent','normal','low')",
-            name="ck_in_app_notifications_priority",
-        ),
-        Index(
-            "ix_in_app_notifications_recipient_created",
-            "tenant_id",
-            "recipient_employee_id",
-            "created_at",
-            "notification_id",
-        ),
+        PrimaryKeyConstraint("tenant_id", "notification_id", name="pk_in_app_notifications"),
+        UniqueConstraint("tenant_id", "source_job_id", name="uq_in_app_notifications_source_job"),
+        ForeignKeyConstraint(["tenant_id", "source_job_id"], ["notification_jobs.tenant_id", "notification_jobs.notification_job_id"], ondelete="RESTRICT", name="fk_in_app_notifications_job"),
+        CheckConstraint("priority IN ('urgent','normal','low')", name="ck_in_app_notifications_priority"),
+        Index("ix_in_app_notifications_recipient_created", "tenant_id", "recipient_employee_id", "created_at", "notification_id"),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(32))
@@ -2859,7 +2723,8 @@ class RawArtifactRow(Base):
             name="ck_raw_artifacts_object_key",
         ),
         CheckConstraint(
-            "uploaded_by IS NULL OR uploaded_by ~ '^usr_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            "uploaded_by IS NULL OR uploaded_by ~ "
+            "'^usr_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
             name="ck_raw_artifacts_uploader",
         ),
     )
@@ -2892,7 +2757,9 @@ class GeneratedArtifactRow(Base):
             "artifact_id ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
             name="ck_artifacts_id",
         ),
-        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'", name="ck_artifacts_hash"),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$'", name="ck_artifacts_hash"
+        ),
         CheckConstraint("size_bytes > 0", name="ck_artifacts_size"),
         CheckConstraint(
             "kind='email_draft' AND mime_type="
@@ -3193,9 +3060,7 @@ class DemandSignalRow(Base):
     source_url: Mapped[str | None] = mapped_column(String(2000))
     page_hash: Mapped[str | None] = mapped_column(String(200))
     snapshot_artifact_ref: Mapped[str | None] = mapped_column(String(40))
-    research_evidence: Mapped[dict[str, object] | None] = mapped_column(
-        postgresql.JSONB
-    )
+    research_evidence: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB)
     discovery_key: Mapped[str] = mapped_column(String(64), server_default=text("''"))
 
 
@@ -3295,7 +3160,9 @@ class ContactPointRow(Base):
 
     __tablename__ = "contact_points"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "contact_point_id", name="pk_contact_points"),
+        PrimaryKeyConstraint(
+            "tenant_id", "contact_point_id", name="pk_contact_points"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "contact_id"],
             ["prospect_contacts.tenant_id", "prospect_contacts.contact_id"],
@@ -3516,7 +3383,9 @@ class WorkUploadRow(Base):
     __tablename__ = "work_uploads"
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "upload_id", name="pk_work_uploads"),
-        UniqueConstraint("tenant_id", "artifact_id", name="uq_work_uploads_artifact"),
+        UniqueConstraint(
+            "tenant_id", "artifact_id", name="uq_work_uploads_artifact"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "artifact_id"],
             ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
@@ -3566,8 +3435,12 @@ class ExtractedFactRow(Base):
 
     __tablename__ = "extracted_facts"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "extraction_id", name="pk_extracted_facts"),
-        UniqueConstraint("tenant_id", "upload_id", name="uq_extracted_facts_upload"),
+        PrimaryKeyConstraint(
+            "tenant_id", "extraction_id", name="pk_extracted_facts"
+        ),
+        UniqueConstraint(
+            "tenant_id", "upload_id", name="uq_extracted_facts_upload"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "upload_id"],
             ["work_uploads.tenant_id", "work_uploads.upload_id"],
@@ -3814,7 +3687,9 @@ class MarginRuleRow(Base):
 
     __tablename__ = "margin_rules"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "margin_rule_id", name="pk_margin_rules"),
+        PrimaryKeyConstraint(
+            "tenant_id", "margin_rule_id", name="pk_margin_rules"
+        ),
         CheckConstraint(
             "minimum_margin_rate >= 0 AND "
             "minimum_margin_rate <= target_margin_rate AND "
@@ -4200,7 +4075,8 @@ class CountryPolicyActivationRow(Base):
             name="uq_country_policy_activations_approval",
         ),
         CheckConstraint(
-            "activation_sequence > 0 AND content_hash ~ '^[0-9a-f]{64}$'",
+            "activation_sequence > 0 AND "
+            "content_hash ~ '^[0-9a-f]{64}$'",
             name="ck_country_policy_activations_sequence_hash",
         ),
         CheckConstraint(
@@ -4321,7 +4197,9 @@ class ProviderReadinessEventRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     provider_readiness_event_id: Mapped[str] = mapped_column(String(30))
     provider: Mapped[str] = mapped_column(String(32))
-    capability_set: Mapped[list[str]] = mapped_column(postgresql.ARRAY(String(64)))
+    capability_set: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(String(64))
+    )
     sequence: Mapped[int] = mapped_column(BigInteger)
     event_type: Mapped[str] = mapped_column(String(32))
     configuration_version: Mapped[str] = mapped_column(String(32))
@@ -4342,66 +4220,18 @@ class CostScopeConfirmationRow(Base):
 
     __tablename__ = "cost_scope_confirmations"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "confirmation_id", name="pk_cost_scope_confirmations"
-        ),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_cost_scope_confirmations_key"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "cost_sheet_id"],
-            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
-            name="fk_cost_scope_confirmations_cost_sheet_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "coverage_id"],
-            ["costing_coverage.tenant_id", "costing_coverage.coverage_id"],
-            name="fk_cost_scope_confirmations_coverage_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "need_id"],
-            ["validated_needs.tenant_id", "validated_needs.need_id"],
-            name="fk_cost_scope_confirmations_need_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "confirmed_by"],
-            ["employees.tenant_id", "employees.employee_id"],
-            name="fk_cost_scope_confirmations_confirmed_by",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "opportunity_id"],
-            ["opportunities.tenant_id", "opportunities.opportunity_id"],
-            name="fk_cost_scope_confirmations_opportunity_id",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "jsonb_typeof(payload)='object'", name="ck_cost_scope_confirmations_json"
-        ),
-        CheckConstraint(
-            "isfinite(confirmed_at)", name="ck_cost_scope_confirmations_time"
-        ),
-        CheckConstraint(
-            " AND ".join(
-                f"{name} ~ '^[0-9a-f]{{64}}$'"
-                for name in (
-                    "request_hash",
-                    "content_hash",
-                    "sheet_hash",
-                    "need_facts_hash",
-                    "specification_hash",
-                    "terms_hash",
-                )
-            ),
-            name="ck_cost_scope_confirmations_hash",
-        ),
-        CheckConstraint(
-            "idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",
-            name="ck_cost_scope_confirmations_key",
-        ),
+        PrimaryKeyConstraint("tenant_id","confirmation_id",name="pk_cost_scope_confirmations"),
+        UniqueConstraint("tenant_id","idempotency_key",name="uq_cost_scope_confirmations_key"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_cost_scope_confirmations_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","coverage_id"],["costing_coverage.tenant_id","costing_coverage.coverage_id"],name="fk_cost_scope_confirmations_coverage_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","need_id"],["validated_needs.tenant_id","validated_needs.need_id"],name="fk_cost_scope_confirmations_need_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","confirmed_by"],["employees.tenant_id","employees.employee_id"],name="fk_cost_scope_confirmations_confirmed_by",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","opportunity_id"],["opportunities.tenant_id","opportunities.opportunity_id"],name="fk_cost_scope_confirmations_opportunity_id",ondelete="RESTRICT"),
+        CheckConstraint("jsonb_typeof(payload)='object'",name="ck_cost_scope_confirmations_json"),
+        CheckConstraint("isfinite(confirmed_at)",name="ck_cost_scope_confirmations_time"),
+        CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
+            "request_hash","content_hash","sheet_hash","need_facts_hash","specification_hash","terms_hash")),name="ck_cost_scope_confirmations_hash"),
+        CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_cost_scope_confirmations_key"),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     confirmation_id: Mapped[str] = mapped_column(String(40))
@@ -4426,63 +4256,17 @@ class CostingQuoteBasisRow(Base):
 
     __tablename__ = "costing_quote_bases"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "basis_id", name="pk_costing_quote_bases"),
-        UniqueConstraint(
-            "tenant_id", "operation_id", name="uq_costing_quote_bases_operation"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "scope_confirmation_id"],
-            [
-                "cost_scope_confirmations.tenant_id",
-                "cost_scope_confirmations.confirmation_id",
-            ],
-            name="fk_costing_quote_bases_scope_confirmation_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "cost_sheet_id"],
-            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
-            name="fk_costing_quote_bases_cost_sheet_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "policy_id"],
-            ["costing_policies.tenant_id", "costing_policies.policy_id"],
-            name="fk_costing_quote_bases_policy_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "opportunity_id"],
-            ["opportunities.tenant_id", "opportunities.opportunity_id"],
-            name="fk_costing_quote_bases_opportunity_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "operation_id"],
-            [
-                "quote_creation_operations.tenant_id",
-                "quote_creation_operations.operation_id",
-            ],
-            name="fk_costing_quote_bases_operation_id",
-            ondelete="RESTRICT",
-            deferrable=True,
-            initially="DEFERRED",
-            use_alter=True,
-        ),
-        CheckConstraint(
-            "jsonb_typeof(payload)='object'", name="ck_costing_quote_bases_json"
-        ),
-        CheckConstraint(
-            " AND ".join(
-                f"{name} ~ '^[0-9a-f]{{64}}$'"
-                for name in ("request_hash", "context_hash", "sheet_hash", "basis_hash")
-            ),
-            name="ck_costing_quote_bases_hash",
-        ),
-        CheckConstraint(
-            "isfinite(valid_until) AND isfinite(frozen_at) AND valid_until>frozen_at",
-            name="ck_costing_quote_bases_time",
-        ),
+        PrimaryKeyConstraint("tenant_id","basis_id",name="pk_costing_quote_bases"),
+        UniqueConstraint("tenant_id","operation_id",name="uq_costing_quote_bases_operation"),
+        ForeignKeyConstraint(["tenant_id","scope_confirmation_id"],["cost_scope_confirmations.tenant_id","cost_scope_confirmations.confirmation_id"],name="fk_costing_quote_bases_scope_confirmation_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_costing_quote_bases_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","policy_id"],["costing_policies.tenant_id","costing_policies.policy_id"],name="fk_costing_quote_bases_policy_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","opportunity_id"],["opportunities.tenant_id","opportunities.opportunity_id"],name="fk_costing_quote_bases_opportunity_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","operation_id"],["quote_creation_operations.tenant_id","quote_creation_operations.operation_id"],name="fk_costing_quote_bases_operation_id",ondelete="RESTRICT",deferrable=True,initially="DEFERRED",use_alter=True),
+        CheckConstraint("jsonb_typeof(payload)='object'",name="ck_costing_quote_bases_json"),
+        CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
+            "request_hash","context_hash","sheet_hash","basis_hash")),name="ck_costing_quote_bases_hash"),
+        CheckConstraint("isfinite(valid_until) AND isfinite(frozen_at) AND valid_until>frozen_at",name="ck_costing_quote_bases_time"),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     basis_id: Mapped[str] = mapped_column(String(40))
@@ -4505,53 +4289,17 @@ class QuoteCreationOperationRow(Base):
 
     __tablename__ = "quote_creation_operations"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "operation_id", name="pk_quote_creation_operations"
-        ),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_quote_creation_operations_key"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "cost_sheet_id"],
-            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
-            name="fk_quote_creation_operations_cost_sheet_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "basis_id"],
-            ["costing_quote_bases.tenant_id", "costing_quote_bases.basis_id"],
-            name="fk_quote_creation_operations_basis_id",
-            ondelete="RESTRICT",
-            deferrable=True,
-            initially="DEFERRED",
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$'", name="ck_quote_creation_operations_hash"
-        ),
-        CheckConstraint(
-            "isfinite(created_at) AND (completed_at IS NULL OR isfinite(completed_at))",
-            name="ck_quote_creation_operations_time",
-        ),
-        CheckConstraint(
-            "jsonb_typeof(intent)='object' AND (completion IS NULL OR jsonb_typeof(completion)='object')",
-            name="ck_quote_creation_operations_json",
-        ),
-        CheckConstraint(
-            "(state='frozen' AND completion IS NULL AND completed_at IS NULL) OR (state='completed' AND completion IS NOT NULL AND completed_at IS NOT NULL AND completed_at>=created_at)",
-            name="ck_quote_creation_operations_state",
-        ),
-        CheckConstraint(
-            "idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",
-            name="ck_quote_creation_operations_key",
-        ),
-        Index(
-            "uq_quote_creation_operations_pending",
-            "tenant_id",
-            "cost_sheet_id",
-            unique=True,
-            postgresql_where=text("state='frozen'"),
-        ),
-        Index("ix_quote_creation_operations_sheet", "tenant_id", "cost_sheet_id"),
+        PrimaryKeyConstraint("tenant_id","operation_id",name="pk_quote_creation_operations"),
+        UniqueConstraint("tenant_id","idempotency_key",name="uq_quote_creation_operations_key"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_quote_creation_operations_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","basis_id"],["costing_quote_bases.tenant_id","costing_quote_bases.basis_id"],name="fk_quote_creation_operations_basis_id",ondelete="RESTRICT",deferrable=True,initially="DEFERRED"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'",name="ck_quote_creation_operations_hash"),
+        CheckConstraint("isfinite(created_at) AND (completed_at IS NULL OR isfinite(completed_at))",name="ck_quote_creation_operations_time"),
+        CheckConstraint("jsonb_typeof(intent)='object' AND (completion IS NULL OR jsonb_typeof(completion)='object')",name="ck_quote_creation_operations_json"),
+        CheckConstraint("(state='frozen' AND completion IS NULL AND completed_at IS NULL) OR (state='completed' AND completion IS NOT NULL AND completed_at IS NOT NULL AND completed_at>=created_at)",name="ck_quote_creation_operations_state"),
+        CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_quote_creation_operations_key"),
+        Index("uq_quote_creation_operations_pending","tenant_id","cost_sheet_id",unique=True,postgresql_where=text("state='frozen'")),
+        Index("ix_quote_creation_operations_sheet","tenant_id","cost_sheet_id"),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     operation_id: Mapped[str] = mapped_column(String(40))
@@ -4563,9 +4311,7 @@ class QuoteCreationOperationRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     intent: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
-    completion: Mapped[dict[str, object] | None] = mapped_column(
-        postgresql.JSONB(none_as_null=True), nullable=True
-    )
+    completion: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB(none_as_null=True),nullable=True)
 
 
 class QuotationIssuerRow(Base):
@@ -4573,25 +4319,12 @@ class QuotationIssuerRow(Base):
 
     __tablename__ = "quotation_issuers"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "issuer_id", name="pk_quotation_issuers"),
-        UniqueConstraint("tenant_id", "version", name="uq_quotation_issuers_version"),
-        UniqueConstraint(
-            "tenant_id", "idempotency_key", name="uq_quotation_issuers_key"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "confirmed_by"],
-            ["employees.tenant_id", "employees.employee_id"],
-            name="fk_quotation_issuers_employee",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "version>0 AND idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",
-            name="ck_quotation_issuers_input",
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_quotation_issuers_hash",
-        ),
+        PrimaryKeyConstraint('tenant_id','issuer_id',name='pk_quotation_issuers'),
+        UniqueConstraint('tenant_id','version',name='uq_quotation_issuers_version'),
+        UniqueConstraint('tenant_id','idempotency_key',name='uq_quotation_issuers_key'),
+        ForeignKeyConstraint(['tenant_id','confirmed_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_issuers_employee',ondelete='RESTRICT'),
+        CheckConstraint("version>0 AND idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name='ck_quotation_issuers_input'),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_issuers_hash'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     issuer_id: Mapped[str] = mapped_column(String(40))
@@ -4609,87 +4342,22 @@ class QuotationRow(Base):
 
     __tablename__ = "quotations"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "quote_id", name="pk_quotations"),
-        UniqueConstraint(
-            "tenant_id", "opportunity_id", "version", name="uq_quotations_version"
-        ),
-        UniqueConstraint("tenant_id", "operation_id", name="uq_quotations_operation"),
-        ForeignKeyConstraint(
-            ["tenant_id", "opportunity_id"],
-            ["opportunities.tenant_id", "opportunities.opportunity_id"],
-            name="fk_quotations_opportunity_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "operation_id"],
-            [
-                "quote_creation_operations.tenant_id",
-                "quote_creation_operations.operation_id",
-            ],
-            name="fk_quotations_operation_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "basis_id"],
-            ["costing_quote_bases.tenant_id", "costing_quote_bases.basis_id"],
-            name="fk_quotations_basis_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "cost_sheet_id"],
-            ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"],
-            name="fk_quotations_cost_sheet_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "issuer_id"],
-            ["quotation_issuers.tenant_id", "quotation_issuers.issuer_id"],
-            name="fk_quotations_issuer_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "prepared_by"],
-            ["employees.tenant_id", "employees.employee_id"],
-            name="fk_quotations_prepared_by",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "owner_id"],
-            ["employees.tenant_id", "employees.employee_id"],
-            name="fk_quotations_owner_id",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "replaces_quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotations_replaces_quote_id",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "version>0 AND isfinite(valid_until) AND isfinite(created_at) AND valid_until>created_at",
-            name="ck_quotations_time",
-        ),
-        CheckConstraint(
-            "(replaces_quote_id IS NULL AND replaced_quote_version IS NULL) OR (replaces_quote_id IS NOT NULL AND replaced_quote_version>0)",
-            name="ck_quotations_revision",
-        ),
-        CheckConstraint(
-            "state IN ('draft','pending_approval','approved','sent','accepted','rejected','expired','superseded')",
-            name="ck_quotations_state",
-        ),
-        Index(
-            "uq_quotations_active",
-            "tenant_id",
-            "opportunity_id",
-            unique=True,
-            postgresql_where=text(
-                "state IN ('draft','pending_approval','approved','sent')"
-            ),
-        ),
-        CheckConstraint(
-            "request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_quotations_hash",
-        ),
+        PrimaryKeyConstraint('tenant_id','quote_id',name='pk_quotations'),
+        UniqueConstraint('tenant_id','opportunity_id','version',name='uq_quotations_version'),
+        UniqueConstraint('tenant_id','operation_id',name='uq_quotations_operation'),
+        ForeignKeyConstraint(['tenant_id','opportunity_id'],['opportunities.tenant_id','opportunities.opportunity_id'],name='fk_quotations_opportunity_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','operation_id'],['quote_creation_operations.tenant_id','quote_creation_operations.operation_id'],name='fk_quotations_operation_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','basis_id'],['costing_quote_bases.tenant_id','costing_quote_bases.basis_id'],name='fk_quotations_basis_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','cost_sheet_id'],['cost_sheets.tenant_id','cost_sheets.cost_sheet_id'],name='fk_quotations_cost_sheet_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','issuer_id'],['quotation_issuers.tenant_id','quotation_issuers.issuer_id'],name='fk_quotations_issuer_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','prepared_by'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_prepared_by',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','owner_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotations_owner_id',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','replaces_quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotations_replaces_quote_id',ondelete='RESTRICT'),
+        CheckConstraint("version>0 AND isfinite(valid_until) AND isfinite(created_at) AND valid_until>created_at",name='ck_quotations_time'),
+        CheckConstraint("(replaces_quote_id IS NULL AND replaced_quote_version IS NULL) OR (replaces_quote_id IS NOT NULL AND replaced_quote_version>0)",name='ck_quotations_revision'),
+        CheckConstraint("state IN ('draft','pending_approval','approved','sent','accepted','rejected','expired','superseded')",name='ck_quotations_state'),
+        Index('uq_quotations_active','tenant_id','opportunity_id',unique=True,postgresql_where=text("state IN ('draft','pending_approval','approved','sent')")),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotations_hash'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     quote_id: Mapped[str] = mapped_column(String(40))
@@ -4716,16 +4384,9 @@ class QuotationLineRow(Base):
 
     __tablename__ = "quotation_lines"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "quote_id", "line_number", name="pk_quotation_lines"
-        ),
-        CheckConstraint("line_number=1", name="ck_quotation_lines_one"),
-        ForeignKeyConstraint(
-            ["tenant_id", "quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotation_lines_quote",
-            ondelete="RESTRICT",
-        ),
+        PrimaryKeyConstraint('tenant_id','quote_id','line_number',name='pk_quotation_lines'),
+        CheckConstraint('line_number=1',name='ck_quotation_lines_one'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_lines_quote',ondelete='RESTRICT'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     quote_id: Mapped[str] = mapped_column(String(40))
@@ -4738,24 +4399,10 @@ class QuotationEvidenceRefRow(Base):
 
     __tablename__ = "quotation_evidence_refs"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "quote_id", "evidence_id", name="pk_quotation_evidence_refs"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "evidence_id"],
-            ["costing_price_evidence.tenant_id", "costing_price_evidence.evidence_id"],
-            name="fk_quotation_evidence_refs_evidence",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotation_evidence_refs_quote",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_quotation_evidence_refs_hash"
-        ),
+        PrimaryKeyConstraint('tenant_id','quote_id','evidence_id',name='pk_quotation_evidence_refs'),
+        ForeignKeyConstraint(['tenant_id','evidence_id'],['costing_price_evidence.tenant_id','costing_price_evidence.evidence_id'],name='fk_quotation_evidence_refs_evidence',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_evidence_refs_quote',ondelete='RESTRICT'),
+        CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_evidence_refs_hash'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     quote_id: Mapped[str] = mapped_column(String(40))
@@ -4769,22 +4416,10 @@ class QuotationStateEventRow(Base):
 
     __tablename__ = "quotation_state_events"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "event_id", name="pk_quotation_state_events"),
-        ForeignKeyConstraint(
-            ["tenant_id", "actor_id"],
-            ["employees.tenant_id", "employees.employee_id"],
-            name="fk_quotation_state_events_employee",
-            ondelete="RESTRICT",
-        ),
-        UniqueConstraint(
-            "tenant_id", "quote_id", "to_state", name="uq_quotation_state_events_target"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotation_state_events_quote",
-            ondelete="RESTRICT",
-        ),
+        PrimaryKeyConstraint('tenant_id','event_id',name='pk_quotation_state_events'),
+        ForeignKeyConstraint(['tenant_id','actor_id'],['employees.tenant_id','employees.employee_id'],name='fk_quotation_state_events_employee',ondelete='RESTRICT'),
+        UniqueConstraint('tenant_id','quote_id','to_state',name='uq_quotation_state_events_target'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_state_events_quote',ondelete='RESTRICT'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     event_id: Mapped[str] = mapped_column(String(40))
@@ -4802,29 +4437,10 @@ class QuotationApprovalBindingRow(Base):
 
     __tablename__ = "quotation_approval_bindings"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id",
-            "quote_id",
-            "approval_type",
-            "approval_id",
-            name="pk_quotation_approval_bindings",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "approval_id"],
-            ["approval_packages.tenant_id", "approval_packages.approval_id"],
-            name="fk_quotation_approval_bindings_approval",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotation_approval_bindings_quote",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "content_hash ~ '^[0-9a-f]{64}$'",
-            name="ck_quotation_approval_bindings_hash",
-        ),
+        PrimaryKeyConstraint('tenant_id','quote_id','approval_type','approval_id',name='pk_quotation_approval_bindings'),
+        ForeignKeyConstraint(['tenant_id','approval_id'],['approval_packages.tenant_id','approval_packages.approval_id'],name='fk_quotation_approval_bindings_approval',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_approval_bindings_quote',ondelete='RESTRICT'),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_approval_bindings_hash'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     quote_id: Mapped[str] = mapped_column(String(40))
@@ -4885,27 +4501,10 @@ class QuotationSendReceiptRow(Base):
 
     __tablename__ = "quotation_send_receipts"
     __table_args__ = (
-        PrimaryKeyConstraint(
-            "tenant_id", "attempt_id", name="pk_quotation_send_receipts"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "attempt_id"],
-            [
-                "outreach_message_attempts.tenant_id",
-                "outreach_message_attempts.attempt_id",
-            ],
-            name="fk_quotation_send_receipts_attempt",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "quote_id"],
-            ["quotations.tenant_id", "quotations.quote_id"],
-            name="fk_quotation_send_receipts_quote",
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint(
-            "content_hash ~ '^[0-9a-f]{64}$'", name="ck_quotation_send_receipts_hash"
-        ),
+        PrimaryKeyConstraint('tenant_id','attempt_id',name='pk_quotation_send_receipts'),
+        ForeignKeyConstraint(['tenant_id','attempt_id'],['outreach_message_attempts.tenant_id','outreach_message_attempts.attempt_id'],name='fk_quotation_send_receipts_attempt',ondelete='RESTRICT'),
+        ForeignKeyConstraint(['tenant_id','quote_id'],['quotations.tenant_id','quotations.quote_id'],name='fk_quotation_send_receipts_quote',ondelete='RESTRICT'),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$'",name='ck_quotation_send_receipts_hash'),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     attempt_id: Mapped[str] = mapped_column(String(40))

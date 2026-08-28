@@ -24,6 +24,11 @@ from tests.integration.test_quote_context_locks import (
 from tests.integration.test_quote_cost_lock import (
     freeze_case as freeze_case,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
 )
+from tests.unit.test_quotation_service import (
+    UnusedApprovalContext,
+    UnusedApprovalPolicy,
+    UnusedWorkflowRunReader,
+)
 
 
 class CurrentActors:
@@ -98,6 +103,9 @@ async def quotation_case(context_case):
         actors,
         public.StrictQuotePreparationPolicy(),
         NoSend(),
+        context_provider=UnusedApprovalContext(),
+        approval_policy_reader=UnusedApprovalPolicy(),
+        workflow_run_reader=UnusedWorkflowRunReader(),
         now=lambda: clock[0],
     )
     return QuotationCase(context_case, service, factory, actors, clock)

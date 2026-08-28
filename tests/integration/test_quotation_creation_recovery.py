@@ -29,6 +29,11 @@ from tests.integration.test_quotations import (
 from tests.integration.test_quotations import (
     unit_engine as unit_engine,  # noqa: PLC0414 -- pytest跨文件fixture显式导出
 )
+from tests.unit.test_quotation_service import (
+    UnusedApprovalContext,
+    UnusedApprovalPolicy,
+    UnusedWorkflowRunReader,
+)
 
 
 @dataclass
@@ -65,6 +70,9 @@ class RecoveryCase:
             c.actors,
             public.StrictQuotePreparationPolicy(),
             NoSend(),
+            context_provider=UnusedApprovalContext(),
+            approval_policy_reader=UnusedApprovalPolicy(),
+            workflow_run_reader=UnusedWorkflowRunReader(),
             now=lambda: c.clock[0],
         )
         previous = f.service

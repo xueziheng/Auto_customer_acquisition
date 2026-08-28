@@ -70,7 +70,7 @@ class ApprovalRepository(Protocol):
         ...
 
     async def list_pending_for_employee(
-        self, tenant_id: TenantId, employee_id: EmployeeId, limit: int
+        self, tenant_id: TenantId, employee_id: EmployeeId, limit: int, *, legacy_only: bool = False
     ) -> list[ApprovalPackage]: ...
 
     async def list_expired_candidates(

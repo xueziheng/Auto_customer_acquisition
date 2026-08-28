@@ -307,7 +307,7 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
         return _row_to_package(row) if row is not None else None
 
     async def list_pending_for_employee(
-        self, tenant_id: TenantId, employee_id: EmployeeId, limit: int
+        self, tenant_id: TenantId, employee_id: EmployeeId, limit: int, *, legacy_only: bool = False
     ) -> list[ApprovalPackage]:
         self._require_tenant(tenant_id, "approval_list_pending")
         employee = str(employee_id)
@@ -318,6 +318,7 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
                     .where(
                         ApprovalPackageRow.tenant_id == str(self._tenant_id),
                         ApprovalPackageRow.state == ApprovalState.PENDING.value,
+                        or_(not legacy_only, ApprovalPackageRow.contract_namespace.is_(None)),
                         or_(
                             ApprovalPackageRow.proposed_by_employee.is_(None),
                             ApprovalPackageRow.proposed_by_employee != employee,

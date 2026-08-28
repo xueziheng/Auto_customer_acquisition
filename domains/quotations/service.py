@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from domains.quotations.approval_rules import (
     parse_quote_approval_payload,
@@ -15,6 +15,19 @@ from domains.quotations.approval_rules import (
     quote_change_set_ref,
     require_quote_approval_access,
     required_quote_approvals,
+)
+from domains.quotations.approval_schemas import (
+    QuoteApprovalAccessResult,
+    QuoteApprovalApplicationReceipt,
+    QuoteApprovalSnapshot,
+    QuoteApprovalSubject,
+    QuoteWorkflowExecutor,
+)
+from domains.quotations.approval_service import (
+    QuoteApprovalPolicyReader,
+    QuoteApprovalSession,
+    QuotePolicySelection,
+    QuoteWorkflowRunReader,
 )
 from domains.quotations.context import (
     QuoteContextProvider,
@@ -93,6 +106,27 @@ class QuoteCreationSession(Protocol):
 
 class QuotationVersionService(Protocol):
     """新生产候选端口，旧骨架服务不转调本实现。"""
+    async def approval_snapshot(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteApprovalSnapshot:
+        """当前四成本角色的审批启动快照。"""
+        ...
+
+    async def approval_target(self, tenant_id: TenantId, quote_id: QuoteId, *, executor: QuoteWorkflowExecutor) -> QuoteApprovalSnapshot:
+        """内部技术入口必须核真实run绑定。"""
+        ...
+
+    def open_approval_access(self, tenant_id: TenantId, subject: QuoteApprovalSubject, *, actor_id: EmployeeId,
+        action: Literal["read", "decide"]) -> AbstractAsyncContextManager[QuoteApprovalAccessResult]:
+        """历史审批读取/决定的当前员工和机会租约。"""
+        ...
+
+    def open_approval(self, tenant_id: TenantId, quote_id: QuoteId, *, executor: QuoteWorkflowExecutor) -> AbstractAsyncContextManager[QuoteApprovalSession]:
+        """同UoW原子报价审批会话，不接布尔批准。"""
+        ...
+
+    async def get_approval_application(self, tenant_id: TenantId, quote_id: QuoteId,
+        *, executor: QuoteWorkflowExecutor) -> QuoteApprovalApplicationReceipt | None:
+        """历史成功receipt查询，不证明当前文件生成许可。"""
+        ...
 
     def open_creation(
         self,
@@ -389,11 +423,15 @@ __all__ = [
     "QuotationService",
     "QuotationUowFactory",
     "QuotationVersionService",
+    "QuoteApprovalPolicyReader",
+    "QuoteApprovalSession",
     "QuoteContextProvider",
     "QuoteCreationSession",
     "QuoteIssuerReader",
+    "QuotePolicySelection",
     "QuotePreparationPolicy",
     "QuoteSendReceiptReader",
+    "QuoteWorkflowRunReader",
     "StrictQuotePreparationPolicy",
     "build_quote_content",
     "canonical_quote_specification",

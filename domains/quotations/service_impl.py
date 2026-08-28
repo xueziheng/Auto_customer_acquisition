@@ -8,6 +8,14 @@ from typing import Literal
 from pydantic import TypeAdapter
 from pydantic import ValidationError as SchemaError
 
+from domains.quotations.approval_schemas import (
+    QuoteApprovalAccessResult,
+    QuoteApprovalApplicationReceipt,
+    QuoteApprovalSnapshot,
+    QuoteApprovalSubject,
+    QuoteWorkflowExecutor,
+)
+from domains.quotations.approval_service import QuoteApprovalServiceImpl
 from domains.quotations.creation import ACTIVE_STATES, CreationSessionImpl
 from domains.quotations.errors import (
     QuotationError,
@@ -27,10 +35,18 @@ from domains.quotations.schemas import (
     QuoteStateEvent,
     StoredQuoteIssuer,
 )
-from domains.quotations.service import QuotationActorReader, QuoteSendReceiptReader
+from domains.quotations.service import (
+    QuotationActorReader,
+    QuoteApprovalPolicyReader,
+    QuoteApprovalSession,
+    QuoteContextProvider,
+    QuoteSendReceiptReader,
+    QuoteWorkflowRunReader,
+)
 from domains.quotations.version_repository import QuotationUowFactory
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
+    EmployeeId,
     OpportunityId,
     QuoteId,
     TenantId,
@@ -56,6 +72,9 @@ class QuotationServiceImpl:
         preparation_policy: QuotePreparationPolicy,
         send_reader: QuoteSendReceiptReader,
         *,
+        context_provider: QuoteContextProvider,
+        approval_policy_reader: QuoteApprovalPolicyReader,
+        workflow_run_reader: QuoteWorkflowRunReader,
         now: Callable[[], datetime],
     ) -> None:
         """不提供缺省角色、发送许可或业务时钟。"""
@@ -66,6 +85,34 @@ class QuotationServiceImpl:
             send_reader,
             now,
         )
+        self._approvals = QuoteApprovalServiceImpl(uow_factory, context_provider,
+            approval_policy_reader, workflow_run_reader, self._actor, now=now)
+
+    async def approval_snapshot(self, tenant_id: TenantId, quote_id: QuoteId, *, actor: QuotationActor) -> QuoteApprovalSnapshot:
+        """内部用途当前授权后生成安全审批快照。"""
+        return await self._approvals.approval_snapshot(tenant_id,quote_id,actor=actor)
+
+    async def approval_target(self, tenant_id: TenantId, quote_id: QuoteId, *, executor: QuoteWorkflowExecutor) -> QuoteApprovalSnapshot:
+        """受信worker通过统一真实run绑定检查。"""
+        return await self._approvals.approval_target(tenant_id,quote_id,executor=executor)
+
+    @asynccontextmanager
+    async def open_approval_access(self, tenant_id: TenantId, subject: QuoteApprovalSubject, *, actor_id: EmployeeId,
+        action: Literal["read","decide"]) -> AsyncIterator[QuoteApprovalAccessResult]:
+        """只委托唯一审批业务规则，保持guard到调用者提交。"""
+        async with self._approvals.open_approval_access(tenant_id,subject,actor_id=actor_id,action=action) as result:
+            yield result
+
+    @asynccontextmanager
+    async def open_approval(self, tenant_id: TenantId, quote_id: QuoteId, *, executor: QuoteWorkflowExecutor) -> AsyncIterator[QuoteApprovalSession]:
+        """原子报价应用session，不恢复旧单包布尔入口。"""
+        async with self._approvals.open_approval(tenant_id,quote_id,executor=executor) as session:
+            yield session
+
+    async def get_approval_application(self, tenant_id: TenantId, quote_id: QuoteId,
+        *, executor: QuoteWorkflowExecutor) -> QuoteApprovalApplicationReceipt | None:
+        """只查询真实持久成功，不借当前角色或状态伪造回执。"""
+        return await self._approvals.get_approval_application(tenant_id,quote_id,executor=executor)
 
     async def _actor(
         self,

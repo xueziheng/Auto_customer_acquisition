@@ -6,6 +6,10 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from domains.costing.approval_policy import (
+    CostingApprovalPolicyReader,
+    CostingPolicySelection,
+)
 from domains.costing.calculation import canonical_pricing_hash, compute_breakdown
 from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
 from domains.costing.freeze_schemas import (
@@ -62,8 +66,10 @@ __all__ = (
     "CostScopeSourceAccess",
     "CostingActor",
     "CostingActorReader",
+    "CostingApprovalPolicyReader",
     "CostingContext",
     "CostingFreezeService",
+    "CostingPolicySelection",
     "CostingQuoteService",
     "CostingScope",
     "CostingService",
