@@ -82,13 +82,17 @@ async def test_cycle_places_expiry_after_campaign_before_workflow_and_isolates_e
         campaign_driver=Campaign(),
         quote_expiry_driver=Expiry(),
     )
+
+    async def confirm_lock():
+        calls.append("lock")
+
     if failure == "cancel":
         with pytest.raises(asyncio.CancelledError):
-            await scheduler._run_cycle(runtime, 1)
-        assert calls == ["outbox", "campaign", "expiry"]
+            await scheduler._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+        assert calls == ["outbox", "campaign", "lock", "expiry"]
     else:
-        await scheduler._run_cycle(runtime, 1)
-        assert calls == ["outbox", "campaign", "expiry", "workflow"] + (
+        await scheduler._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+        assert calls == ["outbox", "campaign", "lock", "expiry", "workflow"] + (
             ["outbox"] if progress else []
         )
         if failure == "error":
@@ -97,3 +101,48 @@ async def test_cycle_places_expiry_after_campaign_before_workflow_and_isolates_e
                 for r in caplog.records
             )
     assert "private expiry failure" not in caplog.text
+
+
+@pytest.mark.parametrize("check", ["missing", "lost", "cancel"])
+async def test_expiry_requires_current_lock_and_never_swallows_lock_loss(check):
+    expiry, outbox, workflow = AsyncMock(), AsyncMock(), AsyncMock()
+    expiry.scan_once.return_value = outbox.drain.return_value = (
+        workflow.poll_due.return_value
+    ) = 0
+    runtime = scheduler.SchedulerRuntime(
+        SimpleNamespace(),
+        outbox,
+        workflow,
+        "tenant",
+        scheduler.SchedulerConfig(1, 5, 1),
+        quote_expiry_driver=expiry,
+    )
+
+    async def confirm_lock():
+        if check == "cancel":
+            raise asyncio.CancelledError()
+        raise scheduler._SchedulerLockLost()
+
+    expected = asyncio.CancelledError if check == "cancel" else RuntimeError
+    with pytest.raises(expected):
+        if check == "missing":
+            await scheduler._run_cycle(runtime, 1)
+        else:
+            await scheduler._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+    expiry.scan_once.assert_not_awaited()
+    workflow.poll_due.assert_not_awaited()
+    assert outbox.drain.await_count <= 1
+
+
+async def test_old_cycle_without_expiry_needs_no_lock_callback():
+    outbox, workflow = AsyncMock(), AsyncMock()
+    outbox.drain.return_value = workflow.poll_due.return_value = 0
+    runtime = scheduler.SchedulerRuntime(
+        SimpleNamespace(),
+        outbox,
+        workflow,
+        "tenant",
+        scheduler.SchedulerConfig(1, 5, 1),
+    )
+    await scheduler._run_cycle(runtime, 1)
+    workflow.poll_due.assert_awaited_once_with("tenant", 5)

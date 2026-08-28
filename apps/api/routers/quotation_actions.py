@@ -172,6 +172,15 @@ def _composition(deps: ConfiguredApiDependencies) -> QuotationHttpComposition:
     return deps.quotation
 
 
+def _file_composition(deps: ConfiguredApiDependencies) -> QuotationHttpComposition:
+    """文件能力整组发布，列表不能绕过生成或metadata-only依赖缺失。"""
+    composition = _composition(deps)
+    _required(composition.domain.files)
+    _required(composition.files_application)
+    _required(composition.customer_versions)
+    return composition
+
+
 def _cost_actor(identity: RequestIdentity, *, boss: bool = False) -> CostingActor:
     role = identity.employee.role
     if role not in ({"boss"} if boss else {"boss", "product", "sourcing", "finance"}):
@@ -602,7 +611,7 @@ async def customer_versions(
     limit: Annotated[int, Query(gt=0)],
     before_version: Annotated[int | None, Query(gt=0)] = None,
 ) -> QuoteCustomerVersionPage:
-    return await _required(_composition(deps).customer_versions).list_versions(
+    return await _required(_file_composition(deps).customer_versions).list_versions(
         identity.tenant_id,
         OpportunityId(_identifier(opportunity_id)),
         actor_id=identity.employee.employee_id,
@@ -619,7 +628,7 @@ async def customer_versions(
 async def list_files(
     quote_id: str, identity: Identity, deps: Dependencies
 ) -> tuple[QuoteFileView, ...]:
-    return await _required(_composition(deps).domain.files).list_files(
+    return await _required(_file_composition(deps).domain.files).list_files(
         identity.tenant_id,
         QuoteId(_file_identifier(quote_id, "quote_id")),
         actor_id=identity.employee.employee_id,
@@ -638,7 +647,7 @@ async def generate_file(
     deps: Dependencies,
     body: Annotated[QuoteEmptyCommand, Body()] = _EMPTY_COMMAND,
 ) -> QuoteFileView:
-    return await _required(_composition(deps).files_application).generate(
+    return await _required(_file_composition(deps).files_application).generate(
         identity.tenant_id,
         QuoteId(_file_identifier(quote_id, "quote_id")),
         actor_id=identity.employee.employee_id,
@@ -658,7 +667,7 @@ async def reconcile_file(
 ) -> QuoteFileRecoveryResult:
     if body.quote_id != _identifier(quote_id):
         raise ValidationError("报价恢复路径绑定无效")
-    return await _required(_composition(deps).files_application).reconcile(
+    return await _required(_file_composition(deps).files_application).reconcile(
         identity.tenant_id,
         QuoteId(quote_id),
         body.original_generation_call_id,
@@ -697,7 +706,7 @@ async def download_file(
     quote_id: str, file_id: str, identity: Identity, deps: Dependencies
 ) -> Response:
     return _pdf(
-        await _required(_composition(deps).files_application).download(
+        await _required(_file_composition(deps).files_application).download(
             identity.tenant_id,
             QuoteId(_file_identifier(quote_id, "quote_id")),
             QuoteFileId(_file_identifier(file_id, "file_id")),
@@ -715,7 +724,7 @@ async def history_file(
     quote_id: str, file_id: str, identity: Identity, deps: Dependencies
 ) -> Response:
     return _pdf(
-        await _required(_composition(deps).files_application).read_history(
+        await _required(_file_composition(deps).files_application).read_history(
             identity.tenant_id,
             QuoteId(_file_identifier(quote_id, "quote_id")),
             QuoteFileId(_file_identifier(file_id, "file_id")),

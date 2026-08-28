@@ -112,3 +112,21 @@ HTTP DTO/端点、legacy展示字典（包括country_policy精确等值消费者
 本次触及adapter发现六项既有类型表达缺陷，仅将原QuoteApprovalSubject九字段及
 QuoteApprovalFact原完整字段构造改为同类model_validate原值mapping；原strict模型和全部
 校验保留，无提前cast/转换/默认、忽略错误或业务分支变化，不转交T10规避该文件类型门。
+
+## 整项审查Fix1：文件组、锁边界与共享机械装配
+
+HTTP六个文件入口通过同一_file_composition，domain.files、files_application、
+customer_versions任一缺失共同固定503。域文件服务及其内部绑定不移除、不替换，核心与
+来源不被关闭。代价是缺generated或metadata-only时列表也不可用，不保留部分文件能力。
+
+scheduler在activation返回后和expiry进入前复核原专用backend，后者在普通phase异常捕获外。
+失锁由私有固定异常返回LOCK_LOST，未完成轮不计数且不继续workflow/post-outbox；普通
+expiry错误仍隔离、取消不吞。有expiry而缺确认回调失败关闭，旧无expiry两参数调用保留。
+增加两处锁往返；这是阶段边界检查，不是对已开始扫描的分布式fencing或回滚承诺。
+
+apps/composition_support为非进程机械装配库，共享生命周期、Domain/Evidence束和原构造代码，
+禁止绝对或相对导入任何进程模块。API/worker保留本层公开完整签名、最终dataclass、同class
+类型重导出和独立实例。build_quotation_runtime_parts仅返回actor_reader/customer_versions/
+files_application/lifecycle，必填lease_owner由两端显式传原值；没有通用DI或全局对象缓存。
+规则由实际包及绝对/相对import结构测试覆盖，不把原仅区分顶层apps的checker当充分证明。
+Linux仅quotation白名单增两个共享.py，原入口、Dockerfile依赖、网络隔离与资源预算不变。

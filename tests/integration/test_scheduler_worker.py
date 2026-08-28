@@ -340,7 +340,9 @@ async def test_runtime_activation_runs_after_lock_and_before_first_cycle(
 
     assert result.status is module.WorkerStartStatus.STARTED
     assert activation.calls == 1
-    assert order[:3] == ["lock_confirmed", "runtime_composed", "drain:1"]
+    assert order[:4] == [
+        "lock_confirmed", "runtime_composed", "lock_confirmed", "drain:1"
+    ]
 
 
 async def test_activation_failure_releases_lock_and_runs_no_cycle(

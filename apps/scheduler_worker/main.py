@@ -132,6 +132,11 @@ class WorkerRunResult:
 
 
 WaitForNextCycle = Callable[[float, asyncio.Event], Awaitable[None]]
+ConfirmSchedulerLock = Callable[[], Awaitable[None]]
+
+
+class _SchedulerLockLost(RuntimeError):
+    """阶段边界失去原专用连接；不得当作普通业务phase异常吞掉。"""
 
 
 def _error_category(error: BaseException) -> str:
@@ -186,12 +191,19 @@ def _install_stop_signals(stop_event: asyncio.Event) -> Callable[[], None]:
     return cleanup
 
 
-async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
+async def _run_cycle(
+    runtime: SchedulerRuntime,
+    cycle: int,
+    *,
+    confirm_lock: ConfirmSchedulerLock | None = None,
+) -> None:
     """执行一个固定顺序 cycle；各 phase 隔离且不跨 phase 回滚。
 
     顺序：outbox 前置投递 → Campaign 到期扫描 → 报价到期 → workflow 推进 →
     有推进时 outbox 后置投递。
     """
+    if runtime.quote_expiry_driver is not None and confirm_lock is None:
+        raise RuntimeError("报价到期扫描缺少单副本锁确认")
     pre_count = 0
     campaign_count = 0
     workflow_count = 0
@@ -219,6 +231,8 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
             )
 
     if runtime.quote_expiry_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
         try:
             await runtime.quote_expiry_driver.scan_once()
         except Exception as error:  # noqa: BLE001 - phase独立失败、固定类型日志
@@ -267,9 +281,7 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
     )
 
 
-async def _same_lock_backend(
-    connection: AsyncConnection, expected_pid: int
-) -> bool:
+async def _same_lock_backend(connection: AsyncConnection, expected_pid: int) -> bool:
     """确认 dedicated physical connection 未变化，并结束 heartbeat 事务。"""
     try:
         current_pid = (
@@ -328,6 +340,11 @@ async def run_scheduler_worker(
         cycles = 0
         lock_owned = True
         activation_pending = runtime.activation is not None
+
+        async def confirm_lock() -> None:
+            if not await _same_lock_backend(connection, lock_backend_pid):
+                raise _SchedulerLockLost()
+
         try:
             while not stop.is_set():
                 if not await _same_lock_backend(connection, lock_backend_pid):
@@ -343,12 +360,20 @@ async def run_scheduler_worker(
                     assert runtime.activation is not None
                     await runtime.activation.activate()
                     activation_pending = False
-                await _run_cycle(runtime, cycles + 1)
+                    await confirm_lock()
+                await _run_cycle(runtime, cycles + 1, confirm_lock=confirm_lock)
                 cycles += 1
                 if stop.is_set():
                     break
                 await wait_next(runtime.config.interval_seconds, stop)
             return WorkerRunResult(WorkerStartStatus.STARTED, cycles)
+        except _SchedulerLockLost:
+            lock_owned = False
+            logger.error(
+                "scheduler worker 单副本锁已丢失",
+                extra={"tenant_id": str(runtime.tenant_id)},
+            )
+            return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
         finally:
             cleanup_signals()
             if lock_owned:

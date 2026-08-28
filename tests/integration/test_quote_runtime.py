@@ -279,6 +279,65 @@ async def runtime_request(
     )
 
 
+@pytest.mark.parametrize("missing", ["generated", "metadata_only"])
+async def test_actual_file_composition_missing_port_closes_all_http_entries(
+    unit_engine, monkeypatch, missing
+):
+    from apps.api.composition import runtime as composition
+
+    build = composition.build_quotation_http
+
+    def incomplete(*args, **kwargs):
+        kwargs[missing] = None
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(composition, "build_quotation_http", incomplete)
+    async with actual_api_case(unit_engine, monkeypatch) as case:
+        await seed_runtime_facts(case)
+        domain = case.dependencies.quotation.domain
+        assert domain.files is not None and domain.quotations._files is domain.files
+        calls = []
+
+        async def list_files(*args, **kwargs):
+            calls.append("list_files")
+            return ()
+
+        # 真实composition保留；仅隔离列表的DB读取以让错误旁路明确表现为200。
+        monkeypatch.setattr(domain.files, "list_files", list_files)
+        quote, file, call = new_id("quo"), new_id("qfl"), new_id("tcl")
+        routes = [
+            ("GET", f"/quotes/{quote}/files", None),
+            ("POST", f"/quotes/{quote}/files", {}),
+            (
+                "POST",
+                f"/quotes/{quote}/files/reconcile",
+                {
+                    "quote_id": quote,
+                    "original_generation_call_id": call,
+                },
+            ),
+            ("GET", f"/quotes/{quote}/files/{file}", None),
+            ("GET", f"/quotes/{quote}/files/{file}/history", None),
+            (
+                "GET",
+                f"/opportunities/{case.opportunity}/customer-quote-versions?limit=3",
+                None,
+            ),
+        ]
+        before = list(case.objects.calls)
+        for method, path, body in routes:
+            response = await case.client.request(
+                method,
+                "/costing-quotes" + path,
+                json=body,
+                headers={"X-Tenant-ID": case.tenant, "X-Employee-ID": case.actor},
+            )
+            assert response.status_code == 503
+        assert calls == [] and case.objects.calls == before
+        await runtime_request(case, "GET", "/issuer")
+        await runtime_request(case, "GET", f"/needs/{case.need}/unit")
+
+
 async def test_actual_api_factory_degraded_parser_keeps_safe_metadata_and_core(
     unit_engine, monkeypatch
 ):
@@ -577,3 +636,103 @@ async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
         assert result.status is (
             WorkerStartStatus.LOCK_LOST if lose_lock else WorkerStartStatus.STARTED
         )
+
+
+@pytest.mark.parametrize("phase", ["activation", "campaign"])
+async def test_actual_worker_loss_during_phase_never_enters_expiry(
+    unit_engine, monkeypatch, phase
+):
+    import asyncio
+    from dataclasses import replace
+
+    from sqlalchemy import text
+
+    from apps.scheduler_worker.main import WorkerStartStatus, run_scheduler_worker
+    from tests.integration.test_scheduler_worker import _lock_holder
+
+    monkeypatch.setattr(
+        worker, "EnvironmentSecretResolver", lambda _: _TrackingEnvironmentSecrets()
+    )
+    factory = worker.SchedulerRuntimeFactory(
+        worker_environment(unit_engine, new_id("tn"), "enabled"),
+        _factory_dependencies(worker, with_hunter=False),
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
+    )
+    async with factory() as original:
+        entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls = []
+
+        class Activation:
+            async def activate(self):
+                await original.activation.activate()
+                entered.set()
+                await release.wait()
+
+        class Campaign:
+            async def scan_once(self):
+                entered.set()
+                await release.wait()
+                return 0
+
+        scan = original.quote_expiry_driver.scan_once
+
+        async def expiry():
+            calls.append("expiry")
+            return await scan()
+
+        poll = original.workflow.poll_due
+
+        async def workflow(*args, **kwargs):
+            calls.append("workflow")
+            return await poll(*args, **kwargs)
+
+        async def wait(interval, event):
+            event.set()
+
+        monkeypatch.setattr(original.quote_expiry_driver, "scan_once", expiry)
+        monkeypatch.setattr(original.workflow, "poll_due", workflow)
+        runtime = replace(
+            original,
+            activation=Activation() if phase == "activation" else original.activation,
+            campaign_driver=Campaign()
+            if phase == "campaign"
+            else original.campaign_driver,
+        )
+        task = asyncio.create_task(
+            run_scheduler_worker(
+                runtime,
+                stop_event=stop,
+                wait=wait,
+                install_signal_handlers=False,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            pid, _ = await _lock_holder(unit_engine, runtime.config.lock_key)
+            async with unit_engine.begin() as killer:
+                assert await killer.scalar(
+                    text("SELECT pg_terminate_backend(:pid)"), {"pid": pid}
+                )
+            async with unit_engine.connect() as successor:
+                assert await successor.scalar(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": runtime.config.lock_key},
+                )
+                await successor.commit()
+                release.set()
+                result = await asyncio.wait_for(task, 5)
+                assert result.status is WorkerStartStatus.LOCK_LOST
+                assert result.cycles_completed == 0
+                assert calls == []
+                await successor.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": runtime.config.lock_key},
+                )
+                await successor.commit()
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task

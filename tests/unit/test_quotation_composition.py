@@ -59,12 +59,12 @@ def forbidden_factory():
     pytest.fail("构造不允许打开数据库session")
 
 
-def source_case():
+def source_case(composition_module=composition):
     settings = from_mapping(quotation_settings_values())
     raw, uploads, authorizer = AsyncMock(), AsyncMock(), AsyncMock()
     fingerprints = HmacFingerprintProvider("test-v1", b"x" * 32)
     assert hasattr(composition, "build_quotation_evidence"), "缺少来源独立工厂"
-    evidence = composition.build_quotation_evidence(
+    evidence = composition_module.build_quotation_evidence(
         forbidden_factory,
         settings,
         tenant_id=TENANT,
@@ -164,11 +164,17 @@ def test_domain_factory_tenant_is_required_not_inferred_from_readers():
 
 
 @pytest.mark.parametrize("missing", [None, "files", "generated", "metadata_only"])
-def test_http_factory_has_whole_file_group_and_metadata_only_recovery(missing):
-    settings, evidence, _, _, _ = source_case()
+@pytest.mark.parametrize("root_name", ["api", "scheduler"])
+def test_http_factory_has_whole_file_group_and_metadata_only_recovery(
+    missing, root_name
+):
+    from apps.scheduler_worker import quotations as scheduler
+
+    root = composition if root_name == "api" else scheduler
+    settings, evidence, _, _, _ = source_case(root)
     if missing == "files":
         settings = from_mapping({**quotation_settings_values(), "files": None})
-    domain = composition.build_quotation_domains(
+    domain = root.build_quotation_domains(
         forbidden_factory,
         settings,
         tenant_id=TENANT,
@@ -184,8 +190,12 @@ def test_http_factory_has_whole_file_group_and_metadata_only_recovery(missing):
 
     metadata = Metadata()
     generated = AsyncMock()
-    assert hasattr(composition, "build_quotation_http"), "缺少真实文件HTTP工厂"
-    result = composition.build_quotation_http(
+    final_factory = (
+        root.build_quotation_http
+        if root_name == "api"
+        else root.build_quotation_runtime
+    )
+    result = final_factory(
         domain,
         factory=forbidden_factory,
         approvals=AsyncMock(),
@@ -199,7 +209,10 @@ def test_http_factory_has_whole_file_group_and_metadata_only_recovery(missing):
     )
     assert result.domain is domain and result.evidence is evidence
     assert result.lifecycle._parser is evidence.parser
-    assert result.approval_starter is not None
+    if root_name == "api":
+        assert result.approval_starter is not None
+    else:
+        assert not hasattr(result, "approval_starter")
     if missing:
         assert result.files_application is None and result.customer_versions is None
     else:
@@ -220,6 +233,123 @@ def test_http_factory_has_whole_file_group_and_metadata_only_recovery(missing):
         rate = gateway._checks["rate_limit"]._limiter
         assert rate._owner == gateway._lease_owner
     assert generated.mock_calls == []
+
+
+def test_two_roots_share_mechanics_but_never_runtime_instances(monkeypatch):
+    import inspect
+    from functools import wraps
+
+    from apps.composition_support import quotations as common
+    from apps.scheduler_worker import quotations as scheduler
+
+    delegated = []
+
+    def observe(name):
+        original = getattr(common, name)
+
+        @wraps(original)
+        def build(*args, **kwargs):
+            delegated.append(name)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(common, name, build)
+
+    for name in (
+        "build_quotation_evidence",
+        "build_quotation_domains",
+        "build_quotation_runtime_parts",
+    ):
+        observe(name)
+    parsers = []
+    parser_type = common.LinuxEvidenceTextParser
+
+    def parser(**kwargs):
+        value = parser_type(**kwargs)
+        parsers.append(value)
+        return value
+
+    monkeypatch.setattr(common, "LinuxEvidenceTextParser", parser)
+    results = []
+    for root, owner, final_factory in (
+        (composition, "api-quote-files", composition.build_quotation_http),
+        (scheduler, "scheduler-quote-files", scheduler.build_quotation_runtime),
+    ):
+        for name in (
+            "QuotationDomainComposition",
+            "QuotationEvidenceComposition",
+            "QuotationRuntimeLifecycle",
+        ):
+            assert getattr(root, name) is getattr(common, name)
+        for name in (
+            "build_need_unit_authorizer",
+            "build_quotation_evidence",
+            "build_quotation_domains",
+        ):
+            assert inspect.signature(getattr(root, name)) == inspect.signature(
+                getattr(common, name)
+            )
+        settings, evidence, *_ = source_case(root)
+        domain = root.build_quotation_domains(
+            forbidden_factory,
+            settings,
+            tenant_id=TENANT,
+            evidence=evidence,
+            run_reader=AsyncMock(),
+            artifact_reader=AsyncMock(),
+            now=lambda: basis_case()[3],
+        )
+        approvals, engine = AsyncMock(), AsyncMock()
+        result = final_factory(
+            domain,
+            factory=forbidden_factory,
+            approvals=approvals,
+            engine=engine,
+            settings=settings,
+            evidence=evidence,
+            generated=AsyncMock(),
+            metadata_only=AsyncMock(),
+            fingerprints=HmacFingerprintProvider("test", b"x" * 32),
+            now=lambda: basis_case()[3],
+        )
+        gateway = result.files_application._gateway
+        assert gateway._lease_owner == owner
+        assert gateway._checks["rate_limit"]._limiter._owner == owner
+        access = result.files_application._access
+        assert access._runs._engine() is engine
+        assert access._facts._approvals is approvals
+        assert result.lifecycle._parser is evidence.parser
+        assert domain.approval_access._quotes is domain.quotations
+        results.append(result)
+    first, second = results
+    assert len(parsers) == 2 and parsers[0] is not parsers[1]
+    assert first.domain.quotations is not second.domain.quotations
+    assert (
+        first.evidence.preview_reader._gateway
+        is not second.evidence.preview_reader._gateway
+    )
+    assert first.files_application._gateway is not second.files_application._gateway
+    assert first.files_application._slot is not second.files_application._slot
+    assert first.lifecycle is not second.lifecycle
+    assert delegated == [
+        "build_quotation_evidence",
+        "build_quotation_domains",
+        "build_quotation_runtime_parts",
+        "build_quotation_evidence",
+        "build_quotation_domains",
+        "build_quotation_runtime_parts",
+    ]
+
+
+def test_shared_file_factory_requires_explicit_process_lease_owner():
+    import inspect
+
+    from apps.composition_support.quotations import build_quotation_runtime_parts
+
+    parameter = inspect.signature(build_quotation_runtime_parts).parameters[
+        "lease_owner"
+    ]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
 
 
 @pytest.mark.parametrize("mode", ["enabled", "no_files", "no_config", "no_store"])

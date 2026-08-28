@@ -453,6 +453,48 @@ async def test_file_routes_and_submit_use_technical_apps_without_internal_cost_r
         assert "Buyer" not in str(response.headers)
 
 
+@pytest.mark.parametrize("missing", ["files", "files_application", "customer_versions"])
+@pytest.mark.parametrize(
+    "action", ["list", "generate", "reconcile", "download", "history", "versions"]
+)
+async def test_file_group_missing_any_port_closes_all_six_routes(
+    wire_case, missing, action
+):
+    from tests.unit.test_quote_pdf_artifacts import ULID
+
+    c = wire_case
+    quote, file = c.file.quote_id, c.file.file_id
+    if missing == "files":
+        c.composition.domain.files = None
+    else:
+        setattr(c.composition, missing, None)
+    paths = {
+        "list": ("GET", f"/quotes/{quote}/files", None),
+        "generate": ("POST", f"/quotes/{quote}/files", {}),
+        "reconcile": (
+            "POST",
+            f"/quotes/{quote}/files/reconcile",
+            {
+                "quote_id": quote,
+                "original_generation_call_id": f"tcl_{ULID}",
+            },
+        ),
+        "download": ("GET", f"/quotes/{quote}/files/{file}", None),
+        "history": ("GET", f"/quotes/{quote}/files/{file}/history", None),
+        "versions": (
+            "GET",
+            "/opportunities/opp_test/customer-quote-versions?limit=3",
+            None,
+        ),
+    }
+    method, path, body = paths[action]
+    response = await request(c.app, method, path, body=body)
+    assert response.status_code == 503, response.text
+    assert c.calls == []
+    core = await request(c.app, "GET", "/issuer")
+    assert core.status_code == 200
+
+
 @pytest.mark.parametrize("path", ["/quotes/quo_test/submit", "/quotes/quo_test/files"])
 @pytest.mark.parametrize(
     "body",

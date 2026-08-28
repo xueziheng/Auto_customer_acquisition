@@ -30,5 +30,9 @@ loopback HTTP，供本地验收使用。SIGTERM 只设置停止标志，必须�
 
 ```text
 允许   一切下层
-禁止   apps 之间互相 import（进程间协作靠数据库与事件，不靠 HTTP 互调）
+禁止   apps 进程之间互相 import（进程间协作靠数据库与事件，不靠 HTTP 互调）
 ```
+
+`composition_support/`是非进程机械装配库，仅供API与scheduler引用，不是新增进程。
+该库只能向下或依赖本库，绝对/相对导入任何进程模块都禁止；进程仍不得互导。
+共享的是代码，不是parser、Gateway、slot、域、engine或其他全局运行实例。

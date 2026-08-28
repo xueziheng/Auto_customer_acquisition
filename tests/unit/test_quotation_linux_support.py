@@ -30,6 +30,8 @@ def test_runtime_image_uses_explicit_b2_whitelist_without_changing_a_chain(
     assert seen["target"] == ("quotation" if quotation else "chain")
     assert ("apps/api/composition/runtime.py" in seen["names"]) is quotation
     assert ("apps/scheduler_worker/runtime.py" in seen["names"]) is quotation
+    for name in ("__init__.py", "quotations.py"):
+        assert (f"apps/composition_support/{name}" in seen["names"]) is quotation
     assert ("connectors/object_store/quote_pdf.py" in seen["names"]) is quotation
     assert (
         "tests/integration/quotation_runtime_linux_cases.py" in seen["names"]

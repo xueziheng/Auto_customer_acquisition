@@ -36,6 +36,23 @@ class Parser:
             raise self.close_fault
 
 
+async def test_shared_lifecycle_type_does_not_share_process_parser_or_close_state():
+    from apps.composition_support.quotations import QuotationRuntimeLifecycle as Shared
+    from apps.scheduler_worker.quotations import QuotationRuntimeLifecycle as Worker
+
+    assert QuotationRuntimeLifecycle is Worker is Shared
+    api_parser, worker_parser = Parser(), Parser()
+    api, worker = QuotationRuntimeLifecycle(api_parser), Worker(worker_parser)
+    await api.startup()
+    await worker.aclose()
+    assert api_parser.calls == ["probe"]
+    assert worker_parser.calls == ["close"]
+    await api.aclose()
+    assert api_parser.calls == ["probe", "close"]
+    with pytest.raises(RuntimeError, match="^报价运行依赖启动失败$"):
+        await worker.startup()
+
+
 @pytest.mark.parametrize(
     "failure", [None, "platform", "runtime", "resource", "protocol"]
 )

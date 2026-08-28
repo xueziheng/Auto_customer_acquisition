@@ -28,7 +28,8 @@ dedicated backend connection 的 scheduler 副本写入，且必须早于第一�
 锁已丢失或双工具未精确注册时一律不得写。激活失败必须释放同一把锁、零 cycle 退出，
 日志不得包含异常原文、凭证引用、配置哈希或凭证值。
 
-报价使用本进程独立composition，不导入apps.api。显式报价配置与对象端口齐备后才注册
+报价使用本进程独立composition，可委托非进程composition_support的机械装配，不导入apps.api。
+各进程新建独立实例与显式lease_owner，不共享运行对象。显式报价配置与对象端口齐备后才注册
 同一approvals/engine的七个报价步骤；缺文件预算只禁用整个文件组。来源tenant显式绑定。
 quotation startup必须在原singleton获取且backend核验后、旧activation之后、首轮cycle之前；
 未获锁零probe。resources退出先关同一parser再health/DB，启动取消保留原异常并沿原流程解锁。
@@ -36,6 +37,9 @@ quotation startup必须在原singleton获取且backend核验后、旧activation�
 QuoteExpiryDriver仅使用显式core.expiry_batch_limit委托expire_overdue；持锁cycle中位于campaign
 之后/workflow之前，普通失败独立记录quote_expiry并继续其他driver，取消原样传播。API不扫描，
 未获singleton或已失锁零expiry；事件沿原QuotationStateEventRow，不新增DomainEvent或cron。
+activation返回后及expiry进入前重新确认同一专用锁backend；确认位于普通phase异常捕获外，
+失锁返回LOCK_LOST且未完成轮不计数、不继续workflow/post-outbox。无expiry的旧两参数cycle
+可保留；有expiry缺显式确认回调必须失败关闭。阶段检查不承诺已开始扫描的分布式fencing。
 
 验证只能由授权真人经 `provider.hunter.validate` 逐次触发，scheduler 不得代跑或自动重试。
 validation passed 后必须重启 singleton scheduler；Settings 只有在 matching

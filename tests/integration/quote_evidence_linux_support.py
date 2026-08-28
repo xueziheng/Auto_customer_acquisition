@@ -110,6 +110,8 @@ def build_parser_image(
         if (root / "apps/__init__.py").is_file():
             paths.append(root / "apps/__init__.py")
         for name in (
+            "apps/composition_support/__init__.py",
+            "apps/composition_support/quotations.py",
             "connectors/search_contracts.py",
             "tests/integration/test_quote_runtime.py",
             "tests/integration/test_api_runtime.py",
