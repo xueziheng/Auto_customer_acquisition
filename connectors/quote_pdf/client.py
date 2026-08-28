@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from connectors.base import ConnectorManifest
+from connectors.quote_pdf.layout import load_fonts, render_pdf, validate_glyphs
+from connectors.quote_pdf.limits import validate_customer_text
 from connectors.quote_pdf.manifest import MANIFEST
 from shared.schemas.quote_document import CustomerQuoteView, QuotePdfRenderError
+from shared.schemas.quote_files import QUOTE_PDF_TEMPLATE_VERSIONS
 
 
 class ReportLabQuotePdfRenderer:
@@ -27,9 +30,24 @@ class ReportLabQuotePdfRenderer:
         """离线 connector 不读取密钥；保留统一 Connector 生命周期接口。"""
 
     async def health_check(self) -> bool:
-        """后续仅检查固定本地依赖，不生成 PDF 或访问网络。"""
+        """仅核固定本地字体可用，不生成 PDF、访问网络或读取密钥。"""
+        try:
+            load_fonts()
+        except QuotePdfRenderError:
+            return False
         return True
 
     def render(self, view: CustomerQuoteView, *, template_version: str) -> bytes:
-        """实际排版由后续切片实现；当前不接受内部报价或自由输入。"""
-        raise NotImplementedError
+        """严格按输入、模板、文本、字体、页数和输出顺序完成离线渲染。"""
+        if not isinstance(view, CustomerQuoteView):
+            raise QuotePdfRenderError("invalid_input")
+        if template_version not in QUOTE_PDF_TEMPLATE_VERSIONS:
+            raise QuotePdfRenderError("template_unsupported")
+        values = validate_customer_text(
+            view, maximum_text_bytes=self._maximum_text_bytes
+        )
+        fonts = load_fonts()
+        validate_glyphs(values, fonts)
+        return render_pdf(
+            view, maximum_bytes=self._maximum_bytes, maximum_pages=self._maximum_pages
+        )
