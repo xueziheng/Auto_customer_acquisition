@@ -174,6 +174,24 @@ quantity/unit/destination/issuer缺失不妨碍合法规格构造；material/siz
 在同一个准备lease内，精确核assessment.tenant_id/need_id等于输入，且assessment.need_facts_hash等于本次完整facts按既有shared canonical编码（版本need-quote-facts-v1）的hash；错tenant/Need或陈旧facts结果按facts_corrupt拒绝，不接受仅hash形状合法。数量/单位状态仍只由demand实现，不在quotation复制其分类。域随后投影安全Need/规格/issuer与blockers。仅blockers为空时按原QuoteBusinessContext字段构造并使用其原context_hash；可提取并复用原构造纯helper，但不得在持锁区再调用open另开连接/重复锁，也不把runtime.current_actor/checked_at/public摘要新增到业务hash。原prepared_by仍绑定：不同员工开始新起草可因prepared_by不同而得到不同hash，不承诺不同actor的这个GET永远同hash。构造剩余校验失败必须原类别报错，不吞成None；无blocker而context_hash=None禁止返回。普通GET只读，无锁定成本/确认记录/来源IO。
 sheet→opportunity由workflow调用现CostingService.get_sheet得真实ID，不能新增HTTP opportunity自证；scope/calculate仍调用现QuotePreparationApplication。内部报价project方法只裁剪已授权真实quote；QuoteInternalPublicView不可由HTTP反向提交。
 
+#### 2.2.3 价格依据集合的真实机会存在性（实施期核对）
+
+保留§2“对象缺失/跨租户404，存在但无依据200空集合”，不沿旧成本list把两者混为一谈。现Costing UoW没有该事实口；新增本域内部只读存储Protocol，不调用带CRM读权的机会服务，也不要求存在成本表/owner/unit/issuer：
+
+```python
+# domains/costing/quote_repository.py，内部存储事实，不是授权票据
+class CostingOpportunityReferenceReader(Protocol):
+    async def exists(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> bool: ...
+# domains/costing/repository.py::CostingUnitOfWork追加必填成员
+opportunity_refs: CostingOpportunityReferenceReader
+```
+
+infra/db/repositories/costing_quote.py新增CostingOpportunityReferenceReaderImpl，复用本域tenant-bound基座，以infra.db.tables.OpportunityRow作显式tenant+opportunity的SELECT EXISTS，只返回真正bool，不投影客户/owner/Need/状态或复制权限。infra/db/costing_uow.py在同session构造opportunity_refs。list_price_evidence先按原当前员工/C读取权限核验，再在同一短UoW核exists并读取持久依据；不存在或跨tenant抛固定CostingQuoteNotFoundError，存在无依据返回空tuple。SQL失败不能当False/空集合；这是只读时点事实，无新锁/冻结/记录/来源IO，也不修改旧list_sheets等语义。
+
+新增domains/costing/errors.py::CostingQuoteNotFoundError(ValidationError)，固定code=record_not_found、固定中文“成本报价记录不存在”，从costing.service显式重导出；仅本批新增安全读取路径使用，HTTP显式映射404，不按异常文字猜分类、不挪用freeze错误消息。未知仓储失败仍沿本批HTTP固定503，不伪装缺项。旧确认/读取异常契约不在此顺改。
+
+先测试实际同租户机会无价格→空、缺机会/跨tenant→not_found、有依据→稳定真实列表、无C权限→拒绝且不调用存在性/依据、存储故障→非not_found；PG fixture真实创建机会，不能用price外键或有无cost_sheet代替。内部Protocol/UoW与适配及这一个固定错误同步ADR0022/就近规则，原签名不新增自由HTTP参数，不扩CRM或授权范围。
+
 ### 2.3 固定错误与调用ID
 
 仅文件routes复用B1已交付的workflow `QuoteFileApiError`（workflows/quote_approval/file_schemas.py）：code:QuoteFileFailureCode、message（固定中文表）、tool_call_id:ToolCallId|None、original_generation_call_id:ToolCallId|None、retry_after_seconds:int|None。QuoteFileFailureCode引用已裁定文件/限速/显式恢复固定集合，不另建自由code或第二错误DTO；现CallId别名保持B1真实Gateway身份校验，技术调用ID不引入业务域。
