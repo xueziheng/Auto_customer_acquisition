@@ -332,6 +332,8 @@ T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-g
 
 T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
 
+当前T8B2进行中：8.1安全读取（5c4799b）、8.2 HTTP（1179405c）、8.3 API/worker装配及生命周期（1b8920）已分片提交验证；8.3最终相关872 unit/131隔离PG零skip、21生产文件mypy与结构通过。8.4受控Linux完整业务链/expiry首次通过，完整报告与提交正在收口；其后补原规格所需审批可读展示（子计划§2.4），再整项独立审查，不提前勾选T8B完成。上文各前置项的“未运行”描述是其交付时的证据边界，不否定本片已有实际factory/受控链，也不等同真实供应商资料或生产对象网络验收。
+
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`
 - Modify: `tool_gateway/manifest.py`（注册工厂，不改pipeline）, `apps/api/{dependencies,main}.py`, `apps/api/composition/runtime.py`, `apps/scheduler_worker/{runtime,main}.py`, `domains/quotations/service.py`, `infra/.env.example`
@@ -509,6 +511,7 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 - [ ] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
 - [ ] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
 - [ ] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
+- [ ] 报价审批沿B2§2.4生成ApprovalView.proposed_change_display的服务端中文平面字段显示；没有新增嵌套typed HTTP报价对象，不JSON.parse自由字符串、不type assertion造DTO。金额/比例/单件整单/前版与FX口径由服务投影，UI不重算或据标签授权；legacy展示保持。最终B2交付前不把当前旧JSON字符串视为该可读投影已完成。
 - [ ] 报价结果通知使用固定相对深链`/costing-quotes/quotes/{quote_id}`，同CostingQuotes页面显式声明`/costing-quotes/quotes/:quoteId`路由，按path参数加载指定版本；不跳最新，不要求通知附带OpportunityId，不解析自由正文。补实际通知链接的router匹配、指定版本加载及身份/页面scope失效测试；通知LOW只进worker站内，API旧出口仅日志，不新增外发按钮或客户端通知权限。
 - [ ] 同步成本报价路由与页面的旧Phase1-only说明，准确描述本批Phase2成本/报价能力且不声称整个Phase2完成；真实启用/可执行仍看后端配置与allowed_actions。information-architecture.test.ts将成本报价与仍为Phase1人工的products/sourcing分开断言，保留其他路由与Phase3禁用约束，不删断言取绿。
 - [ ] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。

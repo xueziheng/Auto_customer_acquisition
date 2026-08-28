@@ -1,9 +1,9 @@
 # Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
-> **状态：前置接口已核对，T8B2准备派发，尚未实现或运行本任务测试。** T5/T6/T8A及T8B1已完成独立审查（B1最终e958b3c），控制器核对实际构造口与依赖并记录交接。按主计划SDD使用test-driven-development与verification-before-completion，不另起执行批次或派子代理。本计划新增方法仍为待实施要求，不把前置测试当成本任务验收。
+> **状态：T8B2实施中，8.1–8.3已分片提交验证，8.4完整链路验收进行中；尚未整项独立审查。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3实际API/worker配置与生命周期1b8920已交付。8.3最终相关872 unit与131隔离PG零skip、21文件mypy/结构通过；不代表整个T8B2或Phase 2完成。T5/T6/T8A及T8B1独立审查已完成（B1最终e958b3c）。下文是精确实施与验收规范，未勾选项在整项审查通过前保持待关门，不把前置或单片结果代替最终验收。
 
 **Goal:** 将已验收域/文件能力接入安全HTTP、显式配置和真实API/worker，保持旧流程兼容。
-**Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；所有新方法仍为待实施要求，不是验收结论。
+**Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；下文方法描述是规范，不独立构成验收结论。
 
 ADR指定`docs/adr/0022-quotation-runtime-http-contracts.md`：2026-08-29控制器派发前核未占号，记录本批准备事实公共契约、权限交集、HTTP与实际运行时兼容决策；若被其他工作占用先回报，不覆盖已有ADR。实现者只更新本批实现相关规则/ADR，不改控制器永久计划或前置验收状态。
 
@@ -34,6 +34,8 @@ ADR指定`docs/adr/0022-quotation-runtime-http-contracts.md`：2026-08-29控制�
 真实Gateway审计仍只表示最多32字符的既有safe-label员工编号，且保留敏感token禁用；业务DTO的40字符身份范围不因此扩大网关列。本批不迁移/截断/hash编号或伪造UserId。文件路径真实invoke尚无result的ValidationError按B1裁定返回固定invalid_input/无call ID；来源路径沿A现有固定错误映射失败关闭。实际factory需补已存在且不超过32字符的中文/内部空格/保留token编号零对象IO反例，并保留合法短旧编号原样入审计正例；不能宣称所有fact_identity都可执行Gateway。employees.employee_id本身也是String(32)，33/40字符拒绝仅用B1受控actor/access配真实Gateway覆盖，不声称存在这种持久员工或要求真实PG插入。metadata内部读权仍沿原域契约，不能全局改成32字符身份门。
 
 派发前核实的同链兼容修复：`workflows/quote_approval/steps.py::_identity`目前仍对prepared_by/initiated_by要求`startswith("emp_")`，会拒绝服务已允许的合法短旧员工编号。B2仅将这两个值的格式校验改为调用现`fact_identity`并保留原字符串；该函数只校验且返回None，不能把返回值当ID。其余run/quote/version/hash绑定、实际当前员工和审批独立性检查全部保留，不改workflow版本或既有run数据。先用真实步骤验证非emp_旧编号的行为RED，补非法/空/非字符串拒绝与canonical编号保护测试；§8.4用实际factory、真实持久旧编号走submit→步骤→独立审批→文件，不能只证明HTTP202即称同链兼容。原错误仍固定workflow_binding_invalid，不增加通用身份规则或改Gateway safe-label限制。
+
+实际Linux同链发现的第二处旧员工接缝：公共ApprovalServiceImpl.submit仅在quote_contract_subject返回None的legacy分支执行原proposed_by_employee/owner_employee的emp_前缀检查；真实新版subject已由ApprovalQuoteSubject→QuoteDTO按既有fact_identity验证两人，原值入库、不重复或转换。decide保留ApprovalId/approved/note门，把员工格式判断移至现_decision_guard短读package并严格_marker之后：legacy仍原_optional_id，真实新版用fact_identity，ValueError映固定ValidationError。不得增加SQL、放宽半标记/损坏namespace、改变当前guard/员工机会→审批锁序/禁止自批/回执。代价是无效legacy决定人的格式错误可能晚于不存在/损坏package错误，短读先于格式校验；仅此错误优先级变化，不改变旧可接受员工集合。四个已观察行为RED保留，补新版非法/None/控制字符/超长、旧短编号拒绝、canonical与自批/撤权保护，实际持久短编号贯通Linux独立审批与文件；ADR0022与审批就近规则留痕。
 
 本片类型门的窄例外：steps.py已触及，扩大mypy发现同分支T5既有的两项QuoteWorkflowRunFact入参可空类型错误与一次poll/apply局部变量类型复用，B2一起修正，不能排除该文件宣称类型通过。将同一七字段原值映射交给现QuoteWorkflowRunFact.model_validate，沿其原strict/frozen/extra-forbid及全部validator，不先cast未经校验的quote_version/content_hash为int/str、不做转换/默认值、model_construct或ignore；apply分支result/patch局部变量仅分别改名apply_result/apply_patch。原workflow_binding_invalid映射、身份原文、版本/hash/流程行为均不变。先保存已观察静态RED；新增或复用真实step对缺/None/bool/0/字符串版本、非法hash与合法输入的保护测试（改前已GREEN就如实记回归），改后原19文件及本片新增公共出口完整mypy及原报价审批unit/相关真实PG回归通过。此修正限这三项，不扩大为通用WorkflowRun上下文重构。
 
@@ -213,6 +215,22 @@ infra/db/repositories/costing_quote.py新增CostingOpportunityReferenceReaderImp
 固定状态映射：HTTP输入/尚未invoke的unsupported=400，权限403，缺对象404，idempotency/revision/context冲突及确定性正式阻断409，rate_limited=429，dependency/lock/storage/unknown=503。已有Gateway结果的文件VALIDATION/unsupported同样保留技术错误与call ID，归409，不掉回只code/message的400。文件同status同时可能有flat错误与技术错误时，OpenAPI用显式union；400保留现全局flat契约，不与main强制400覆盖冲突。
 Retry-After仅真实结果合法整数1..86400，缺失就不加，不能使用ApiSettings.retry_after_seconds冒充unknown恢复时间；保留原K/原文件，取消不造成功response。业务固定code按T2/T3B/T4/T5/T6已实际导出的类显式映射，不透传异常消息；T2当前reader失败统一InvalidPricingEvidenceError，不能凭空承诺能输出T8A每个细码。
 
+### 2.4 审批可读展示接缝（8.4同链完成后的本项收口）
+
+实际ApprovalView只提供proposed_change_display:dict[str,str]，通用_view把嵌套报价对象json.dumps；这不是已交付的typed报价HTTP详情。为满足原规格§6.3/§7与T9一页审批需求，保留ApprovalView全部字段/构造及HTTP形状，不增加端点/DTO、不让前端JSON.parse猜业务。仅新版报价改用服务端已验证payload的显式中文平面展示。
+
+- 在quotations本域新增approval_display.py，公开纯函数project_quote_approval_display(payload:QuoteApprovalPackagePayload)->dict[str,str]，从quotations.service同函数重导出；只逐字段格式化既有安全事实，不读库/原件、不决定权限/批准或重算金额、利润、差异/hash。禁止递归dump任意模型或自动加入未来字段。
+- QuoteApprovalAccess新增纯display(fact:ApprovalFactView)->dict[str,str]；实际QuotationApprovalAccess先复用现_subject的完整绑定校验，再从公共parse_quote_approval_payload取得同安全DTO并委托域投影，不跨域导入私有模型/仓储。缺投影依赖失败关闭，无退回JSON展示的宽兼容。
+- ApprovalServiceImpl仅在_read_view及list_for_reader已有当前报价read lease内，原replace(view,can_current_user_decide=...)同时覆盖proposed_change_display=access.display(fact)。通用_view、legacy字段和值、get_by_change_set的新namespace拒绝和其余guard/锁序/期限/hash/决定/apply全部不变。list_pending_for/get经原_read_view覆盖，旧employee前缀行为仍按原接口。
+- 展示白名单含租户/quote/版本/机会/content/context/basis身份、起草人与owner、当前审批类型及全部required_types；本公司抬头/地址/联系、客户/国家、产品描述/完整规格/数量/单位、客户单价/整单合计/舍入/有效期、逐项商业条款；核算与报价币种、实际有效单件收入、完整metrics、政策ID/hash/category/最低与目标比例/生效时间；原顺序成本FX与报价FX（币种对、rate、时间、reference），证据ID/hash/类别/basis/原金额/有效期/确认人/时间；previous无则明确无上一版本，有则显示其ID/版本/hash及自身customer/calculation/policy全部安全内容。重复条款/FX/证据不合并或排序改意图，索引用于区分同名字段。
+- Money直接保留原amount十进制字符串及币种；metrics除margin_rate/discount_headroom外按原核算币种明确单件，margin_rate、discount_headroom及政策阈值明确“比例，1=100%”，不乘100、量化或Number转换。负数/零/尾零不丢。整单只展示持久displayed_total，不能由投影乘数量造整单利润。前版只列原事实，不计算财务差额。所需例外直接展示required_types，不重复底线判断。明确本批批准不自动发送，不把引用文本当可点击原件地址。
+- 所有标签中文且稳定、值只纯文本；不输出原始资料source_quote/source_url/locator、供应商身份、完整Need/basis/Provenance/模型/SQL或动态HTML。该展示仍仅内部审批读权，不成为客户文件或原文授权。
+- 先新tests/unit/test_quote_approval_display.py取得缺函数/真实显示RED，并补原test_approval_service对get/list租约内调用、缺guard/越权/损坏namespace零投影、legacy原字典原样断言。实际adapter/独立导入/Decimal低precision上下文不影响值、重复项/前版/无FX/尾零/负值/敏感原文不泄覆盖。唯一旧QuoteAccessCase补显式display适配，不删旧断言；country_policy_change实际依赖旧display完全等值，连同旧playbook/审批回归。
+- 新生产文件及已触service/adapter纳Ruff、结构和mypy；当前实际API/worker/旧报价PG回归及最终Linux同链定向验证新展示为中文纯文本、身份/自批等门不变。ADR0022与两域/流程规则记录新namespace展示键变化和Protocol增量。此为8.4后最后小片，整B2 BASE不变，全部完成才一次整项独立审查。
+
+代价：新版proposed_change_display内部键从机器字段变为中文展示标签，按旧机器键解析新版包的未知消费者需适配；仓库唯一业务等值消费者country_policy_change属legacy须完全不变。新增纯projection接口及测试替身维护，不新增存储/审批规则/HTTP字段。前端沿生成ApprovalView显示服务端结果，不承诺新增嵌套typed HTTP报价对象。
+
+
 ## 3. 最小显式配置与禁用粒度（已裁定）
 
 新增`infra/quotation_settings.py`只解析非秘密DTO，不读环境/文件/凭证；API runtime_config与scheduler runtime各读同一可选环境变量`TRADEOS_QUOTATION_SETTINGS_JSON`并调用它，不跨apps导入解析器。缺整个变量=旧运行模式；JSON提供时所有下列字段必填，允许指定None仅在标注处，未知/重复key、NaN、bool冒充int、空字符串或缺子字段均固定配置错误，不静默降级为默认。
@@ -380,7 +398,7 @@ HTTP unit使用受控服务只测wire；真实集成必须从实际factory走真
 - 缺env/缺files/畸形子配置/probe失败/取消各组表现精确；原API readiness无写、原旧costing仍用；startup与shutdown对同parser实例，aclose早于DB dispose，子进程归零。SDK timeout不宣称kill线程。
 - singleton两连接只有持锁者expiry，独立expiry失败不封其他driver，真实expiry状态/事件和T4规则一致；无cron/API后台expiry。PG技术now/lease与业务now分离，所有资源fixture显式。
 
-控制器已全文核对并接受以下方向（实现仍待前置交付与独立验收）：
+控制器已全文核对并接受以下方向（当前实施状态见顶部，整项独立验收仍待）：
 
 1. **GET缺项与安全schema增量**：独立open_preparation_facts/安全投影及refresh端口，保持原open和C/U/F权限不变；本次补充demand唯一纯规则结果与用途adapter，不能从冻结错误猜页面缺项。共享ProvenanceSummary仅纯契约，若最终已有等效摘要则复用同class。
 2. **HTTP一致性**：沿现400输入约定，明确本表只读POST、T5固定canonical与NONE例外；文件执行错误用409/429/503显式union，不修改全局错误处理。
@@ -421,6 +439,8 @@ Create `connectors/object_store/deferred.py::DeferredS3ObjectBlobTransport(setti
 - [ ] 证明原上传Raw/EMAIL_DRAFT、旧API readonly readiness与旧worker仍兼容。提交 `feat: 装配报价运行配置与受控生命周期`。
 
 ### 8.4 真实链路、到期驱动与交接
+
+Linux测试装配窄扩展：现build_parser_image新增quotation专用选择，仅在chain=True且显式复用已验收base image时合法；原parser/refreshed/chain默认stage与入口保持。原A白名单之外仅取apps/__init__.py（若存在；当前apps为namespace package，无此文件，不为打包新增它）及apps/api、apps/scheduler_worker、apps/notification_worker、agent_runtime、notification_gateway的*.py；connectors/dns_auth、object_store、openai、quote_pdf、tavily、web_search的*.py与connectors/search_contracts.py，全部排除AppleDouble。额外测试仅tests/integration/test_quote_runtime.py、test_api_runtime.py、test_scheduler_worker.py、tests/unit/test_api_runtime_config.py、tests/quotation_runtime_fixtures.py及新tests/integration/quotation_runtime_linux_cases.py、quotation_runtime_linux_support.py；前述三个短文件名均在tests/integration。Dockerfile加quotation stage，只COPY该白名单tar已有文件，不复制整工作树或所有apps，不带.env/.git/宿主凭证/挂载/端口。新固定B2入口只运行指定cases，不接受外部任意测试路径或命令；原A入口不变。复用run_chain_cases的internal PG、非root/只读/无cap与已有所有预算，pytest180s、runner240s不变，不运行pip。补tar白名单与原默认入口保护；额外import缺口需具名核实，不宽泛扩目录。环境预检/Mac降级不等于B2真实同链，最终单列实际image ID、原解析器/probe与真实factory业务链结果。
 
 - [ ] `tests/integration/test_quote_runtime.py` 从实际API factory走真实PG+T2/T3B/T4/T5/T6/T8A/B1+Gateway+T7 renderer+受控对象边界；覆盖人工单位/价格/政策/FX/coverage/scope→报价→独立审批→文件、刷新和受限原文。不能把mock业务服务称真实接线。
 - [ ] 涉及真实受限解析的完整链在T8A规定Linux runtime与同一隔离PG环境运行，沿其显式资源fixture；Mac解析失败关闭另测。SDK可受控，真实业务资料、真实S3网络与发送仍未运行。
