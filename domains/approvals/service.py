@@ -56,6 +56,12 @@ class ApprovalService(Protocol):
         """受信workflow事实读取，重新校验原始请求hash，不作HTTP出口。"""
         ...
 
+    async def find_quote_fact(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalFactView | None:
+        """受信workflow按精确新版引用恢复原包；校验原请求，不作HTTP出口。"""
+        ...
+
     async def get_for_reader(
         self,
         tenant_id: TenantId,

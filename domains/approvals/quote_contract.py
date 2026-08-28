@@ -63,6 +63,12 @@ _REF = re.compile(
 )
 
 
+def validate_quote_change_set_ref(value: str) -> None:
+    """内部历史查找也只接受完整新版引用，不回退legacy查询。"""
+    if not isinstance(value, str) or _REF.fullmatch(value) is None:
+        raise QuoteContractError("quote_contract_invalid")
+
+
 def quote_contract_subject(
     *,
     tenant_id: TenantId,

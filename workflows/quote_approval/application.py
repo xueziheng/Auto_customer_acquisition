@@ -526,6 +526,18 @@ class QuoteApprovalApplication:
             existing = await session.submission()
             if existing is not None:
                 return existing
+            snapshot = await session.snapshot()
+            found: list[ApprovalId] = []
+            for payload in snapshot.payloads:
+                fact = await self._approvals.find_quote_fact(tenant_id,
+                    quote_change_set_ref(quote_id,payload.content_hash,payload.approval_type))
+                if fact is not None:
+                    found.append(fact.approval_id)
+            if len(found) == len(snapshot.payloads):
+                submission = await self._submit_group(snapshot,executor=executor,
+                    expected_ids=tuple(found))
+                await session.recover_submission(submission,actor=actor)
+                return submission
         c = target.internal_quote.content
         async with (
             self._context.open(tenant_id, c.opportunity_id, initiated_by, prepared_by=c.prepared_by) as context,
@@ -535,24 +547,35 @@ class QuoteApprovalApplication:
             if existing is not None:
                 return existing
             snapshot = await session.prepare_submission(context,actor=actor)
-            ids: list[ApprovalId] = []
-            for payload in snapshot.payloads:
-                kind = payload.approval_type
-                ids.append(await self._approvals.submit(tenant_id,ApprovalType(kind),
-                    f"报价审批 {quote_id} {kind}",payload.model_dump(mode="json"),
-                    f"独立确认报价版本 {quote_id} 的 {kind}",
-                    BlastRadius([str(quote_id)],"允许本报价版本进入批准态","关闭本轮报价审批",False),
-                    proposed_by_run=executor.run_id,proposed_by_employee=c.prepared_by,
-                    owner_employee=c.owner_id,
-                    evidence_refs=[f"quote-evidence:{quote_id}:{e.evidence_id}" for e in payload.evidence],
-                    change_set_ref=quote_change_set_ref(quote_id,c.content_hash,kind),
-                    expires_at_limit=snapshot.expires_at_limit))
-            facts = await read_quote_facts(self._approvals,tenant_id,tuple(ids))
-            submission = qa.QuoteApprovalSubmission(tenant_id=tenant_id,quote_id=quote_id,
-                quote_version=c.version,content_hash=c.content_hash,policy_id=c.basis.policy_id,
-                policy_hash=c.basis.policy.content_hash,required_types=snapshot.required_types,facts=facts)
+            submission = await self._submit_group(snapshot,executor=executor)
             await session.bind(submission,context,actor=actor)
             return submission
+
+    async def _submit_group(self, snapshot: qa.QuoteApprovalSnapshot, *,
+        executor: qa.QuoteWorkflowExecutor,
+        expected_ids: tuple[ApprovalId,...] | None = None) -> qa.QuoteApprovalSubmission:
+        """首次与重放共享原固定请求；恢复逐包确认原ID，不接受新包替换。"""
+        c = snapshot.internal_quote.content
+        tenant_id,quote_id = c.tenant_id,c.quote_id
+        ids: list[ApprovalId] = []
+        for index,payload in enumerate(snapshot.payloads):
+            kind = payload.approval_type
+            approval_id = await self._approvals.submit(tenant_id,ApprovalType(kind),
+                f"报价审批 {quote_id} {kind}",payload.model_dump(mode="json"),
+                f"独立确认报价版本 {quote_id} 的 {kind}",
+                BlastRadius([str(quote_id)],"允许本报价版本进入批准态","关闭本轮报价审批",False),
+                proposed_by_run=executor.run_id,proposed_by_employee=c.prepared_by,
+                owner_employee=c.owner_id,
+                evidence_refs=[f"quote-evidence:{quote_id}:{e.evidence_id}" for e in payload.evidence],
+                change_set_ref=quote_change_set_ref(quote_id,c.content_hash,kind),
+                expires_at_limit=snapshot.expires_at_limit)
+            if expected_ids is not None and approval_id != expected_ids[index]:
+                raise QuoteApprovalError("approval_binding_conflict")
+            ids.append(approval_id)
+        facts = await read_quote_facts(self._approvals,tenant_id,tuple(ids))
+        return qa.QuoteApprovalSubmission(tenant_id=tenant_id,quote_id=quote_id,
+            quote_version=c.version,content_hash=c.content_hash,policy_id=c.basis.policy_id,
+            policy_hash=c.basis.policy.content_hash,required_types=snapshot.required_types,facts=facts)
 
     async def poll(self, tenant_id: TenantId, quote_id: QuoteId, *,
                    executor: qa.QuoteWorkflowExecutor) -> qa.QuoteApprovalPollResult:

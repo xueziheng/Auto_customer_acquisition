@@ -731,6 +731,462 @@ async def test_partial_submission_recovers_original_packages(
     assert len(recovered.facts) == 2
 
 
+@pytest.mark.parametrize(
+    "recovery_state,expected",
+    [
+        ("expired_after_loss", "expired"),
+        ("before_expiry", "pending_approval"),
+        ("expiry_worker", "expired"),
+        ("stale_context", "pending_approval"),
+        ("superseded", "superseded"),
+    ],
+)
+async def test_restart_binds_original_complete_group_after_quote_and_limit_expire(
+    approval_case, monkeypatch, recovery_state, expected
+):
+    from domains.quotations.errors import QuoteApprovalUnavailableError
+    from infra.db.repositories.quotations import QuotationVersionRepositoryImpl
+    from tests.unit.test_quotation_service import UnusedApprovalContext
+    from workflows.quote_approval.application import QuoteApprovalApplication
+
+    c = approval_case
+    app = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        c.provider,
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+    original = QuotationVersionRepositoryImpl.add_approval_bindings
+
+    async def lose_binding(self, *args, **kwargs):
+        await original(self, *args, **kwargs)
+        raise QuoteApprovalUnavailableError("storage_unknown")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            QuotationVersionRepositoryImpl, "add_approval_bindings", lose_binding
+        )
+        with pytest.raises(QuoteApprovalUnavailableError):
+            await app.submit(
+                c.quotation.tenant,
+                c.quote.content.quote_id,
+                initiated_by=c.quotation.actor.employee_id,
+                executor=c.executor,
+            )
+    async with c.quotation.context.unit.sessions() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ApprovalPackageRow).where(
+                        ApprovalPackageRow.tenant_id == c.quotation.tenant
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+        before = {
+            row.approval_id: (
+                row.request_hash,
+                row.expires_at_limit,
+                row.proposed_by_run,
+                row.proposed_change,
+            )
+            for row in rows
+        }
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_bindings WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+    from shared.schemas.identifiers import TenantId
+
+    assert (
+        await c.approvals.find_quote_fact(TenantId("tn_other"), rows[0].change_set_ref)
+        is None
+    )
+    if recovery_state in {"expired_after_loss", "expiry_worker"}:
+        c.quotation.clock[0] = max(
+            c.quote.content.valid_until, *(row.expires_at_limit for row in rows)
+        ) + timedelta(seconds=1)
+    if recovery_state == "expiry_worker":
+        assert (
+            await c.quotation.service.expire_overdue(c.quotation.tenant, limit=10) == 1
+        )
+    if recovery_state == "stale_context":
+        await c.creation.freeze.change_material()
+    if recovery_state == "superseded":
+        from tests.integration.test_quotation_creation_recovery import new_command
+
+        command = await new_command(c.creation, "recovery-revision", previous=c.quote)
+        await c.creation.app.create(
+            c.quotation.tenant,
+            command,
+            actor_id=c.quotation.actor.employee_id,
+            idempotency_key="recovery-revision",
+        )
+    restarted = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        UnusedApprovalContext(),
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+
+    def no_policy(*args, **kwargs):
+        raise AssertionError("历史绑定恢复不能取得fresh政策租约")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c.policies, "open", no_policy)
+        recovered = await restarted.submit(
+            c.quotation.tenant,
+            c.quote.content.quote_id,
+            initiated_by=c.quotation.actor.employee_id,
+            executor=c.executor,
+        )
+    assert {fact.approval_id for fact in recovered.facts} == set(before)
+    # submit自身已经原子补绑定并终止；不得靠后续poll修正状态。
+    async with c.quotation.context.unit.sessions() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ApprovalPackageRow).where(
+                        ApprovalPackageRow.tenant_id == c.quotation.tenant
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            row.approval_id: (
+                row.request_hash,
+                row.expires_at_limit,
+                row.proposed_by_run,
+                row.proposed_change,
+            )
+            for row in rows
+        } == before
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT state FROM quotations WHERE tenant_id=:tenant AND quote_id=:quote"
+                ),
+                {"tenant": c.quotation.tenant, "quote": c.quote.content.quote_id},
+            )
+            == expected
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_bindings WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 2
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_receipts WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM outbox_events WHERE tenant_id=:tenant AND event_type='QuoteApproved'"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+    if recovery_state == "stale_context":
+        for fact in recovered.facts:
+            await c.approvals.decide(
+                c.quotation.tenant,
+                fact.approval_id,
+                approved=True,
+                decided_by=c.decider,
+            )
+        result = await app.apply(
+            c.quotation.tenant, c.quote.content.quote_id, executor=c.executor
+        )
+        assert result.outcome == "blocked" and result.error_code == "context_changed"
+
+
+async def test_partial_original_group_cannot_create_missing_expired_package(
+    approval_case, monkeypatch
+):
+    from domains.quotations.errors import (
+        QuoteApprovalError,
+        QuoteApprovalUnavailableError,
+    )
+    from workflows.quote_approval.application import QuoteApprovalApplication
+
+    c = approval_case
+    app = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        c.provider,
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+    original = c.approvals.submit
+    ids = []
+
+    async def partial(*args, **kwargs):
+        if ids:
+            raise QuoteApprovalUnavailableError("storage_unknown")
+        result = await original(*args, **kwargs)
+        ids.append(result)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c.approvals, "submit", partial)
+        with pytest.raises(QuoteApprovalUnavailableError):
+            await app.submit(
+                c.quotation.tenant,
+                c.quote.content.quote_id,
+                initiated_by=c.quotation.actor.employee_id,
+                executor=c.executor,
+            )
+    c.quotation.clock[0] = c.quote.content.valid_until + timedelta(seconds=1)
+    with pytest.raises(QuoteApprovalError) as error:
+        await app.submit(
+            c.quotation.tenant,
+            c.quote.content.quote_id,
+            initiated_by=c.quotation.actor.employee_id,
+            executor=c.executor,
+        )
+    assert error.value.code == "approval_expired"
+    async with c.quotation.context.unit.sessions() as session:
+        assert (
+            await session.execute(
+                select(ApprovalPackageRow.approval_id).where(
+                    ApprovalPackageRow.tenant_id == c.quotation.tenant
+                )
+            )
+        ).scalars().all() == ids
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_bindings WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+
+
+@pytest.mark.parametrize("mismatch", ["request", "run", "limit"])
+async def test_original_group_recovery_rejects_mismatched_request_without_bindings(
+    approval_case, monkeypatch, mismatch
+):
+    from domains.approvals.errors import QuoteContractError
+    from domains.quotations.errors import (
+        QuoteApprovalError,
+        QuoteApprovalUnavailableError,
+    )
+    from infra.db.repositories.quotations import QuotationVersionRepositoryImpl
+    from workflows.quote_approval.application import QuoteApprovalApplication
+
+    c = approval_case
+    app = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        c.provider,
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+    run = await c.engine.get_run(c.quotation.tenant, c.executor.run_id)
+    other_run = await c.engine.start(
+        c.quotation.tenant,
+        "quote_approval",
+        run.subject_ref,
+        run.context,
+        "other-original-run",
+    )
+    original_submit = c.approvals.submit
+
+    async def changed_request(*args, **kwargs):
+        if mismatch == "request":
+            args = (*args[:2], "不同原始审批请求", *args[3:])
+        elif mismatch == "run":
+            kwargs["proposed_by_run"] = other_run
+        else:
+            kwargs["expires_at_limit"] += timedelta(seconds=1)
+        return await original_submit(*args, **kwargs)
+
+    original_bind = QuotationVersionRepositoryImpl.add_approval_bindings
+
+    async def lose_binding(self, *args, **kwargs):
+        await original_bind(self, *args, **kwargs)
+        raise QuoteApprovalUnavailableError("storage_unknown")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c.approvals, "submit", changed_request)
+        patch.setattr(
+            QuotationVersionRepositoryImpl, "add_approval_bindings", lose_binding
+        )
+        with pytest.raises((QuoteApprovalError, QuoteApprovalUnavailableError)):
+            await app.submit(
+                c.quotation.tenant,
+                c.quote.content.quote_id,
+                initiated_by=c.quotation.actor.employee_id,
+                executor=c.executor,
+            )
+    c.quotation.clock[0] = c.quote.content.valid_until + timedelta(seconds=2)
+    with pytest.raises(QuoteContractError) as error:
+        await app.submit(
+            c.quotation.tenant,
+            c.quote.content.quote_id,
+            initiated_by=c.quotation.actor.employee_id,
+            executor=c.executor,
+        )
+    assert error.value.code == "quote_request_conflict"
+    async with c.quotation.context.unit.sessions() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ApprovalPackageRow)
+                .where(ApprovalPackageRow.tenant_id == c.quotation.tenant)
+            )
+            == 2
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_bindings WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT state FROM quotations WHERE tenant_id=:tenant AND quote_id=:quote"
+                ),
+                {"tenant": c.quotation.tenant, "quote": c.quote.content.quote_id},
+            )
+            == "draft"
+        )
+
+
+@pytest.mark.parametrize("fault", ["terminate", "replayed_id"])
+async def test_recovered_bindings_and_expiry_transition_roll_back_together(
+    approval_case, monkeypatch, fault
+):
+    from domains.quotations.approval_service import QuoteApprovalSessionImpl
+    from domains.quotations.errors import (
+        QuoteApprovalError,
+        QuoteApprovalUnavailableError,
+    )
+    from infra.db.repositories.quotations import QuotationVersionRepositoryImpl
+    from workflows.quote_approval.application import QuoteApprovalApplication
+
+    c = approval_case
+    app = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        c.provider,
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+    original_bind = QuotationVersionRepositoryImpl.add_approval_bindings
+
+    async def lose_binding(self, *args, **kwargs):
+        await original_bind(self, *args, **kwargs)
+        raise QuoteApprovalUnavailableError("storage_unknown")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            QuotationVersionRepositoryImpl, "add_approval_bindings", lose_binding
+        )
+        with pytest.raises(QuoteApprovalUnavailableError):
+            await app.submit(
+                c.quotation.tenant,
+                c.quote.content.quote_id,
+                initiated_by=c.quotation.actor.employee_id,
+                executor=c.executor,
+            )
+    c.quotation.clock[0] = c.quote.content.valid_until + timedelta(seconds=1)
+    original_terminate = QuoteApprovalSessionImpl.terminate
+
+    async def lose_expiry(self, *args, **kwargs):
+        await original_terminate(self, *args, **kwargs)
+        raise QuoteApprovalUnavailableError("storage_unknown")
+
+    original_submit = c.approvals.submit
+
+    async def wrong_replayed_id(*args, **kwargs):
+        result = await original_submit(*args, **kwargs)
+        async with c.quotation.context.unit.sessions() as session:
+            return (
+                await session.execute(
+                    select(ApprovalPackageRow.approval_id).where(
+                        ApprovalPackageRow.tenant_id == c.quotation.tenant,
+                        ApprovalPackageRow.approval_id != result,
+                    )
+                )
+            ).scalar_one()
+
+    with monkeypatch.context() as patch:
+        if fault == "terminate":
+            patch.setattr(QuoteApprovalSessionImpl, "terminate", lose_expiry)
+        else:
+            patch.setattr(c.approvals, "submit", wrong_replayed_id)
+        with pytest.raises(
+            (QuoteApprovalError, QuoteApprovalUnavailableError)
+        ) as error:
+            await app.submit(
+                c.quotation.tenant,
+                c.quote.content.quote_id,
+                initiated_by=c.quotation.actor.employee_id,
+                executor=c.executor,
+            )
+        assert error.value.code == (
+            "storage_unknown" if fault == "terminate" else "approval_binding_conflict"
+        )
+    async with c.quotation.context.unit.sessions() as session:
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_approval_bindings WHERE tenant_id=:tenant"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT state FROM quotations WHERE tenant_id=:tenant AND quote_id=:quote"
+                ),
+                {"tenant": c.quotation.tenant, "quote": c.quote.content.quote_id},
+            )
+            == "draft"
+        )
+        assert (
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM quotation_state_events WHERE tenant_id=:tenant AND to_state IN ('pending_approval','expired')"
+                ),
+                {"tenant": c.quotation.tenant},
+            )
+            == 0
+        )
+
+
 @pytest.mark.parametrize("entry", ["poll", "event"])
 async def test_engine_execution_lease_blocks_writes_delete_and_cancel(
     unit_engine, entry

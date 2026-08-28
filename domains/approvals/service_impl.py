@@ -21,7 +21,11 @@ from domains.approvals.models import (
     ApprovalType,
     BlastRadius,
 )
-from domains.approvals.quote_contract import quote_contract_subject, quote_request_hash
+from domains.approvals.quote_contract import (
+    quote_contract_subject,
+    quote_request_hash,
+    validate_quote_change_set_ref,
+)
 from domains.approvals.repository import ApprovalUnitOfWorkFactory
 from domains.approvals.schemas import (
     ApprovalFactView,
@@ -214,6 +218,24 @@ class ApprovalServiceImpl:
                 raise ValidationError("审批不存在")
             return self._fact(package)
 
+    async def find_quote_fact(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalFactView | None:
+        """只查原始新版包，缺依赖/损坏契约不作为不存在继续创建。"""
+        self._tenant(tenant_id)
+        validate_quote_change_set_ref(change_set_ref)
+        self._access()
+        async with self._uow_factory(tenant_id) as uow:
+            package = await uow.approvals.find_quote_by_change_set(tenant_id, change_set_ref)
+            if package is None:
+                return None
+            if package.tenant_id != tenant_id or package.change_set_ref != change_set_ref:
+                raise QuoteContractError("quote_contract_invalid")
+            fact = self._fact(package)
+            if fact.contract_namespace != "quote-approval-v1":
+                raise QuoteContractError("quote_contract_invalid")
+            return fact
+
     async def _read_view(
         self,
         package: ApprovalPackage,
@@ -285,6 +307,7 @@ class ApprovalServiceImpl:
                         )
                     )
         after = None
+        visible_quotes = 0
         while True:
             async with self._uow_factory(tenant_id) as uow:
                 page = await uow.approvals.list_quote_pending_candidates(
@@ -318,10 +341,11 @@ class ApprovalServiceImpl:
                             and current.can_decide,
                         )
                     )
+                    visible_quotes += 1
                 finally:
                     await manager.__aexit__(None, None, None)
             after = (page[-1].expires_at, page[-1].approval_id)
-            if len(result) >= limit:
+            if visible_quotes >= limit:
                 break
         return sorted(result, key=lambda item: (item.expires_at, item.approval_id))[
             :limit

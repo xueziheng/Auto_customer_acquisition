@@ -499,3 +499,56 @@ async def test_new_invisible_candidates_do_not_consume_legacy_list_limit():
     result = await svc.list_for_reader(payload.tenant_id,
         reader=ApprovalReaderIdentity(employee_id=APPROVER,role="boss"),limit=1)
     assert [item.approval_id for item in result] == [legacy]
+
+
+async def test_mixed_queue_scans_past_invisible_page_before_merging_legacy():
+    from dataclasses import replace
+
+    from domains.approvals.schemas import ApprovalAccessResult, ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+    from shared.schemas.identifiers import new_id
+
+    svc,factory,guard,clock = quote_service_case()
+    payload,visible_id = await submit_quote(svc)
+    visible = factory.store.packages[visible_id]
+    legacy = await svc.submit(payload.tenant_id,ApprovalType.PLAYBOOK_CHANGE,"旧审批",
+        {"version":"old"},"旧申请",BlastRadius(["old"],"批准","不变",False),
+        proposed_by_employee=payload.prepared_by,owner_employee=payload.prepared_by)
+    # 完整原请求保持不变；201个不同实际ID模拟稳定游标的跨页候选。
+    factory.store.packages[visible_id] = replace(visible,created_at=clock[0]+timedelta(hours=1),
+        expires_at=visible.expires_at+timedelta(hours=1))
+    for _ in range(200):
+        invisible = replace(visible,approval_id=ApprovalId(new_id("apr")))
+        factory.store.packages[invisible.approval_id] = invisible
+    clock[0] += timedelta(hours=2)
+    @asynccontextmanager
+    async def selective_guard(subject,*,actor_id,action):
+        del actor_id,action
+        if subject.approval_id != visible_id:
+            raise PermissionDenied("不在当前范围")
+        yield ApprovalAccessResult(can_decide=True,current_role="boss")
+    guard.guard = selective_guard
+    result = await svc.list_for_reader(payload.tenant_id,
+        reader=ApprovalReaderIdentity(employee_id=APPROVER,role="boss"),limit=1)
+    assert factory.store.packages[visible_id].expires_at < factory.store.packages[legacy].expires_at
+    assert [item.approval_id for item in result] == [visible_id]
+
+
+async def test_quote_fact_lookup_is_strict_internal_and_revalidates_original_request():
+    from domains.approvals.errors import QuoteContractError
+    from shared.errors import PermissionDenied
+
+    svc,factory,_,_ = quote_service_case()
+    payload,approval_id = await submit_quote(svc)
+    package = factory.store.packages[approval_id]
+    fact = await svc.find_quote_fact(payload.tenant_id,package.change_set_ref)
+    assert fact.approval_id == approval_id and fact.request_hash == package.request_hash
+    assert await svc.find_quote_fact(payload.tenant_id,package.change_set_ref.replace("quote_send","discount")) is None
+    for ref in ("legacy:whatever",package.change_set_ref.upper()," "+package.change_set_ref,"quote:invalid"):
+        with pytest.raises(QuoteContractError):
+            await svc.find_quote_fact(payload.tenant_id,ref)
+    with pytest.raises(PermissionDenied):
+        await ApprovalServiceImpl(factory).find_quote_fact(payload.tenant_id,package.change_set_ref)
+    package.title = "篡改原请求"
+    with pytest.raises(QuoteContractError):
+        await svc.find_quote_fact(payload.tenant_id,package.change_set_ref)

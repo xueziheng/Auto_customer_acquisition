@@ -126,6 +126,12 @@ class QuoteApprovalSession(Protocol):
         """整组精确绑定与draft→pending同事务，不替换旧包。"""
         ...
 
+    async def recover_submission(
+        self, submission: QuoteApprovalSubmission, *, actor: QuotationActor
+    ) -> QuoteDetailView:
+        """只补完整已存原组并同事务终止，不取fresh context或批准。"""
+        ...
+
     async def apply(
         self, facts: tuple[QuoteApprovalFact, ...], context: QuoteApprovalContext
     ) -> QuoteApprovalApplyResult:
@@ -590,14 +596,8 @@ class QuoteApprovalSessionImpl:
         await self._fresh(context)
         return await self.snapshot()
 
-    async def bind(
-        self,
-        submission: QuoteApprovalSubmission,
-        context: QuoteBusinessContext,
-        *,
-        actor: QuotationActor,
-    ) -> QuoteDetailView:
-        """全组一次绑定；已绑定原组幂等，其他组或终轮不能替换。"""
+    async def _validate_submission(self, submission: QuoteApprovalSubmission) -> None:
+        """首次绑定与原组恢复使用同一不可变身份/全类型校验。"""
         self._check()
         c = self._quote.content
         if (
@@ -619,6 +619,17 @@ class QuoteApprovalSessionImpl:
         ):
             raise QuoteApprovalError("approval_binding_conflict")
         await self._validate(submission.facts)
+
+    async def bind(
+        self,
+        submission: QuoteApprovalSubmission,
+        context: QuoteBusinessContext,
+        *,
+        actor: QuotationActor,
+    ) -> QuoteDetailView:
+        """全组一次绑定；已绑定原组幂等，其他组或终轮不能替换。"""
+        await self._validate_submission(submission)
+        c = self._quote.content
         previous = await self.submission()
         if previous is not None:
             await self._bound(submission.facts)
@@ -629,6 +640,25 @@ class QuoteApprovalSessionImpl:
         await self._transition(
             QuoteState.PENDING_APPROVAL, "approval_submitted", now, actor.employee_id
         )
+        return self._quote
+
+    async def recover_submission(
+        self, submission: QuoteApprovalSubmission, *, actor: QuotationActor
+    ) -> QuoteDetailView:
+        """已持久完整原组只补历史关联；过期/终态不复活，无批准副作用。"""
+        await self._validate_submission(submission)
+        c = self._quote.content
+        await self._service._actor(c.tenant_id, actor, action="prepare")
+        if await self.submission() is not None:
+            await self._bound(submission.facts)
+        else:
+            await self._uow.quotes.add_approval_bindings(c.tenant_id, submission)
+            if self._quote.state is QuoteState.DRAFT:
+                await self._transition(
+                    QuoteState.PENDING_APPROVAL, "approval_submitted",
+                    fact_utc(self._service._now()), actor.employee_id,
+                )
+        await self.terminate(submission.facts)
         return self._quote
 
     async def _transition(
