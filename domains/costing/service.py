@@ -8,19 +8,30 @@ from typing import Protocol, runtime_checkable
 
 from domains.costing.calculation import canonical_pricing_hash, compute_breakdown
 from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
+from domains.costing.freeze_schemas import (
+    CostingContext,
+    CostScopeAccess,
+    CostScopeConfirmationCommand,
+    CostScopeConfirmationView,
+    CostScopeEvidenceBinding,
+    FrozenCostBasis,
+)
 from domains.costing.models import (
     CostItemType,
     CostSheet,
     CostSheetVersion,
 )
 from domains.costing.permissions import CostingActor, CostingActorReader
+from domains.costing.quote_lock import cost_scope_hash
 from domains.costing.schemas import (
+    CalculationSnapshot,
     CostCoverageCreate,
     CostItemCreate,
     CostSheetCreate,
     CostSheetView,
     PriceEvidenceCreate,
     PriceEvidenceView,
+    PricingOptions,
     PricingPolicyCreate,
     PricingPolicyView,
     QuoteFxCreate,
@@ -35,16 +46,35 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from shared.schemas.money import CurrencyCode, Money, PriceBasis, convert
+from shared.schemas.provenance import FactualField
+from shared.schemas.quote_creation import (
+    QuoteCreationCompletion,
+    QuoteCreationIntent,
+    QuoteCreationOperationView,
+)
+from shared.schemas.quote_facts import NeedQuoteFacts
 
 __all__ = (
+    "CostScopeAccess",
+    "CostScopeConfirmationCommand",
+    "CostScopeConfirmationView",
+    "CostScopeEvidenceBinding",
+    "CostScopeSourceAccess",
+    "CostingActor",
     "CostingActorReader",
+    "CostingContext",
+    "CostingFreezeService",
     "CostingQuoteService",
     "CostingService",
+    "FrozenCostBasis",
+    "NeedFactsValidator",
     "PricingEvidenceReader",
+    "QuoteCreationCompletionReader",
     "assess_quote_readiness",
     "compute_breakdown",
     "compute_unit_full_cost",
     "cost_item_type_values",
+    "cost_scope_hash",
     "cost_sheet_content_hash",
 )
 
@@ -266,3 +296,43 @@ class CostingQuoteService(Protocol):
     async def get_quote_fx(self, tenant_id: TenantId, fx_id: str, *, actor: CostingActor) -> QuoteFxView:
         """按当前身份和租户读取已确认报价汇率。"""
         ...
+
+
+class NeedFactsValidator(Protocol):
+    """上层适配demand的公共纯校验，不复制单位有效性规则。"""
+    def require_current_unit(self, facts: NeedQuoteFacts) -> FactualField[str]: ...
+
+
+class CostScopeSourceAccess(Protocol):
+    """仅核实本次员工可读持久来源，不决定商业适用性。"""
+    async def require(self, tenant_id: TenantId, evidence: tuple[PriceEvidenceView, ...],
+                      *, actor_id: EmployeeId) -> None: ...
+
+
+class QuoteCreationCompletionReader(Protocol):
+    """只接受真实持久quote到receipt的可信投影，T3B仅受控实现。"""
+    async def read(self, tenant_id: TenantId, operation_id: str,
+                   *, actor_id: EmployeeId) -> QuoteCreationCompletion | None: ...
+
+
+class CostingFreezeService(Protocol):
+    """scope、确定性计算及可恢复冻结，不负责报价CRUD或审批。"""
+    async def prepare_scope_access(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        command: CostScopeConfirmationCommand, *, actor: CostingActor) -> CostScopeAccess: ...
+    async def confirm_scope(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        command: CostScopeConfirmationCommand, context: CostingContext, *, actor: CostingActor,
+        idempotency_key: str, source_access: CostScopeAccess) -> CostScopeConfirmationView: ...
+    async def get_scope(self, tenant_id: TenantId, confirmation_id: str,
+                         *, actor: CostingActor) -> CostScopeConfirmationView: ...
+    async def calculate(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        options: PricingOptions, context: CostingContext, *, quote_fx_ref: str | None,
+        actor: CostingActor) -> CalculationSnapshot: ...
+    async def freeze(self, tenant_id: TenantId, cost_sheet_id: CostSheetId,
+        options: PricingOptions, context: CostingContext, *, idempotency_key: str,
+        intent: QuoteCreationIntent, actor: CostingActor) -> FrozenCostBasis: ...
+    async def get_frozen(self, tenant_id: TenantId, basis_id: str,
+                         *, actor: CostingActor) -> FrozenCostBasis: ...
+    async def get_creation(self, tenant_id: TenantId, idempotency_key: str,
+                           *, actor: CostingActor) -> QuoteCreationOperationView | None: ...
+    async def complete_creation(self, tenant_id: TenantId, operation_id: str,
+                                *, actor: CostingActor) -> QuoteCreationOperationView: ...

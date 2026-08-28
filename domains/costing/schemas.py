@@ -599,3 +599,12 @@ class CostCoverageView(CostCoverageCreate):
 
 
 PricingPolicyView.model_rebuild()
+
+from domains.costing.freeze_schemas import (  # noqa: E402
+    CostingContext as CostingContext,
+    CostScopeAccess as CostScopeAccess,
+    CostScopeConfirmationCommand as CostScopeConfirmationCommand,
+    CostScopeConfirmationView as CostScopeConfirmationView,
+    CostScopeEvidenceBinding as CostScopeEvidenceBinding,
+    FrozenCostBasis as FrozenCostBasis,
+)

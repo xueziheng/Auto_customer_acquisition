@@ -4203,3 +4203,97 @@ class ProviderReadinessEventRow(Base):
     actor_id: Mapped[str] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str] = mapped_column(String(200))
+
+
+class CostScopeConfirmationRow(Base):
+    """人工适用性确认，只增且绑定完整Need。"""
+    __tablename__ = "cost_scope_confirmations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id","confirmation_id",name="pk_cost_scope_confirmations"),
+        UniqueConstraint("tenant_id","idempotency_key",name="uq_cost_scope_confirmations_key"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_cost_scope_confirmations_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","coverage_id"],["costing_coverage.tenant_id","costing_coverage.coverage_id"],name="fk_cost_scope_confirmations_coverage_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","need_id"],["validated_needs.tenant_id","validated_needs.need_id"],name="fk_cost_scope_confirmations_need_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","confirmed_by"],["employees.tenant_id","employees.employee_id"],name="fk_cost_scope_confirmations_confirmed_by",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","opportunity_id"],["opportunities.tenant_id","opportunities.opportunity_id"],name="fk_cost_scope_confirmations_opportunity_id",ondelete="RESTRICT"),
+        CheckConstraint("jsonb_typeof(payload)='object'",name="ck_cost_scope_confirmations_json"),
+        CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
+            "request_hash","content_hash","sheet_hash","need_facts_hash","specification_hash","terms_hash")),name="ck_cost_scope_confirmations_hash"),
+        CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_cost_scope_confirmations_key"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    confirmation_id: Mapped[str] = mapped_column(String(40))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    opportunity_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    coverage_id: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    sheet_hash: Mapped[str] = mapped_column(String(64))
+    need_facts_hash: Mapped[str] = mapped_column(String(64))
+    specification_hash: Mapped[str] = mapped_column(String(64))
+    terms_hash: Mapped[str] = mapped_column(String(64))
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+
+
+class CostingQuoteBasisRow(Base):
+    """冻结依据与操作双向延迟FK，内容不可改。"""
+    __tablename__ = "costing_quote_bases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id","basis_id",name="pk_costing_quote_bases"),
+        UniqueConstraint("tenant_id","operation_id",name="uq_costing_quote_bases_operation"),
+        ForeignKeyConstraint(["tenant_id","scope_confirmation_id"],["cost_scope_confirmations.tenant_id","cost_scope_confirmations.confirmation_id"],name="fk_costing_quote_bases_scope_confirmation_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_costing_quote_bases_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","policy_id"],["costing_policies.tenant_id","costing_policies.policy_id"],name="fk_costing_quote_bases_policy_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","opportunity_id"],["opportunities.tenant_id","opportunities.opportunity_id"],name="fk_costing_quote_bases_opportunity_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","operation_id"],["quote_creation_operations.tenant_id","quote_creation_operations.operation_id"],name="fk_costing_quote_bases_operation_id",ondelete="RESTRICT",deferrable=True,initially="DEFERRED",use_alter=True),
+        CheckConstraint("jsonb_typeof(payload)='object'",name="ck_costing_quote_bases_json"),
+        CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
+            "request_hash","context_hash","sheet_hash","basis_hash")),name="ck_costing_quote_bases_hash"),
+        CheckConstraint("valid_until>frozen_at",name="ck_costing_quote_bases_time"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    basis_id: Mapped[str] = mapped_column(String(40))
+    operation_id: Mapped[str] = mapped_column(String(40))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    opportunity_id: Mapped[str] = mapped_column(String(40))
+    scope_confirmation_id: Mapped[str] = mapped_column(String(40))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    context_hash: Mapped[str] = mapped_column(String(64))
+    sheet_hash: Mapped[str] = mapped_column(String(64))
+    basis_hash: Mapped[str] = mapped_column(String(64))
+    policy_id: Mapped[str] = mapped_column(String(64))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+
+
+class QuoteCreationOperationRow(Base):
+    """同成本表仅一个pending；完成后可用显式修订新建记录。"""
+    __tablename__ = "quote_creation_operations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id","operation_id",name="pk_quote_creation_operations"),
+        UniqueConstraint("tenant_id","idempotency_key",name="uq_quote_creation_operations_key"),
+        ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_quote_creation_operations_cost_sheet_id",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","basis_id"],["costing_quote_bases.tenant_id","costing_quote_bases.basis_id"],name="fk_quote_creation_operations_basis_id",ondelete="RESTRICT",deferrable=True,initially="DEFERRED"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'",name="ck_quote_creation_operations_hash"),
+        CheckConstraint("jsonb_typeof(intent)='object' AND (completion IS NULL OR jsonb_typeof(completion)='object')",name="ck_quote_creation_operations_json"),
+        CheckConstraint("(state='frozen' AND completion IS NULL AND completed_at IS NULL) OR (state='completed' AND completion IS NOT NULL AND completed_at IS NOT NULL AND completed_at>=created_at)",name="ck_quote_creation_operations_state"),
+        CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_quote_creation_operations_key"),
+        Index("uq_quote_creation_operations_pending","tenant_id","cost_sheet_id",unique=True,postgresql_where=text("state='frozen'")),
+        Index("ix_quote_creation_operations_sheet","tenant_id","cost_sheet_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    operation_id: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    basis_id: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    intent: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+    completion: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB,nullable=True)

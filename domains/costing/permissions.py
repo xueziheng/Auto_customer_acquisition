@@ -21,6 +21,11 @@ class CostingAction(str, Enum):
     EVIDENCE_CONFIRM = "pricing_evidence:confirm"
     COVERAGE_CONFIRM = "cost_coverage:confirm"
     QUOTE_FX_CONFIRM = "quote_fx:confirm"
+    SCOPE_CONFIRM = "cost_scope:confirm"
+    QUOTE_CALCULATE = "quote:calculate"
+    QUOTE_FREEZE = "quote:freeze"
+    QUOTE_OPERATION_READ = "quote_operation:read"
+    QUOTE_OPERATION_COMPLETE = "quote_operation:complete"
 
 
 class CostingScope(str, Enum):

@@ -124,3 +124,13 @@ HTTP/UI及生产装配不在T3A中。后续冻结应在自己持锁连接投影�
 访问权。SQL adapter按排序员工→机会→Need的SHARE锁同session投影；bootstrap关联变化整轮失败，
 不能持机会锁再补锁新负责人。员工FK KEY SHARE与SHARE兼容，成本持久提交发生在lease内。
 上下文业务hash排除runtime与机会正常生命周期状态，但保留原起草人/owner和所有事实来源。
+
+人工成本适用性scope把完整Need、所有持久依据ID/hash与逐项人工说明、条款和有效期绑定到
+只增确认。供应商原始自由规格保留，不能与客户规范JSON做机器等价判断；材质、包装、来源
+等变化即使金额不变也需新scope。T2与scope共用22项覆盖规则；单位、目的地、MOQ、数量档、
+quoted及有效期仍逐项硬核验。来源阅读授权在所有业务锁外完成，确认提交处于context lease内。
+
+0043只增加scope、成本basis与创建operation三表，均有tenant复合外键与完整JSON快照。
+scope/basis不可更新删除；operation仅首次frozen→completed。basis与operation双向外键延迟
+到提交检查，不关闭约束；pending按tenant/sheet部分唯一，不把sheet永久占给一个报价。
+非空降级明确拒绝，避免抹掉商业确认历史；不建假quotation表或假生产回执。

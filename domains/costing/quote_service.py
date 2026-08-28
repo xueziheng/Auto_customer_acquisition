@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from typing import Literal, cast
 
 from pydantic import BaseModel
@@ -326,118 +325,21 @@ class CostingQuoteServiceImpl:
             return record.value
 
     async def _validate_coverage(
-        self,
-        tenant_id: TenantId,
-        sheet: CostSheet,
-        command: CostCoverageCreate,
-        uow: CostingUnitOfWork,
+        self, tenant_id: TenantId, sheet: CostSheet,
+        command: CostCoverageCreate, uow: CostingUnitOfWork,
     ) -> None:
-        """逐项核对已确认金额、计价口径、数量与原文费用行，绝不把缺项当零。"""
-        confirmed = {
-            item.item_sequence: item
-            for item in sheet.items
-            if item.entered_by is not None
-        }
-        if (
-            None in confirmed
-            or not confirmed
-            or len(confirmed)
-            != sum(item.entered_by is not None for item in sheet.items)
-        ):
-            raise InvalidPricingEvidenceError("成本表没有有效已确认明细或序号重复")
-        bound: set[int] = set()
-        lines: set[tuple[str, str, str]] = set()
-        detail_types = {"contact_data_cost", "ad_allocation", "agent_api_allocation"}
-        for decision in command.decisions:
-            if decision.applicable and (
-                (
-                    command.acquisition_mode == "summary"
-                    and decision.item_type in detail_types
-                )
-                or (
-                    command.acquisition_mode == "detail"
-                    and decision.item_type == "customer_acquisition"
-                )
-            ):
-                raise InvalidPricingEvidenceError("获客汇总与明细口径不能混用")
-            for binding in decision.item_bindings:
-                item = confirmed.get(binding.item_sequence)
-                if (
-                    item is None
-                    or item.item_type.value != decision.item_type
-                    or binding.item_sequence in bound
-                ):
-                    raise InvalidPricingEvidenceError("费用绑定未确认、类型错配或重复")
-                record = await uow.prices.get(tenant_id, binding.evidence_id)
-                if record is None:
-                    raise InvalidPricingEvidenceError("费用确认依据不存在")
-                evidence = record.value
-                if (
-                    evidence.opportunity_id != sheet.opportunity_id
-                    or item.source_ref
-                    not in {
-                        evidence.source_ref,
-                        evidence.source.artifact_id,
-                        evidence.evidence_id,
-                    }
-                    or binding.source_line_ref != evidence.locator
-                    or item.amount.currency != evidence.currency
-                    or item.price_basis != evidence.basis
-                ):
-                    raise InvalidPricingEvidenceError(
-                        "费用来源、机会、币种或计价基准不一致"
-                    )
-                # 使用可信 artifact 身份归一别名，防止同一原件换 source_ref 重复计入。
-                line = (
-                    evidence.source.artifact_id,
-                    binding.source_line_ref,
-                    binding.allocation_scope,
-                )
-                if line in lines:
-                    raise InvalidPricingEvidenceError("同一原文费用明细及分摊范围重复")
-                lines.add(line)
-                if (
-                    evidence.valid_until is not None
-                    and evidence.valid_until <= self._clock()
-                ):
-                    raise InvalidPricingEvidenceError("费用或采购依据已过期")
-                if isinstance(evidence, SupplierPriceEvidenceView):
-                    if (
-                        decision.item_type != "product_purchase"
-                        or evidence.basis != "quoted"
-                        or not evidence.quantity_min
-                        <= sheet.quantity
-                        <= evidence.quantity_max
-                        or sheet.quantity < evidence.moq
-                    ):
-                        raise InvalidPricingEvidenceError(
-                            "采购必须为适用数量档内的供应商实报价"
-                        )
-                    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
-                        expected = (
-                            evidence.amount
-                            if item.is_per_unit
-                            else evidence.amount * Decimal(sheet.quantity)
-                        )
-                    if item.amount.amount != expected:
-                        raise InvalidPricingEvidenceError(
-                            "采购单件/整单金额与供应商单价不一致"
-                        )
-                elif (
-                    evidence.item_type != decision.item_type
-                    or evidence.amount != item.amount.amount
-                    or evidence.is_per_unit != item.is_per_unit
-                    or evidence.quantity != sheet.quantity
-                    or evidence.allocation_scope != binding.allocation_scope
-                ):
-                    raise InvalidPricingEvidenceError(
-                        "费用金额、适用数量或分摊口径不一致"
-                    )
-                bound.add(binding.item_sequence)
-        if bound != set(confirmed):
-            raise InvalidPricingEvidenceError(
-                "清单遗漏已确认费用或把已有费用标为不适用"
-            )
+        """同事务读取依据，费用规则与冻结路径共享唯一纯守卫。"""
+        from domains.costing.quote_lock import validate_cost_coverage
+
+        ids = sorted({binding.evidence_id for decision in command.decisions
+                      for binding in decision.item_bindings})
+        evidence: list[PriceEvidenceView] = []
+        for evidence_id in ids:
+            record = await uow.prices.get(tenant_id, evidence_id)
+            if record is None:
+                raise InvalidPricingEvidenceError("费用确认依据不存在")
+            evidence.append(record.value)
+        validate_cost_coverage(sheet, command, tuple(evidence), now=self._clock())
 
     async def confirm_coverage(
         self,
