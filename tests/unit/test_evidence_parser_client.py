@@ -52,6 +52,24 @@ async def test_non_linux_probe_never_spawns(monkeypatch):
     assert report.status == "unavailable" and report.failure == "platform"
 
 
+async def test_closed_parser_never_restarts_probe_or_parse(monkeypatch):
+    from connectors.evidence_text import client
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("关闭完成后不得再启动子进程")
+
+    instance = client.LinuxEvidenceTextParser(
+        limits=parse_limits(), probe_limits=probe_limits()
+    )
+    await instance.aclose()
+    monkeypatch.setattr(client.asyncio, "create_subprocess_exec", forbidden)
+    assert (await instance.probe()).status == "unavailable"
+    with pytest.raises(QuoteEvidenceError) as caught:
+        await instance.parse(b"controlled", profile="rfc822-plain-v1", page=None)
+    assert caught.value.code == "parse_unavailable"
+    await instance.aclose()
+
+
 @pytest.mark.parametrize("value", [True, 0, -1, "1"])
 def test_parse_and_probe_limits_are_strict(value):
     from pydantic import ValidationError

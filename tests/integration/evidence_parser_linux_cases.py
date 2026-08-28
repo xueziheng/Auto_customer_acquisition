@@ -39,6 +39,13 @@ def _fault_main(action):
     if action == "ipc":
         sys.stdout.buffer.write(struct.pack("!I", limits["maximum_result_bytes"] + 1))
         sys.stdout.buffer.flush()
+    if action == "flood":
+        sys.stdout.buffer.write(struct.pack("!I", limits["maximum_result_bytes"] + 1))
+        for _ in range(16):
+            sys.stdout.buffer.write(b"x" * 65536)
+            sys.stdout.buffer.flush()
+        while True:
+            time.sleep(1)
     if action in {"ipc", "wall"}:
         while True:
             time.sleep(1)
@@ -284,7 +291,9 @@ async def test_aclose_during_probe_never_enables():
         await asyncio.sleep(0.01)
     pids = [process.pid for process in instance._processes]
     await instance.aclose()
-    assert (await call).status == "unavailable"
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert instance.capability().status == "unavailable"
     assert_reaped(pids)
 
 
@@ -302,3 +311,216 @@ async def test_cancel_queued_reprobe_cannot_enable_older_probe():
     assert (await first).status == "unavailable"
     assert instance.capability().status == "unavailable"
     await instance.aclose()
+
+
+@pytest.mark.parametrize("cancel_close", [False, True])
+async def test_fix_close_waits_for_probe_launch_barrier(monkeypatch, cancel_close):
+    instance = parser()
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = asyncio.create_subprocess_exec
+    children = []
+
+    async def launch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        child = await original(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    probe = asyncio.create_task(instance.probe())
+    closing = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        closing = asyncio.create_task(instance.aclose())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        returned_before_launch_settled = closing.done()
+        if cancel_close:
+            closing.cancel()
+        release.set()
+        if cancel_close:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(closing, 10)
+        else:
+            await asyncio.wait_for(closing, 10)
+        await asyncio.gather(probe, return_exceptions=True)
+        assert not returned_before_launch_settled
+        assert len(children) == 1
+        assert_reaped([child.pid for child in children])
+        assert instance.capability().status == "unavailable"
+    finally:
+        release.set()
+        if not probe.done():
+            probe.cancel()
+        await asyncio.gather(probe, return_exceptions=True)
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await instance.aclose()
+
+
+async def _exited_child(*, output=False):
+    child = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",
+        "-c",
+        "import sys; sys.stdout.buffer.write(b'x'*1048576); sys.stdout.buffer.flush()"
+        if output
+        else "pass",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env={"LANG": "C.UTF-8"},
+        limit=1024,
+    )
+    deadline = asyncio.get_running_loop().time() + 2
+    if output:
+        while not child.stdout._paused and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.001)
+        assert child.stdout._paused
+        child.terminate()
+    while child.returncode is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.001)
+    assert child.returncode is not None
+    return child
+
+
+async def _test_close_child_pipes(child):
+    child.stdout._transport.close()
+    child.stdout._buffer.clear()
+    child.stdin.close()
+    try:
+        await child.stdin.wait_closed()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    await child.wait()
+
+
+async def test_fix_reap_closes_backpressured_stdout_without_gc():
+    instance = parser()
+    child = await _exited_child(output=True)
+    instance._processes.add(child)
+    try:
+        await instance._reap(child, 200)
+        assert child.stdout._transport.is_closing()
+        assert not child.stdout._buffer
+        assert child.stdout.at_eof()
+        assert_reaped([child.pid])
+    finally:
+        await _test_close_child_pipes(child)
+
+
+@pytest.mark.parametrize("outer_cancel", [False, True])
+async def test_fix_cleanup_cancel_is_propagated_after_reap(monkeypatch, outer_cancel):
+    instance = parser()
+    child = await _exited_child()
+    entered, release, body_entered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = child.wait
+
+    async def wait():
+        entered.set()
+        await release.wait()
+        return await original()
+
+    monkeypatch.setattr(child, "wait", wait)
+
+    async def call():
+        try:
+            body_entered.set()
+            if outer_cancel:
+                await asyncio.Event().wait()
+            return "success"
+        finally:
+            await instance._reap(child, 200)
+
+    task = asyncio.create_task(call())
+    try:
+        await asyncio.wait_for(body_entered.wait(), 2)
+        if outer_cancel:
+            task.cancel()
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert_reaped([child.pid])
+        assert child.stdout._transport.is_closing()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await _test_close_child_pipes(child)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_fix_run_backpressure_closes_before_cancel_or_rejection(
+    monkeypatch, cancel
+):
+    instance = parser()
+    original = asyncio.create_subprocess_exec
+    entered, release = asyncio.Event(), asyncio.Event()
+    children = []
+
+    async def spawn(*args, **kwargs):
+        child = await original(
+            *args[:3],
+            "tests.integration.evidence_parser_linux_cases",
+            "flood",
+            **kwargs,
+        )
+        children.append(child)
+        read = child.stdout.readexactly
+
+        async def delayed(n):
+            if n == 4:
+                entered.set()
+                await release.wait()
+            return await read(n)
+
+        child.stdout.readexactly = delayed
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    header = {
+        "protocol": "evidence-worker-v1",
+        "operation": "parse",
+        "profile": "rfc822-plain-v1",
+        "page": None,
+        "input_bytes": len(EMAIL),
+        "limits": parse_limits().model_dump(),
+    }
+    task = asyncio.create_task(
+        instance._run(
+            "connectors.evidence_text.worker", header, EMAIL, 2097152, 8000, 200
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        child = children[0]
+        deadline = asyncio.get_running_loop().time() + 2
+        while not child.stdout._paused and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.001)
+        assert child.stdout._paused
+        if cancel:
+            task.cancel()
+        else:
+            release.set()
+        done, _ = await asyncio.wait({task}, timeout=2)
+        completed = bool(done)
+        closed = child.stdout._transport.is_closing() and not child.stdout._buffer
+        if completed:
+            if cancel:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                assert (await task)[2] == "oversized"
+        assert completed and closed
+        assert_reaped([child.pid])
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        for child in children:
+            if child.returncode is None:
+                child.kill()
+            await _test_close_child_pipes(child)
+        await asyncio.gather(task, return_exceptions=True)

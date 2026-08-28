@@ -11,7 +11,7 @@ import signal
 import struct
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -25,6 +25,13 @@ from shared.schemas.evidence_read import (
 )
 
 _PROTOCOL: Literal["evidence-worker-v1"] = "evidence-worker-v1"
+
+
+class _ReadPipeState(Protocol):
+    """仅CPython固定runtime的StreamReader私有管道/缓存类型桥接。"""
+
+    _transport: asyncio.ReadTransport
+    _buffer: bytearray
 
 
 def _digest(value: object) -> str:
@@ -109,6 +116,8 @@ class LinuxEvidenceTextParser:
         self._probe_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(self._limits.maximum_concurrency)
         self._calls: set[asyncio.Task] = set()
+        self._probes: set[asyncio.Task] = set()
+        self._launches: set[asyncio.Task[asyncio.subprocess.Process]] = set()
         self._processes: set[asyncio.subprocess.Process] = set()
 
     def capability(self) -> EvidenceParserCapability:
@@ -122,6 +131,16 @@ class LinuxEvidenceTextParser:
         )
 
     async def probe(self) -> EvidenceParserCapability:
+        """登记整个probe（含排队/启动窗口），关闭必须等待其完整收口。"""
+        owner = asyncio.current_task()
+        assert owner is not None
+        self._probes.add(owner)
+        try:
+            return await self._probe()
+        finally:
+            self._probes.discard(owner)
+
+    async def _probe(self) -> EvidenceParserCapability:
         """成功必须来自本实例真实四探针；取消/失败立即清除旧成功。"""
         self._status = "unavailable"
         self._probe_generation += 1
@@ -139,6 +158,8 @@ class LinuxEvidenceTextParser:
                     return self.capability()
                 limits = self._probe_limits
                 for action in ("cpu", "as", "wall", "ipc"):
+                    if self._closed:
+                        return self.capability()
                     code, result, reason = await self._run(
                         "connectors.evidence_text.probe",
                         {"action": action, "limits": limits.model_dump()},
@@ -297,9 +318,23 @@ class LinuxEvidenceTextParser:
         """拒绝新请求，取消并回收当前调用及全部实际子进程。"""
         self._closed = True
         self._status = "unavailable"
-        await self._cancel_calls()
-        for process in tuple(self._processes):
-            await self._reap(process, self._limits.termination_grace_ms)
+        owner = asyncio.current_task()
+
+        async def finish() -> None:
+            tasks = tuple(
+                task for task in self._calls | self._probes if task is not owner
+            )
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for launch in tuple(self._launches):
+                process = await launch
+                await self._reap(process, self._limits.termination_grace_ms)
+            for process in tuple(self._processes):
+                await self._reap(process, self._limits.termination_grace_ms)
+
+        await self._wait_cleanup(asyncio.create_task(finish()))
 
     async def _cancel_calls(self) -> None:
         tasks = tuple(
@@ -317,6 +352,10 @@ class LinuxEvidenceTextParser:
                     process.terminate()
                 except ProcessLookupError:
                     pass
+            # CPython固定runtime的读管道桥接：先关闭输入来源，不能等背压stdout自行EOF。
+            if process.stdout is not None:
+                cast(_ReadPipeState, process.stdout)._transport.close()
+            if process.returncode is None:
                 try:
                     await asyncio.wait_for(process.wait(), grace_ms / 1000)
                 except TimeoutError:
@@ -331,15 +370,29 @@ class LinuxEvidenceTextParser:
                     await process.stdin.wait_closed()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+            if process.stdout is not None:
+                # 管道已close，不再进新bytes；仅有限排空当时已缓存的长度，随后等待EOF。
+                buffered = len(cast(_ReadPipeState, process.stdout)._buffer)
+                for offset in range(0, buffered, 65536):
+                    await process.stdout.read(min(65536, buffered - offset))
+                if await process.stdout.read(1):
+                    raise RuntimeError("来源读管道未关闭")
+            self._processes.discard(process)
 
-        cleanup = asyncio.create_task(finish())
+        await self._wait_cleanup(asyncio.create_task(finish()))
+
+    @staticmethod
+    async def _wait_cleanup(cleanup: asyncio.Task[None]) -> None:
+        """首次/重复取消均延迟到资源回收完成后传播，不把取消改成成功。"""
+        cancelled = False
         while not cleanup.done():
             try:
                 await asyncio.shield(cleanup)
             except asyncio.CancelledError:
-                continue
+                cancelled = True
         cleanup.result()
-        self._processes.discard(process)
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _run(
         self,
@@ -350,6 +403,8 @@ class LinuxEvidenceTextParser:
         wall_ms: int,
         grace_ms: int,
     ) -> tuple[int | None, dict | None, str | None]:
+        if self._closed:
+            raise QuoteEvidenceError("parse_unavailable")
         process = None
         deadline = asyncio.get_running_loop().time() + wall_ms / 1000
         launch = asyncio.create_task(
@@ -365,6 +420,7 @@ class LinuxEvidenceTextParser:
                 limit=65536,
             )
         )
+        self._launches.add(launch)
         try:
             try:
                 process = await asyncio.wait_for(asyncio.shield(launch), wall_ms / 1000)
@@ -432,5 +488,8 @@ class LinuxEvidenceTextParser:
                     return process.returncode, None, "timeout"
                 return process.returncode, None, "short"
         finally:
-            if process is not None:
-                await self._reap(process, grace_ms)
+            try:
+                if process is not None:
+                    await self._reap(process, grace_ms)
+            finally:
+                self._launches.discard(launch)

@@ -1,6 +1,6 @@
 # ADR 0020：报价来源的有界原件、用途与受限取证契约
 
-日期：2026-08-28。状态：T8A实现及下层验证完成，待整项独立审查；不表示实际API/worker接线或真实资料验收。
+日期：2026-08-28。状态：T8A首审四项问题已修复并重新验证，待定向复审；不表示实际API/worker接线或真实资料验收。
 
 ## 决策
 
@@ -43,12 +43,19 @@ RECONCILIATION_REQUIRED仍为gateway_unavailable。接受此诊断精度损失�
 旧Raw/Generated幂等、写入补偿、T3A单位确认/历史receipt均保持。历史单位只重验metadata
 与当前访问权，数量变化不恢复失效单位。单位验证仅为整数与逐字单位相邻的必要词法条件，
 语义确认仍属员工责任。所有来源错误为固定中文不可重试code；临时类在Gateway仍正确分类。
+词法边界取canonical locator的原文code point位置，不能把较大数字或较长单位裁成合法token；
+别处有同文字不能代替选中位置。新确认加强此必要关系，不重写旧receipt或加入语义解释。
+
+关闭需覆盖probe排队、尚未登记进程的launch及parse全生命周期。stdout先显式关闭读管道，
+仅按当时已缓存长度有限排空并等待EOF，进程与全部管道完成回收后才返回；清理阶段首次或
+重复取消也必须重新传播。固定CPython的私有StreamReader管道/缓存由内部typed桥接使用，
+不得以GC作为关闭保证；将来升级runtime需重新验证该管道和取消契约，不只是改版本常量。
 
 验收分别记录有界Store/S3、真实Linux资源、真实PG/Gateway受控原件链；不互相替代。镜像固定
 官方index digest和arm64目标，构建白名单输入；纯解析网络none，全链仅专用internal测试PG网络。
 
 已执行真实Linux CPython3.12.14/pypdf6.16.2资源探针与同worker的CPU/AS/wall/IPC、取消、
 并发/排队和合法资料恢复验证；真实PG/Gateway/受控PDF确认及RFC822单位receipt历史链通过。
-下层同链测试镜像为`sha256:4decc89b8c379dd138cc8629c5b2a44294bfa7b924a2682cb417f5a83304eaf7`，
+修复后同链及network-none资源测试镜像为`sha256:2b0b00d817e767647f6d629902f5d391c13598cc481b75a5fabbaf7b2c229a33`，
 官方基础index为`sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579`。
 依赖中未锁上限项不保证未来重建逐包相同；固定产物与实际版本记录须随验收保存。

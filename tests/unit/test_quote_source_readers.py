@@ -47,15 +47,21 @@ def quantity(**changes):
     )
 
 
-def facts_and_query(excerpt="50 pieces"):
+def facts_and_query(excerpt="50 pieces", *, body=None, start=None):
     field = quantity()
+    if body is None:
+        body = BODY if excerpt == "50 pieces" else BODY + excerpt
+        start = 8 if excerpt == "50 pieces" else len(BODY)
+    else:
+        field = replace(field, provenance=replace(field.provenance, source_quote=body))
+    assert start is not None
     current = e.NeedQuantitySourceFact(
         tenant_id=TENANT, need_id=NEED, account_id=ACCOUNT, quantity=field
     )
     selection, _ = e.select_evidence_text(
-        e.ParsedEvidenceText(profile="rfc822-plain-v1", page=None, text=BODY),
-        8,
-        17,
+        e.ParsedEvidenceText(profile="rfc822-plain-v1", page=None, text=body),
+        start,
+        start + len(excerpt),
         maximum_excerpt_bytes=8192,
     )
     query = NeedUnitEvidenceQuery(
@@ -71,6 +77,55 @@ def facts_and_query(excerpt="50 pieces"):
         source_quote=excerpt,
     )
     return current, query
+
+
+@pytest.mark.parametrize(
+    "body,start",
+    [
+        ("We need 150 pieces.", 9),
+        ("We need 50 piecesXYZ.", 8),
+        ("50 pieces. We need 150 pieces.", 20),
+        ("😀 We need 150 pieces.", 11),
+    ],
+)
+def test_selected_original_token_cannot_be_clipped(body, start):
+    from domains.demand.service import validate_need_unit_source_text
+
+    assert body[start : start + 9] == "50 pieces"
+    current, query = facts_and_query(body=body, start=start)
+    with pytest.raises(NeedUnitError) as caught:
+        validate_need_unit_source_text(query, current, body=body, excerpt="50 pieces")
+    assert caught.value.code == "source_mismatch"
+
+
+@pytest.mark.parametrize(
+    "body,start", [("We need 50 pieces.", 8), ("😀 We need 50 pieces.", 10)]
+)
+def test_original_complete_token_uses_codepoint_coordinates(body, start):
+    from domains.demand.service import validate_need_unit_source_text
+
+    current, query = facts_and_query(body=body, start=start)
+    validate_need_unit_source_text(query, current, body=body, excerpt="50 pieces")
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "$",
+        "not-a-locator",
+        "pdf-text-v1:p=1;c=8:17;h=" + sha256(b"50 pieces").hexdigest(),
+        "rfc822-plain-v1:c=8:99;h=" + sha256(b"50 pieces").hexdigest(),
+        "rfc822-plain-v1:c=0:9;h=" + sha256(b"50 pieces").hexdigest(),
+    ],
+)
+def test_original_selection_binding_is_required(locator):
+    from domains.demand.service import validate_need_unit_source_text
+
+    current, query = facts_and_query()
+    query = query.model_copy(update={"locator": locator})
+    with pytest.raises(NeedUnitError) as caught:
+        validate_need_unit_source_text(query, current, body=BODY, excerpt="50 pieces")
+    assert caught.value.code == "source_mismatch"
 
 
 @pytest.mark.parametrize(

@@ -157,7 +157,22 @@ def run_resource_cases() -> tuple[int, str]:
     previous = testcontainers_config.ryuk_disabled
     testcontainers_config.ryuk_disabled = True
     try:
-        with resource_container(image_id()) as container:
+        with resource_container(image_id()).with_command(
+            [
+                "python",
+                "-m",
+                "pytest",
+                "-c",
+                "/opt/tradeos/pyproject.toml",
+                "/usr/local/lib/python3.12/site-packages/tests/integration/evidence_parser_linux_cases.py",
+                "/usr/local/lib/python3.12/site-packages/tests/unit/test_evidence_text_profiles.py",
+                "/usr/local/lib/python3.12/site-packages/tests/unit/test_evidence_parser_client.py",
+                "-q",
+                "--tb=short",
+                "-p",
+                "no:cacheprovider",
+            ]
+        ) as container:
             wrapped = container.get_wrapped_container()
             result = wrapped.wait(timeout=240)
             logs = wrapped.logs().decode("utf-8", errors="replace")

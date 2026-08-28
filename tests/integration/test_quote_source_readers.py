@@ -1,6 +1,7 @@
 """实际Linux parser→真实PG/Gateway→两业务服务，仅受控PDF/客户消息。"""
 
 import sys
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -23,7 +24,14 @@ from domains.demand.service import (
 from domains.demand.unit_service import NeedUnitServiceImpl
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.need_unit_uow import SqlAlchemyNeedUnitUnitOfWork
-from infra.db.tables import EmployeeRow, OpportunityRow, ToolCallRow, ValidatedNeedRow
+from infra.db.tables import (
+    EmployeeRow,
+    MessageRow,
+    NeedUnitConfirmationRow,
+    OpportunityRow,
+    ToolCallRow,
+    ValidatedNeedRow,
+)
 from shared.schemas import evidence_read as e
 from shared.schemas.provenance import FactualField
 from tests.integration.test_quote_evidence_gateway import NOW, build_case
@@ -281,3 +289,102 @@ async def test_actual_parser_prices_and_unit_receipt_history(integration_engine)
             idempotency_key="controlled-unit",
         )
     assert case.transport.reads == reads
+
+
+@pytest.mark.parametrize(
+    "body,start", [("We need 150 pieces.", 9), ("We need 50 piecesXYZ.", 8)]
+)
+async def test_clipped_source_is_rejected_by_real_linux_need_confirmation(
+    integration_engine, body, start
+):
+    assert sys.platform == "linux", "not_run：必须固定Linux同链"
+    parser = LinuxEvidenceTextParser(limits=parse_limits(), probe_limits=probe_limits())
+    assert (await parser.probe()).status == "available"
+    try:
+        case = await build_case(integration_engine, parser=parser)
+        raw = await case.store.put(
+            case.tenant,
+            RawArtifactKind.EMAIL_RAW,
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\n" + body.encode(),
+            "message/rfc822",
+        )
+        quantity = replace(
+            case.quantity,
+            provenance=replace(case.quantity.provenance, source_quote=body),
+        )
+        async with case.factory() as session, session.begin():
+            await session.execute(
+                update(MessageRow)
+                .where(
+                    MessageRow.tenant_id == case.tenant,
+                    MessageRow.message_id == case.message,
+                )
+                .values(raw_artifact_ref=raw.artifact_id)
+            )
+            await session.execute(
+                update(ValidatedNeedRow)
+                .where(
+                    ValidatedNeedRow.tenant_id == case.tenant,
+                    ValidatedNeedRow.need_id == case.need,
+                )
+                .values(
+                    quantity=TypeAdapter(FactualField[int]).dump_python(
+                        quantity, mode="json"
+                    )
+                )
+            )
+        selected = await locate(
+            case,
+            "message:" + case.message,
+            e.NeedUnitEvidenceScope(
+                purpose="need_unit", need_id=case.need, action="confirm"
+            ),
+            "rfc822-plain-v1",
+            None,
+            start,
+            start + 9,
+        )
+        assert selected.excerpt == "50 pieces"
+        service = NeedUnitServiceImpl(
+            lambda tn: SqlAlchemyNeedUnitUnitOfWork(
+                case.factory, tn, lock_timeout_ms=1000, statement_timeout_ms=1000
+            ),
+            case.need_access,
+            GatewayNeedUnitEvidenceReader(
+                case.reader, case.access, case.contexts, case.need_access
+            ),
+            now=lambda: NOW,
+        )
+        command = NeedUnitConfirmationCommand(
+            unit="pieces",
+            source_message_id=case.message,
+            locator=selected.locator,
+            source_quote="50 pieces",
+            expected_quantity_fact_hash=quantity_fact_hash(
+                case.tenant, case.need, quantity
+            ),
+            expected_unit_confirmation_id=None,
+        )
+        with pytest.raises(NeedUnitError) as caught:
+            await service.confirm(
+                case.tenant,
+                case.need,
+                command,
+                actor_id=case.actor,
+                idempotency_key="clipped-unit",
+            )
+        assert caught.value.code == "source_mismatch"
+        assert (
+            await service.get_facts(case.tenant, case.need, actor_id=case.actor)
+        ).unit is None
+        async with case.factory() as session:
+            assert (
+                await session.scalars(
+                    select(NeedUnitConfirmationRow).where(
+                        NeedUnitConfirmationRow.tenant_id == case.tenant,
+                        NeedUnitConfirmationRow.need_id == case.need,
+                    )
+                )
+            ).all() == []
+    finally:
+        await parser.aclose()

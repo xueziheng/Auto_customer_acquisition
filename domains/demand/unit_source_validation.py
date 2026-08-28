@@ -5,7 +5,11 @@ import re
 from domains.demand.errors import NeedUnitError
 from domains.demand.schemas import NeedUnitEvidenceQuery
 from domains.demand.unit_facts import quantity_fact_hash
-from shared.schemas.evidence_read import NeedQuantitySourceFact
+from shared.schemas.evidence_read import (
+    NeedQuantitySourceFact,
+    QuoteEvidenceError,
+    parse_evidence_locator,
+)
 from shared.schemas.provenance import SourceType
 
 
@@ -40,6 +44,15 @@ def validate_need_unit_source_text(
             != query.quantity_fact_hash
         ):
             raise ValueError
+        selection = parse_evidence_locator(query.locator)
+        if (
+            selection is None
+            or selection.profile != "rfc822-plain-v1"
+            or selection.page is not None
+            or not 0 <= selection.start < selection.end <= len(body)
+            or body[selection.start : selection.end] != excerpt
+        ):
+            raise ValueError
         digits = list(re.finditer(r"[0-9]+", excerpt))
         if (
             len(digits) != 1
@@ -48,15 +61,23 @@ def validate_need_unit_source_text(
         ):
             raise ValueError
         token = digits[0]
-        for index in (token.start() - 1, token.end()):
-            if 0 <= index < len(excerpt):
-                char = excerpt[index]
+        for index in (
+            selection.start + token.start() - 1,
+            selection.start + token.end(),
+        ):
+            if 0 <= index < len(body):
+                char = body[index]
                 if char.isalnum() or char in "_.,+-":
                     raise ValueError
         unit = re.escape(query.unit)
-        if re.match(rf"\s+{unit}(?!\w)", excerpt[token.end() :]) is None:
+        matched = re.match(rf"\s+{unit}(?!\w)", excerpt[token.end() :])
+        if matched is None:
             raise ValueError
+        unit_end = selection.start + token.end() + matched.end()
+        for index in (unit_end - len(query.unit) - 1, unit_end):
+            if 0 <= index < len(body) and (body[index].isalnum() or body[index] == "_"):
+                raise ValueError
         if len(list(re.finditer(rf"(?<!\w){unit}(?!\w)", excerpt))) != 1:
             raise ValueError
-    except (ValueError, TypeError, AttributeError, NeedUnitError):
+    except (ValueError, TypeError, AttributeError, NeedUnitError, QuoteEvidenceError):
         raise NeedUnitError("source_mismatch") from None
