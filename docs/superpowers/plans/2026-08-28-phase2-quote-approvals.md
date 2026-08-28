@@ -1,6 +1,6 @@
 # Task 5：报价单轮审批、当前授权与原子应用 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans。控制器已全文自检并补齐FX/真实Run契约；仅在核定T3B/T4最终接口并派发后实施，不派子代理。下列提交是TDD/自检边界，整项Task5交付后统一一次独立审查，不逐提交派review。
+> **For agentic workers:** REQUIRED SUB-SKILLS: Use superpowers:test-driven-development and superpowers:verification-before-completion。此任务由主计划的SDD控制器派发，不另启动executing-plans批次或子代理。控制器已全文自检并补齐FX/真实Run契约；仅在核定T3B/T4最终接口并派发后实施。下列提交是TDD/自检边界，整项Task5交付后统一一次独立审查，不逐提交派review。
 
 **Goal:** 将一个不可变报价版本的一轮独立审批安全提交、等待并原子应用，真实成功receipt可在重启后完成审批记账。
 **Architecture:** quotations拥有安全业务payload、报价ABAC、状态/成功receipt；approvals拥有审批包/决定/请求幂等，通过注入的报价专用guard隔离新namespace。workflow显式转换并编排；context先锁全部员工，报价session持机会锁后取得costing公开政策租约，报价/outbox/receipt提交后再释放租约。
@@ -21,7 +21,7 @@
 ## 0. 前置与精确文件
 
 工作树`/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-costing-quotation`。先读根AGENTS/HANDBOOK及domains/{approvals,quotations,costing}/shared/workflows/quote_approval/infra/apps/api/tests就近AGENTS。
-**T3B正在实施，T4仅计划。** 派发前控制器必须核对真实0043/0044、QuotationVersionService/QuoteDetailView、context内部锁复用点、policy selection锁、旧审批服务与本brief相合；不以本文为既有代码证明。
+**前置已核验：T3B至b1846ce、T4至b10d101均完成独立任务审查。** 真实0043/0044、QuotationVersionService/QuoteDetailView、context锁、冻结/完成reader已交付；本任务新增的approval context、policy selection公开租约和审批服务仍待实施，不能把本文作为它们已存在的证明。按派发context核对真实签名和旧测试构造；不重做已完成任务。
 当前T4 §2.2已允许latest accepted/rejected且无active时，新cost sheet/scope/key、replaces=None开下一版本，旧终态不改；latest expired仍E2。本任务不恢复已否决包、不复用rejected报价的锁表。
 
 | 文件 | 责任 |
@@ -329,7 +329,7 @@ submit使用同一expires_at_limit（quote/依据最早值），不是approvals�
 poll从真实bindings读取全部facts，先看成功receipt；无receipt时有拒绝/到期则session.terminate；未齐/仍pending返回waiting；全部approved返回ready，仅表示可进入fresh apply，绝非报价已批准。deadline取真实包最早expires_at，未有包为None；返回QuoteApprovalPollResult，不返回包含原文的内部quote。
 apply先查真实成功receipt，存在即mark_completed后already_applied，不进context/policy。否则读全部facts；pending/终止按poll分类。全部approved才取quote_send.decided_by为context actor，收集所有deciders→open_for_approval→open_approval→重读facts确认同ID/immutable决定集合→session.apply→quote提交→退出所有lease→mark_completed。
 mark_completed只读真实receipt，核其quote/hash/精确bindings/decisions，从approvals读现事实并比排除state后的facts_hash；逐包调用mark_applied，稳定key=`quote-apply:{quote_id}:{content_hash}:{approval_type}`。APPROVED/APPLIED混合重启逐个补完；不可用事件或手写quote_id生成receipt。之后Need/issuer/policy/在职变化不阻历史补记，但不再次准许客户文件。
-后续文件契约：receipt.approval_run_id固定为本轮真实quote_approval WorkflowRun.run_id，经§3.4读口校验，须与全部新包proposed_by_run及首次成功executor.run_id相同并有tenant复合FK；FK只证存在，不代替type/subject/version/hash校验。同quote成功只一条receipt，重启不改该ID。T6/T8可经get_approval_application取得稳定真实run引用，包括run已completed时；不每次手动生成随机run、不伪造执行历史。本任务只提供该查询事实，不实现文件生成/未知提交恢复。
+后续文件契约：receipt.approval_run_id固定为本轮真实quote_approval WorkflowRun.run_id，经§3.4读口校验，须与全部新包proposed_by_run及首次成功executor.run_id相同并有tenant复合FK；FK只证存在，不代替type/subject/version/hash校验。同quote成功只一条receipt，重启不改该ID。get_approval_application仍供本任务内部真实workflow查询；T6公开get_file_approval按quote和当前文件actor读取稳定run，T8消费后者，避免必须先知道executor才能发现run的循环。run已completed不抹去归属；不每次手动生成随机run、不伪造执行历史。本任务只提供该查询事实，不实现文件生成/未知提交恢复。
 fresh确定性阻断需要mark_apply_failed时：重新开quote-only open_approval并先查receipt；若已成功改走mark_completed，不标失败。无receipt且仍该轮，持同报价机会锁期间仅对真实state=approved包调用mark_apply_failed固定code，防另一个成功apply与迟到失败标记交错。此路径不取新员工/Need锁、不调用guarded UI get；approvals.mark_apply_failed只锁自身包。状态pending/rejected/expired/applied不能传入mark_apply_failed。transient/timeout/storage_unknown不转永久失败，保留可恢复，禁止盲目重试到批准。
 
 workflow公共构造（复用现有engine Protocol）：

@@ -1,6 +1,6 @@
 # Task 6：报价PDF存储与真实文件关联 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans。控制器已全文自检；仅核对T4/T5真实交付后实施，不派子代理。按下列TDD切片提交，完整Task6统一独立审查，不自行开始T7/T8。
+> **For agentic workers:** REQUIRED SUB-SKILLS: Use superpowers:test-driven-development and superpowers:verification-before-completion。此任务由主计划的SDD控制器派发，不另启动executing-plans批次或子代理。控制器已全文自检；仅核对T4/T5真实交付后实施。按下列TDD切片提交，完整Task6统一独立审查，不自行开始T7/T8。
 
 **Goal:** 隔离QUOTE_PDF派生类型，按真实metadata/批准run/三个hash只增记录文件，并在未知提交后保留可恢复bytes。
 **Architecture:** artifact_store只管内容完整性及幂等；quotation管文件关联/真实批准归属；infra仅把Store安全metadata映射为本地DTO。当前客户文件正式授权与所有bytes的Gateway编排归T8。
@@ -70,8 +70,10 @@ _generated_matches沿原全部绑定比较kind/hash/size/MIME/run/subject/sequen
 新`ArtifactCommitUnknownError(TransientError)`固定code='artifact_commit_unknown'；新`ArtifactUnavailableError(TransientError)`固定code='artifact_unavailable'，无自由错误参数/SQL/路径。只用于新增QUOTE_PDF异常映射；旧Raw/EMAIL_DRAFT错误和补偿语义不顺带重写。
 QUOTE_PDF put在任何object put尝试之后，若transport/UoW退出/commit/close发生异常而无法证明未提交，**保留candidate bytes**；非取消抛ArtifactCommitUnknownError from None，取消原样传播。不要因rollback调用成功或随后SELECT暂不可见就删除candidate。
 尚未尝试object put的基础设施失败映射ArtifactUnavailableError；输入ValidationError/确定的同key冲突保持原类。QUOTE_PDF已确认成功的EXISTING结果可删除仅自己的未引用candidate；如果winner绑定不等仍冲突。cleanup失败沿固定安全错误，不能删除winner或改key。
-重试由调用方显式用**原key/bytes/run/subject/sequence/template**调用put；不新增get_by_key公共口、不在catch里自动重试/换key。现仓储已有get_by_idempotency_key足够返回winner。真实bytes完整性由Store.get重算hash/length，不以get_meta代替。
+受信调用方只有在已知可安全再次put的场景才显式用**原key/bytes/run/subject/sequence/template**调用put，不在catch里自动重试/换key。新增窄只读`GeneratedArtifactStore.get_meta_by_key(tenant_id:TenantId,idempotency_key:IdempotencyKey)->GeneratedArtifactMeta|None`，复用现有仓储get_by_idempotency_key，返回不可变安全metadata或不存在；验证tenant/key形状，存储故障固定ArtifactUnavailableError，取消原样，不读/写/删对象、不创建candidate。它供T8 Gateway既有reconcile钩子按原稳定key找回已提交产物，不为HTTP开放任意key查找；不能把暂未找到当未写入而重新render/put。真实bytes完整性仍由Store.get重算hash/length，不以get_meta或get_meta_by_key代替。
 确未提交的失败也可保守留下孤立bytes；本任务不建清扫器/删除业务接口。QUOTE_PDF未知commit时DB暂不可读不报告成功、不删除；旧分支保持兼容。
+
+get_meta_by_key补真实PG测试：已提交QUOTE_PDF/既有EMAIL_DRAFT精确原metadata、未知key与跨tenant为None、故障固定错误，read调用的对象get/put/delete均为零；真实commit成功但响应未知后按原key可读回。不得依赖生成服务重新渲染以获得查询所需bytes。
 
 ## 3. 本地端口、依赖与调用顺序
 

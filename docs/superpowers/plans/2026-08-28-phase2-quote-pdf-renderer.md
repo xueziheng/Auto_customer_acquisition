@@ -1,11 +1,11 @@
 # Task 7：确定性离线客户报价PDF Implementation Plan（已自检，待前置交付）
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans。只在前置契约核定后实施，不派代理。三个TDD切片自检提交，完整Task7统一独立审查，不提前开始T8/T10。
+> **For agentic workers:** REQUIRED SUB-SKILLS: Use superpowers:test-driven-development and superpowers:verification-before-completion。此任务由主计划的SDD控制器派发，不另启动executing-plans批次或子代理。只在前置契约核定后实施。三个TDD切片自检提交，完整Task7统一独立审查，不提前开始T8/T10。
 
 **Goal:** 将真实报价的唯一客户白名单投影渲染成确定性、资源有界、无外部动作/附件的PDF bytes。
 **Architecture:** quotations定义Renderer Protocol及金额投影验证；connector结构化实现，不导入domains。shared只承载唯一客户DTO、模板版本和跨层固定渲染错误；授权/存储/Gateway归T8。
 **Tech Stack:** Python 3.12+、runtime固定reportlab==5.0.1及pypdf==6.16.2；无网络/OCR/新框架。
-**Spec:** 主计划Task7、T4客户投影、T6模板契约、本目录task-7-handoff.md及task-7-context.md。官方依赖核验已由控制器完成，不重复联网选型。
+**Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md` §7；主计划Task7、`2026-08-28-phase2-quotation-versions.md`客户投影及`2026-08-28-phase2-quote-files.md`模板契约。派发时另附实际接口与PDF验收交接，官方依赖核验已由控制器完成，不重复联网选型。
 
 ## 0. 前置与精确文件
 

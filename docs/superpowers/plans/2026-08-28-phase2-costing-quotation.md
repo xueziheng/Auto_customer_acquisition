@@ -313,12 +313,20 @@ T4客户投影验证、T6shared模板实际交付后再派发；首次实际PDF�
 
 ## Task 8：Gateway 文件插件、API 和 scheduler 实际装配
 
+### Task 8A：有界来源读取与受限取证
+
+先完整执行[有界取证子计划](2026-08-28-phase2-quote-evidence.md)，独立验收bounded Store/S3、Linux受限解析/locator、用途权限、来源Gateway与两个域reader。仍属同一Phase2批次，不新增Phase。实际API/worker/HTTP接线归T8B；T8A不以OS探针或受控parser替代完整真实链。
+
+### Task 8B：文件Gateway与实际API/worker装配
+
+T8A通过独立审查后执行下列接线要求。下文来源实现事项由T8A完整子计划负责，T8B复用其真实接口并完成生产factory/HTTP，不重复实现reader/解析器。正式文件授权与客户用途列表的精确契约须在T5/T6交付后对齐；不将内部成本读取权当作文件ABAC。
+
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`
 - Modify: `tool_gateway/manifest.py`（注册工厂，不改pipeline）, `apps/api/{dependencies,main}.py`, `apps/api/composition/runtime.py`, `apps/scheduler_worker/{runtime,main}.py`, `domains/quotations/service.py`, `infra/.env.example`
 
 **Interfaces**
-- `QuoteFileAccessService.authorize(tenant_id,quote_id,*,actor_id,history:bool)->CustomerQuoteView`（async）；读取T3 context、T5持久facts和当前政策，委托域检查；history不能返回当前正式下载许可。
+- `QuoteFileAccessService.authorize(tenant_id,quote_id,*,actor_id)->QuoteFormalFileSnapshot`（async）；读取文件用途当前context、T5真实持久facts和当前政策，委托域检查。独立`authorize_history(tenant_id,quote_id,file_id,*,actor_id)->QuoteFileView`仅核已存文件和当前机会ABAC，不返回正式授权或接受history布尔值。
 - `QuoteFilesApplication.generate(tenant_id,quote_id,*,actor_id)->QuoteFileView`；`download(tenant_id,quote_id,file_id,*,actor_id)->tuple[QuoteFileView,bytes]`，无通用URL/路径。
 - `build_quotation_composition(session_factory, settings, raw_store, generated_store, tool_gateway, *, now)` 返回明确 `QuotationComposition(application,costing,quotations,files,workflow_handlers)`；API和worker分别调用本层装配，不互相import。
 - `QuoteExpiryDriver.scan_once()->int` 调域 `expire_overdue`；SchedulerRuntime 增加可选 `quote_expiry_driver`，为None维持旧cycle行为，不新增定时进程。
@@ -334,7 +342,7 @@ def test_public_quote_command_cannot_claim_approval_or_cost_lock():
 ```
 
 - [ ] RED：`python3 -m pytest tests/unit/test_quotation_router.py tests/unit/test_quote_file_gateway.py -q`；随后用ASGITransport加真实请求422/403、跨tenant404、未装配503测试。
-- [ ] 两个私有文件工具 `quotation.file.generate` / `quotation.file.read`，以及只读价格资料工具 `quotation.evidence.read`；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；read 为 LOW且每次重验真实授权。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
+- [ ] 三个私有文件工具 `quotation.file.generate` / `quotation.file.read` / `quotation.file.history.read`，来源工具复用T8A契约；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；两个read为LOW且各自逐次核验正式或独立历史权限。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
 - [ ] handler以 quote_id/file_id 或source_ref/locator取受信数据；参数和ledger不含正文/成本/bytes。PDF下载bytes及原始资料用一次性typed槽，同调用栈取走并finally清理。生成返回安全artifact/fileID，持久去重由T6；拒绝时存储/renderer调用为零。
 - [ ] 实现PricingEvidenceReader与NeedUnitEvidenceReader：仅已授权raw source，Gateway读取后验证实际hash/locator，消息来源先经现有消息阅读权限转换成raw artifact；不接受generated artifact为证据。未知结果结构化失败，不把空内容当核验完成。最小来源支持和定位契约见下段；未接入来源固定source_unsupported。
 - [ ] 为人工选择原文位置提供同profile的受鉴权、受限文本预览及locator生成入口；只能访问已授权upload/message，不接受任意URL/路径。选定范围由后端生成/核验canonical locator，正文只通过本次Gateway结果槽送已授权HTTP界面，不进入ledger/日志/模型。不要求用户自行从另一PDF引擎猜字符偏移或手算片段hash。

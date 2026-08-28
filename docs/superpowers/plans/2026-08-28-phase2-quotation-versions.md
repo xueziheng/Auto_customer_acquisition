@@ -28,7 +28,7 @@
 | Create `shared/schemas/quote_document.py` | 唯一CustomerQuoteView纯DTO |
 | Create `domains/quotations/version_schemas.py`、`basis_schemas.py`、`content.py` | 新内容/证据快照、hash/格式化/第二道门纯规则 |
 | Create `domains/quotations/creation.py`、`service_impl.py`、`version_repository.py` | 专用creation session及统一规则、服务门面、窄存储Protocol |
-| Modify `domains/quotations/{schemas,service,permissions,errors,models}.py` | 新公开重导出/端口/固定错误，状态表补边；不改旧构造 |
+| Modify `domains/quotations/{schemas,service,errors,models}.py`；Verify existing `permissions.py` | 新公开重导出/端口/固定错误，状态表补边；不改旧构造。既有StrictQuotePreparationPolicy已精确满足四角色/tenant/active/用途规则，核验复用而非无意义改动 |
 | Create `infra/db/quotation_uow.py`、`infra/db/repositories/quotations.py`；Modify `infra/db/tables.py` | 同session事务/锁、报价/抬头持久化；基础设施只映射与持久约束 |
 | Create `migrations/versions/0044_quotations.py` | 本节新表、tenant复合FK、不可变和状态/活跃唯一约束 |
 | Modify `workflows/quote_approval/application.py`；Create `basis_adapter.py`、`completion_reader.py`、`issuer_reader.py` | 保留T3B准备应用，追加真实create/recovery、抬头reader与显式DTO转换 |
@@ -220,6 +220,7 @@ transition(tenant_id,quote_id:QuoteId,expected:QuoteState,target:QuoteState,even
 overdue_opportunities(tenant_id,*,now:datetime,limit:int)->tuple[OpportunityId,...]
 lock_issuer(tenant_id)->None
 issuer_by_key(tenant_id,key:str)->StoredQuoteIssuer|None
+current_issuer_record(tenant_id)->StoredQuoteIssuer|None
 current_issuer(tenant_id)->QuoteIssuer|None
 get_issuer(tenant_id,issuer_id:str)->QuoteIssuer|None
 add_issuer(tenant_id,record:StoredQuoteIssuer)->None
@@ -251,6 +252,7 @@ quote→operation/basis/issuer/机会/员工/前版均tenant复合FK；0044为�
 workflow新增`QuoteApplicationService(context_provider:QuoteContextProvider,costing:CostingFreezeService,quotations:QuotationVersionService,actors:QuotationActorReader,policy:QuotePreparationPolicy,*,now:Callable[[],datetime])`。
 唯一外部创建方法：`async create(tenant_id:TenantId,command:QuoteDraftCommand,*,actor_id:EmployeeId,idempotency_key:str)->QuoteDetailView`。不接任意operation_id；保留T3B QuotePreparationApplication原行为。
 显式适配函数：`costing_context(context:QuoteBusinessContext)->CostingContext`复用T3B已公开的同名函数，不新增同义包装；`to_quote_basis(frozen:FrozenCostBasis)->QuoteBasis`与`pricing_options_from_intent(intent:QuoteCreationIntent)->PricingOptions`在workflow。后者manual、unit_price/rounding来自intent，quote_fx=None，algorithm_version='costing-v1'；freeze通过quote_fx_ref解析真实FX，不能用客户端rate。
+`domains/costing/service.py`只补显式重导出既有`CostingScope`，供本workflow构造真实CostingActor(scope=CostingScope.TENANT)；现有类型和行为不变，不用字符串/反射或跨域内部导入替代。这是本T4允许文件范围的窄增量，需公共导入和实际应用回归。
 同模块`creation_intent(tenant_id:TenantId,command:QuoteDraftCommand,*,prepared_by:EmployeeId,scope_hash:Hash)->QuoteCreationIntent`只逐字段映射；成本actor由当前QuoteEmployeeFact经已验T3B的四角色policy后显式构造CostingActor(actor_id=employee_id,role=role,scope=CostingScope.TENANT)，不是默认scope给所有员工。quotation actor同样取当前ID/role；reader缺事实拒绝。
 `PersistentQuoteCreationCompletionReader(quotations:QuotationVersionService,actors:QuotationActorReader)`实现T3B reader.read(tenant_id,operation_id,*,actor_id)->QuoteCreationCompletion|None；调用公开creation_completion。receipt从真实持久content投影，不接受调用方quote_id/成功标志。
 `PersistentQuoteIssuerReader(quotations:QuotationVersionService)`在issuer_reader.py实现T3B `async get_confirmed(tenant_id:TenantId)->QuoteIssuer`，只转调get_confirmed_issuer。真实DB测试中context provider必须注入它，issuer先经真实boss确认；不是继续用T3B手写issuer来声称报价→抬头FK已接通。两个adapter均无默认后备，T8实际composition root再装配。
@@ -267,10 +269,12 @@ workflow新增`QuoteApplicationService(context_provider:QuoteContextProvider,cos
 不同sheet并发同一旧version：后到者在preflight看见新latest后revision_conflict，**其costsheet尚未freeze**。不能为它自动改expected/version或另生成key。不同机会但同tenant/key的碰撞由costing key唯一/hash拒绝。
 调用complete_creation时必须已退出报价session/context，reader不能在成本锁内逆向取报价锁；同进程复用同service实例可以，禁止循环调用应用create作为reader。
 quote写入时将replaced_quote_version存为第一次成功CAS值，receipt不从后来的active版本猜；completion字段逐一对应shared QuoteCreationCompletion。
+终态后新建无replaces但真实quote.version可大于1：T4允许窄修`domains/costing/quote_lock.py:require_completion`，保留全部tenant/operation/request/basis/replaces绑定和已完成receipt精确等值；只有intent带expected_quote_version时才要求receipt.quote_version=expected+1。无replaces仍要求shared正整数version，其机会顺序由真实quotation reader和quotation机会锁/唯一约束证明，costing不能假定永远首版。先补新成本表从accepted/rejected后创建第2版并complete/replay的真实RED，同时保留首版/修订错误版本/缺真实quote/异receipt拒绝；不改旧hash或迁移。
 
 ## 5. 抬头、过期与受控发送
 
 confirm_issuer：输入只有name/address/contact；老板当前身份校验→issuer事务锁→再次读当前身份→查key/hash。request hash绑定tenant、实际employee_id和三字段，samekey同载荷返同记录，异载荷冲突。
+新key在同一issuer锁/UoW下通过current_issuer_record读取最大version完整记录，空租户取1，否则version+1；此窄端口按version降序，不按时间选版。current_issuer继续返回QuoteIssuer供现有reader，复用相同读取/解码规则；不得扫描全租户记录、猜时间戳或在workflow访问SQL。补真实并发确认不同key的连续唯一version、samekey不占新version、跨租户隔离回归。
 服务生成issuer_id；source_ref=issuer_id；exact三键field_provenance分别为EMPLOYEE_INPUT/source_id=issuer_id/extracted_by=当前老板EmployeeId/extracted_at=confirmed_at=取得issuer锁后的注入now/confirmed_by=同一老板，source_quote为该字段原输入（不标raw verified）。内容hash绑定完整三字段及确认事实；保留原值，非法空白/控制符拒绝，不默默补公司信息。source_url/page_hash=None。旧quote引用原issuer快照永不替换。
 “当前抬头”用于context读取时选版；确认新抬头只新增，不撤销旧确认。creation采用该次context所选真实版本快照，不在事务中追逐latest issuer或增加全租户issuer写锁；若重试重新读context选到新issuer，expected_context_hash冲突。控制器已确认该快照语义，不增加撤销/生效窗口；T5/T8当前context门禁仍会阻断不再匹配新抬头的正式文件。
 expire_overdue：limit正整数≤1000；候选为全部active且valid_until<=now。按机会锁后重读时钟/状态，变expired+event原子提交；无效候选跳过，返回实际状态变更数；不自动发邮件、续期或创建新版本。
