@@ -1,6 +1,6 @@
 # ADR 0020：报价来源的有界原件、用途与受限取证契约
 
-日期：2026-08-28。状态：T8A实施中；不表示实际API/worker接线或真实资料验收。
+日期：2026-08-28。状态：T8A实现及下层验证完成，待整项独立审查；不表示实际API/worker接线或真实资料验收。
 
 ## 决策
 
@@ -30,6 +30,11 @@ Unicode规范化、OCR、HTML剥离、金额/单位推断或换算。来源核�
 字段和授权原件。qev槽只在同task成功审计后一次领取；失败只保留固定code，不能将原文
 写入ledger/日志或重放。不修改Gateway核心，不将凭证交给上层。
 
+既有ToolCallResult不投影失败stage：EXECUTING提交失败若返回PROVIDER_TRANSIENT且无qev细码，
+只能沿固定fallback映射source_unavailable，不能声称已识别为外部来源故障；invoke异常或明确
+RECONCILIATION_REQUIRED仍为gateway_unavailable。接受此诊断精度损失，不读历史ledger猜stage，
+不扩展旧Protocol或改核心管线。所有非SUCCEEDED均不领取成功payload，finally清槽。
+
 所有资源值必填正整数排bool，无生产默认。本任务仅受控原件/真实PG/Gateway/Linux下层链；
 真实API/worker装配、NeedUnitAuthorizer、HTTP和真实商业资料核验由后续T8B另行完成。
 
@@ -41,3 +46,9 @@ Unicode规范化、OCR、HTML剥离、金额/单位推断或换算。来源核�
 
 验收分别记录有界Store/S3、真实Linux资源、真实PG/Gateway受控原件链；不互相替代。镜像固定
 官方index digest和arm64目标，构建白名单输入；纯解析网络none，全链仅专用internal测试PG网络。
+
+已执行真实Linux CPython3.12.14/pypdf6.16.2资源探针与同worker的CPU/AS/wall/IPC、取消、
+并发/排队和合法资料恢复验证；真实PG/Gateway/受控PDF确认及RFC822单位receipt历史链通过。
+下层同链测试镜像为`sha256:4decc89b8c379dd138cc8629c5b2a44294bfa7b924a2682cb417f5a83304eaf7`，
+官方基础index为`sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579`。
+依赖中未锁上限项不保证未来重建逐包相同；固定产物与实际版本记录须随验收保存。
