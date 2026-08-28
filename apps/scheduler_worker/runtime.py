@@ -246,6 +246,7 @@ from workflows.playbook_change import (
     register_playbook_change,
 )
 from workflows.quote_approval.application import QuoteApprovalApplication
+from workflows.quote_approval.expiry import QuoteExpiryDriver
 from workflows.quote_approval.flow import (
     build_quote_approval_handlers,
     register_quote_approval,
@@ -1510,6 +1511,11 @@ class SchedulerRuntimeFactory:
                 ),
                 campaign_driver=campaign_driver,
                 activation=runtime_activation,
+                quote_expiry_driver=(
+                    QuoteExpiryDriver(quotation.domain.quotations, config.tenant_id,
+                        limit=quote_settings.core.expiry_batch_limit)
+                    if quotation is not None and quote_settings is not None else None
+                ),
             )
         except BaseException as error:
             primary = error

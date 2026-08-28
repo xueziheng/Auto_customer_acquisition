@@ -24,9 +24,13 @@ TARGET_MANIFEST = (
 )
 
 
-def build_parser_image(base_image: str | None = None, *, chain: bool = False) -> str:
+def build_parser_image(
+    base_image: str | None = None, *, chain: bool = False, quotation: bool = False
+) -> str:
     """显式构建入口，只在获准构建阶段联网获取已列依赖。"""
     root = Path(__file__).resolve().parents[2]
+    if quotation and (not chain or base_image is None):
+        raise ValueError("报价同链必须显式复用chain和已验收image")
     paths = [
         root / "pyproject.toml",
         root / "connectors/__init__.py",
@@ -84,6 +88,38 @@ def build_parser_image(base_image: str | None = None, *, chain: bool = False) ->
             "tests/unit/test_need_units.py",
         ):
             paths.append(root / name)
+    if quotation:
+        for package in (
+            "apps/api",
+            "apps/scheduler_worker",
+            "apps/notification_worker",
+            "agent_runtime",
+            "notification_gateway",
+            "connectors/dns_auth",
+            "connectors/object_store",
+            "connectors/openai",
+            "connectors/quote_pdf",
+            "connectors/tavily",
+            "connectors/web_search",
+        ):
+            paths.extend(
+                path
+                for path in (root / package).rglob("*.py")
+                if not path.name.startswith("._")
+            )
+        if (root / "apps/__init__.py").is_file():
+            paths.append(root / "apps/__init__.py")
+        for name in (
+            "connectors/search_contracts.py",
+            "tests/integration/test_quote_runtime.py",
+            "tests/integration/test_api_runtime.py",
+            "tests/integration/test_scheduler_worker.py",
+            "tests/unit/test_api_runtime_config.py",
+            "tests/quotation_runtime_fixtures.py",
+            "tests/integration/quotation_runtime_linux_cases.py",
+            "tests/integration/quotation_runtime_linux_support.py",
+        ):
+            paths.append(root / name)
     paths.append(root / "tests/fixtures/quote_evidence/linux/Dockerfile")
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
@@ -109,7 +145,13 @@ def build_parser_image(base_image: str | None = None, *, chain: bool = False) ->
                 "PYTHON_IMAGE": PYTHON_IMAGE,
                 "TEST_BASE_IMAGE": base_image or PYTHON_IMAGE,
             },
-            target="chain" if chain else "refreshed" if base_image else "parser",
+            target="quotation"
+            if quotation
+            else "chain"
+            if chain
+            else "refreshed"
+            if base_image
+            else "parser",
             platform="linux/arm64",
             rm=True,
         )

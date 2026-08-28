@@ -99,3 +99,8 @@ decide顺序为员工/机会guard→审批行UPDATE锁→新时钟→决定及ou
 报价receipt由报价域持久；APPLIED状态和ApprovalDecided事件不能反向证明报价成功。
 恢复仅按真实receipt及不含应用状态的决定hash逐包补记，允许过期后的历史记账但不重新应用商业承诺。
 只有实际APPROVED包可标固定apply_failed；超时/未知存储结果保留可恢复，不把异常原文写入审批。
+
+新版报价submit已由ApprovalQuoteSubject严格验证员工身份，原样保留合法持久短编号；只有
+legacy继续执行emp_前缀校验。decide在现短读/namespace识别之后，真报价用fact_identity，
+legacy保持原前缀规则；非法新版员工固定ValidationError，不增查询、不改变当前guard/锁序/
+自批禁令。该短读意味着非法legacy员工可能先遇缺失或损坏审批，不承诺原错误优先级。

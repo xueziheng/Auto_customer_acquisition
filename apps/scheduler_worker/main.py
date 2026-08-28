@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from shared.errors import TradeOSError, ValidationError
 from shared.schemas.identifiers import TenantId
+from workflows.quote_approval.expiry import QuoteExpiryDriver
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class SchedulerRuntime:
     config: SchedulerConfig
     campaign_driver: CampaignDriver | None = None
     activation: RuntimeActivation | None = None
+    quote_expiry_driver: QuoteExpiryDriver | None = None
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():
@@ -187,7 +189,7 @@ def _install_stop_signals(stop_event: asyncio.Event) -> Callable[[], None]:
 async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
     """执行一个固定顺序 cycle；各 phase 隔离且不跨 phase 回滚。
 
-    顺序：outbox 前置投递 → Campaign 到期扫描（起 run）→ workflow 推进 →
+    顺序：outbox 前置投递 → Campaign 到期扫描 → 报价到期 → workflow 推进 →
     有推进时 outbox 后置投递。
     """
     pre_count = 0
@@ -211,6 +213,17 @@ async def _run_cycle(runtime: SchedulerRuntime, cycle: int) -> None:
         except Exception as error:  # noqa: BLE001 - phase 必须隔离并统一脱敏
             _log_phase_error(
                 phase="campaign",
+                error=error,
+                tenant_id=runtime.tenant_id,
+                cycle=cycle,
+            )
+
+    if runtime.quote_expiry_driver is not None:
+        try:
+            await runtime.quote_expiry_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - phase独立失败、固定类型日志
+            _log_phase_error(
+                phase="quote_expiry",
                 error=error,
                 tenant_id=runtime.tenant_id,
                 cycle=cycle,

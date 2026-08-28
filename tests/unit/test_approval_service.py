@@ -231,6 +231,103 @@ async def submit_quote(svc, *, limit=None, title="正式报价审批"):
     return payload, approval_id
 
 
+@pytest.mark.parametrize("prepared,owner", [("boss-runtime", "sales-owner"), (PROPOSER, "sales-owner"), ("boss-runtime", APPROVER)])
+async def test_quote_namespace_submission_preserves_persisted_short_employee_ids(prepared, owner):
+    from domains.quotations.service import quote_approval_payloads, quote_change_set_ref
+    from tests.unit.test_quote_approval_contracts import RUN, quote_case
+
+    svc, _, _, _ = quote_service_case()
+    payload = quote_approval_payloads(quote_case(), None)[0].model_dump(mode="json")
+    payload.update(prepared_by=prepared, submitted_owner_id=owner)
+    kwargs = {"proposed_by_run": RUN, "proposed_by_employee": prepared, "owner_employee": owner,
+        "change_set_ref": quote_change_set_ref(payload["quote_id"], payload["content_hash"], "quote_send"),
+        "expires_at_limit": quote_case().content.valid_until}
+    args = (payload["tenant_id"], ApprovalType.QUOTE_SEND, "正式报价审批", payload,
+        "人工核实商业条款", BlastRadius([payload["quote_id"]], "仅批准本版本", "关闭本轮", False))
+    approval_id = await svc.submit(*args, **kwargs)
+    assert await svc.submit(*args, **kwargs) == approval_id
+    fact = await svc.read_fact(payload["tenant_id"], approval_id)
+    assert fact.proposed_by_employee == prepared and fact.owner_employee == owner
+
+
+async def test_quote_namespace_decision_accepts_short_id_under_original_guard():
+    from domains.approvals.schemas import ApprovalAccessResult
+
+    svc, _, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    actors = []
+
+    @asynccontextmanager
+    async def allowed(subject, *, actor_id, action):
+        actors.append((actor_id, action))
+        yield ApprovalAccessResult(can_decide=True, current_role="boss")
+
+    guard.guard = allowed
+    await svc.decide(payload.tenant_id, approval_id, True, "independent-boss")
+    assert actors == [("independent-boss", "decide")]
+    assert (await svc.read_fact(payload.tenant_id, approval_id)).decided_by_employee == "independent-boss"
+
+
+@pytest.mark.parametrize("employee", [None, True, "", " leading", "bad\nidentity", "a" * 41])
+async def test_quote_namespace_rejects_invalid_decider_before_guard_and_writes(employee):
+    from shared.errors import ValidationError
+
+    svc, factory, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+
+    @asynccontextmanager
+    async def forbidden(*args, **kwargs):
+        pytest.fail("非法员工不得进入当前授权lease")
+        yield
+
+    guard.guard = forbidden
+    with pytest.raises(ValidationError, match="审批决定员工无效"):
+        await svc.decide(payload.tenant_id, approval_id, True, employee)
+    assert factory.store.packages[approval_id].state.value == "pending"
+
+
+@pytest.mark.parametrize("field", ["prepared_by", "submitted_owner_id"])
+@pytest.mark.parametrize("employee", [None, True, "", " trailing ", "bad\nidentity", "a" * 41])
+async def test_quote_namespace_rejects_invalid_proposer_or_owner_before_write(field, employee):
+    from domains.approvals.errors import QuoteContractError
+    from domains.quotations.service import quote_approval_payloads, quote_change_set_ref
+    from tests.unit.test_quote_approval_contracts import quote_case
+
+    svc, factory, _, _ = quote_service_case()
+    payload = quote_approval_payloads(quote_case(), None)[0].model_dump(mode="json")
+    payload[field] = employee
+    with pytest.raises(QuoteContractError):
+        await svc.submit(payload["tenant_id"], ApprovalType.QUOTE_SEND, "报价", payload, "人工核对",
+            BlastRadius([payload["quote_id"]], "批准", "拒绝", False),
+            proposed_by_employee=payload["prepared_by"], owner_employee=payload["submitted_owner_id"],
+            change_set_ref=quote_change_set_ref(payload["quote_id"], payload["content_hash"], "quote_send"),
+            expires_at_limit=quote_case().content.valid_until)
+    assert not factory.store.packages
+
+
+async def test_legacy_submission_and_decision_keep_original_short_id_rejection():
+    from shared.errors import ValidationError
+
+    svc = _service()
+    with pytest.raises(ValidationError):
+        await svc.submit(TENANT, ApprovalType.PLAYBOOK_CHANGE, "旧审批", {"change": "old"}, "人工核对",
+            BlastRadius(["old"], "批准", "拒绝", False), proposed_by_employee="boss-runtime")
+    approval_id = await _submit(svc)
+    with pytest.raises(ValidationError):
+        await svc.decide(TENANT, approval_id, True, "independent-boss")
+
+
+async def test_short_quote_decider_does_not_bypass_current_guard():
+    from shared.errors import PermissionDenied
+
+    svc, factory, guard, _ = quote_service_case()
+    payload, approval_id = await submit_quote(svc)
+    guard.allowed = False
+    with pytest.raises(PermissionDenied):
+        await svc.decide(payload.tenant_id, approval_id, True, "independent-boss")
+    assert factory.store.packages[approval_id].state.value == "pending"
+
+
 @pytest.mark.parametrize("operation", ["get", "list"])
 async def test_new_reader_role_change_between_readable_roles_is_rejected(operation):
     from domains.approvals.schemas import ApprovalReaderIdentity

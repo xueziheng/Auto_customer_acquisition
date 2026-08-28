@@ -75,3 +75,22 @@ API只原structured_log，worker入原job→claim→固定模板→原LOW路由�
 NeedUnitUnitOfWork，保持同class，不修改Protocol/UoW；不靠导入私有repository绕过依赖检查。
 T5步骤仅用同QuoteWorkflowRunFact.model_validate验证原七字段mapping、局部apply变量改名，
 保留原strict验证、错误、workflow版本与控制流，未验证输入不提前cast。
+
+## 实际审批短编号与到期驱动
+
+同链发现共享ApprovalServiceImpl仍对新版报价起草人、owner、决定人要求emp_前缀。仅在
+quote_contract_subject成功返回严格subject后跳过submit的两项legacy前缀校验；身份由原
+QuoteDTO.fact_identity原样验证。decide保留ApprovalId/approved/note门，员工格式判断移入
+原_decision_guard短读和namespace识别之后：legacy仍原_optional_id，真报价fact_identity，
+ValueError固定转ValidationError。半namespace/损坏不能回退，无新增SQL、转换、默认身份或
+当前权限/独立审批/锁序/回执变化。代价是非法legacy决定员工可能先遇缺失/损坏package，
+不承诺原错误优先级；legacy接受集合不扩大。
+
+QuoteExpiryDriver只有tenant与显式limit，直接委托现expire_overdue；实际scheduler仅持原
+singleton时在campaign之后/workflow之前调用，普通错误不阻其他driver，取消不吞；API
+没有后台scanner。T4原状态事件落QuotationStateEventRow，保留幂等事件而不新造DomainEvent。
+
+Linux完整装配测试使用quotation专用白名单stage与固定入口，复用已验收依赖和internal PG、
+非root/read-only/no-cap/无挂载无端口与原预算；SDK网络边界受控，不代表真实S3或客户发送。
+审批HTTP仍为原ApprovalView.proposed_change_display字串字典，不是typed报价载荷；T9展示
+边界另行裁定，本批不新增审批DTO或让UI自行解析自由JSON。

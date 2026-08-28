@@ -65,3 +65,6 @@ DeferredQuoteIssuerReader未发布时固定dependency_unavailable，发布后仅
 步骤prepared_by/initiated_by按既有fact_identity验证并保留原字符串，不要求emp_前缀，
 其他run/version/hash/当前员工/独立审批绑定不放宽。QuoteSendReceiptReader明确失败关闭，
 不能用Outreach发送、下载或PDF生成回执自证正式报价发送。
+
+QuoteExpiryDriver只委托既有QuotationVersionService.expire_overdue，tenant与limit必须由
+受信装配显式传入；不创建actor、run、审批回执、定时进程或新的业务到期规则。

@@ -467,8 +467,9 @@ class ApprovalServiceImpl:
         if change_set_ref is not None:
             _text(change_set_ref, "变更集引用", 200)
         _optional_id(proposed_by_run, "提议 Run", "run")
-        _optional_id(proposed_by_employee, "提议员工", "emp")
-        _optional_id(owner_employee, "业务负责人", "emp")
+        if subject is None:
+            _optional_id(proposed_by_employee, "提议员工", "emp")
+            _optional_id(owner_employee, "业务负责人", "emp")
         if expires_at_limit is not None:
             expires_at_limit = _utc(expires_at_limit)
         if subject is not None and expires_at_limit is None:
@@ -540,7 +541,6 @@ class ApprovalServiceImpl:
     ) -> None:
         self._tenant(tenant_id)
         _optional_id(approval_id, "approval_id", "apr")
-        _optional_id(decided_by, "decided_by", "emp")
         if type(approved) is not bool:
             raise ValidationError("审批决定无效")
         if note is not None:
@@ -563,8 +563,15 @@ class ApprovalServiceImpl:
             if package is None:
                 raise ValidationError("审批不存在")
         if not self._marker(package):
+            _optional_id(decided_by, "decided_by", "emp")
             yield None
             return
+        from shared.schemas.quote_facts import fact_identity
+
+        try:
+            fact_identity(decided_by)
+        except ValueError:
+            raise ValidationError("审批决定员工无效") from None
         access = self._access()
         fact = self._fact(package)
         async with access.guard(

@@ -20,6 +20,14 @@ COPY tests ./tests
 USER 65534:65534
 CMD ["python", "-m", "tests.integration.quote_evidence_linux_support"]
 
+FROM chain AS quotation
+USER 0:0
+COPY apps ./apps
+COPY agent_runtime ./agent_runtime
+COPY notification_gateway ./notification_gateway
+USER 65534:65534
+CMD ["python", "-m", "tests.integration.quotation_runtime_linux_support"]
+
 FROM ${TEST_BASE_IMAGE} AS refreshed
 USER 0:0
 COPY pyproject.toml /opt/tradeos/pyproject.toml
