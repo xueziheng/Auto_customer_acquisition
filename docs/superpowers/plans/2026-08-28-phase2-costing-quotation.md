@@ -332,7 +332,7 @@ T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-g
 
 T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
 
-当前T8B2进行中：8.1安全读取（5c4799b）、8.2 HTTP（1179405c）、8.3 API/worker装配及生命周期（1b8920）已分片提交验证；8.3最终相关872 unit/131隔离PG零skip、21生产文件mypy与结构通过。8.4受控Linux完整业务链/expiry首次通过，完整报告与提交正在收口；其后补原规格所需审批可读展示（子计划§2.4），再整项独立审查，不提前勾选T8B完成。上文各前置项的“未运行”描述是其交付时的证据边界，不否定本片已有实际factory/受控链，也不等同真实供应商资料或生产对象网络验收。
+当前T8B2实施已提交，待整项独立审查：8.1安全读取（5c4799b）、8.2 HTTP（1179405c）、8.3 API/worker（1b8920）、8.4完整受控链（7c6c061）与§2.4审批中文展示（9de7640）。最终相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、最终Linux全链1项零skip，59生产文件mypy/Ruff/结构通过；不提前勾选T8B完成或称全库验收。前置项“未运行”是各自交付时证据边界，不否定本片实际factory/受控链，也不等同真实供应商资料、生产对象网络或真实发送。
 
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`

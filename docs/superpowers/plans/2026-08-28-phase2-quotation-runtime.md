@@ -1,6 +1,6 @@
 # Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
-> **状态：T8B2实施中，8.1–8.3已分片提交验证，8.4完整链路验收进行中；尚未整项独立审查。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3实际API/worker配置与生命周期1b8920已交付。8.3最终相关872 unit与131隔离PG零skip、21文件mypy/结构通过；不代表整个T8B2或Phase 2完成。T5/T6/T8A及T8B1独立审查已完成（B1最终e958b3c）。下文是精确实施与验收规范，未勾选项在整项审查通过前保持待关门，不把前置或单片结果代替最终验收。
+> **状态：T8B2实施提交完成，待整项独立审查。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3 API/worker 1b8920、8.4完整受控链7c6c061及§2.4中文展示9de7640已提交。最终相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、最终Linux实际factory全链1项零skip，59生产文件mypy/Ruff/结构通过；不等于全库验收或整个Phase 2完成。T5/T6/T8A及B1已审查；本B2仍以BASE585cead到最终HEAD整体审查后关门。下文未勾选项在审查通过前保持待验，不把早期分片证据当最后改后重跑。
 
 **Goal:** 将已验收域/文件能力接入安全HTTP、显式配置和真实API/worker，保持旧流程兼容。
 **Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；下文方法描述是规范，不独立构成验收结论。
@@ -227,6 +227,7 @@ Retry-After仅真实结果合法整数1..86400，缺失就不加，不能使用A
 - 所有标签中文且稳定、值只纯文本；不输出原始资料source_quote/source_url/locator、供应商身份、完整Need/basis/Provenance/模型/SQL或动态HTML。该展示仍仅内部审批读权，不成为客户文件或原文授权。
 - 先新tests/unit/test_quote_approval_display.py取得缺函数/真实显示RED，并补原test_approval_service对get/list租约内调用、缺guard/越权/损坏namespace零投影、legacy原字典原样断言。实际adapter/独立导入/Decimal低precision上下文不影响值、重复项/前版/无FX/尾零/负值/敏感原文不泄覆盖。唯一旧QuoteAccessCase补显式display适配，不删旧断言；country_policy_change实际依赖旧display完全等值，连同旧playbook/审批回归。
 - 新生产文件及已触service/adapter纳Ruff、结构和mypy；当前实际API/worker/旧报价PG回归及最终Linux同链定向验证新展示为中文纯文本、身份/自批等门不变。ADR0022与两域/流程规则记录新namespace展示键变化和Protocol增量。此为8.4后最后小片，整B2 BASE不变，全部完成才一次整项独立审查。
+- 本片扩大59文件mypy在已触workflows/quote_approval/approvals.py发现6项T5原构造错误（approval_type的str→Literal两处、request_hash/limit可空、state与decision的Literal）：仅将guard的QuoteApprovalSubject与read_quote_facts的QuoteApprovalFact两处构造改为同类model_validate(逐字段原值mapping)，保留同一strict/frozen/extra-forbid与validator，不转换/默认/cast/ignore，不改_subject、状态推导、异常、锁或回执。原6项静态RED保留；先补或复用真实adapter的非法Literal/缺hash/limit/版本及合法值保护（改前已GREEN注明），最终同59文件及新增生产文件全门与受影响PG改后验证。不归入T10四文件债务，也不排除adapter。代价是两处模型调用表达变化与防验证语义漂移回归，无公开字段/运行规则变更。
 
 代价：新版proposed_change_display内部键从机器字段变为中文展示标签，按旧机器键解析新版包的未知消费者需适配；仓库唯一业务等值消费者country_policy_change属legacy须完全不变。新增纯projection接口及测试替身维护，不新增存储/审批规则/HTTP字段。前端沿生成ApprovalView显示服务端结果，不承诺新增嵌套typed HTTP报价对象。
 
