@@ -14,6 +14,25 @@ from domains.quotations.context import (
 from shared.schemas.money import Money
 from shared.schemas.quote_creation import QuoteRoundingInput as QuoteRoundingInput
 from shared.schemas.quote_creation import QuoteTerm as QuoteTerm
+from shared.schemas.quote_document import CustomerQuoteView as CustomerQuoteView
+from domains.quotations.models import QuoteState as QuoteState
+from domains.quotations.basis_schemas import (
+    Hash as Hash, QuoteBasis as QuoteBasis, QuoteEvidenceSource as QuoteEvidenceSource,
+    QuoteEvidenceConfirmation as QuoteEvidenceConfirmation, QuoteSupplierEvidence as QuoteSupplierEvidence,
+    QuoteExpenseEvidence as QuoteExpenseEvidence, QuotePriceEvidence as QuotePriceEvidence,
+    QuoteFxSnapshot as QuoteFxSnapshot, QuotePolicySnapshot as QuotePolicySnapshot,
+    QuoteCostItemBinding as QuoteCostItemBinding, QuoteCoverageDecision as QuoteCoverageDecision,
+    QuoteCoverageSnapshot as QuoteCoverageSnapshot, QuoteScopeEvidenceBinding as QuoteScopeEvidenceBinding,
+    QuoteScopeConfirmation as QuoteScopeConfirmation, QuoteProfitMetrics as QuoteProfitMetrics,
+    QuoteCalculationSnapshot as QuoteCalculationSnapshot, QuotePricingOptions as QuotePricingOptions,
+)
+from domains.quotations.version_schemas import (
+    QuotationActor as QuotationActor, QuoteDraftCommand as QuoteDraftCommand,
+    QuoteIssuerCreate as QuoteIssuerCreate, QuoteContentLine as QuoteContentLine,
+    QuoteContentSnapshot as QuoteContentSnapshot, QuoteDetailView as QuoteDetailView,
+    QuoteSendReceipt as QuoteSendReceipt, QuoteStateEvent as QuoteStateEvent,
+    StoredQuoteIssuer as StoredQuoteIssuer,
+)
 
 
 @dataclass(frozen=True)

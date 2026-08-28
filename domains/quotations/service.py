@@ -42,6 +42,12 @@ from shared.schemas.identifiers import (
 from shared.schemas.quote_creation import (
     quote_creation_request_hash as quote_creation_request_hash,
 )
+from domains.quotations.content import (
+    build_quote_content as build_quote_content,
+    format_quote_specification as format_quote_specification,
+    quote_content_hash as quote_content_hash,
+    validate_quote_basis as validate_quote_basis,
+)
 
 
 def contains_forbidden_commitment(text: str) -> list[ForbiddenAutoCommitment]:

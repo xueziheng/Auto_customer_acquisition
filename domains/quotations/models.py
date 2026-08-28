@@ -79,9 +79,9 @@ class QuoteState(str, Enum):
 
 
 ALLOWED_TRANSITIONS: dict[QuoteState, set[QuoteState]] = {
-    QuoteState.DRAFT: {QuoteState.PENDING_APPROVAL},
-    QuoteState.PENDING_APPROVAL: {QuoteState.APPROVED, QuoteState.REJECTED},
-    QuoteState.APPROVED: {QuoteState.SENT, QuoteState.SUPERSEDED},
+    QuoteState.DRAFT: {QuoteState.PENDING_APPROVAL, QuoteState.EXPIRED, QuoteState.SUPERSEDED},
+    QuoteState.PENDING_APPROVAL: {QuoteState.APPROVED, QuoteState.REJECTED, QuoteState.EXPIRED, QuoteState.SUPERSEDED},
+    QuoteState.APPROVED: {QuoteState.SENT, QuoteState.SUPERSEDED, QuoteState.EXPIRED},
     QuoteState.SENT: {
         QuoteState.ACCEPTED,
         QuoteState.REJECTED,

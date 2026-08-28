@@ -15,6 +15,47 @@ from shared.errors import (
     ValidationError,
 )
 
+QuotationErrorCode = Literal[
+    "invalid_input", "unsupported_term", "quote_not_found", "issuer_not_found",
+    "idempotency_conflict", "revision_conflict", "active_quote_exists", "context_changed",
+    "basis_mismatch", "scope_stale", "evidence_invalid", "evidence_expired", "quote_expired",
+    "approval_missing", "receipt_invalid", "invalid_state",
+]
+
+
+class QuotationError(ValidationError):
+    """报价固定业务错误，不携带来源原文。"""
+
+    def __init__(self, code: QuotationErrorCode) -> None:
+        self.code = code
+        super().__init__({
+            "invalid_input": "报价输入无效", "unsupported_term": "报价条款类型不支持",
+            "quote_not_found": "报价不存在", "issuer_not_found": "缺少已确认抬头",
+            "idempotency_conflict": "幂等键绑定冲突", "revision_conflict": "报价修订版本冲突",
+            "active_quote_exists": "机会已有活跃报价", "context_changed": "报价上下文已变化",
+            "basis_mismatch": "报价与冻结依据不一致", "scope_stale": "人工适用性确认已失效",
+            "evidence_invalid": "报价依据无效", "evidence_expired": "报价依据已过期",
+            "quote_expired": "报价有效期已到", "approval_missing": "缺少适用报价批准",
+            "receipt_invalid": "发送回执无效", "invalid_state": "报价状态不允许此操作",
+        }[code])
+
+
+class QuotationPermissionError(PermissionDenied):
+    """当前员工无本次内部用途权限。"""
+
+    def __init__(self, code: Literal["permission_denied"]) -> None:
+        self.code = code
+        super().__init__("当前员工无报价用途权限")
+
+
+class QuotationUnavailableError(TradeOSError):
+    """持久化失败固定脱敏；未知提交只能原键恢复。"""
+
+    def __init__(self, code: Literal["dependency_unavailable", "lock_timeout", "storage_unknown", "storage_inconsistent"]) -> None:
+        self.code = code
+        super().__init__({"dependency_unavailable": "报价依赖不可用", "lock_timeout": "报价锁等待超时",
+            "storage_unknown": "报价存储状态未知", "storage_inconsistent": "报价持久记录不一致"}[code])
+
 QuoteContextErrorCode = Literal[
     "invalid_input", "context_changed", "facts_missing", "facts_corrupt", "unit_missing",
     "unit_stale", "fact_unconfirmed", "specification_mismatch", "quantity_mismatch",
