@@ -579,6 +579,63 @@ async def test_file_context_first_cancel_at_session_boundary(file_access_case, m
     assert c.blobs.gets == 0
 
 
+@pytest.mark.parametrize("purpose", ["scope", "current"])
+@pytest.mark.parametrize("signal_type", [SystemExit, KeyboardInterrupt, GeneratorExit])
+@pytest.mark.parametrize("later", ["sql", "cancel", "terminal"])
+async def test_yielded_file_context_keeps_first_terminal(file_access_case, monkeypatch, caplog, purpose, signal_type, later):
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from tests.unit.test_quote_file_access import ControlledCleanupSignal
+
+    c = file_access_case
+    signal = signal_type("private-yield-terminal")
+    subsequent = {"sql": SQLAlchemyError("private-rollback-sql"),
+        "cancel": asyncio.CancelledError("private-rollback-cancel"),
+        "terminal": ControlledCleanupSignal("private-second-terminal")}[later]
+    execute, rollback, close = AsyncSession.execute, AsyncSession.rollback, AsyncSession.close
+    owner = asyncio.current_task()
+    target, armed = None, False
+    cleanup = []
+
+    async def observed(session, *args, **kwargs):
+        nonlocal target
+        result = await execute(session, *args, **kwargs)
+        if asyncio.current_task() is owner:
+            target = session
+        return result
+
+    async def failed_rollback(session):
+        await rollback(session)
+        if armed and session is target:
+            cleanup.append("rollback")
+            raise subsequent
+
+    async def failed_close(session):
+        await close(session)
+        if armed and session is target:
+            cleanup.append("close")
+            raise SQLAlchemyError("private-final-close")
+
+    args = (c.tenant, c.quote.content.opportunity_id, c.sales_id)
+    lease = (c.approval.provider.open_file_scope(*args) if purpose == "scope" else
+        c.approval.provider.open_for_file(*args, prepared_by=c.quote.content.prepared_by,
+            decider_ids=tuple({d.decided_by for d in c.receipt.decisions})))
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "execute", observed)
+        patch.setattr(AsyncSession, "rollback", failed_rollback)
+        patch.setattr(AsyncSession, "close", failed_close)
+        with pytest.raises(signal_type) as error:
+            async with lease:
+                armed = True
+                raise signal
+        assert error.value is signal and cleanup == ["rollback", "close"]
+        assert "private-" not in caplog.text
+    await asyncio.wait_for(c.approval.quotation.context.update_owner_manager(), 2)
+    assert (await c.access.authorize(c.tenant, c.quote_id, actor_id=c.sales_id)).quote_id == c.quote_id
+    assert c.blobs.gets == 0
+
+
 @pytest.mark.parametrize("fault", ["rollback", "close", "both"])
 async def test_formal_context_cleanup_failure_cannot_return_snapshot(file_access_case, monkeypatch, fault):
     from sqlalchemy.exc import SQLAlchemyError

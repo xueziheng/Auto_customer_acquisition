@@ -167,3 +167,74 @@ async def test_context_unknown_base_exception_is_never_replaced(signal_type, can
         async with lease:
             pytest.fail("失败的bootstrap不可产出上下文")
     assert error.value is signal
+
+
+@pytest.mark.parametrize("signal_type", [SystemExit, KeyboardInterrupt, GeneratorExit, ControlledCleanupSignal])
+@pytest.mark.parametrize("purpose", ["scope", "current"])
+@pytest.mark.parametrize("source,cancel_first", [
+    ("bootstrap", False), ("business", False), ("rollback", False), ("rollback", True),
+])
+@pytest.mark.parametrize("later", ["sql", "validation", "cancel", "terminal"])
+async def test_context_first_terminal_survives_later_cleanup(
+    signal_type, purpose, source, cancel_first, later, caplog
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from infra.db.quote_context import SqlAlchemyQuoteContextProvider
+
+    signal = signal_type("private-first-terminal")
+    cancellation = asyncio.CancelledError("private-primary-cancel")
+    subsequent = {"sql": SQLAlchemyError("private-later-sql"),
+        "validation": ValueError("private-later-validation"),
+        "cancel": asyncio.CancelledError("private-later-cancel"),
+        "terminal": ControlledCleanupSignal("private-second-terminal")}[later]
+    phases, cleanup = [], []
+
+    class Session:
+        def __init__(self):
+            self.bootstrap = not phases
+            phases.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def execute(self, *args):
+            if self.bootstrap:
+                if source == "bootstrap":
+                    raise signal
+                candidate = SimpleNamespace(owner="emp_owner", need_id="need_existing", account_id="acct_existing")
+                return SimpleNamespace(one_or_none=lambda: candidate)
+            # 只定位业务session首个await的异常控制流，不伪造员工/抬头授权事实。
+            if source == "business":
+                raise signal
+            raise cancellation if cancel_first else RuntimeError("private-initial-failure")
+
+        async def rollback(self):
+            cleanup.append("rollback")
+            raise signal if source == "rollback" else subsequent
+
+        async def __aexit__(self, *args):
+            if self.bootstrap and source != "bootstrap":
+                return
+            cleanup.append("close")
+            if source == "business":
+                raise SQLAlchemyError("private-last-close")
+            raise subsequent
+
+    class Issuer:
+        async def get_confirmed(self, tenant):
+            return object()
+
+    provider = SqlAlchemyQuoteContextProvider(Session, Issuer(),
+        lock_timeout_ms=1000, statement_timeout_ms=2500)
+    args = ("tn_00000000000000000000000001", "opp_existing", "emp_owner")
+    lease = (provider.open_file_scope(*args) if purpose == "scope" else
+        provider.open_for_file(*args, prepared_by="emp_boss", decider_ids=("emp_decider",)))
+    with pytest.raises(signal_type) as error:
+        async with lease:
+            pytest.fail("终止路径不能产出上下文")
+    assert error.value is signal
+    assert cleanup == (["close"] if source == "bootstrap" else ["rollback", "close"])
+    assert "private-" not in caplog.text

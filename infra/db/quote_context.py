@@ -130,14 +130,18 @@ class SqlAlchemyQuoteContextProvider:
         """租约内持锁，异常/取消尽力回滚关闭；不升级为FOR UPDATE。"""
         consumer_error: BaseException | None = None
         primary_cancel: asyncio.CancelledError | None = None
+        first_terminal: BaseException | None = None
         try:
             async with self._factory() as bootstrap:
                 try:
                     candidate = (await bootstrap.execute(select(OpportunityRow.owner, OpportunityRow.need_id,
                         OpportunityRow.account_id).where(OpportunityRow.tenant_id == tenant_id,
                         OpportunityRow.opportunity_id == opportunity_id))).one_or_none()
-                except asyncio.CancelledError as exc:
-                    primary_cancel = exc
+                except BaseException as exc:
+                    if isinstance(exc, asyncio.CancelledError):
+                        primary_cancel = exc
+                    elif not isinstance(exc, Exception):
+                        first_terminal = exc
                     raise
             if candidate is None:
                 raise QuoteContextError("record_not_found")
@@ -236,17 +240,26 @@ class SqlAlchemyQuoteContextProvider:
                     except BaseException as exc:
                         consumer_error = exc
                         raise
-                except asyncio.CancelledError as exc:
-                    primary_cancel = exc
+                except BaseException as exc:
+                    if isinstance(exc, asyncio.CancelledError):
+                        primary_cancel = exc
+                    elif not isinstance(exc, Exception) and first_terminal is None:
+                        first_terminal = exc
                     raise
                 finally:
                     try:
                         await session.rollback()
-                    except asyncio.CancelledError as exc:
-                        if primary_cancel is None:
+                    except BaseException as exc:
+                        if isinstance(exc, asyncio.CancelledError) and primary_cancel is None:
                             primary_cancel = exc
+                        elif not isinstance(exc, (Exception, asyncio.CancelledError)) and first_terminal is None:
+                            first_terminal = exc
                         raise
-        except BaseException as exc:  # close也可能覆盖主取消；未知异常仍原样抛出
+        except BaseException as exc:  # 后续close不能覆盖首个终止对象或原取消。
+            if first_terminal is not None:
+                if exc is not first_terminal:
+                    logger.warning("报价上下文终止后的清理失败")
+                raise first_terminal from None
             if primary_cancel is not None and isinstance(exc, (Exception, asyncio.CancelledError)):
                 if exc is not primary_cancel:
                     logger.warning("报价上下文取消后的清理失败")

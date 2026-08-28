@@ -28,7 +28,9 @@ confirm_issuer使用同锁且锁后无反向业务取锁；代价是确认与正
 共享context仅在原_open内保留bootstrap/锁等待/已yield/首次rollback的原取消对象，尽力执行
 原rollback及close；二次清理异常不能覆盖主取消，非取消仍沿原分类。无通用清理框架或其他
 UoW改动，只记录固定脱敏警告；清理故障不代表连接已确定释放。恢复原取消仅覆盖普通
-Exception或再次CancelledError；SystemExit等其余BaseException始终原样传播，不降为依赖错误。
+Exception或再次CancelledError；首个SystemExit等终止型BaseException须在bootstrap/业务等待/
+已yield/rollback处保存原对象，优先于后续rollback/close的普通异常、取消或第二终止异常；
+首次终止出现在close时原样传播，不降为依赖错误。仅本_open保存局部状态，不改其他租约。
 
 每次正式生成、正式读取、恢复均重验当前context、全部批准、policy、quoted依据及有效期。
 snapshot业务等值显式包含全部字段及完整customer，只排除checked_at；不能缓存许可。

@@ -142,7 +142,8 @@ API/worker接线仍留B2。`QuoteFileAccessService`正式用途独立于actor=se
 不调用commit；旧prepare/apply的选定抬头快照不追逐当前版本。仅文件context的真实
 issuer_not_found视为context_changed，未知reader/持久损坏保持技术故障，不降为版本页blocker。
 共用context的bootstrap/业务等待/首次rollback取消须保留原对象，不能被后续rollback或close的
-普通异常或再次取消覆盖；其余BaseException始终原样传播。正常非取消故障仍失败关闭。
+普通异常或再次取消覆盖；首个终止型BaseException优先于任何后续清理故障及原取消，
+须在bootstrap、业务等待/已yield、rollback处保存原对象，close不得覆盖。正常非取消故障仍失败关闭。
 清理只尽力执行，不宣称故障连接必已释放。
 snapshot等值只排除checked_at，不缓存许可；外部IO不持业务锁，交付前必须重新真实授权。
 
