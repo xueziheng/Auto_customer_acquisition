@@ -1,4 +1,4 @@
-# T8B2：安全HTTP与真实进程装配 Implementation Plan
+# Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
 > **状态：尚未实施、未运行测试。** 控制器已全文核对本计划；T5/T6/T8A/T8B1最终交付后仍须对齐实际接口再派发。按主计划SDD使用test-driven-development与verification-before-completion，不另起执行批次或派子代理。
 

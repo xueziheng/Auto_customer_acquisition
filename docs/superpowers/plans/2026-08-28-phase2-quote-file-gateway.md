@@ -1,6 +1,6 @@
-# T8B1：文件授权、Gateway与持久恢复 Implementation Plan
+# Task 8B1：文件授权、Gateway与持久恢复 Implementation Plan
 
-> **状态：尚未实施、未运行测试。** 控制器已全文核对本计划；T5/T6/T8A真实交付后仍须逐项对齐最终公共接口，T7真实renderer也须可用，才可派发。文内“新增/提取”均不是已存在能力。
+> **状态：前置核对完成，T8B1尚未实施、未运行本任务测试。** T5/T6/T7与T8A已完成独立审查（A最终6938804）；控制器已核实际公共接口并记录交接。文内“新增/提取”均不是已存在能力；当前依据/决策人共同规则仍需本任务提取。ADR指定`docs/adr/0021-quotation-file-gateway-recovery.md`，2026-08-28派发前核未占号；若期间发生冲突回报控制器，不覆盖。
 > **For agentic workers:** 在现SDD控制器下使用superpowers:test-driven-development与superpowers:verification-before-completion实施下列切片；不另启executing-plans批次。控制器管理派发与一次完整Task审查，不自行再派代理或启动T8B2。
 
 **Goal:** 交付正式/历史文件授权、客户安全版本发现、真实有界Generated读取/专用惰性写入、四个文件Gateway工具、持久限速及有限metadata恢复。
@@ -15,7 +15,7 @@
 - 不修改Gateway pipeline、通用ledger接口/状态机，不新增表、索引迁移、钱包、fencing、通用权限/事务框架。旧Raw/EMAIL_DRAFT/邮件工具语义不改。
 - 不写HTTP routes、总settings JSON/env解析、实际factory/lifecycle/expiry、旧上传Deferred wrapper；全部B2。B1不实现来源解析器、真实发送、mark_sent或发送回执替身。
 - 所有限额/时钟/租约依赖显式；无生产默认值。测试仅受控对象传输、真实PG+Store、可计数有限流及真实S3适配器配受控SDK；不新增MinIO镜像，不声称真实S3网络/商业资料验收。
-- 当前真实代码依据：T4 `version_schemas.py:110–139`为`QuoteDetailView(content,state)`；T5 `approval_service.py:459–575,660–735`仍有session私有绑定/receipt/fresh校验；Gateway `pipeline.py:304–310,491–665`与`infra/db/repositories/tool_calls.py:336–343`决定claim/recovery事实。这些阅读不是交付审查。
+- 当前真实代码依据：T4 `version_schemas.py`为`QuoteDetailView(content,state)`；T6已将T5/T6共同snapshot/request/binding/receipt/run纯验证抽至`domains/quotations/approval_rules.py`，B1复用这份实际实现并另核实时事实，不能恢复第二份弱化副本。Gateway `pipeline.py:304–310,491–665`与`infra/db/repositories/tool_calls.py:336–343`决定claim/recovery事实。这些接口核对不代替B1交付审查。
 - 消费永久子计划：`2026-08-28-phase2-quote-approvals.md`、`2026-08-28-phase2-quote-files.md`、`2026-08-28-phase2-quote-evidence.md`（均在docs/superpowers/plans）。T6的0046及T8A的bounded能力是前置，不在B1补成假实现。
 
 ## 1. 文件责任清单
@@ -36,7 +36,7 @@
 | Create `tool_gateway/file_rate_limit.py`, `quote_file_ledger.py`, `infra/db/quote_file_rate_limit.py` | 技术预留/执行历史端口与PG适配；public ledger读取与新恢复requested审计 |
 | Modify `tool_gateway/manifest.py`仅必要注册入口 | 实际`ToolRegistry.register`已存在，优先在新handler模块提供注册helper；不得为新工具改核心验证/枚举 |
 | Create下文列名的unit/integration测试及局部fixtures | 真实PG多连接/Store/Gateway、受控SDK与安全断言；不伪造receipt/run |
-| Modify相关AGENTS；Create一份未占号的窄ADR | 中立store边界、技术预留写、MEDIUM/NONE内部关联写、保守恢复/无fencing；ADR号由控制器派发时分配，不覆盖0019 |
+| Modify相关AGENTS；Create `docs/adr/0021-quotation-file-gateway-recovery.md` | 中立store边界、技术预留写、MEDIUM/NONE内部关联写、保守恢复/无fencing；控制器已核未占号，不覆盖0019/0020 |
 
 `tool_gateway`/`workflows`不得导入artifact_store/infra或域私有仓储；adapter放infra。ToolCallId仍只定义于tool_gateway.repository，不移动到shared/domain。共享CustomerQuoteView与QUOTE_PDF_TEMPLATE_VERSIONS仍各唯一class/常量。
 

@@ -1,5 +1,7 @@
 # Task 8A：有界来源读取与受限取证 Implementation Plan
 
+> **实施状态（2026-08-28）：下层实现及独立复审完成，最终提交6938804。** 六切片原实现2646908经首审发现四项Important，Fix1修复后逐项复审通过；新增一项非阻塞测试失败清理Minor留最终审查。最终固定Linux资源48项、Linux/PG真实域同链264项、受影响兼容361项均通过，实际API/worker、真实商业资料仍未运行。下文资源预算与切片是实施要求/历史执行方案，不是生产默认值，也不代表整个Phase2完成。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 遵守控制器SDD委派合同，使用 superpowers:test-driven-development 与 superpowers:verification-before-completion 逐切片完成实现与验证，不停留在计划。控制器在Task8A完整交付后安排一次独立审查；实现者不启动自己的reviewer或子代理。步骤以复选框追踪。
 
 **Goal:** 实现真实raw metadata→有界对象读取→Linux受限解析→版本化定位→资料ACL/Gateway→两个域reader的可独立测试下层链，不声称API/worker已上线。
@@ -224,6 +226,7 @@ Need adapter自选`NeedUnitEvidenceScope(purpose='need_unit',need_id=query.need_
 返回后重查当前Need数量投影和权限；调用新纯域`validate_need_unit_source_text(query:NeedUnitEvidenceQuery,current:NeedQuantitySourceFact,*,body:str,excerpt:str)->None`，再逐字段构造既有VerifiedNeedUnitEvidence（tenant/need/account/msg/artifact/raw hash/locator/exact excerpt/unit/quantity hash/observed_at）。没有确认人，确认时间与Provenance仍由既有NeedUnitService在后续guard+事务中产生。
 该纯函数只落已批准最小子集：query/current绑定和`quantity_fact_hash`完整相等；quantity为正int排bool、CONVERSATION、已human_confirmed、source_id恰当前msg；原quantity.provenance.source_quote非空且逐字在body中；excerpt恰query.source_quote且是Gateway核验片段。
 整数/单位必要条件采用notes允许的明确相邻“数量 单位”形式：excerpt用`[0-9]+`找全部数字段，必须恰一段且逐字等于`str(quantity.value)`；含其他Unicode十进制数字拒绝。数值段左右不能紧邻字母/数字/下划线或`.,+-`，其后必须有一个或多个Unicode空白字符（Python re空白字符类）再接逐字unit，unit末端不能紧邻字母数字/下划线；同一literal unit作为完整token重复出现也拒绝。明确多数字/重复候选均source_mismatch。不casefold、不单复数/别名、不换算、不支持千分位/小数/科学计数。选区长度仍由资源限额控制。
+数量与单位的token边界必须落在已验证locator的原文精确位置，而不只看截取后的excerpt。纯函数保持现签名，复用shared.schemas.evidence_read.parse_evidence_locator(query.locator)取得code point坐标，确认非根的rfc822-plain-v1/page=None、范围在body内且body[start:end]逐字等于excerpt；选中片段内的数字/单位offset加start后检查body中两侧字符，沿上句同一边界规则。不得用body.find或别处存在同文字替代本次坐标；所有无效绑定/裁剪均source_mismatch。增加150 pieces→选50 pieces、50 piecesXYZ→选50 pieces，以及原文另有合法同文字但实际选区仍裁剪的反例；完整50 pieces及非BMP前缀仍成功。不扩大为语义分析、单位词典或新授权，不改变NeedUnitService/receipt/旧词表。
 这里只验证必要词法关系，不声称能识别所有不同单位词、否定、历史引用、其他产品或包装上下文；含糊关系须由员工拒绝并补证，确认动作承担语义责任。不建单位词典/语义解析器；精确token边界与反例在切片5先RED锁定，超出子集不扩展支持而回控制器。
 历史authorize_reference使用scope.action='read'，只重验当前Need/account/msg/raw metadata和receipt artifact/hash/observed_at绑定，零bytes/parser；不要求当前quantity等于旧receipt，也不恢复stale单位。现NeedUnitService负责receipt本身及旧幂等；新reader不能改其行为。
 Need错误映射：权限→既有NeedUnitPermissionError('permission_denied')；unsupported→NeedUnitError('source_unsupported')；摘录/绑定/token/完整性→NeedUnitError('source_mismatch')；源/解析资源/Gateway不可用→NeedUnitUnavailableError('source_unavailable')。旧CostingQuoteService将reader失败统一安全InvalidPricingEvidenceError，T8B不假定它已经暴露细粒度新code。
@@ -256,7 +259,7 @@ class ToolGatewayQuoteEvidenceReader:
 
 slot单一ContextVar记录(owner asyncio.current_task,成功payload或固定failure code)，不是全局dict；take只同task同handle且立即删，子task复制上下文不能领取/删除父内容；同task嵌套read若槽非空拒绝，不清掉外层。wrapper先确认空，随后owned invocation finally清槽。
 permission check、handler.prepare和execute捕获已分类失败时只put_failure(code)，然后抛§3匹配ToolGatewayError；原文绝不进入failure分支。wrapper只在真实SUCCEEDED后take原文；任何非SUCCEEDED先take_failure（只有固定code，若槽存成功payload则返回None，绝不领取/删除该payload），有code则保留。没有code才按固定Gateway类别退化：VALIDATION→invalid_input、PERMISSION_DENIED→permission_denied、PROVIDER_TRANSIENT→source_unavailable；REJECTED无类别时仅`tenant:evidence_request`→invalid_input、`tenant:evidence_tenant`→permission_denied，其他未知类别/规则或DUPLICATE→gateway_unavailable。不能把所有REJECTED一概当permission_denied。
-审计/ledger失败或invoke抛异常时不领取成功内容，固定gateway_unavailable；取消传播CancelledError；finally均清槽。上述固定fallback和错误表由本插件单一纯映射函数复用，不改核心错误管线。真实失败细码传递只依赖当次task，不从历史ledger恢复。
+任何审计/ledger失败均不得领取成功内容。invoke抛异常或返回明确RECONCILIATION_REQUIRED时固定gateway_unavailable；但既有ToolCallResult不投影stage，EXECUTING提交失败可被核心管线归为PROVIDER_TRANSIENT且没有qev细码，此不可辨别路径沿上句固定fallback返回source_unavailable，不声称故障发生在外部来源。不得为细化错误改pipeline、扩展结果Protocol或读取历史ledger猜stage。真实PG用例必须证明该路径零raw/parser调用、无成功交付、单次invoke且无自动重试。取消传播CancelledError；finally均清槽。上述固定fallback和错误表由本插件单一纯映射函数复用，不改核心错误管线。真实失败细码传递只依赖当次task，不从历史ledger恢复。
 wrapper按本次actor构造`ToolCallContext(tenant_id,UserId(str(actor_id)),'quotation.evidence.read',safe_params,run_id=None)`；沿已有内部EmployeeId承载约定，不造usr/run/defaultboss。拿到成功typed结果后再次access.authorize并核对，才交付domain adapter；所有路径finally清理，无跨调用缓存或ledger原文重放。
 新`infra/quote_evidence_settings.py`仅`QuoteEvidenceSettings(raw_maximum_bytes:int,object_read:ObjectReadLimits,parser:EvidenceParseLimits,probe:EvidenceProbeLimits)`严格DTO，及`from_mapping(Mapping[str,object])->QuoteEvidenceSettings`纯解析；不读os.environ/凭证/文件，未知字段拒绝。与旧S3秘密引用配置分开。
 T8B消费本节各明确ctor/Protocol，自建独立ToolRegistry/Gateway并注册manifest/handler、两个stage；厂内不得await probe/解析秘密/访问网络，startup显式本地probe后启用parse路径。无成功probe只可root能力或整体不注册，不可默默让文本工具走无限解析。Raw S3 connector惰性解析秘密在已授权EXECUTING后。

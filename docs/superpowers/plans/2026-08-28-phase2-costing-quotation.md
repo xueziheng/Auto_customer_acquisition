@@ -318,6 +318,8 @@ T4客户投影验证、T6shared模板实际交付后再派发；首次实际PDF�
 
 先完整执行[有界取证子计划](2026-08-28-phase2-quote-evidence.md)，独立验收bounded Store/S3、Linux受限解析/locator、用途权限、来源Gateway与两个域reader。仍属同一Phase2批次，不新增Phase。实际API/worker/HTTP接线归T8B；T8A不以OS探针或受控parser替代完整真实链。
 
+- [x] T8A下层实现及Fix1复审完成（6938804）；最终固定Linux资源48项、Linux/PG真实域同链264项、受影响兼容361项通过。四项主要问题关闭；测试失败清理Minor留最终审查。T8B实际装配及真实业务未运行。
+
 ### Task 8B：文件Gateway与实际API/worker装配
 
 T8A通过独立审查后执行下列接线要求。下文来源实现事项由T8A完整子计划负责，T8B复用其真实接口并完成生产factory/HTTP，不重复实现reader/解析器。正式文件授权与客户用途列表的精确契约须在T5/T6交付后对齐；不将内部成本读取权当作文件ABAC。
@@ -391,11 +393,42 @@ if runtime.quote_expiry_driver is not None:
 
 **Files**
 - Create: `apps/web/src/views/costing-quotes/PricingPolicyForm.vue`, `apps/web/src/views/costing-quotes/PriceEvidenceForm.vue`, `apps/web/src/views/costing-quotes/CostCoverageForm.vue`, `apps/web/src/views/costing-quotes/NeedUnitConfirmationForm.vue`, `apps/web/src/views/costing-quotes/CostScopeConfirmationForm.vue`, `apps/web/src/views/costing-quotes/QuoteVersions.vue`, `apps/web/src/views/costing-quotes/QuoteIssuerForm.vue`, `apps/web/src/views/costing-quotes/quote-input.ts`, `apps/web/tests/quotation-flow.test.ts`
-- Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/api/api.d.ts`, `apps/web/tests/costing-quotes.test.ts`
+- Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/router.ts`, `apps/web/src/api/api.d.ts`, `apps/web/tests/costing-quotes.test.ts`, `apps/web/tests/information-architecture.test.ts`
 
 **Interfaces**
 - 仅使用生成 `components['schemas'][...]`，不手写DTO；组件Props/Emits为UI组合类型。
 - 报价页显示后端 `allowed_actions`、`blockers`、版本/hash、审批和file状态；最终权限仍在后端。
+- `quote-input.ts`另导出纯UI函数`utf16SelectionToCodepoints(text:string,start:number,end:number): readonly [number,number]`，将浏览器UTF-16半开选区转为后端Unicode code point半开区间。要求整数、`0<=start<end<=text.length`且两端不能切开代理对；不修改原文/trim/规范化，不本地生成locator或hash。
+
+该坐标函数的目标失败测试与实现骨架如下，和金额保真测试同属第一轮TDD；HTTP请求仍用后端preview返回的raw_hash/text_hash，页、来源或文本变化立即废弃旧选区与locator。
+
+```typescript
+import { utf16SelectionToCodepoints } from '../src/views/costing-quotes/quote-input';
+it('maps UTF-16 selection without changing evidence text', () => {
+  expect(utf16SelectionToCodepoints('A😀B', 1, 3)).toEqual([1, 2]);
+  expect(utf16SelectionToCodepoints('A😀B', 3, 4)).toEqual([2, 3]);
+  expect(() => utf16SelectionToCodepoints('A😀B', 1, 2)).toThrow();
+  expect(() => utf16SelectionToCodepoints('A😀B', 2, 3)).toThrow();
+  expect(() => utf16SelectionToCodepoints('A😀B', 3, 3)).toThrow();
+});
+
+export function utf16SelectionToCodepoints(
+  text: string, start: number, end: number,
+): readonly [number, number] {
+  const splitsPair = (position: number): boolean => {
+    if (position <= 0 || position >= text.length) return false;
+    const left = text.charCodeAt(position - 1);
+    const right = text.charCodeAt(position);
+    return left >= 0xd800 && left <= 0xdbff && right >= 0xdc00 && right <= 0xdfff;
+  };
+  if (!Number.isInteger(start) || !Number.isInteger(end)
+      || start < 0 || end > text.length || start >= end
+      || splitsPair(start) || splitsPair(end)) {
+    throw new Error('请选择完整的原文字符');
+  }
+  return [Array.from(text.slice(0, start)).length, Array.from(text.slice(0, end)).length];
+}
+```
 
 - [ ] 先在新测试文件加入payload保真测试，再加入整页fake fetch行为测试（沿用现有createApp+router方式，不引入另一个测试框架）：
 
@@ -422,9 +455,12 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 - [ ] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
 - [ ] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
 - [ ] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
+- [ ] 同步成本报价路由与页面的旧Phase1-only说明，准确描述本批Phase2成本/报价能力且不声称整个Phase2完成；真实启用/可执行仍看后端配置与allowed_actions。information-architecture.test.ts将成本报价与仍为Phase1人工的products/sourcing分开断言，保留其他路由与Phase3禁用约束，不删断言取绿。
 - [ ] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。
 
 ## Task 10：跨进程验收、回归、审查和交付记录
+
+验收必须修复并保留T4已记录的三个旧unit契约失败：迁移测试证明当前单head、0040祖先及完整链，AppleDouble测试先取合法基线再验证加sidecar不变；人工unit明确排除模型提取词表并补不能形成ChangeSet的反例。test_alembic_appledouble.py四个用例改用专用tmp迁移副本，不能向真实versions覆盖/删除固定测试名，也不能仅把0040硬改当前号码或扩大模型权限取绿。既有runner的拒删未知sidecar和混合候选原子失败断言均保留；不改生产清理器。
 
 **Files**
 - Create: `tests/integration/test_costing_quote_closed_loop.py`, `tests/e2e/test_costing_quote_browser.py`, `docs/acceptance/2026-08-28-phase2-costing-quotation.md`, `docs/operations/costing-quotation.md`
