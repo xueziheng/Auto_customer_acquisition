@@ -24,7 +24,7 @@
 工作树 `/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-costing-quotation`。
 **执行前置：T3A经控制器验收并提交，head已含0042。** 当前正在实施的T3A文件不可抢改；派发时先核对其最终公开字段/错误与本brief一致，有差异先报控制器，不重做0042。
 阅读根AGENTS/HANDBOOK、shared/domains/costing/quotations/demand/workflows/quote_approval/infra/tests就近AGENTS，以及本计划。实际锁路径、完整类型与验收顺序均在本文定义。
-只新增迁移 `0043_costing_quote_lock.py`（down_revision=0042）；T4报价0044、文件0045仍未实施。
+只新增迁移 `0043_costing_quote_lock.py`（down_revision=0042）；T4报价0044、T5审批0045、文件0046仍未实施。
 
 | 文件（Create，除标Modify） | 单一职责 |
 | --- | --- |
@@ -111,6 +111,7 @@ QuoteCreationOperationView:
 rounding精度0..12、strategy只允许Money现有舍入策略。revision两个字段同None或同有，version正整数；unit_price正值、有限Decimal。terms为空可以，顺序与重复项不可擅自去重；不支持的商业承诺明确拒绝，不用自由note绕过T5。
 shared只检形状；领域校验kind与其文本/后续审批映射。quotations.schemas重导出QuoteTerm/QuoteRoundingInput。
 `quote_creation_request_hash(intent:QuoteCreationIntent)->str`在shared实现、quotations.service重导出；版本quote-create-request-v1，完整intent canonical JSON、Decimal无损规范化、UTC，保留None/terms次序；不含key/operation_id/now/当前审批人。
+新canonical Decimal展开前须限制系数位数、绝对指数及预估定点编码字符数各不超过4096，零值也先核资源形状；这是技术资源边界，不套用业务金额精度到T1的prec50结果。成本calculate/freeze对人工客户单价在hash/事务前复用现有Numeric(28,12)正值边界，拒绝固定invalid_input；不修改共享Money或旧Need/计算hash的正常字节。
 T4的QuoteDraftCommand必须包含scope_confirmation_id；scope hash从持久记录解析，HTTP不传prepared_by/确认hash/已锁标记。
 
 ### 1.4 scope与冻结（costing，内部含敏感事实）
@@ -133,12 +134,13 @@ FrozenCostBasis:
  quantity:int;specification,unit,destination:str;need_facts:NeedQuoteFacts
  scope_confirmation:CostScopeConfirmationView;policy:PricingPolicyView;coverage:CostCoverageView
  calculation:CalculationSnapshot;price_evidence:tuple[PriceEvidenceView,...]
- pricing_options:PricingOptions;quote_fx:QuoteFxView|None;valid_until:datetime;frozen_at:datetime
+ pricing_options:PricingOptions;cost_fx_rates:tuple[FxRate,...];quote_fx:QuoteFxView|None;valid_until:datetime;frozen_at:datetime
 ```
 
 scope全部依据ID/hash精确覆盖coverage引用集合，按ID排序且唯一；各自applicability_note是人工业务映射说明，不冒充客户/供应商原话。原PriceEvidence自由文本与来源完整保留在basis。
 `cost_scope_hash(view:CostScopeConfirmationView)->str`（costing.service公开）排除content_hash自身，但含全部scope、确认记录身份、evidence mapping及确认Provenance；terms_hash用shared纯编码的quote-terms-v1。
 FrozenCostBasis的basis_hash覆盖全部业务快照/操作绑定，排除basis_hash自身、frozen_at与随机basis_id；计算inputs_hash沿用T1，不挤入新的计算公式。
+cost_fx_rates必填，从锁内真实sheet.fx_rates按原顺序逐项原值复制（无转换则显式空tuple），纳入basis_hash及严格存储读取；不与独立quote_fx合并，不改已有sheet/Need/inputs_hash算法。多币种成本的汇率、来源、时间须在冻结后可重现，变更快照改变basis_hash；T5审批安全摘要仅展示方向/汇率/时间和成本表引用，不透传source自由文本或伪造额外确认事实。
 T4 QuoteBasis须等值携带完整scope确认、Need事实及原始供应商specification/evidence，不能缩为hash后失去第二道规格映射校验；T3B不实现T4存储。
 
 ## 2. 公共端口、构造与错误
@@ -220,6 +222,7 @@ add_scope(tenant_id,record:StoredCostScope)->None
 get_operation_by_key(tenant_id,key)->QuoteCreationOperationView|None
 get_operation(tenant_id,operation_id:str)->QuoteCreationOperationView|None
 pending_for_sheet(tenant_id,cost_sheet_id:CostSheetId)->QuoteCreationOperationView|None
+completed_for_revision(tenant_id,cost_sheet_id:CostSheetId,quote_id:QuoteId,quote_version:int)->QuoteCreationOperationView|None
 get_basis(tenant_id,basis_id:str)->FrozenCostBasis|None
 add_frozen(tenant_id,basis:FrozenCostBasis,operation:QuoteCreationOperationView)->None
 complete(tenant_id,operation_id:str,receipt:QuoteCreationCompletion,at:datetime)->None
@@ -227,6 +230,7 @@ mark_sheet_locked_once(tenant_id,cost_sheet_id:CostSheetId,at:datetime)->None
 ```
 
 所有简写tenant_id为TenantId、key为str；`StoredCostScope(view:CostScopeConfirmationView,idempotency_key:str,request_hash:Hash)`是costing内部DTO。
+completed_for_revision同session按tenant+sheet+completed+receipt quote/version精确读取，严格解码；无记录None，意外多条或绑定损坏固定facts_corrupt拒绝，不任选一条。可使用tenant+sheet索引，不跨域读取quotation表或再次调用completion_reader。
 key advisory xact lock覆盖“行尚不存在”；作用域包含tenant/kind/key，不能只锁已存在行。所有读写同session。
 `SqlAlchemyCostingFreezeUow(factory,tenant_id,*,now:Callable[[],datetime],lock_timeout_ms:int,statement_timeout_ms:int)`显式正配置，参数化set_config；异常含取消均rollback/close。
 
@@ -261,6 +265,7 @@ scope同时绑定material/packaging/required_by/destination/full Provenance、te
 ### 4.3 计算、freeze、恢复
 
 calculate允许target/manual但仅当前四角色；读取当前sheet/coverage/policy、按quote_fx_ref解析已确认FX、当前完整Need后调用T1，不写锁定/operation。options若带quote_fx须逐字段等于该持久确认；同币ref必须None，异币缺ref拒绝，不能把FxRate.source自由文本当作fx_id。所得context_hash只用于乐观重验，不承诺以后仍有效。
+计算的coverage选择端口为CostCoverageRepository新增async `get_for_sheet_hash(tenant_id:TenantId,cost_sheet_id:CostSheetId,sheet_hash:str)->EvidenceRecord[CostCoverageView]|None`：精确tenant/sheet/hash过滤，再confirmed_at降序、coverage_id降序稳定选取；严格解码及列/payload一致性检查。无匹配不回退旧hash，实际清单进入计算hash；freeze/scope仍采用其显式coverage ID，不偷换latest。用窄查询/索引而非应用层全表扫描。
 freeze只允许manual、intent.unit_price等于options.unit_price、rounding/FX引用及所有重复字段一致；intent.prepared_by在新建时等于当前actor，options不接受HTTP未经解析的FX事实。
 顺序：当前actor/policy门→context lease（application）→creation key锁→查winner→sheet FOR UPDATE→查其他pending operation→当前coverage/scope/价格/policy/FX核验→T1计算→basis+operation+首次locked_at同事务→commit→释放lease。
 同key同完整intent且当前context/适用性仍有效时返回原basis，异terms/valid_until/replaces/version/scope/actor均冲突；相同key换sheet也冲突。旧basis与当前context失配可用get_creation查询恢复状态，但freeze不得把旧passed作为当前有效；返回context_changed/scope_stale。
@@ -334,6 +339,8 @@ fixture的quantity为显式整数，`update_owner_manager()->None`每次独立se
 - [ ] 定向GREEN后commit `feat: 保护报价准备的当前事实与用途权限`。
 
 ### Task B3：0043与人工scope确认
+
+提交边界补正：B3以人工scope确认/完整Need绑定/持久及迁移GREEN为界；下列调用freeze的material变化示例属于B4的真实RED→GREEN，保留全部最终验收，不用stub异常冒充业务拒绝。
 
 - [ ] RED先测material变而size_spec/sheet_hash不变仍拒旧scope；raw supplier specification与canonical JSON不同不自动拒绝/通过，必须有显式完整人工映射并仍过unit/destination/quantity硬检查。
 - [ ] 创建专用隔离DB fixture `freeze_case`：真实0041/0042/0043迁移、真实T2确认服务+成本仓储、真实demand更新、真实context provider和FreezeService；actor/source_access/issuer/completion是显式受控依赖，fixture不挂生产。
