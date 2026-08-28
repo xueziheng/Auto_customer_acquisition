@@ -21,7 +21,11 @@ from domains.costing.schemas import (
     FxRateView,
     QuoteReadiness,
 )
-from domains.costing.service import assess_quote_readiness, compute_unit_full_cost
+from domains.costing.service import (
+    assess_quote_readiness,
+    compute_unit_full_cost,
+    cost_sheet_content_hash,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     CostSheetId,
@@ -86,6 +90,7 @@ def _view(sheet: CostSheet) -> CostSheetView:
                 amount=item.amount,
                 price_basis=item.price_basis,
                 is_per_unit=item.is_per_unit,
+                item_sequence=item.item_sequence,
                 note=item.note,
                 source_ref=item.source_ref,
                 entered_by_id=(
@@ -98,6 +103,7 @@ def _view(sheet: CostSheet) -> CostSheetView:
         created_at=sheet.created_at,
         is_locked=sheet.locked_at is not None,
         has_indicative_items=sheet.has_indicative_items(),
+        content_hash=cost_sheet_content_hash(sheet),
         fx_snapshot_id=(
             str(sheet.fx_snapshot_id) if sheet.fx_snapshot_id is not None else None
         ),
@@ -221,6 +227,7 @@ class CostingServiceImpl:
                 note=command.note,
                 source_ref=command.source_ref,
                 entered_by=EmployeeId(actor.actor_id),
+                item_sequence=max((item.item_sequence or 0 for item in sheet.items), default=0) + 1,
             )
             sheet.items.append(item)
             await uow.sheets.update(sheet)

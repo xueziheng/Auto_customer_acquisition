@@ -17,6 +17,10 @@ class CostingAction(str, Enum):
     SHEET_CREATE = "cost_sheet:create"
     ITEM_ADD = "cost_item:add"
     QUOTE_READINESS_ASSESS = "quote_readiness:assess"
+    POLICY_CONFIRM = "pricing_policy:confirm"
+    EVIDENCE_CONFIRM = "pricing_evidence:confirm"
+    COVERAGE_CONFIRM = "cost_coverage:confirm"
+    QUOTE_FX_CONFIRM = "quote_fx:confirm"
 
 
 class CostingScope(str, Enum):
@@ -72,14 +76,24 @@ class Phase1CostingAuthorizer:
             or not isinstance(action, CostingAction)
             or actor.scope is not CostingScope.TENANT
             or actor.role not in self._ALLOWED_ROLES
+            or (action is CostingAction.POLICY_CONFIRM and actor.role != "boss")
         ):
             raise PermissionDenied("Phase 1 成本授权拒绝")
         return f"phase1:{actor.role}:{actor.scope.value}:{action.value}"
 
 
+class CostingActorReader(Protocol):
+    """由员工公共服务投影当前在职身份；不存在/离职返回 None。"""
+
+    async def read_current(self, tenant_id: TenantId, actor_id: str) -> CostingActor | None:
+        """按租户读取当前角色与范围，不接受请求体角色自证。"""
+        ...
+
+
 __all__ = (
     "CostingAction",
     "CostingActor",
+    "CostingActorReader",
     "CostingAuthorizer",
     "CostingScope",
     "Phase1CostingAuthorizer",

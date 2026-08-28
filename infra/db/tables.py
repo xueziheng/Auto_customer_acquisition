@@ -38,6 +38,93 @@ class Base(DeclarativeBase):
     """声明式基类（schema 归迁移管理）。"""
 
 
+class _CostingEvidenceColumns:
+    """四类只增确认共享的数据库列；不放业务规则。"""
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CostingPolicyRow(_CostingEvidenceColumns, Base):
+    """costing_policies 的租户隔离、只增确认行。"""
+
+    __tablename__ = "costing_policies"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "policy_id", name="pk_costing_policies"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_policies_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_policies_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_policies_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_policies_artifact", ondelete="RESTRICT"),
+        Index("ix_costing_policies_effective", "tenant_id", "category", "effective_from"),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    category: Mapped[str | None] = mapped_column(String(200))
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CostingPriceEvidenceRow(_CostingEvidenceColumns, Base):
+    """costing_price_evidence 的租户隔离、只增确认行。"""
+
+    __tablename__ = "costing_price_evidence"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "evidence_id", name="pk_costing_price_evidence"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_price_evidence_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_price_evidence_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_price_evidence_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_price_evidence_artifact", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "opportunity_id"], ["opportunities.tenant_id", "opportunities.opportunity_id"], name="fk_costing_price_evidence_opportunity", ondelete="RESTRICT"),
+    )
+
+    evidence_id: Mapped[str] = mapped_column(String(64))
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    opportunity_id: Mapped[str] = mapped_column(String(40))
+
+
+class CostingCoverageRow(_CostingEvidenceColumns, Base):
+    """costing_coverage 的租户隔离、只增确认行。"""
+
+    __tablename__ = "costing_coverage"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "coverage_id", name="pk_costing_coverage"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_coverage_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_coverage_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "cost_sheet_id"], ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"], name="fk_costing_coverage_sheet", ondelete="RESTRICT"),
+        CheckConstraint("sheet_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_sheet_hash"),
+    )
+
+    coverage_id: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    cost_sheet_id: Mapped[str] = mapped_column(String(40))
+    sheet_hash: Mapped[str] = mapped_column(String(64))
+
+
+class CostingQuoteFxRow(_CostingEvidenceColumns, Base):
+    """costing_quote_fx 的租户隔离、只增确认行。"""
+
+    __tablename__ = "costing_quote_fx"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "fx_id", name="pk_costing_quote_fx"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_costing_quote_fx_key"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$' AND content_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_quote_fx_hash"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_quote_fx_confirmation"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_costing_quote_fx_artifact", ondelete="RESTRICT"),
+    )
+
+    fx_id: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+
+
+
 class SearchQuotaAccountRow(Base):
     """数据库级 Tavily 单账户槽；全局唯一防止租户或 key 引用复制额度。"""
 

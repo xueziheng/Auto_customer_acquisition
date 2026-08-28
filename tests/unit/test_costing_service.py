@@ -86,6 +86,10 @@ class _Uow:
     def __init__(self, sheets: _Sheets) -> None:
         self.sheets = sheets
         self.margin_rules = _MarginRules()
+        self.policies = _UnusedQuoteRepository()
+        self.prices = _UnusedQuoteRepository()
+        self.coverage = _UnusedQuoteRepository()
+        self.quote_fx = _UnusedQuoteRepository()
 
     async def __aenter__(self) -> Self:
         return self
@@ -107,6 +111,13 @@ class _MarginRules:
     async def set_rule(self, rule: object) -> None:
         del rule
         raise AssertionError("本测试不写利润规则")
+
+
+class _UnusedQuoteRepository:
+    """旧只读路径不应调用新报价仓储，触碰即使测试失败。"""
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"旧成本路径不应读取新报价仓储：{name}")
 
 
 class _Factory:

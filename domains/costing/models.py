@@ -31,6 +31,14 @@ def _require_numeric_precision(
     """拒绝会被既有 Numeric 列静默舍入或溢出的原始业务输入。"""
     sign, digits, exponent = value.as_tuple()
     del sign
+    # 只移除表示层尾零，不调用受当前 Decimal context 影响的 normalize。
+    if not value.is_finite():
+        raise ValidationError(f"{field}必须为有限 Decimal")
+    if not value:
+        return
+    while digits and digits[-1] == 0:
+        digits = digits[:-1]
+        exponent += 1
     fractional_digits = max(-exponent, 0)
     integer_digits = max(len(digits) + exponent, 0)
     if fractional_digits > scale or integer_digits > precision - scale:
@@ -111,8 +119,13 @@ class CostItem:
     note: str | None = None
     source_ref: str | None = None
     entered_by: EmployeeId | None = None
+    item_sequence: int | None = None
 
     def __post_init__(self) -> None:
+        if self.item_sequence is not None and (
+            type(self.item_sequence) is not int or self.item_sequence <= 0
+        ):
+            raise ValidationError("成本明细序号必须为正整数")
         if not isinstance(self.item_type, CostItemType):
             raise ValidationError("成本项类型无效")
         if not isinstance(self.amount, Money) or self.amount.amount < 0:

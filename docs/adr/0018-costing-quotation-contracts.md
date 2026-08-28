@@ -42,3 +42,39 @@ Task 1 不以数学可折扣空间代替批准。
 Schema 和算法版本进入输入哈希。未来新增字段、算法或工作流解释时必须以新版本保持旧
 快照可读、可重现，不能覆写历史数字。政策、证据、冻结、例外审批和报价持久化由后续
 任务实现；本 ADR 不授予自动发送、自动承诺或自动批准权限。
+
+## Task 2：人工确认与持久化契约补充
+
+新增 `CostingQuoteService` 与四张只增表：政策、价格/费用依据、完整性清单、报价汇率。
+每类确认持久保存 tenant、幂等键、请求 hash、结构化业务 payload 与逐字段 Provenance；
+金额以十进制字符串存 JSON，原文 bytes 不进入这些表。复合外键关联同租户原始资料、机会和成本表；
+数据库 UPDATE/DELETE 触发器禁止改写确认历史。历史 `margin_rules` 不自动获得新路径确认资格。
+
+`CostingQuoteServiceImpl` 构造增加必填 `actor_reader: CostingActorReader`。其
+`read_current(tenant_id, actor_id)` 必须按当前在职员工事实返回角色/范围，缺失、离职或角色
+变化默认拒绝；每次操作先检查，原文读取完成后且写入前再次检查。政策确认仅 boss；其余
+成本角色不扩大到销售等角色。确认人不能由请求体提供，幂等请求 hash 绑定实际确认人。
+T8 须装配真实员工服务；本轮受控 reader 验证不能替代生产装配或事务级身份撤销保证。
+
+`PricingEvidenceReader.read_verified(tenant_id, source_ref, locator, *, actor_id: EmployeeId)`
+增加必填 actor_id，以便原件 ACL 按当前员工校验；成本角色和持有 source_ref 不代表原件读取权限。
+可信 reader 须核验原件租户、内容 hash、定位与授权，再返回 `SourceEvidence` 安全投影。
+`SourceEvidence.source_url` 对 WEB_PAGE 必填，网页不能伪装上传来源；来源类型采用明确 allowlist。
+政策和汇率使用根定位 `$`，表示整份授权原件，并非逐字段机器语义证明；采购/费用使用可复核片段定位。
+原文和真正外部 IO 留给 T8 的 Gateway 装配，本轮不实现解析器、不访问真实原文、不确认供应商价款真实性。
+
+费用依据增加必填 `is_per_unit: bool` 与 `quantity: int`（本次人工确认适用的订单数量），
+防止从自由文本 allocation_scope 猜量纲；无产品 MOQ。采购依据记录供应商单价及 MOQ/数量范围，
+可绑定单件项或整单项：前者金额须等于单价，后者须等于单价×成本表数量，以固定50位 Decimal
+上下文核对且不改写金额。新报价采购只接受 quoted，费用允许 quoted/actual，不开放 indicative 费用例外。
+
+完整性清单逐项覆盖22类，绑定持久 `item_sequence`、已确认价格依据、原文费用行及分摊范围。
+以可信 artifact 身份归一 source_ref 别名后去重；同原件不同行允许，同明细同分摊范围不得重复；
+获客汇总与数据/广告/API明细互斥。不适用但已有确认成本、金额/币种/计价口径/适用数量错配均拒绝。
+费用范围确认不代替 T3 对当前 Need 规格、单位、目的地和机会归属的核验。
+
+`CostItemView.item_sequence` 从真实持久序号恢复；新增项在现有最大序号后分配，不按数组位置重排。
+`CostSheetView.content_hash` 包含数量、币种、成本项/确认来源和汇率，排除创建时间与 locked_at，
+所以追加成本令旧清单失效，而单纯锁定不改变原内容身份。旧 API 与 readiness 仍保留原含义。
+PricingPolicyView 可兼容纯计算 fixture 的缺来源形状，但正式仓储读写均验证来源、所有叶字段
+Provenance、确认人/时间与内容 hash 一致；缺确认事实不能作为当前有效政策。

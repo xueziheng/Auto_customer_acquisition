@@ -2,37 +2,59 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
-from domains.costing.calculation import compute_breakdown
+from domains.costing.calculation import canonical_pricing_hash, compute_breakdown
 from domains.costing.errors import EmptyCostSheetError, MissingFxSnapshotError
 from domains.costing.models import (
     CostItemType,
     CostSheet,
     CostSheetVersion,
 )
-from domains.costing.permissions import CostingActor
+from domains.costing.permissions import CostingActor, CostingActorReader
 from domains.costing.schemas import (
+    CostCoverageCreate,
     CostItemCreate,
     CostSheetCreate,
     CostSheetView,
+    PriceEvidenceCreate,
+    PriceEvidenceView,
+    PricingPolicyCreate,
+    PricingPolicyView,
+    QuoteFxCreate,
+    QuoteFxView,
     QuoteReadiness,
+    SourceEvidence,
 )
 from shared.schemas.identifiers import (
     CostSheetId,
+    EmployeeId,
     OpportunityId,
     TenantId,
 )
 from shared.schemas.money import CurrencyCode, Money, PriceBasis, convert
 
 __all__ = (
+    "CostingActorReader",
+    "CostingQuoteService",
     "CostingService",
+    "PricingEvidenceReader",
     "assess_quote_readiness",
     "compute_breakdown",
     "compute_unit_full_cost",
     "cost_item_type_values",
+    "cost_sheet_content_hash",
 )
+
+
+def cost_sheet_content_hash(sheet: CostSheet) -> str:
+    """以真实成本/来源/汇率生成身份；锁定状态和读取时间不改变内容。"""
+    payload = asdict(sheet)
+    payload.pop("locked_at")
+    payload.pop("created_at")
+    return canonical_pricing_hash(payload)
 
 
 def cost_item_type_values() -> tuple[str, ...]:
@@ -155,6 +177,7 @@ class CostingService(Protocol):
         """
         ...
 
+
     async def add_item(
         self,
         tenant_id: TenantId,
@@ -203,4 +226,43 @@ class CostingService(Protocol):
         actor: CostingActor,
     ) -> list[CostSheetView]:
         """一个机会的全部成本表版本，按类型和版本号排序。"""
+        ...
+
+class PricingEvidenceReader(Protocol):
+    """可信 reader 必须核验租户、不可变内容 hash 和原文定位；不能仅返回 URL。
+
+    生产装配的原文 IO 必须经过 Tool Gateway。本域不打开文件或访问网络。
+    政策/汇率使用固定根定位 `$`；人工逐字段确认不代表模型验证价款真实性。
+    """
+
+    async def read_verified(self, tenant_id: TenantId, source_ref: str, locator: str, *, actor_id: EmployeeId) -> SourceEvidence:
+        """返回经核验的安全来源投影，未知来源或不可读取时拒绝。"""
+        ...
+
+
+class CostingQuoteService(Protocol):
+    """新报价路径的人工确认契约；不执行报价、冻结或客户发送。"""
+
+    async def confirm_policy(self, tenant_id: TenantId, command: PricingPolicyCreate, *, actor: CostingActor, idempotency_key: str) -> PricingPolicyView:
+        """只允许当前在职老板追加已确认政策。"""
+        ...
+
+    async def get_policy(self, tenant_id: TenantId, category: str | None, *, actor: CostingActor) -> PricingPolicyView:
+        """读取当前已确认政策，绝不把旧 margin_rules 当作确认事实。"""
+        ...
+
+    async def confirm_price(self, tenant_id: TenantId, command: PriceEvidenceCreate, *, actor: CostingActor, idempotency_key: str) -> PriceEvidenceView:
+        """区分供应商价格和实际费用，逐字段保存来源。"""
+        ...
+
+    async def confirm_coverage(self, tenant_id: TenantId, cost_sheet_id: CostSheetId, command: CostCoverageCreate, *, actor: CostingActor, idempotency_key: str) -> str:
+        """确认全部费用类型与真实明细绑定，返回不可变清单内容 hash。"""
+        ...
+
+    async def confirm_quote_fx(self, tenant_id: TenantId, command: QuoteFxCreate, *, actor: CostingActor, idempotency_key: str) -> QuoteFxView:
+        """确认独立报价换算方向，不更改已有成本汇率。"""
+        ...
+
+    async def get_quote_fx(self, tenant_id: TenantId, fx_id: str, *, actor: CostingActor) -> QuoteFxView:
+        """按当前身份和租户读取已确认报价汇率。"""
         ...

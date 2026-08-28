@@ -917,6 +917,22 @@ def test_orm_metadata_parity_with_head() -> None:
                 "tenant_id", "margin_rule_id", "category", "minimum_margin_rate",
                 "target_margin_rate", "effective_from",
             },
+            "costing_policies": {
+                "tenant_id", "policy_id", "category", "effective_from", "content_hash",
+                "payload", "confirmed_by", "confirmed_at", "idempotency_key", "request_hash", "artifact_id",
+            },
+            "costing_price_evidence": {
+                "tenant_id", "evidence_id", "opportunity_id", "artifact_id", "evidence_hash",
+                "payload", "confirmed_by", "confirmed_at", "idempotency_key", "request_hash",
+            },
+            "costing_coverage": {
+                "tenant_id", "coverage_id", "cost_sheet_id", "sheet_hash", "content_hash",
+                "payload", "confirmed_by", "confirmed_at", "idempotency_key", "request_hash",
+            },
+            "costing_quote_fx": {
+                "tenant_id", "fx_id", "artifact_id", "content_hash", "payload", "confirmed_by", "confirmed_at",
+                "idempotency_key", "request_hash",
+            },
             "company_playbook_versions": {
                 "tenant_id", "playbook_version_id", "version_number",
                 "content_hash", "base_version_id", "base_content_hash",
@@ -939,6 +955,7 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        "ix_costing_policies_effective": ("tenant_id", "category", "effective_from"),
         "ix_approval_packages_tenant_state_expiry": (
             "tenant_id", "state", "expires_at", "approval_id",
         ),

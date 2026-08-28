@@ -12,6 +12,12 @@ from infra.db.repositories.costing import (
     CostSheetRepositoryImpl,
     MarginRuleRepositoryImpl,
 )
+from infra.db.repositories.costing_quote import (
+    CostCoverageRepositoryImpl,
+    PriceEvidenceRepositoryImpl,
+    PricingPolicyRepositoryImpl,
+    QuoteFxRepositoryImpl,
+)
 from shared.schemas.identifiers import TenantId
 
 
@@ -33,6 +39,10 @@ class SqlAlchemyCostingUnitOfWork:
         self.margin_rules = MarginRuleRepositoryImpl(
             self._session, self._tenant_id, now=self._now
         )
+        self.policies = PricingPolicyRepositoryImpl(self._session, self._tenant_id)
+        self.prices = PriceEvidenceRepositoryImpl(self._session, self._tenant_id)
+        self.coverage = CostCoverageRepositoryImpl(self._session, self._tenant_id)
+        self.quote_fx = QuoteFxRepositoryImpl(self._session, self._tenant_id)
         return self
 
     async def __aexit__(

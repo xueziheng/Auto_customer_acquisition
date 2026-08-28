@@ -8,6 +8,12 @@ from __future__ import annotations
 from typing import Protocol, Self, runtime_checkable
 
 from domains.costing.models import CostSheet, MarginRule
+from domains.costing.quote_repository import (
+    CostCoverageRepository,
+    PriceEvidenceRepository,
+    PricingPolicyRepository,
+    QuoteFxRepository,
+)
 from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId
 
 
@@ -62,6 +68,10 @@ class MarginRuleRepository(Protocol):
 class CostingUnitOfWork(Protocol):
     sheets: CostSheetRepository
     margin_rules: MarginRuleRepository
+    policies: PricingPolicyRepository
+    prices: PriceEvidenceRepository
+    coverage: CostCoverageRepository
+    quote_fx: QuoteFxRepository
 
     async def __aenter__(self) -> Self: ...
 

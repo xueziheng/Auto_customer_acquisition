@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0040"
+_ALEMBIC_HEAD = "0041"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -61,6 +61,10 @@ def _type_key(value: str) -> str:
 
 
 EXPECTED_TABLES: tuple[str, ...] = (
+    "costing_policies",
+    "costing_price_evidence",
+    "costing_coverage",
+    "costing_quote_fx",
     "country_policy_versions",
     "country_policy_field_provenance",
     "country_policy_activations",
@@ -149,6 +153,33 @@ def _run_alembic(db_url: str, *command: str) -> None:
 def _sync_table_names(conn: Connection) -> list[str]:
     """同步 inspect：当前 schema 的表名列表。"""
     return inspect(conn).get_table_names()
+
+
+async def test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables(db_url: str) -> None:
+    """0041 只管理四表，降级不改变已有成本与利润规则。"""
+    from infra.db.session import create_engine_from
+
+    expected = {"costing_policies", "costing_price_evidence", "costing_coverage", "costing_quote_fx"}
+    try:
+        _run_alembic(db_url, "downgrade", "0040")
+        engine = create_engine_from(db_url)
+        try:
+            before = await _table_names(engine)
+        finally:
+            await engine.dispose()
+        assert not before & expected
+        assert {"cost_items", "cost_sheets", "margin_rules"} <= before
+        _run_alembic(db_url, "upgrade", "0041")
+        engine = create_engine_from(db_url)
+        try:
+            after = await _table_names(engine)
+        finally:
+            await engine.dispose()
+        assert after - before == expected
+        _run_alembic(db_url, "downgrade", "0040")
+        _run_alembic(db_url, "upgrade", "0041")
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
 
 
 def _sync_columns(conn: Connection, table: str) -> set[str]:

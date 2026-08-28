@@ -45,3 +45,11 @@ class UnconfirmedModelValueError(PolicyViolation):
     模型可以提建议（「你可能漏了报关费」），但进入计算的每个数字
     都要有人确认过（硬边界 2 的延伸）。
     """
+
+
+class InvalidPricingEvidenceError(ValidationError):
+    """可信来源、逐字段确认或适用范围不完整，必须人工补证。"""
+
+
+class CostCoverageConflict(ValidationError):
+    """确认清单对应的成本内容已改变，不允许把旧结论贴到新成本上。"""

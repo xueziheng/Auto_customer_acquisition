@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -140,6 +141,7 @@ def _to_sheet(
                 ),
                 price_basis=item.price_basis,
                 is_per_unit=item.is_per_unit,
+                item_sequence=item.item_sequence,
                 note=item.note,
                 source_ref=item.source_ref,
                 entered_by=(
@@ -314,10 +316,20 @@ class CostSheetRepositoryImpl(_TenantBoundRepository, CostSheetRepository):
         return [await self._hydrate(row) for row in rows]
 
     def _add_children(self, sheet: CostSheet) -> None:
+        next_sequence = max((item.item_sequence or 0 for item in sheet.items), default=0)
+        items: list[CostItem] = []
+        for item in sheet.items:
+            if item.item_sequence is None:
+                next_sequence += 1
+                item = replace(item, item_sequence=next_sequence)
+            items.append(item)
+        if len({item.item_sequence for item in items}) != len(items):
+            raise ValidationError("成本明细序号重复")
+        sheet.items = items
         self._session.add_all(
             [
-                _item_row(sheet, item, sequence)
-                for sequence, item in enumerate(sheet.items, start=1)
+                _item_row(sheet, item, item.item_sequence)
+                for item in sheet.items
             ]
         )
         self._session.add_all([_rate_row(sheet, rate) for rate in sheet.fx_rates])
