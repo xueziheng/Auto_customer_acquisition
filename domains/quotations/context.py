@@ -11,6 +11,10 @@ if TYPE_CHECKING:
         QuoteApprovalAccessContext,
         QuoteApprovalContext,
     )
+    from domains.quotations.file_access_schemas import (
+        QuoteFileCurrentFacts,
+        QuoteFileScopeFacts,
+    )
 
 from pydantic import AfterValidator, Field, computed_field, model_validator
 
@@ -165,6 +169,17 @@ def quote_context_hash(context: QuoteBusinessContext) -> str:
 
 class QuoteContextProvider(Protocol):
     """保持当前员工/机会/Need事实直到调用者事务完成。"""
+
+    def open_file_scope(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId) -> AbstractAsyncContextManager[QuoteFileScopeFacts]:
+        """仅排序锁actor/owner再锁机会；不读Need/抬头/政策。"""
+        ...
+
+    def open_for_file(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        actor_id: EmployeeId, *, prepared_by: EmployeeId, decider_ids: tuple[EmployeeId, ...]
+    ) -> AbstractAsyncContextManager[QuoteFileCurrentFacts]:
+        """一次锁齐actor/owner/存在的preparer/全部deciders，再机会与Need。"""
+        ...
 
     def open_approval_access(self, tenant_id: TenantId, opportunity_id: OpportunityId,
         actor_id: EmployeeId, *, prepared_by: EmployeeId, submitted_owner_id: EmployeeId

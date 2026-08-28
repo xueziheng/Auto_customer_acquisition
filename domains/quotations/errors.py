@@ -15,6 +15,52 @@ from shared.errors import (
     ValidationError,
 )
 
+QUOTE_FILE_ACCESS_MESSAGES = {
+    "quote_inactive": "报价当前状态不允许正式文件用途",
+    "quote_expired": "报价有效期已到",
+    "approval_missing": "缺少真实报价批准记录",
+    "approval_invalid": "当前报价批准无效",
+    "approval_expired": "报价批准已过期",
+    "decider_invalid": "报价决定人当前权限已失效",
+    "context_changed": "报价业务上下文已变化",
+    "policy_stale": "当前报价政策已变化",
+    "basis_invalid": "报价当前依据不适用",
+}
+
+
+class QuoteFileAccessError(ValidationError):
+    """只有确定性当前商业失效可作为客户动作blocker。"""
+
+    def __init__(self, code: Literal["quote_inactive", "quote_expired", "approval_missing",
+        "approval_invalid", "approval_expired", "decider_invalid", "context_changed",
+        "policy_stale", "basis_invalid"]) -> None:
+        if code not in QUOTE_FILE_ACCESS_MESSAGES:
+            raise ValueError("无效文件用途错误码")
+        self.code = code
+        super().__init__(QUOTE_FILE_ACCESS_MESSAGES[code])
+
+
+class QuoteFileAccessPermissionError(PermissionDenied):
+    """文件scope与内部成本角色分离。"""
+
+    def __init__(self, code: Literal["permission_denied"]) -> None:
+        if code != "permission_denied":
+            raise ValueError("无效文件用途错误码")
+        self.code = code
+        super().__init__("当前员工无报价文件用途权限")
+
+
+class QuoteFileAccessUnavailableError(TradeOSError):
+    """故障与持久绑定损坏不能伪装成待审批或空列表。"""
+
+    def __init__(self, code: Literal["dependency_unavailable", "lock_timeout", "storage_inconsistent"]) -> None:
+        messages = {"dependency_unavailable": "报价文件依赖不可用", "lock_timeout": "报价文件锁等待超时",
+            "storage_inconsistent": "报价文件持久绑定不一致"}
+        if code not in messages:
+            raise ValueError("无效文件用途错误码")
+        self.code = code
+        super().__init__(messages[code])
+
 QuoteFileErrorCode = Literal[
     "invalid_input", "not_found", "approval_missing", "file_conflict",
     "metadata_mismatch", "workflow_binding_invalid", "template_unsupported",

@@ -19,6 +19,7 @@ from domains.quotations.errors import (
     QuotationUnavailableError,
     QuoteApprovalError,
     QuoteApprovalUnavailableError,
+    QuoteFileAccessUnavailableError,
     QuoteFileError,
     QuoteFilePermissionError,
     QuoteFileUnavailableError,
@@ -198,7 +199,7 @@ class QuoteFileServiceImpl:
             raise
         except PermissionDenied:
             raise QuoteFilePermissionError("permission_denied") from None
-        except (QuotationUnavailableError, QuoteApprovalUnavailableError) as error:
+        except (QuotationUnavailableError, QuoteApprovalUnavailableError, QuoteFileAccessUnavailableError) as error:
             raise QuoteFileUnavailableError(error.code) from None
         except QuoteApprovalError as error:
             if error.code == "workflow_binding_invalid":

@@ -2,7 +2,8 @@
 
 import json
 import re
-from typing import Literal
+from datetime import datetime
+from typing import Literal, cast
 
 from pydantic import JsonValue
 
@@ -23,15 +24,76 @@ from domains.quotations.approval_schemas import (
     QuoteApprovalType,
     QuoteWorkflowRunFact,
 )
-from domains.quotations.basis_schemas import Hash
+from domains.quotations.basis_schemas import Hash, QuotePolicySnapshot
+from domains.quotations.content import validate_quote_basis
+from domains.quotations.context import QuoteBusinessContext
 from domains.quotations.errors import (
+    QuotationError,
     QuoteApprovalError,
     QuoteApprovalPermissionError,
     QuoteApprovalUnavailableError,
 )
 from domains.quotations.version_schemas import QuoteDetailView
+from shared.errors import PermissionDenied
 from shared.schemas.identifiers import QuoteId, RunId, TenantId
 from shared.schemas.quote_creation import canonical_creation_hash
+from shared.schemas.quote_facts import QuoteEmployeeFact
+
+
+def require_quote_current_basis(quote: QuoteDetailView, context: QuoteBusinessContext,
+    policy: QuotePolicySnapshot, *, now: datetime) -> None:
+    """T5与正式文件共用当前政策/完整context/第二道依据门，不重价。"""
+    c = quote.content
+    if (policy.policy_id, policy.content_hash) != (c.basis.policy_id, c.basis.policy.content_hash):
+        raise QuoteApprovalError("policy_stale")
+    if context.context_hash != c.basis.context_hash or context.opportunity_state in {"won", "lost", "disqualified"}:
+        raise QuoteApprovalError("context_changed")
+    if c.valid_until <= now:
+        raise QuoteApprovalError("approval_expired")
+    try:
+        validate_quote_basis(c.intent, c.basis, context, now=now)
+    except QuotationError as error:
+        code = error.code if error.code in {"context_changed", "evidence_invalid", "evidence_expired"} else "evidence_invalid"
+        raise QuoteApprovalError(code) from None
+
+
+def require_quote_decision_states(facts: tuple[QuoteApprovalFact, ...], *, allow_applied: bool) -> None:
+    """当前决定形状门；原apply在fresh前保持原错误顺序。"""
+    if not allow_applied and any(f.state == "applied" for f in facts):
+        raise QuoteApprovalUnavailableError("storage_inconsistent")
+    states = {"approved", "applied"} if allow_applied else {"approved"}
+    if any(f.state not in states or f.decision != "approve" or f.decided_by is None or f.decided_at is None for f in facts):
+        raise QuoteApprovalError("approval_fact_invalid")
+
+
+def require_quote_approved_decisions(facts: tuple[QuoteApprovalFact, ...], *, now: datetime, allow_applied: bool) -> None:
+    """只有真实批准且期限内的决定可用；allow_applied由可信用途固定。"""
+    require_quote_decision_states(facts, allow_applied=allow_applied)
+    if any(now >= f.expires_at or f.decided_at is None or not f.created_at <= f.decided_at < f.expires_at for f in facts):
+        raise QuoteApprovalError("approval_expired")
+
+
+def require_quote_current_deciders(quote: QuoteDetailView, facts: tuple[QuoteApprovalFact, ...],
+    business: QuoteBusinessContext, deciders: tuple[QuoteEmployeeFact, ...]) -> None:
+    """全部决定人逐一核当前独立审批权；文件actor无需是其中之一。"""
+    current = {e.employee_id: e for e in deciders}
+    if len(current) != len(deciders) or set(current) != {f.decided_by for f in facts}:
+        raise QuoteApprovalError("context_changed")
+    c = quote.content
+    for f in facts:
+        if f.decided_by is None:
+            raise QuoteApprovalError("context_changed")
+        subject = QuoteApprovalSubject(tenant_id=c.tenant_id, approval_id=f.approval_id,
+            quote_id=c.quote_id, quote_version=c.version, content_hash=c.content_hash,
+            opportunity_id=c.opportunity_id, prepared_by=c.prepared_by,
+            submitted_owner_id=c.owner_id, approval_type=f.approval_type)
+        access = QuoteApprovalAccessContext(tenant_id=c.tenant_id, opportunity_id=c.opportunity_id,
+            actor=current[f.decided_by], owner=business.runtime.owner,
+            prepared_by=c.prepared_by, submitted_owner_id=c.owner_id)
+        try:
+            require_quote_approval_access(subject, access, action="apply")
+        except PermissionDenied:
+            raise QuoteApprovalError("decider_invalid") from None
 
 APPROVAL_TYPES: tuple[QuoteApprovalType, ...] = (
     "quote_send",
@@ -245,7 +307,7 @@ def quote_approval_payloads(
             evidence_id=e.evidence_id,
             evidence_hash=e.evidence_hash,
             kind=e.kind,
-            basis=e.basis,
+            basis=cast(Literal["quoted", "actual"], e.basis),
             amount=e.amount,
             valid_until=e.valid_until,
             confirmed_by=e.confirmed_by,

@@ -31,6 +31,11 @@ from shared.schemas.identifiers import (
 class QuotationVersionRepository(Protocol):
     """仅报价本域持久操作，不暴露SQL session。"""
 
+    async def customer_version_page(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        *, before_version: int | None, limit: int) -> tuple[QuoteDetailView, ...]:
+        """同tenant/机会的窄降序分页；调用方以limit+1检测后页。"""
+        ...
+
     async def file_by_id(self, tenant_id: TenantId, quote_id: QuoteId, file_id: QuoteFileId) -> QuoteFileRecord | None:
         """精确tenant/quote/file读取原关联，不跨报价枚举。"""
         ...

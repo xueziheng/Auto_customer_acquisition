@@ -238,6 +238,16 @@ class QuotationVersionRepositoryImpl(TenantScopedRepository):
         )
         return tuple(self._detail(row) for row in rows)
 
+    async def customer_version_page(self, tenant_id: TenantId, opportunity_id: OpportunityId,
+        *, before_version: int | None, limit: int) -> tuple[QuoteDetailView, ...]:
+        """仅同租户机会范围，LIMIT由域严格校验后显式传入。"""
+        self._tenant(tenant_id)
+        query = self.scoped_query(QuotationRow).where(QuotationRow.opportunity_id == opportunity_id)
+        if before_version is not None:
+            query = query.where(QuotationRow.version < before_version)
+        rows = await self._session.scalars(query.order_by(QuotationRow.version.desc()).limit(limit))
+        return tuple(self._detail(row) for row in rows)
+
     async def add(self, tenant_id: TenantId, quote: QuoteDetailView) -> None:
         """一次插入draft内容/行/全部依据/created审计；不提供update内容入口。"""
         self._tenant(tenant_id)

@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from domains.quotations.approval_rules import (
     APPROVAL_TYPES,
@@ -13,17 +13,21 @@ from domains.quotations.approval_rules import (
     require_quote_approval_bindings,
     require_quote_approval_facts,
     require_quote_approval_receipt,
+    require_quote_approved_decisions,
+    require_quote_current_basis,
+    require_quote_current_deciders,
+    require_quote_decision_states,
     require_quote_run_binding,
     required_quote_approvals,
 )
 from domains.quotations.approval_schemas import (
-    QuoteApprovalAccessContext,
     QuoteApprovalAccessResult,
     QuoteApprovalApplicationReceipt,
     QuoteApprovalApplyResult,
     QuoteApprovalContext,
     QuoteApprovalDecisionSnapshot,
     QuoteApprovalFact,
+    QuoteApprovalOutcome,
     QuoteApprovalSnapshot,
     QuoteApprovalSubject,
     QuoteApprovalSubmission,
@@ -31,10 +35,8 @@ from domains.quotations.approval_schemas import (
     QuoteWorkflowRunFact,
 )
 from domains.quotations.basis_schemas import QuotePolicySnapshot
-from domains.quotations.content import validate_quote_basis
 from domains.quotations.context import QuoteBusinessContext, QuoteContextProvider
 from domains.quotations.errors import (
-    QuotationError,
     QuotationUnavailableError,
     QuoteApprovalError,
     QuoteApprovalPermissionError,
@@ -50,7 +52,6 @@ from domains.quotations.version_schemas import (
     QuoteDetailView,
     QuoteStateEvent,
 )
-from shared.errors import PermissionDenied
 from shared.events.catalog import QuoteApproved
 from shared.schemas.identifiers import EmployeeId, QuoteId, RunId, TenantId, new_id
 from shared.schemas.quote_facts import QuoteEmployeeFact, fact_utc
@@ -148,22 +149,6 @@ class QuoteApprovalSession(Protocol):
         ...
 
 
-def _subject(quote: QuoteDetailView, fact: QuoteApprovalFact) -> QuoteApprovalSubject:
-    """安全最小归属来自真实报价与已核验审批身份。"""
-    c = quote.content
-    return QuoteApprovalSubject(
-        tenant_id=c.tenant_id,
-        approval_id=fact.approval_id,
-        quote_id=c.quote_id,
-        quote_version=c.version,
-        content_hash=c.content_hash,
-        opportunity_id=c.opportunity_id,
-        prepared_by=c.prepared_by,
-        submitted_owner_id=c.owner_id,
-        approval_type=fact.approval_type,
-    )
-
-
 def _decisions(
     facts: tuple[QuoteApprovalFact, ...],
 ) -> tuple[QuoteApprovalDecisionSnapshot, ...]:
@@ -230,7 +215,7 @@ class QuoteApprovalServiceImpl:
         c = quote.content
         require_quote_run_binding(tenant_id, c.quote_id, c.version, c.content_hash, run)
         if (executor.quote_id != c.quote_id or executor.workflow_type != "quote_approval"
-            or run.run_id != executor.run_id):
+            or run is None or run.run_id != executor.run_id):
             raise QuoteApprovalError("workflow_binding_invalid")
 
     async def _snapshot(
@@ -453,28 +438,7 @@ class QuoteApprovalSessionImpl:
             self._selection = await self._policy_cm.__aenter__()
         policy = await self._selection.current()
         now = fact_utc(self._service._now())
-        if (policy.policy_id, policy.content_hash) != (
-            c.basis.policy_id,
-            c.basis.policy.content_hash,
-        ):
-            raise QuoteApprovalError("policy_stale")
-        if (
-            context.context_hash != c.basis.context_hash
-            or context.opportunity_state in {"won", "lost", "disqualified"}
-        ):
-            raise QuoteApprovalError("context_changed")
-        if c.valid_until <= now:
-            raise QuoteApprovalError("approval_expired")
-        try:
-            validate_quote_basis(c.intent, c.basis, context, now=now)
-        except QuotationError as error:
-            code = (
-                error.code
-                if error.code
-                in {"context_changed", "evidence_invalid", "evidence_expired"}
-                else "evidence_invalid"
-            )
-            raise QuoteApprovalError(code) from None
+        require_quote_current_basis(self._quote, context, policy, now=now)
         return now
 
     async def prepare_submission(
@@ -555,7 +519,9 @@ class QuoteApprovalSessionImpl:
         return self._quote
 
     async def _transition(
-        self, target: QuoteState, reason: str, now: datetime, actor: EmployeeId | None
+        self, target: QuoteState,
+        reason: Literal["created", "revision", "expiry", "verified_send", "approval_submitted", "approval_approved", "approval_rejected"],
+        now: datetime, actor: EmployeeId | None
     ) -> None:
         """CAS与状态事件同UoW，不改不可变内容。"""
         c = self._quote.content
@@ -576,7 +542,7 @@ class QuoteApprovalSessionImpl:
         self._quote = self._quote.model_copy(update={"state": target})
 
     def _result(
-        self, outcome: str, receipt: QuoteApprovalApplicationReceipt | None = None
+        self, outcome: QuoteApprovalOutcome, receipt: QuoteApprovalApplicationReceipt | None = None
     ) -> QuoteApprovalApplyResult:
         """统一返回当前真实报价和可选成功事实。"""
         return QuoteApprovalApplyResult(
@@ -597,14 +563,7 @@ class QuoteApprovalSessionImpl:
             raise QuoteApprovalUnavailableError("storage_inconsistent")
         if self._quote.state is not QuoteState.PENDING_APPROVAL:
             raise QuoteApprovalError("quote_inactive")
-        if any(
-            f.state != "approved"
-            or f.decision != "approve"
-            or f.decided_by is None
-            or f.decided_at is None
-            for f in facts
-        ):
-            raise QuoteApprovalError("approval_fact_invalid")
+        require_quote_decision_states(facts, allow_applied=False)
         deciders = {e.employee_id: e for e in context.deciders}
         send = next(f for f in facts if f.approval_type == "quote_send")
         if (
@@ -613,27 +572,9 @@ class QuoteApprovalSessionImpl:
         ):
             raise QuoteApprovalError("context_changed")
         c = self._quote.content
-        for f in facts:
-            access = QuoteApprovalAccessContext(
-                tenant_id=c.tenant_id,
-                opportunity_id=c.opportunity_id,
-                actor=deciders[f.decided_by],
-                owner=context.business.runtime.owner,
-                prepared_by=c.prepared_by,
-                submitted_owner_id=c.owner_id,
-            )
-            try:
-                require_quote_approval_access(
-                    _subject(self._quote, f), access, action="apply"
-                )
-            except PermissionDenied:
-                raise QuoteApprovalError("decider_invalid") from None
+        require_quote_current_deciders(self._quote, facts, context.business, context.deciders)
         now = await self._fresh(context.business)
-        if any(
-            now >= f.expires_at or not f.created_at <= f.decided_at < f.expires_at
-            for f in facts
-        ):
-            raise QuoteApprovalError("approval_expired")
+        require_quote_approved_decisions(facts, now=now, allow_applied=False)
         receipt = QuoteApprovalApplicationReceipt(
             tenant_id=c.tenant_id,
             quote_id=c.quote_id,
@@ -669,7 +610,7 @@ class QuoteApprovalSessionImpl:
         await self._bound(facts)
         state = self._quote.state
         if state in {QuoteState.REJECTED, QuoteState.EXPIRED}:
-            return self._result(state.value)
+            return self._result(cast(QuoteApprovalOutcome, state.value))
         if state not in {QuoteState.DRAFT, QuoteState.PENDING_APPROVAL}:
             return self._result("obsolete")
         now = fact_utc(self._service._now())
