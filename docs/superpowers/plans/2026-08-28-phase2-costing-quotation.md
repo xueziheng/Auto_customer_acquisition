@@ -6,7 +6,7 @@
 
 **Architecture:** 复用 costing、approvals、Postgres workflow 和 Artifact Store。业务规则留在 costing/quotations，跨域只由 workflow/application 调公开契约；API/worker 装配真实适配器。新增报价文件工具通过插件挂载，Gateway 核心不变。
 
-**Tech Stack:** Python 3.12+、Pydantic v2、SQLAlchemy 2.x、Postgres、FastAPI；Vue 3 + TypeScript + Vite + Ant Design Vue；ReportLab 本地 PDF、pypdf 测试。
+**Tech Stack:** Python 3.12+、Pydantic v2、SQLAlchemy 2.x、Postgres、FastAPI；Vue 3 + TypeScript + Vite + Ant Design Vue；ReportLab 本地 PDF、pypdf 原件文本定位与测试。
 
 **Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`（2026-08-28 用户已确认）。
 
@@ -27,9 +27,9 @@
 
 ## 0. 执行环境和状态记录
 
-基线：`378db84`，主工作区 `/Volumes/T7/Company/Auto_customer_acquisition`。当前没有本批实现分支。
-开始实现时使用 using-git-worktrees 创建 `codex/phase2-costing-quotation`，优先目录
-`.worktrees/phase2-costing-quotation`；若已存在，先核实其归属，不覆盖。不在 main 实现功能。
+执行基线：`809d7b6`，主工作区 `/Volumes/T7/Company/Auto_customer_acquisition`。
+已使用 using-git-worktrees 创建 `codex/phase2-costing-quotation`，工作树为
+`.worktrees/phase2-costing-quotation`；恢复时核对本计划进度账本和提交，不重新创建或覆盖。不在 main 实现功能。
 所有命令在该工作树根运行；环境安装不能修改生产部署。
 
 ```bash
@@ -39,7 +39,7 @@ env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_costing_calculation.p
 python3 scripts/check_boundaries.py
 ```
 
-先确认环境与导入路径指向当前工作树。每任务按 RED → 最小实现 → GREEN → 回归 → 审查 → commit；
+先确认环境与导入路径指向当前工作树。每任务按 RED → 最小实现 → GREEN → 回归 → 自审与commit → 独立审查；
 若任务较大，每个明确行为重复此循环，不先写整域再补测试。测试缺 Docker 的 skip 不计为数据库验收通过。
 迁移只在隔离容器跑，使用 `scripts/run_alembic.py`，不直接执行 alembic 扫入 AppleDouble 文件。
 
@@ -83,7 +83,7 @@ ADR 拟使用 `0018-costing-quotation-contracts.md`、`0019-quote-pdf-artifacts.
 | `RoundingPolicy` / costing | `unit_places: int, total_places: int, strategy: str`；两精度 0..12，策略为 Money 已允许集合，无默认 |
 | `PricingOptions` / costing | `mode: Literal['target','manual'], unit_price: Money\|None, rounding: RoundingPolicy, quote_fx: FxRate\|None, algorithm_version: Literal['costing-v1']`；manual 必须有单价，target 不接收伪实际售价 |
 | `CalculationSnapshot` / costing | `cost_sheet_id, policy_id, inputs_hash, context_hash: str, version_number: int, computed_at: datetime, base_currency, quote_currency: str, metrics: ProfitMetrics, effective_unit_revenue: Money, displayed_unit_price, displayed_total: Money` |
-| `SourceEvidence` / costing | `tenant_id, source_ref, artifact_id, content_hash, locator: str, observed_at: datetime, source_type: str`；仅可信 reader 产生，非 HTTP |
+| `SourceEvidence` / costing | `tenant_id, source_ref, artifact_id, content_hash, locator: str, observed_at: datetime, source_type: str, source_url: str\|None`；WEB_PAGE须有source_url，仅可信 reader 产生，非 HTTP |
 | `PriceEvidenceCreate` / costing | 按 `kind` 判别的 `SupplierPriceEvidenceCreate \| ExpenseEvidenceCreate`，具体字段见T2；不能要求每一笔管理分摊费用都有供应商MOQ |
 | `PriceEvidenceView` / costing | 创建字段 + `evidence_id, evidence_hash: str, source: SourceEvidence, field_provenance: dict[str, Provenance]` |
 | `CostCoverageCreate` / costing | `expected_sheet_hash: str, decisions: tuple[CostCoverageDecision,...], acquisition_mode: Literal['summary','detail']` |
@@ -184,15 +184,17 @@ with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
 
 **Interfaces**
 - Consumes: T1 DTO、既有 `CostingActor`、`RawArtifactMeta` 的安全字段（经来源 reader 投影）。
-- Produces: `PricingEvidenceReader.read_verified(tenant_id: TenantId, source_ref: str, locator: str) -> SourceEvidence`（async Protocol，在 service.py 公开）。
+- Produces: `PricingEvidenceReader.read_verified(tenant_id: TenantId, source_ref: str, locator: str, *, actor_id: EmployeeId) -> SourceEvidence`（async Protocol，在 service.py 公开）。服务传入当前已核验身份；reader仍独立执行原件读取权限，不因成本角色扩大收件箱或附件可读范围。
 - Produces: `CostingQuoteService.confirm_policy(tenant_id, command: PricingPolicyCreate, *, actor: CostingActor) -> PricingPolicyView`；`get_policy(tenant_id, category: str|None, *, actor) -> PricingPolicyView`。
 - Produces: `confirm_price(tenant_id, command: PriceEvidenceCreate, *, actor) -> PriceEvidenceView`；`confirm_coverage(tenant_id, cost_sheet_id: CostSheetId, command: CostCoverageCreate, *, actor) -> str`（返回覆盖内容 hash）；均为 async。
 - Produces: `confirm_quote_fx(tenant_id, command: QuoteFxCreate, *, actor)->QuoteFxView`、`get_quote_fx(tenant_id,fx_id,*,actor)->QuoteFxView`；`QuoteFxCreate(base_currency,quote_currency,source_ref:str,rate:Decimal,observed_at:datetime)`，view另含 `fx_id,content_hash,confirmed_by,confirmed_at`。独立保存核算→报价方向，不改旧成本汇率元组。
 - `SupplierPriceEvidenceCreate`：`kind='supplier_price'`；`opportunity_id,need_id,supplier_ref,specification,unit,destination,currency,basis,source_ref,locator:str`，`quantity_min,quantity_max,moq:int`，`amount:Decimal`，`quoted_at,valid_until:datetime`。
-- `ExpenseEvidenceCreate`：`kind='confirmed_expense'`；`opportunity_id,item_type,allocation_scope,currency,basis,source_ref,locator:str`，`amount:Decimal`，`observed_at:datetime`，`valid_until:datetime|None`；无MOQ/供应商产品字段。不将actual凭证重标quoted；适用范围和确认事实仍须核实。新报价采购只接受quoted；非采购费用接受已发生凭证或确认价目依据，indicative费用本批不开放人工例外。
-- Constructor: `CostingQuoteServiceImpl(uow_factory, evidence_reader: PricingEvidenceReader, *, now: Callable[[], datetime])`；只在 `service.py` 导出 Protocol，应用装配导入实现。
+- `ExpenseEvidenceCreate`：`kind='confirmed_expense'`；`opportunity_id,item_type,allocation_scope,currency,basis,source_ref,locator:str`，`amount:Decimal, is_per_unit:bool, quantity:int`（适用订单数量，正整数），`observed_at:datetime`，`valid_until:datetime|None`；无MOQ/供应商产品字段。不将actual凭证重标quoted；适用范围和确认事实仍须核实。新报价采购只接受quoted；非采购费用接受已发生凭证或确认价目依据，indicative费用本批不开放人工例外。
+- Constructor: `CostingQuoteServiceImpl(uow_factory, evidence_reader: PricingEvidenceReader, *, actor_reader: CostingActorReader, now: Callable[[], datetime])`；只在 `service.py` 导出 Protocol，应用装配导入实现。`CostingActorReader.read_current(tenant_id:TenantId,actor_id:EmployeeId)->CostingActor|None`为async，入口及来源IO后写入前复核当前身份，失效拒绝。
+- 来源DTO补`source_url:str|None`，WEB_PAGE必需；政策/FX视图补可信source和field_provenance。旧T1纯计算fixture允许缺该扩展，但正式持久路径强制完整并校验确认身份/时间，不将缺来源历史政策当作当前授权。
+- coverage核对金额、币种、基准、类型、source_ref及分摊口径；费用quantity须等于sheet.quantity。供应商单件项amount等于其单价，整单项amount等于单价×数量（固定Decimal上下文，不自动改值/舍入）；两者都须满足数量范围/MOQ。
 
-- [ ] 用 schema 失败测试先锁定：老板确认参数不能来自请求体，归类不覆盖22项被拒，quoted 无数量范围/有效期/来源被拒。
+- [x] 用 schema 失败测试先锁定：老板确认参数不能来自请求体，归类不覆盖22项被拒，quoted 无数量范围/有效期/来源被拒。
 
 ```python
 import pytest
@@ -214,10 +216,10 @@ def test_expense_evidence_does_not_accept_hidden_actor_override():
         ExpenseEvidenceCreate.model_validate({'kind': 'confirmed_expense', 'confirmed_by': 'boss'})
 ```
 
-- [ ] 跑 `python3 -m pytest tests/unit/test_costing_quote_evidence.py -q`，确认 RED 是缺失新约束而非依赖配置。
-- [ ] 扩展 UoW 为 `policies/prices/coverage/quote_fx` 仓储；方法统一 `add`, `get(tenant_id,id)`, `get_for_update`，政策另有 `get_effective(tenant_id,category,at)`。每个主键和关联均含 tenant。
-- [ ] 0041 增量建四表：`costing_policies(tenant_id,policy_id,category,effective_from,content_hash,payload,confirmed_by,confirmed_at)`；`costing_price_evidence(tenant_id,evidence_id,opportunity_id,artifact_id,evidence_hash,payload,confirmed_by,confirmed_at)`；`costing_coverage(tenant_id,coverage_id,cost_sheet_id,sheet_hash,content_hash,payload,confirmed_by,confirmed_at)`；`costing_quote_fx(tenant_id,fx_id,content_hash,payload,confirmed_by,confirmed_at)`。payload 仅业务结构化字段，金额字符串；原始 bytes 不入库。
-- [ ] 唯一 `(tenant_id,id)`；确认方法均额外接 `idempotency_key:str` keyword，持久记录key和payload hash，同key同内容返回同记录；对四表 UPDATE/DELETE 加 append-only trigger；引用 cost_sheets/opportunities/raw_artifacts 用复合外键。不改旧 margin_rules 记录；新路径只读有确认事实的 costing_policies。
+- [x] 跑 `python3 -m pytest tests/unit/test_costing_quote_evidence.py -q`，确认 RED 是缺失新约束而非依赖配置。
+- [x] 扩展 UoW 为 `policies/prices/coverage/quote_fx` 仓储；方法统一 `add`, `get(tenant_id,id)`, `get_for_update`，政策另有 `get_effective(tenant_id,category,at)`。每个主键和关联均含 tenant。
+- [x] 0041 增量建四表：`costing_policies(tenant_id,policy_id,category,effective_from,content_hash,payload,confirmed_by,confirmed_at)`；`costing_price_evidence(tenant_id,evidence_id,opportunity_id,artifact_id,evidence_hash,payload,confirmed_by,confirmed_at)`；`costing_coverage(tenant_id,coverage_id,cost_sheet_id,sheet_hash,content_hash,payload,confirmed_by,confirmed_at)`；`costing_quote_fx(tenant_id,fx_id,content_hash,payload,confirmed_by,confirmed_at)`。payload 仅业务结构化字段，金额字符串；原始 bytes 不入库。
+- [x] 唯一 `(tenant_id,id)`；确认方法均额外接 `idempotency_key:str` keyword，持久记录key和payload hash，同key同内容返回同记录；对四表 UPDATE/DELETE 加 append-only trigger；引用 cost_sheets/opportunities/raw_artifacts 用复合外键。不改旧 margin_rules 记录；新路径只读有确认事实的 costing_policies。
 
 ```sql
 CREATE FUNCTION reject_costing_evidence_mutation() RETURNS trigger AS $$
@@ -227,11 +229,11 @@ END;
 $$ LANGUAGE plpgsql;
 ```
 
-- [ ] 服务先通过当前员工身份校验权限（新 `POLICY_CONFIRM` 仅 boss），再验证可信 source 的 tenant/hash/locator，逐字段构造 Provenance；非 quoted 可保留作估算，但正式路径不得用。未知来源类型固定拒绝，不调用模型。
-- [ ] 覆盖清单以 `item_sequence` 绑定当前 sheet hash；22项需全覆盖。`(source_ref, source_line_ref, allocation_scope)` 重复拒绝，同 artifact 不同行可通过；summary/detail 获客口径互斥。配置不适用但存在相应确认成本也拒绝，防隐藏费用。
-- [ ] 为 `CostSheetView` 增加服务端 `content_hash`，`CostItemView` 增加持久 `item_sequence`，不让前端按数组位置猜费用ID。hash覆盖数量/币种/成本项/已确认来源/汇率，不含locked_at或读取时间；并发追加后旧expected hash失效，单纯锁定不会改变原内容身份。旧字段及旧接口含义保留，新字段从真实数据计算。
-- [ ] PostgreSQL 测试四表 tenant FK、追加不可改、源 artifact 跨租户、历史政策未确认、新旧生效时间、精度超限拒绝及 0041 往返。用 `integration_engine` 真连接；来源 reader 可受控，但不得把 fake reader 当成真实原文核验。
-- [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_costing_quote_evidence.py tests/integration/test_costing_quote_evidence.py -q`；结构检查后提交 `feat: 持久化成本政策与供应商价格确认依据`。
+- [x] 服务先通过当前员工身份校验权限（新 `POLICY_CONFIRM` 仅 boss），再验证可信 source 的 tenant/hash/locator，逐字段构造 Provenance；非 quoted 可保留作估算，但正式路径不得用。未知来源类型固定拒绝，不调用模型。
+- [x] 覆盖清单以 `item_sequence` 绑定当前 sheet hash；22项需全覆盖。`(source_ref, source_line_ref, allocation_scope)` 重复拒绝，同 artifact 不同行可通过；summary/detail 获客口径互斥。配置不适用但存在相应确认成本也拒绝，防隐藏费用。
+- [x] 为 `CostSheetView` 增加服务端 `content_hash`，`CostItemView` 增加持久 `item_sequence`，不让前端按数组位置猜费用ID。hash覆盖数量/币种/成本项/已确认来源/汇率，不含locked_at或读取时间；并发追加后旧expected hash失效，单纯锁定不会改变原内容身份。旧字段及旧接口含义保留，新字段从真实数据计算。
+- [x] PostgreSQL 测试四表 tenant FK、追加不可改、源 artifact 跨租户、历史政策未确认、新旧生效时间、精度超限拒绝及 0041 往返。用 `integration_engine` 真连接；来源 reader 可受控，但不得把 fake reader 当成真实原文核验。
+- [x] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_costing_quote_evidence.py tests/integration/test_costing_quote_evidence.py -q`；结构检查后提交 `feat: 持久化成本政策与供应商价格确认依据`。
 
 ## Task 3：当前业务上下文、成本锁定和恢复
 
@@ -262,6 +264,7 @@ def test_stale_business_context_cannot_be_frozen():
 - [ ] RED：`python3 -m pytest tests/unit/test_quote_cost_lock.py -q`。
 - [ ] 实现 `require_context_hash(expected: str, actual: str) -> None`，比较严格64位 hex；再实现证据 basis/适用范围/有效期、全部成本确认、人工报价与汇率、当前政策检查，收集固定原因码。
 - [ ] `infra/db/quote_context.py` 只投影已有基础表，不包含商业规则，不导入其他域 repository。按确定顺序读取并 `FOR SHARE` 锁相关员工、机会、已验证需求行，返回 context；锁存活于本地 freeze/报价写入区间，结束即释放。`FOR SHARE` 允许 FK KEY SHARE，阻止并发改归属/规格；使用实际独立连接测试，不嵌套重取同一成本锁。
+- [ ] 无锁bootstrap只发现候选actor/owner/prepared_by和Need；先对员工ID去重排序锁定，再锁机会并重读。owner/need/account与bootstrap不符时释放并返回冲突，不能持机会锁补锁新owner。报价owner取Opportunity.owner，不将独立的账户OwnershipLock当同一事实，也不在context内自动resolve/assign。锁后的Need完整事实来自T3A契约，不能复用bootstrap ORM缓存或机会规格摘要。
 - [ ] 原资料bytes的读取在上述锁区间之外完成；锁内只读不可变证据元数据。锁等待与本地事务设显式运行配置超时；任何超时整笔失败，不将旧校验结果标为有效。新锁顺序须与现有归属/需求更新路径多连接交叉验证，不能仅靠单路径排序宣称无死锁。
 - [ ] 该 provider 只返回事实，quotations/costing 服务校验机会与已验证需求相连、当前员工可访问、数量/规格完整；缺失状态不可用。公司抬头由已确认配置投影，缺失时阻断，绝不写死测试公司名。
 - [ ] context_hash绑定业务来源版本、owner、原prepared_by和issuer版本，但不绑定正在查看的审批人；当前操作者权限单独读取。测试换独立审批人不会产生假“上下文漂移”，真实owner/规格变更必然使hash变化。
@@ -278,6 +281,7 @@ def require_context_hash(expected: str, actual: str) -> None:
 ```
 
 - [ ] 多连接测试：加成本与 freeze 竞争只有一个合法结果；改规格/改owner被上下文锁阻止或导致冲突；锁定后崩溃同键读回 basis；不得自动解锁。已锁 basis 不匹配当前 context 时显示 blocked，不能沿用 old passed。
+- [ ] 使用真实EmployeeRepository.update、OpportunityService.assign、DemandService.update_need_fields覆盖双方先后时序、同值新来源和guard异常/取消释放；账户transfer仅改OwnershipLock，不应误测为自动改机会owner。验证两context可并行及FK KEY SHARE兼容，禁止持SHARE等待另一session更新同一行的回调自等待。
 - [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_cost_lock.py tests/integration/test_quote_cost_lock.py tests/integration/test_costing_repository.py -q`；结构检查后提交 `feat: 增加报价成本冻结与可恢复创建操作`。
 
 ## Task 4：报价版本、状态、客户投影与迁移
@@ -403,7 +407,7 @@ def test_quote_pdf_is_a_generated_kind_not_a_raw_evidence_kind():
 
 **Files**
 - Create: `connectors/quote_pdf/{AGENTS.md,__init__.py,client.py,manifest.py}`, `tests/unit/test_quote_pdf_renderer.py`
-- Modify: `domains/quotations/service.py`, `pyproject.toml`（runtime `reportlab==5.0.1`；dev `pypdf==6.16.2`）
+- Modify: `domains/quotations/service.py`, `pyproject.toml`（runtime `reportlab==5.0.1`、`pypdf==6.16.2`；pypdf还供T8原件文本定位，不依赖dev安装泄漏）
 
 **Interfaces**
 - `QuotePdfRenderer.render(view:CustomerQuoteView,*,template_version:str)->bytes` Protocol 在 quotations.service 公开，实际 connector 只接收客户白名单DTO。
@@ -467,7 +471,7 @@ def test_public_quote_command_cannot_claim_approval_or_cost_lock():
 - [ ] RED：`python3 -m pytest tests/unit/test_quotation_router.py tests/unit/test_quote_file_gateway.py -q`；随后用ASGITransport加真实请求422/403、跨tenant404、未装配503测试。
 - [ ] 两个私有文件工具 `quotation.file.generate` / `quotation.file.read`，以及只读价格资料工具 `quotation.evidence.read`；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；read 为 LOW且每次重验真实授权。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
 - [ ] handler以 quote_id/file_id 或source_ref/locator取受信数据；参数和ledger不含正文/成本/bytes。PDF下载bytes及原始资料用一次性typed槽，同调用栈取走并finally清理。生成返回安全artifact/fileID，持久去重由T6；拒绝时存储/renderer调用为零。
-- [ ] 实现PricingEvidenceReader：仅已授权raw source，Gateway读取后验证实际hash/locator，消息来源先经现有消息阅读权限转换成raw artifact；不接受generated artifact为证据。未知结果结构化失败，不把空内容当核验完成。
+- [ ] 实现PricingEvidenceReader与NeedUnitEvidenceReader：仅已授权raw source，Gateway读取后验证实际hash/locator，消息来源先经现有消息阅读权限转换成raw artifact；不接受generated artifact为证据。未知结果结构化失败，不把空内容当核验完成。最小来源支持和定位契约见下段；未接入来源固定source_unsupported。
 - [ ] API端点（均在 `/costing-quotes`）：`GET/POST /policies`、`GET/POST /issuer`、`POST /quote-fx`、`POST /price-evidence`、`POST /cost-sheets/{id}/coverage`、`POST /cost-sheets/{id}/calculate`、`GET/POST /opportunities/{id}/quotes`、`GET /quotes/{id}`、`POST /quotes/{id}/submit`、`POST /quotes/{id}/revisions`、`POST /quotes/{id}/files`、`GET /quotes/{id}/files/{file_id}`。另加 `GET /opportunities/{id}/quote-context` 返回创建前所需当前hash和可编辑资料，不暴露凭证/成本给无权角色；不能把context查询设计成必须先有quote才能调用。
 - [ ] 增加已确认资料的可恢复读取：`GET /opportunities/{id}/price-evidence`、`GET /quote-fx/{fx_id}`、`GET /cost-sheets/{id}/coverage`、`GET /quotes/{id}/files`；租户/角色/机会范围与写入一致。对应public service补 `list_price_evidence(tenant_id,opportunity_id,*,actor)`, `get_coverage(tenant_id,cost_sheet_id,*,actor)`, `list_files(tenant_id,quote_id,*,actor)`，分别返回typed证据列表、确认清单、文件列表；刷新页面不依赖内存缓存的来源ID。
 - [ ] POST绑定HTTP幂等键、当前员工；失败返回固定code与可展示原因，旧请求readiness不新增写。当前规则提高底线/证据失效/quote过期时正式file拒绝；文件返回前再验quote状态，不在鉴权前取bytes。
@@ -481,6 +485,16 @@ if runtime.quote_expiry_driver is not None:
 - [ ] API和scheduler真实factory均构造仓储/服务，注册quote_approval definition/handlers/outbox与expiry；缺任一依赖保持能力unavailable且无工具注册。expiry故障单独隔离，不吞掉其他workflow；未获singleton锁零expiry调用。不在构造时读取provider凭证或访问网络。
 - [ ] 测试真实factory→真实Postgres→Gateway→renderer→受控object transport→持久generated metadata，包含锁顺序。API伪服务仅用于unit，不替代这一集成。预算/大小/页数未配置时禁用文件能力，错误脱敏。
 - [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_gateway.py tests/unit/test_quotation_router.py tests/integration/test_quote_runtime.py tests/unit/test_api_runtime.py -q`；结构检查后提交 `feat: 装配报价审批和受控客户文件接口`。
+
+### T8来源接线补充（执行中核对，2026-08-28）
+
+- 最小生产支持：价格/费用为`upload:upl_<ULID>`，复用WorkIntake本人上传ACL并取得raw PDF；客户单位为真实入站Message→Conversation→account/Need→EMAIL_RAW，保持当前收件箱boss-only。成本角色、同租户或知道artifact ID都不授予资料阅读权；机会范围由上层和域服务另验，不以reader签名中没有scope而默认通过。
+- PDF定位为`pdf-text-v1:p=1;c=20:140;h=<64位小写hex>`，邮件定位为`rfc822-plain-v1:c=0:19;h=<64位小写hex>`。p从1开始，c为确定性文本Unicode code point半开区间，h为该片段UTF-8哈希；完整raw bytes另核对原件hash/长度。profile固定parser版本和CRLF/CR→LF规则，不trim/换算/猜文字；前端选取使用同profile，不能从另一PDF文本引擎猜坐标。
+- 政策/FX的`$`特指整份授权原件根引用：验证实际原件hash，业务值仍由员工确认；它不是供应商费用明细locator的替代物。报价/费用片段须能定位人工所依据的内容；同一来源不代表全字段已由解析器证实。
+- 邮件只用首个非附件非空text/plain，不用旧reader截断正文。最小单位路径要求quantity为已确认CONVERSATION事实且source_id等于该消息；逐字摘录/原数量来源、整数token/单位关系均须匹配，复杂或含糊表达要求补证。人工确认仍负责语义，不将parser成功、否定句或历史引用推定为新需求。
+- 文字PDF可解析；扫描、加密、损坏、超限及未实现Word/Excel/OCR/网页来源明确拒绝。运行配置显式提供原件bytes、页数、文本长度和解析资源上限；不可信PDF在可终止受限解析单元中处理，线程wait_for不充当资源隔离。原件读取上限须由transport保证，事后len校验不得宣称有界分配。
+- 新增中立evidence DTO/离线connector、专属Gateway handler/check与一次性槽、上层typed reader；不改通用槽已有联系人前缀语义，不跨apps导入。原文只进调用内槽，ledger/log仅安全handle。当前身份显式逐次传入，不能固定boss/system或全局可变actor。
+- 最低测试包含真实受控PDF/RFC822解析、真正raw store与持久metadata、跨actor/tenant/account拒绝零读取、篡改/越界/超限拒绝、槽取消清理、源码与日志无原文，以及原邮件/上传兼容。真实商业资料核验仍须单独标记，受控解析不证明客户/供应商真实承诺。
 
 ## Task 9：前端接线、权限展示和类型生成
 
