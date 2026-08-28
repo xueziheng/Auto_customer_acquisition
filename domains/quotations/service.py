@@ -418,6 +418,8 @@ class QuotationService(Protocol):
         ...
 
 
+from shared.schemas.quote_document import customer_quote_hash
+
 __all__ = [
     "QuotationActorReader",
     "QuotationService",
@@ -436,6 +438,7 @@ __all__ = [
     "build_quote_content",
     "canonical_quote_specification",
     "contains_forbidden_commitment",
+    "customer_quote_hash",
     "format_quote_specification",
     "parse_quote_approval_payload",
     "project_customer",

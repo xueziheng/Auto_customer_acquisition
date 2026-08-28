@@ -19,6 +19,7 @@ from shared.schemas.identifiers import (
     TenantId,
     UserId,
 )
+from shared.schemas.quote_files import QUOTE_PDF_TEMPLATE_VERSIONS
 
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_ID = re.compile(rf"tn_{_ULID}")
@@ -26,6 +27,7 @@ _ARTIFACT_ID = re.compile(rf"art_{_ULID}")
 _RUN_ID = re.compile(rf"run_{_ULID}")
 _USER_ID = re.compile(rf"usr_{_ULID}")
 _SUBJECT_REF = re.compile(rf"enr_{_ULID}")
+_QUOTE_REF = re.compile(rf"quo_{_ULID}")
 _HASH = re.compile(r"[0-9a-f]{64}")
 _GENERATED_BY = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_SIGNED_INT64 = 2**63 - 1
@@ -49,6 +51,7 @@ class GeneratedArtifactKind(str, Enum):
     """只代表 TradeOS 生成的派生产物。"""
 
     EMAIL_DRAFT = "email_draft"
+    QUOTE_PDF = "quote_pdf"
 
 
 RAW_ARTIFACT_MIME_TYPES: Mapping[RawArtifactKind, frozenset[str]] = MappingProxyType({
@@ -78,7 +81,8 @@ GENERATED_ARTIFACT_MIME_TYPES: Mapping[
 ] = MappingProxyType({
     GeneratedArtifactKind.EMAIL_DRAFT: frozenset(
         {"application/vnd.tradeos.email-draft+json"}
-    )
+    ),
+    GeneratedArtifactKind.QUOTE_PDF: frozenset({"application/pdf"}),
 })
 
 
@@ -190,16 +194,22 @@ class GeneratedArtifactMeta:
         workflow_run_id = RunId(
             _canonical_string(self.workflow_run_id, _RUN_ID)
         )
-        subject_ref = _safe_text(self.subject_ref, _SUBJECT_REF)
         sequence_number = _positive_int(self.sequence_number)
-        expected_key = f"{subject_ref}:{sequence_number}:draft"
+        generated_by = _safe_text(self.generated_by, _GENERATED_BY)
+        if self.kind is GeneratedArtifactKind.QUOTE_PDF:
+            subject_ref = _safe_text(self.subject_ref, _QUOTE_REF)
+            if generated_by not in QUOTE_PDF_TEMPLATE_VERSIONS:
+                raise _invalid()
+            expected_key = f"{subject_ref}:{sequence_number}:quote_pdf:{generated_by}"
+        else:
+            subject_ref = _safe_text(self.subject_ref, _SUBJECT_REF)
+            expected_key = f"{subject_ref}:{sequence_number}:draft"
         if (
             not isinstance(self.idempotency_key, str)
             or self.idempotency_key != expected_key
         ):
             raise _invalid()
         idempotency_key = IdempotencyKey(self.idempotency_key)
-        generated_by = _safe_text(self.generated_by, _GENERATED_BY)
         generated_at = _utc_datetime(self.generated_at)
         object.__setattr__(self, "tenant_id", tenant_id)
         object.__setattr__(self, "artifact_id", artifact_id)

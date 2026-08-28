@@ -1,5 +1,8 @@
 """客户报价唯一白名单DTO；不证明访问权限或条款已获批准。"""
 
+import hashlib
+import json
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,3 +25,29 @@ class CustomerQuoteView(BaseModel):
     currency: str
     valid_until_display: str
     approved_terms: tuple[str, ...]
+
+
+def customer_quote_hash(view: CustomerQuoteView) -> str:
+    """显式客户白名单的规范hash，不改展示字符串或条款顺序。"""
+    customer = {
+        "quote_id": view.quote_id,
+        "version": view.version,
+        "issuer_name": view.issuer_name,
+        "issuer_address": view.issuer_address,
+        "issuer_contact": view.issuer_contact,
+        "account_name": view.account_name,
+        "description": view.description,
+        "specification": view.specification,
+        "unit": view.unit,
+        "quantity_display": view.quantity_display,
+        "unit_price_display": view.unit_price_display,
+        "total_display": view.total_display,
+        "currency": view.currency,
+        "valid_until_display": view.valid_until_display,
+        "approved_terms": list(view.approved_terms),
+    }
+    encoded = json.dumps(
+        {"version": "customer-quote-v1", "customer": customer},
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

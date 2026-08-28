@@ -54,6 +54,11 @@ from domains.quotations.context import (
     QuoteIssuer,
     QuoteSpecificationFacts,
 )
+from domains.quotations.file_schemas import (
+    QuoteFileApprovalFact,
+    QuoteFileView,
+    QuoteGeneratedArtifactFact,
+)
 from domains.quotations.models import QuoteState
 from domains.quotations.version_schemas import (
     QuotationActor,
@@ -206,7 +211,10 @@ __all__ = [
     "QuoteEvidenceConfirmation",
     "QuoteEvidenceSource",
     "QuoteExpenseEvidence",
+    "QuoteFileApprovalFact",
+    "QuoteFileView",
     "QuoteFxSnapshot",
+    "QuoteGeneratedArtifactFact",
     "QuoteIssuer",
     "QuoteIssuerCreate",
     "QuoteLineRequest",

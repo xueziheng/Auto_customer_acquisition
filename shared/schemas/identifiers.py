@@ -71,6 +71,7 @@ SupplierCandidateId = NewType("SupplierCandidateId", str)
 
 CostSheetId = NewType("CostSheetId", str)
 QuoteId = NewType("QuoteId", str)
+QuoteFileId = NewType("QuoteFileId", str)
 PriceSnapshotId = NewType("PriceSnapshotId", str)
 FxSnapshotId = NewType("FxSnapshotId", str)
 
