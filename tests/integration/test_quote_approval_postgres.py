@@ -246,6 +246,78 @@ async def test_real_quote_all_approvals_event_and_receipt_commit_once(approval_c
             )
 
 
+async def test_binding_receipt_storage_is_append_only_and_real_run_bound(approval_case):
+    from domains.quotations.errors import QuoteApprovalError
+    from workflows.quote_approval.application import QuoteApprovalApplication
+
+    c = approval_case
+    ids = await bind_real_approvals(c)
+    for approval_id in ids:
+        await c.approvals.decide(
+            c.quotation.tenant, approval_id, approved=True, decided_by=c.decider
+        )
+    app = QuoteApprovalApplication(
+        c.quotation.service,
+        c.approvals,
+        c.provider,
+        c.quotation.actors,
+        now=lambda: c.quotation.clock[0],
+    )
+    assert (
+        await app.apply(
+            c.quotation.tenant, c.quote.content.quote_id, executor=c.executor
+        )
+    ).receipt is not None
+    for table in ("quotation_approval_bindings", "quotation_approval_receipts"):
+        for statement in (
+            f"UPDATE {table} SET content_hash=repeat('f',64)",
+            f"DELETE FROM {table}",
+        ):
+            async with c.quotation.context.unit.sessions() as session:
+                with pytest.raises(DBAPIError):
+                    await session.execute(
+                        text(
+                            statement + " WHERE tenant_id=:tenant AND quote_id=:quote"
+                        ),
+                        {
+                            "tenant": c.quotation.tenant,
+                            "quote": c.quote.content.quote_id,
+                        },
+                    )
+                await session.rollback()
+    old = await c.engine.get_run(c.quotation.tenant, c.executor.run_id)
+    other_run = await c.engine.start(
+        c.quotation.tenant,
+        "quote_approval",
+        "another-quote",
+        old.context,
+        "other-real-run",
+    )
+    other_executor = c.executor.model_copy(update={"run_id": other_run})
+    for entry in ("target", "session", "receipt"):
+        with pytest.raises(QuoteApprovalError) as error:
+            if entry == "target":
+                await c.quotation.service.approval_target(
+                    c.quotation.tenant,
+                    c.quote.content.quote_id,
+                    executor=other_executor,
+                )
+            elif entry == "receipt":
+                await c.quotation.service.get_approval_application(
+                    c.quotation.tenant,
+                    c.quote.content.quote_id,
+                    executor=other_executor,
+                )
+            else:
+                async with c.quotation.service.open_approval(
+                    c.quotation.tenant,
+                    c.quote.content.quote_id,
+                    executor=other_executor,
+                ):
+                    pytest.fail("存在的其他run也不能替代本轮绑定")
+        assert error.value.code == "workflow_binding_invalid"
+
+
 async def test_handler_can_commit_receipt_while_own_run_is_locked(approval_case):
     from infra.db.workflow_engine import PostgresWorkflowEngine
     from workflows.engine.runner import StepDefinition, StepStatus, WorkflowDefinition
