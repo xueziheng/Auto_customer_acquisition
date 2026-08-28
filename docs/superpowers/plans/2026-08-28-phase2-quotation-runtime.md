@@ -1,6 +1,6 @@
 # Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
-> **状态：T8B2实施提交完成，待整项独立审查。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3 API/worker 1b8920、8.4完整受控链7c6c061及§2.4中文展示9de7640已提交。最终相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、最终Linux实际factory全链1项零skip，59生产文件mypy/Ruff/结构通过；不等于全库验收或整个Phase 2完成。T5/T6/T8A及B1已审查；本B2仍以BASE585cead到最终HEAD整体审查后关门。下文未勾选项在审查通过前保持待验，不把早期分片证据当最后改后重跑。
+> **状态：T8B2整项首次审查发现3项Important，Fix1实施中。** 8.1安全读取5c4799b、8.2 HTTP 1179405c、8.3 API/worker 1b8920、8.4完整受控链7c6c061及§2.4中文展示9de7640已提交。审查前相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、Linux实际factory全链1项零skip，59生产文件mypy/Ruff/结构通过；这些未覆盖本次发现的两个负向组合，不是最终验收或整个Phase 2完成。首次整项范围585cead..9b05f70，Fix1按§9修文件整组门、轮中失锁和共享机械装配，修复范围复审通过才关门。未勾选项仍待验，T9/T10未开始。
 
 **Goal:** 将已验收域/文件能力接入安全HTTP、显式配置和真实API/worker，保持旧流程兼容。
 **Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；下文方法描述是规范，不独立构成验收结论。
@@ -448,3 +448,15 @@ Linux测试装配窄扩展：现build_parser_image新增quotation专用选择，
 - [ ] Worker真实singleton两连接仅持锁者expiry；expiry故障不阻其他driver，关闭/锁丢失零越权调用；真实状态事件与T4过期规则一致。
 - [ ] 重跑全部新unit/integration及既有API/runtime/worker/上传/审批兼容目标；结构自检、原配置Ruff与本批类型检查。记录精确命令、pass/fail/skip和每层受控边界。
 - [ ] 更新相关AGENTS/ADR与最小配置说明；`infra/.env.example`只注明可选配置用途及字段要求，不填测试数字或秘密。提交 `docs: 记录报价实际接线与运行边界`，整项由控制器一次独立审查。T9再进行Vue接线，T10才计最终浏览器与全量验收。
+
+## 9. 整项审查 Fix1 裁定（2026-08-29）
+
+首次整项审查为Needs fixes，三项Important全部修复后才进入T9；本节在冲突处优先于§4“本地实现”的措辞。独立进程入口不意味着逐字复制共享实现。整项BASE仍585cead69dc18045dc7b9b0a8d0077879bbda508，Fix1 BASE为9b05f709a9640aadbbdfab50830a3d3d252a8aac。
+
+1. 文件组：不删除domain.files或替换域服务内部引用。在HTTP层以同一个私有_file_composition门同时核domain.files/files_application/customer_versions，六个文件入口（列表、生成、恢复、下载、历史、客户版本发现）共同使用；任一缺失沿原固定503，内部core与来源保持。generated/metadata_only分别缺失时，实际composition配合法身份HTTP的六路均503/零服务及对象IO；完整端口保持原行为。
+2. singleton：保留专用连接和原_same_lock_backend。activation返回后、开始本轮业务前确认，另在expiry调用之前、普通phase异常捕获之外确认；可用私有固定失锁异常及显式异步回调。_run_cycle保留旧两参数无expiry消费者，新增keyword-only confirm_lock；有expiry而无确认回调必须失败关闭。主循环捕获失锁→LOCK_LOST、不递增未完成轮、不运行后续workflow/post-outbox。普通expiry错误仍隔离，取消原样传播。真实PG分别在activation/Campaign等待中终止锁backend，第二副本取得同锁后释放等待，旧副本expiry零调用。此检查不宣称对已开始的扫描做分布式fencing或回滚。
+3. 共享机械装配：新增非进程库apps/composition_support/__init__.py和quotations.py，共享现生命周期、Domain/Evidence束、单位授权/来源/域factory及文件机械装配。API/worker保留原公开factory完整签名、最终本层dataclass和同class类型重导出；各root仍创建独立实例/slots/gateways/engine引用。新增build_quotation_runtime_parts返回actor_reader/customer_versions/files_application/lifecycle的纯装配bundle；文件lease_owner必填，由API/worker显式传原api-quote-files/scheduler-quote-files，来源owner保持原显式值。API额外创建原CurrentQuoteApprovalStarter，worker不创建。不得导入另一进程、搬业务到infra/workflows、建通用DI或共享全局运行实例。
+4. apps/AGENTS明确“进程不得互导，非进程composition_support只能向下依赖”；新增就近规则及ADR0022说明职责，根九硬边界不变。结构测试覆盖绝对/相对import及反向进程依赖；现checker未检查apps内部方向，不把它通过当完整证明。真实两root构造、唯一approvals/engine、独立gateway/lease owner、关闭/清理/probe/取消均回归。
+5. Linux quotation白名单仅增加上述两个共享.py，排除AppleDouble且只在quotation stage携带；原A默认stage/入口/Dockerfile依赖与全部资源预算不变。最终重跑原实际factory Linux完整链；不安装依赖、扩大挂载或借旧image成功替代当前代码。
+6. 代价：新增一个非进程库与三字段统一文件门；缺端口从部分可读变整组503；新增两处锁往返及内部回调接缝；移动装配代码影响测试patch/import路径与打包。若共享提取带来隐式实例复用或锁检查错误，会影响两进程运行，须以真实构造/PG/清理/打包回归防护。只修本轮三项，T10全量验收与原静态债务不在此冒充完成。
+7. 共享库纳入原59加新2共61生产文件mypy；apps当前namespace导致同一模块双名时，保留原报错并增加--explicit-package-bases正确绑定当前工作树，其他参数/文件不缩减，不新建apps/__init__或ignore。公开重导出可用__all__保持同class及全部既有出口，不为Ruff添加无效重复别名；该调整只明确模块解析，需原签名/导入与完整类型检查证明。

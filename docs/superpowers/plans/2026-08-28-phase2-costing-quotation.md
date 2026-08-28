@@ -332,7 +332,7 @@ T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-g
 
 T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
 
-当前T8B2实施已提交，待整项独立审查：8.1安全读取（5c4799b）、8.2 HTTP（1179405c）、8.3 API/worker（1b8920）、8.4完整受控链（7c6c061）与§2.4审批中文展示（9de7640）。最终相关1844 unit（最后纯测试import排序后定向151）、类型修正后117隔离PG、最终Linux全链1项零skip，59生产文件mypy/Ruff/结构通过；不提前勾选T8B完成或称全库验收。前置项“未运行”是各自交付时证据边界，不否定本片实际factory/受控链，也不等同真实供应商资料、生产对象网络或真实发送。
+当前T8B2首次整项审查发现3项Important，Fix1按子计划§9修复中：文件整组关闭、轮中singleton失锁停止、API/worker共享机械装配。已有8.1（5c4799b）、8.2（1179405c）、8.3（1b8920）、8.4（7c6c061）、中文审批展示（9de7640）；审查前1844相关unit、117隔离PG、Linux全链1项及59生产文件mypy/Ruff/结构通过，但未覆盖本次负向组合，不提前勾T8B或称全库验收。首次审查范围585cead..9b05f70，修复后只复审Fix1增量；T9/T10尚未开始。实际factory/受控链不等同真实供应商资料、生产对象网络或真实发送。
 
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`
@@ -531,10 +531,10 @@ python3 -m mypy --follow-imports=silent domains/costing/schemas.py domains/costi
 - Modify: `HANDBOOK.md`, `ROADMAP.md`, 必要模块AGENTS；`tests/e2e/conftest.py` 只增加隔离环境接线，不能降低现有就绪检测门槛；上述四个成本域/仓储文件只收口已归因静态类型问题。
 
 **Interfaces**
-- 使用T8真实composition。T10 fixture `quote_case` 放新integration测试文件：持有tenant/current actors、已验证需求/机会、raw artifact、显式测试policy、price evidence、完整coverage和QuoteDraftCommand；全部通过公开服务建立，只有来源bytes和对象存储transport受控。
+- 使用T8真实composition。T10 fixture `quote_case` 放新integration测试文件：持有tenant/current actors、已验证需求/机会、raw artifact、显式测试policy、price evidence、完整coverage和QuoteDraftCommand；业务状态通过公开服务建立，来源bytes和对象存储transport受控。现EmployeeService没有创建员工方法：仅隔离测试库的测试身份可用显式EmployeeRow初始化，租户/角色/active完整给定，后续所有授权仍读取真实持久员工；不新增生产员工接口或造授权票据。
 - fixture字段：`tenant, actor_id, file_actor_id, command, application, approvals, quotations, files, context_provider, gateway_calls`。actor_id是当前四成本角色中的起草人；file_actor_id是另经当前机会ABAC授权的客户文件读取人，不假设成本角色天然可下载。方法 `submit_and_approve(quote_id)->None` 用真实独立审批service和engine推进，不直接改quote.state。返回的gateway_calls是按tool_id计数的只读dict。
 
-- [ ] 写闭环失败测试，先证明真实composition链未完整接通：
+- [ ] 先写新闭环验收测试。T8B2已有真实composition全链通过，不能预设其必定断开；若新测试直接GREEN，按新增保护测试记录。缺fixture、导入或环境失败与真实功能RED分列，不能破坏实现制造RED。只有观察到实际缺口时才按失败测试修复：
 
 ```python
 async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
@@ -549,7 +549,7 @@ async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
 ```
 
 - [ ] RED：`env -u TEST_DATABASE_URL python3 -m pytest tests/integration/test_costing_quote_closed_loop.py -q`；记录失败原因，修复仅属于本链的实际装配缺口。
-- [ ] fixture实现先通过原Need/Opportunity/员工服务建立已验证需求和可访问机会；上传受控supplierPDF为RawArtifact，T2确认，T3–T5实际创建/审批。fixture不提供默认生产利润政策，不调用真实联系人。最后另断言机会未won、需求未fulfilled、quote未sent，PDF可提取合计与域结果一致。
+- [ ] fixture按上述限定初始化测试身份，通过原Need/Opportunity及员工分配服务建立已验证需求和可访问机会，不能直接写ValidatedNeed/Opportunity状态或靠B2种子行宣称验证了晋升；上传受控supplierPDF为RawArtifact，T2确认，T3–T5实际创建/审批。fixture不提供默认生产利润政策，不调用真实联系人。最后另断言机会未won、需求未fulfilled、quote未sent，PDF可提取合计与域结果一致。
 - [ ] 多连接并发与重启套件：最后一次owner变更、两个修订、追加和freeze、报价已写operation未记、审批已应用mark_applied未记、PDF已存quote关联未记、unknown存储结果。通过Events/Barrier控制时序，不靠长sleep；每例必须断言最终记录数、状态及零重复副作用。
 - [ ] 真实Uvicorn+Vite+Chromium E2E：老板配政策、员工录证据与成本、独立审批人批准、下载PDF；窄屏390与桌面1280浏览，内容不溢出；自批不可用、API直调仍403；刷新和深链选中正确quote而不是列表第一条。
 - [ ] 用pdf技能做实际生成文件的文本/metadata检查和逐页视觉检查；保留受控样例、hash与截图。浏览器操作使用当前可用browser技能；不能将手工查看源代码当作浏览器验收。
