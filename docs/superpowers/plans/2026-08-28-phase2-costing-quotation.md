@@ -89,17 +89,17 @@ ADR 拟使用 `0018-costing-quotation-contracts.md`、`0019-quote-pdf-artifacts.
 | `CostCoverageCreate` / costing | `expected_sheet_hash: str, decisions: tuple[CostCoverageDecision,...], acquisition_mode: Literal['summary','detail']` |
 | `CostCoverageDecision` / costing | `item_type: str, applicable: bool, reason: str, item_bindings: tuple[CostItemBinding,...]`；不适用必须理由，适用必须绑定金额 |
 | `CostItemBinding` / costing | `item_sequence: int, evidence_id, source_line_ref, allocation_scope: str`；按费用明细和分摊范围去重，不按整个 artifact 去重 |
-| `QuoteBusinessContext` / quotations | `tenant_id, opportunity_id, need_id, context_hash, specification, unit, destination, category, owner_id, prepared_by, account_name, country: str, quantity: int, issuer: QuoteIssuer`；可信数据库快照，无模型分数 |
-| `QuoteIssuer` / quotations | `name, address, contact: str, source_ref: str, confirmed_by: str, confirmed_at: datetime`；来自已确认本公司抬头，不设样例公司默认值 |
-| `QuoteDraftCommand` / quotations | `opportunity_id, cost_sheet_id, expected_context_hash, expected_sheet_hash: str, valid_until: datetime, unit_price: Money, rounding: RoundingPolicy 的本域等值输入, quote_fx_ref: str\|None, terms: tuple[QuoteTerm,...], replaces_quote_id: str\|None, expected_quote_version: int\|None` |
-| `QuoteTerm` / quotations | `kind: str, text: str`；客户英文、固定类型 allowlist、无任意自动承诺 |
-| `FrozenCostBasis` / costing | `basis_id, operation_id, tenant_id, opportunity_id, context_hash, sheet_hash, basis_hash, policy_id: str, quantity: int, specification, unit, destination: str, calculation: CalculationSnapshot, price_evidence: tuple[PriceEvidenceView,...], valid_until: datetime` |
+| `QuoteBusinessContext` / quotations | 标量身份/客户/规格及`account_id, opportunity_state, need_facts:NeedQuoteFacts, need_facts_hash, specification_hash, issuer:QuoteIssuer, runtime:QuoteRuntimeFacts`；context_hash为只读派生。全部精确字段见冻结子计划§1.2，内部可信事实不直接HTTP序列化 |
+| `QuoteIssuer` / quotations | `issuer_id, content_hash, name, address, contact, source_ref: str, confirmed_by: EmployeeId, confirmed_at: datetime, field_provenance: dict[str,Provenance]`；老板EMPLOYEE_INPUT确认、服务端来源ID，不设样例默认值 |
+| `QuoteDraftCommand` / quotations | `opportunity_id, cost_sheet_id, expected_context_hash, expected_sheet_hash, scope_confirmation_id: str, valid_until: datetime, unit_price: Money, rounding: QuoteRoundingInput, quote_fx_ref: str\|None, terms: tuple[QuoteTerm,...], replaces_quote_id: str\|None, expected_quote_version: int\|None` |
+| `QuoteTerm` / shared，quotations重导出 | `kind: Literal['discount','delivery_commitment','payment_terms','certification_commitment'], text: str`；客户英文，领域再验文本/类型和独立审批映射 |
+| `FrozenCostBasis` / costing | 完整字段见冻结子计划§1.4；除原计算/价格证据外，保存request_hash、完整Need事实、scope确认、policy、coverage、pricing_options及报价FX，不能只存引用 |
 | `QuoteBasis` / quotations | costing 公共结果的本域投影：同名 scalar 绑定、金额结果、证据摘要/hash、确认/有效期；不导入 costing 私有模型或 schemas |
 | `QuoteApprovalFact` / quotations | `tenant_id, approval_id, quote_id, content_hash, approval_type, state, decided_by, proposed_by, owner_id: str, expires_at: datetime, decided_at: datetime\|None`；由持久 approvals reader 产生 |
-| `CustomerQuoteView` / quotations | `quote_id: str, version: int, issuer_name, issuer_address, issuer_contact, account_name, description, specification, unit, quantity_display, unit_price_display, total_display, currency, valid_until_display: str, approved_terms: tuple[str,...]`；全部确定性字符串，无成本、源引用、内部人名 |
+| `CustomerQuoteView` / shared，quotations重导出 | `quote_id: str, version: int, issuer_name, issuer_address, issuer_contact, account_name, description, specification, unit, quantity_display, unit_price_display, total_display, currency, valid_until_display: str, approved_terms: tuple[str,...]`；全部确定性字符串，无成本、源引用、内部人名 |
 | `QuoteFileView` / quotations | `file_id, quote_id, artifact_id, content_hash, template_version: str, quote_version: int, size_bytes: int, generated_at: datetime`；不给 bucket/key/永久 URL |
 
-`QuoteDraftCommand` 不跨域 import `RoundingPolicy`，本域使用相同字段的 `QuoteRoundingInput`，
+`QuoteDraftCommand` 不跨域 import `RoundingPolicy`，使用shared纯形状的 `QuoteRoundingInput` 并在quotations重导出，
 上层显式转换；generated OpenAPI 类型各自生成，不在前端重写。`QuoteBasis` 字段详情在 T4
 实现为本域 DTO，禁止只留 `dict` 或一个 `cost_sheet_locked: bool`。
 
@@ -235,56 +235,27 @@ $$ LANGUAGE plpgsql;
 - [x] PostgreSQL 测试四表 tenant FK、追加不可改、源 artifact 跨租户、历史政策未确认、新旧生效时间、精度超限拒绝及 0041 往返。用 `integration_engine` 真连接；来源 reader 可受控，但不得把 fake reader 当成真实原文核验。
 - [x] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_costing_quote_evidence.py tests/integration/test_costing_quote_evidence.py -q`；结构检查后提交 `feat: 持久化成本政策与供应商价格确认依据`。
 
-## Task 3：当前业务上下文、成本锁定和恢复
+## Task 3：客户单位、完整上下文与可恢复成本冻结
 
-**Files**
-- Create: `domains/costing/quote_lock.py`, `infra/db/quote_context.py`, `workflows/quote_approval/application.py`, `tests/unit/test_quote_cost_lock.py`, `tests/integration/test_quote_cost_lock.py`
-- Modify: `domains/costing/service.py`, `domains/costing/quote_repository.py`, `domains/costing/schemas.py`, `domains/quotations/service.py`, `domains/quotations/schemas.py`, `infra/db/repositories/costing_quote.py`, `infra/db/repositories/costing.py`, `infra/db/tables.py`
-- Create migrations: `migrations/versions/0042_need_quantity_unit.py`, `migrations/versions/0043_costing_quote_lock.py`；本任务提交自己的单位/锁定/操作表与往返测试，不能等待T4才可测试持久化。
+本任务分为先后两个独立审查子切片，全部通过才算Task3完成；不增加Phase。
 
-**Interfaces**
-- Produces: `QuoteContextProvider.open(tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId, *, prepared_by: EmployeeId) -> AsyncContextManager[QuoteBusinessContext]`，Protocol 放 `domains/quotations/service.py`；仅受信应用内部使用。create从当前身份绑定prepared_by，approval从持久quote读取prepared_by；不能把当前审批人误当起草人，也不能让HTTP传prepared_by。
-- Produces: `QuoteIssuerReader.get_confirmed(tenant_id:TenantId)->QuoteIssuer` async Protocol，交给context provider注入。T3用受控reader验证锁定，T4提供持久报价抬头，T8完成真实装配。
-- Produces: `CostingQuoteService.calculate(tenant_id, cost_sheet_id, options: PricingOptions, context: QuoteBusinessContext 的本域投影, *, actor) -> CalculationSnapshot`。
-- Produces: `freeze(tenant_id, cost_sheet_id, options, context, *, operation_id: str, expected_sheet_hash: str, valid_until: datetime, actor) -> FrozenCostBasis`；`get_frozen(tenant_id,basis_id,*,actor) -> FrozenCostBasis`（async）。costing 的上下文投影为 `CostingContext(tenant_id,opportunity_id,need_id,context_hash,specification,unit,destination,category,quantity,owner_id,prepared_by)`，定义在 costing.schemas。
+- [x] T3A：客户单位事实、数量来源绑定、旧流程兼容与0042已完成（d77f292、aa98790），独立审查及嵌套确认人修复复审通过；并发测试屏障Minor留最终审查。真实来源/授权装配仍归T8。
+- [ ] T3B：按 `docs/superpowers/plans/2026-08-28-phase2-quote-freeze.md` 完成四个TDD提交：共享事实/意图及两个minor、真实context lease、0043与人工成本适用性、冻结/恢复/显式修订复用；独立审查通过。
 
-- [ ] 先测试锁定条件，独立纯谓词 `require_quote_basis` 放 quote_lock.py，签名 `(basis: FrozenCostBasis, context: CostingContext, *, now: datetime) -> None`。
+**T3B公共契约与边界（完整精确字段以冻结子计划为准）**
 
-```python
-import pytest
-from domains.costing.schemas import CostingContext
-from domains.costing.quote_lock import require_context_hash
-from shared.errors import ValidationError
-
-def test_stale_business_context_cannot_be_frozen():
-    with pytest.raises(ValidationError, match='上下文'):
-        require_context_hash('a' * 64, 'b' * 64)
-```
-
-- [ ] RED：`python3 -m pytest tests/unit/test_quote_cost_lock.py -q`。
-- [ ] 实现 `require_context_hash(expected: str, actual: str) -> None`，比较严格64位 hex；再实现证据 basis/适用范围/有效期、全部成本确认、人工报价与汇率、当前政策检查，收集固定原因码。
-- [ ] `infra/db/quote_context.py` 只投影已有基础表，不包含商业规则，不导入其他域 repository。按确定顺序读取并 `FOR SHARE` 锁相关员工、机会、已验证需求行，返回 context；锁存活于本地 freeze/报价写入区间，结束即释放。`FOR SHARE` 允许 FK KEY SHARE，阻止并发改归属/规格；使用实际独立连接测试，不嵌套重取同一成本锁。
-- [ ] 无锁bootstrap只发现候选actor/owner/prepared_by和Need；先对员工ID去重排序锁定，再锁机会并重读。owner/need/account与bootstrap不符时释放并返回冲突，不能持机会锁补锁新owner。报价owner取Opportunity.owner，不将独立的账户OwnershipLock当同一事实，也不在context内自动resolve/assign。锁后的Need完整事实来自T3A契约，不能复用bootstrap ORM缓存或机会规格摘要。
-- [ ] 原资料bytes的读取在上述锁区间之外完成；锁内只读不可变证据元数据。锁等待与本地事务设显式运行配置超时；任何超时整笔失败，不将旧校验结果标为有效。新锁顺序须与现有归属/需求更新路径多连接交叉验证，不能仅靠单路径排序宣称无死锁。
-- [ ] 该 provider 只返回事实，quotations/costing 服务校验机会与已验证需求相连、当前员工可访问、数量/规格完整；缺失状态不可用。公司抬头由已确认配置投影，缺失时阻断，绝不写死测试公司名。
-- [ ] context_hash绑定业务来源版本、owner、原prepared_by和issuer版本，但不绑定正在查看的审批人；当前操作者权限单独读取。测试换独立审批人不会产生假“上下文漂移”，真实owner/规格变更必然使hash变化。
-- [ ] 锁定事务：读取 `cost_sheets FOR UPDATE` → 检查 expected hash/当前覆盖 → 原子写 `costing_quote_bases` 与 `quote_creation_operations` → 写 locked_at。成本 repo 保留不可变 trigger；对同 operation 先读 winner，payload 不同冲突。事务失败回滚所有写，不先标成功。
-
-```python
-import re
-
-def require_context_hash(expected: str, actual: str) -> None:
-    if (re.fullmatch(r'[0-9a-f]{64}', expected) is None
-            or re.fullmatch(r'[0-9a-f]{64}', actual) is None
-            or expected != actual):
-        raise ValidationError('报价上下文已经变化')
-```
-
-- [ ] 多连接测试：加成本与 freeze 竞争只有一个合法结果；改规格/改owner被上下文锁阻止或导致冲突；锁定后崩溃同键读回 basis；不得自动解锁。已锁 basis 不匹配当前 context 时显示 blocked，不能沿用 old passed。
-- [ ] 使用真实EmployeeRepository.update、OpportunityService.assign、DemandService.update_need_fields覆盖双方先后时序、同值新来源和guard异常/取消释放；账户transfer仅改OwnershipLock，不应误测为自动改机会owner。验证两context可并行及FK KEY SHARE兼容，禁止持SHARE等待另一session更新同一行的回调自等待。
-- [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_cost_lock.py tests/integration/test_quote_cost_lock.py tests/integration/test_costing_repository.py -q`；结构检查后提交 `feat: 增加报价成本冻结与可恢复创建操作`。
+- 完整Need事实和中立身份/创建意图放shared，demand保留原公开名与单位业务规则；同值来源变化仍使绑定失效。QuoteBusinessContext携带完整事实和当前runtime，但业务hash排除本次审批人/runtime，包含原prepared_by、owner和issuer版本。
+- `QuoteContextProvider.open(tenant_id, opportunity_id, actor_id, *, prepared_by)` 在同session按员工ID排序→机会→Need持FOR SHARE；bootstrap变化即释放冲突，不补锁新owner。原件IO在锁外；当前时间在实际取得锁后读取，不能用等待前的旧时间判有效。
+- 新增独立 `CostingFreezeService`，不把冻结塞进T2的证据服务。公开 `prepare_scope_access/confirm_scope/get_scope/calculate/freeze/get_frozen/get_creation/complete_creation`；报价FX按显式quote_fx_ref读取持久事实。
+- 0043新增 `cost_scope_confirmations/costing_quote_bases/quote_creation_operations`。人工scope绑定完整Need/规格/条款/期限、sheet/coverage/所有原始证据；不能自动把旧覆盖清单升级为适用。供应商自由文本保留，以明确人工映射对应完整目标规格，数量/单位/目的地/quoted/期限硬检查不绕过。
+- freeze接收完整共享 `QuoteCreationIntent` 与幂等键，首次winner分配稳定operation，basis/operation/首次locked_at同事务。完成receipt只由真实报价reader提供；同键异完整请求冲突，未知提交只原键恢复。
+- 未完成operation独占sheet；完成后显式修订可以复用未变锁表并生成新scope/basis。表内成本/核算FX变化须新成本版本；独立报价FX可绑定新的确认记录并重算，不改旧记录。
+- 报价准备与内部读取仅四个既有成本角色；这不授予通用CRM、原件或客户文件权限。context/basis的原文摘录不得直接序列化到HTTP。审批和客户文件分别沿用既有独立授权。
+- 保留旧readiness/研究/Campaign，修复T1同币种无关FX和T2EmployeeId类型minor；真实多连接/0043往返/兼容/结构验收见子计划，T4/T8真实装配不在本任务冒充完成。
 
 ## Task 4：报价版本、状态、客户投影与迁移
+
+执行前交接补正：新入口返回严格`QuoteDetailView`（不可变content快照+state），旧QuoteView/QuoteLineView构造不变；新行带显式rounding。先按operation恢复已写入quote，再考虑当前context；恢复不是重新批准。创建采用报价专用creation session，在外层context lease内、freeze前持报价机会advisory锁并preflight，同session保持至报价写入提交，不跨连接对Opportunity取FOR UPDATE。replaces允许当前active或无active时的latest expired，均CAS预期版本；expired旧行不改。老板抬头仅接name/address/contact，服务端生成source_ref和三字段EMPLOYEE_INPUT Provenance。新增报价证据tenant复合FK关联表，采购/费用为本域判别联合；当前身份reader必填。完整接口在T3B交付后由T4专用brief核定，不允许实现者沿用下列旧简写猜缺失字段。
 
 **Files**
 - Create: `shared/schemas/quote_document.py`, `domains/quotations/service_impl.py`, `domains/quotations/permissions.py`, `infra/db/quotation_uow.py`, `infra/db/repositories/quotations.py`, `migrations/versions/0044_quotations.py`, `tests/unit/test_quotation_service.py`, `tests/integration/test_quotations.py`
@@ -294,7 +265,7 @@ def require_context_hash(expected: str, actual: str) -> None:
 - Produces: `QuotationActor(employee_id: str, role: str, opportunity_scope: str)`，由身份/context 绑定。
 - Produces: `QuotationService.create_from_basis(tenant_id, command: QuoteDraftCommand, basis: QuoteBasis, context: QuoteBusinessContext, *, operation_id: str, actor: QuotationActor) -> QuoteView`。
 - Produces: `get(tenant_id,quote_id,*,actor)`, `list_versions(tenant_id,opportunity_id,*,actor)`；`expire_overdue(tenant_id,*,limit:int) -> int`；`project_customer(quote: QuoteView) -> CustomerQuoteView`（仅投影，外层另验批准）。
-- `QuoteBasis` 精确持有 `basis_id,operation_id,tenant_id,opportunity_id,context_hash,sheet_hash,basis_hash,policy_id,specification,unit,destination,base_currency,quote_currency: str; quantity:int; displayed_unit_price,displayed_total,unit_full_cost:Money; margin_rate,minimum_margin_rate:Decimal; evidence:tuple[QuotePriceEvidence,...]; evidence_valid_until:datetime; inputs_hash:str`；不持有内部私有类。
+- `QuoteBasis` 精确持有 `basis_id,operation_id,request_hash,tenant_id,opportunity_id,context_hash,sheet_hash,basis_hash,policy_id,specification,unit,destination,base_currency,quote_currency: str; quantity:int; displayed_unit_price,displayed_total,unit_full_cost:Money; margin_rate,minimum_margin_rate:Decimal; evidence:tuple[QuotePriceEvidence,...]; evidence_valid_until:datetime; inputs_hash:str`，另含共享`NeedQuoteFacts`及本域等值`QuoteScopeConfirmation`（完整字段对应冻结子计划CostScopeConfirmationView，含原始证据ID/hash、人工映射和Provenance）；上层显式转换，不导入costing域DTO或只保留一个确认hash。
 - `QuotePriceEvidence`（本域schemas）包含 `evidence_id,evidence_hash,kind,basis,specification,unit,currency,confirmed_by:str; quantity_min,quantity_max,moq:int|None; amount:Money; confirmed_at:datetime; valid_until:datetime|None`。报价域按kind再次校验采购quoted、规格数量单位及到期，不能只凭一组引用/hash认可价格。
 - `confirm_issuer(tenant_id,command:QuoteIssuerCreate,*,actor:QuotationActor,idempotency_key:str)->QuoteIssuer`；`get_confirmed_issuer(tenant_id)->QuoteIssuer`（async）。`QuoteIssuerCreate(name,address,contact,source_ref:str)` 不接收confirmed字段；确认仅boss，记录不可变新版本，供T3 reader适配。
 - Produces: `QuoteApplicationService.create(tenant_id,command:QuoteDraftCommand,*,actor_id:EmployeeId,idempotency_key:str)->QuoteView`；构造注入 context_provider、costing、quotations、clock。转换两个域的 DTO 在此显式进行。
@@ -324,7 +295,7 @@ WHERE state IN ('draft','pending_approval','approved','sent');
 ```
 
 - [ ] create_from_basis 再验 tenant/机会/规格/数量/有效期、P和内容一致、已锁依据；单产品只允许一行。修订必须携带 expected_quote_version，在同事务标旧 superseded 并建新版本。并发冲突返回409，不在服务里无界重试分配新版本。
-- [ ] application 使用 context lease → costing.freeze → quotations.create_from_basis → operation complete；quote已写而operation未complete可同键恢复。不能用新幂等键绕过锁住的旧操作。补 receipt 接口 `record_verified_send(tenant_id,quote_id,receipt: QuoteSendReceipt,*,actor)`；`QuoteSendReceipt(attempt_id,quote_id,content_hash,tenant_id,sent_at)` 只由可信reader注入，本批不暴露手写sent HTTP。
+- [ ] application先校验完整QuoteDraftCommand（新增scope_confirmation_id），解析持久scope hash组成共享QuoteCreationIntent；新请求使用context lease → CostingFreezeService.freeze → quotations.create_from_basis → complete_creation。quote表必须UNIQUE(tenant_id,operation_id)并保存request_hash；新增真实QuoteCreationCompletionReader适配，从持久quote取得完整receipt。quote已写而operation未complete可按同key/operation回读恢复，不能用新幂等键绕过pending操作；已完成后显式修订按T3B复用规则。第二道规格校验核对完整scope人工映射及原始PriceEvidence，不能拿供应商自由文本和canonical JSON直接比较。补 receipt 接口 `record_verified_send(tenant_id,quote_id,receipt: QuoteSendReceipt,*,actor)`；`QuoteSendReceipt(attempt_id,quote_id,content_hash,tenant_id,sent_at)` 只由可信reader注入，本批不暴露手写sent HTTP。
 - [ ] `project_customer` 逐字段白名单构造，不 `model_dump(exclude=...)`；报价内部视图单独持有成本信息，JSON序列化均可测试。历史保留 exact旧成本/规则/FX；Actual对照仅比较同规格数量币种，缺收入不生成 realized profit。
 - [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quotation_service.py tests/unit/test_quotation_models.py tests/integration/test_quotations.py tests/integration/test_quote_cost_lock.py -q`；0044 roundtrip及结构检查通过后提交 `feat: 持久化不可变报价版本和安全客户视图`。
 
@@ -337,7 +308,7 @@ WHERE state IN ('draft','pending_approval','approved','sent');
 **Interfaces**
 - Produces: `build_quote_approval_definition() -> WorkflowDefinition`；`register_quote_approval(engine, registry, approvals: ApprovalService) -> None`；`build_quote_approval_handlers(quotations,approvals,context_provider,system_actor)->Mapping[str,StepHandler]`。
 - Produces: quotations `approval_snapshot(tenant_id,quote_id,*,actor)->QuoteApprovalSnapshot`；`bind_approval(tenant_id,quote_id,fact:QuoteApprovalFact,*,actor)->None`；`apply_approval_facts(tenant_id,quote_id,facts:tuple[QuoteApprovalFact,...],context:QuoteBusinessContext,*,actor)->QuoteView`。
-- `QuoteApprovalSnapshot(quote_id,content_hash,context_hash,prepared_by,owner_id: str, required_types:tuple[str,...], internal_quote:QuoteView, expires_at:datetime)`；所有 facts从 approvals.get 读取，event仅作唤醒。
+- `QuoteApprovalSnapshot(quote_id,content_hash,context_hash,prepared_by,owner_id: str, required_types:tuple[str,...], internal_quote:QuoteDetailView, expires_at:datetime)`；所有 facts从 approvals.get 读取，event仅作唤醒。
 - Produces pure `quote_change_set_ref(quote_id:str,content_hash:str,approval_type:str)->str`，严格形状 `quote:{quote_id}:{content_hash}:{approval_type}`。
 - Existing `ApprovalService.submit` 新增可选 keyword `expires_at_limit: datetime|None=None`，仅可将既有类型期限缩短，不能延长；旧调用不变。提交时间之后的UTC限制才有效，已有包同key但新载荷/期限不一致报冲突；本变化写入ADR0018并补旧流程回归。
 
@@ -472,8 +443,10 @@ def test_public_quote_command_cannot_claim_approval_or_cost_lock():
 - [ ] 两个私有文件工具 `quotation.file.generate` / `quotation.file.read`，以及只读价格资料工具 `quotation.evidence.read`；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；read 为 LOW且每次重验真实授权。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
 - [ ] handler以 quote_id/file_id 或source_ref/locator取受信数据；参数和ledger不含正文/成本/bytes。PDF下载bytes及原始资料用一次性typed槽，同调用栈取走并finally清理。生成返回安全artifact/fileID，持久去重由T6；拒绝时存储/renderer调用为零。
 - [ ] 实现PricingEvidenceReader与NeedUnitEvidenceReader：仅已授权raw source，Gateway读取后验证实际hash/locator，消息来源先经现有消息阅读权限转换成raw artifact；不接受generated artifact为证据。未知结果结构化失败，不把空内容当核验完成。最小来源支持和定位契约见下段；未接入来源固定source_unsupported。
+- [ ] 为人工选择原文位置提供同profile的受鉴权、受限文本预览及locator生成入口；只能访问已授权upload/message，不接受任意URL/路径。选定范围由后端生成/核验canonical locator，正文只通过本次Gateway结果槽送已授权HTTP界面，不进入ledger/日志/模型。不要求用户自行从另一PDF引擎猜字符偏移或手算片段hash。
 - [ ] API端点（均在 `/costing-quotes`）：`GET/POST /policies`、`GET/POST /issuer`、`POST /quote-fx`、`POST /price-evidence`、`POST /cost-sheets/{id}/coverage`、`POST /cost-sheets/{id}/calculate`、`GET/POST /opportunities/{id}/quotes`、`GET /quotes/{id}`、`POST /quotes/{id}/submit`、`POST /quotes/{id}/revisions`、`POST /quotes/{id}/files`、`GET /quotes/{id}/files/{file_id}`。另加 `GET /opportunities/{id}/quote-context` 返回创建前所需当前hash和可编辑资料，不暴露凭证/成本给无权角色；不能把context查询设计成必须先有quote才能调用。
 - [ ] 增加已确认资料的可恢复读取：`GET /opportunities/{id}/price-evidence`、`GET /quote-fx/{fx_id}`、`GET /cost-sheets/{id}/coverage`、`GET /quotes/{id}/files`；租户/角色/机会范围与写入一致。对应public service补 `list_price_evidence(tenant_id,opportunity_id,*,actor)`, `get_coverage(tenant_id,cost_sheet_id,*,actor)`, `list_files(tenant_id,quote_id,*,actor)`，分别返回typed证据列表、确认清单、文件列表；刷新页面不依赖内存缓存的来源ID。
+- [ ] 接入T3B的`POST /cost-sheets/{id}/scope-confirmations`与对应已确认记录GET；确认前呈现完整目标规格/需求、条款、期限和每条来源的人工适用性说明。prepare_scope_access在context lease外，确认/冻结在受保护事实下提交。报价准备上下文用专门HTTP投影，不直接model_dump内部Need/context/basis中的source_quote；原件展开仍独立鉴权。新计算请求显式quote_fx_ref，不能提交自证的FxRate对象。API/worker组合分别注入T2证据服务和T3B冻结服务，不注册受控替身。
 - [ ] POST绑定HTTP幂等键、当前员工；失败返回固定code与可展示原因，旧请求readiness不新增写。当前规则提高底线/证据失效/quote过期时正式file拒绝；文件返回前再验quote状态，不在鉴权前取bytes。
 
 ```python
@@ -499,7 +472,7 @@ if runtime.quote_expiry_driver is not None:
 ## Task 9：前端接线、权限展示和类型生成
 
 **Files**
-- Create: `apps/web/src/views/costing-quotes/PricingPolicyForm.vue`, `apps/web/src/views/costing-quotes/PriceEvidenceForm.vue`, `apps/web/src/views/costing-quotes/CostCoverageForm.vue`, `apps/web/src/views/costing-quotes/QuoteVersions.vue`, `apps/web/src/views/costing-quotes/QuoteIssuerForm.vue`, `apps/web/src/views/costing-quotes/quote-input.ts`, `apps/web/tests/quotation-flow.test.ts`
+- Create: `apps/web/src/views/costing-quotes/PricingPolicyForm.vue`, `apps/web/src/views/costing-quotes/PriceEvidenceForm.vue`, `apps/web/src/views/costing-quotes/CostCoverageForm.vue`, `apps/web/src/views/costing-quotes/NeedUnitConfirmationForm.vue`, `apps/web/src/views/costing-quotes/CostScopeConfirmationForm.vue`, `apps/web/src/views/costing-quotes/QuoteVersions.vue`, `apps/web/src/views/costing-quotes/QuoteIssuerForm.vue`, `apps/web/src/views/costing-quotes/quote-input.ts`, `apps/web/tests/quotation-flow.test.ts`
 - Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/api/api.d.ts`, `apps/web/tests/costing-quotes.test.ts`
 
 **Interfaces**
@@ -528,6 +501,7 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 ```
 
 - [ ] 拆分表单：老板政策与22项归类无预填利润率；老板确认本公司报价抬头；人工填写核算→报价汇率及来源；原价证据显示确认来源；适用清单区分缺失/零/不适用；目标和实际报价收益分列。报价输入数量/单位/币种不从网页猜，现有页面的示例默认值不能作为新方案确认值。
+- [ ] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
 - [ ] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
 - [ ] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
 - [ ] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。
