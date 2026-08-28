@@ -395,6 +395,8 @@ if runtime.quote_expiry_driver is not None:
 
 ## Task 9：前端接线、权限展示和类型生成
 
+- [x] T9工程接线及Fix1独立复审完成：完整审查3999ad7..64d13e4发现的三项Important由41ef0c2修复，增量复审全部关闭、无新问题。最终21文件233前端测试/typecheck/build/生成漂移/结构通过；lint零errors、133既有warnings如实保留。成本hash变化、审批忙态、恢复调用引用均有整页RED→GREEN；真实Browser/PDF/完整后端验收仍归T10，不等同整个Phase2完成。
+
 **Files**
 - Create: `apps/web/src/views/costing-quotes/PricingPolicyForm.vue`, `apps/web/src/views/costing-quotes/PriceEvidenceForm.vue`, `apps/web/src/views/costing-quotes/CostCoverageForm.vue`, `apps/web/src/views/costing-quotes/NeedUnitConfirmationForm.vue`, `apps/web/src/views/costing-quotes/CostScopeConfirmationForm.vue`, `apps/web/src/views/costing-quotes/QuoteVersions.vue`, `apps/web/src/views/costing-quotes/QuoteIssuerForm.vue`, `apps/web/src/views/costing-quotes/quote-input.ts`, `apps/web/tests/quotation-flow.test.ts`
 - Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/router.ts`, `apps/web/src/api/client.ts`, `apps/web/src/api/api.d.ts`, `apps/web/tests/api-client-identity.test.ts`, `apps/web/tests/costing-quotes.test.ts`, `apps/web/tests/information-architecture.test.ts`
@@ -487,7 +489,7 @@ export function utf16SelectionToCodepoints(
 }
 ```
 
-- [ ] 先在新测试文件加入payload保真测试，再加入整页fake fetch行为测试（沿用现有createApp+router方式，不引入另一个测试框架）：
+- [x] 先在新测试文件加入payload保真测试，再加入整页fake fetch行为测试（沿用现有createApp+router方式，不引入另一个测试框架）：
 
 ```typescript
 import { expect, it } from 'vitest';
@@ -498,8 +500,8 @@ it('keeps precise money text without Number coercion', () => {
 });
 ```
 
-- [ ] RED：`npm --prefix apps/web test -- tests/quotation-flow.test.ts`；生成类型 `npm --prefix apps/web run gen:api`，确认使用当前PYTHONPATH。
-- [ ] 新建 `apps/web/src/views/costing-quotes/quote-input.ts` 导出 `createQuotePriceBody(amount:string,currency:string): components['schemas']['Money']`；trim字符串，拒绝空值，不做金额运算。
+- [x] RED：`npm --prefix apps/web test -- tests/quotation-flow.test.ts`；生成类型 `npm --prefix apps/web run gen:api`，确认使用当前PYTHONPATH。
+- [x] 新建 `apps/web/src/views/costing-quotes/quote-input.ts` 导出 `createQuotePriceBody(amount:string,currency:string): components['schemas']['Money']`；trim字符串，拒绝空值，不做金额运算。
 
 ```typescript
 export function createQuotePriceBody(amount: string, currency: string): components['schemas']['Money'] {
@@ -508,14 +510,14 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 }
 ```
 
-- [ ] 拆分表单：老板政策与22项归类无预填利润率；老板确认本公司报价抬头；人工填写核算→报价汇率及来源；原价证据显示确认来源；适用清单区分缺失/零/不适用；目标和实际报价收益分列。报价输入数量/单位/币种不从网页猜，现有页面的示例默认值不能作为新方案确认值。
-- [ ] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
-- [ ] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
-- [ ] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
-- [ ] 报价审批沿B2§2.4生成ApprovalView.proposed_change_display的服务端中文平面字段显示；没有新增嵌套typed HTTP报价对象，不JSON.parse自由字符串、不type assertion造DTO。金额/比例/单件整单/前版与FX口径由服务投影，UI不重算或据标签授权；legacy展示保持。最终B2交付前不把当前旧JSON字符串视为该可读投影已完成。
-- [ ] 报价结果通知使用固定相对深链`/costing-quotes/quotes/{quote_id}`，同CostingQuotes页面显式声明`/costing-quotes/quotes/:quoteId`路由，按path参数加载指定版本；不跳最新，不要求通知附带OpportunityId，不解析自由正文。补实际通知链接的router匹配、指定版本加载及身份/页面scope失效测试；通知LOW只进worker站内，API旧出口仅日志，不新增外发按钮或客户端通知权限。
-- [ ] 同步成本报价路由与页面的旧Phase1-only说明，准确描述本批Phase2成本/报价能力且不声称整个Phase2完成；真实启用/可执行仍看后端配置与allowed_actions。information-architecture.test.ts将成本报价与仍为Phase1人工的products/sourcing分开断言，保留其他路由与Phase3禁用约束，不删断言取绿。
-- [ ] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。
+- [x] 拆分表单：老板政策与22项归类无预填利润率；老板确认本公司报价抬头；人工填写核算→报价汇率及来源；原价证据显示确认来源；适用清单区分缺失/零/不适用；目标和实际报价收益分列。报价输入数量/单位/币种不从网页猜，现有页面的示例默认值不能作为新方案确认值。
+- [x] 接上客户单位确认与成本适用性确认两表单。缺单位/绑定失效明确显示；无消息读取权不能确认但不扩收件箱权限。原文选择使用后端同profile预览和locator；scope表单展示完整目标规格/目的地/时间、条款、期限及每条来源的人工映射说明。提交后保留确认ID，需求/条款变化导致旧确认失效时要求重新确认，不自动刷新hash冒充已确认；幂等未知结果仍保留原键。
+- [x] 版本列表显示draft/等待/approved/expired/superseded及先前成本引用；修订确认明确旧版停用；未知请求结果显示待核对，保留原幂等键，不“一键重试”生成新单。下载按钮只取后端授权文件，没有自动发送按钮。
+- [x] 审批页一屏看必要信息、证据与低于底线例外，明确批准不发送；Run只展示安全摘要。客户文件预览不混内部成本数据；空数据/503/403/409/过期原因单独展示。
+- [x] 报价审批沿B2§2.4生成ApprovalView.proposed_change_display的服务端中文平面字段显示；没有新增嵌套typed HTTP报价对象，不JSON.parse自由字符串、不type assertion造DTO。金额/比例/单件整单/前版与FX口径由服务投影，UI不重算或据标签授权；legacy展示保持。最终B2交付前不把当前旧JSON字符串视为该可读投影已完成。
+- [x] 报价结果通知使用固定相对深链`/costing-quotes/quotes/{quote_id}`，同CostingQuotes页面显式声明`/costing-quotes/quotes/:quoteId`路由，按path参数加载指定版本；不跳最新，不要求通知附带OpportunityId，不解析自由正文。补实际通知链接的router匹配、指定版本加载及身份/页面scope失效测试；通知LOW只进worker站内，API旧出口仅日志，不新增外发按钮或客户端通知权限。
+- [x] 同步成本报价路由与页面的旧Phase1-only说明，准确描述本批Phase2成本/报价能力且不声称整个Phase2完成；真实启用/可执行仍看后端配置与allowed_actions。information-architecture.test.ts将成本报价与仍为Phase1人工的products/sourcing分开断言，保留其他路由与Phase3禁用约束，不删断言取绿。
+- [x] GREEN：`npm --prefix apps/web test -- tests/costing-quotes.test.ts tests/quotation-flow.test.ts`；再typecheck/build；提交 `feat: 接通成本政策证据和报价审批界面`。
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
