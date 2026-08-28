@@ -35,10 +35,32 @@ def _parse_costing_decimal(value: object) -> Decimal:
     return parsed
 
 
+def _parse_costing_datetime(value: object) -> datetime:
+    """接受 HTTP 的带时区 ISO 8601 字符串或内部已解析 datetime。"""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and "T" in value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("时间必须是有效 ISO 8601 字符串") from exc
+    else:
+        raise ValueError("时间必须是带时区 ISO 8601 字符串")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("时间必须含时区")
+    return parsed
+
+
 CostingDecimalInput = Annotated[
     Decimal,
     BeforeValidator(_parse_costing_decimal),
     WithJsonSchema({"type": "string"}),
+]
+
+CostingDatetimeInput = Annotated[
+    datetime,
+    BeforeValidator(_parse_costing_datetime),
+    WithJsonSchema({"type": "string", "format": "date-time"}),
 ]
 
 
@@ -136,10 +158,10 @@ class PricingPolicyCreate(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     category: str | None
-    minimum_margin_rate: Decimal
-    target_margin_rate: Decimal
+    minimum_margin_rate: CostingDecimalInput
+    target_margin_rate: CostingDecimalInput
     cost_groups: dict[str, Literal["goods", "variable", "fixed"]]
-    effective_from: datetime
+    effective_from: CostingDatetimeInput
     source_ref: str
 
     @model_validator(mode="after")

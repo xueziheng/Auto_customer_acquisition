@@ -7,6 +7,7 @@ from decimal import Decimal as D
 import pytest
 
 from domains.costing.calculation import canonical_pricing_hash, compute_metrics
+from domains.costing.errors import MissingFxSnapshotError
 from domains.costing.schemas import (
     CostGroups,
     PricingOptions,
@@ -163,13 +164,18 @@ def test_canonical_pricing_hash_changes_when_commercial_input_changes(
     )
 
 
-def _pricing_policy() -> PricingPolicyView:
+def _pricing_policy(
+    *,
+    policy_id: str = "policy-1",
+    minimum: D = D("0.20"),
+    target: D = D("0.36"),
+) -> PricingPolicyView:
     return PricingPolicyView(
-        policy_id="policy-1",
+        policy_id=policy_id,
         content_hash="policy-content-hash",
         category=None,
-        minimum_margin_rate=D("0.20"),
-        target_margin_rate=D("0.36"),
+        minimum_margin_rate=minimum,
+        target_margin_rate=target,
         cost_groups={
             item_type.value: (
                 "goods"
@@ -184,6 +190,135 @@ def _pricing_policy() -> PricingPolicyView:
         source_ref="boss-policy-record",
         confirmed_by="boss-1",
         confirmed_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+    )
+
+
+def _quoted_sheet(
+    *,
+    quantity: int = 3,
+    fx_snapshot_id: str = "cost-fx-1",
+    product_source: str = "supplier-quote",
+    include_pending_item: bool = False,
+) -> CostSheet:
+    """构造含外币货品、单位费用和整单费用的完整报价成本表。"""
+    items = [
+        CostItem(
+            item_type=CostItemType.PRODUCT_PURCHASE,
+            amount=Money(D(7), CurrencyCode("CNY")),
+            price_basis="quoted",
+            is_per_unit=True,
+            source_ref=product_source,
+            entered_by=EmployeeId("buyer-1"),
+        ),
+        CostItem(
+            item_type=CostItemType.PACKAGING,
+            amount=Money(D("0.02"), CurrencyCode("USD")),
+            price_basis="quoted",
+            is_per_unit=True,
+            source_ref="packing-quote",
+            entered_by=EmployeeId("buyer-1"),
+        ),
+        CostItem(
+            item_type=CostItemType.DOMESTIC_FREIGHT,
+            amount=Money(D(3), CurrencyCode("USD")),
+            price_basis="quoted",
+            is_per_unit=False,
+            source_ref="freight-quote",
+            entered_by=EmployeeId("buyer-1"),
+        ),
+    ]
+    if include_pending_item:
+        items.append(
+            CostItem(
+                item_type=CostItemType.AGENT_API_ALLOCATION,
+                amount=Money(D(999), CurrencyCode("USD")),
+                price_basis="quoted",
+                is_per_unit=True,
+                source_ref=None,
+                entered_by=None,
+            )
+        )
+    return CostSheet(
+        cost_sheet_id=CostSheetId("sheet-1"),
+        tenant_id=TenantId("tenant-1"),
+        opportunity_id=OpportunityId("opportunity-1"),
+        version_type=CostSheetVersion.QUOTED,
+        version_number=3,
+        quantity=quantity,
+        base_currency="USD",
+        quote_currency="EUR",
+        created_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+        fx_snapshot_id=FxSnapshotId(fx_snapshot_id),
+        fx_rates=(
+            FxRate(
+                base=CurrencyCode("CNY"),
+                quote=CurrencyCode("USD"),
+                rate=D("0.14"),
+                observed_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+                source="locked-cost-fx",
+            ),
+        ),
+        items=items,
+    )
+
+
+def _margin_rule(
+    *, minimum: D = D("0.20"), target: D = D("0.36")
+) -> MarginRule:
+    """构造与测试政策一致的旧兼容利润规则。"""
+    return MarginRule(
+        tenant_id=TenantId("tenant-1"),
+        minimum_margin_rate=minimum,
+        target_margin_rate=target,
+        effective_from=datetime(2026, 8, 28, 8, tzinfo=UTC),
+    )
+
+
+def _manual_options(
+    *,
+    unit_price: D = D("2.005"),
+    unit_places: int = 2,
+    total_places: int = 2,
+    quote_fx: FxRate | None = None,
+) -> PricingOptions:
+    """构造人工客户价与锁定核算币到报价币直连汇率。"""
+    return PricingOptions(
+        mode="manual",
+        unit_price=Money(unit_price, CurrencyCode("EUR")),
+        rounding=RoundingPolicy(
+            unit_places=unit_places,
+            total_places=total_places,
+            strategy="ROUND_HALF_UP",
+        ),
+        quote_fx=quote_fx
+        or FxRate(
+            base=CurrencyCode("USD"),
+            quote=CurrencyCode("EUR"),
+            rate=D("0.8"),
+            observed_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+            source="locked-quote-fx",
+        ),
+        algorithm_version="costing-v1",
+    )
+
+
+def _breakdown(
+    *,
+    sheet: CostSheet | None = None,
+    policy: PricingPolicyView | None = None,
+    margin_rule: MarginRule | None = None,
+    options: PricingOptions | None = None,
+    now: datetime = datetime(2026, 8, 28, 9, tzinfo=UTC),
+):
+    """只通过公开计算接口取得快照，测试不接触内部哈希构造。"""
+    return compute_breakdown(
+        sheet or _quoted_sheet(),
+        margin_rule or _margin_rule(),
+        policy=policy or _pricing_policy(),
+        options=options or _manual_options(),
+        coverage_hash="coverage-hash",
+        context_hash="context-hash",
+        now=now,
     )
 
 
@@ -277,6 +412,83 @@ def test_breakdown_uses_grouped_costs_and_rounded_customer_revenue() -> None:
     assert result.displayed_total == Money(D("6.03"), CurrencyCode("EUR"))
     assert result.effective_unit_revenue == Money(D("2.5125"), CurrencyCode("USD"))
     assert result.computed_at == datetime(2026, 8, 28, 9, tzinfo=UTC)
+
+
+def test_breakdown_inputs_hash_covers_real_commercial_inputs_but_not_clock() -> None:
+    """真实计算快照的哈希随商业依据变化，不能随计算时钟漂移。"""
+    baseline = _breakdown()
+    changed_results = [
+        _breakdown(policy=_pricing_policy(policy_id="policy-2")),
+        _breakdown(sheet=_quoted_sheet(quantity=4)),
+        _breakdown(options=_manual_options(unit_price=D("2.015"))),
+        _breakdown(options=_manual_options(unit_places=3, total_places=2)),
+        _breakdown(sheet=_quoted_sheet(product_source="supplier-quote-v2")),
+        _breakdown(
+            options=_manual_options(
+                quote_fx=FxRate(
+                    base=CurrencyCode("USD"),
+                    quote=CurrencyCode("EUR"),
+                    rate=D("0.81"),
+                    observed_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+                    source="locked-quote-fx-v2",
+                )
+            )
+        ),
+        _breakdown(sheet=_quoted_sheet(fx_snapshot_id="cost-fx-2")),
+    ]
+
+    assert all(result.inputs_hash != baseline.inputs_hash for result in changed_results)
+    assert (
+        _breakdown(now=datetime(2026, 8, 29, 9, tzinfo=UTC)).inputs_hash
+        == baseline.inputs_hash
+    )
+
+
+def test_breakdown_excludes_pending_amount_and_applies_distinct_unit_total_precision() -> None:
+    """未确认金额不入成本；客户单价和总额必须依次按各自精度舍入。"""
+    with_pending = _breakdown(sheet=_quoted_sheet(include_pending_item=True))
+    different_precision = _breakdown(
+        options=_manual_options(unit_places=2, total_places=0)
+    )
+
+    assert with_pending.metrics.unit_full_cost == D("2.00")
+    assert with_pending.metrics.full_cost_profit == D("0.5125")
+    assert different_precision.displayed_unit_price == Money(
+        D("2.01"), CurrencyCode("EUR")
+    )
+    assert different_precision.displayed_total == Money(D(6), CurrencyCode("EUR"))
+    assert different_precision.effective_unit_revenue == Money(
+        D("2.5"), CurrencyCode("USD")
+    )
+
+
+def test_breakdown_rejects_missing_or_reverse_quote_fx() -> None:
+    """报价换算只能使用存在的核算币种到报价币种直连冻结汇率。"""
+    missing = PricingOptions(
+        mode="manual",
+        unit_price=Money(D("2.005"), CurrencyCode("EUR")),
+        rounding=RoundingPolicy(
+            unit_places=2,
+            total_places=2,
+            strategy="ROUND_HALF_UP",
+        ),
+        quote_fx=None,
+        algorithm_version="costing-v1",
+    )
+    reverse = _manual_options(
+        quote_fx=FxRate(
+            base=CurrencyCode("EUR"),
+            quote=CurrencyCode("USD"),
+            rate=D("1.25"),
+            observed_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
+            source="reverse-quote-fx",
+        )
+    )
+
+    with pytest.raises(MissingFxSnapshotError, match="锁定报价汇率"):
+        _breakdown(options=missing)
+    with pytest.raises(ValidationError, match="直连方向"):
+        _breakdown(options=reverse)
 
 
 @pytest.mark.parametrize(

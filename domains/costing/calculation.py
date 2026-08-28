@@ -246,6 +246,9 @@ def _calculation_inputs(
         },
         "sheet": {
             "cost_sheet_id": str(sheet.cost_sheet_id),
+            "fx_snapshot_id": (
+                None if sheet.fx_snapshot_id is None else str(sheet.fx_snapshot_id)
+            ),
             "version_number": sheet.version_number,
             "quantity": sheet.quantity,
             "base_currency": sheet.base_currency,

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from domains.costing.schemas import PricingPolicyCreate
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     CostSheetId,
@@ -23,6 +25,25 @@ CostSheet = _models.CostSheet
 CostSheetVersion = _models.CostSheetVersion
 MarginRule = _models.MarginRule
 RiskAcceptance = _models.RiskAcceptance
+
+
+def _pricing_policy_payload() -> dict[str, object]:
+    """构造完整政策 HTTP 载荷，避免测试借不完整数据掩盖边界行为。"""
+    return {
+        "category": None,
+        "minimum_margin_rate": "0.20",
+        "target_margin_rate": "0.36",
+        "cost_groups": {
+            item_type.value: "goods"
+            if item_type is CostItemType.PRODUCT_PURCHASE
+            else "variable"
+            if item_type is CostItemType.PACKAGING
+            else "fixed"
+            for item_type in CostItemType
+        },
+        "effective_from": "2026-08-28T08:00:00Z",
+        "source_ref": "boss-policy-record",
+    }
 
 
 def _item(
@@ -167,6 +188,45 @@ def test_margin_rule_accepts_explicit_decimal_policy_without_defaults() -> None:
 
     assert rule.minimum_margin_rate == Decimal("0.15")
     assert rule.target_margin_rate == Decimal("0.25")
+
+
+def test_pricing_policy_accepts_decimal_strings_at_python_and_json_http_boundaries() -> None:
+    """已解码和原始 JSON 请求都必须用十进制字符串保留利润率精度。"""
+    decoded = _pricing_policy_payload()
+    from_python = PricingPolicyCreate.model_validate(decoded)
+    from_json = PricingPolicyCreate.model_validate_json(json.dumps(decoded))
+
+    assert from_python.minimum_margin_rate == Decimal("0.20")
+    assert from_python.target_margin_rate == Decimal("0.36")
+    assert from_json.minimum_margin_rate == Decimal("0.20")
+    assert from_json.target_margin_rate == Decimal("0.36")
+
+
+@pytest.mark.parametrize("invalid_rate", [0.2, 0, True])
+def test_pricing_policy_rejects_non_string_rate_at_http_boundaries(
+    invalid_rate: object,
+) -> None:
+    """float、int 与 bool 会在 HTTP 解析前失真，两个入口均须拒绝。"""
+    decoded = _pricing_policy_payload() | {"minimum_margin_rate": invalid_rate}
+    json_payload = decoded
+
+    with pytest.raises(ValueError, match="十进制字符串"):
+        PricingPolicyCreate.model_validate(decoded)
+    with pytest.raises(ValueError, match="十进制字符串"):
+        PricingPolicyCreate.model_validate_json(json.dumps(json_payload))
+
+
+@pytest.mark.parametrize("invalid_time", [1_788_000_000, True])
+def test_pricing_policy_rejects_numeric_or_boolean_time_at_http_boundaries(
+    invalid_time: object,
+) -> None:
+    """政策时间必须是带时区 ISO 字符串，不能由时间戳或 bool 隐式转换。"""
+    payload = _pricing_policy_payload() | {"effective_from": invalid_time}
+
+    with pytest.raises(ValueError, match="时间必须是带时区 ISO"):
+        PricingPolicyCreate.model_validate(payload)
+    with pytest.raises(ValueError, match="时间必须是带时区 ISO"):
+        PricingPolicyCreate.model_validate_json(json.dumps(payload))
 
 
 def test_cost_inputs_reject_values_that_numeric_storage_would_round() -> None:
