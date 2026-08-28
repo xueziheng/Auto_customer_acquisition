@@ -163,3 +163,87 @@ def test_rounding_and_terms_reject_unsupported_shape() -> None:
     ]:
         with pytest.raises(ValidationError):
             module.QuoteTerm(kind=kind, text=text)
+
+
+def employee(role: str = "boss", **changes: object):
+    """运行时受控员工，不作为真实身份来源。"""
+    from shared.schemas.quote_facts import QuoteEmployeeFact
+    return QuoteEmployeeFact(**({"tenant_id": TENANT, "employee_id": ACTOR,
+        "role": role, "is_active": True, "manager_id": None, "team_id": None} | changes))
+
+
+def issuer():
+    """抬头是老板输入事实，未声称外部工商文件核验。"""
+    from dataclasses import replace
+
+    from domains.quotations import schemas
+    from shared.schemas.provenance import SourceType
+    assert hasattr(schemas, "QuoteIssuer"), "缺少抬头内部契约"
+    p = replace(field("issuer").provenance, source_type=SourceType.EMPLOYEE_INPUT,
+                source_id="issuer_test", source_quote=None)
+    return schemas.QuoteIssuer(issuer_id="issuer_test", content_hash="f" * 64,
+        name="Supplier Company", address="Test address", contact="hello@example.test",
+        source_ref="issuer_test", confirmed_by=ACTOR, confirmed_at=p.confirmed_at,
+        field_provenance={name: p for name in ("name", "address", "contact")})
+
+
+def business_context(**changes: object):
+    """所有标量从完整事实确定性投影，hash不由调用者临时填充。"""
+    from domains.quotations import schemas, service
+    from shared.schemas.quote_facts import QuoteRuntimeFacts
+    assert hasattr(schemas, "QuoteBusinessContext"), "缺少完整业务上下文"
+    facts = changes.pop("need_facts", bound_facts(material=field("steel"),
+        size_spec=field("50 mm"), packaging=field("carton"), destination=field("US")))
+    specification = service.quote_specification(facts)
+    values = {"tenant_id": TENANT, "opportunity_id": "opp_test", "need_id": NEED,
+        "account_id": "acct_test", "opportunity_state": "qualified", "owner_id": ACTOR,
+        "prepared_by": ACTOR, "account_name": "Buyer", "country": "US",
+        "category": "hinges", "specification": service.canonical_quote_specification(specification),
+        "unit": "pieces", "destination": "US", "quantity": 500, "need_facts": facts,
+        "need_facts_hash": demand_service.need_quote_facts_hash(facts),
+        "specification_hash": service.quote_specification_hash(specification), "issuer": issuer(),
+        "runtime": QuoteRuntimeFacts(current_actor=employee(), owner=employee(), preparer=employee())}
+    return schemas.QuoteBusinessContext(**(values | changes))
+
+
+@pytest.mark.parametrize("role", ["boss", "product", "sourcing", "finance", "sales", "manager", "viewer"])
+@pytest.mark.parametrize("action", ["prepare", "read_internal"])
+def test_quote_preparation_purpose_policy(role: str, action: str) -> None:
+    from domains.quotations import service
+    assert hasattr(service, "StrictQuotePreparationPolicy"), "缺少准备用途授权"
+    from domains.quotations.errors import QuoteContextPermissionError
+    policy = service.StrictQuotePreparationPolicy()
+    if role in {"boss", "product", "sourcing", "finance"}:
+        assert policy.require(TENANT, employee(role), action=action)
+    else:
+        with pytest.raises(QuoteContextPermissionError):
+            policy.require(TENANT, employee(role), action=action)
+
+
+def test_context_hash_binds_business_not_runtime_state() -> None:
+    before = business_context()
+    from shared.schemas.quote_facts import QuoteRuntimeFacts
+    other = employee("finance", employee_id="emp_other")
+    assert business_context(runtime=QuoteRuntimeFacts(current_actor=other,
+        owner=employee(), preparer=employee()), opportunity_state="quoted").context_hash == before.context_hash
+    for change in ({"account_name": "Buyer changed"}, {"country": "CA"},
+                   {"prepared_by": "emp_other"}, {"issuer": issuer().model_copy(update={"content_hash": "e" * 64})}):
+        if "prepared_by" in change:
+            change["runtime"] = QuoteRuntimeFacts(current_actor=employee(), owner=employee(), preparer=other)
+        assert business_context(**change).context_hash != before.context_hash
+    for name in ("material", "packaging", "size_spec", "application"):
+        updated = before.need_facts.model_copy(update={name: field("changed")})
+        assert business_context(need_facts=updated).context_hash != before.context_hash
+    with pytest.raises(ValidationError):
+        business_context(context_hash="a" * 64)
+
+
+@pytest.mark.parametrize("change", [{"quantity": 501}, {"unit": "boxes"},
+    {"destination": "CA"}, {"category": "furniture"}, {"need_facts_hash": "0" * 64},
+    {"specification": "50 mm"}, {"specification_hash": "0" * 64}, {"account_id": "acct_wrong"}])
+def test_context_rejects_facts_scalar_mismatch(change: dict[str, object]) -> None:
+    from domains.quotations import schemas
+    assert hasattr(schemas, "QuoteBusinessContext"), "缺少完整业务上下文"
+    from domains.quotations.errors import QuoteContextError
+    with pytest.raises((ValidationError, QuoteContextError)):
+        business_context(**change)

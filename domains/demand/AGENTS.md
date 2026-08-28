@@ -131,3 +131,6 @@ T3A受控reader/authorizer不注册生产，真实适配与HTTP/UI由后续装�
 
 新冻结消费者使用`NeedQuoteFacts`及公开纯函数，保留全部Provenance，不从展示摘要补造来源。
 缺单位、未确认、绑定stale须阻断新冻结；不影响旧流程读取。
+
+T3B将`NeedQuoteFacts`纯DTO迁至shared并保持原公开名称同class重导出；旧字节hash和错误码不变。
+单位有效性/确认规则仍仅在demand，报价准备内部guard不能被解释为绕过T3A人工确认来源权限。

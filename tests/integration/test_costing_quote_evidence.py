@@ -18,7 +18,7 @@ from domains.costing.service import cost_item_type_values
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.tables import OpportunityRow, RawArtifactRow
 from shared.errors import IdempotencyConflict, PermissionDenied, ValidationError
-from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId, new_id
+from shared.schemas.identifiers import CostSheetId, EmployeeId, OpportunityId, TenantId, new_id
 
 NOW = datetime(2026, 8, 28, 9, tzinfo=UTC)
 BOSS = CostingActor("emp-boss", "boss", CostingScope.TENANT)

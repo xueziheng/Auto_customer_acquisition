@@ -63,3 +63,13 @@ draft ──→ pending_approval ──→ approved ──→ sent ──→ acc
 报价模型、版本化、状态机、禁止承诺注册表、审批衔接。Phase 1 报价由人工起草，但走同一套结构和门禁。
 
 不做：报价 PDF 生成（Phase 2）、多币种并列报价、自动折扣策略。
+
+## Phase 2 报价准备用途
+
+`QuoteBusinessContext`仅供可信内部应用；含完整Need原文摘录，不可直接序列化为HTTP/日志。
+prepare/read_internal只开放当前在职boss/product/sourcing/finance，不借此扩大CRM、客户文件、
+消息或原件权限。审批仍由approvals决定，客户文件仍按机会ABAC，不复用准备用途policy。
+
+业务hash绑定完整Need来源、负责人、原起草人和抬头版本；不含本次actor、runtime或正常机会状态。
+完整规格保留material/packaging等维度及None，供应商自由文本不能与canonical JSON猜测等价。
+context lease按员工→机会→Need取SHARE，直到内部持久事务完成；外部bytes读取不得进入锁区间。

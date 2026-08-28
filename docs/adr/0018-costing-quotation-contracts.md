@@ -119,3 +119,8 @@ HTTP/UI及生产装配不在T3A中。后续冻结应在自己持锁连接投影�
 与重复项、期限、scope确认及显式修订版本。其Decimal规范化不依赖运行时精度，且与保留
 尾零的T3A事实编码隔离；不能为了统一格式而改变历史事实身份。operation/completion为
 中立内部DTO，不接受客户端自证完成；真实报价存在性仍须由后续可信报价reader证明。
+
+报价准备采用用途隔离：四成本角色只获得内部最小机会/Need事实，不获得通用CRM/原件/客户文件
+访问权。SQL adapter按排序员工→机会→Need的SHARE锁同session投影；bootstrap关联变化整轮失败，
+不能持机会锁再补锁新负责人。员工FK KEY SHARE与SHARE兼容，成本持久提交发生在lease内。
+上下文业务hash排除runtime与机会正常生命周期状态，但保留原起草人/owner和所有事实来源。
