@@ -5,7 +5,7 @@
 Artifact Store 是内容寻址的受信基础设施，公共契约严格拆成两类：
 
 - `RawArtifactStore`：邮件原文、聊天截图、PDF、Word、Excel、网页快照、图片、音频；
-- `GeneratedArtifactStore`：系统生成的派生产物，Phase 1 当前只有 `email_draft`。
+- `GeneratedArtifactStore`：系统生成的派生产物，`email_draft`与Phase 2新增`quote_pdf`。
 
 生成草稿不是客户原话，也不能作为原始证据或 Provenance 链终点。禁止恢复一个混合
 Raw/Generated 的宽泛 `ArtifactStore` 接口。
@@ -30,6 +30,21 @@ Raw/Generated 的宽泛 `ArtifactStore` 接口。
 
 S3/MinIO SDK、endpoint/bucket 传输和凭证解析只属于 `connectors/object_store/`。
 PostgreSQL metadata 只由 `infra/db/` 实现。本目录只依赖两个窄 Protocol，不持有凭证。
+
+## Phase 2 报价PDF边界
+
+`quote_pdf`与邮件草稿的MIME/subject/key/模板规则互斥，原Raw.PDF仍是证据。
+模板只读共享`shared.schemas.quote_files`注册集合；Store验证内容完整性和幂等绑定，
+不判断run是否真实、报价是否获批、员工是否可使用客户文件。
+
+仅QUOTE_PDF在object put尝试后的未知提交/关闭/传输错误或取消时保留candidate bytes。
+非取消固定artifact_commit_unknown，不因rollback成功或暂时查不到metadata就删除。
+只有已确认EXISTING loser可以清理自身未引用candidate；Raw/email旧补偿保持。
+未知状态不得自动重试、换key或重新渲染；可能留下孤立bytes，本期无清扫器。
+
+`get_meta_by_key`仅供受信Gateway恢复按原稳定键读取安全metadata，不访问对象。
+None不证明未写入；实际读取仍必须`get`重算bytes hash与length。此窄接口不对HTTP开放。
+当前正式生成/下载、历史用途授权和全部bytes Gateway编排由T8装配，本任务未提供许可。
 
 ## Phase 1 范围
 

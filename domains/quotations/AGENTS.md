@@ -110,3 +110,23 @@ Task4未装配T5审批/T8 Gateway及发送reader，无生产自动发送、人�
 executor不是员工身份或授权票据。成功receipt含完整不可变决定和首次run归属，只增且与真实包/绑定一致。
 历史恢复只核receipt/绑定/决定hash并补记APPLIED，不再要求fresh context，不代表允许再次生成客户文件。
 API/worker生产composition及通知/原件Gateway留T8，文件权限留T6，不增加默认actor或默认allow依赖。
+
+## Phase 2 报价文件关联
+
+独立`QuoteFileService`及门面四个文件方法只输出安全metadata/历史批准归属，不走内部
+四成本角色policy；当前actor必须真实在职且同tenant，受信scope保护当前机会ABAC直到事务结束。
+sales本人/manager当前直属owner/boss租户的真实guard装配留T8；T6受控scope不代表生产授权。
+既有EmployeeId复用fact_identity，不升级身份格式；所有新文件DTO仍严格不可变、拒额外字段。
+
+文件只从真实metadata、原quote内容与真实成功receipt产生；复用T5同一完整snapshot、
+全组原请求/绑定、决定hash及真实run校验，不伪造executor、不补记APPLIED、不重新批准历史。
+metadata adapter放infra，只用Store公开get_meta；本域不导入artifact_store或对象bytes。
+
+record先scope→原quote/receipt/run→锁外metadata→T4同机会advisory→重读quote/receipt→
+只增文件→commit→释放scope，不升级Opportunity锁、不持报价锁补员工。三个hash分别绑定
+完整报价、客户投影和bytes；生成时间取真实metadata，唯一模板关联重试返回原file_id。
+未知关联提交只用原artifact恢复，不删Store对象、不改quote state/outbox、更不标记sent。
+
+get/list逐次重投影客户hash并重核真实metadata/receipt/run。历史quote过期或终态可读不等于
+当前正式使用许可；T8还须当前context/适用批准及Store.get bytes完整性校验。未装配files时
+四个文件入口全部dependency_unavailable，不以安全metadata/FK存在替代正式生成或下载授权。
