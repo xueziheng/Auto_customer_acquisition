@@ -3,6 +3,20 @@
 from shared.errors import TradeOSError, TransientError
 
 
+class ArtifactBoundedReadUnavailable(TradeOSError):
+    """旧Store没有专用有界能力时固定拒绝，禁止全量回退。"""
+
+    def __init__(self) -> None:
+        super().__init__("Artifact 有界读取不可用")
+
+
+class ArtifactReadLimitExceeded(TradeOSError):
+    """元数据或实际对象超过本次读取上限。"""
+
+    def __init__(self) -> None:
+        super().__init__("Artifact 超过读取限制")
+
+
 class ArtifactCommitUnknownError(TransientError):
     """PDF对象尝试写入后结果未知，原key可核对但不得删除candidate。"""
 

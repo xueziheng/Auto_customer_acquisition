@@ -54,36 +54,38 @@ class GeneratedArtifactKind(str, Enum):
     QUOTE_PDF = "quote_pdf"
 
 
-RAW_ARTIFACT_MIME_TYPES: Mapping[RawArtifactKind, frozenset[str]] = MappingProxyType({
-    RawArtifactKind.EMAIL_RAW: frozenset({"message/rfc822"}),
-    RawArtifactKind.CHAT_SCREENSHOT: frozenset(
-        {"image/png", "image/jpeg", "image/webp"}
-    ),
-    RawArtifactKind.PDF: frozenset({"application/pdf"}),
-    RawArtifactKind.WORD: frozenset(
-        {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }
-    ),
-    RawArtifactKind.EXCEL: frozenset(
-        {
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "text/csv",
-        }
-    ),
-    RawArtifactKind.WEB_SNAPSHOT: frozenset({"text/html"}),
-    RawArtifactKind.IMAGE: frozenset({"image/png", "image/jpeg", "image/webp"}),
-    RawArtifactKind.AUDIO: frozenset({"audio/mpeg", "audio/wav", "audio/mp4"}),
-})
+RAW_ARTIFACT_MIME_TYPES: Mapping[RawArtifactKind, frozenset[str]] = MappingProxyType(
+    {
+        RawArtifactKind.EMAIL_RAW: frozenset({"message/rfc822"}),
+        RawArtifactKind.CHAT_SCREENSHOT: frozenset(
+            {"image/png", "image/jpeg", "image/webp"}
+        ),
+        RawArtifactKind.PDF: frozenset({"application/pdf"}),
+        RawArtifactKind.WORD: frozenset(
+            {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        ),
+        RawArtifactKind.EXCEL: frozenset(
+            {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "text/csv",
+            }
+        ),
+        RawArtifactKind.WEB_SNAPSHOT: frozenset({"text/html"}),
+        RawArtifactKind.IMAGE: frozenset({"image/png", "image/jpeg", "image/webp"}),
+        RawArtifactKind.AUDIO: frozenset({"audio/mpeg", "audio/wav", "audio/mp4"}),
+    }
+)
 
-GENERATED_ARTIFACT_MIME_TYPES: Mapping[
-    GeneratedArtifactKind, frozenset[str]
-] = MappingProxyType({
-    GeneratedArtifactKind.EMAIL_DRAFT: frozenset(
-        {"application/vnd.tradeos.email-draft+json"}
-    ),
-    GeneratedArtifactKind.QUOTE_PDF: frozenset({"application/pdf"}),
-})
+GENERATED_ARTIFACT_MIME_TYPES: Mapping[GeneratedArtifactKind, frozenset[str]] = (
+    MappingProxyType(
+        {
+            GeneratedArtifactKind.EMAIL_DRAFT: frozenset(
+                {"application/vnd.tradeos.email-draft+json"}
+            ),
+            GeneratedArtifactKind.QUOTE_PDF: frozenset({"application/pdf"}),
+        }
+    )
+)
 
 
 def _invalid() -> ValidationError:
@@ -212,9 +214,7 @@ class GeneratedArtifactMeta:
             or self.mime_type not in GENERATED_ARTIFACT_MIME_TYPES[self.kind]
         ):
             raise _invalid()
-        workflow_run_id = RunId(
-            _canonical_string(self.workflow_run_id, _RUN_ID)
-        )
+        workflow_run_id = RunId(_canonical_string(self.workflow_run_id, _RUN_ID))
         sequence_number = _positive_int(self.sequence_number)
         generated_by = _safe_text(self.generated_by, _GENERATED_BY)
         if self.kind is GeneratedArtifactKind.QUOTE_PDF:
@@ -242,6 +242,22 @@ class GeneratedArtifactMeta:
         object.__setattr__(self, "idempotency_key", idempotency_key)
         object.__setattr__(self, "generated_by", generated_by)
         object.__setattr__(self, "generated_at", generated_at)
+
+
+class BoundedRawArtifactStore(Protocol):
+    """先释放metadata事务，再执行有界且完整性核验的原件读取。"""
+
+    async def get_meta(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> RawArtifactMeta:
+        """仅取得真实原件metadata，不访问对象。"""
+        ...
+
+    async def get_bounded(
+        self, tenant_id: TenantId, artifact_id: ArtifactId, *, maximum_bytes: int
+    ) -> tuple[RawArtifactMeta, bytes]:
+        """按调用和Store上限交集读取，不存在与跨租户统一拒绝。"""
+        ...
 
 
 @runtime_checkable

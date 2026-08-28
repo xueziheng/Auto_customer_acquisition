@@ -9,10 +9,12 @@ from collections.abc import Callable
 from datetime import datetime
 
 from artifact_store.errors import (
+    ArtifactBoundedReadUnavailable,
     ArtifactCommitUnknownError,
     ArtifactConflictError,
     ArtifactIntegrityError,
     ArtifactNotFoundError,
+    ArtifactReadLimitExceeded,
     ArtifactUnavailableError,
 )
 from artifact_store.repository import (
@@ -28,7 +30,12 @@ from artifact_store.store import (
     RawArtifactMeta,
     validate_generated_key,
 )
-from artifact_store.transport import BlobObjectNotFoundError, ObjectBlobTransport
+from artifact_store.transport import (
+    BlobObjectNotFoundError,
+    BlobReadLimitExceeded,
+    BoundedObjectBlobTransport,
+    ObjectBlobTransport,
+)
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -43,11 +50,7 @@ _cleanup_logger = logging.getLogger("artifact_store.cleanup")
 
 
 def _require_content(content: object, maximum_bytes: int) -> bytes:
-    if (
-        not isinstance(content, bytes)
-        or not content
-        or len(content) > maximum_bytes
-    ):
+    if not isinstance(content, bytes) or not content or len(content) > maximum_bytes:
         raise ValidationError("artifact metadata 无效")
     return content
 
@@ -138,12 +141,15 @@ class RawArtifactStoreImpl:
         maximum_bytes: int,
         now: Callable[[], datetime],
         id_generator: Callable[[str], str],
+        *,
+        bounded_transport: BoundedObjectBlobTransport | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._transport = transport
         self._maximum_bytes = _require_limit(maximum_bytes)
         self._now = now
         self._id_generator = id_generator
+        self._bounded_transport = bounded_transport
 
     def __repr__(self) -> str:
         return "RawArtifactStoreImpl()"
@@ -193,9 +199,7 @@ class RawArtifactStoreImpl:
             raise
         assert result is not None
         if result.status is ArtifactInsertStatus.EXISTING:
-            await _cleanup_object(
-                self._transport, candidate.object_key, primary=None
-            )
+            await _cleanup_object(self._transport, candidate.object_key, primary=None)
         return result.winner.meta
 
     async def get(
@@ -210,15 +214,39 @@ class RawArtifactStoreImpl:
             len(content) != record.meta.size_bytes
             or _content_hash(content) != record.meta.content_hash
         ):
-            raise _integrity_failure(
-                tenant_id, artifact_id, record.meta.kind
-            )
+            raise _integrity_failure(tenant_id, artifact_id, record.meta.kind)
         return record.meta, content
 
     async def get_meta(
         self, tenant_id: TenantId, artifact_id: ArtifactId
     ) -> RawArtifactMeta:
         return (await self._get_record(tenant_id, artifact_id)).meta
+
+    async def get_bounded(
+        self, tenant_id: TenantId, artifact_id: ArtifactId, *, maximum_bytes: int
+    ) -> tuple[RawArtifactMeta, bytes]:
+        """有界读取在metadata事务退出后执行，绝不调用旧get。"""
+        limit = min(_require_limit(maximum_bytes), self._maximum_bytes)
+        if self._bounded_transport is None:
+            raise ArtifactBoundedReadUnavailable()
+        record = await self._get_record(tenant_id, artifact_id)
+        if record.meta.size_bytes > limit:
+            raise ArtifactReadLimitExceeded()
+        try:
+            content = await self._bounded_transport.get_bounded(
+                record.object_key, maximum_bytes=min(limit, record.meta.size_bytes)
+            )
+        except BlobReadLimitExceeded:
+            raise ArtifactReadLimitExceeded() from None
+        except BlobObjectNotFoundError:
+            raise ArtifactNotFoundError() from None
+        if (
+            not isinstance(content, bytes)
+            or len(content) != record.meta.size_bytes
+            or _content_hash(content) != record.meta.content_hash
+        ):
+            raise _integrity_failure(tenant_id, artifact_id, record.meta.kind)
+        return record.meta, content
 
     async def _get_record(
         self, tenant_id: TenantId, artifact_id: ArtifactId
@@ -333,9 +361,7 @@ class GeneratedArtifactStoreImpl:
             len(content) != record.meta.size_bytes
             or _content_hash(content) != record.meta.content_hash
         ):
-            raise _integrity_failure(
-                tenant_id, artifact_id, record.meta.kind
-            )
+            raise _integrity_failure(tenant_id, artifact_id, record.meta.kind)
         return record.meta, content
 
     async def get_meta(
