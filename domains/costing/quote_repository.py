@@ -12,7 +12,7 @@ from domains.costing.schemas import (
     PricingPolicyView,
     QuoteFxView,
 )
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import CostSheetId, TenantId
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,10 @@ class EvidenceRepository[T](Protocol):
 
 
 class PricingPolicyRepository(EvidenceRepository[PricingPolicyView], Protocol):
+    async def lock_selection(self, tenant_id: TenantId, *, exclusive: bool) -> None:
+        """确认独占、freeze共享，同tenant政策集合选择与插入串行化。"""
+        ...
+
     async def get_effective(
         self, tenant_id: TenantId, category: str | None, at: datetime
     ) -> EvidenceRecord[PricingPolicyView] | None:
@@ -66,6 +70,12 @@ class PriceEvidenceRepository(EvidenceRepository[PriceEvidenceView], Protocol):
 
 class CostCoverageRepository(EvidenceRepository[CostCoverageView], Protocol):
     """完整性确认按内容 hash 定位，过期清单不会自动更新。"""
+
+    async def get_for_sheet_hash(
+        self, tenant_id: TenantId, cost_sheet_id: CostSheetId, sheet_hash: str
+    ) -> EvidenceRecord[CostCoverageView] | None:
+        """只按精确内容身份选最近confirmed_at/coverage_id，不回退旧清单。"""
+        ...
 
 
 class QuoteFxRepository(EvidenceRepository[QuoteFxView], Protocol):

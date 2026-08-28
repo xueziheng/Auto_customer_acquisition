@@ -76,3 +76,6 @@ ACTUAL      实际发生。事后核算用
 - scope和T2共用同一22项费用覆盖校验，不能以人工说明替代金额、币种、单件/整单口径及重复分摊检查。
 - 原件授权在context与成本锁外完成；仅可信内部application可传递本次准确绑定的来源授权投影，不向HTTP开放授权票据或敏感facts快照。
 - scope、basis及创建意图是只增历史；0043不证明真实报价存在，完成回执必须由后续可信报价持久reader提供。
+- 冻结固定creation key→sheet→政策集合共享锁顺序，取得锁后才取本轮时钟；政策确认以相同tenant集合独占锁保护，原件读取在锁外。
+- 同key绑定全部创建意图；pending不能换key绕过。未知提交只按原key查操作，不自动解锁或换键。完成后仅显式旧quote/version回执匹配才可复用未变锁表，并需新scope/basis。
+- basis完整保存`cost_fx_rates`表内核算汇率元组，与独立`quote_fx`及实际PricingOptions区分；修订可选新已确认报价FX，不能改旧成本FX/locked_at。

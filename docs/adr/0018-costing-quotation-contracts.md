@@ -134,3 +134,19 @@ quoted及有效期仍逐项硬核验。来源阅读授权在所有业务锁外�
 scope/basis不可更新删除；operation仅首次frozen→completed。basis与operation双向外键延迟
 到提交检查，不关闭约束；pending按tenant/sheet部分唯一，不把sheet永久占给一个报价。
 非空降级明确拒绝，避免抹掉商业确认历史；不建假quotation表或假生产回执。
+
+冻结以tenant/kind/key咨询事务锁覆盖操作尚未存在的并发窗口，随后锁成本表，再共享锁当前
+政策集合，之后读取一次注入时钟。政策确认按同tenant集合独占锁→确认键固定顺序；原件
+读取在短重放检查事务结束后执行，保存时再次竞争键及核验当前员工。冻结重新验证完整
+scope、Need单位、22项清单和全部持久依据，T1只接收已确认直连FX及当前政策，无隐式默认。
+
+完整意图幂等包括条款顺序/重复项、原起草人、期限、scope和修订引用。basis、operation与
+首次locked_at原子提交；同键仅在当前事实仍适用时返回原basis，不把历史通过当作当前有效。
+commit回包未知固定storage_unknown；只能原键恢复。完成回执在零锁阶段由可信reader读取，
+锁内精确复验tenant/operation/request/basis/修订链；重复同回执无写效果，另一个回执拒绝。
+
+完成后可用新key、显式旧quote/version及新scope复用未变成本表；旧items、locked_at和basis
+不修改。`FrozenCostBasis.cost_fx_rates`必填，原样保存锁内表内核算FX元组（含显式空元组），
+与独立已确认`quote_fx`分别进入basis哈希；新修订可以选择新报价FX，但不得改写表内核算FX。
+T3B完成回执只证明旧创建事实；当前active或latest expired版本的CAS、真实报价唯一约束、
+实际报价抬头/原件reader、审批与客户文件授权均由后续切片分别验收，不由该回执替代。

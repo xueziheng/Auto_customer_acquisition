@@ -92,9 +92,9 @@ def test_same_currency_does_not_accept_unrelated_identity_fx(mode: str) -> None:
     options = SimpleNamespace(quote_fx=_rate("EUR", "CNY", "1"))
     with pytest.raises(ValidationError):
         if mode == "target":
-            calc._base_to_quote_price(Decimal("2"), sheet=sheet, options=options)
+            calc._base_to_quote_price(Decimal(2), sheet=sheet, options=options)
         else:
-            calc._quote_to_base_revenue(Money(Decimal("2"), "USD"), sheet=sheet, options=options)
+            calc._quote_to_base_revenue(Money(Decimal(2), "USD"), sheet=sheet, options=options)
 
 
 def test_unit_full_cost_distributes_order_cost_and_ignores_unconfirmed_suggestions() -> None:

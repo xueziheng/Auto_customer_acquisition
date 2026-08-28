@@ -71,12 +71,57 @@ class ContextCase:
                     if writer.done():
                         await writer
                         pytest.fail("写方在lease仍持锁时已提交")
+                    await session.execute(text("SELECT pg_stat_clear_snapshot()"))
                     blocked = await session.scalar(text("SELECT count(*) FROM pg_stat_activity "
                         "WHERE datname=current_database() AND wait_event_type='Lock' "
                         "AND pid<>pg_backend_pid()"))
                     if blocked:
                         return
                     await asyncio.sleep(0)
+
+
+async def test_lease_preserves_consumer_validation_error(context_case: ContextCase) -> None:
+    c=context_case
+    failure=ValueError("受控调用方错误")
+    with pytest.raises(ValueError) as caught:
+        async with c.provider.open(c.tenant_id,c.opportunity_id,c.actor_id,prepared_by=c.actor_id):
+            raise failure
+    assert caught.value is failure
+    await c.update_owner_manager()
+
+
+async def test_cleanup_error_is_sanitized_even_after_consumer_failure(context_case: ContextCase,monkeypatch) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from domains.quotations.errors import QuoteContextUnavailableError
+    c=context_case
+    original=AsyncSession.rollback
+    async def failed(session):
+        await original(session)
+        raise SQLAlchemyError("受控清理底层错误")
+    monkeypatch.setattr(AsyncSession,"rollback",failed)
+    with pytest.raises(QuoteContextUnavailableError) as error:
+        async with c.provider.open(c.tenant_id,c.opportunity_id,c.actor_id,prepared_by=c.actor_id):
+            raise ValueError("受控业务错误")
+    assert error.value.code=="storage_unknown"
+    assert "底层错误" not in str(error.value)
+
+
+async def test_corrupt_shared_provenance_is_fixed_context_error(context_case: ContextCase) -> None:
+    from domains.quotations.errors import QuoteContextError
+    from infra.db.tables import ValidatedNeedRow
+    c=context_case
+    async with c.unit.sessions.begin() as session:
+        row=await session.scalar(select(ValidatedNeedRow).where(ValidatedNeedRow.tenant_id==c.tenant_id,
+            ValidatedNeedRow.need_id==c.unit.need_id))
+        material={**row.material,"provenance":{**row.material["provenance"],"source_quote":""}}
+        await session.execute(update(ValidatedNeedRow).where(ValidatedNeedRow.tenant_id==c.tenant_id,
+            ValidatedNeedRow.need_id==c.unit.need_id).values(material=material))
+    with pytest.raises(QuoteContextError) as error:
+        async with c.provider.open(c.tenant_id,c.opportunity_id,c.actor_id,prepared_by=c.actor_id):
+            pytest.fail("损坏事实不得形成lease")
+    assert error.value.code=="facts_corrupt"
 
 
 @pytest_asyncio.fixture

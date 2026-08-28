@@ -25,6 +25,7 @@ from infra.db.tables import (
     ProspectAccountRow,
     ValidatedNeedRow,
 )
+from shared.errors import ValidationError as DomainValidationError
 from shared.schemas.identifiers import EmployeeId, OpportunityId, TenantId
 from shared.schemas.quote_facts import (
     NeedQuoteFacts,
@@ -57,6 +58,7 @@ class SqlAlchemyQuoteContextProvider:
     async def open(self, tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId,
                    *, prepared_by: EmployeeId) -> AsyncIterator[QuoteBusinessContext]:
         """锁持有到调用者提交结束；异常/取消都回滚释放，不升级为FOR UPDATE。"""
+        consumer_error: BaseException | None = None
         try:
             async with self._factory() as bootstrap:
                 candidate = (await bootstrap.execute(select(OpportunityRow.owner, OpportunityRow.need_id,
@@ -117,10 +119,18 @@ class SqlAlchemyQuoteContextProvider:
                         specification_hash=quote_specification_hash(spec), issuer=issuer,
                         runtime=QuoteRuntimeFacts(current_actor=employees[actor_id], owner=employees[opportunity.owner],
                                                   preparer=employees.get(prepared_by)))
-                    yield context
+                    try:
+                        yield context
+                    except BaseException as exc:
+                        consumer_error = exc
+                        raise
                 finally:
                     await session.rollback()
         except SQLAlchemyError as exc:
+            if exc is consumer_error:
+                raise
             raise _storage_error(exc) from None
-        except (SchemaError, ValueError, TypeError, KeyError):
+        except (SchemaError, ValueError, TypeError, KeyError, DomainValidationError) as exc:
+            if exc is consumer_error or isinstance(exc,QuoteContextError):
+                raise
             raise QuoteContextError("facts_corrupt") from None

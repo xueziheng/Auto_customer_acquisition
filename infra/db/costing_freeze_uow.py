@@ -4,13 +4,19 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Self
 
+from pydantic import ValidationError as SchemaError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from domains.costing.errors import CostFreezeError, CostFreezeUnavailableError
+from domains.costing.errors import (
+    CostFreezeError,
+    CostFreezeUnavailableError,
+    InvalidPricingEvidenceError,
+)
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.repositories.costing_freeze import CostingFreezeRepositoryImpl
+from shared.errors import ValidationError as DomainValidationError
 from shared.schemas.identifiers import TenantId
 
 
@@ -62,8 +68,13 @@ class SqlAlchemyCostingFreezeUow(SqlAlchemyCostingUnitOfWork):
             self.freezes = CostingFreezeRepositoryImpl(self._session, self._tenant_id)
             return self
         except BaseException as exc:
-            await self._session.rollback()
-            await self._session.close()
+            try:
+                try:
+                    await self._session.rollback()
+                finally:
+                    await self._session.close()
+            except SQLAlchemyError as failure:
+                raise _failure(failure) from None
             if isinstance(exc, SQLAlchemyError):
                 raise _failure(exc) from None
             raise
@@ -86,5 +97,14 @@ class SqlAlchemyCostingFreezeUow(SqlAlchemyCostingUnitOfWork):
                 await self._session.rollback()
                 if isinstance(exc, SQLAlchemyError):
                     raise _failure(exc) from None
+                if isinstance(exc, (SchemaError, InvalidPricingEvidenceError)):
+                    raise CostFreezeError("facts_corrupt") from None
+                if isinstance(exc,DomainValidationError) and not isinstance(exc,CostFreezeError):
+                    raise CostFreezeError("facts_corrupt") from None
+        except SQLAlchemyError as failure:
+            raise _failure(failure) from None
         finally:
-            await self._session.close()
+            try:
+                await self._session.close()
+            except SQLAlchemyError as failure:
+                raise _failure(failure) from None

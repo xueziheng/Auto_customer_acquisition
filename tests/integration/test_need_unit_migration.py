@@ -94,12 +94,14 @@ async def test_downgrade_with_confirmation_refuses_and_preserves_receipt(
 ) -> None:
     c = unit_db_case
     receipt = await c.confirm()
+    async with c.engine.connect() as connection:
+        original_revision=(await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
     assert migrate(c.engine, "downgrade", "0041") != 0
     assert await c.confirm() == receipt
     async with c.engine.connect() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "0042"
+        ).scalar_one() == original_revision
 
 
 async def test_empty_unit_roundtrip_preserves_old_need(unit_db_case) -> None:

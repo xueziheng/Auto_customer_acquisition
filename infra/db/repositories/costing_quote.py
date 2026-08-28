@@ -29,7 +29,7 @@ from infra.db.tables import (
     RawArtifactRow,
 )
 from shared.errors import IdempotencyConflict
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import CostSheetId, TenantId
 
 
 class _EvidenceRepository[T: BaseModel](_TenantBoundRepository):
@@ -161,6 +161,21 @@ class _EvidenceRepository[T: BaseModel](_TenantBoundRepository):
             raise InvalidPricingEvidenceError("持久确认列与内容不一致")
         if hasattr(row, "artifact_id") and row.artifact_id != value.source.artifact_id:
             raise InvalidPricingEvidenceError("持久来源关联不一致")
+        if isinstance(value, CostCoverageView) and (
+            row.cost_sheet_id,
+            row.sheet_hash,
+        ) != (value.cost_sheet_id, value.expected_sheet_hash):
+            raise InvalidPricingEvidenceError("持久清单与成本内容关联不一致")
+        if isinstance(value, PricingPolicyView) and (
+            row.category,
+            row.effective_from,
+        ) != (value.category, value.effective_from):
+            raise InvalidPricingEvidenceError("持久政策生效范围不一致")
+        if (
+            hasattr(row, "opportunity_id")
+            and row.opportunity_id != value.opportunity_id
+        ):
+            raise InvalidPricingEvidenceError("持久依据机会关联不一致")
         return record
 
     async def _get(
@@ -218,6 +233,21 @@ class PricingPolicyRepositoryImpl(_EvidenceRepository[PricingPolicyView]):
 
     row_type, value_type, id_field = CostingPolicyRow, PricingPolicyView, "policy_id"
 
+    async def lock_selection(self, tenant_id: TenantId, *, exclusive: bool) -> None:
+        """同tenant政策集合锁，防止freeze选政策时并发插入改变当前选择。"""
+        self._require_tenant(tenant_id, "costing_policy_selection_lock")
+        function = (
+            "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+        )
+        await self._session.execute(
+            text(f"SELECT {function}(hashtextextended(:key,0))"),
+            {
+                "key": json.dumps(
+                    ["costing-current-policy-v1", tenant_id], separators=(",", ":")
+                )
+            },
+        )
+
     async def get_effective(
         self, tenant_id: TenantId, category: str | None, at: datetime
     ) -> EvidenceRecord[PricingPolicyView] | None:
@@ -262,6 +292,26 @@ class CostCoverageRepositoryImpl(_EvidenceRepository[CostCoverageView]):
     """完整性清单以内容 hash 为可恢复身份。"""
 
     row_type, value_type, id_field = CostingCoverageRow, CostCoverageView, "coverage_id"
+
+    async def get_for_sheet_hash(
+        self, tenant_id: TenantId, cost_sheet_id: CostSheetId, sheet_hash: str
+    ) -> EvidenceRecord[CostCoverageView] | None:
+        """SQL精确tenant/sheet/hash后稳定选取，不应用层猜选历史清单。"""
+        self._require_tenant(tenant_id, "costing_coverage_current")
+        row = await self._session.scalar(
+            select(CostingCoverageRow)
+            .where(
+                CostingCoverageRow.tenant_id == tenant_id,
+                CostingCoverageRow.cost_sheet_id == cost_sheet_id,
+                CostingCoverageRow.sheet_hash == sheet_hash,
+            )
+            .order_by(
+                CostingCoverageRow.confirmed_at.desc(),
+                CostingCoverageRow.coverage_id.desc(),
+            )
+            .limit(1)
+        )
+        return self._record(row) if row else None
 
 
 class QuoteFxRepositoryImpl(_EvidenceRepository[QuoteFxView]):

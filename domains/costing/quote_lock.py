@@ -10,6 +10,7 @@ from domains.costing.freeze_schemas import (
     CostingContext,
     CostScopeConfirmationView,
     CostScopeEvidenceBinding,
+    FrozenCostBasis,
 )
 from domains.costing.models import CostSheet
 from domains.costing.schemas import (
@@ -17,7 +18,13 @@ from domains.costing.schemas import (
     PriceEvidenceView,
     SupplierPriceEvidenceView,
 )
-from shared.schemas.quote_creation import canonical_creation_hash, quote_terms_hash
+from shared.schemas.quote_creation import (
+    QuoteCreationCompletion,
+    QuoteCreationOperationView,
+    canonical_creation_hash,
+    quote_creation_request_hash,
+    quote_terms_hash,
+)
 from shared.schemas.quote_facts import canonical_fact_hash
 
 
@@ -173,7 +180,18 @@ def require_scope_evidence(
         raise CostFreezeError("evidence_invalid")
     if tuple(b.evidence_id for b in bindings) != tuple(sorted(expected)):
         raise CostFreezeError("evidence_invalid")
-    if valid_until <= now:
+    require_evidence_applicability(context, evidence, valid_until=valid_until, now=now)
+
+
+def require_evidence_applicability(
+    context: CostingContext,
+    evidence: tuple[PriceEvidenceView, ...],
+    *,
+    valid_until: datetime | None,
+    now: datetime,
+) -> None:
+    """测算和人工scope共用硬适用条件；测算不构造虚假人工映射。"""
+    if valid_until is not None and valid_until <= now:
         raise CostFreezeError("evidence_expired")
     suppliers = 0
     for item in evidence:
@@ -183,7 +201,8 @@ def require_scope_evidence(
         ):
             raise CostFreezeError("evidence_invalid")
         if item.valid_until is not None and (
-            item.valid_until <= now or valid_until > item.valid_until
+            item.valid_until <= now
+            or (valid_until is not None and valid_until > item.valid_until)
         ):
             raise CostFreezeError("evidence_expired")
         if isinstance(item, SupplierPriceEvidenceView):
@@ -237,5 +256,117 @@ def require_scope_integrity(view: CostScopeConfirmationView) -> None:
         or p.extracted_by != p.confirmed_by
         or p.extracted_at != p.confirmed_at
         or not p.is_human_confirmed
+    ):
+        raise CostFreezeError("facts_corrupt")
+
+
+def require_completion(
+    operation: QuoteCreationOperationView, receipt: QuoteCreationCompletion
+) -> None:
+    """回执须精确绑定原操作和修订链；不在此断言真实报价存在。"""
+    intent = operation.intent
+    if (
+        receipt.tenant_id,
+        receipt.operation_id,
+        receipt.request_hash,
+        receipt.basis_id,
+        receipt.replaces_quote_id,
+        receipt.replaced_quote_version,
+        receipt.quote_version,
+    ) != (
+        operation.tenant_id,
+        operation.operation_id,
+        operation.request_hash,
+        operation.basis_id,
+        intent.replaces_quote_id,
+        intent.expected_quote_version,
+        (intent.expected_quote_version or 0) + 1,
+    ):
+        raise CostFreezeError("revision_conflict")
+    if operation.completion is not None and operation.completion != receipt:
+        raise CostFreezeError("revision_conflict")
+
+
+def require_operation_integrity(operation: QuoteCreationOperationView) -> None:
+    """持久读取不能信任错误的请求hash或不一致完成绑定。"""
+    if operation.request_hash != quote_creation_request_hash(operation.intent):
+        raise CostFreezeError("facts_corrupt")
+    if operation.completion is not None:
+        try:
+            require_completion(operation, operation.completion)
+        except CostFreezeError:
+            raise CostFreezeError("facts_corrupt") from None
+
+
+def basis_content_hash(values: dict[str, object]) -> str:
+    """完整业务快照与操作身份进入hash，仅排除随机basisID/冻结时钟/自身。"""
+    return canonical_creation_hash(
+        {
+            "version": "frozen-cost-basis-v1",
+            **{
+                name: value
+                for name, value in values.items()
+                if name not in {"basis_id", "basis_hash", "frozen_at"}
+            },
+        }
+    )
+
+
+def frozen_basis_hash(basis: FrozenCostBasis) -> str:
+    """用于写入与严格恢复的相同快照身份。"""
+    return basis_content_hash(
+        {name: getattr(basis, name) for name in type(basis).model_fields}
+    )
+
+
+def require_basis_integrity(basis: FrozenCostBasis) -> None:
+    """完整scope和所有嵌套快照绑定必须一致，不裁成不可复核的hash列表。"""
+    from domains.costing.quote_service import view_content_hash
+
+    require_scope_integrity(basis.scope_confirmation)
+    s = basis.scope_confirmation
+    evidence={item.evidence_id:item.evidence_hash for item in basis.price_evidence}
+    if (len(evidence)!=len(basis.price_evidence) or evidence!={b.evidence_id:b.evidence_hash for b in s.evidence_bindings}
+        or basis.policy.content_hash!=view_content_hash(basis.policy)
+        or basis.coverage.content_hash!=view_content_hash(basis.coverage)
+        or any(item.evidence_hash!=view_content_hash(item) for item in basis.price_evidence)
+        or (basis.quote_fx is not None and basis.quote_fx.content_hash!=view_content_hash(basis.quote_fx))
+        or basis.pricing_options.mode!="manual"):
+        raise CostFreezeError("facts_corrupt")
+    if (
+        basis.basis_hash != frozen_basis_hash(basis)
+        or (
+            s.tenant_id,
+            s.opportunity_id,
+            s.cost_sheet_id,
+            s.sheet_hash,
+            s.need_facts,
+            s.specification,
+            s.valid_until,
+        )
+        != (
+            basis.tenant_id,
+            basis.opportunity_id,
+            basis.cost_sheet_id,
+            basis.sheet_hash,
+            basis.need_facts,
+            basis.specification,
+            basis.valid_until,
+        )
+        or (basis.coverage.coverage_id, basis.coverage.content_hash)
+        != (s.coverage_id, s.coverage_hash)
+        or (
+            basis.calculation.cost_sheet_id,
+            basis.calculation.context_hash,
+            basis.calculation.policy_id,
+        )
+        != (basis.cost_sheet_id, basis.context_hash, basis.policy_id)
+        or basis.policy.policy_id != basis.policy_id
+        or basis.need_facts.quantity is None
+        or basis.quantity != basis.need_facts.quantity.value
+        or basis.need_facts.unit is None
+        or basis.unit != basis.need_facts.unit.value
+        or basis.need_facts.destination is None
+        or basis.destination != basis.need_facts.destination.value
     ):
         raise CostFreezeError("facts_corrupt")

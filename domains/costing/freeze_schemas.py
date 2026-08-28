@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Self
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from shared.schemas.identifiers import (
     CostSheetId,
@@ -14,6 +14,7 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
+from shared.schemas.money import FxRate
 from shared.schemas.provenance import Provenance
 from shared.schemas.quote_creation import (
     QuoteDTO,
@@ -62,7 +63,7 @@ class CostingContext(_FreezeDTO):
     prepared_by: EmployeeId
     category: QuoteText
     specification: QuoteText
-    unit: Annotated[str, Field(min_length=1, max_length=64)]
+    unit: Annotated[str, Field(min_length=1, max_length=64), AfterValidator(fact_text)]
     destination: QuoteText
     quantity: Annotated[int, Field(gt=0)]
     need_facts: NeedQuoteFacts
@@ -146,7 +147,7 @@ class FrozenCostBasis(_FreezeDTO):
     policy_id: str
     quantity: Annotated[int, Field(gt=0)]
     specification: QuoteText
-    unit: Annotated[str, Field(min_length=1, max_length=64)]
+    unit: Annotated[str, Field(min_length=1, max_length=64), AfterValidator(fact_text)]
     destination: QuoteText
     need_facts: NeedQuoteFacts
     scope_confirmation: CostScopeConfirmationView
@@ -155,6 +156,7 @@ class FrozenCostBasis(_FreezeDTO):
     calculation: CalculationSnapshot
     price_evidence: tuple[PriceEvidenceView, ...]
     pricing_options: PricingOptions
+    cost_fx_rates: tuple[FxRate, ...]
     quote_fx: QuoteFxView | None
     valid_until: QuoteTime
     frozen_at: QuoteTime

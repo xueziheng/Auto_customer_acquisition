@@ -99,6 +99,7 @@ class CostingCoverageRow(_CostingEvidenceColumns, Base):
         CheckConstraint("btrim(tenant_id) <> '' AND btrim(confirmed_by) <> '' AND btrim(idempotency_key) <> '' AND jsonb_typeof(payload) = 'object'", name="ck_costing_coverage_confirmation"),
         ForeignKeyConstraint(["tenant_id", "cost_sheet_id"], ["cost_sheets.tenant_id", "cost_sheets.cost_sheet_id"], name="fk_costing_coverage_sheet", ondelete="RESTRICT"),
         CheckConstraint("sheet_hash ~ '^[0-9a-f]{64}$'", name="ck_costing_coverage_sheet_hash"),
+        Index("ix_costing_coverage_sheet_hash","tenant_id","cost_sheet_id","sheet_hash","confirmed_at","coverage_id"),
     )
 
     coverage_id: Mapped[str] = mapped_column(String(64))
@@ -4217,6 +4218,7 @@ class CostScopeConfirmationRow(Base):
         ForeignKeyConstraint(["tenant_id","confirmed_by"],["employees.tenant_id","employees.employee_id"],name="fk_cost_scope_confirmations_confirmed_by",ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id","opportunity_id"],["opportunities.tenant_id","opportunities.opportunity_id"],name="fk_cost_scope_confirmations_opportunity_id",ondelete="RESTRICT"),
         CheckConstraint("jsonb_typeof(payload)='object'",name="ck_cost_scope_confirmations_json"),
+        CheckConstraint("isfinite(confirmed_at)",name="ck_cost_scope_confirmations_time"),
         CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
             "request_hash","content_hash","sheet_hash","need_facts_hash","specification_hash","terms_hash")),name="ck_cost_scope_confirmations_hash"),
         CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_cost_scope_confirmations_key"),
@@ -4253,7 +4255,7 @@ class CostingQuoteBasisRow(Base):
         CheckConstraint("jsonb_typeof(payload)='object'",name="ck_costing_quote_bases_json"),
         CheckConstraint(" AND ".join(f"{name} ~ '^[0-9a-f]{{64}}$'" for name in (
             "request_hash","context_hash","sheet_hash","basis_hash")),name="ck_costing_quote_bases_hash"),
-        CheckConstraint("valid_until>frozen_at",name="ck_costing_quote_bases_time"),
+        CheckConstraint("isfinite(valid_until) AND isfinite(frozen_at) AND valid_until>frozen_at",name="ck_costing_quote_bases_time"),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     basis_id: Mapped[str] = mapped_column(String(40))
@@ -4280,6 +4282,7 @@ class QuoteCreationOperationRow(Base):
         ForeignKeyConstraint(["tenant_id","cost_sheet_id"],["cost_sheets.tenant_id","cost_sheets.cost_sheet_id"],name="fk_quote_creation_operations_cost_sheet_id",ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id","basis_id"],["costing_quote_bases.tenant_id","costing_quote_bases.basis_id"],name="fk_quote_creation_operations_basis_id",ondelete="RESTRICT",deferrable=True,initially="DEFERRED"),
         CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'",name="ck_quote_creation_operations_hash"),
+        CheckConstraint("isfinite(created_at) AND (completed_at IS NULL OR isfinite(completed_at))",name="ck_quote_creation_operations_time"),
         CheckConstraint("jsonb_typeof(intent)='object' AND (completion IS NULL OR jsonb_typeof(completion)='object')",name="ck_quote_creation_operations_json"),
         CheckConstraint("(state='frozen' AND completion IS NULL AND completed_at IS NULL) OR (state='completed' AND completion IS NOT NULL AND completed_at IS NOT NULL AND completed_at>=created_at)",name="ck_quote_creation_operations_state"),
         CheckConstraint("idempotency_key=btrim(idempotency_key) AND length(idempotency_key)>0 AND idempotency_key !~ '[[:cntrl:]]'",name="ck_quote_creation_operations_key"),
@@ -4296,4 +4299,4 @@ class QuoteCreationOperationRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     intent: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
-    completion: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB,nullable=True)
+    completion: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB(none_as_null=True),nullable=True)

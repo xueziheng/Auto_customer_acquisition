@@ -28,6 +28,11 @@ def _fk(
 
 def upgrade() -> None:
     """新表只增，operation唯一允许首次完成；不修改0042或旧成本内容。"""
+    op.create_index(
+        "ix_costing_coverage_sheet_hash",
+        "costing_coverage",
+        ["tenant_id", "cost_sheet_id", "sheet_hash", "confirmed_at", "coverage_id"],
+    )
     op.execute("""CREATE FUNCTION reject_quote_lock_mutation() RETURNS trigger AS $$
         BEGIN RAISE EXCEPTION 'immutable quote lock record'; END; $$ LANGUAGE plpgsql""")
     op.create_table(
@@ -61,6 +66,9 @@ def upgrade() -> None:
         _fk("cost_scope_confirmations", "opportunity_id", "opportunities"),
         sa.CheckConstraint(
             "jsonb_typeof(payload)='object'", name="ck_cost_scope_confirmations_json"
+        ),
+        sa.CheckConstraint(
+            "isfinite(confirmed_at)", name="ck_cost_scope_confirmations_time"
         ),
         sa.CheckConstraint(
             " AND ".join(
@@ -121,7 +129,10 @@ def upgrade() -> None:
             ),
             name="ck_costing_quote_bases_hash",
         ),
-        sa.CheckConstraint("valid_until>frozen_at", name="ck_costing_quote_bases_time"),
+        sa.CheckConstraint(
+            "isfinite(valid_until) AND isfinite(frozen_at) AND valid_until>frozen_at",
+            name="ck_costing_quote_bases_time",
+        ),
     )
     op.create_table(
         "quote_creation_operations",
@@ -152,6 +163,10 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "request_hash ~ '^[0-9a-f]{64}$'", name="ck_quote_creation_operations_hash"
+        ),
+        sa.CheckConstraint(
+            "isfinite(created_at) AND (completed_at IS NULL OR isfinite(completed_at))",
+            name="ck_quote_creation_operations_time",
         ),
         sa.CheckConstraint(
             "jsonb_typeof(intent)='object' AND "
@@ -232,6 +247,7 @@ def downgrade() -> None:
     op.drop_constraint(
         "fk_costing_quote_bases_operation_id", "costing_quote_bases", type_="foreignkey"
     )
+    op.drop_index("ix_costing_coverage_sheet_hash", table_name="costing_coverage")
     for table in (
         "quote_creation_operations",
         "costing_quote_bases",

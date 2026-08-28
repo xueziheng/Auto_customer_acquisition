@@ -6,7 +6,31 @@ import re
 import unicodedata
 from typing import Protocol, runtime_checkable
 
+from domains.quotations.context import (
+    QuoteContextProvider as QuoteContextProvider,
+)
+from domains.quotations.context import (
+    QuoteIssuerReader as QuoteIssuerReader,
+)
+from domains.quotations.context import (
+    canonical_quote_specification as canonical_quote_specification,
+)
+from domains.quotations.context import (
+    quote_context_hash as quote_context_hash,
+)
+from domains.quotations.context import (
+    quote_specification as quote_specification,
+)
+from domains.quotations.context import (
+    quote_specification_hash as quote_specification_hash,
+)
 from domains.quotations.models import ForbiddenAutoCommitment
+from domains.quotations.permissions import (
+    QuotePreparationPolicy as QuotePreparationPolicy,
+)
+from domains.quotations.permissions import (
+    StrictQuotePreparationPolicy as StrictQuotePreparationPolicy,
+)
 from domains.quotations.schemas import QuoteCreateRequest, QuoteView
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
@@ -15,18 +39,8 @@ from shared.schemas.identifiers import (
     QuoteId,
     TenantId,
 )
-from shared.schemas.quote_creation import quote_creation_request_hash as quote_creation_request_hash
-from domains.quotations.context import (
-    QuoteContextProvider as QuoteContextProvider,
-    QuoteIssuerReader as QuoteIssuerReader,
-    canonical_quote_specification as canonical_quote_specification,
-    quote_context_hash as quote_context_hash,
-    quote_specification as quote_specification,
-    quote_specification_hash as quote_specification_hash,
-)
-from domains.quotations.permissions import (
-    QuotePreparationPolicy as QuotePreparationPolicy,
-    StrictQuotePreparationPolicy as StrictQuotePreparationPolicy,
+from shared.schemas.quote_creation import (
+    quote_creation_request_hash as quote_creation_request_hash,
 )
 
 

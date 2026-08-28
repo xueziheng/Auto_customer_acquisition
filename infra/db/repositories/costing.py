@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import case, delete, func, or_, select, text
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.costing.errors import LockedCostSheetError
@@ -177,6 +177,13 @@ def _to_sheet(
 
 class CostSheetRepositoryImpl(_TenantBoundRepository, CostSheetRepository):
     """成本表读写；服务层与数据库触发器共同保护锁定版本。"""
+
+    async def mark_locked_once(self, tenant_id: TenantId, cost_sheet_id: CostSheetId, at: datetime) -> None:
+        """冻结调用者已持FOR UPDATE；仅首次写锁定时刻，复用不改旧表。"""
+        self._require_tenant(tenant_id,"cost_sheet_lock_once")
+        await self._session.execute(update(CostSheetRow).where(
+            CostSheetRow.tenant_id==tenant_id,CostSheetRow.cost_sheet_id==cost_sheet_id,
+            CostSheetRow.locked_at.is_(None)).values(locked_at=at))
 
     async def add(self, sheet: CostSheet) -> None:
         self._require_tenant(sheet.tenant_id, "cost_sheet_add")

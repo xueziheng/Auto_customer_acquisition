@@ -178,8 +178,21 @@ class CostingQuoteServiceImpl:
         request_hash = canonical_pricing_hash(
             {"command": payload, "actor": actor.actor_id}
         )
+        source = None
+        if repository == "policies":
+            # 先短事务检查重放，再零锁读取原件；写入事务重新竞争同键。
+            async with self._factory(tenant_id) as uow:
+                await uow.policies.lock_selection(tenant_id,exclusive=True)
+                previous=await uow.policies.get_by_key_for_update(tenant_id,idempotency_key)
+                if previous is not None:
+                    if previous.request_hash!=request_hash:
+                        raise IdempotencyConflict("同一幂等键不能确认另一份内容或更换确认人")
+                    return previous.value
+            source=await self._source(tenant_id,str(payload["source_ref"]),"$",actor=actor)
         async with self._factory(tenant_id) as uow:
             repo = getattr(uow, repository)
+            if repository == "policies":
+                await uow.policies.lock_selection(tenant_id,exclusive=True)
             previous = await repo.get_by_key_for_update(tenant_id, idempotency_key)
             if previous is not None:
                 if previous.request_hash != request_hash:
@@ -187,12 +200,13 @@ class CostingQuoteServiceImpl:
                         "同一幂等键不能确认另一份内容或更换确认人"
                     )
                 return previous.value
-            source = await self._source(
-                tenant_id,
-                str(payload["source_ref"]),
-                str(payload.get("locator", "$")),
-                actor=actor,
-            )
+            if source is None:
+                source = await self._source(
+                    tenant_id,
+                    str(payload["source_ref"]),
+                    str(payload.get("locator", "$")),
+                    actor=actor,
+                )
             await self._require(tenant_id, actor, action)
             now = self._clock()
             observed = payload.get("quoted_at", payload.get("observed_at"))
