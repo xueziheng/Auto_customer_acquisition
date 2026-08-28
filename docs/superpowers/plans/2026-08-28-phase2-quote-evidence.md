@@ -43,6 +43,8 @@ shared现无protocols目录，端口固定放`shared/evidence_read.py`，下文�
 
 身份兼容测试除canonical正常样例外，增加真实存在的合法旧员工ID经过authorize→AuthorizedEvidenceReference→Gateway结果成功，以及不存在/失活/错tenant/撤权仍拒绝；空值、空白、bool、超40字符/控制字符在资料IO前拒绝。其他新来源/Need/tenant/消息/Artifact ID的严格格式不放松，不迁移或重写员工记录。
 
+后续B1真实接缝核对补充：上述旧编号成功证据仅覆盖既有Gateway ledger可表示的编号，不代表全部fact_identity均可执行Gateway。现ledger user_id是最多32字符的safe-label，拒非ASCII/内部空格及保留敏感token；数据库列String(32)。A业务/来源DTO的40字符契约不改，不能为通过网关截断或换人；当前超出网关表示范围的调用失败关闭，原来源错误映射不因本文改变。扩大通用审计身份/迁移不在本批，T8B实际接线与最终报告必须披露有限兼容。
+
 ```python
 class DTO(BaseModel):  # 本文件内部严格基座，不作为通用框架导出
     model_config = ConfigDict(strict=True, frozen=True, extra='forbid')

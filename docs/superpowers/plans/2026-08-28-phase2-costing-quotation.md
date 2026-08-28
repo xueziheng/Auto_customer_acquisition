@@ -328,6 +328,8 @@ T8A通过独立审查后执行下列接线要求。下文来源实现事项由T8
 
 T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，已整合正式/历史规则、三hash、四工具、持久限速、工具版本保护及有限恢复；T5/T6/T8A最终交付后对齐真实签名再实施，不以本文证明前置已完成。
 
+- [x] T8B1工程交付及两轮修复复审完成（e958b3c）；原三项Important及新增连续清理异常问题均已关闭。最终文件/context385项与T4–T6/Gateway定向36项零skip通过；范围外观察及结构Minor保留最终全分支审查。未运行实际API/worker、真实对象网络或业务资料，T8B2/T9/T10待完成。
+
 T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
 
 **Files**
@@ -393,11 +395,63 @@ if runtime.quote_expiry_driver is not None:
 
 **Files**
 - Create: `apps/web/src/views/costing-quotes/PricingPolicyForm.vue`, `apps/web/src/views/costing-quotes/PriceEvidenceForm.vue`, `apps/web/src/views/costing-quotes/CostCoverageForm.vue`, `apps/web/src/views/costing-quotes/NeedUnitConfirmationForm.vue`, `apps/web/src/views/costing-quotes/CostScopeConfirmationForm.vue`, `apps/web/src/views/costing-quotes/QuoteVersions.vue`, `apps/web/src/views/costing-quotes/QuoteIssuerForm.vue`, `apps/web/src/views/costing-quotes/quote-input.ts`, `apps/web/tests/quotation-flow.test.ts`
-- Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/router.ts`, `apps/web/src/api/api.d.ts`, `apps/web/tests/costing-quotes.test.ts`, `apps/web/tests/information-architecture.test.ts`
+- Modify: `apps/web/src/views/costing-quotes/CostingQuotes.vue`, `apps/web/src/views/approvals/ApprovalCenter.vue`, `apps/web/src/views/runs/RunCenter.vue`, `apps/web/src/router.ts`, `apps/web/src/api/client.ts`, `apps/web/src/api/api.d.ts`, `apps/web/tests/api-client-identity.test.ts`, `apps/web/tests/costing-quotes.test.ts`, `apps/web/tests/information-architecture.test.ts`
+- Create: `apps/web/src/views/costing-quotes/quote-request-scope.ts`（仅UI请求失效与待核对意图，不是权限/认证存储）
 
 **Interfaces**
 - 仅使用生成 `components['schemas'][...]`，不手写DTO；组件Props/Emits为UI组合类型。
 - 报价页显示后端 `allowed_actions`、`blockers`、版本/hash、审批和file状态；最终权限仍在后端。
+- `api/client.ts`沿同一个WebIdentityProvider增量提供身份版本与订阅，不能另读环境/存储或推断role。现runtime provider的configure/clear同步推进generation并通知所有订阅者；即使A→B→A或同身份重新配置，也废弃旧请求。开发fallback每次返回新对象不因此推进generation。provider新增两必填方法，现四个受控provider用显式静态generation/空订阅适配；当前身份头覆盖/缺生产身份零fetch/无身份剥离头/上传行为保持。
+
+```typescript
+// 纯UI/transport身份元数据，不是后端DTO或授权票据。
+export interface WebIdentityProvider {
+  current(): WebRequestIdentity | null;
+  generation(): number;
+  subscribe(listener: () => void): () => void;
+}
+export interface WebIdentitySnapshot {
+  readonly identity: Readonly<WebRequestIdentity> | null;
+  readonly generation: number;
+}
+// createApiClient的两个附加只读方法；同注入provider，没有另一个身份通道。
+export interface ApiIdentityReader {
+  identitySnapshot(): WebIdentitySnapshot;
+  subscribeIdentity(listener: () => void): () => void;
+}
+```
+
+`identitySnapshot`逐字段复制并冻结identity与外层；generation须非负safe integer，身份错误/非法版本固定WebIdentityError，不把异常转成默认身份。实际请求仍由原identityMiddleware从同provider.current绑定，调用者不能传快照来替代真实身份。订阅不在createApiClient构造时永久注册；由页面生命周期注册并在unmount解除，避免测试/多实例泄漏。runtime更新先发布新身份与generation再同步通知；一个订阅者错误不能阻止其他订阅者失效，通知完成后仅抛固定WebIdentityError，不输出原错误或身份数据。不引入轮询、Pinia身份副本、cookie/token/role或新的认证机制。
+
+`quote-request-scope.ts`仅消费上述只读接口，导出`sameIdentitySnapshot(a,b):boolean`（比较tenant/employee/mode/generation值，非引用）；页面再用自己的请求generation及明确的opportunity/quote/source/page/选区值绑定每次操作。发请求前及应用成功/错误响应前均比较快照与该操作scope；身份/机会/报价/原件/页/文本/选区改变立即使对应旧操作失效，旧结果不能更新数据、错误、locator、幂等键或触发下载。AbortController只节省等待，不声称服务端操作已取消。
+
+身份订阅触发时立即清除本页业务数据、原文、选区、文件Blob URL与待确认表单/键，取消在途UI请求；不保留其他员工的隐形表单缓存。再次登录/刷新只经持久GET核对已保存记录，不能宣称恢复了已丢失的客户端键。同一身份与未改意图下的未知结果保留原K并提供明确核对动作；修改输入仅标新意图，用户明确发起新确认时才生成新K，不能后台换K重发。文件generate仍服务端canonical，不受这些客户端K控制。client与范围函数不计算业务hash、不缓存权限；无身份时新报价提交禁用，原API缺身份语义不改。
+
+该UI隔离覆盖CostingQuotes及本批ApprovalCenter/RunCenter接入的报价内容：身份变化时立即清本页已加载数据，在途列表/详情/动作响应同样按捕获的identity与页面generation检查；不只保护报价编辑表单。沿原页面行为做窄增量，不重做全站身份或权限体系。
+
+先补失败测试：
+```typescript
+import { afterEach, expect, it, vi } from 'vitest';
+import { clearAuthenticatedIdentity, configureAuthenticatedIdentity, createApiClient }
+  from '../src/api/client';
+import { sameIdentitySnapshot } from '../src/views/costing-quotes/quote-request-scope';
+
+afterEach(clearAuthenticatedIdentity);
+it('invalidates A-B-A responses but not fresh objects of one identity', () => {
+  const client = createApiClient({
+    baseUrl: 'https://tradeos.test', fetch: vi.fn<typeof globalThis.fetch>(),
+  });
+  configureAuthenticatedIdentity('tn-a', 'emp-a');
+  const before = client.identitySnapshot();
+  expect(sameIdentitySnapshot(before, client.identitySnapshot())).toBe(true);
+  configureAuthenticatedIdentity('tn-b', 'emp-b');
+  configureAuthenticatedIdentity('tn-a', 'emp-a');
+  expect(sameIdentitySnapshot(before, client.identitySnapshot())).toBe(false);
+});
+```
+
+测试client在本组以真实createApiClient构造，afterEach清身份/订阅/DOM。追加实际fake fetch悬挂Promise：身份切换后旧预览/错误/PDF晚到均不得展示或下载；scope切回同机会也不能接纳旧generation；同身份新对象不误清表单；订阅抛错仍让其他订阅者清状态且固定脱敏错误；unmount后无通知/Blob URL遗留；合法短身份仍原样覆盖伪头，PDF用生成GET的parseAs:'blob'而非裸fetch，错误JSON仍可分类。先跑`npm --prefix apps/web test -- tests/api-client-identity.test.ts tests/quotation-flow.test.ts`取得新接口/行为RED，再最小实现、同组GREEN及旧前端回归。B2实际schema交付后再补具体端点类型，不手写后台模型。
+
 - `quote-input.ts`另导出纯UI函数`utf16SelectionToCodepoints(text:string,start:number,end:number): readonly [number,number]`，将浏览器UTF-16半开选区转为后端Unicode code point半开区间。要求整数、`0<=start<end<=text.length`且两端不能切开代理对；不修改原文/trim/规范化，不本地生成locator或hash。
 
 该坐标函数的目标失败测试与实现骨架如下，和金额保真测试同属第一轮TDD；HTTP请求仍用后端preview返回的raw_hash/text_hash，页、来源或文本变化立即废弃旧选区与locator。

@@ -1,9 +1,11 @@
 # Task 8B2：安全HTTP与真实进程装配 Implementation Plan
 
-> **状态：尚未实施、未运行测试。** 控制器已全文核对本计划；T5/T6/T8A/T8B1最终交付后仍须对齐实际接口再派发。按主计划SDD使用test-driven-development与verification-before-completion，不另起执行批次或派子代理。
+> **状态：前置接口已核对，T8B2准备派发，尚未实现或运行本任务测试。** T5/T6/T8A及T8B1已完成独立审查（B1最终e958b3c），控制器核对实际构造口与依赖并记录交接。按主计划SDD使用test-driven-development与verification-before-completion，不另起执行批次或派子代理。本计划新增方法仍为待实施要求，不把前置测试当成本任务验收。
 
 **Goal:** 将已验收域/文件能力接入安全HTTP、显式配置和真实API/worker，保持旧流程兼容。
 **Spec:** `docs/superpowers/specs/2026-08-28-phase2-costing-quotation-design.md`与主计划T8B2。文件能力精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，来源能力见[有界取证子计划](2026-08-28-phase2-quote-evidence.md)。本文件不重做B1的文件/限速/恢复规则；所有新方法仍为待实施要求，不是验收结论。
+
+ADR指定`docs/adr/0022-quotation-runtime-http-contracts.md`：2026-08-29控制器派发前核未占号，记录本批准备事实公共契约、权限交集、HTTP与实际运行时兼容决策；若被其他工作占用先回报，不覆盖已有ADR。实现者只更新本批实现相关规则/ADR，不改控制器永久计划或前置验收状态。
 
 ## 1. 实际接缝与责任
 
@@ -29,7 +31,11 @@
 
 可信当前员工ID沿T6与T8A/B1的fact_identity既有契约，不要求emp_ULID或迁移旧员工；身份仍只来自真实请求依赖，body/query不得自报actor/role。实际factory/ASGI覆盖合法旧员工ID的授权成功及不存在、失活、撤权拒绝，不把格式合法当许可；其余资源ID按对应公开DTO严格规则处理。
 
-下表路径均相对`/costing-quotes`。C=当前在职四成本角色；B=boss且当前在职；U=原NeedUnitAuthorizer的Need/机会权限，涉及消息原件或历史receipt时再叠加T8A现boss-only入站消息ACL；F=当前机会ABAC：sales本人/manager当前直属owner/boss租户，绝不自动包含四成本角色。
+真实Gateway审计仍只表示最多32字符的既有safe-label员工编号，且保留敏感token禁用；业务DTO的40字符身份范围不因此扩大网关列。本批不迁移/截断/hash编号或伪造UserId。文件路径真实invoke尚无result的ValidationError按B1裁定返回固定invalid_input/无call ID；来源路径沿A现有固定错误映射失败关闭。实际factory需补已存在且不超过32字符的中文/内部空格/保留token编号零对象IO反例，并保留合法短旧编号原样入审计正例；不能宣称所有fact_identity都可执行Gateway。employees.employee_id本身也是String(32)，33/40字符拒绝仅用B1受控actor/access配真实Gateway覆盖，不声称存在这种持久员工或要求真实PG插入。metadata内部读权仍沿原域契约，不能全局改成32字符身份门。
+
+派发前核实的同链兼容修复：`workflows/quote_approval/steps.py::_identity`目前仍对prepared_by/initiated_by要求`startswith("emp_")`，会拒绝服务已允许的合法短旧员工编号。B2仅将这两个值的格式校验改为调用现`fact_identity`并保留原字符串；该函数只校验且返回None，不能把返回值当ID。其余run/quote/version/hash绑定、实际当前员工和审批独立性检查全部保留，不改workflow版本或既有run数据。先用真实步骤验证非emp_旧编号的行为RED，补非法/空/非字符串拒绝与canonical编号保护测试；§8.4用实际factory、真实持久旧编号走submit→步骤→独立审批→文件，不能只证明HTTP202即称同链兼容。原错误仍固定workflow_binding_invalid，不增加通用身份规则或改Gateway safe-label限制。
+
+下表路径均相对`/costing-quotes`。C=当前在职四成本角色；B=boss且当前在职；U=原NeedUnitAuthorizer的Need/机会权限，依T3A§1明确为C **并且**现有机会访问权，涉及消息原件或历史receipt时再叠加T8A现boss-only入站消息ACL；F=当前机会ABAC：sales本人/manager当前直属owner/boss租户，绝不自动包含四成本角色。现有机会矩阵中C与机会访问权交集只有boss，不能让U自动等于F或为其他成本角色增加CRM权限。
 所有路径先可信RequestIdentity；tenant与actor只来自认证，服务再读当前员工。跨tenant/缺对象统一404；真实拒权403；缺依赖503，不伪装空列表。K=必填`Idempotency-Key`，按既有QuoteKey/各域原校验绑定，原样传给对应公共服务，重放不换key；不新增通用幂等表。请求不能自证confirmed_by/at、tenant、role、owner、prepared_by、locked/approved或operation_id。
 
 | 方法/路径 | 安全入参 → 安全响应；真实调用 | 门/幂等 |
@@ -170,7 +176,7 @@ sheet→opportunity由workflow调用现CostingService.get_sheet得真实ID，不
 
 ### 2.3 固定错误与调用ID
 
-仅文件routes新增workflow `QuoteFileApiError`：code:QuoteFileFailureCode、message（固定中文表）、tool_call_id:ToolCallId|None、original_generation_call_id:ToolCallId|None、retry_after_seconds:int|None。QuoteFileFailureCode引用已裁定文件/限速/显式恢复固定集合，不另建自由code；ToolCallId仍只从tool_gateway.repository导入到workflow技术wrapper。
+仅文件routes复用B1已交付的workflow `QuoteFileApiError`（workflows/quote_approval/file_schemas.py）：code:QuoteFileFailureCode、message（固定中文表）、tool_call_id:ToolCallId|None、original_generation_call_id:ToolCallId|None、retry_after_seconds:int|None。QuoteFileFailureCode引用已裁定文件/限速/显式恢复固定集合，不另建自由code或第二错误DTO；现CallId别名保持B1真实Gateway身份校验，技术调用ID不引入业务域。
 真实invoke已有结果才保留tool_call_id；只有经只读ledger核真实同quote/key/HMAC且仍EXECUTING才填original_generation_call_id。CONFLICT新ID、权限拒绝前的输入ID、没有结果的异常都不能假称原canonical；ID放专门字段，不拼message。无Gateway参与的普通输入/身份拒绝继续ApiErrorResponse(code,message)，不改全局契约。
 固定状态映射：HTTP输入/尚未invoke的unsupported=400，权限403，缺对象404，idempotency/revision/context冲突及确定性正式阻断409，rate_limited=429，dependency/lock/storage/unknown=503。已有Gateway结果的文件VALIDATION/unsupported同样保留技术错误与call ID，归409，不掉回只code/message的400。文件同status同时可能有flat错误与技术错误时，OpenAPI用显式union；400保留现全局flat契约，不与main强制400覆盖冲突。
 Retry-After仅真实结果合法整数1..86400，缺失就不加，不能使用ApiSettings.retry_after_seconds冒充unknown恢复时间；保留原K/原文件，取消不造成功response。业务固定code按T2/T3B/T4/T5/T6已实际导出的类显式映射，不透传异常消息；T2当前reader失败统一InvalidPricingEvidenceError，不能凭空承诺能输出T8A每个细码。
@@ -219,12 +225,84 @@ API `Phase1RuntimeSettings`末尾追加`quotation:QuotationRuntimeSettings|None=
 
 ## 4. 解构造环与真实装配顺序
 
+`NeedUnitAuthorizer`当前只有demand公开Protocol与受控测试实现，B2须新增真实check/guard适配，并非引用一个已存在的生产类。guard在零原件IO前提下保护当前员工/机会授权行至内层Need事务提交，顺序Employee→Opportunity→Need；check用于锁外即时复核，精确绑定tenant/need/account/actor，不要求已有issuer或unit。具体公共facts/lease适配见§4.1；派发前仍核B1最终接口，以域公共规则判权，不在infra复制业务权限或把普通read当持锁guard。
+
+### 4.1 单位授权的精确实现接缝（B1接口核对后的补正）
+
+不复用B1文件scope作为U授权：它额外要求owner存在且在职，且DTO没有Need/account绑定；这会改变T3A的C∩原机会访问权。新增以下窄事实lease，不扩一般CRM读权或新增权限框架：
+
+| 文件 | 责任 |
+| --- | --- |
+| `domains/demand/schemas.py`、`service.py` | 内部NeedUnitScopeFacts与NeedUnitScopeReader，公开重导出；不注册HTTP、不改旧NeedUnitService签名 |
+| `domains/opportunities/service.py` | 仅显式重导出现有OpportunityAuthorizer/OpportunityAction/ScopeLevel，Actor/OpportunityScope已可用；不改原权限矩阵 |
+| 新`infra/db/need_unit_scope.py` | 真实Employee→Opportunity SHARE锁、Need/account结构绑定与短事务关闭；没有角色业务判断 |
+| 新`workflows/quote_approval/need_unit_access.py` | 组合成本与机会两个域公共权限，给真实NeedUnitAuthorizer的check/guard |
+| 新`tests/unit/test_need_unit_access.py`、`tests/integration/test_need_unit_access.py` | 角色交集、无owner/issuer/unit前置、真实多连接授权锁与Need提交边界 |
+
+```python
+# demand.schemas：strict/frozen/extra-forbid，ID沿原fact_identity，actor沿唯一shared DTO
+class NeedUnitScopeFacts(NeedFactDTO):
+    tenant_id: TenantId
+    need_id: ValidatedNeedId
+    opportunity_id: OpportunityId
+    account_id: ProspectAccountId
+    actor: QuoteEmployeeFact
+
+# demand.service，内部存储适配端口，不是授权结果
+class NeedUnitScopeReader(Protocol):
+    def open(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+             actor_id: EmployeeId) -> AsyncContextManager[NeedUnitScopeFacts]: ...
+
+# infra：全部依赖显式，无业务默认
+class SqlAlchemyNeedUnitScopeReader:
+    def __init__(self, factory: SessionFactory, *, lock_timeout_ms: int,
+                 statement_timeout_ms: int) -> None: ...
+
+# workflow：contexts复用A的真实当前员工读取，不需要quotation/issuer先构造
+class CurrentNeedUnitAuthorizer:
+    def __init__(self, contexts: QuoteEvidenceContextReader,
+                 scopes: NeedUnitScopeReader,
+                 opportunity_authorizer: OpportunityAuthorizer) -> None: ...
+    async def check(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+                    actor_id: EmployeeId, *, action: NeedUnitAction) -> NeedUnitAccess: ...
+    def guard(self, tenant_id: TenantId, need_id: ValidatedNeedId,
+              actor_id: EmployeeId, *, action: NeedUnitAction
+              ) -> AsyncContextManager[NeedUnitAccess]: ...
+```
+
+workflow每次先校验action为原read/confirm、真实当前actor的tenant/ID/active，再调用costing.service.require_pricing_source_access（原C矩阵），之后调用真实机会域authorizer。此窄交集传入从同一真实员工事实构造的`Actor(str(actor_id), OpportunityScope(level=ScopeLevel.TENANT), role=fact.role)`，固定action=OPPORTUNITY_READ；不把role改成boss、system，不从请求或配置提供allowed。当前原矩阵仅boss+TENANT能同时满足C，其他组合拒绝；以后矩阵若改变，需重新核对本用途，不承诺自动获得新scope。工厂注入既有Phase1OpportunityAuthorizer(真实tenant)实现，不放默认allow。
+
+初检成功后进入scopes.open，逐值核返回tenant/need/actor并用锁内actor再次执行同一两个域规则。通过才构造NeedUnitAccess，account/opportunity取真实lease，authorization_ref取本次机会authorizer的固定规则标识；无fake允许票据。check完整进入并退出guard后返回即时事实，不声称返回后仍持锁；guard保持到调用方Need UoW结束。两函数不调用原件/解析器/模型，取消原样。
+
+SQL设置core显式超时后，先按tenant+actor锁真实Employee SHARE，再按tenant+need锁唯一Opportunity SHARE；该表已有tenant+need唯一约束，不新增迁移。随后只读同tenant+need的Need.account_id（不取Need行锁）；必须与Opportunity.account_id一致，缺记录need_not_found，关系或typed事实损坏facts_corrupt。返回原员工完整QuoteEmployeeFact和精确绑定，不要求owner、issuer、现unit或非终态；终态确认/数量规则仍由原NeedUnitService判断。NeedService在内层FOR UPDATE后已有account/当前事实重验，SQLlease不能提前锁Need导致跨连接自等待。finally独立尽力rollback/close、保留原取消；锁超时固定NeedUnitUnavailableError(lock_timeout)，其他存储故障storage_unknown，原业务错误不得改成facts_corrupt；不输出SQL/原消息。
+
+缺actor或两域拒权→NeedUnitPermissionError(permission_denied)；输入错误→NeedUnitError(invalid_input)；损坏绑定→NeedUnitError(facts_corrupt)；reader意外失败→NeedUnitUnavailableError(dependency_unavailable)，取消不捕为普通异常。C函数的固定QuoteEvidenceError(permission_denied)精确转换，不将任意错误当拒权。HTTP依§2将facts_corrupt映射503，旧单位错误和历史语义保持。
+
+首个失败测试使用实际两个域矩阵和隔离PG：
+
+```python
+async def test_unit_guard_preserves_unassigned_opportunity_access(unit_access_case):
+    c = unit_access_case
+    await c.make_owner_missing_and_unit_missing()
+    async with c.authorizer.guard(c.tenant, c.need_id, c.boss_id, action="confirm") as access:
+        assert (access.need_id, access.account_id) == (c.need_id, c.account_id)
+        assert await c.other_connection_cannot_change_actor_role()
+        assert await c.other_connection_cannot_change_opportunity_binding()
+        assert await c.need_row_is_not_locked_by_authorizer()
+```
+
+fixture新建于该组，三个并发断言用独立连接、NOWAIT或pg_stat_activity锁等待证据；不靠固定sleep。补失活/未知/跨tenant、各角色交集、owner失活但boss原读权仍有效、无opportunity、错account、返回陈旧actor/错Need、SQL超时/取消清理；真实NeedUnitService确认在内层提交后才释放授权锁，来源reader断言所有锁外执行。先运行这两个新文件取得RED，最小实现后同组GREEN，再纳入§8.1旧Need/context回归及§8.4真实API/worker同链；无新迁移、没有新部署默认值。
+
+### 4.2 实际组合与发布顺序
+
 已替换主计划原示意`build_quotation_composition(..., tool_gateway, ...)`的一步式签名：它要求先有Gateway，但新handlers/readers又依赖quotation。采用本进程两个明确阶段，来源Gateway独立，文件Gateway后建；不修改ToolGateway/WorkflowEngine核心，不把新工具塞入旧email/DNS注册表。
 
 下文SessionFactory=async_sessionmaker[AsyncSession]、Clock=Callable[[],datetime]，只是本地类型别名。拟议API本地`apps/api/composition/quotations.py`输出frozen `QuotationDomainComposition(context_provider:QuoteContextProvider,quotations:QuotationVersionService,costing_quotes:CostingQuoteService,costing_freeze:CostingFreezeService,need_units:NeedUnitService,creation:QuoteApplicationService,preparation:QuotePreparationApplication,preparation_reads:QuotePreparationReadService,files:QuoteFileService|None,approval_access:QuoteApprovalAccess)`；files仅files配置缺失时None。构造函数`build_quotation_domains(factory:SessionFactory,settings:QuotationRuntimeSettings,*,evidence:QuotationEvidenceComposition,run_reader:QuoteWorkflowRunReader,artifact_reader:QuoteGeneratedArtifactReader|None,now:Clock)->QuotationDomainComposition`，**不接Gateway或approvals**；需要的仓储/当前身份/纯policy在该本地factory明示构造。
 `QuotationEvidenceComposition`为本层frozen bundle：`pricing:PricingEvidenceReader,need_units:NeedUnitEvidenceReader,scope_access:CostScopeSourceAccess,preview_reader:QuoteEvidenceReader,parser:LinuxEvidenceTextParser`；其构造先组T8A access/独立registry/handler/Gateway/slot，再组两个domain reader。它不持quotation service，不引用旧manual_gateway。上传/Need当前authorizer必须真实装配，不用测试reader。
 source bundle的本地构造口为`build_quotation_evidence(factory:SessionFactory,settings:QuotationRuntimeSettings,*,raw:QuoteEvidenceRawReader,uploads:WorkIntakeService,need_authorizer:NeedUnitAuthorizer,fingerprints:HmacFingerprintProvider,lease_duration:timedelta,lease_owner:str,now:Clock)->QuotationEvidenceComposition`；raw是infra adapter而不是从workflow直接import ArtifactStore。scope_access适配T3B公开require，仅对持久证据重新做T8A access元数据/本人资料授权绑定，不把它伪装成冻结票据或复制价款规则。
-另`build_quotation_http(domain:QuotationDomainComposition,*,factory:SessionFactory,approvals:ApprovalService,engine:WorkflowEngine,settings:QuotationRuntimeSettings,evidence:QuotationEvidenceComposition,generated:GeneratedDocumentStore|None,fingerprints:HmacFingerprintProvider,now:Clock)->QuotationHttpComposition`构造文件access/事实adapter、独立文件registry/Gateway/应用及HTTP工作流适配；不会再建approvals/engine。该函数在现engine构造和闭包发布后调用，不参与handlers建立。
+另`build_quotation_http(domain:QuotationDomainComposition,*,factory:SessionFactory,approvals:ApprovalService,engine:WorkflowEngine,settings:QuotationRuntimeSettings,evidence:QuotationEvidenceComposition,generated:GeneratedDocumentStore|None,metadata_only:GeneratedDocumentMetadataReader|None,fingerprints:HmacFingerprintProvider,now:Clock)->QuotationHttpComposition`构造文件access/事实adapter、独立文件registry/Gateway/应用及HTTP工作流适配；不会再建approvals/engine。该函数在现engine构造和闭包发布后调用，不参与handlers建立。
+
+metadata_only必须由API/worker各自实际调用点以B1的GeneratedStoreDocumentMetadataReader(真实GeneratedArtifactStore)独立构造并显式传入；正常文件路径另用GeneratedStoreDocumentAdapter(store,bounded)。不能把宽generated对象换窄注解传入恢复handler，也不能在本HTTP工厂私取adapter._store。files=None时两参数均None；启用files而缺任一真实端口时文件组固定unavailable，不注册半套。测试核恢复对象无公开put/get_bounded/delete/renderer能力，恢复只调用独立metadata方法；两对象可共享同一个底层真实Store的metadata，但不把宽对象交给恢复执行器。worker本层等价装配遵守同约束，不import API工厂。
 最终`ConfiguredApiDependencies.quotation:QuotationHttpComposition|None=None`；其字段`domain:QuotationDomainComposition,approval_starter:QuoteApprovalStarter,customer_versions:QuoteCustomerVersionsService|None,files_application:QuoteFilesApplication|None,evidence:QuotationEvidenceComposition,lifecycle:QuotationRuntimeLifecycle`；只有两个文件字段按files分组可空。workflow技术`QuoteApprovalStarter.start(tenant_id:TenantId,quote_id:QuoteId,*,actor_id:EmployeeId)->QuoteApprovalStartResult`为async，当前actor reader→T5 start_quote_approval；不会从请求造QuotationActor。API只从自己composition导入；scheduler可有同责任的本层helper，直接复用域/工作流真实类，不import apps.api。
 
 实际装配顺序（API与worker各自执行；“唯一”指同一进程内所有引用同实例，不要求跨进程共享Python对象）：
@@ -283,8 +361,9 @@ Create `connectors/object_store/deferred.py::DeferredS3ObjectBlobTransport(setti
 
 - [ ] 先写 `tests/unit/test_quote_http_projection.py`、`test_quote_preparation_read.py` 和 `tests/integration/test_quote_preparation_read.py`，覆盖§2全部白名单/typed wire、demand assessment、初次缺单位/issuer、合法None规格及损坏事实失败。
 - [ ] RED后实现shared只读DTO、demand纯投影、quotation新用途Protocol/只读服务/就近纯投影、workflow适配、原SQL锁租约复用；所有跨域调用只经公共service，不复制分类或以泛异常返回缺项。
+- [ ] 按§4.1先运行两个`test_need_unit_access.py`取得RED，再实现真实单位check/guard与Employee→Opportunity事实lease；GREEN须包括实际权限矩阵、独立连接锁证据、无owner/issuer/unit前置、Need内层提交及原件IO锁外。
 - [ ] 增加price/coverage/scope/issuer刷新读口及精确同hash读回，证明确认重放不会误读并发新latest。GET零确认/冻结/对象读取；原get_facts/quantity hash/require_current_unit、原context与T4创建/恢复行为不变。
-- [ ] 运行这三文件与受影响旧demand/context/costing/quotation目标；保持完整数量来源hash与原context hash字节。提交 `feat: 增加安全报价准备摘要与确认资料刷新`。
+- [ ] 运行上述五个新文件与受影响旧demand/context/costing/quotation目标；保持完整数量来源hash与原context hash字节。提交 `feat: 增加安全报价准备摘要与确认资料刷新`。
 
 ### 8.2 HTTP与OpenAPI契约
 

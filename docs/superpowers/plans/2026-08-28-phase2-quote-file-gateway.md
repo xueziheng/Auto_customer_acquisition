@@ -1,6 +1,6 @@
 # Task 8B1：文件授权、Gateway与持久恢复 Implementation Plan
 
-> **状态：前置核对完成，T8B1尚未实施、未运行本任务测试。** T5/T6/T7与T8A已完成独立审查（A最终6938804）；控制器已核实际公共接口并记录交接。文内“新增/提取”均不是已存在能力；当前依据/决策人共同规则仍需本任务提取。ADR指定`docs/adr/0021-quotation-file-gateway-recovery.md`，2026-08-28派发前核未占号；若期间发生冲突回报控制器，不覆盖。
+> **状态：T8B1工程交付及独立审查已完成，最终e958b3c。** 原三项Important经Fix1解决，连续清理终止异常经Fix2复审ADDRESSED，无新增Critical/Important；完整首审与两轮修复报告保留在本批账本。最终文件/context385项、T4–T6/Gateway定向36项零skip通过；不替代T8B2实际进程接线或T10全量验收。handler职责拆分及未触_policy_lease的终止异常观察留最终全分支审查。ADR为`docs/adr/0021-quotation-file-gateway-recovery.md`。
 > **For agentic workers:** 在现SDD控制器下使用superpowers:test-driven-development与superpowers:verification-before-completion实施下列切片；不另启executing-plans批次。控制器管理派发与一次完整Task审查，不自行再派代理或启动T8B2。
 
 **Goal:** 交付正式/历史文件授权、客户安全版本发现、真实有界Generated读取/专用惰性写入、四个文件Gateway工具、持久限速及有限metadata恢复。
@@ -44,6 +44,8 @@
 
 以下T6公共签名是前置目标，需核真实交付：
 T6最终已保留既有EmployeeId身份形状：actor_id用shared.schemas.quote_facts.fact_identity（严格str、非空、无首尾空白/C0-C1控制、最多40字符），不新增emp_ULID门。新文件域、Gateway应用和技术DTO中由同一员工ID包装的user_id保持该兼容；仍核真实tenant/ID/在职/当前权限，格式本身不是授权。quote/file/artifact/run/ToolCallId等本批严格ID不变，增加合法旧员工ID及非法/不存在/撤权零IO反例。
+
+业务域与员工DTO仍保留fact_identity的最多40字符契约；文件Gateway另受既有ledger可表示性限制：真实user_id须满足其safe-label且最多32字符（含保留敏感token拒绝），事件actor受同safe-label约束，数据库user_id列也是String(32)。本批不修改通用ledger/表/迁移，不截断、hash、替换员工ID或造另一审计人。尚无ToolCallResult时真实invoke抛shared ValidationError，应用固定invalid_input、两个call ID均None并清槽，零对象IO/自动重试；不复制私有safe-label算法或虚构审计记录。现employees.employee_id本身也是String(32)，故33与40字符仅以受控actor/access事实配真实Gateway验证DTO→ledger拒绝，不声称能持久化该员工；中文、内部空格、保留token用不超过32字符的真实PG员工验证拒绝，合法短旧编号原样入真实审计；其他异常沿既定不可用类别。此为执行网关的有限兼容，不在域metadata读取额外加32字符门，不声称所有fact_identity均能执行外部工具。
 
 ```python
 class QuoteFileService(Protocol):
@@ -99,12 +101,18 @@ workflow `ApprovalServiceQuoteFileFactsReader(approvals:ApprovalService)`逐ID�
 require_quote_file_scope只允许同tenant且active的boss、sales本人owner、manager当前直属owner；其余包括product/sourcing/finance拒绝。manager沿既有机会scope，owner当前在职条件不放松。原prepared_by不自动获得文件权；历史preparer失活不单独阻断。当前文件actor始终是真请求人，不等于quote_send决策人，也不构造假QuoteWorkflowExecutor。
 open_file_scope仅排序锁actor/owner Employee SHARE→Opportunity SHARE，无Need/issuer/policy；open_for_file在机会锁前一次排序去重锁actor/owner/存在的preparer/全部deciders，再Opportunity SHARE→Need SHARE。全部tenant过滤/owner bootstrap重核，原SQL投影复用；已持Opportunity后不能补锁其他员工，不升级Opportunity FOR UPDATE。
 
+Fix1取消保护仅在现quote_context._open局部完成：bootstrap读与业务session的锁前/锁等待/已yield路径记录首个CancelledError原对象，仍尽力执行原rollback与close；二次SQL/validation/取消不得覆盖该原取消。首次取消若发生在rollback也需记住，不能再被close故障替换；没有先前取消时，首次close取消原样传播，其他错误沿原技术/业务分类。外层若合并异常出口须保留consumer_error的原业务异常识别，不引入通用cleanup框架、不改其他UoW/提交/锁序/超时。仅固定脱敏清理告警，不输出原异常文本，不承诺故障连接必已释放。真实多连接与受控清理故障组合覆盖file_scope/file_current、yield前等待和已yield、rollback/close/两者；另覆盖bootstrap和首次清理取消。旧prepare/apply共用该函数，须最终改后定向T4/T5/T6回归。
+
+异常优先级精确为：已有primary取消时，仅普通Exception（包括SQL/validation故障）或再次CancelledError让位于该原取消；SystemExit、KeyboardInterrupt、GeneratorExit及其他不属于Exception/CancelledError的BaseException，无论有无primary都原样向外传播。它们是控制流终止而非普通清理故障，不转换为依赖不可用。用受控异常直接await测试原对象，不发送真实OS信号或终止测试服务；保留原取消对普通清理故障的全部真实PG证明。
+
+Fix2明确连续故障的优先级：同一_open一旦观察到首个不属于Exception/CancelledError的终止型BaseException，就保留该原对象，后续rollback/close的普通异常、取消或第二终止异常均不能覆盖它；优先级为首个终止异常→首个取消→原有普通业务/技术分类。bootstrap查询、业务锁等待/已yield、rollback、close都在该局部规则内；仍尝试原有清理，普通成功/失败不变。只补同函数局部状态，不建框架或修改file_access._policy_lease/其他UoW。受控直接await矩阵覆盖终止来源×后续清理故障、有无先前取消、两用途及对象身份，禁止真实OS信号；原真实PG取消/锁与旧T4–T6回归保持。
+
 正式authorize严格顺序：
 
 1. actor_reader真实当前初检；本域短读quote仅取opportunity/preparer，随后短scope gate。拒绝零审批事实/metadata/object/renderer；不从内部四角色get取得文件许可。
 2. T6 get_file_approval取得真实receipt摘要/run；本域短读原receipt/bindings，受信read_fact取得全部deciders。缺receipt为approval_missing；APPLIED/QuoteApproved不代替receipt。plain读真实run并核type/version/subject/quote version/content hash；completed/failed但绑定正确的历史run可读。
 3. open_for_file锁齐所有员工→O→Need，再次scope gate；quotation UoW取现`lock_opportunity`（quotation-create-v1 advisory）并重读quote、bindings、receipt及实时facts。decider/owner/不可变决定集合变化则context_changed退出，绝不补员工锁或在此调用T6公开get/list嵌套scope。
-4. 取政策selection lease，顺序context→quotation业务锁→policy；所有等待后selection.current()及新now。selected policy id/hash必须等于basis/submission，不只比较利润底线。
+4. 取政策selection lease，顺序context→quotation业务锁→policy→issuer；在同一quotation UoW内复用现lock_issuer（quotation-issuer-v1租户advisory，与confirm_issuer同锁），随后current_issuer重读并与business.issuer完整不可变DTO核等。当前缺项或版本不同为context_changed；持久损坏/未知故障仍技术失败。该锁持至只读UoW退出，无commit、不新增迁移/锁表/reader端口。所有等待（含issuer）后再selection.current()及新now，selected policy id/hash必须等于basis/submission，不只比较利润底线。旧prepare/apply仍其既有选定快照语义；history不取issuer锁。文件用途context预读只对真实issuer_not_found保留确定性缺项，需跨内外异常映射全链证明；未知reader错误不能变blocker。
 5. 复用T5原请求/绑定/receipt校验：类型恰全且唯一、tenant/quote/version/payload/request/期限/run一致；实时facts的不可变决定hash=receipt.facts_hash，APPROVED→APPLIED不能改变hash。每包approve、真实decided_by/at、state approved或applied且未过期；全部deciders逐一沿require_quote_approval_access(action='apply')，禁止prepared_by/当前owner/提交owner自批。
 6. quote为当前有效approved/sent且未过期；Need完整事实/当前unit、issuer/context/scope/全部evidence/quoted及期限重验。复用T5当前依据门与T4 validate_quote_basis(真实intent,basis,context,now=now)，不重价、不重读客户原件。
 7. project_customer→validate_customer_projection→customer_quote_hash，构造snapshot；退出只读UoW/policy/context。不写state/receipt/mark_applied/sent。snapshot仅检查时点，不是可跨请求传递的授权票据。
@@ -201,7 +209,7 @@ manifest版本各为显式`v1`，high_risk_stage_profile=None，cost_class=FREE�
 | quotation.file.history.read | LOW/NONE/False | tenant,permission / quotation:file_history_read / quote_id,file_id |
 | quotation.file.reconcile | MEDIUM/NONE/True | tenant,permission,approval / quotation:file_reconcile / quote_id,original_generation_call_id |
 
-每个input_schema additionalProperties=False，ID按现quo/qfl/tcl+ULID验证；无actor/role/approved/run/key/template/history/force/客户内容。output_schema仅安全provider_ref:file_id，reconcile另固定status='metadata_recovered_original_unresolved'；其他状态/bytes/DTO只进typed槽，不扩pipeline安全output键。
+每个input_schema additionalProperties=False，ID按现quo/qfl/tcl+ULID验证；无actor/role/approved/run/key/template/history/force/客户内容。四工具output_schema均仅安全provider_ref:file_id；reconcile的metadata_recovered_original_unresolved只由SUCCEEDED后的严格typed RecoveryPayload核验形成应用outcome，不放output.status。现pipeline只接受status='validation_passed'，本批不修改核心、不借该值伪报另一语义。应用仍核恢复新/原调用ID、file provider_ref、原状态和checked_at，不能降成普通generate成功；其他状态/bytes/DTO只进typed槽。通用output不携业务outcome，恢复含义由专用工具、新requested审计和受信wrapper保留。
 新增QuoteFilePermissionCheck/QuoteFileApprovalCheck均实现现CheckStage.check(ctx,state)，只调公共服务。permission先QuotationActorReader.read_current核真实tenant+员工（ctx.user_id是B2传入的真实员工标识的UserId包装，不造usr/default boss），并执行文件scope或正式授权；approval复用完整正式authorize，history不注册。初始许可不得把角色/员工映射写进共享可变属性。
 注册helper`register_quote_file_tools(registry:ToolRegistry,*,generate:QuoteFileGenerateHandler,read:QuoteFileReadHandler,history:QuoteFileReadHandler,recovery:QuoteFileRecoveryHandler)->None`仅注册四固定manifest/实例；read/history实例分别固定用途，不接客户端mode。独立文件registry/check映射交B2，不修改旧email/DNS注册集合。
 
@@ -230,12 +238,16 @@ prepare/execute沿现async签名`prepare(ctx,preflight)->PreparedToolCall`、`ex
 tool version单独由manifest/ledger绑定并在恢复核验。密钥或协议变更冲突失败关闭，不换key/template重生成，不声称跨密钥轮换恢复。每次user_id审计/当前授权保持；ToolCallContext.run_id/approval_ref/campaign_ref=None，artifact.workflow_run_id取真实receipt run，不冒充本次正在执行批准run。
 应用先真实authorize得到canonical，再invoke；check/prepare再次核key与新snapshot等值，变化固定冲突，零对象IO。执行路径：
 
+这里“snapshot等值”是业务/授权绑定等值：显式比较tenant_id、quote_id、opportunity_id、quote_version、quote_content_hash、customer_content_hash、approval_run_id、approval_facts_hash、template_version和完整customer；唯一不比较checked_at。每次authorize仍真实执行全部当前门禁并使用最新checked_at，不缓存授权或跳过有效期检查；时间流逝本身不改变canonical/HMAC。补只变检查时钟仍通过、其他任一绑定变化拒绝，以及等待期间真实到期仍拒绝的测试。
+
 1. mark_executing及其事件已确定提交后，handler重新authorize；用§5真实rate_claim核canonical执行历史，恰1事件才可能首次生成，>=2只metadata恢复，0/错绑定/非executing拒绝。
 2. T6 list_files查本模板，再按原key get_meta_by_key。现存file/metadata都必须严格真实绑定；已有file返回同ID，只有metadata则T6 record_file补关联。错绑定/故障不能当不存在。
 3. 只有普通execute、首次历史、两个查询均确定无记录时render(customer,template_version=template)→put_pdf(真实run/key/version/template)→record_file(artifact_id,actor_id)。T7由B2提供显式byte/page/text limits；B1不能自行接受或重算金额。全部对象IO在Employee/O/Need/policy长锁外。
 4. generate.reconcile和历史>=2分支同一个metadata-only helper；没metadata、存储/关联未知一律reconciliation_required，零render/put/delete。不能用执行历史0冒称首次，也不能用category被RATE_LIMITED覆盖后重新生成。
 5. 最终T6 get_file及authorize再核quote/version/三hash/receipt run/facts hash/template。成功provider_ref只用真实file_id；取消/后置拒绝/ledger完成失败不返回成功、不清winner。generate只返回metadata，不顺带读bytes。
 6. DUPLICATE先当前authorize，再用真实provider_ref解析qfl并T6 get_file核绑定；无/错ID固定storage_inconsistent，不能猜ID。read/history各前后门，并核bounded返回meta与file/真实receipt绑定后才put bytes槽。
+
+generate正常SUCCEEDED仅提供真实provider_ref，不向成功槽塞空bytes或新增metadata联合分支。应用确认状态后要求该路径槽为空，按真实file_id经T6 get_file与正式后置门重核绑定再返回QuoteFileView；发现意外bytes/recovery/failure均清槽并失败关闭。此规定只适用于generate：read/history仍必须消费真实bytes载荷，reconcile仍必须消费绑定本次call的恢复载荷；所有分支finally清本task槽。生成路径不因此调用bounded读取或向调用者返回PDF。
 
 真正EXECUTING无条件不可reclaim，即使lease过期。现_can_reclaim仅允许CLAIMED或FAILED_TRANSIENT，且lease_expires_at非空且<=now、retry_after_at为空或<=now；重认领后只有**原status=FAILED_TRANSIENT且原error_category=RECONCILIATION_REQUIRED**才标记reconciliation_only进入既有hook。到期CLAIMED或其他可重认领FAILED_TRANSIENT走execute，但仍由执行历史safeguard保证旧执行只能metadata恢复。原artifact已commit但卡EXECUTING只能用§6显式恢复，不改旧ledger成功、不假造原claim可恢复。
 
@@ -355,8 +367,8 @@ QuoteFileApplicationError(TradeOSError): detail:QuoteFileApiError
 
 ### 8.1 文件规则与客户发现
 
-- [ ] 创建`tests/unit/test_quote_file_access.py`, `test_quote_customer_versions.py`及`tests/integration/test_quote_file_access.py`；fixture用T4真实新报价+T5真实submit/decide/apply/run生成receipt，T6真实Store/file，不直接INSERT假成功receipt。
-- [ ] RED最小断言：
+- [x] 创建`tests/unit/test_quote_file_access.py`, `test_quote_customer_versions.py`及`tests/integration/test_quote_file_access.py`；fixture用T4真实新报价+T5真实submit/decide/apply/run生成receipt，T6真实Store/file，不直接INSERT假成功receipt。
+- [x] RED最小断言：
 
 ```python
 async def test_file_actor_is_not_send_decider(approved_file_case):
@@ -367,14 +379,15 @@ async def test_file_actor_is_not_send_decider(approved_file_case):
     assert s.customer_content_hash == customer_quote_hash(s.customer)
 ```
 
-- [ ] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_access.py tests/unit/test_quote_customer_versions.py tests/integration/test_quote_file_access.py -q`；GREEN新增domain/SQL用途、T5同域helper提取、workflow事实adapter、分页。
-- [ ] 参数化actor/decider不同、任一非quote_send决策人失活/换role/直属、自批三ID、四成本角色文件拒绝、history只当前ABAC；receipt/bindings/run/hash错误、APPLIED无receipt、mixed APPROVED/APPLIED稳定hash、包到期及completed run。
-- [ ] 多连接测Employee归属/owner/Need数量及来源/材质/required_by/issuer/policy变更与未来policy生效、revision/expiry；所有员工先锁、锁后fresh now、无T6嵌套锁。客户页limit/before/limit+1、空与503、过期未扫、无成本/原文递归泄漏；T5旧apply/历史恢复及旧审批目标回归。
-- [ ] Commit `feat: 增加客户文件用途授权和安全版本发现`（显式git add本组文件，禁止git add .）。
+- [x] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_access.py tests/unit/test_quote_customer_versions.py tests/integration/test_quote_file_access.py -q`；GREEN新增domain/SQL用途、T5同域helper提取、workflow事实adapter、分页。
+- [x] 参数化actor/decider不同、任一非quote_send决策人失活/换role/直属、自批三ID、四成本角色文件拒绝、history只当前ABAC；receipt/bindings/run/hash错误、APPLIED无receipt、mixed APPROVED/APPLIED稳定hash、包到期及completed run。
+- [x] 多连接测Employee归属/owner/Need数量及来源/材质/required_by/issuer/policy变更与未来policy生效、revision/expiry；所有员工先锁、锁后fresh now、无T6嵌套锁。客户页limit/before/limit+1、空与503、过期未扫、无成本/原文递归泄漏；T5旧apply/历史恢复及旧审批目标回归。
+- [x] Fix1补真实Employee/报价/policy等待后确认新版issuer、末端issuer锁等待后重选和期限/政策再验；证明当前确认锁与正式校验同序协调、取消/超时释放且无反向锁环。真实issuer_not_found返回context_changed及客户页blocker，损坏/未知reader仍503；独立非quote_send决定人撤权拒绝正式但历史可读，真实多版本limit+1、非空下一页、连续无重漏游标。旧fixture如无持久issuer须补真实确认链，不用受控current_issuer代替新正式门。
+- [x] Commit `feat: 增加客户文件用途授权和安全版本发现`（显式git add本组文件，禁止git add .）。
 
 ### 8.2 中立Store、有界下载与新lazy writer
 
-- [ ] 新增`tests/unit/test_quote_document_store.py`, `test_quote_pdf_object_transport.py`与`tests/integration/test_generated_artifact_bounded.py`。RED：
+- [x] 新增`tests/unit/test_quote_document_store.py`, `test_quote_pdf_object_transport.py`与`tests/integration/test_generated_artifact_bounded.py`。RED：
 
 ```python
 async def test_actual_object_read_is_bounded(generated_bounded_case):
@@ -385,14 +398,14 @@ async def test_actual_object_read_is_bounded(generated_bounded_case):
     assert c.body.closed
 ```
 
-- [ ] fixture真实metadata合法且size<limit，对象体比meta大；按T8A transport超限→ArtifactReadLimitExceeded契约，断言必须是**读取计数**而非事后len。另测meta超限零IO、短对象/同长坏hash、kind/MIME/tenant、缺bounded依赖、取消/慢流/close。
-- [ ] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_document_store.py tests/unit/test_quote_pdf_object_transport.py tests/integration/test_generated_artifact_bounded.py -q`；GREEN只新增端口/adapter/新writer，不改旧get。
-- [ ] 真实新S3代码注入受控SDK body/client，构造零secret/SDK、每次read(n)有限、一次put/delete、Config attempts=1、无multipart；SDK前/中/成功后取消/close错不冒称未写。真实PG Store commit成功后返回错误保留winner、unknown零delete、仅确认loser cleanup；旧Raw/EMAIL_DRAFT目标回归。
-- [ ] Commit `feat: 为报价PDF增加中立有界存储和惰性写入`。
+- [x] fixture真实metadata合法且size<limit，对象体比meta大；按T8A transport超限→ArtifactReadLimitExceeded契约，断言必须是**读取计数**而非事后len。另测meta超限零IO、短对象/同长坏hash、kind/MIME/tenant、缺bounded依赖、取消/慢流/close。
+- [x] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_document_store.py tests/unit/test_quote_pdf_object_transport.py tests/integration/test_generated_artifact_bounded.py -q`；GREEN只新增端口/adapter/新writer，不改旧get。
+- [x] 真实新S3代码注入受控SDK body/client，构造零secret/SDK、每次read(n)有限、一次put/delete、Config attempts=1、无multipart；SDK前/中/成功后取消/close错不冒称未写。真实PG Store commit成功后返回错误保留winner、unknown零delete、仅确认loser cleanup；旧Raw/EMAIL_DRAFT目标回归。
+- [x] Commit `feat: 为报价PDF增加中立有界存储和惰性写入`。
 
 ### 8.3 四manifest、三分支槽与正常文件链
 
-- [ ] 新增`tests/unit/test_quote_file_gateway.py`、`tests/integration/test_quote_file_gateway.py`，真实ToolGateway/PG ledger+前两组真实服务。RED：
+- [x] 新增`tests/unit/test_quote_file_gateway.py`、`tests/integration/test_quote_file_gateway.py`，真实ToolGateway/PG ledger+前两组真实服务。RED：
 
 ```python
 async def test_cross_actor_duplicate_keeps_one_file(file_gateway_case):
@@ -403,13 +416,13 @@ async def test_cross_actor_duplicate_keeps_one_file(file_gateway_case):
     assert c.renderer.calls == c.objects.put_calls == 1
 ```
 
-- [ ] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_gateway.py tests/integration/test_quote_file_gateway.py -q`；GREEN固定manifest/strict params/checks/handlers/slot/HMAC/app；可先受控limiter跑本组，不冒充§8.4持久验收。
-- [ ] 测key跨actor一致、HMAC真实key_version不被协议覆盖、变版本/协议冲突零生成、generated_by=template；独立read/history、二次撤权零bytes且不删产物、Gateway complete失败/取消清槽；跨task/重复put/错误分支拒绝、三个分支永不同存，repr/ledger无客户/PDF/source marker。
-- [ ] Commit `feat: 增加报价文件Gateway与安全结果交接`。
+- [x] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_gateway.py tests/integration/test_quote_file_gateway.py -q`；GREEN固定manifest/strict params/checks/handlers/slot/HMAC/app；可先受控limiter跑本组，不冒充§8.4持久验收。
+- [x] 测key跨actor一致、HMAC真实key_version不被协议覆盖、变版本/协议冲突零生成、generated_by=template；独立read/history、二次撤权零bytes且不删产物、Gateway complete失败/取消清槽；跨task/重复put/错误分支拒绝、三个分支永不同存，repr/ledger无客户/PDF/source marker。
+- [x] Commit `feat: 增加报价文件Gateway与安全结果交接`。
 
 ### 8.4 持久预留与历史unknown保护
 
-- [ ] 新增`tests/unit/test_quote_file_rate_limit.py`、`tests/integration/test_quote_file_rate_limit.py`；用真实独立PG连接/ToolGateway调用，不fake claim返回值。RED：
+- [x] 新增`tests/unit/test_quote_file_rate_limit.py`、`tests/integration/test_quote_file_rate_limit.py`；用真实独立PG连接/ToolGateway调用，不fake claim返回值。RED：
 
 ```python
 async def test_over_limit_never_enters_render(rate_case):
@@ -420,14 +433,14 @@ async def test_over_limit_never_enters_render(rate_case):
     assert sum(r.error_category is ToolErrorCategory.RATE_LIMITED for r in results) == 1
 ```
 
-- [ ] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_rate_limit.py tests/integration/test_quote_file_rate_limit.py -q`；GREEN独立tenant预留SQL、真实canonical prepared注入、history reader及handler只恢复分支。
-- [ ] 测reserved commit/close未知零render、不退款；窗口边界/N缩小/未来timestamp/锁后DB now/SQL超时、真实received≠canonical及actor审计、不按attempt免费复用、Retry-After含lease。unknown→reclaim→rate拒→category覆盖→后次>=2事件仍零render/put；0事件/错绑定拒绝。
-- [ ] 真实EXECUTING过期仍IN_PROGRESS且零handler；CLAIMED/FAILED_TRANSIENT均须lease到期且retry_after满足才能重认领，仅原FAILED_TRANSIENT+RECONCILIATION_REQUIRED进hook并新计，其余execute仍受历史保护；retry_after未到零handler。延迟旧协程任何放行均有独立event，但不宣称fencing。技术lease以真实DB当前UTC建测试预算，报价业务now另设；不改append-only历史事件来操纵时钟。
-- [ ] Commit `feat: 持久限制报价生成并保护未知执行历史`。
+- [x] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_rate_limit.py tests/integration/test_quote_file_rate_limit.py -q`；GREEN独立tenant预留SQL、真实canonical prepared注入、history reader及handler只恢复分支。
+- [x] 测reserved commit/close未知零render、不退款；窗口边界/N缩小/未来timestamp/锁后DB now/SQL超时、真实received≠canonical及actor审计、不按attempt免费复用、Retry-After含lease。unknown→reclaim→rate拒→category覆盖→后次>=2事件仍零render/put；0事件/错绑定拒绝。
+- [x] 真实EXECUTING过期仍IN_PROGRESS且零handler；CLAIMED/FAILED_TRANSIENT均须lease到期且retry_after满足才能重认领，仅原FAILED_TRANSIENT+RECONCILIATION_REQUIRED进hook并新计，其余execute仍受历史保护；retry_after未到零handler。延迟旧协程任何放行均有独立event，但不宣称fencing。技术lease以真实DB当前UTC建测试预算，报价业务now另设；不改append-only历史事件来操纵时钟。
+- [x] Commit `feat: 持久限制报价生成并保护未知执行历史`。
 
 ### 8.5 显式metadata恢复与安全错误ID
 
-- [ ] 新增`tests/unit/test_quote_file_recovery.py`、`tests/integration/test_quote_file_gateway_recovery.py`；RED：
+- [x] 新增`tests/unit/test_quote_file_recovery.py`、`tests/integration/test_quote_file_gateway_recovery.py`；RED：
 
 ```python
 async def test_recovery_links_without_changing_old_ledger(recovery_case):
@@ -441,16 +454,17 @@ async def test_recovery_links_without_changing_old_ledger(recovery_case):
     assert c.recovery_object_calls == 0
 ```
 
-- [ ] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_recovery.py tests/integration/test_quote_file_gateway_recovery.py -q`；GREENmetadata-only handler、public ledger reader/audit、workflow wrappers，不能给恢复handler宽Store。
-- [ ] 真PG测requested成功退出在record_file之前；append失败/commit未知/close错/取消零关联，audit_projection不当证据。旧线程artifact commit后暂停→恢复补关联→旧线程继续同file；并发恢复唯一、关联unknown再恢复；原线程最终完成前后at_check语义正确。
-- [ ] 错old tenant/tool/version/key/HMAC/run/template/hash/size、无metadata、缺/伪preflight/newcall/user/status均失败；新NONE key不进Store。丢ID再generate保留真实旧canonical ID，CONFLICT新ID不冒原ID；新ledger完成失败无payload，无ack/旧call写或自动history fallback。
-- [ ] Commit `feat: 显式找回已提交报价文件并保留未决原审计`。
+- [x] Run `env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_recovery.py tests/integration/test_quote_file_gateway_recovery.py -q`；GREENmetadata-only handler、public ledger reader/audit、workflow wrappers，不能给恢复handler宽Store。
+- [x] 真PG测requested成功退出在record_file之前；append失败/commit未知/close错/取消零关联，audit_projection不当证据。旧线程artifact commit后暂停→恢复补关联→旧线程继续同file；并发恢复唯一、关联unknown再恢复；原线程最终完成前后at_check语义正确。
+- [x] 错old tenant/tool/version/key/HMAC/run/template/hash/size、无metadata、缺/伪preflight/newcall/user/status均失败；新NONE key不进Store。丢ID再generate保留真实旧canonical ID，CONFLICT新ID不冒原ID；新ledger完成失败无payload，无ack/旧call写或自动history fallback。
+- [x] Commit `feat: 显式找回已提交报价文件并保留未决原审计`。
 
 ### 8.6 整项验收与B2交付门
 
-- [ ] 将上述unit/integration各组**全部**重跑，真实PG测试不能skip跳过后称通过；运行`python3 scripts/check_boundaries.py`及本次文件ruff/既有配置的类型检查。测试环境故障列阻断，不读/输出凭证或把受控SDK称live。
-- [ ] 完成窄ADR/就近规则：rate_limit技术预留是写，MEDIUM/NONE恢复是内部幂等关联写；旧CheckStage“仅幂等写”注释偏差披露，不改核心；object_store新writer执行期才取秘密，旧constructor仍原事实。
-- [ ] 提交文档/契约收口，报告真实命令/结果、skip数、未运行范围。一次完整T8B1审查覆盖所有提交与多连接测试；不逐提交另派review，不自行启动B2。
+- [x] 将上述unit/integration各组**全部**重跑，真实PG测试不能skip跳过后称通过；运行`python3 scripts/check_boundaries.py`及本次文件ruff/既有配置的类型检查。测试环境故障列阻断，不读/输出凭证或把受控SDK称live。
+- [x] 全28个本Task触及生产文件的既有配置mypy须通过；已核BASE原有8项类型问题只在context.py、file_service.py、infra/db/repositories/quotations.py窄补正，不扩全库债。仓储ID用对应NewType保留原值；run仅在require_quote_run_binding真实验证后窄化；规格完整六字段/None/原值/hash不变，不用Any/model_construct或跳过校验；computed_field仅其行已知装饰器错误允许具体错误码ignore，不关全局检查。以既有quotation contracts/context、文件unit及真实PG关联回归覆盖，报告保留BASE事实，不把已有行为GREEN伪作新RED。
+- [x] 完成窄ADR/就近规则：rate_limit技术预留是写，MEDIUM/NONE恢复是内部幂等关联写；旧CheckStage“仅幂等写”注释偏差披露，不改核心；object_store新writer执行期才取秘密，旧constructor仍原事实。
+- [x] 提交文档/契约收口，报告真实命令/结果、skip数、未运行范围。一次完整T8B1审查覆盖所有提交与多连接测试；不逐提交另派review，不自行启动B2。
 
 ## 9. B2收到什么；剩余派发前核对
 
