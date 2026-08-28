@@ -521,6 +521,10 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
+- Fix1真实浏览器发现初始单位读取竞态：当前输入可操作时，编辑source/unit会取消共用scope的初始Need单位GET并让hash缺失、确认按钮持续不可用。仅NeedUnitConfirmationForm.vue及既有quotation-flow测试做独立读取范围的最小修正，先deferred GET失败证明；source/unit/locator编辑不取消与它们无关的当前Need读取，而Need/identity变化、同slot较新read仍须丢弃旧响应。保留原confirm键/身份generation、raw来源及当前事实变化失效，不改共享scope/后端/DTO。真实早输入探针验证读取可完成和流程继续，不只让E2E等完再输入。代价是独立读取生命周期及前端全门/E2E重验，错误隔离可能接受旧身份或旧Need事实，须反例保护。后台not-e2e可继续验证未改后端/监督算法，但记录诊断差异与源码时点，前端及E2E必须在修后冻结代码重验。
+
+- Fix1完整E2E单位确认超时诊断：仅测试action记录request/failed/response计数、button disabled与只读选区坐标，输出按固定字段及数值/布尔白名单过滤并补反例；不输出URL/正文/原文/自由异常文本，不延预算或重试点击。先单跑具名DOM定位；原not-e2e可暂继续但须明确收集时源码与后续纯诊断改动，不当统一冻结快照。若需要行为修复，按具名影响裁定是否停止旧全量与修后重验。代价是诊断维护、泄露防护及定向时间，禁止用猜测替代因果或用旧源码通过认证新行为。
+
 - T10 Fix1总生命周期：新增host-only tests/e2e/costing_quote_lifecycle.py及tests/unit/test_costing_quote_lifecycle.py，将integration/browser/visual固定入口放入本次独立session子进程，由父监督器在工作目录准备/build前开始300/900秒绝对deadline，并预留末45秒清理（正常工作255/855秒）；不得把同步Docker仅放thread冒充可取消。固定entry不接任意命令/路径或形成递归，原A/B与共享conftest不改、新helper不入Linux image。资源首次创建前即确定本次UUID的精确network/PG/API名字及owner标签；正常Vite→桥/exec→APIworker（验证I1成功回执/exit）→PG/network，超时TERM/短宽限/KILL并回收本次子进程，清理命令各用剩余预算并核名字+owner+实际ID，不删image/base/cache或其他任务。必须核Playwright driver/Chromium是否自建进程组，不能以父组结束推断所有子孙已退出，也不能杀用户浏览器。daemon无响应时不能保证服务端build取消或资源已删除，只能有界失败并输出固定cleanup_unknown+本次owner ID，不计GREEN；任何进程/端口/资源清理未获证实均不得打印verified。视觉仍提供真实URL和有效期限，父SIGTERM路径同样受监督。补启动卡住、部分资源创建、近deadline清理、非零/缺回执、实际本次进程/端口回收测试。代价是两测试helper与监督/清理协议维护、正常工作预算缩短和本地资源开销；若所有权/进程组判断错误会遗留或误清资源，因此失败关闭和原始证据必需，不虚构无条件daemon清理保证。
 
 - A入口执行证据细化：固定pytest仅追加-rA，输出精确模块/已知函数匹配后映射的两个预定PASSED常量，完全剥离参数、不转发未知通过行；host wrapper核首函数1次、裁剪反例2次，同时保留exit0/no skipped。补过滤器正反测试防任意正文/参数泄露，不扩用例范围、时间资源或通用日志框架。这是固定A入口裁定的验证细化。
