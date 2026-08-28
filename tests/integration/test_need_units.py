@@ -504,6 +504,13 @@ async def test_history_failure_rolls_back_three_writes(
         (["provenance", "extracted_at"], '"2026-08-28T00:00:00"'),
         (["provenance", "extracted_at"], "123"),
         (["provenance", "extracted_by"], "123"),
+        (["provenance", "confirmed_by"], '""'),
+        (["provenance", "confirmed_by"], '" "'),
+        (["provenance", "confirmed_by"], '" emp"'),
+        (["provenance", "confirmed_by"], '"emp "'),
+        (["provenance", "confirmed_by"], json.dumps("x" * 41)),
+        (["provenance", "confirmed_by"], json.dumps("em\np")),
+        (["provenance", "confirmed_by"], json.dumps("em\x7fp")),
     ],
 )
 async def test_corrupt_quantity_is_not_coerced(
@@ -521,6 +528,11 @@ async def test_corrupt_quantity_is_not_coerced(
     with pytest.raises(NeedUnitUnavailableError) as caught:
         await c.service.get_facts(c.tenant, c.need_id, actor_id=c.actor_id)
     assert caught.value.code == "facts_corrupt"
+    with pytest.raises(NeedUnitUnavailableError) as caught:
+        await c.confirm()
+    assert caught.value.code == "facts_corrupt"
+    assert c.reader.calls == 0
+    assert await c.confirmation_count() == await c.unit_history_count() == 0
 
 
 async def test_repository_tenant_mismatch_audited_and_hidden(

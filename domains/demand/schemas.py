@@ -70,6 +70,13 @@ def _unit_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _unit_identity(value: object) -> None:
+    """仅新单位契约的身份ID使用40字符边界，不约束旧多态来源/提取者标签。"""
+    if type(value) is not str or len(value) > 40:
+        raise ValueError("标识必须为不超过40字符的字符串")
+    _unit_text(value)
+
+
 _UnitText = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_unit_text)]
 _UnitLocator = Annotated[str, Field(min_length=1, max_length=256), AfterValidator(_unit_text)]
 _UnitQuote = Annotated[str, Field(min_length=1, max_length=4096), AfterValidator(_unit_quote)]
@@ -85,15 +92,15 @@ class _NeedUnitDTO(BaseModel):
 
     @model_validator(mode="after")
     def _metadata(self) -> Self:
-        """全部强类型ID同样约束长度；完整Provenance时间统一UTC。"""
+        """顶层与事实确认人ID同样校验；完整Provenance时间统一UTC。"""
         for name in type(self).model_fields:
             value = getattr(self, name)
             if value is not None and (name.endswith("_id") or name == "confirmed_by"):
-                if type(value) is not str or len(value) > 40:
-                    raise ValueError("标识必须为不超过40字符的字符串")
-                _unit_text(value)
+                _unit_identity(value)
             if isinstance(value, FactualField):
                 provenance = value.provenance
+                if provenance.confirmed_by is not None:
+                    _unit_identity(provenance.confirmed_by)
                 updated = replace(provenance,
                     extracted_at=_unit_utc(provenance.extracted_at),
                     confirmed_at=_unit_utc(provenance.confirmed_at) if provenance.confirmed_at else None)

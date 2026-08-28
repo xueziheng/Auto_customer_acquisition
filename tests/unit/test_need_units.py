@@ -583,6 +583,84 @@ def test_all_fact_identity_fields_are_validated(field_name: str, value: str) -> 
         facts(**{field_name: value})
 
 
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("product_category", "hinges"),
+        ("application", "cabinet"),
+        ("material", "steel"),
+        ("size_spec", "10 cm"),
+        ("packaging", "carton"),
+        ("destination", "DE"),
+        ("current_supply_issue", "delay"),
+        ("certification_required", "CE"),
+        ("unit", "pieces"),
+        ("quantity", 500),
+        ("required_by", date(2026, 9, 1)),
+        ("target_price", Money(Decimal("1.23"), "USD")),
+    ],
+)
+@pytest.mark.parametrize("actor", ["", " ", " emp", "emp ", "x" * 41, "em\np", "em\x7fp"])
+def test_all_nested_fact_confirmers_are_validated(
+    field_name: str, value: object, actor: str
+) -> None:
+    """每个完整事实位置都拒绝伪人工身份，不把非None当成有效员工ID。"""
+    original = field(value)
+    malformed = replace(
+        original, provenance=replace(original.provenance, confirmed_by=EmployeeId(actor))
+    )
+    with pytest.raises(SchemaError):
+        facts(**{field_name: malformed})
+
+
+@pytest.mark.parametrize("actor", ["", " ", " emp", "emp ", "x" * 41, "em\np", "em\x7fp"])
+def test_evidence_query_rejects_invalid_quantity_confirmer(actor: str) -> None:
+    """来源reader的独立DTO不能接收带非法确认人的数量事实。"""
+    quantity = replace(
+        field(500), provenance=replace(field(500).provenance, confirmed_by=EmployeeId(actor))
+    )
+    with pytest.raises(SchemaError):
+        schemas.NeedUnitEvidenceQuery(
+            tenant_id=TENANT, need_id=NEED, account_id="acct_test", actor_id=ACTOR,
+            quantity=quantity,
+            quantity_fact_hash=service.quantity_fact_hash(TENANT, NEED, quantity),
+            unit="pieces", source_message_id="msg_customer_1",
+            locator="body:0:19", source_quote="We need 500 pieces.",
+        )
+
+
+@pytest.mark.parametrize("actor", ["", " ", " emp", "emp ", "x" * 41, "em\np", "em\x7fp"])
+async def test_confirmation_receipt_rejects_invalid_nested_confirmer(actor: str) -> None:
+    """receipt的单位事实也不得携带非法人工确认身份。"""
+    first = await confirm(unit_service(MemoryCase()))
+    payload = {name: getattr(first, name) for name in type(first).model_fields}
+    payload["unit"] = replace(
+        first.unit,
+        provenance=replace(first.unit.provenance, confirmed_by=EmployeeId(actor)),
+    )
+    with pytest.raises(SchemaError):
+        schemas.NeedUnitConfirmationView.model_validate(payload)
+
+
+@pytest.mark.parametrize("actor", [None, EmployeeId("e" * 40)])
+def test_valid_nested_confirmer_preserves_provenance_and_hash(actor: EmployeeId | None) -> None:
+    """None仍表示未确认；合法40字符ID不被修剪，旧来源多态标签与hash不变。"""
+    quantity = replace(
+        field(500),
+        provenance=replace(
+            field(500).provenance,
+            source_id="a" * 64,
+            extracted_by="model-version-" + "v" * 40,
+            confirmed_by=actor,
+            confirmed_at=NOW if actor is not None else None,
+        ),
+    )
+    before = service.quantity_fact_hash(TENANT, NEED, quantity)
+    projected = facts(quantity=quantity)
+    assert projected.quantity == quantity
+    assert service.quantity_fact_hash(TENANT, NEED, projected.quantity) == before
+
+
 def test_provenance_times_must_be_aware_and_normalized() -> None:
     with pytest.raises(SchemaError):
         facts(
