@@ -29,3 +29,15 @@ PDF已保存但关联未记，核对原generation call后人工metadata reconcil
 
 隔离测试栈自建PG，SDK受控、历史DNS/可达性/投递为模拟，无真实发送或供应商调用，不得连接生产库。
 本机Docker internal网络原生发布未成功；测试专用loopback桥只经固定relay访问真实Uvicorn，不证明生产入口。
+
+T10 Fix1测试入口由宿主监督器从准备/build前开始总计时：自动300秒、协调visual900秒，
+其中255/855秒工作、末45秒用于有界清理。同步Docker与自动Chromium在本次独立session子进程；
+正常依次停Vite、桥/exec、API/worker并验exit0/成功回执，再清理PG/network；超时TERM后5秒可强制结束。
+只持有本次实际子孙PID/进程组/启动时间，及预先确定的UUID资源名字、owner标签和核对后的实际ID，
+不按Chromium名字批量杀进程、不删除镜像/base/cache或其他任务资源。
+
+Docker daemon无响应时不能保证服务端build取消或资源已经删除。监督器必须有界非零并输出
+`t10_cleanup=unknown`与本次owner，不能显示verified；先由运维只读核对该owner的具体资源，
+不得扩大为按前缀/目录清扫。visual输出的父PID接受SIGTERM并执行同样的有界收尾；
+交接URL只在输出期限内有效，清理后是历史测试上下文，不是生产服务地址。
+Fix1完整验收与增量审查状态见[批次验收](../acceptance/2026-08-28-phase2-costing-quotation.md)，未过门不视为完成。

@@ -12,13 +12,36 @@ T10验收任务BASE `ce2e76a71d10ce855a47f6b93fa7b242485883fe`；
 | 工程定向 | 四文件mypy36项本分支问题RED→GREEN；三个旧测试3failed→29passed；成本unit/PG230passed |
 | 公开前置与真实工厂 | Linux真实API lifespan、独立worker runtime/engine/outbox、真实PG/parser、受控boto SDK；真实客户回复Verifier→Need晋升→Opportunity分配→成本→报价→独立审批→PDF，1passed |
 | 并发与恢复 | 真实多连接锁/报价/审批/文件恢复112passed；成本冻结另已在230项中覆盖，不累加重叠场景；对象重建不是独立OS崩溃隔离 |
-| Browser | 完整E2E 9passed；本项真实Uvicorn/三Vite/Chromium完成单位/政策/证据/成本/修订/独立审批/403/PDF下载；controller另实际检查1280/390和PDF全部1页 |
+| Browser | initial 6e时点完整E2E 9passed；真实Uvicorn/三Vite/Chromium完成单位/政策/证据/成本/修订/独立审批/403/PDF下载；controller另实际检查1280/390和PDF全部1页；Fix1当前状态见下节 |
 | 真实供应商/对象存储 | not_run；PDF输入是受控文本，SDK无真实网络 |
 | 真实客户回复/可达性/历史投递 | not_run；fixture公开记录模拟历史，真实Verifier仍要求持久SENT关联 |
 | 本次报价真实发送 | not_run；受控链也未发送，quote approved、机会未won、需求未fulfilled |
-| 前端最终门 | 21文件247passed；typecheck/build/生成类型漂移通过；lint 0errors、133既有warnings |
-| 后端全量最终门 | 当前源码6785passed、9deselected、1052.59s；上一轮44失败及修正完整保留 |
-| 独立整项审查 | 实现者已自审，controller独立审查待执行，不以测试通过代替 |
+| 前端门 | initial 6e为247passed；Fix1裁定127修后21文件252passed，typecheck/build/生成类型零漂移通过，lint 0errors、133既有warnings |
+| 后端全量 | initial 6e为6785passed；Fix1保留完整命令6819passed/11deselected、1105.00s，新增诊断过滤器另由73定向覆盖；源码时点差异见下节 |
+| 独立整项审查 | 首审Spec❌ / Needs fixes，3个Important；Fix1实施与验证完成、待提交及增量复审，不能称审查通过 |
+
+### Fix1当前状态
+
+Fix BASE `6f7ddf2614834336dad6bbb327a61c1ecd2001cc`。首审发现：容器退出失败/缺回执未传回宿主，
+半开HTTP连接未计入8并发且15秒只是空闲超时，准备/同步Docker/清理未受300/900秒全栈watchdog约束。
+初始6785+9是真实历史通过，但不能证明这三条边界。
+
+Fix1针对退出验收、接入前容量/绝对时钟、独立子进程监督和本次资源所有权增加保护。
+当前73项定向通过，含新增诊断过滤器、真实Chromium独立进程组/哨兵、取消与清理未知；真实公开闭环与原A宿主8项通过，
+正常DOM、真实API137拒绝、初始化后宿主卡住的fallback清理、visual自动DOM后父SIGTERM短路径均取得定向证据。
+完整E2E本轮实际`1 failed, 10 passed, 6819 deselected in 112.11s`：客户单位确认点击超时，
+清理和worker退出通过；此旧失败不能回溯认定与后续探针同因。真实早输入探针独立证明初始单位GET会被
+source/unit编辑取消。裁定127仅修改单位表单读取scope及Need切换同步清旧hash/receipt，保留所有身份/确认/原文门。
+新增deferred测试2failed→完整55passed；修后真实早输入GET返回、摘要出现并按实际hash确认，随后正常DOM通过，
+合计2passed53.76s。完整not-e2e沿原进程最终6819passed/11deselected、1105.00s、exit0；
+修后完整E2E（含保留探针共12项）实际12passed/6820deselected、139.97s、exit0。
+后端/监督算法及Linux镜像源码未在not-e2e启动后变化，新增诊断测试另验；不得把不同快照说成同一全仓冻结。
+当前测试镜像为`sha256:58270a3f8a6ee6e97603cd61e8fd1c482f65d037be596a39a6f3130e48fc5cb2`，
+后端/renderer未修改，前端仅上述单位读取UX修复。旧五件批准样例保留原字节；Fix1新产物不冒充controller复核样例。
+最终E2E本地产物`output/playwright/t10-f17de10f2da0466a9ffd0ff383a46d50/`，PDF1页42048bytes，
+SHA256 `ddba1899167ff0d0db3a243022abf6b8ecc6bb7530212d533146f2bf25e02050`；
+自动实际下载/API/result hash一致。worker cycles20、禁用工具0、child/cleanup verified；
+本次159个历史观测PID均退出、四端口关闭、t10容器/network空。新产物不纳入本轮提交。
 
 首个闭环测试缺fixture，后续DTO/CORS/来源权限/选区手势/审批视图问题均为夹具错误，未改生产校验。
 正确夹具后业务链直接GREEN，属于新增保护。完整命令、原始失败与实际输出保留于T10报告。
@@ -56,16 +79,16 @@ quota/单位/审批/旧新artifact/demo真实PG103passed。另发现A包装器�
 host 1passed38.22s，首来源测试1次和两个裁剪反例2次均经固定身份记录及host断言核实。
 原parser资源runner始终显式命令，其既有结果不受影响。
 
-最终回归时点镜像为`sha256:6e122e8f484be2d31fbb5e6fb3ef63991a319a6e775dbd62a7f1b316bd1b1ddf`。
+initial T10回归时点镜像为`sha256:6e122e8f484be2d31fbb5e6fb3ef63991a319a6e775dbd62a7f1b316bd1b1ddf`。
 它相对807278只更新测试入口、Linux归属与执行证据；生产UI/后端/renderer及公开闭环helper未变。
 本轮完整not-e2e/e2e运行期间源码冻结，仅完善文档。下列已批准五件807278样例保留原字节，
 不称为6e122e8f镜像产物，新回归输出另记。
 
-最终完整not-e2e实际`6785 passed, 9 deselected in 1052.59s (0:17:32)`、exit0；
+initial完整not-e2e实际`6785 passed, 9 deselected in 1052.59s (0:17:32)`、exit0；
 这9项是另一个完整E2E命令覆盖的marker互斥选择，无skip。完整原始记录由T10实施报告索引保留。
-最终源码全库Ruff与结构七项通过；四文件mypy、前端最终命令之后对应代码未再变化。
+initial时点全库Ruff与结构七项通过；四文件mypy、前端命令之后对应代码在initial验收收尾未再变化。
 
-当前6e122e8f完整E2E实际`9 passed, 6785 deselected in 72.50s`。其本地新产物在
+initial 6e122e8f完整E2E实际`9 passed, 6785 deselected in 72.50s`。其本地新产物在
 `output/playwright/t10-5bf703567e414666891b3b16a5d1e58d/`，1页42047bytes、
 SHA256 `7557d8839ce85094c21a904852c89eda180c4d1617cbf2e4dc66c83ada3c7838`，
 自动实际下载与API/result hash一致；此目录不纳入提交，也不冒称另有controller视觉复验。
@@ -73,7 +96,9 @@ SHA256 `7557d8839ce85094c21a904852c89eda180c4d1617cbf2e4dc66c83ada3c7838`，
 API/PG仅internal网络；本机Docker实际Ports为空，Mac无法直连，使用已批准的有限测试HTTP桥：
 host仅loopback、固定容器relay→127.0.0.1:8000真实Uvicorn、每请求15秒/请求响应各1MiB/最多8并发。
 不开放任意URL、目标、命令或重定向，不证明原生Docker发布或生产入口。
-自动总生命周期300秒、协调视觉900秒；只清理本次Vite、桥/exec、API/worker、PG和network。
+Fix1自动总生命周期300秒、协调视觉900秒，父层从准备前计时：最多255/855秒工作，保留末45秒清理。
+独立子进程承载同步Docker与真实Chromium；只按本次实际子孙身份及network/PG/API名字+owner+ID核对后清理。
+daemon无响应时不能证明服务端build已取消/资源已删；必须有界非零并记cleanup_unknown，不计verified。
 API/worker同一测试OS进程但独立runtime，跨进程是API与Vite/Chromium；未验worker独立OS崩溃隔离。
 
 ## 实际样例与视觉边界
@@ -88,7 +113,8 @@ controller实际渲染全部1页，无裁切/黑块/JS/form/附件；页面1280/
 下载成功证据是自动Chromium实际保存bytes/hash，不将两种浏览器观察混为一项。
 受控视觉栈收到SIGTERM后exit0，worker STARTED且518cycles，禁用Gateway调用0；
 finally核实本次Vite/桥exec/APIworker/PG/network与端口全部清理，不影响用户其他资源。
-该视觉检查对应生产前端/后端/renderer最终相同代码；后续仅测试前置helper及测试入口/旧契约有改动。
+该视觉检查对应initial验收的生产前端/后端/renderer相同代码；之后Fix1另修改单位读取UX，
+其真实早输入/确认行为由Fix1新测试覆盖，不宣称旧视觉检查与最终Vue源码完全相同。
 新image自动PDF另行核对，不用旧视觉文件冒充最终夹具产物。
 
 保留样例对应的完整E2E在807278…image上为`9 passed, 6785 deselected in 72.78s`。

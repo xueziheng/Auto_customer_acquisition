@@ -16,14 +16,16 @@ const locator = ref<components["schemas"]["EvidenceLocatorPublicView"] | null>(n
 const selection = ref<readonly [number, number] | null>(null);
 const messageIdPattern = /^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 function clearRaw(): void { preview.value = null; locator.value = null; selection.value = null; rawError.value = ""; }
+function clearCurrent(): void { current.value = null; receipt.value = null; }
+const readGate = useQuoteRequestScope(client, () => [props.needId], clearCurrent);
 const rawGate = useQuoteRequestScope(client, () => [props.needId, source.value, selection.value?.[0], selection.value?.[1]], clearRaw);
 watch(() => [props.needId, source.value], clearRaw, { flush: "sync" });
 watch(selection, () => { locator.value = null; }, { flush: "sync" });
-const { begin, hasIdentity, confirm, message, key, pending } = useQuoteConfirmation(client, () => [props.needId, source.value, unit.value, locator.value?.locator, current.value?.quantity_fact_hash, current.value?.unit_confirmation_id], () => {
+const { hasIdentity, confirm, message, key, pending } = useQuoteConfirmation(client, () => [props.needId, source.value, unit.value, locator.value?.locator, current.value?.quantity_fact_hash, current.value?.unit_confirmation_id], () => {
   unit.value = ""; source.value = ""; current.value = null; receipt.value = null; clearRaw();
 });
 async function read(): Promise<void> {
-  const op = begin("read"); if (!op?.valid()) return;
+  const op = readGate.begin("read"); if (!op?.valid()) return;
   try {
     const result = await client.GET("/costing-quotes/needs/{need_id}/unit", { params: { path: { need_id: props.needId } }, signal: op.signal });
     if (!op.valid()) return;
@@ -66,7 +68,7 @@ async function save(): Promise<void> {
   const body: components["schemas"]["NeedUnitConfirmationCommand"] = { unit: unit.value, source_message_id: locator.value.source_ref.slice("message:".length), source_quote: locator.value.excerpt, locator: locator.value.locator, expected_quantity_fact_hash: current.value.quantity_fact_hash, expected_unit_confirmation_id: current.value.unit_confirmation_id };
   await confirm(body, (id, signal) => client.POST("/costing-quotes/needs/{need_id}/unit-confirmations", { params: { path: { need_id: props.needId }, header: { "Idempotency-Key": id } }, body, signal }), (data) => { receipt.value = data; emit("saved"); });
 }
-watch(() => props.needId, () => void read(), { immediate: true });
+watch(() => props.needId, () => { clearCurrent(); void read(); }, { immediate: true, flush: "sync" });
 </script>
 <template>
   <section class="panel">

@@ -32,12 +32,15 @@ class RelayPool:
         self.lock = threading.Lock()
         self.processes = set()
         self.connections = set()
+        self.deadlines = {}
         self.closed = False
 
     def request(self, payload, deadline):
         with self.lock:
             if self.closed:
                 raise RuntimeError("bridge_closed")
+            if time.monotonic() >= deadline:
+                raise TimeoutError
             process = subprocess.Popen(
                 ["docker", "exec", "-i", "--env", "TEST_DATABASE_URL=", self.runner.id,
                  "python", "-m", "tests.e2e.costing_quote_server", "--mode", "relay"],
@@ -96,23 +99,43 @@ def make_handler(pool):
 
         def setup(self):
             super().setup()
-            self.connection.settimeout(TIMEOUT_SECONDS)
-            with pool.lock:
-                if pool.closed:
-                    raise ConnectionAbortedError
-                pool.connections.add(self.connection)
+            self.deadline = pool.deadlines[self.connection]
+            self.remaining()
 
-        def finish(self):
-            try:
-                super().finish()
-            finally:
-                with pool.lock:
-                    pool.connections.discard(self.connection)
+        def remaining(self):
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            self.connection.settimeout(remaining)
+            return remaining
 
         def log_message(self, *_args):
             pass
 
+        def parse_request(self):
+            source = self.rfile
+
+            class HeaderLines:
+                last = None
+
+                def readline(self, limit):
+                    self.last = source.readline(limit)
+                    return self.last
+
+            lines = HeaderLines()
+            self.rfile = lines
+            try:
+                parsed = super().parse_request()
+            finally:
+                self.rfile = source
+            # 标准库接受headers中途EOF；已取消的不完整请求不能触发业务调用。
+            if lines.last not in (b"\r\n", b"\n"):
+                self.close_connection = True
+                return False
+            return parsed
+
         def reply(self, status, headers=(), body=b""):
+            self.remaining()
             self.send_response_only(status)
             for key, value in headers:
                 self.send_header(key, value)
@@ -120,16 +143,13 @@ def make_handler(pool):
             self.send_header("Connection", "close")
             self.end_headers()
             if self.command != "HEAD":
+                self.remaining()
                 self.wfile.write(body)
             self.close_connection = True
 
         def execute(self):
-            if not pool.gate.acquire(blocking=False):
-                self.reply(503)
-                return
             try:
-                deadline = time.monotonic() + TIMEOUT_SECONDS
-                self.connection.settimeout(TIMEOUT_SECONDS)
+                self.remaining()
                 lengths = self.headers.get_all("Content-Length", [])
                 if (self.command not in METHODS or self.headers.get("Transfer-Encoding")
                     or len(lengths) > 1 or (lengths and not lengths[0].isdigit())):
@@ -140,11 +160,12 @@ def make_handler(pool):
                     self.reply(413)
                     return
                 body = self.rfile.read(length)
+                self.remaining()
                 if len(body) != length:
                     self.reply(400)
                     return
                 payload = request_bytes(self.command, self.path, list(self.headers.items()), body)
-                status, headers, response = pool.request(payload, deadline)
+                status, headers, response = pool.request(payload, self.deadline)
                 self.reply(status, headers, response)
             except (TimeoutError, subprocess.TimeoutExpired):
                 self.reply(504)
@@ -152,8 +173,6 @@ def make_handler(pool):
                 self.reply(400)
             except (OSError, RuntimeError):
                 self.reply(502)
-            finally:
-                pool.gate.release()
 
         do_GET = do_HEAD = do_POST = do_OPTIONS = execute
 
@@ -168,6 +187,55 @@ def http_bridge(runner):
     pool = RelayPool(runner)
 
     class Server(ThreadingHTTPServer):
+        def get_request(self):
+            connection, address = super().get_request()
+            self.accepted_deadline = time.monotonic() + TIMEOUT_SECONDS
+            return connection, address
+
+        def process_request(self, connection, address):
+            # 容量在解析首字节/创建处理线程之前占用；半开请求也占一席。
+            if not pool.gate.acquire(blocking=False):
+                try:
+                    connection.setblocking(False)
+                    connection.send(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                except OSError:
+                    pass
+                finally:
+                    self.shutdown_request(connection)
+                return
+            with pool.lock:
+                pool.connections.add(connection)
+                pool.deadlines[connection] = self.accepted_deadline
+            try:
+                super().process_request(connection, address)
+            except BaseException:
+                self.release(connection)
+                raise
+
+        def release(self, connection):
+            with pool.lock:
+                pool.connections.discard(connection)
+                pool.deadlines.pop(connection, None)
+            pool.gate.release()
+
+        def process_request_thread(self, connection, address):
+            def expire():
+                # socket超时是空闲预算；独立绝对时钟才能中断持续滴流/阻塞写。
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+
+            timer = threading.Timer(max(0, pool.deadlines[connection] - time.monotonic()), expire)
+            timer.start()
+            try:
+                super().process_request_thread(connection, address)
+            finally:
+                timer.cancel()
+                timer.join()
+                self.release(connection)
+
         def handle_error(self, *_args):
             # 客户端断开/关闭中的socket不输出任何请求或传输异常正文。
             pass

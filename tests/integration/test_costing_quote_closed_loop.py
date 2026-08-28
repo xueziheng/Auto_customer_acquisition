@@ -1,6 +1,5 @@
 """T10公开需求晋升→真实工厂成本报价→审批→PDF，不产生发送或成交。"""
 
-import asyncio
 import io
 import sys
 from types import SimpleNamespace
@@ -80,9 +79,10 @@ else:
 async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
     """PDF交付不得隐式推进发送、成交或需求履约。"""
     if quote_case is None:
-        from tests.e2e.costing_quote_stack import run_closed_loop
+        from tests.e2e.costing_quote_lifecycle import run_supervised
 
-        code, output = await asyncio.to_thread(run_closed_loop)
+        result = await run_supervised("integration")
+        code, output = result.code, result.output
         assert code == 0, output
         assert "passed" in output and "skipped" not in output
         print(output)

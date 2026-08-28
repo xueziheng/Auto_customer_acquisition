@@ -7,6 +7,8 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+from contextlib import ExitStack
 from types import SimpleNamespace
 
 import httpx
@@ -15,6 +17,7 @@ import pytest
 from tests.e2e import costing_quote_bridge as bridge
 from tests.e2e import costing_quote_relay as relay
 from tests.e2e import costing_quote_server as server
+from tests.e2e import costing_quote_stack as stack_module
 
 
 @pytest.mark.parametrize("path", ["https://example.test/x", "//example.test/x", "/%2fexample.test", "/a/../b",
@@ -148,6 +151,112 @@ def test_bridge_cleanup_closes_idle_header_connection():
     idle.close()
 
 
+def test_bridge_admits_only_eight_connections_before_headers(monkeypatch):
+    runner = SimpleNamespace(id="a" * 64, attrs={"ExecIDs": None}, reload=lambda: None)
+    calls = []
+    monkeypatch.setattr(bridge.RelayPool, "request", lambda *_: calls.append(True) or (200, [], b"ok"))
+    with bridge.http_bridge(runner) as origin, ExitStack() as sockets:
+        address = ("127.0.0.1", int(origin.rsplit(":", 1)[1]))
+        for _ in range(8):
+            connection = sockets.enter_context(socket.create_connection(address))
+            connection.sendall(b"GET / HTTP/1.1\r\nX-Partial: ")
+        rejected = sockets.enter_context(socket.create_connection(address))
+        rejected.settimeout(.5)
+        rejected.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assert rejected.recv(4096).startswith(b"HTTP/1.1 503 ")
+    assert calls == []
+
+
+@pytest.mark.parametrize("stage", ["request_line", "headers", "body"])
+def test_bridge_absolute_deadline_stops_continuous_drip(monkeypatch, stage, capsys):
+    monkeypatch.setattr(bridge, "TIMEOUT_SECONDS", .2)
+    runner = SimpleNamespace(id="a" * 64, attrs={"ExecIDs": None}, reload=lambda: None)
+    calls = []
+    monkeypatch.setattr(bridge.RelayPool, "request", lambda *_: calls.append(True) or (200, [], b"ok"))
+    prefixes = {"request_line": b"G", "headers": b"GET / HTTP/1.1\r\nX-Partial: ",
+                "body": b"POST / HTTP/1.1\r\nContent-Length: 20\r\n\r\n"}
+    stopped = threading.Event()
+    with bridge.http_bridge(runner) as origin:
+        connection = socket.create_connection(("127.0.0.1", int(origin.rsplit(":", 1)[1])))
+        connection.settimeout(.55)
+        started = time.monotonic()
+        connection.sendall(prefixes[stage])
+
+        def drip():
+            while not stopped.wait(.04):
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    break
+
+        writer = threading.Thread(target=drip)
+        writer.start()
+        try:
+            try:
+                response = connection.recv(4096)
+            except ConnectionResetError:
+                response = b""
+            assert time.monotonic() - started < .5
+            assert not response.startswith(b"HTTP/1.1 200 ")
+            assert calls == []
+        finally:
+            stopped.set()
+            connection.close()
+            writer.join(1)
+            assert not writer.is_alive()
+    assert capsys.readouterr() == ("", "")
+
+
+def test_bridge_deadline_remains_active_through_response(monkeypatch):
+    monkeypatch.setattr(bridge, "TIMEOUT_SECONDS", .2)
+    runner = SimpleNamespace(id="a" * 64, attrs={"ExecIDs": None}, reload=lambda: None)
+
+    def slow_response(*_args):
+        time.sleep(.3)
+        return 200, [], b"late"
+
+    monkeypatch.setattr(bridge.RelayPool, "request", slow_response)
+    with bridge.http_bridge(runner) as origin, socket.create_connection(
+        ("127.0.0.1", int(origin.rsplit(":", 1)[1]))
+    ) as connection:
+        connection.settimeout(.5)
+        connection.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        assert not connection.recv(4096).startswith(b"HTTP/1.1 200 ")
+
+
+def test_bridge_absolute_deadline_aborts_blocked_response_write(monkeypatch):
+    monkeypatch.setattr(bridge, "TIMEOUT_SECONDS", .2)
+    original = bridge.make_handler
+
+    def small_send_buffer(pool):
+        base = original(pool)
+
+        class Handler(base):
+            def setup(self):
+                super().setup()
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+
+        return Handler
+
+    monkeypatch.setattr(bridge, "make_handler", small_send_buffer)
+    monkeypatch.setattr(bridge.RelayPool, "request", lambda *_: (200, [], b"x" * relay.MAX_BYTES))
+    runner = SimpleNamespace(id="a" * 64, attrs={"ExecIDs": None}, reload=lambda: None)
+    with bridge.http_bridge(runner) as origin, socket.socket() as connection:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        connection.settimeout(.5)
+        connection.connect(("127.0.0.1", int(origin.rsplit(":", 1)[1])))
+        connection.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        time.sleep(.3)
+        received = bytearray()
+        try:
+            while chunk := connection.recv(4096):
+                received.extend(chunk)
+        except ConnectionResetError:
+            pass
+        # 已发200 header不能撤回，但不完整body必须终止，不能构成成功HTTP响应。
+        assert len(received) < relay.MAX_BYTES
+
+
 def test_pool_timeout_kills_only_own_fixed_exec(monkeypatch):
     seen = {}
 
@@ -193,3 +302,125 @@ def test_oversize_upstream_response_fails_closed(monkeypatch):
     with pytest.raises(ValueError, match="body_too_large"):
         relay.relay_request(relay.request_bytes("GET", "/costing-quotes", [], b""))
     assert closed == [True]
+
+
+@pytest.fixture
+def stopped_stack(monkeypatch):
+    """仅替换外部Docker边界；实际linux_stack退出/清理控制流保留。"""
+    removed = []
+    outcome = SimpleNamespace(code=0, logs=(
+        b"t10_worker_started_cycles=1\nt10_forbidden_gateway_calls=0\n"
+        b"t10_runtime_exit=verified\n"
+    ))
+    network = SimpleNamespace(name="owned-network", id="owned-network",
+        attrs={"Internal": True}, remove=lambda: removed.append("network"))
+
+    class Container:
+        def __init__(self, kind):
+            self.kind = self.id = kind
+            self.status = "running"
+            self.attrs = {"State": {"ExitCode": 0, "Status": "running", "OOMKilled": False},
+                "HostConfig": {"ReadonlyRootfs": True, "Binds": [], "Memory": 1073741824,
+                    "PidsLimit": 128, "PortBindings": {}},
+                "NetworkSettings": {"Networks": {network.name: {}}}}
+
+        def exec_run(self, _command):
+            return SimpleNamespace(exit_code=0)
+
+        def reload(self):
+            assert self.kind not in removed
+
+        def stop(self, timeout):
+            self.status = "exited"
+            self.attrs["State"].update(ExitCode=outcome.code if self.kind == "runner" else 0,
+                                       Status="exited")
+
+        def logs(self):
+            assert self.kind not in removed
+            return outcome.logs
+
+        def remove(self, **_kwargs):
+            removed.append(self.kind)
+
+    pg, runner = Container("pg"), Container("runner")
+    client = SimpleNamespace(networks=SimpleNamespace(create=lambda *_a, **_kw: network,
+        get=lambda _: network), containers=SimpleNamespace(
+            run=lambda image, *_a, **_kw: pg if image == "pgvector/pgvector:pg16" else runner,
+            list=lambda **_: []), close=lambda: removed.append("client"))
+    monkeypatch.setattr(stack_module.docker, "from_env", lambda: client)
+    monkeypatch.setattr(stack_module, "current_image", lambda: "controlled-image")
+    return outcome, removed
+
+
+@pytest.mark.parametrize("failure", ["exit2", "killed", "missing_receipt", "runtime_assertion"])
+def test_linux_stack_rejects_unsuccessful_runtime_exit(stopped_stack, failure):
+    outcome, removed = stopped_stack
+    if failure == "exit2":
+        outcome.code = 2
+    elif failure == "killed":
+        outcome.code = 137
+    elif failure == "missing_receipt":
+        outcome.logs = b"t10_worker_started_cycles=1\nt10_forbidden_gateway_calls=0\n"
+    else:
+        outcome.code, outcome.logs = 2, b"t10_fixture_error=AssertionError\n"
+    with pytest.raises(AssertionError, match="退出验收"), stack_module.linux_stack(mode="browser"):
+        pass
+    assert removed == ["runner", "pg", "network", "client"]
+
+
+def test_linux_stack_preserves_primary_cancellation_during_failed_exit(stopped_stack):
+    import asyncio
+
+    outcome, removed = stopped_stack
+    outcome.code = 2
+    primary = asyncio.CancelledError("controlled-primary")
+    with pytest.raises(asyncio.CancelledError) as captured, stack_module.linux_stack(mode="browser"):
+        raise primary
+    assert captured.value is primary
+    assert removed == ["runner", "pg", "network", "client"]
+
+
+def test_linux_stack_accepts_verified_runtime_exit(stopped_stack):
+    _, removed = stopped_stack
+    with stack_module.linux_stack(mode="browser"):
+        pass
+    assert removed == ["runner", "pg", "network", "client"]
+
+
+def test_server_runtime_cleanup_failure_has_no_success_receipt(monkeypatch, capsys):
+    async def fail(*_args):
+        raise AssertionError("private-runtime-cleanup")
+
+    monkeypatch.setenv("TEST_DATABASE_URL", "controlled-test-connection")
+    monkeypatch.setattr(server, "migrate", lambda _: None)
+    monkeypatch.setattr(server, "serve", fail)
+    monkeypatch.setattr(sys, "argv", ["server", "--mode", "browser"])
+    assert server.main() == 2
+    assert capsys.readouterr() == ("t10_fixture_error=AssertionError\n", "")
+
+
+def test_server_success_receipt_is_after_runtime_cleanup(monkeypatch, capsys):
+    async def complete(*_args):
+        assert capsys.readouterr() == ("", "")
+        print("controlled_cleanup_completed")
+
+    monkeypatch.setenv("TEST_DATABASE_URL", "controlled-test-connection")
+    monkeypatch.setattr(server, "migrate", lambda _: None)
+    monkeypatch.setattr(server, "serve", complete)
+    monkeypatch.setattr(sys, "argv", ["server", "--mode", "browser"])
+    assert server.main() == 0
+    assert capsys.readouterr() == ("controlled_cleanup_completed\nt10_runtime_exit=verified\n", "")
+
+
+def test_unit_action_diagnostics_allow_only_fixed_numeric_fields():
+    allowed = ["t10_unit_diag_requests=1", "t10_unit_diag_failed=0", "t10_unit_diag_responses=1",
+               "t10_unit_diag_disabled=1", "t10_unit_diag_selection_start=0",
+               "t10_unit_diag_selection_end=9", "t10_unit_diag_text_length=30"]
+    allowed.extend(["t10_unit_probe_initial_response=0", "t10_unit_probe_failed=1",
+                    "t10_unit_probe_response=0", "t10_unit_probe_summary_visible=0", "t10_unit_probe_disabled=1"])
+    forbidden = ["t10_unit_diag_body=private", "t10_unit_diag_requests=https://private.invalid",
+                 "t10_unit_diag_disabled=2", "t10_unit_diag_selection_start=0 private",
+                 "t10_unit_diag_unknown=1", "t10_unit_diag_url=1"]
+    forbidden.extend(["t10_unit_probe_body=private", "t10_unit_probe_response=2",
+                      "t10_unit_probe_response=https://private.invalid"])
+    assert stack_module.safe_output("\n".join([*allowed, *forbidden]).encode()) == "\n".join(allowed)

@@ -57,6 +57,8 @@ def safe_output(raw):
         if (re.fullmatch(r"(?:runtime_http_error|fixed_exception_type|t10_fixture_error)=[A-Za-z0-9_.]+", line)
             or re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line)
             or re.fullmatch(r"t10_(?:worker_started_cycles|forbidden_gateway_calls)=[0-9]+", line)
+            or re.fullmatch(r"t10_unit_diag_(?:(?:requests|failed|responses|selection_start|selection_end|text_length)=[0-9]+|disabled=[01])", line)
+            or re.fullmatch(r"t10_unit_probe_(?:initial_response|failed|response|summary_visible|disabled)=[01]", line)
             or re.fullmatch(r"(?:FAILED|ERROR) tests/[a-zA-Z0-9_/:.\[\]-]+", line)
             or re.fullmatch(r"[0-9]+ (?:passed|failed|error|errors)(?:, [0-9]+ (?:passed|failed|error|errors))* in [0-9.]+s", line)):
             lines.append(line)
@@ -68,24 +70,37 @@ def linux_stack(*, mode="integration"):
     """固定mode，API仅loopback；所有ID来自本次创建并在finally收口。"""
     if mode not in {"integration", "browser", "visual"}:
         raise ValueError("固定测试模式无效")
+    from tests.e2e.costing_quote_lifecycle import (
+        OWNER_LABEL,
+        active_run,
+        resource_names,
+    )
+
+    ownership = active_run()
+    suffix = ownership.owner if ownership else uuid4().hex
+    names, labels = resource_names(suffix), {OWNER_LABEL: suffix}
     client = docker.from_env()
     network = pg = runner = None
     resource_ids = []
+    primary = None
     port = 0  # Desktop internal网络不能实际publish；仅由固定host桥暴露loopback。
     web_ports = tuple(free_port() for _ in range(3)) if mode != "integration" else ()
+    if ownership:
+        (ownership.artifacts / "ports.json").write_text(json.dumps(web_ports))
     try:
         image = current_image()
-        suffix = uuid4().hex
-        network = client.networks.create("t10-" + suffix, internal=True, driver="bridge")
+        network = client.networks.create(names["network"], internal=True, driver="bridge", labels=labels)
         password = secrets.token_hex(32)
-        pg_name = "t10-pg-" + suffix
+        pg_name = names["pg"]
         pg = client.containers.run(
-            "pgvector/pgvector:pg16", detach=True, network=network.name, name=pg_name,
+            "pgvector/pgvector:pg16", detach=True, network=network.name, name=pg_name, labels=labels,
             environment={"POSTGRES_USER": "t10", "POSTGRES_DB": "t10", "POSTGRES_PASSWORD": password},
             mem_limit=536870912, memswap_limit=536870912,
         )
         resource_ids.append(pg.id)
         deadline = time.monotonic() + 30
+        if ownership:
+            deadline = min(deadline, ownership.work_deadline)
         while pg.exec_run(["pg_isready", "-U", "t10", "-d", "t10"]).exit_code:
             if time.monotonic() > deadline:
                 raise AssertionError("T10隔离Postgres readiness超时")
@@ -93,7 +108,8 @@ def linux_stack(*, mode="integration"):
         connection = f"postgresql+asyncpg://t10:{password}@{pg_name}:5432/t10"
         runner = client.containers.run(
             image, ["python", "-m", "tests.e2e.costing_quote_server", "--mode", mode],
-            detach=True, network=network.name, read_only=True, user="65534:65534",
+            detach=True, network=network.name, name=names["api"], labels=labels,
+            read_only=True, user="65534:65534",
             cap_drop=["ALL"], security_opt=["no-new-privileges"],
             mem_limit=1073741824, memswap_limit=1073741824, pids_limit=128,
             nano_cpus=2000000000, tmpfs={"/tmp": "rw,size=67108864,noexec,nosuid"},
@@ -113,49 +129,91 @@ def linux_stack(*, mode="integration"):
         else:
             assert not host["PortBindings"]
         yield LinuxStack(runner, f"http://127.0.0.1:{port}" if port else "", web_ports, image)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        try:
-            if runner is not None:
-                runner.stop(timeout=12)
-                for line in safe_output(runner.logs()).splitlines():
-                    if line.startswith(("t10_worker_started_cycles=", "t10_forbidden_gateway_calls=")):
-                        print(line)
-                runner.remove()
-        finally:
+        failures = []
+
+        def cleanup(action):
             try:
-                if pg is not None:
-                    pg.stop(timeout=5)
-                    pg.remove()
-            finally:
-                if network is not None:
-                    network.remove()
-                try:
-                    existing = {item.id for item in client.containers.list(all=True)}
-                    assert not existing.intersection(resource_ids)
-                    if port:
-                        with socket.socket() as probe:
-                            assert probe.connect_ex(("127.0.0.1", port)) != 0
-                finally:
-                    client.close()
+                action()
+            except BaseException as error:  # noqa: BLE001 - 每项清理都尝试，最终保留主异常
+                failures.append(error)
+
+        if runner is not None:
+            def finish_runner():
+                runner.stop(timeout=12)
+                runner.reload()
+                state = runner.attrs["State"]
+                assert state.get("Status") == "exited" and state.get("ExitCode") == 0
+                assert not state.get("OOMKilled", False)
+                lines = runner.logs().decode("utf-8", errors="replace").splitlines()
+                if mode in {"browser", "visual"}:
+                    assert lines.count("t10_runtime_exit=verified") == 1
+                    assert lines.count("t10_forbidden_gateway_calls=0") == 1
+                    assert sum(bool(re.fullmatch(r"t10_worker_started_cycles=[1-9][0-9]*", line))
+                               for line in lines) == 1
+                    assert not any(line.startswith("t10_fixture_error=") for line in lines)
+                for line in lines:
+                    if re.fullmatch(r"t10_(?:worker_started_cycles|forbidden_gateway_calls)=[0-9]+", line):
+                        print(line)
+
+            cleanup(finish_runner)
+            cleanup(lambda: runner.remove(force=True))
+        if pg is not None:
+            cleanup(lambda: pg.stop(timeout=5))
+            cleanup(lambda: pg.remove(force=True))
+        if network is not None:
+            cleanup(network.remove)
+
+        def verify_removed():
+            existing = {item.id for item in client.containers.list(all=True)}
+            assert not existing.intersection(resource_ids)
+            if port:
+                with socket.socket() as probe:
+                    assert probe.connect_ex(("127.0.0.1", port)) != 0
+
+        cleanup(verify_removed)
+        cleanup(client.close)
+        if failures:
+            if primary is not None:
+                primary.add_note("T10退出验收或清理失败；原主异常保留")
+            else:
+                raise AssertionError("T10退出验收或清理失败") from None
 
 
 def run_closed_loop():
+    """兼容同步调用方，但实际全部准备/执行在可终止子进程中。"""
+    from tests.e2e.costing_quote_lifecycle import run_supervised
+
+    result = asyncio.run(run_supervised("integration"))
+    return result.code, result.output
+
+
+def _run_closed_loop():
     """固定Linux测试入口；不把容器环境/连接/任意日志回传模型。"""
+    from tests.e2e.costing_quote_lifecycle import active_run
+
+    ownership = active_run()
+    assert ownership is not None
     with linux_stack() as stack:
-        result = stack.runner.wait(timeout=300)
+        result = stack.runner.wait(timeout=max(.1, ownership.work_deadline - time.monotonic()))
         output = safe_output(stack.runner.logs())
         return result["StatusCode"], output
 
 
 async def visual_handoff():
     """仅经controller协调启动：自动跑同DOM后保留本次栈，总计不超过900秒。"""
-    import os
     import signal
     from datetime import UTC, datetime, timedelta
 
+    from tests.e2e.costing_quote_lifecycle import active_run
     from tests.e2e.test_costing_quote_browser import exercise_browser
 
-    artifacts = Path(__file__).resolve().parents[2] / "output/playwright" / ("t10-visual-" + uuid4().hex)
+    ownership = active_run()
+    assert ownership is not None
+    artifacts = ownership.artifacts
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for kind in (signal.SIGINT, signal.SIGTERM):
@@ -164,7 +222,7 @@ async def visual_handoff():
         try:
             async with browser_stack(artifacts, mode="visual") as stack:
                 result = await exercise_browser(stack, artifacts)
-                handoff = {"pid": os.getpid(), "artifacts": str(artifacts),
+                handoff = {"pid": ownership.parent_pid, "artifacts": str(artifacts),
                     "expires_at": (datetime.now(UTC) + timedelta(seconds=max(0, stack.deadline - loop.time()))).isoformat(),
                     "origins": result["origins"], "api_origin": stack.api_origin,
                     "quote_url": result["quote_url"], "quote_id": result["quote_id"],
@@ -172,7 +230,7 @@ async def visual_handoff():
                     "source": result["source"], "policy_source": result["policy_source"],
                     "pdf_sha256": result["pdf_sha256"]}
                 (artifacts / "handoff.json").write_text(json.dumps(handoff, ensure_ascii=False, indent=2))
-                print("t10_visual_handoff=" + json.dumps(handoff, ensure_ascii=False), flush=True)
+                print("t10_visual_handoff=ready", flush=True)
                 await stop.wait()
         except TimeoutError:
             print("t10_visual_deadline=expired", flush=True)
@@ -185,14 +243,16 @@ async def visual_handoff():
 @asynccontextmanager
 async def browser_stack(artifacts: Path, *, mode="browser"):
     """三个固定开发身份只在Vite环境；不修改Browser身份或生产认证。"""
-    from tests.e2e.conftest import _minimal_process_env, _start_process, _wait_for_http
+    from tests.e2e.conftest import _minimal_process_env, _start_process
     from tests.e2e.costing_quote_bridge import http_bridge
+    from tests.e2e.costing_quote_lifecycle import active_run
 
-    deadline_total = asyncio.get_running_loop().time() + (900 if mode == "visual" else 300)
-    artifacts.mkdir(parents=True, exist_ok=False)
+    ownership = active_run()
+    assert ownership is not None and artifacts == ownership.artifacts
+    deadline_total = ownership.work_deadline
     processes = []
     with linux_stack(mode=mode) as stack, ExitStack() as files:
-        deadline = time.monotonic() + 45
+        deadline = min(time.monotonic() + 45, deadline_total)
         while True:
             manifest = stack.manifest()
             if manifest is not None:
@@ -203,6 +263,9 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
             await asyncio.sleep(0.1)
         try:
             stack.api_origin = files.enter_context(http_bridge(stack.runner))
+            (artifacts / "ports.json").write_text(json.dumps([
+                *stack.web_ports, int(stack.api_origin.rsplit(":", 1)[1]),
+            ]))
             origins = {}
             for role, port in zip(("boss", "actor", "decider"), stack.web_ports, strict=True):
                 origin = f"http://127.0.0.1:{port}"
@@ -217,7 +280,7 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
                     stderr=files.enter_context((artifacts / f"{role}.stderr").open("wb")),
                 )
                 processes.append(process)
-                await _wait_for_http(origin + "/costing-quotes", process)
+                await _wait_for_ready(origin + "/costing-quotes", process, deadline_total)
                 origins[role] = origin
             stack.manifest_data = manifest
             stack.web_origins = origins
@@ -225,7 +288,7 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
             # 真实API已启动，明确tenant与身份检查，不能用Vite HTML代替后端ready。
             import httpx
             async with httpx.AsyncClient() as client:
-                async with asyncio.timeout(15):
+                async with asyncio.timeout_at(min(deadline_total, time.monotonic() + 15)):
                     while True:
                         try:
                             response = await client.get(stack.api_origin + "/costing-quotes/opportunities/"
@@ -241,11 +304,40 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
             async with asyncio.timeout_at(deadline_total):
                 yield stack
         finally:
+            failures = []
             for process in reversed(processes):
-                process.stop()
+                try:
+                    process.stop()
+                except BaseException as error:  # noqa: BLE001 - 清理其他Vite后保留主异常
+                    failures.append(error)
             for port in stack.web_ports:
                 with socket.socket() as probe:
-                    assert probe.connect_ex(("127.0.0.1", port)) != 0
+                    if probe.connect_ex(("127.0.0.1", port)) == 0:
+                        failures.append(AssertionError("T10 Vite端口未回收"))
+            if failures:
+                import sys
+                primary = sys.exc_info()[1]
+                if primary is not None:
+                    primary.add_note("T10 Vite清理失败；原主异常保留")
+                else:
+                    raise AssertionError("T10 Vite清理失败") from None
+
+
+async def _wait_for_ready(url, process, deadline):
+    """T10专用readiness使用剩余工作预算，不改变其他E2E的共享helper。"""
+    import httpx
+
+    deadline = min(deadline, time.monotonic() + 20)
+    async with asyncio.timeout_at(deadline), httpx.AsyncClient() as client:
+        while True:
+            assert process.process.poll() is None, "T10 Vite启动失败"
+            try:
+                response = await client.get(url, timeout=max(.01, min(1, deadline - time.monotonic())))
+                if response.status_code == 200:
+                    return
+            except httpx.TransportError:
+                pass
+            await asyncio.sleep(.05)
 
 
 if __name__ == "__main__":
@@ -254,4 +346,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("visual",), required=True)
     parser.parse_args()
-    asyncio.run(visual_handoff())
+    from tests.e2e.costing_quote_lifecycle import run_supervised
+
+    result = asyncio.run(run_supervised("visual"))
+    print(result.output, flush=True)
+    raise SystemExit(result.code)

@@ -173,6 +173,7 @@ def test_t10_target_adds_only_named_helpers(monkeypatch):
             "tests/e2e/costing_quote_server.py", "tests/e2e/costing_quote_relay.py"}.issubset(seen["names"])
     assert "tests/e2e/costing_quote_stack.py" not in seen["names"]
     assert "tests/e2e/costing_quote_bridge.py" not in seen["names"]
+    assert "tests/e2e/costing_quote_lifecycle.py" not in seen["names"]
     assert not any(".env" in name or name.startswith(("output/", "tmp/", "apps/web/")) for name in seen["names"])
     dockerfile = (Path(__file__).parents[1] / "fixtures/quote_evidence/linux/Dockerfile").read_text()
     assert 'FROM quotation AS costing_quote\nCMD ["python", "-m", "tests.e2e.costing_quote_server", "--mode", "integration"]' in dockerfile

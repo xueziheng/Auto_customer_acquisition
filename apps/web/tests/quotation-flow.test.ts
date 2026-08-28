@@ -1,10 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createApp, nextTick, type App as VueApp } from "vue";
+import { createApp, h, nextTick, ref, type App as VueApp, type Ref } from "vue";
 import App from "../src/App.vue";
 import router from "../src/router";
 import { configureAuthenticatedIdentity, clearAuthenticatedIdentity, createApiClient, type WebIdentityProvider } from "../src/api/client";
 import type { components } from "../src/api/api";
 import { createQuotePriceBody, utf16SelectionToCodepoints } from "../src/views/costing-quotes/quote-input";
+import NeedUnitConfirmationForm from "../src/views/costing-quotes/NeedUnitConfirmationForm.vue";
 
 it("keeps precise money text without Number coercion", () => {
   expect(createQuotePriceBody("0.123456789012", "USD")).toEqual({ amount: "0.123456789012", currency: "USD" });
@@ -104,6 +105,88 @@ function basic(request: Request): Response {
   if (path.endsWith("/issuer") || path.endsWith("/coverage")) return json(null);
   return json([]);
 }
+
+function unitPreparation(hash: string, needId = need): components["schemas"]["NeedUnitPreparationView"] {
+  return { account_id: "account", need_id: needId, quantity: 100, quantity_fact_hash: hash, quantity_origin: provenance, quantity_status: "current", unit: null, unit_confirmation_id: null, unit_origin: null, unit_status: "missing" };
+}
+async function mountUnit(fetch: typeof globalThis.fetch): Promise<{ root: HTMLElement; currentNeed: Ref<string> }> {
+  configureAuthenticatedIdentity("tenant-a", "employee-a");
+  const currentNeed = ref(need);
+  const root = document.createElement("div"); document.body.append(root);
+  const app = createApp({ setup: () => () => h(NeedUnitConfirmationForm, { needId: currentNeed.value }) });
+  apps.push(app);
+  app.provide("tradeos-api-client", createApiClient({ baseUrl: "https://tradeos.test", fetch }));
+  app.mount(root); await nextTick();
+  return { root, currentNeed };
+}
+
+it("keeps unit preparation alive through editing and locating, then confirms the actual returned hash", async () => {
+  const initial = deferred(); const nextNeed = deferred(); const reads: Request[] = []; const bodies: unknown[] = [];
+  const preview = { artifact_id: "artifact", page: null, profile: "rfc822-plain-v1", raw_hash: "raw", scope: { purpose: "need_unit", action: "confirm", need_id: need }, source_ref: `message:${messageId}`, text: "100 pieces", text_hash: "text" };
+  const { root, currentNeed } = await mountUnit(async (input) => {
+    if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname;
+    if (path.endsWith("/unit")) { reads.push(input); return reads.length === 1 ? initial.promise : nextNeed.promise; }
+    if (path.endsWith("/evidence/preview")) return json(preview);
+    if (path.endsWith("/evidence/locator")) return json({ ...preview, start: 0, end: 10, excerpt: "100 pieces", excerpt_hash: "excerpt", locator: "pending-read-locator" });
+    if (path.endsWith("/unit-confirmations")) { bodies.push(await input.json()); return json({ artifact_id: "artifact", confirmation_id: "pending-read-confirmed", confirmed_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", content_hash: "unit-hash", need_id: need, observed_at: "2026-08-28T00:00:00Z", quantity_fact_hash: "actual-read-hash", source_message_id: messageId, unit: "pieces", unit_origin: provenance }); }
+    return basic(input);
+  });
+  await eventually(() => expect(reads).toHaveLength(1));
+  field(root, "unit-source", messageId); field(root, "unit-value", "pieces"); await nextTick();
+  click(root, "预览客户消息"); await eventually(() => expect(root.querySelector('[name="unit-preview"]')).not.toBeNull());
+  const area = root.querySelector<HTMLTextAreaElement>('[name="unit-preview"]')!;
+  area.setSelectionRange(0, 10); area.dispatchEvent(new Event("select")); await nextTick();
+  click(root, "定位客户单位原话"); await eventually(() => expect(root.textContent).toContain("pending-read-locator"));
+  expect(reads[0]?.signal.aborted).toBe(false);
+  initial.resolve(json(unitPreparation("actual-read-hash")));
+  await eventually(() => expect(root.textContent).toContain("actual-read-hash"));
+  click(root, "确认客户单位"); await eventually(() => expect(bodies).toHaveLength(1));
+  expect(bodies[0]).toMatchObject({ expected_quantity_fact_hash: "actual-read-hash", expected_unit_confirmation_id: null, source_message_id: messageId, locator: "pending-read-locator" });
+  await eventually(() => expect(root.textContent).toContain("pending-read-confirmed"));
+  currentNeed.value = "need-other"; await nextTick();
+  expect(root.textContent).not.toContain("pending-read-confirmed");
+  expect(root.textContent).not.toContain("actual-read-hash");
+});
+
+it.each(["need", "identity", "newer-read"] as const)("discards late unit preparation after %s for both success and failure", async (change) => {
+  for (const outcome of ["success", "failure"] as const) {
+    const old = deferred(); const fresh = deferred(); const reads: Request[] = [];
+    const { root, currentNeed } = await mountUnit(async (input) => {
+      if (!(input instanceof Request)) throw new Error();
+      if (new URL(input.url).pathname.endsWith("/unit")) { reads.push(input); return reads.length === 1 ? old.promise : fresh.promise; }
+      return basic(input);
+    });
+    await eventually(() => expect(reads).toHaveLength(1));
+    if (change === "need") { currentNeed.value = "need-new"; await nextTick(); }
+    else {
+      if (change === "identity") { configureAuthenticatedIdentity("tenant-b", "employee-b"); configureAuthenticatedIdentity("tenant-a", "employee-a"); await nextTick(); }
+      click(root, "核对已保存客户单位");
+    }
+    await eventually(() => expect(reads).toHaveLength(2)); expect(reads[0]?.signal.aborted).toBe(true);
+    fresh.resolve(json(unitPreparation("fresh-unit-hash", currentNeed.value)));
+    await eventually(() => expect(root.textContent).toContain("fresh-unit-hash"));
+    if (outcome === "success") old.resolve(json(unitPreparation("stale-unit-hash")));
+    else old.reject(new Error("stale-unit-error"));
+    await nextTick(); await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.textContent).toContain("fresh-unit-hash"); expect(root.textContent).not.toContain("stale-unit");
+    expect(root.textContent).not.toContain("客户单位核对失败");
+    apps.pop()?.unmount(); root.remove();
+  }
+});
+
+it("clears old unit preparation synchronously on Need change before the new read resolves", async () => {
+  const fresh = deferred(); let calls = 0;
+  const { root, currentNeed } = await mountUnit(async (input) => {
+    if (!(input instanceof Request)) throw new Error();
+    if (new URL(input.url).pathname.endsWith("/unit")) { calls += 1; return calls === 1 ? json(unitPreparation("old-need-hash")) : fresh.promise; }
+    return basic(input);
+  });
+  await eventually(() => expect(root.textContent).toContain("old-need-hash"));
+  currentNeed.value = "need-new"; await nextTick();
+  expect(root.textContent).not.toContain("old-need-hash");
+  fresh.resolve(json(unitPreparation("new-need-hash", "need-new")));
+  await eventually(() => expect(root.textContent).toContain("new-need-hash"));
+});
 
 it("loads the exact notification quote and independent authorized PDF despite internal 403", async () => {
   const paths: string[] = [];

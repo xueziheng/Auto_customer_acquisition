@@ -108,6 +108,7 @@ def main():
         if mode == "integration":
             return integration(connection)
         asyncio.run(serve(connection, mode))
+        print("t10_runtime_exit=verified", flush=True)
         return 0
     except Exception as error:  # noqa: BLE001 - 不输出环境/数据库原异常正文
         print("t10_fixture_error=" + type(error).__name__)

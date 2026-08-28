@@ -8,16 +8,15 @@ import io
 import json
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 import httpx
 import pytest
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright, expect
 from pypdf import PdfReader
 
-from tests.e2e.costing_quote_stack import browser_stack
+from tests.e2e.costing_quote_lifecycle import run_supervised
 
 
 async def fill(page, values):
@@ -28,21 +27,41 @@ async def fill(page, values):
 async def action(page, name, path, *, method="POST", status=200):
     """只观察实际HTTP响应，不route、不修改请求或业务数据。"""
     observed = []
+    responses = []
     def requested(request):
         if urlsplit(request.url).path == path:
             observed.append("request")
     def failed(request):
         if urlsplit(request.url).path == path:
             observed.append("failed:" + (request.failure or "unknown"))
+    def responded(response):
+        if urlsplit(response.url).path == path:
+            responses.append(response.status)
     page.on("request", requested)
     page.on("requestfailed", failed)
+    page.on("response", responded)
     try:
         async with page.expect_response(
             lambda response: response.url.endswith(path) and response.request.method == method
         ) as pending:
             await page.get_by_role("button", name=name, exact=True).click()
     except Exception:
-        print("browser_action_failure=" + name + ";observed=" + repr(observed))
+        if name == "确认客户单位":
+            print("t10_unit_diag_requests=" + str(observed.count("request")), flush=True)
+            print("t10_unit_diag_failed=" + str(sum(item.startswith("failed:") for item in observed)), flush=True)
+            print("t10_unit_diag_responses=" + str(len(responses)), flush=True)
+            try:
+                async with asyncio.timeout(1):
+                    disabled = await page.get_by_role("button", name=name, exact=True).is_disabled()
+                    selected = await page.locator('[name="unit-preview"]').evaluate(
+                        "e => [e.selectionStart, e.selectionEnd, e.value.length]")
+                    print("t10_unit_diag_disabled=" + str(int(disabled)), flush=True)
+                    for key, value in zip(("selection_start", "selection_end", "text_length"), selected, strict=True):
+                        print("t10_unit_diag_" + key + "=" + str(value), flush=True)
+            except (TimeoutError, PlaywrightError):
+                pass
+        else:
+            print("browser_action_failure=" + name + ";observed=" + repr(observed))
         if name == "定位价格选区":
             print("selection_after_click=" + repr(await page.locator('[name="price-preview"]').evaluate(
                 "e => ({start:e.selectionStart,end:e.selectionEnd,length:e.value.length})")))
@@ -50,6 +69,7 @@ async def action(page, name, path, *, method="POST", status=200):
     finally:
         page.remove_listener("request", requested)
         page.remove_listener("requestfailed", failed)
+        page.remove_listener("response", responded)
     response = await pending.value
     assert response.status == status, (path, response.status, await response.text())
     return await response.json() if status != 204 else None
@@ -248,7 +268,128 @@ async def exercise_browser(stack, artifacts):
 
 @pytest.mark.e2e
 async def test_real_costing_quote_browser():
-    artifacts = Path(__file__).resolve().parents[2] / "output/playwright" / ("t10-" + uuid4().hex)
-    async with browser_stack(artifacts) as stack:
-        await exercise_browser(stack, artifacts)
-    print("T10浏览器产物：" + str(artifacts))
+    result = await run_supervised("browser")
+    assert result.code == 0, result.output
+    assert result.cleanup_verified
+    print(result.output)
+    print("T10浏览器产物：" + str(result.artifacts))
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("failure", ["runtime_kill", "host_stall"])
+async def test_real_killed_linux_runtime_fails_and_cleans_only_owned_stack(monkeypatch, failure):
+    """仅测试边界替换固定子入口；真实被杀API不能被退出门当作成功。"""
+    from tests.e2e import costing_quote_lifecycle as lifecycle
+
+    script = """
+import signal, sys, time
+from pathlib import Path
+from tests.e2e import costing_quote_lifecycle as lifecycle
+from tests.e2e.costing_quote_stack import linux_stack
+owner, work, finish, parent, failure = sys.argv[1:]
+lifecycle._ACTIVE = lifecycle.OwnedRun(owner, float(work), float(finish),
+    lifecycle.OUTPUT_ROOT / ('t10-' + owner), int(parent))
+try:
+    with linux_stack(mode='browser') as stack:
+        stack.runner.reload()
+        assert stack.runner.attrs['Name'] == '/' + lifecycle.resource_names(owner)['api']
+        assert stack.runner.attrs['Config']['Labels'][lifecycle.OWNER_LABEL] == owner
+        if failure == 'host_stall':
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            print('fixed_exception_type=HostStalledAfterApiCreate', flush=True)
+            time.sleep(60)
+        stack.runner.kill(signal='SIGKILL')
+        assert stack.runner.wait(timeout=10)['StatusCode'] == 137
+        print('fixed_exception_type=RuntimeKilled137', flush=True)
+except AssertionError:
+    raise SystemExit(2)
+print('t10_child_exit=verified', flush=True)
+"""
+
+    def command(mode, owner, work, finish):
+        import os
+        assert mode == "browser"
+        return [sys.executable, "-c", script, owner, str(work), str(finish), str(os.getpid()), failure]
+
+    monkeypatch.setattr(lifecycle, "_child_command", command)
+    if failure == "host_stall":
+        monkeypatch.setattr(lifecycle, "TOTAL_SECONDS", {**lifecycle.TOTAL_SECONDS, "browser": 35})
+        monkeypatch.setattr(lifecycle, "CLEANUP_SECONDS", 12)
+        monkeypatch.setattr(lifecycle, "TERM_SECONDS", .3)
+    result = await run_supervised("browser")
+    assert result.code != 0 and result.cleanup_verified, result.output
+    assert ("fixed_exception_type=" + (
+        "RuntimeKilled137" if failure == "runtime_kill" else "HostStalledAfterApiCreate"
+    )) in result.output
+    if failure == "host_stall":
+        assert "t10_deadline=expired" in result.output
+    assert "t10_child_exit=verified" not in result.output
+    print(result.output)
+
+
+async def probe_initial_unit_read(stack, _artifacts):
+    """真实GET发出即输入，读取仍完成且能确认；不route/延迟/写内部状态。"""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        manifest = stack.manifest_data
+        path = f'/costing-quotes/needs/{manifest["need"]}/unit'
+        responses = []
+
+        def response_seen(response):
+            if urlsplit(response.url).path == path:
+                responses.append(True)
+
+        page.on("response", response_seen)
+        try:
+            await page.goto(stack.web_origins["boss"] + "/costing-quotes")
+            await page.locator('[name="opportunity-id"]').fill(manifest["opportunity"])
+            async with page.expect_request(lambda request: urlsplit(request.url).path == path) as pending:
+                await page.get_by_role("button", name="读取成本版本", exact=True).click()
+            request = await pending.value
+            print("t10_unit_probe_initial_response=" + str(int(bool(responses))), flush=True)
+            assert not responses, "真实探针未捕获在途初始GET"
+            await fill(page, {"unit-source": manifest["message"], "unit-value": "pieces"})
+            async with asyncio.timeout(5):
+                response = await request.response()
+            panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="客户单位确认", exact=True))
+            assert response is not None and response.status == 200
+            prepared = await response.json()
+            await expect(panel.get_by_text("数量 hash", exact=False)).to_be_visible()
+            summary = await panel.get_by_text("数量 hash", exact=False).is_visible()
+            await action(page, "预览客户消息", "/costing-quotes/evidence/preview")
+            await select_excerpt(page, "unit-preview", "50 pieces")
+            await action(page, "定位客户单位原话", "/costing-quotes/evidence/locator")
+            button = panel.get_by_role("button", name="确认客户单位", exact=True)
+            await expect(button).to_be_enabled()
+            disabled = await button.is_disabled()
+            print("t10_unit_probe_failed=" + str(int(request.failure is not None)), flush=True)
+            print("t10_unit_probe_response=" + str(int(response is not None)), flush=True)
+            print("t10_unit_probe_summary_visible=" + str(int(summary)), flush=True)
+            print("t10_unit_probe_disabled=" + str(int(disabled)), flush=True)
+            assert request.failure is None and summary and not disabled
+            confirmed = await action(page, "确认客户单位", f'/costing-quotes/needs/{manifest["need"]}/unit-confirmations')
+            assert confirmed["quantity_fact_hash"] == prepared["quantity_fact_hash"]
+        finally:
+            await browser.close()
+
+
+@pytest.mark.e2e
+async def test_real_initial_unit_read_probe(monkeypatch):
+    from tests.e2e import costing_quote_lifecycle as lifecycle
+
+    original = lifecycle._child_command
+    script = """
+from tests.e2e import test_costing_quote_browser as browser_case
+from tests.e2e.costing_quote_lifecycle import main
+browser_case.exercise_browser = browser_case.probe_initial_unit_read
+raise SystemExit(main())
+"""
+
+    def command(mode, owner, work, finish):
+        return [sys.executable, "-c", script, *original(mode, owner, work, finish)[3:]]
+
+    monkeypatch.setattr(lifecycle, "_child_command", command)
+    result = await run_supervised("browser")
+    assert result.code == 0 and result.cleanup_verified, result.output
+    print(result.output)
