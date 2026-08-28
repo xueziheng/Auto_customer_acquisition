@@ -165,11 +165,28 @@ class QuoteCreationOperationView(QuoteDTO):
         return self
 
 
+def require_creation_decimal_resources(value: Decimal) -> None:
+    """定点展开前限制系数、指数和编码长度；4096是资源上限，不是业务精度。"""
+    if not value.is_finite():
+        raise ValueError("金额必须为有限Decimal")
+    sign, digits, exponent = value.as_tuple()
+    if len(digits) > 4096 or abs(exponent) > 4096:
+        raise ValueError("Decimal编码超出资源上限")
+    if value.is_zero():
+        return
+    length = (
+        len(digits) + exponent + sign
+        if exponent >= 0
+        else max(len(digits) + exponent, 1) + 1 - exponent + sign
+    )
+    if length > 4096:
+        raise ValueError("Decimal编码超出资源上限")
+
+
 def canonical_creation_value(value: object) -> object:
     """不依赖Decimal上下文的无损规范化；与旧事实编码刻意分离。"""
     if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError("金额必须为有限Decimal")
+        require_creation_decimal_resources(value)
         if value.is_zero():
             return "0"
         fixed = format(value, "f")

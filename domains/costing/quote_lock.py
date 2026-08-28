@@ -12,20 +12,36 @@ from domains.costing.freeze_schemas import (
     CostScopeEvidenceBinding,
     FrozenCostBasis,
 )
-from domains.costing.models import CostSheet
+from domains.costing.models import CostSheet, _require_numeric_precision
 from domains.costing.schemas import (
     CostCoverageCreate,
     PriceEvidenceView,
     SupplierPriceEvidenceView,
 )
+from shared.errors import ValidationError
+from shared.schemas.money import Money
 from shared.schemas.quote_creation import (
     QuoteCreationCompletion,
     QuoteCreationOperationView,
     canonical_creation_hash,
     quote_creation_request_hash,
     quote_terms_hash,
+    require_creation_decimal_resources,
 )
 from shared.schemas.quote_facts import canonical_fact_hash
+
+
+def require_manual_price(price: Money) -> None:
+    """人工原始单价沿用Numeric(28,12)边界，不限制T1派生输出的50位精度。"""
+    try:
+        require_creation_decimal_resources(price.amount)
+        if price.amount <= 0:
+            raise ValueError("人工单价必须为正")
+        _require_numeric_precision(
+            price.amount, precision=28, scale=12, field="人工单价"
+        )
+    except (ValueError, ValidationError):
+        raise CostFreezeError("invalid_input") from None
 
 
 def validate_cost_coverage(

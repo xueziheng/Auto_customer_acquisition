@@ -1,9 +1,12 @@
 """完成回执绑定是纯守卫，不依赖实际quotation表或外部IO。"""
 
+from decimal import Decimal
+
 import pytest
 
 from domains.costing import quote_lock
 from domains.costing.errors import CostFreezeError
+from shared.schemas.money import Money
 from shared.schemas.quote_creation import (
     QuoteCreationCompletion,
     QuoteCreationOperationView,
@@ -101,3 +104,31 @@ def test_costing_unit_rejects_control_characters():
     values = {name: getattr(context, name) for name in CostingContext.model_fields}
     with pytest.raises(ValidationError):
         CostingContext(**(values | {"unit": "pcs\x00"}))
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1E+100000", "1E-100000", "1E16", "1E-13", "0", "-1", "9" * 4097],
+    ids=[
+        "positive-exponent",
+        "negative-exponent",
+        "integer-overflow",
+        "scale-overflow",
+        "zero",
+        "negative",
+        "coefficient",
+    ],
+)
+def test_manual_price_rejects_resource_and_numeric_input_limits(value):
+    assert hasattr(quote_lock, "require_manual_price"), "人工单价缺少独立输入边界"
+    with pytest.raises(CostFreezeError) as error:
+        quote_lock.require_manual_price(Money(Decimal(value), "USD"))
+    assert error.value.code == "invalid_input"
+
+
+@pytest.mark.parametrize(
+    "value", ["9999999999999999.999999999999", "1E-12", "2.3000000000000000"]
+)
+def test_manual_price_accepts_numeric_boundaries_and_representation_zeros(value):
+    assert hasattr(quote_lock, "require_manual_price"), "人工单价缺少独立输入边界"
+    assert quote_lock.require_manual_price(Money(Decimal(value), "USD")) is None

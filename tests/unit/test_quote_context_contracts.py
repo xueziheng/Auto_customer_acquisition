@@ -80,6 +80,42 @@ def test_intent_hash_normalizes_decimal_without_context_rounding() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "value",
+    ["1E+100000", "1E-100000", "9" * 4097, "9" * 4096 + "E+1"],
+    ids=["positive-exponent", "negative-exponent", "coefficient", "encoded-length"],
+)
+def test_intent_hash_rejects_decimal_resource_limits_before_format(value, monkeypatch):
+    module = creation_module()
+
+    def forbidden_format(*args):
+        pytest.fail("越界Decimal不应进入定点展开")
+
+    monkeypatch.setattr(module, "format", forbidden_format, raising=False)
+    with pytest.raises(ValueError, match="Decimal编码超出资源上限"):
+        module.quote_creation_request_hash(
+            intent(unit_price=Money(Decimal(value), "USD"))
+        )
+
+
+@pytest.mark.parametrize("value", ["0E+100000", "0E-100000", "-0E-100000"])
+def test_creation_zero_obeys_decimal_resource_limit(value):
+    with pytest.raises(ValueError, match="Decimal编码超出资源上限"):
+        creation_module().canonical_creation_value(Decimal(value))
+
+
+@pytest.mark.parametrize(
+    "value, length",
+    [("1E+4095", 4096), ("1E-4094", 4096), ("9" * 4096, 4096), ("-1E+4094", 4096)],
+    ids=["integer", "fraction", "coefficient", "signed"],
+)
+def test_creation_decimal_resource_boundary_is_not_business_precision(value, length):
+    result = creation_module().canonical_creation_value(Decimal(value))
+    assert len(result) == length
+    assert Decimal(result) == Decimal(value)
+    assert creation_module().canonical_creation_value(Decimal("-0.000")) == "0"
+
+
 def test_intent_hash_covers_each_field_and_preserves_order_duplicates() -> None:
     module = creation_module()
     original = intent()

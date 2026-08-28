@@ -794,6 +794,45 @@ async def test_unknown_commit_recovers_original_key_without_new_effect(
     assert await c.count("operation") == await c.count("basis") == 1
 
 
+@pytest.mark.parametrize("value", ["1E+100000", "1E-100000", "1E16", "1E-13"])
+@pytest.mark.parametrize("action", ["freeze", "calculate"])
+async def test_invalid_manual_price_has_no_effect_and_original_key_recovers(
+    freeze_case: FreezeCase, value: str, action: str
+) -> None:
+    from domains.costing.errors import CostFreezeError
+
+    c = freeze_case
+    original = await c.intent()
+    price = Money(Decimal(value), "USD")
+    invalid = original.model_copy(update={"unit_price": price})
+    options = c.options.model_copy(update={"unit_price": price})
+    with pytest.raises(CostFreezeError) as error:
+        if action == "freeze":
+            await c.freeze(key="numeric-limit", intent=invalid, options=options)
+        else:
+            await c.application.calculate(
+                c.tenant_id,
+                c.opportunity_id,
+                c.cost_sheet_id,
+                options,
+                quote_fx_ref=None,
+                actor_id=c.actor_id,
+            )
+    assert error.value.code == "invalid_input"
+    assert await c.count("basis") == await c.count("operation") == 0
+    assert await c.count("scope") == 1
+    assert await c.locked_at() is None
+    first = await c.freeze(key="numeric-limit", intent=original)
+    locked_at = await c.locked_at()
+    with pytest.raises(CostFreezeError) as error:
+        await c.freeze(key="numeric-limit", intent=invalid, options=options)
+    assert error.value.code == "invalid_input"
+    recovered = await c.freeze(key="numeric-limit", intent=original)
+    assert recovered == first
+    assert await c.locked_at() == locked_at
+    assert await c.count("basis") == await c.count("operation") == 1
+
+
 async def test_context_lease_covers_actual_costing_commit(
     freeze_case: FreezeCase, monkeypatch
 ) -> None:

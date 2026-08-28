@@ -34,6 +34,7 @@ from domains.costing.quote_lock import (
     require_completion,
     require_context,
     require_evidence_applicability,
+    require_manual_price,
     require_scope_evidence,
     require_scope_integrity,
     scope_content_hash,
@@ -400,6 +401,12 @@ class CostingFreezeServiceImpl:
     ) -> CalculationSnapshot:
         """同lease下只读测算；当前清单必须精确匹配sheet hash，不写冻结标记。"""
         await self._require(tenant_id, actor, CostingAction.QUOTE_CALCULATE, context)
+        try:
+            options = PricingOptions.model_validate_json(options.model_dump_json())
+        except (SchemaError, ValueError, TypeError):
+            raise CostFreezeError("invalid_input") from None
+        if options.unit_price is not None:
+            require_manual_price(options.unit_price)
         async with self._factory(tenant_id) as uow:
             sheet = await uow.sheets.get_for_update(tenant_id, cost_sheet_id)
             if sheet is None:
@@ -443,9 +450,12 @@ class CostingFreezeServiceImpl:
             key = TypeAdapter(QuoteKey).validate_python(idempotency_key)
             intent = QuoteCreationIntent.model_validate_json(intent.model_dump_json())
             options = PricingOptions.model_validate_json(options.model_dump_json())
+            require_manual_price(intent.unit_price)
+            if options.unit_price is not None:
+                require_manual_price(options.unit_price)
+            request_hash = quote_creation_request_hash(intent)
         except (SchemaError, ValueError, TypeError):
             raise CostFreezeError("invalid_input") from None
-        request_hash = quote_creation_request_hash(intent)
         async with self._factory(tenant_id) as uow:
             await uow.freezes.lock_key(tenant_id, "creation", key)
             winner = await uow.freezes.get_operation_by_key(tenant_id, key)
