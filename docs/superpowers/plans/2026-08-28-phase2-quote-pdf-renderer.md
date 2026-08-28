@@ -12,7 +12,7 @@
 工作树`/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/phase2-costing-quotation`。先读根AGENTS/HANDBOOK、connectors/shared/domains/quotations/tests就近AGENTS；不把机检允许误作目录许可。
 T4/T6是前置交付，不能把brief当现有实现。控制器先将context中的validate_customer_projection补充前移T4并核验真实接口；T7不修改T4 brief，也不在renderer补金额规则。
 首次真正PDF作者命令（包含运行会实际render的pytest）之前，由控制器依handoff执行已核定marker：其Node/脚本路径、create、expected-output-count=1、output-format=pdf，成功恰一次并记录。未完成不得开始PDF作者命令；本brief不重读或解释PDF技能。
-T7测试在项目tradeos-py312环境；bundled pdfinfo/pdftoppm是handoff定位的T10工具，不替换项目Python。当前仅编计划，不安装依赖/运行marker/生成PDF。
+T7测试在项目tradeos-py312环境；bundled pdfinfo/pdftoppm是handoff定位的T10工具，不替换项目Python。本文是计划而非渲染验收；实施时按5.1准备锁定依赖，首次会创建PDF的命令前通知控制器运行marker，未收到成功确认不得开始作者命令。
 
 | 文件 | 责任 |
 | --- | --- |
@@ -96,7 +96,7 @@ PDF结构安全＋提取正确不代表布局正确；真实逐页PNG/视觉检�
 
 ### 5.1 契约与域边界
 
-- [ ] marker前置完成后，RED新增renderer Protocol结构化一致、shared错误同对象、manifest无secret、缺/非法上限、模板拒绝、真实合法域投影及篡改拒绝测试。
+- [ ] RED新增renderer Protocol结构化一致、shared错误同对象、manifest无secret、缺/非法上限、模板拒绝、真实合法域投影及篡改拒绝测试；若测试会实际创建PDF，必须此前完成marker。仅只读依赖/契约检查不提前执行marker。
 
 ```python
 def test_domain_rejects_changed_customer_price(quote_detail):

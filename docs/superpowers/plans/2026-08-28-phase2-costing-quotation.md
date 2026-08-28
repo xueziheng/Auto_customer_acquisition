@@ -290,14 +290,14 @@ T3B/T4交付后先核对真实接口与新增构造依赖，再派发；不能�
 完整接口、0046与四个TDD提交以 [报价文件子计划](2026-08-28-phase2-quote-files.md) 为准。
 T4/T5实际交付后核对quote/receipt/run reader及构造依赖再派发；不将计划接口视为已实现。
 
-- [ ] 新QUOTE_PDF严格kind/MIME/quo主体/key/已注册模板分支，EMAIL_DRAFT原enr/:draft行为不变；shared唯一模板版本常量。
-- [ ] 区分quote_content_hash、customer_content_hash和PDF artifact_hash；QuoteFileView.content_hash仅指bytes，所有值由真实来源推导。
-- [ ] record_file只接artifact_id，真实metadata reader在infra适配Store.get_meta；get/list仅安全metadata，不代表正式下载许可。
-- [ ] get_file_approval按quote读取真实成功receipt并核稳定run，解决先知道executor才能查run的循环；不补造批准或新执行。
-- [ ] 文件/历史metadata走当前机会ABAC，不复用四成本角色门；真实scope与当前正式授权归T8，T6受控guard明确失败关闭。
-- [ ] 0046双kind及文件关联、复合FK/一致性trigger/唯一quote+template/只增；有新数据downgrade拒绝。
-- [ ] QUOTE_PDF未知commit保留可能已持久的bytes，原key/全部绑定恢复；旧Raw/EMAIL_DRAFT补偿不重写，孤立bytes后续审计、不自动清扫。
-- [ ] 真实PG提交成功后异常/取消、并发winner、三hash/真实run/meta绑定、历史只读与旧草稿回归后统一独立审查。
+- [x] 新QUOTE_PDF严格kind/MIME/quo主体/key/已注册模板分支，EMAIL_DRAFT原enr/:draft行为不变；shared唯一模板版本常量。
+- [x] 区分quote_content_hash、customer_content_hash和PDF artifact_hash；QuoteFileView.content_hash仅指bytes，所有值由真实来源推导。
+- [x] record_file只接artifact_id，真实metadata reader在infra适配Store.get_meta；get/list仅安全metadata，不代表正式下载许可。
+- [x] get_file_approval按quote读取真实成功receipt并核稳定run，解决先知道executor才能查run的循环；不补造批准或新执行。
+- [x] 文件/历史metadata使用独立scope端口，不复用四成本角色门；T6受控guard失败关闭，真实机会ABAC与当前正式授权仍归T8，未计入本项完成。
+- [x] 0046双kind及文件关联、复合FK/一致性trigger/唯一quote+template/只增；有新数据downgrade拒绝。
+- [x] QUOTE_PDF未知commit保留可能已持久的bytes，原key/全部绑定恢复；旧Raw/EMAIL_DRAFT补偿不重写，孤立bytes后续审计、不自动清扫。
+- [x] 真实PG提交成功后异常/取消、并发winner、三hash/真实run/meta绑定、历史只读与旧草稿回归及统一独立审查通过；Fix1保留真实UoW原取消，独立复审通过（fa65fcf..6d50dae）。
 
 ## Task 7：离线 PDF 渲染适配器
 

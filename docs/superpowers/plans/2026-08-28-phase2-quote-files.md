@@ -21,7 +21,7 @@ scope按当前机会ABAC：sales本人、manager当前直属owner、boss租户�
 | Modify `artifact_store/{store,service_impl,errors}.py` | 新kind/严格分支、仅PDF未知提交保护及固定错误 |
 | Create `domains/quotations/file_schemas.py`、`file_service.py`；Modify `schemas.py`、`service.py`、`service_impl.py`、`version_repository.py`、`errors.py` | typed文件/reader/guard、真实关联、服务委托/窄仓储/固定错误 |
 | Modify `domains/quotations/approval_rules.py`、`approval_service.py` | 复用/抽取T5同一snapshot、原请求集合、binding、receipt及run绑定纯校验，不重做审批 |
-| Create `infra/quote_file_artifacts.py`；Modify `infra/db/{tables.py,repositories/artifacts.py,repositories/quotations.py}` | metadata适配、0046映射/只增关联；无业务规则/SDK/bytes |
+| Create `infra/quote_file_artifacts.py`；Modify `infra/db/{tables.py,repositories/quotations.py}`；Verify existing `infra/db/repositories/artifacts.py` | metadata适配、0046映射/只增关联；既有enum映射及带tenant的get_by_idempotency_key复用，仍需真实回归；无业务规则/SDK/bytes |
 | Create `migrations/versions/0046_quote_pdf_artifacts.py`、`docs/adr/0019-quote-pdf-artifacts.md` | 双kind约束、文件表与不可变/绑定约束、失败恢复语义 |
 | Create `tests/unit/test_quote_pdf_artifacts.py`、`test_quote_file_service.py`；Create `tests/integration/test_quote_pdf_artifacts.py`、`test_quote_file_migration.py` | typed/安全/服务、真实DB/未知commit/锁/迁移 |
 | Modify `tests/integration/test_migrations.py`、`artifact_store/AGENTS.md`、`domains/quotations/AGENTS.md` | 迁移head及已实现/未装配边界；旧Artifact测试目标回归 |
@@ -99,6 +99,7 @@ class QuoteFileService(Protocol):
 
 `QuoteFileServiceImpl(uow_factory:QuotationUowFactory,actor_reader:QuotationActorReader,scope_authorizer:QuoteFileScopeAuthorizer,artifact_reader:QuoteGeneratedArtifactReader,workflow_run_reader:QuoteWorkflowRunReader,*,id_generator:Callable[[str],str])`依赖全部必填。None/未装配调用失败，不默认允许；不接客户自报role、approved或verified。
 QuotationVersionService追加这四个同签名方法；QuotationServiceImpl新增keyword `files:QuoteFileService|None=None`并仅委托，不把file方法送进prepare/read_internal四角色policy。None只保持既有T4/T5非文件入口构造兼容，四文件方法一律dependency_unavailable，绝非默认许可；T8有真实files才可注册能力。服务与门面共用实现，不重复规则。独立file service依赖全部必填，只依赖本域UoW/端口，不反向依赖门面实例。
+actor_id沿既有EmployeeId/QuoteEmployeeFact身份规则：复用shared.schemas.quote_facts.fact_identity（严格str、非空、无首尾空白/控制字符、最多40字符），不得新增emp_ULID要求或迁移旧员工ID；仍必须由真实actor_reader及scope核对tenant/实际ID/在职与当前权限。新QuoteFileId及本批文件DTO规定的quote/artifact/run等ID严格格式不变。
 scope guard由受信上层适配既有机会ABAC，保证tenant/active/current owner-manager关系并在调用期间保护Employee→Opportunity；不返回权限token。T6受控实现必须可拒绝并测试拒绝零artifact读取；T8实现真实guard。actor_reader另验真实tenant/active，不在file service复制角色矩阵。
 `infra/quote_file_artifacts.py`新增`GeneratedStoreQuoteArtifactReader(store:GeneratedArtifactStore)`实现read：只调用get_meta，逐字段构造本地Fact；ArtifactNotFoundError→None（跨tenant同样），其余基础设施错误映射固定不可用，取消原样。不import私有artifact repository，不调get/put，不读bytes/SDK/凭证，不含quote审批/权限判断。
 任何对外返回前先完成scope授权；允许短读本域quote仅作不可变opportunity_id bootstrap，但不得向未授权调用方泄露存在性。缺quote与跨tenant对外统一not_found；已经识别无权限时permission_denied，不回传内部详情。
@@ -146,6 +147,7 @@ downgrade先检查新kind或任何quotation_files；存在即固定拒绝，不�
 `QuoteFileError(ValidationError)`仅code：invalid_input/not_found/approval_missing/file_conflict/metadata_mismatch/workflow_binding_invalid/template_unsupported。
 `QuoteFilePermissionError(PermissionDenied)`仅permission_denied；`QuoteFileUnavailableError(TradeOSError)`仅dependency_unavailable/lock_timeout/storage_unknown/storage_inconsistent。构造不接受自由文本；T5绑定错误映射同固定code，已有T4/T5异常公共语义不改。
 record缺receipt为approval_missing、缺artifact为not_found、现有metadata错绑定为metadata_mismatch、未注册template为template_unsupported；get_file_approval无receipt返回None。已存file重读发现任何hash/meta/receipt绑定损坏统一storage_inconsistent；普通get缺file为not_found。存储错误不透传SQL，取消始终原样传播。
+复用的SqlAlchemyQuotationUow必须在__aenter__/__aexit__清理时保留原取消对象，即使rollback或close再次失败也尽力完成清理并仅记录固定安全信息；没有原取消时正常清理故障仍失败关闭，不改成功/未知commit、锁顺序、自动重试或其他UoW。为此允许窄改infra/db/quotation_uow.py，并新增tests/unit/test_quotation_uow_cleanup.py及文件入口组合回归；实际报价/审批事务旧回归仍须覆盖。
 请求无原始client key参数：文件key完全由真实quote/version/template决定。file_id/quote hash/客户hash/run/时间均非HTTP信任字段。record_file(artifact_id)仅受信生成/恢复内部入口；HTTP生成只接quote，由T8产生artifact。
 读取已存file无法证明对象bytes完整；T8必须Store.get并核关联hash/size。metadata reader固定失败不得fallback为客户端fact。未装配scope/reader时禁止注册生产文件能力。
 
