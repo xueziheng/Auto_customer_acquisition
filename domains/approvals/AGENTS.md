@@ -53,7 +53,7 @@ INDICATIVE 风险接受
 国家政策包审批人 ≠ 国家政策包提交人，且 ≠ 该变更 owner
 ```
 
-不是不信任员工，是消除「赶指标时给自己开绿灯」的结构性诱惑。规则在本域强制——各业务域提供归属信息，本域做最终判断。
+不是不信任员工，是消除「赶指标时给自己开绿灯」的结构性诱惑。通用自批规则由本域强制；新版报价的当前归属与用途规则由注入的报价guard判断，本域必须持该租约完成决定事务。
 
 ## 幂等应用
 
@@ -83,3 +83,19 @@ INDICATIVE 风险接受
 审批包、状态机、MUST_APPROVE 注册表、自批禁止、过期机制。
 
 不做：多级审批链（Phase 2，Phase 1 一级审批够用）、按金额自动分级路由。
+
+## Phase 2 报价namespace隔离
+
+新路径必须同时满足精确`quote-approval-v1`载荷及`quote:{quote_id}:{hash}:{type}`引用。
+任一疑似标记出现均严格验证，不得因半标记、空白或大小写伪装降级legacy。仅approval_type=quote_send
+不是新路径；旧邮件/其他审批保持原默认期限、pending幂等与读取权限。
+
+新请求hash绑定全部原请求及原expires_at_limit，跨状态同键只返回原ID，异请求拒绝；重试时钟
+不延长期限。namespace/hash/limit及原请求不可变，首次决定后决定人/时间/备注也不可改写。
+新版get/list/decide缺guard必须失败关闭。read/list在当前lease内比较可信reader.role与current_role；
+不一致明确拒绝，不能作为不可见候选吞掉。own read不授予decide，内部read_fact不注册HTTP。
+decide顺序为员工/机会guard→审批行UPDATE锁→新时钟→决定及outbox提交→退出guard。
+
+报价receipt由报价域持久；APPLIED状态和ApprovalDecided事件不能反向证明报价成功。
+恢复仅按真实receipt及不含应用状态的决定hash逐包补记，允许过期后的历史记账但不重新应用商业承诺。
+只有实际APPROVED包可标固定apply_failed；超时/未知存储结果保留可恢复，不把异常原文写入审批。

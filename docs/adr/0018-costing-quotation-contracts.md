@@ -1,6 +1,6 @@
 # ADR 0018：成本与报价计算契约
 
-状态：已接受（Phase 2 Task 1）
+状态：已接受（Phase 2 Task 1—5分段补充）
 
 ## 决策
 
@@ -184,3 +184,48 @@ accepted/rejected不能被替换，但新成本表/新scope/新key可在无activ
 后台expiry覆盖四active状态。发送记录必须有可信reader精确实际receipt、真实attempt FK且当前未过期approved，
 receipt/sent/event同事务，重复receipt只返回当前状态。测试中的审批状态/发送reader受控，T5真实审批/outbox、
 T8 Gateway/客户文件ABAC/HTTP及生产装配均未完成，本决策不授予自动承诺或发送权限。
+
+## Task 5：单轮审批、当前授权与原子成功
+
+一个不可变quote只有一轮，六类required_type按固定顺序派生，每类一个真实包。quote_send必需，低于底线
+另需margin_floor_override，折扣/交期/付款/认证分别确认。严格新namespace与payload同时匹配才进入新路径；
+半标记/空白/大小写伪装失败关闭，不影响legacy邮件quote_send。请求hash覆盖原始expires_at_limit与全部
+原输入，跨状态同key返回原ID，不能因重启延长期限或替换被拒/过期包。
+
+quotation拥有唯一业务ABAC与安全payload；approvals经注入guard保护决定事务，workflow只适配公开DTO。
+当前active boss或当前owner直属manager可决定/应用，但任何起草人、提交owner、当前owner都禁止自批。
+own read只给读权；可信reader.role在lease内必须等于当前员工角色，角色漂移不能被list静默跳过。
+历史读取只保护员工/机会关联，不追逐Need单位、issuer或policy。payload保留安全商业金额、FX实际引用与
+证据确认摘要，不包含source_url、locator、原文或完整Provenance；这不是原件ACL授权。
+
+fresh提交/应用顺序为全部员工一次排序SHARE→Opportunity→Need→报价机会advisory及quote→政策集合shared。
+全体decider必须同时受锁保护，不能在Opportunity后补员工锁。政策选择复用costing公开selection，按当前
+业务category及每次新时钟选择；全锁后再检查policy id/hash、context及T4第二道依据门，不重算历史价格。
+报价state、状态事件、QuoteApproved与完整决定receipt同一事务提交/回滚，之后才释放policy及context。
+
+0045新增namespace/hash/原limit、跨状态唯一、每quote/type唯一和成功receipt；所有tenant复合FK保留。
+审批原请求及首次决定事实不可修改，binding只增并比对实际包的完整原请求事实；receipt只增不可删改，
+其完整决定必须匹配绑定和实际包的决定人/时间/备注。存在新审批历史时拒绝降级，不删除商业事实。
+SQL仅保护存在性/绑定一致，不复制角色或业务适用性规则。ORM同步CHECK/unique形状。
+
+首次成功receipt固定保存真实quote_approval run归属。quotation必填run reader核tenant/run/type/version/
+subject/quote_version/content_hash；executor不是员工身份，FK存在也不是授权证明。engine公开get_run仅供
+受信workflow内部，以独立MVCC plain SELECT读取包含终态的run；完整context不进入quotation或HTTP。
+
+真实PG复现揭示：跨await handler的Run FOR UPDATE会阻止独立报价事务receipt外键取得KEY SHARE。
+控制器核定执行只修改非键字段后，仅poll_due/deliver_event两处改FOR NO KEY UPDATE，SQLAlchemy使用
+`with_for_update(key_share=True)`且不设read=True。step FOR UPDATE/SKIP LOCKED、step→run顺序、cancel/
+失败收尾的Run锁保持不变；run_id、tenant_id、idempotency_key在执行期间不可改变。真实barrier测试证明
+该锁允许FK校验，仍阻塞独立非键写/键修改/删除，cancel等待后不复活终态，poll/event不重复应用。
+依据：[PostgreSQL 16行锁兼容矩阵](https://www.postgresql.org/docs/16/explicit-locking.html#LOCKING-ROWS)、
+[SQLAlchemy锁参数](https://docs.sqlalchemy.org/en/20/core/selectable.html#sqlalchemy.sql.expression.GenerativeSelect.with_for_update)。
+
+七步流程assemble→submit→wait→apply→mark_applied→notify→complete只持久metadata。事件仅以approval_id
+唤醒原run，真实包决定每步重读；早到事件、重启、部分submit/bind失败仍使用原组。wait进入即poll，超时
+只能终止，旧版本晚到事件不批准新版本。receipt优先恢复，混合APPROVED/APPLIED按稳定key逐个补记；
+此时Need/policy/在职变化不阻历史记账。无receipt不能由APPLIED或事件反造成功；迟到确定性失败在报价锁
+内先查receipt，成功后只补记，不写apply_failed。transient/未知存储结果不转永久失败。
+
+本任务验证真实隔离PG、审批/报价/outbox/engine与当前权限/政策锁；原件ACL使用受控测试端口，通知仅
+受控metadata Protocol。T8才装配API/worker/真实通知及Gateway依赖；T6/T7客户文件仍需当前文件actor、
+context与适用批准，成功receipt和QuoteApproved都不是永久文件或发送授权。本任务不生成PDF、不外发。

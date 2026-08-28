@@ -21,7 +21,7 @@ draft ──→ pending_approval ──→ approved ──→ sent ──→ acc
                                                 └──→ superseded（被新版本替代）
 ```
 
-**只有 `approved` 状态的报价可以发送**，门就是 `QuoteApproved` 事件——没有这个事件，`tool_gateway` 拒绝执行含报价内容的发送。
+**只有当前有效且获批的报价可以发送**。`QuoteApproved`只记录当时成功，不是永久授权；正式文件或发送必须重新验证当前机会权限、报价/context/有效期及全部适用批准。
 
 ## 版本不可变
 
@@ -49,7 +49,7 @@ draft ──→ pending_approval ──→ approved ──→ sent ──→ acc
 ## 发布 / 订阅
 
 发布：`QuoteApproved`
-订阅：`ApprovalDecided`（审批结果落到报价状态）
+由上层workflow消费`ApprovalDecided`，读取真实决定后调用本域；事件本身不能推进批准状态。
 
 ## 禁止事项
 
@@ -93,3 +93,20 @@ active为draft/pending_approval/approved/sent，全部按有效期过期。修�
 生成正式客户文件还须独立机会ABAC、全部适用审批、有效期及当前context门禁；不得返回内部成本DTO。
 `record_verified_send`只接受可信reader的实际发送精确receipt，并要求当前未过期approved；下载不是发送。
 Task4未装配T5审批/T8 Gateway及发送reader，无生产自动发送、人工accepted/rejected或HTTP状态改写入口。
+
+## Phase 2 单轮独立审批
+
+每个不可变quote只有一轮，每种required_type只绑定一个实际审批包。quote_send必需，低底线与四类
+承诺分别独立审批；改变政策或报价需新basis/版本，不修改旧payload、hash或替换过期包。
+安全payload逐字段白名单，包含真实FX引用与证据确认摘要，不含原文/来源地址/完整Need或Provenance。
+审批read可读自己的包；decide/apply仅当前在职boss或owner直属manager，排除原起草人、提交owner、
+当前owner，无老板自批豁免。不得用四成本角色权限代替审批权限或客户文件权限。
+
+顺序固定：全部员工一次排序SHARE→Opportunity→Need→报价机会advisory/quote→政策集合shared。
+全部锁后重取当前时钟、政策选择及第二道报价依据门；报价state/状态事件/QuoteApproved/receipt
+同事务commit或rollback，之后才退出政策及外层context。历史access不查Need/issuer/policy。
+
+真实run reader是必填内部依赖，逐字段验证tenant/run/type/version/subject及固定quote_version/hash；
+executor不是员工身份或授权票据。成功receipt含完整不可变决定和首次run归属，只增且与真实包/绑定一致。
+历史恢复只核receipt/绑定/决定hash并补记APPLIED，不再要求fresh context，不代表允许再次生成客户文件。
+API/worker生产composition及通知/原件Gateway留T8，文件权限留T6，不增加默认actor或默认allow依赖。

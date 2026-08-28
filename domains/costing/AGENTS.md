@@ -79,3 +79,11 @@ ACTUAL      实际发生。事后核算用
 - 冻结固定creation key→sheet→政策集合共享锁顺序，取得锁后才取本轮时钟；政策确认以相同tenant集合独占锁保护，原件读取在锁外。
 - 同key绑定全部创建意图；pending不能换key绕过。未知提交只按原key查操作，不自动解锁或换键。完成后仅显式旧quote/version回执匹配才可复用未变锁表，并需新scope/basis。
 - basis完整保存`cost_fx_rates`表内核算汇率元组，与独立`quote_fx`及实际PricingOptions区分；修订可选新已确认报价FX，不能改旧成本FX/locked_at。
+
+## Phase 2 审批政策选择租约
+
+`CostingApprovalPolicyReader`只向可信报价审批编排提供当前政策selection，不扩展get_policy角色或HTTP。
+它复用本域政策选择算法及tenant政策集合shared advisory锁，`current()`每次取新的注入时钟，按当前
+业务category重新选择，不能只锁历史政策行或用历史global.category掩盖新specific政策。
+报价机会锁后才取得政策租约；报价commit/rollback完成后才关闭。政策确认仍用同集合独占锁。
+缺政策/不同id或hash由报价固定policy_stale阻断，不能补默认政策或重算已确认的旧报价数字。
