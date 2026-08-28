@@ -65,7 +65,7 @@ python3 scripts/check_boundaries.py
 文件拆分只在本批触及的责任内，不顺便整理全库大文件。`service.py` / `schemas.py` 是公开入口，
 实现可以分文件，公开类型须显式重导出，禁止上层导入内部模型。
 
-迁移基线为 0040。本计划预占 0041（成本政策/依据）、0042（锁定）、0043（报价）、0044（QUOTE_PDF）；
+迁移基线为 0040。本计划预占 0041（成本政策/依据）、0042（客户数量单位）、0043（锁定）、0044（报价）、0045（QUOTE_PDF）；
 实施时若编号被其他工作占用，按新 head 顺延并同步本计划，不重写他人的迁移。
 ADR 拟使用 `0018-costing-quotation-contracts.md`、`0019-quote-pdf-artifacts.md`，同样先查冲突。
 
@@ -107,6 +107,22 @@ ADR 拟使用 `0018-costing-quotation-contracts.md`、`0019-quote-pdf-artifacts.
 已有强类型ID；actor必须是对应域typed actor。未展开 `->None` 的签名不得猜测返回HTTP对象。
 测试import的领域私有模块继续用本库既有 importlib 方式，不能以计划例子放宽结构检查。
 
+### 执行前接口补正（2026-08-28）
+
+核对基础表后，T3须先补客户数量单位：现有Need有数量事实，没有结构化unit。
+在demand新增可空unit事实、对应quantity事实hash绑定与窄的人工确认入口；不改旧完整度、
+旧可提取/更新字段词表、研究或Campaign解释，不回填存量单位。新报价缺单位或缺客户来源阻断，
+不能从供应商按件报价推断客户数量按件计。数量/规格/目的地的完整Provenance一并进入冻结上下文，
+不能只保留Opportunity摘要或单个hash。T3分为“客户单位事实”与“上下文冻结”两个审查子切片。
+新增单位迁移占0042，原锁定/报价/文件迁移顺延0043/0044/0045；实施前再次检查head。
+
+T4的CustomerQuoteView唯一纯展示定义放shared/schemas/quote_document.py，域schemas显式重导出；
+T7的QuotePdfRenderer Protocol仍在quotations.service，connector仅导入shared DTO并结构化实现。
+这是落实横切设施不导入domains的既有边界，不放宽硬边界。相关公共契约追加ADR0018。
+T7 Files补domains/quotations/service.py；T8/T9同时接上单位确认接口及无默认单位的表单。
+客户单位子切片的完整接口、来源核验、绑定失效和多连接测试见
+`docs/superpowers/plans/2026-08-28-phase2-need-quantity-unit.md`，不以本段代替验收。
+
 ## Task 1：确定性计算、契约和 ADR
 
 **Files**
@@ -120,7 +136,7 @@ ADR 拟使用 `0018-costing-quotation-contracts.md`、`0019-quote-pdf-artifacts.
 - Produces: `compute_breakdown(sheet: CostSheet, margin_rule: MarginRule, *, policy: PricingPolicyView, options: PricingOptions, coverage_hash: str, context_hash: str, now: datetime) -> CalculationSnapshot`，从 `service.py` 导出。旧函数尚为 stub；旧 `compute_unit_full_cost` 和 readiness 保持原行为。
 - Produces: `canonical_pricing_hash(payload: Mapping[str, object]) -> str`；只接受已确定类型的 JSON 化数据，Decimal/日期规范化，不读取时钟。
 
-- [ ] 写首个失败测试及精确公式样例（仅测试数字，不是生产政策）：
+- [x] 写首个失败测试及精确公式样例（仅测试数字，不是生产政策）：
 
 ```python
 from decimal import Decimal as D
@@ -140,8 +156,8 @@ def test_manual_price_is_used_instead_of_target_price():
     assert value.additional_acquisition_headroom == D('0')
 ```
 
-- [ ] 跑 `python3 -m pytest tests/unit/test_costing_breakdown.py -q`，记录 RED（新接口尚无实现）。
-- [ ] 先实现上述纯公式，再逐条加测试和实现校验：有限 Decimal、非负成本、0≤底线≤目标<1、正售价、总成本为零固定阻断；不借返回零掩盖错误。
+- [x] 跑 `python3 -m pytest tests/unit/test_costing_breakdown.py -q`，记录 RED（新接口尚无实现）。
+- [x] 先实现上述纯公式，再逐条加测试和实现校验：有限 Decimal、非负成本、0≤底线≤目标<1、正售价、总成本为零固定阻断；不借返回零掩盖错误。
 
 ```python
 with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
@@ -154,11 +170,11 @@ with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
     acquisition = max(Decimal(0), price * (Decimal(1) - minimum) - full)
 ```
 
-- [ ] 实现适配成本表的聚合和报价换算：逐项原币→核算币，整单项/Q；按老板已确认归类累计。先舍入客户单价、再行额；使用最终总额/Q/显式报价汇率恢复有效核算收入。所有计算固定 `costing-v1` 50 位上下文；舍入只在客户展示量化。
-- [ ] 加失败测试再实现 hash：同值 `1.0/1.00` 相同；重复项不能被 set 去掉；规则、数量、报价、精度、来源或汇率变更 hash 改变；时钟变更 hash 不变。使用 `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)` 的 UTF-8 SHA-256。
-- [ ] 测试缺汇率、反向汇率、待确认金额、不同精度、低于底线、非正正式售价；单位/整单结果必须分别断言。旧 Money/成本测试不删不放宽。
-- [ ] 记录 ADR 0018：全成本利润率不是毛利率；可折扣空间不是许可；新增获客空间不是总预算；schema 和 workflow 版本兼容；同步 GLOSSARY/本域规则。
-- [ ] GREEN：`python3 -m pytest tests/unit/test_costing_breakdown.py tests/unit/test_costing_calculation.py tests/unit/test_costing_models.py -q`；结构检查后提交 `feat: 实现可追溯的确定性成本利润计算`。
+- [x] 实现适配成本表的聚合和报价换算：逐项原币→核算币，整单项/Q；按老板已确认归类累计。先舍入客户单价、再行额；使用最终总额/Q/显式报价汇率恢复有效核算收入。所有计算固定 `costing-v1` 50 位上下文；舍入只在客户展示量化。
+- [x] 加失败测试再实现 hash：同值 `1.0/1.00` 相同；重复项不能被 set 去掉；规则、数量、报价、精度、来源或汇率变更 hash 改变；时钟变更 hash 不变。使用 `json.dumps(..., sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)` 的 UTF-8 SHA-256。
+- [x] 测试缺汇率、反向汇率、待确认金额、不同精度、低于底线、非正正式售价；单位/整单结果必须分别断言。旧 Money/成本测试不删不放宽。
+- [x] 记录 ADR 0018：全成本利润率不是毛利率；可折扣空间不是许可；新增获客空间不是总预算；schema 和 workflow 版本兼容；同步 GLOSSARY/本域规则。
+- [x] GREEN：`python3 -m pytest tests/unit/test_costing_breakdown.py tests/unit/test_costing_calculation.py tests/unit/test_costing_models.py -q`；结构检查后提交 `feat: 实现可追溯的确定性成本利润计算`。
 
 ## Task 2：政策、价格依据和完整性确认持久化
 
@@ -222,7 +238,7 @@ $$ LANGUAGE plpgsql;
 **Files**
 - Create: `domains/costing/quote_lock.py`, `infra/db/quote_context.py`, `workflows/quote_approval/application.py`, `tests/unit/test_quote_cost_lock.py`, `tests/integration/test_quote_cost_lock.py`
 - Modify: `domains/costing/service.py`, `domains/costing/quote_repository.py`, `domains/costing/schemas.py`, `domains/quotations/service.py`, `domains/quotations/schemas.py`, `infra/db/repositories/costing_quote.py`, `infra/db/repositories/costing.py`, `infra/db/tables.py`
-- Create migration: `migrations/versions/0042_costing_quote_lock.py`；本任务提交自己的锁定/操作表与往返测试，不能等待T4才可测试持久化。
+- Create migrations: `migrations/versions/0042_need_quantity_unit.py`, `migrations/versions/0043_costing_quote_lock.py`；本任务提交自己的单位/锁定/操作表与往返测试，不能等待T4才可测试持久化。
 
 **Interfaces**
 - Produces: `QuoteContextProvider.open(tenant_id: TenantId, opportunity_id: OpportunityId, actor_id: EmployeeId, *, prepared_by: EmployeeId) -> AsyncContextManager[QuoteBusinessContext]`，Protocol 放 `domains/quotations/service.py`；仅受信应用内部使用。create从当前身份绑定prepared_by，approval从持久quote读取prepared_by；不能把当前审批人误当起草人，也不能让HTTP传prepared_by。
@@ -267,7 +283,7 @@ def require_context_hash(expected: str, actual: str) -> None:
 ## Task 4：报价版本、状态、客户投影与迁移
 
 **Files**
-- Create: `domains/quotations/service_impl.py`, `domains/quotations/permissions.py`, `infra/db/quotation_uow.py`, `infra/db/repositories/quotations.py`, `migrations/versions/0043_quotations.py`, `tests/unit/test_quotation_service.py`, `tests/integration/test_quotations.py`
+- Create: `shared/schemas/quote_document.py`, `domains/quotations/service_impl.py`, `domains/quotations/permissions.py`, `infra/db/quotation_uow.py`, `infra/db/repositories/quotations.py`, `migrations/versions/0044_quotations.py`, `tests/unit/test_quotation_service.py`, `tests/integration/test_quotations.py`
 - Modify: `domains/quotations/{service,schemas,models,repository,errors}.py`, `domains/quotations/AGENTS.md`, `infra/db/tables.py`, `workflows/quote_approval/application.py`, `tests/unit/test_quotation_models.py`
 
 **Interfaces**
@@ -295,7 +311,7 @@ def test_unpublished_versions_can_expire_without_becoming_sent(state):
 ```
 
 - [ ] RED：`python3 -m pytest tests/unit/test_quotation_models.py -q`，再只补设计允许的 superseded/expired 边；保留原发送、终态测试。
-- [ ] 0043 建 `quotations`, `quotation_lines`, `quotation_state_events`, `quotation_approval_bindings`, `quotation_issuers`，复用0042的basis/operation。业务 payload 的金额均字符串；state/version/tenant/到期/关联作显式列和约束；quotes 一条业务版本一条 quote_id。
+- [ ] 0044 建 `quotations`, `quotation_lines`, `quotation_state_events`, `quotation_approval_bindings`, `quotation_issuers`，复用0043的basis/operation。业务 payload 的金额均字符串；state/version/tenant/到期/关联作显式列和约束；quotes 一条业务版本一条 quote_id。
 - [ ] 同 opportunity/version 唯一；活跃部分唯一索引仅 `draft,pending_approval,approved,sent`；报价内容更新由 trigger 拒绝，状态只允许显式转换并追加审计，删除拒绝。basis不可变，operation以 tenant+key 唯一且同payload才可恢复。quoted refs必须tenantFK；原先只含字符串的假引用不能通过新路径。
 
 ```sql
@@ -306,7 +322,7 @@ WHERE state IN ('draft','pending_approval','approved','sent');
 - [ ] create_from_basis 再验 tenant/机会/规格/数量/有效期、P和内容一致、已锁依据；单产品只允许一行。修订必须携带 expected_quote_version，在同事务标旧 superseded 并建新版本。并发冲突返回409，不在服务里无界重试分配新版本。
 - [ ] application 使用 context lease → costing.freeze → quotations.create_from_basis → operation complete；quote已写而operation未complete可同键恢复。不能用新幂等键绕过锁住的旧操作。补 receipt 接口 `record_verified_send(tenant_id,quote_id,receipt: QuoteSendReceipt,*,actor)`；`QuoteSendReceipt(attempt_id,quote_id,content_hash,tenant_id,sent_at)` 只由可信reader注入，本批不暴露手写sent HTTP。
 - [ ] `project_customer` 逐字段白名单构造，不 `model_dump(exclude=...)`；报价内部视图单独持有成本信息，JSON序列化均可测试。历史保留 exact旧成本/规则/FX；Actual对照仅比较同规格数量币种，缺收入不生成 realized profit。
-- [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quotation_service.py tests/unit/test_quotation_models.py tests/integration/test_quotations.py tests/integration/test_quote_cost_lock.py -q`；0043 roundtrip及结构检查通过后提交 `feat: 持久化不可变报价版本和安全客户视图`。
+- [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quotation_service.py tests/unit/test_quotation_models.py tests/integration/test_quotations.py tests/integration/test_quote_cost_lock.py -q`；0044 roundtrip及结构检查通过后提交 `feat: 持久化不可变报价版本和安全客户视图`。
 
 ## Task 5：报价审批工作流与独立例外
 
@@ -357,7 +373,7 @@ def quote_change_set_ref(quote_id: str, content_hash: str, approval_type: str) -
 ## Task 6：报价派生文件存储契约
 
 **Files**
-- Create: `docs/adr/0019-quote-pdf-artifacts.md`, `migrations/versions/0044_quote_pdf_artifacts.py`, `tests/unit/test_quote_pdf_artifacts.py`, `tests/integration/test_quote_pdf_artifacts.py`
+- Create: `docs/adr/0019-quote-pdf-artifacts.md`, `migrations/versions/0045_quote_pdf_artifacts.py`, `tests/unit/test_quote_pdf_artifacts.py`, `tests/integration/test_quote_pdf_artifacts.py`
 - Modify: `artifact_store/store.py`, `artifact_store/service_impl.py`, `artifact_store/AGENTS.md`, `infra/db/tables.py`, `infra/db/repositories/artifacts.py`, `domains/quotations/repository.py`, `infra/db/repositories/quotations.py`
 
 **Interfaces**
@@ -378,7 +394,7 @@ def test_quote_pdf_is_a_generated_kind_not_a_raw_evidence_kind():
 
 - [ ] RED：`python3 -m pytest tests/unit/test_quote_pdf_artifacts.py -q`。
 - [ ] 按 kind 明确分支校验subject/key/MIME，禁止放宽原正则为任意字符串。generated_by/sequence仍纳入winner比较，异内容同key拒绝，raw/generated保持分离。
-- [ ] 0044将 artifacts 的 CHECK 改为互斥的两条合法分支；不改旧object_key模式。新增 `quotation_files` tenant复合FK到quotes/artifacts，唯一tenant+quote+template版本，保存客户contenthash、artifacthash、size和时间；只增不可改。
+- [ ] 0045将 artifacts 的 CHECK 改为互斥的两条合法分支；不改旧object_key模式。新增 `quotation_files` tenant复合FK到quotes/artifacts，唯一tenant+quote+template版本，保存客户contenthash、artifacthash、size和时间；只增不可改。
 - [ ] downgrade 若存在新 kind/关联数据明确拒绝并提示先授权导出/处理，不自动删除业务文件；空新表场景验证完整roundtrip，邮件草稿数据全保留。
 - [ ] 存储bytes不使用 RawArtifactKind.PDF；所有读取仍校验hash和length。上层先鉴权，Store不重复实现商业审批。先GeneratedStore完成，后报价关联，失败同key可查winner恢复；不自动换key。
 - [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_pdf_artifacts.py tests/integration/test_quote_pdf_artifacts.py tests/unit/test_artifact_store_contracts.py tests/integration/test_artifact_store_persistence.py -q`；结构检查后提交 `feat: 增加隔离的报价PDF派生文件类型`。
@@ -387,7 +403,7 @@ def test_quote_pdf_is_a_generated_kind_not_a_raw_evidence_kind():
 
 **Files**
 - Create: `connectors/quote_pdf/{AGENTS.md,__init__.py,client.py,manifest.py}`, `tests/unit/test_quote_pdf_renderer.py`
-- Modify: `pyproject.toml`（runtime `reportlab==5.0.1`；dev `pypdf==6.16.2`）
+- Modify: `domains/quotations/service.py`, `pyproject.toml`（runtime `reportlab==5.0.1`；dev `pypdf==6.16.2`）
 
 **Interfaces**
 - `QuotePdfRenderer.render(view:CustomerQuoteView,*,template_version:str)->bytes` Protocol 在 quotations.service 公开，实际 connector 只接收客户白名单DTO。
