@@ -241,7 +241,7 @@ $$ LANGUAGE plpgsql;
 本任务分为先后两个独立审查子切片，全部通过才算Task3完成；不增加Phase。
 
 - [x] T3A：客户单位事实、数量来源绑定、旧流程兼容与0042已完成（d77f292、aa98790），独立审查及嵌套确认人修复复审通过；并发测试屏障Minor留最终审查。真实来源/授权装配仍归T8。
-- [ ] T3B：按 `docs/superpowers/plans/2026-08-28-phase2-quote-freeze.md` 完成四个TDD提交：共享事实/意图及两个minor、真实context lease、0043与人工成本适用性、冻结/恢复/显式修订复用；独立审查通过。
+- [x] T3B：按 `docs/superpowers/plans/2026-08-28-phase2-quote-freeze.md` 完成四个TDD提交及资源上限修复（489c8d3..b1846ce）：共享事实/意图及两个minor、真实context lease、0043与人工成本适用性、冻结/恢复/显式修订复用；独立首审及scoped复审通过。fixture类型Minor留最终审查。
 
 **T3B公共契约与边界（完整精确字段以冻结子计划为准）**
 
@@ -259,30 +259,31 @@ $$ LANGUAGE plpgsql;
 本任务的完整接口、五个TDD提交及验收以 [报价版本子计划](2026-08-28-phase2-quotation-versions.md) 为准。
 T3B交付后须核对最终接口再派发；下面只列交接摘要，不用旧骨架DTO推测缺失字段。
 
-- [ ] 新`QuoteDetailView/QuoteContentSnapshot/QuoteContentLine`严格快照，旧QuoteView/QuoteLineView/Quote/QuoteLine构造不改；新行带显式rounding。
-- [ ] 新`QuotationVersionService`与窄creation session；旧无actor/布尔批准/手写sent骨架不注册为生产后门。
-- [ ] 0044真实报价、行、状态审计、抬头、审批绑定、证据引用和发送receipt；tenant复合FK、内容不可变、唯一active及operation绑定。
-- [ ] 在context lease内、freeze前取报价专用机会锁并preflight，同quotation session保持至创建提交；不跨连接对Opportunity取FOR UPDATE。
-- [ ] 显式replaces支持当前active或无active时latest expired的expected version CAS，expired旧版不改；latest accepted/rejected可用全新成本表/新scope/无replaces开下一版本，原终态不可改写。
-- [ ] 按真实operation先恢复已commit quote并补complete；当前Need/抬头/到期变化不触发重复freeze/报价，也不延续批准。
-- [ ] 老板抬头仅接name/address/contact，服务器生成source_ref及三字段EMPLOYEE_INPUT Provenance；不冒称外部原件已核验。
-- [ ] 采购/费用本域判别联合，完整冻结投影和scope第二道门；费用不伪造规格/MOQ；shared唯一客户白名单。
-- [ ] 五次TDD提交、自审后一次独立任务审查；真实T5批准链及T8装配另行验收，不把受控receipt当真实发信。
+- [x] 新`QuoteDetailView/QuoteContentSnapshot/QuoteContentLine`严格快照，旧QuoteView/QuoteLineView/Quote/QuoteLine构造不改；新行带显式rounding。
+- [x] 新`QuotationVersionService`与窄creation session；旧无actor/布尔批准/手写sent骨架不注册为生产后门。
+- [x] 0044真实报价、行、状态审计、抬头、审批绑定、证据引用和发送receipt；tenant复合FK、内容不可变、唯一active及operation绑定。
+- [x] 在context lease内、freeze前取报价专用机会锁并preflight，同quotation session保持至创建提交；不跨连接对Opportunity取FOR UPDATE。
+- [x] 显式replaces支持当前active或无active时latest expired的expected version CAS，expired旧版不改；latest accepted/rejected可用全新成本表/新scope/无replaces开下一版本，原终态不可改写。
+- [x] 按真实operation先恢复已commit quote并补complete；当前Need/抬头/到期变化不触发重复freeze/报价，也不延续批准。
+- [x] 老板抬头仅接name/address/contact，服务器生成source_ref及三字段EMPLOYEE_INPUT Provenance；不冒称外部原件已核验。
+- [x] 采购/费用本域判别联合，完整冻结投影和scope第二道门；费用不伪造规格/MOQ；shared唯一客户白名单。
+- [x] 五次TDD提交及关键来源字段完整性修复，独立首审和scoped复审通过（bd076f1..b10d101）；供应商映射全字段值比较Minor留最终审查。真实T5批准链及T8装配另行验收，不把受控receipt当真实发信；旧全unit三项断言归T10修正，尚不声称全库回归全绿。
 
 ## Task 5：报价审批工作流与独立例外
 
 完整接口、四个功能TDD提交及文档/最终审查以 [报价审批子计划](2026-08-28-phase2-quote-approvals.md) 为准。
 T3B/T4交付后先核对真实接口与新增构造依赖，再派发；不能按旧骨架布尔审批接口推测实现。
 
-- [ ] 每quote一轮、每type一包；quote_send、低价例外和四类条款精确独立绑定，全部binding与pending原子。
-- [ ] 新quote:与quote-approval-v1命名空间双标记严格验证，原limit/request_hash持久跨状态幂等；旧邮件quote_send保持原解释。
-- [ ] 安全审批payload白名单，显示实际成本/报价FX方向、比率和时间；不含来源原文、URL、locator或整份Need/basis。
-- [ ] boss租户/manager当前直属owner范围，read允许本人起草/负责包，decide/apply禁止起草人及提交/当前owner自批；原件ACL独立。
-- [ ] access历史读取不依赖当前单位有效性；fresh apply一次排序保护全部员工→机会→Need，再持报价锁及当前policy选择锁直至提交。
-- [ ] 当前policy id/hash严格匹配；quote/state-event/QuoteApproved/成功receipt同事务，事件不作授权。拒绝/到期不自动重提，需新报价版本。
-- [ ] receipt优先恢复mark_applied，facts_hash不受应用状态改变；成功之后身份/事实变化不破坏历史补记，也不延续客户文件许可。
-- [ ] 稳定approval_run_id绑定真实workflow run；engine新增内部tenant只读get_run，经公开adapter校验类型/主体/版本/hash，不假扮老板或锁run行自等。
-- [ ] 0045保存新审批契约/唯一binding/成功receipt，QuoteApproved注册持久outbox；真实engine重启/多连接/旧流程回归后统一独立审查。
+- [x] 每quote一轮、每type一包；quote_send、低价例外和四类条款精确独立绑定，全部binding与pending原子。
+- [x] 新quote:与quote-approval-v1命名空间双标记严格验证，原limit/request_hash持久跨状态幂等；旧邮件quote_send保持原解释。
+- [x] 安全审批payload白名单，显示实际成本/报价FX方向、比率和时间；不含来源原文、URL、locator或整份Need/basis。
+- [x] boss租户/manager当前直属owner范围，read允许本人起草/负责包，decide/apply禁止起草人及提交/当前owner自批；原件ACL独立。
+- [x] access历史读取不依赖当前单位有效性；fresh apply一次排序保护全部员工→机会→Need，再持报价锁及当前policy选择锁直至提交。
+- [x] 当前policy id/hash严格匹配；quote/state-event/QuoteApproved/成功receipt同事务，事件不作授权。拒绝/到期不自动重提，需新报价版本。
+- [x] receipt优先恢复mark_applied，facts_hash不受应用状态改变；成功之后身份/事实变化不破坏历史补记，也不延续客户文件许可。
+- [x] 稳定approval_run_id绑定真实workflow run；engine新增内部tenant只读get_run，经公开adapter校验类型/主体/版本/hash，不假扮老板或锁run行自等。
+- [x] 0045保存新审批契约/唯一binding/成功receipt，QuoteApproved注册持久outbox；真实engine重启/多连接/旧流程回归后统一独立审查。
+- [x] 独立首审发现的混合队列漏页及全组已存/绑定失败后的过期恢复已修复，复审通过（ad68d0c..340ed44）。真实HTTP/worker装配、来源ACL、通知与文件门禁仍归后续任务，不计本项完成。
 
 ## Task 6：报价派生文件存储契约
 
@@ -321,14 +322,20 @@ T4客户投影验证、T6shared模板实际交付后再派发；首次实际PDF�
 
 T8A通过独立审查后执行下列接线要求。下文来源实现事项由T8A完整子计划负责，T8B复用其真实接口并完成生产factory/HTTP，不重复实现reader/解析器。正式文件授权与客户用途列表的精确契约须在T5/T6交付后对齐；不将内部成本读取权当作文件ABAC。
 
+按可独立验证的边界串行拆为T8B1与T8B2，各自一次完整任务审查：T8B1交付正式/历史文件授权、客户用途版本列表、中立有界Store/新writer、四个文件Gateway工具、持久限速与显式metadata恢复及workflow应用；不注册HTTP或运行实际API/worker。T8B2消费这些真实端口，完成安全业务HTTP投影/准备缺项入口、严格配置、旧上传deferred wrapper、唯一审批实例与真实factory/lifespan/expiry接线。T8B1未通过不得启动T8B2；T8B2未通过不得称T8B完整。仍属于本批同一Phase，不增加业务范围或并行生产实现者。
+
+T8B1完整精确要求见[文件Gateway子计划](2026-08-28-phase2-quote-file-gateway.md)，已整合正式/历史规则、三hash、四工具、持久限速、工具版本保护及有限恢复；T5/T6/T8A最终交付后对齐真实签名再实施，不以本文证明前置已完成。
+
+T8B2完整要求见[真实HTTP与运行时子计划](2026-08-28-phase2-quotation-runtime.md)，包括安全投影、首次准备、HTTP语义、严格配置、旧上传惰性包装、真实DI/lifecycle与expiry；消费B1端口，不重复文件规则。
+
 **Files**
 - Create: `tool_gateway/handlers/quote_files.py`, `tool_gateway/checks/quote_files.py`, `apps/api/composition/quotations.py`, `apps/api/routers/quotation_actions.py`, `tests/unit/test_quote_file_gateway.py`, `tests/unit/test_quotation_router.py`, `tests/integration/test_quote_runtime.py`
 - Modify: `tool_gateway/manifest.py`（注册工厂，不改pipeline）, `apps/api/{dependencies,main}.py`, `apps/api/composition/runtime.py`, `apps/scheduler_worker/{runtime,main}.py`, `domains/quotations/service.py`, `infra/.env.example`
 
 **Interfaces**
 - `QuoteFileAccessService.authorize(tenant_id,quote_id,*,actor_id)->QuoteFormalFileSnapshot`（async）；读取文件用途当前context、T5真实持久facts和当前政策，委托域检查。独立`authorize_history(tenant_id,quote_id,file_id,*,actor_id)->QuoteFileView`仅核已存文件和当前机会ABAC，不返回正式授权或接受history布尔值。
-- `QuoteFilesApplication.generate(tenant_id,quote_id,*,actor_id)->QuoteFileView`；`download(tenant_id,quote_id,file_id,*,actor_id)->tuple[QuoteFileView,bytes]`，无通用URL/路径。
-- `build_quotation_composition(session_factory, settings, raw_store, generated_store, tool_gateway, *, now)` 返回明确 `QuotationComposition(application,costing,quotations,files,workflow_handlers)`；API和worker分别调用本层装配，不互相import。
+- `QuoteFilesApplication.generate(tenant_id,quote_id,*,actor_id)->QuoteFileView`；`download(tenant_id,quote_id,file_id,*,actor_id)->tuple[QuoteFileView,bytes]`，无通用URL/路径。独立`reconcile(tenant_id,quote_id,original_generation_call_id,*,actor_id)->QuoteFileRecoveryResult`仅补回已有metadata的文件关联，不关闭原generation审计。
+- 真实装配分为来源依赖、域依赖及HTTP/文件依赖三个有序阶段：来源独立Gateway先于T2 reader，quotation与context/issuer reader用一次发布的受信延迟引用解环，唯一ApprovalService带quote_access后才构造handlers/engine，最后发布run reader并构造文件Gateway/HTTP。API和worker分别本层装配，不跨apps import，不向新factory传入尚不能构造的文件Gateway形成循环；精确公共签名须按T5/T6/T8A实际交付对齐。
 - `QuoteExpiryDriver.scan_once()->int` 调域 `expire_overdue`；SchedulerRuntime 增加可选 `quote_expiry_driver`，为None维持旧cycle行为，不新增定时进程。
 
 - [ ] 先写HTTP DTO不接受布尔授权的失败测试：
@@ -341,16 +348,22 @@ def test_public_quote_command_cannot_claim_approval_or_cost_lock():
     assert fields.isdisjoint({'approved','cost_sheet_locked','tenant_id','prepared_by'})
 ```
 
-- [ ] RED：`python3 -m pytest tests/unit/test_quotation_router.py tests/unit/test_quote_file_gateway.py -q`；随后用ASGITransport加真实请求422/403、跨tenant404、未装配503测试。
-- [ ] 三个私有文件工具 `quotation.file.generate` / `quotation.file.read` / `quotation.file.history.read`，来源工具复用T8A契约；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；两个read为LOW且各自逐次核验正式或独立历史权限。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
+- [ ] RED：`python3 -m pytest tests/unit/test_quotation_router.py tests/unit/test_quote_file_gateway.py -q`；随后用ASGITransport加真实请求400/403、跨tenant404、未装配503测试。非法输入沿现全局安全400契约；文件已invoke错误用显式409/429/503及必要403/404错误union保留真实call ID，不改变全局ApiErrorResponse/OpenAPI覆盖规则。
+- [ ] 四个私有文件工具 `quotation.file.generate` / `quotation.file.read` / `quotation.file.history.read` / `quotation.file.reconcile`，来源工具复用T8A契约；显式 tenant/permission gate。generate 为 MEDIUM、本地文件生成、不发送，启用approval/idempotency/rate_limit；两个read为LOW且各自逐次核验正式或独立历史权限。显式reconcile为MEDIUM/FREE/NONE，仅tenant/permission/approval，内部幂等关联写、无对象或外部承诺写，不计生成配额。新gate只调用公共服务，不复制利润规则；不增HIGH发送profile。
+- [ ] generate按tenant滑动窗口以append-only event原子预留每次获准执行门，失败/取消/未知/metadata恢复不退款，duplicate不新计；全部限额显式。tenant advisory→当前canonical行锁→锁后DB时间→计数/event同事务，提交未知不放行；claim后限速拒绝抛固定ToolGatewayError而非CheckRejection。仅专用check/adapter及AGENTS/ADR明确技术预留写，不改pipeline执行代码。
+- [ ] generate普通execute用真实canonical已提交executing历史保护unknown：恰1条才可能首次生成，至少2条仅metadata恢复；0条/错绑定失败关闭。不能因后次RATE_LIMITED覆盖unknown error_category重新render/put，也不把attempt/lease_owner当fencing。EXECUTING本身不可重认领必须真实测试并披露。
+- [ ] 新文件插件另验canonical.tool_version：rate/history请求携受信manifest.version，DUPLICATE/IN_PROGRESS短路则应用经既有public ledger reader核真实result ID的工具版本/key/HMAC后才返回文件或原恢复ID。通用claim没有工具版本比较，不能假定已校验；错版本保守冲突，零生成，不改核心/HMAC协议parts或换key。
+- [ ] 显式reconcile只核原generate仍EXECUTING且原key/tool/version/HMAC全部匹配，使用独立metadata-only adapter；当前正式门通过后先向新call追加requested→original ID审计，确定提交后才T6 record_file，后置再验。无renderer/put/delete/bytes能力，旧call及events完全不写。返回明确metadata_recovered_original_unresolved及两个真实call ID/检查时间；不是原生成成功或bytes已验证。完整错误/技术wrapper在workflow，domain不得反向导入Gateway。
+- [ ] 文件HTTP固定错误投影保留真实调用ID；只读核实原EXECUTING绑定后才给可恢复原ID，冲突的新ID不冒称原ID。现全局ApiErrorResponse仅code/message，不改其契约；新投影及独立恢复POST显式登记OpenAPI。不新增find-by-key、ack原审计、自动扫描或重生成入口。
 - [ ] handler以 quote_id/file_id 或source_ref/locator取受信数据；参数和ledger不含正文/成本/bytes。PDF下载bytes及原始资料用一次性typed槽，同调用栈取走并finally清理。生成返回安全artifact/fileID，持久去重由T6；拒绝时存储/renderer调用为零。
 - [ ] 实现PricingEvidenceReader与NeedUnitEvidenceReader：仅已授权raw source，Gateway读取后验证实际hash/locator，消息来源先经现有消息阅读权限转换成raw artifact；不接受generated artifact为证据。未知结果结构化失败，不把空内容当核验完成。最小来源支持和定位契约见下段；未接入来源固定source_unsupported。
 - [ ] 为人工选择原文位置提供同profile的受鉴权、受限文本预览及locator生成入口；只能访问已授权upload/message，不接受任意URL/路径。选定范围由后端生成/核验canonical locator，正文只通过本次Gateway结果槽送已授权HTTP界面，不进入ledger/日志/模型。不要求用户自行从另一PDF引擎猜字符偏移或手算片段hash。
 - [ ] API端点（均在 `/costing-quotes`）：`GET/POST /policies`、`GET/POST /issuer`、`POST /quote-fx`、`POST /price-evidence`、`POST /cost-sheets/{id}/coverage`、`POST /cost-sheets/{id}/calculate`、`GET/POST /opportunities/{id}/quotes`、`GET /quotes/{id}`、`POST /quotes/{id}/submit`、`POST /quotes/{id}/revisions`、`POST /quotes/{id}/files`、`GET /quotes/{id}/files/{file_id}`。另加 `GET /opportunities/{id}/quote-context` 返回创建前所需当前hash和可编辑资料，不暴露凭证/成本给无权角色；不能把context查询设计成必须先有quote才能调用。
+- [ ] 首次缺单位/抬头时用独立open_preparation_facts读取受保护事实；原open/计算/冻结完整性不放宽。demand公开纯assess_quote_preparation产生shared只读assessment，quotation经专用workflow adapter/Protocol消费，不跨域import或复制单位规则。数量None/非正/未确认、单位缺失/未确认/陈旧明确分流；历史0保留真实数量hash但不允许报价，损坏事实/未知错误固定失败而非“待补”。合法规格hash始终按原函数，完整context才有原context_hash；新起草prepared_by固定当前actor并明示。安全Need/来源/内部报价投影逐字段白名单，无原始source_quote/完整basis/runtime，原件另鉴权。
 - [ ] 增加已确认资料的可恢复读取：`GET /opportunities/{id}/price-evidence`、`GET /quote-fx/{fx_id}`、`GET /cost-sheets/{id}/coverage`、`GET /quotes/{id}/files`；租户/角色/机会范围与各用途一致。对应public service补 `list_price_evidence(tenant_id,opportunity_id,*,actor)`、`get_coverage(tenant_id,cost_sheet_id,*,actor)`，文件列表复用T6 `list_files(tenant_id,quote_id,*,actor_id)`；分别返回typed证据列表、确认清单、文件列表，刷新不依赖内存缓存的来源ID。文件metadata当前机会ABAC与四成本角色读权分开，不错误复用同一actor门。
 - [ ] 文件生成通过T6 get_file_approval按quote取得真实稳定approval_run_id；正式授权须文件用途专属当前事实租约，不能用四角色get或prepare-only context假装CRM读取。独立history入口只读已存PDF并展示真实状态，不重渲染、不将裸HTTP history布尔值直接作为当前下载门的豁免；全部bytes仍经Gateway并校验artifact hash/size。
 - [ ] 接入T3B的`POST /cost-sheets/{id}/scope-confirmations`与对应已确认记录GET；确认前呈现完整目标规格/需求、条款、期限和每条来源的人工适用性说明。prepare_scope_access在context lease外，确认/冻结在受保护事实下提交。报价准备上下文用专门HTTP投影，不直接model_dump内部Need/context/basis中的source_quote；原件展开仍独立鉴权。新计算请求显式quote_fx_ref，不能提交自证的FxRate对象。API/worker组合分别注入T2证据服务和T3B冻结服务，不注册受控替身。
-- [ ] POST绑定HTTP幂等键、当前员工；失败返回固定code与可展示原因，旧请求readiness不新增写。当前规则提高底线/证据失效/quote过期时正式file拒绝；文件返回前再验quote状态，不在鉴权前取bytes。
+- [ ] 人工确认及创建/修订POST绑定HTTP幂等键与当前员工；只读calculate/preview/locator、T5固定单轮submit、服务端canonical generate、独立NONE reconcile分别沿各自真实身份语义，不伪造通用HTTP key持久重放。旧create_sheet/add_item/readiness不在本批增加写或通用幂等。失败只返回固定code与可展示原因；当前底线/证据/期限不符时正式file拒绝，返回前再验，不在授权前取bytes。
 
 ```python
 # 放在 scheduler 的 singleton lock 已获准的 cycle 内；异常沿用脱敏分类。
@@ -358,7 +371,9 @@ if runtime.quote_expiry_driver is not None:
     await runtime.quote_expiry_driver.scan_once()
 ```
 
-- [ ] API和scheduler真实factory均构造仓储/服务，注册quote_approval definition/handlers/outbox与expiry；缺任一依赖保持能力unavailable且无工具注册。expiry故障单独隔离，不吞掉其他workflow；未获singleton锁零expiry调用。不在构造时读取provider凭证或访问网络。
+- [ ] API和scheduler真实factory均构造仓储/服务，注册quote_approval definition/handlers/outbox与expiry。新增非秘密`TRADEOS_QUOTATION_SETTINGS_JSON`严格解析（拒未知/重复key/NaN/bool冒充int），core+evidence为完整能力组、files显式可空；资源值均无生产默认。整配置缺失保持旧模式、新接口503且不注册新工具/handlers；显式畸形配置启动失败，必要端口缺失按该组unavailable而非半套可用。files缺失只关闭文件组，parser probe失败只关闭实际parse请求，不关闭根hash核验/已有事实/报价/审批/expiry或独立PDF路径。API/worker各自解析同一纯infra配置，不能跨apps导入。
+- [ ] expiry故障单独隔离，不吞掉其他workflow；未获singleton锁零expiry调用。不在构造时读取新Provider凭证或访问网络；parser按真实同实例生命周期启动/关闭，取消与before-yield失败也先清理parser再dispose DB。
+- [ ] 实际API旧上传路径改用专用DeferredS3ObjectBlobTransport推迟旧delegate构造，旧S3实现及Raw/EMAIL_DRAFT IO规则不改；新取证/文件仍专属bounded/lazy writer，不能回退旧get。既有HMAC/退订技术key初始化明确区分，不声称全factory所有resolver调用为零。T8A parser在真实lifespan启动probe/退出aclose，同步factory不假ready。
 - [ ] 测试真实factory→真实Postgres→Gateway→renderer→受控object transport→持久generated metadata，包含锁顺序。API伪服务仅用于unit，不替代这一集成。预算/大小/页数未配置时禁用文件能力，错误脱敏。
 - [ ] GREEN：`env -u TEST_DATABASE_URL python3 -m pytest tests/unit/test_quote_file_gateway.py tests/unit/test_quotation_router.py tests/integration/test_quote_runtime.py tests/unit/test_api_runtime.py -q`；结构检查后提交 `feat: 装配报价审批和受控客户文件接口`。
 

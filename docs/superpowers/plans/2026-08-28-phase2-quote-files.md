@@ -20,7 +20,7 @@ scope按当前机会ABAC：sales本人、manager当前直属owner、boss租户�
 | Create `shared/schemas/quote_files.py`；Modify `shared/schemas/quote_document.py`、`identifiers.py` | 唯一模板常量、客户hash编码、QuoteFileId；不重复CustomerQuoteView |
 | Modify `artifact_store/{store,service_impl,errors}.py` | 新kind/严格分支、仅PDF未知提交保护及固定错误 |
 | Create `domains/quotations/file_schemas.py`、`file_service.py`；Modify `schemas.py`、`service.py`、`service_impl.py`、`version_repository.py`、`errors.py` | typed文件/reader/guard、真实关联、服务委托/窄仓储/固定错误 |
-| Modify `domains/quotations/approval_rules.py`、`approval_service.py` | 仅复用/抽取T5同一run绑定纯校验，不重做审批 |
+| Modify `domains/quotations/approval_rules.py`、`approval_service.py` | 复用/抽取T5同一snapshot、原请求集合、binding、receipt及run绑定纯校验，不重做审批 |
 | Create `infra/quote_file_artifacts.py`；Modify `infra/db/{tables.py,repositories/artifacts.py,repositories/quotations.py}` | metadata适配、0046映射/只增关联；无业务规则/SDK/bytes |
 | Create `migrations/versions/0046_quote_pdf_artifacts.py`、`docs/adr/0019-quote-pdf-artifacts.md` | 双kind约束、文件表与不可变/绑定约束、失败恢复语义 |
 | Create `tests/unit/test_quote_pdf_artifacts.py`、`test_quote_file_service.py`；Create `tests/integration/test_quote_pdf_artifacts.py`、`test_quote_file_migration.py` | typed/安全/服务、真实DB/未知commit/锁/迁移 |
@@ -107,6 +107,7 @@ scope guard由受信上层适配既有机会ABAC，保证tenant/active/current o
 
 在scope guard内读取真实quote及T5唯一success receipt；无receipt返回None。验证receipt quote/version/content/hash/决定集合与真实bindings；读取receipt.approval_run_id对应真实run，不能要求调用方先有executor。
 复用T5 run校验，若其内部尚未具名，抽取`require_quote_run_binding(tenant_id:TenantId,quote_id:QuoteId,quote_version:int,quote_content_hash:str,run:QuoteWorkflowRunFact|None)->None`至approval_rules.py；T5原executor入口调用同函数后仍另验executor ID，外部语义不变。
+T5实际receipt链还包含snapshot（真实前一版本及原limit）、完整原组payload/owner/run核验、binding全部不可变请求字段比较，以及receipt决定hash/quote_send真实decider。将这些纯部分抽取至approval_rules并让T5/T6共用，数据库读取仍由各自service/session持有；T6读取真实version-1，不以replaces是否存在推断无前版。不得仅复用facts_hash/FK而遗漏其余校验，也不复制稍弱校验或为复用旧session伪造executor。T5原fresh准备、独立恢复与fresh apply门禁保持各自原语义。
 该函数精确核tenant/run事实、type='quote_approval'/workflow_version=1/subject=quote_id/quote_version/content_hash；file service另核返回run.run_id=receipt.approval_run_id，全部receipt decisions.proposed_by_run也必须相等。使用T5既有不可变决定/hash与binding验证，不从APPLIED/事件伪造receipt。
 get_file_approval仅返回安全Fact；不含批准人/原文/完整payload，不执行mark_applied。completed/failed run只要绑定正确仍可读取真实历史receipt，不要求当前Need/政策/员工仍支持fresh批准。其意义是历史批准归属，不是当前正式使用许可。
 record/get/list在已有scope内调用同私有验证函数，不递归调用公开get_file_approval再开员工/机会lease；不在已持报价锁后补员工锁。

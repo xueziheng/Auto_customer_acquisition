@@ -27,7 +27,7 @@
 | 文件 | 责任 |
 | --- | --- |
 | Create `domains/quotations/approval_schemas.py`、`approval_rules.py`、`approval_service.py` | 完整typed审批形状、安全payload/ABAC/hash、单用途session与原子效果 |
-| Modify `domains/quotations/{service,service_impl,schemas,permissions,version_repository,errors}.py` | 显式公共重导出、注入依赖、窄仓储；不恢复旧bool审批入口 |
+| Modify `domains/quotations/{service,service_impl,schemas,version_repository,errors}.py`；Verify existing `permissions.py` | 显式公共重导出、注入依赖、窄仓储；既有四角色准备用途保持，新审批矩阵唯一在approval_rules，不恢复旧bool审批入口 |
 | Create `domains/approvals/quote_contract.py`；Modify `service.py`、`service_impl.py`、`schemas.py`、`models.py`、`repository.py`、`errors.py` | 新namespace检测/typed事实/请求hash、兼容旧接口、quote guard与原始limit |
 | Create `domains/costing/approval_policy.py`；Modify `service.py` | 公开单用途selection lease，复用T3B政策选择和shared advisory锁 |
 | Modify `domains/quotations/context.py`、`infra/db/quote_context.py` | 新access/full-approval投影；员工一次排序锁，原open行为不改 |
@@ -35,7 +35,7 @@
 | Create `migrations/versions/0045_quote_approval_contracts.py` | 请求hash/limit/namespace唯一、binding唯一、成功receipt及对应不可变约束 |
 | Create `workflows/quote_approval/approvals.py`、`policy_reader.py`、`run_reader.py`、`flow.py`、`steps.py`；Modify `application.py` | 显式域DTO适配、guard/真实run读取适配、真实流程；保留T3B/T4应用 |
 | Modify `workflows/engine/runner.py`、`infra/db/workflow_engine.py` | WorkflowEngine公开get_run及真实tenant只读实现；复用WorkflowRun，不改audit HTTP或老板权限 |
-| Modify `apps/api/routers/approvals.py`、`apps/api/dependencies.py` | 现有read/list转新授权读取；decide仍真实当前身份。只接端口，不写业务矩阵 |
+| Modify `apps/api/routers/approvals.py`；Verify existing `apps/api/dependencies.py` | 现有read/list转新授权读取；decide仍真实当前身份。既有approvals:ApprovalService可选端口承载新wrapper，真实装配留T8，不写业务矩阵 |
 | Create `tests/unit/test_quote_approval_contracts.py`、`test_quote_approval_workflow.py`；Modify `test_approval_service.py` | namespace/旧兼容、payload/hash、纯规则、流程 |
 | Create `tests/integration/test_quote_approval_postgres.py`、`test_quote_approval_locks.py`、`test_quote_approval_migration.py`；Modify `test_migrations.py` | 真实包/quote/outbox/receipt、重启、多连接、0045 roundtrip |
 | Modify `domains/{approvals,quotations,costing}/AGENTS.md`、`workflows/quote_approval/AGENTS.md`、`docs/adr/0018-costing-quotation-contracts.md` | 单轮/namespace/ABAC/锁/迁移与未装配边界，不放宽九条 |
@@ -106,7 +106,7 @@ QuoteApprovalAccessContext:
  tenant_id:TenantId;opportunity_id:OpportunityId;actor:QuoteEmployeeFact;owner:QuoteEmployeeFact
  prepared_by:EmployeeId;submitted_owner_id:EmployeeId
 QuoteApprovalContext: business:QuoteBusinessContext;deciders:tuple[QuoteEmployeeFact,...]
-QuoteApprovalAccessResult: can_decide:bool
+QuoteApprovalAccessResult: can_decide:bool;current_role:QuoteEmployeeFact.role同一Literal
 QuoteApprovalSubject:
  tenant_id:TenantId;approval_id:ApprovalId|None;quote_id:QuoteId;quote_version:int;content_hash:Hash
  opportunity_id:OpportunityId;prepared_by:EmployeeId;submitted_owner_id:EmployeeId;approval_type:QuoteApprovalType
@@ -153,7 +153,7 @@ ApprovalQuoteSubject:
  tenant_id:TenantId;approval_id:ApprovalId|None;approval_type:str;change_set_ref:str
  quote_id:QuoteId;quote_version:int;content_hash:Hash;opportunity_id:OpportunityId
  prepared_by:EmployeeId;submitted_owner_id:EmployeeId
-ApprovalAccessResult: can_decide:bool
+ApprovalAccessResult: can_decide:bool;current_role:QuoteEmployeeFact.role同一Literal
 ApprovalReaderIdentity: employee_id:EmployeeId;role:QuoteEmployeeFact.role同一Literal
 ```
 
@@ -177,7 +177,8 @@ async def list_for_reader(tenant_id: TenantId, *, reader: ApprovalReaderIdentity
 `ApprovalServiceImpl(...,quote_access:QuoteApprovalAccess|None=None,now=原接口)`允许旧测试/装配不传新依赖，但任何新namespace记录/请求必须有有效quote_access。新read_fact仅受信workflow使用，无HTTP，无客户来源原件；读取也要严格解码namespace/request元数据。
 新read_fact须从实际持久字段重算submit request_hash并匹配，不只相信非空hash列；决定后的decider/decided_at/note是不可变决定事实，state可推进但这些值不得随mark_applied/failed改变。
 `workflows/quote_approval/approvals.py`实现`QuotationApprovalAccess(quotations:QuotationVersionService)`：subject调用quotation纯parse并逐字段验证type/change_set/tenant/quote/hash/proposer/owner相合，再等值转换；guard调用quotation.open_approval_access，业务规则唯一在quotation。
-get_for_reader/list_for_reader用于既有HTTP read/list：new按当前guard，可读自己起草/当前或提交时负责的包；legacy只向原boss/manager reader开放，保留旧展示/查询行为。reader.role来自可信RequestIdentity，不能从请求体/role header取；new路径还必须guard重读当前角色/在职，拒绝传入身份与当前事实不一致。
+get_for_reader/list_for_reader用于既有HTTP read/list：new按当前guard，可读自己起草/当前或提交时负责的包；legacy只向原boss/manager reader开放，保留旧展示/查询行为。reader.role来自可信RequestIdentity，不能从请求体/role header取；new路径还必须guard重读当前角色/在职，拒绝传入身份与当前事实不一致。guard结果的必填current_role来自租约内真实context.actor.role，workflow adapter原值映射；两个wrapper在租约内、HTTP投影前精确比较reader.role与current_role。角色不一致显式拒绝，不得被list的普通不可见候选过滤吞掉。结果只供内部使用，不是HTTP身份令牌；不新增expected_role参数链。旧get仅有current_employee时按真实当前权限判定，不虚构role。
+RED须覆盖get及list：同一起草人从manager变为finance等两个均可读自身包的角色，使当前ABAC仍可读但陈旧reader.role必须被拒；保留真实PG角色变动/离职与租约顺序测试，不能只用角色本就无权访问的反例。
 旧get若读取new且current_employee=None必须拒绝；有current_employee则同guard；旧list_pending_for遇new同样guard过滤，不绕过。worker改用read_fact，不把当前UI can_decide当批准事实。
 router read/list去掉会误封新路径起草人的总boss/manager前置，改调get_for_reader/list_for_reader；legacy角色门由该服务新wrapper保持。decide仍只有boss/manager第一道角色门，new服务guard为第二道。没有新角色审批权。
 
@@ -253,17 +254,20 @@ class QuoteApprovalSession(Protocol):
     async def prepare_submission(self,context:QuoteBusinessContext,*,actor:QuotationActor)->QuoteApprovalSnapshot: ...
     async def bind(self,submission:QuoteApprovalSubmission,context:QuoteBusinessContext,
                    *,actor:QuotationActor)->QuoteDetailView: ...
+    async def recover_submission(self,submission:QuoteApprovalSubmission,
+                                 *,actor:QuotationActor)->QuoteDetailView: ...
     async def apply(self,facts:tuple[QuoteApprovalFact,...],context:QuoteApprovalContext)->QuoteApprovalApplyResult: ...
     async def terminate(self,facts:tuple[QuoteApprovalFact,...])->QuoteApprovalApplyResult: ...
 ```
 
-QuoteApprovalAccessResult与approvals本地ApprovalAccessResult都是单一can_decide字段，adapter显式转换，不跨域导入。
-approval_snapshot只给当前四成本角色；approval_target/get_approval_application是受信本workflow专用内部读取，不是对manager开放一般get，不把executor冒成员工。open_approval_access验证quote不可变身份、payload关联和（decide时）唯一真实binding，再调用context access与唯一纯规则；返回无成本的can_decide。
+QuoteApprovalAccessResult与approvals本地ApprovalAccessResult均含can_decide和必填current_role，adapter显式逐值转换，不跨域导入；current_role与ApprovalReaderIdentity.role使用同一Literal值域。
+approval_snapshot只给当前四成本角色；approval_target/get_approval_application是受信本workflow专用内部读取，不是对manager开放一般get，不把executor冒成员工。open_approval_access验证quote不可变身份、payload关联和（decide时）唯一真实binding，再调用context access与唯一纯规则；租约内从真实context.actor.role产生current_role，返回无成本的权限结果，不能由调用者声称的角色填充。
 QuotationServiceImpl新增必填context_provider/approval_policy_reader/workflow_run_reader:QuoteWorkflowRunReader；创建路径仍用T4原规则。approval_service.py实现上述session，服务门面只委托同实现；不要求实现者沿用旧bind_approval单包自动转态或旧apply bool API。
 session进入T4报价UoW，bootstrap本域quote获取不可变opportunity_id→同`quotation-create-v1`机会advisory→quote FOR UPDATE；没有Opportunity写锁。snapshot/submission/receipt只是本session真实读取。
 prepare_submission/bind/apply才懒打开政策lease；顺序**外层context→报价机会锁→policy shared**。全部锁取得后调用selection.current与now，要求policy id/hash==basis/submission、完整context仍匹配、quote/依据未过期；prepare/bind还检查当前四角色提交权。apply检查所有deciders与全部绑定事实，不复用四角色gate。
 **退出顺序明确**：正常退出先commit报价UoW（state/bindings/receipt/outbox一并），再关闭policy lease，最后由调用方退出context；异常/取消先rollback报价再关policy。不要用普通“内层policy with先退出、外层quote with后commit”的写法提前释放政策锁。receipt恢复只读session不打开policy/context。
 bind验证required集合、每种type恰一真实包、精确payload/hash/owner/限期/policy，全部bindings+draft→pending_approval+事件同事务。若已绑定同一集合，幂等返回；异集合冲突；一轮结束不得替换包。创建包与绑定之间可崩溃，原namespace幂等恢复，不自动新建另一个包。
+全组原包已持久但bindings事务失败时，使用独立`recover_submission`：仍校验当前四角色、真实run、完整原组及精确不可变请求绑定，不取fresh Need/issuer/policy。仅补原组关联并在同一报价事务中调用terminate；draft可先进入pending后立即expired/rejected，已expired/rejected/superseded等历史状态不得复活。未终止且仍pending的恢复不表示批准，后续apply仍执行全部fresh门。无/部分原组不得走此入口或补建过期包。
 apply首先读真实成功receipt；有则同facts_hash返回already_applied，不重发事件。无则仅pending_approval可fresh批准：完整context/当前policy/第二道报价依据门禁、全部包approved且未过期、全decider授权通过→quote approved+状态事件+QuoteApproved+成功receipt一次提交。QuoteApproved.approved_by=quote_send真实decider，其他信息查receipt；事件不是授权凭证。
 terminate不要求Need或policy仍可用，只按真实绑定facts和新now关闭当前draft/pending_approval：任一reject→rejected，任一包到期→expired；不改内容/valid_until，不重新开包。已superseded/accepted/rejected/expired返回obsolete/对应终止结果不改历史；已有成功receipt优先返回already_applied。pending未到期等待，不mark_apply_failed。
 
@@ -287,6 +291,8 @@ PostgresWorkflowEngine.get_run只做显式tenant+run_id的plain SELECT、映射�
 adapter仅调用engine.get_run，逐字段投影元数据与持久context的两个固定键`quote_version`（正整数，拒bool）/`content_hash`（Hash）；任何缺失/非法值抛workflow_binding_invalid，未找到原样返回None；不透传context、正文、原始异常。engine尚未装配返回dependency_unavailable。T5受控/真实DB构造及T8最终装配都按reader闭包→quotation service→application/handlers→PostgresWorkflowEngine→闭包发布engine顺序，在最后一步前禁止启动worker/对外服务；不是默认engine/actor或可由请求替换的依赖。
 统一绑定检查在quotation approval_service中，approval_target/open_approval/get_approval_application都必须调用，不在infra复制：fact tenant/run与入参相等，type='quote_approval'、workflow_version=1、subject_ref=str(quote_id)、quote_version/content_hash与真实不可变quote相等，executor.quote_id也相等；缺失、跨tenant、错type/subject/version/hash均workflow_binding_invalid。session入口核验一次供其所有方法复用；bind再要求每个包proposed_by_run等于该真实run，receipt恢复再核approval_run_id等于该run。对fresh及历史均校验绑定，但**不要求run仍running**，不因历史Need/policy/员工变化阻止receipt恢复或稳定run引用读取。
 get_run是仅受信workflow使用的内部公共读口，完整WorkflowRun不进入quotation/HTTP；不是一般审计授权旁路。engine执行handler时已持run行锁（infra/db/workflow_engine.py:472/607等），独立读必须用MVCC读取先前已提交的initial_context，不能自等该锁；quote_version/content_hash在start原子持久，所有本流程step patch不得改这两个键。
+
+真实PG已复现：plain get_run虽能读，独立报价事务写成功receipt时，真实run外键需要KEY SHARE，仍与外层handler持有的FOR UPDATE冲突。仅将poll_due与deliver_event两个跨handler调用的Run锁改为FOR NO KEY UPDATE（SQLAlchemy `with_for_update(key_share=True)`，不加read=True）；step锁及step→run顺序不变，cancel/失败收尾的无handler Run锁保持原样。引擎执行只更新非键状态/context，不修改run_id、tenant_id、idempotency_key。保留0045真实FK与报价state/receipt/outbox原子提交，不特判quote工具、不跨域共享事务或移出receipt。依据：[PostgreSQL16锁模式](https://www.postgresql.org/docs/16/explicit-locking.html)、[SQLAlchemy锁参数](https://docs.sqlalchemy.org/en/20/core/selectable.html#sqlalchemy.sql.expression.GenerativeSelect.with_for_update)。
 
 ## 4. 0045与窄仓储
 
@@ -326,6 +332,7 @@ mark_completed(tenant_id:TenantId,quote_id:QuoteId,*,executor:QuoteWorkflowExecu
 
 submit：真实snapshot→当前initiated_by四角色→T3B原context.open（prepared_by用quote原起草人）→open_approval→prepare_submission（选当前policy）→逐required_type调用真实approvals.submit→read_fact→bind。proposed_by_employee=quote.prepared_by，owner_employee=quote.owner_id提交快照，proposed_by_run=真实executor.run_id；initiated_by另在workflow记录，不冒称起草人改名。title/reason/blast_radius由固定模板+quote ID/type构造，不携原文；evidence_refs只应用内`quote-evidence:{quote_id}:{evidence_id}`引用，不是对象存储/原件URL。
 submit使用同一expires_at_limit（quote/依据最早值），不是approvals当前剩余期限；每包created_at及类型默认值由approvals服务计算。已有bindings直接核集合返回，不以当前时间重建payload；部分包已提交则跨状态同namespace/hash恢复；若某包在绑定前被决定/到期，仍精确绑定原组后立即进入终止/应用判断，不生成第二轮。
+审批公开内部读口新增`find_quote_fact(tenant_id:TenantId,change_set_ref:str)->ApprovalFactView|None`，只接受精确新namespace，复用既有仓储find_quote_by_change_set及完整_fact校验；不注册HTTP、不改变旧get_by_change_set权限。无bindings时先按不可变snapshot定位全部原包；只有完整组已存在，才按原固定请求逐包调用submit重放精确request_hash/limit并核返回原ID，再读真实facts交recover_submission。原包只增不可删除，重放不新建；无/部分组仍须原fresh准备，过期不能补包。缺依赖/损坏/跨tenant/不同原请求保持固定失败。
 poll从真实bindings读取全部facts，先看成功receipt；无receipt时有拒绝/到期则session.terminate；未齐/仍pending返回waiting；全部approved返回ready，仅表示可进入fresh apply，绝非报价已批准。deadline取真实包最早expires_at，未有包为None；返回QuoteApprovalPollResult，不返回包含原文的内部quote。
 apply先查真实成功receipt，存在即mark_completed后already_applied，不进context/policy。否则读全部facts；pending/终止按poll分类。全部approved才取quote_send.decided_by为context actor，收集所有deciders→open_for_approval→open_approval→重读facts确认同ID/immutable决定集合→session.apply→quote提交→退出所有lease→mark_completed。
 mark_completed只读真实receipt，核其quote/hash/精确bindings/decisions，从approvals读现事实并比排除state后的facts_hash；逐包调用mark_applied，稳定key=`quote-apply:{quote_id}:{content_hash}:{approval_type}`。APPROVED/APPLIED混合重启逐个补完；不可用事件或手写quote_id生成receipt。之后Need/issuer/policy/在职变化不阻历史补记，但不再次准许客户文件。
@@ -409,6 +416,7 @@ async def test_all_deciders_stay_guarded_until_quote_commit(approval_case):
 - [ ] RED真实engine：逐包submit中断、全部包已存但bind未提交、事件在wait前、wait期间进程重启、多个包先后决定、包拒绝/到期一轮关闭、quote被新版本替代后晚到事件只终止旧run。
 - [ ] RED真实DB run绑定：get_run存在/不存在/跨tenant；已有真实run但type、workflow_version、subject、quote_version、content_hash分别错误，两个context键缺失/格式错，伪executor指向另一条真实run，各入口均失败且不写receipt。全部包run与receipt/executor必须相同；completed/failed历史run仍可读取匹配receipt，恢复不取fresh context/policy。测试写入真实run而非仅mock返回Fact；单测另覆盖reader未装配fail-closed。
 - [ ] RED handler已持真实run行锁时经reader→engine.get_run独立连接读取不自等，有限测试超时内返回已提交initial_context；run binding不进入step patch，engine.start同key返回错误绑定也拒绝。
+- [ ] RED真实poll_due及deliver_event持锁handler均能在独立报价事务提交成功receipt；不同连接与明确barrier证明该锁仍阻止并发非键写、键修改/删除，cancel等待handler且不复活终态，poll/event不重复应用。最小改两处Run锁后运行既有引擎回归，不能通过删除FK取绿。
 
 ```python
 async def test_receipt_recovers_after_fresh_context_is_no_longer_usable(approval_case):
