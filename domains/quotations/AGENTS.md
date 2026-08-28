@@ -137,6 +137,13 @@ get/list逐次重投影客户hash并重核真实metadata/receipt/run。历史quo
 API/worker接线仍留B2。`QuoteFileAccessService`正式用途独立于actor=send_decider的旧apply门；
 一次锁齐actor、owner、存在的preparer及全部deciders再锁机会/Need，复用同域T5纯规则，
 重验当前context、policy、quoted依据、所有批准及有效期。scope历史用途不查Need/抬头/policy。
+正式用途按context→报价机会锁→policy选择锁→既有issuer确认锁取得租约；锁内完整比较
+当前持久issuer与context选定DTO，再读取policy.current及新时钟。issuer锁直到只读报价UoW退出，
+不调用commit；旧prepare/apply的选定抬头快照不追逐当前版本。仅文件context的真实
+issuer_not_found视为context_changed，未知reader/持久损坏保持技术故障，不降为版本页blocker。
+共用context的bootstrap/业务等待/首次rollback取消须保留原对象，不能被后续rollback或close的
+普通异常或再次取消覆盖；其余BaseException始终原样传播。正常非取消故障仍失败关闭。
+清理只尽力执行，不宣称故障连接必已释放。
 snapshot等值只排除checked_at，不缓存许可；外部IO不持业务锁，交付前必须重新真实授权。
 
 客户版本页只提供安全版本信息、文件metadata及固定业务blocker，不含价格/成本或完整客户DTO；

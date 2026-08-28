@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -12,7 +14,12 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from domains.quotations.errors import QuoteContextError, QuoteContextUnavailableError
+from domains.quotations.errors import (
+    QuotationError,
+    QuotationUnavailableError,
+    QuoteContextError,
+    QuoteContextUnavailableError,
+)
 from domains.quotations.schemas import (
     QuoteApprovalAccessContext,
     QuoteApprovalContext,
@@ -40,6 +47,8 @@ from shared.schemas.quote_facts import (
     QuoteRuntimeFacts,
     canonical_fact_hash,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _storage_error(exc: SQLAlchemyError) -> QuoteContextUnavailableError:
@@ -118,13 +127,18 @@ class SqlAlchemyQuoteContextProvider:
         decider_ids: tuple[EmployeeId, ...] | None = None, file_scope: bool = False,
         file_current: bool = False,
     ) -> AsyncIterator[QuoteBusinessContext | QuoteApprovalAccessContext | QuoteApprovalContext | QuoteFileScopeFacts | QuoteFileCurrentFacts]:
-        """锁持有到调用者提交结束；异常/取消都回滚释放，不升级为FOR UPDATE。"""
+        """租约内持锁，异常/取消尽力回滚关闭；不升级为FOR UPDATE。"""
         consumer_error: BaseException | None = None
+        primary_cancel: asyncio.CancelledError | None = None
         try:
             async with self._factory() as bootstrap:
-                candidate = (await bootstrap.execute(select(OpportunityRow.owner, OpportunityRow.need_id,
-                    OpportunityRow.account_id).where(OpportunityRow.tenant_id == tenant_id,
-                    OpportunityRow.opportunity_id == opportunity_id))).one_or_none()
+                try:
+                    candidate = (await bootstrap.execute(select(OpportunityRow.owner, OpportunityRow.need_id,
+                        OpportunityRow.account_id).where(OpportunityRow.tenant_id == tenant_id,
+                        OpportunityRow.opportunity_id == opportunity_id))).one_or_none()
+                except asyncio.CancelledError as exc:
+                    primary_cancel = exc
+                    raise
             if candidate is None:
                 raise QuoteContextError("record_not_found")
             if candidate.owner is None:
@@ -133,6 +147,14 @@ class SqlAlchemyQuoteContextProvider:
                 issuer = await self._issuer.get_confirmed(tenant_id) if submitted_owner_id is None and not file_scope else None
             except (QuoteContextError, QuoteContextUnavailableError):
                 raise
+            except QuotationError as exc:
+                if file_current and exc.code == "issuer_not_found":
+                    raise QuoteContextError("context_changed") from None
+                raise QuoteContextUnavailableError("dependency_unavailable") from None
+            except QuotationUnavailableError:
+                if file_current:
+                    raise
+                raise QuoteContextUnavailableError("dependency_unavailable") from None
             except Exception:  # noqa: BLE001 -- 外部依赖异常不得泄露原文或连接信息
                 raise QuoteContextUnavailableError("dependency_unavailable") from None
             async with self._factory() as session:
@@ -214,13 +236,27 @@ class SqlAlchemyQuoteContextProvider:
                     except BaseException as exc:
                         consumer_error = exc
                         raise
+                except asyncio.CancelledError as exc:
+                    primary_cancel = exc
+                    raise
                 finally:
-                    await session.rollback()
-        except SQLAlchemyError as exc:
-            if exc is consumer_error:
-                raise
-            raise _storage_error(exc) from None
-        except (SchemaError, ValueError, TypeError, KeyError, DomainValidationError) as exc:
-            if exc is consumer_error or isinstance(exc,QuoteContextError):
-                raise
-            raise QuoteContextError("facts_corrupt") from None
+                    try:
+                        await session.rollback()
+                    except asyncio.CancelledError as exc:
+                        if primary_cancel is None:
+                            primary_cancel = exc
+                        raise
+        except BaseException as exc:  # close也可能覆盖主取消；未知异常仍原样抛出
+            if primary_cancel is not None and isinstance(exc, (Exception, asyncio.CancelledError)):
+                if exc is not primary_cancel:
+                    logger.warning("报价上下文取消后的清理失败")
+                raise primary_cancel from None
+            if isinstance(exc, SQLAlchemyError):
+                if exc is consumer_error:
+                    raise
+                raise _storage_error(exc) from None
+            if isinstance(exc, (SchemaError, ValueError, TypeError, KeyError, DomainValidationError)):
+                if exc is consumer_error or isinstance(exc, QuoteContextError):
+                    raise
+                raise QuoteContextError("facts_corrupt") from None
+            raise

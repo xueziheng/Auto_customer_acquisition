@@ -394,6 +394,11 @@ class QuoteFileAccessServiceImpl:
                     async with self._policy_lease(
                         tenant_id, business.category
                     ) as selection:
+                        # 当前正式用途在全部业务锁之后与确认方串行；旧prepare/apply仍保留选定快照。
+                        await uow.quotes.lock_issuer(tenant_id)
+                        issuer = await uow.quotes.current_issuer(tenant_id)
+                        if issuer is None or issuer != business.issuer:
+                            raise QuoteFileAccessError("context_changed")
                         policy = await selection.current()
                         now = fact_utc(self._now())
                         require_quote_approval_receipt(

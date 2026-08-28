@@ -19,6 +19,17 @@
 原起草人（仍存在时）和当前Need，复用T5原请求/receipt/run、fresh依据及decider纯规则；
 不调用仍要求actor=send_decider的旧apply入口，不更改apply/历史恢复语义。
 
+正式用途的当前抬头在全部业务等待后另行确认：context→报价机会advisory→policy选择锁
+→既有quotation-issuer-v1租户锁，复用lock_issuer/current_issuer而不新增端口。完整DTO与
+context选定值核等后才读取policy.current及新时钟，issuer锁保持至只读报价UoW退出。
+confirm_issuer使用同锁且锁后无反向业务取锁；代价是确认与正式授权短时串行。
+旧prepare/apply仍保留选定快照语义。仅文件context的确定issuer_not_found转换context_changed，
+技术类及未知reader异常保持失败；不可变损坏不能伪装成缺项或客户版本页blocker。
+共享context仅在原_open内保留bootstrap/锁等待/已yield/首次rollback的原取消对象，尽力执行
+原rollback及close；二次清理异常不能覆盖主取消，非取消仍沿原分类。无通用清理框架或其他
+UoW改动，只记录固定脱敏警告；清理故障不代表连接已确定释放。恢复原取消仅覆盖普通
+Exception或再次CancelledError；SystemExit等其余BaseException始终原样传播，不降为依赖错误。
+
 每次正式生成、正式读取、恢复均重验当前context、全部批准、policy、quoted依据及有效期。
 snapshot业务等值显式包含全部字段及完整customer，只排除checked_at；不能缓存许可。
 只读policy lease显式正常退出以保留消费方业务拒绝，不称为报价业务提交；取消不能被cleanup
