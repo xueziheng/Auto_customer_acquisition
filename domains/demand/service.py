@@ -11,6 +11,15 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
+from domains.demand.errors import (
+    NeedUnitError as NeedUnitError,  # noqa: PLC0414 - 保持既有类身份的公共错误端口
+)
+from domains.demand.errors import (
+    NeedUnitPermissionError as NeedUnitPermissionError,  # noqa: PLC0414
+)
+from domains.demand.errors import (
+    NeedUnitUnavailableError as NeedUnitUnavailableError,  # noqa: PLC0414
+)
 from domains.demand.schemas import (
     CustomerReplyEvidenceClaim,
     DemandSignalView,
@@ -36,6 +45,9 @@ from domains.demand.unit_facts import (
 )
 from domains.demand.unit_facts import (
     require_current_unit as require_current_unit,  # noqa: PLC0414
+)
+from domains.demand.unit_source_validation import (
+    validate_need_unit_source_text as validate_need_unit_source_text,  # noqa: PLC0414
 )
 from shared.schemas.evidence import ConfidenceResult
 from shared.schemas.identifiers import (

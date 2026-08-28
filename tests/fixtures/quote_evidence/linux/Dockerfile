@@ -1,5 +1,25 @@
 ARG PYTHON_IMAGE
 ARG TEST_BASE_IMAGE
+FROM ${TEST_BASE_IMAGE} AS chain
+USER 0:0
+WORKDIR /usr/local/lib/python3.12/site-packages
+COPY pyproject.toml alembic.ini ./
+COPY pyproject.toml /opt/tradeos/pyproject.toml
+COPY shared ./shared
+COPY connectors ./connectors
+COPY shared /opt/tradeos/shared
+COPY connectors /opt/tradeos/connectors
+COPY domains ./domains
+COPY workflows ./workflows
+COPY tool_gateway ./tool_gateway
+COPY artifact_store ./artifact_store
+COPY infra ./infra
+COPY migrations ./migrations
+COPY scripts ./scripts
+COPY tests ./tests
+USER 65534:65534
+CMD ["python", "-m", "tests.integration.quote_evidence_linux_support"]
+
 FROM ${TEST_BASE_IMAGE} AS refreshed
 USER 0:0
 COPY pyproject.toml /opt/tradeos/pyproject.toml

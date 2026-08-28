@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -69,6 +70,11 @@ class ControlledNeedAccess:
         )
         self.denied = False
         self.calls = []
+        self._depth = ContextVar("quote_evidence_need_guard_depth", default=0)
+
+    @property
+    def depth(self):
+        return self._depth.get()
 
     async def check(self, tenant_id, need_id, actor_id, *, action):
         self.calls.append(action)
@@ -82,7 +88,12 @@ class ControlledNeedAccess:
 
     @asynccontextmanager
     async def guard(self, tenant_id, need_id, actor_id, *, action):
-        yield await self.check(tenant_id, need_id, actor_id, action=action)
+        access = await self.check(tenant_id, need_id, actor_id, action=action)
+        token = self._depth.set(self.depth + 1)
+        try:
+            yield access
+        finally:
+            self._depth.reset(token)
 
 
 class Transport:
