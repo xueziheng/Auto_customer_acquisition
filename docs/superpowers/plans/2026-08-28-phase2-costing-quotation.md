@@ -521,6 +521,8 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
+- Fix2全量发现既有桥关闭测试平台语义：仅test_costing_quote_transport.py对已知partial-header socket在RelayPool.close执行shutdown+close后，接受peer `recv()==b''`或精确`ConnectionResetError`作为不可再用；timeout、非空bytes及其他OSError仍失败，finally仅关该socket。保留原1failed/6823passed/12deselected全量记录，修后相关组和一次not-e2e重验；不改bridge/I2绝对deadline、清理实现或吞广义异常。代价是测试承认POSIX合法EOF/RST差异；若放宽过度会掩盖仍可用连接，故只限精确异常和具名已关闭socket。
+
 - Fix2清理证明补正：周期PPID观察只用于定位/尽力清理已知本次进程，不证明任意OS子孙树完整封闭。仅固定子入口正常走完资源owner上下文、exit0、唯一终态成功回执、无父层强杀/主异常，且正常结束或visual请求停止正常收尾，再与已知PID已退、精确名字/owner/ID的Docker清理和记录端口关闭合取，才可标cleanup_verified。任何异常/缺或重复回执/非零/强杀/取消均unknown非零；未启动或空observed不能提升证明，取消仍重抛原异常。仅现生命周期helper/其单测/浏览器负例及验收运维文档五文件，不加握手或通用进程框架；两个真实负例须继续只读核实际已知资源已清及独立sentinel存活。代价是部分实际已清的异常也保守报unknown、增加人工核查，避免短命父退出的孤儿漏检被当verified；正常verified仅限受支持固定入口合作式收尾，不宣称隔绝任意daemon。
 
 - Fix1真实浏览器发现初始单位读取竞态：当前输入可操作时，编辑source/unit会取消共用scope的初始Need单位GET并让hash缺失、确认按钮持续不可用。仅NeedUnitConfirmationForm.vue及既有quotation-flow测试做独立读取范围的最小修正，先deferred GET失败证明；source/unit/locator编辑不取消与它们无关的当前Need读取，而Need/identity变化、同slot较新read仍须丢弃旧响应。保留原confirm键/身份generation、raw来源及当前事实变化失效，不改共享scope/后端/DTO。真实早输入探针验证读取可完成和流程继续，不只让E2E等完再输入。代价是独立读取生命周期及前端全门/E2E重验，错误隔离可能接受旧身份或旧Need事实，须反例保护。后台not-e2e可继续验证未改后端/监督算法，但记录诊断差异与源码时点，前端及E2E必须在修后冻结代码重验。
