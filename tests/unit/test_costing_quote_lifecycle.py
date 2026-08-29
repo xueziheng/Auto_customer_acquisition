@@ -221,6 +221,7 @@ print('t10_child_exit=verified', flush=True)
         assert "t10_cleanup=unknown" in result.output
         assert sentinel.returncode is None
     finally:
+        child_cleanup_timed_out = False
         if child_pid is not None:
             try:
                 os.kill(child_pid, signal.SIGKILL)
@@ -233,10 +234,51 @@ print('t10_child_exit=verified', flush=True)
                     break
                 await asyncio.sleep(.01)
             else:
-                pytest.fail("仅本次改变进程组的child未回收")
-        assert sentinel.returncode is None
-        sentinel.terminate()
-        await asyncio.wait_for(sentinel.wait(), 2)
+                child_cleanup_timed_out = True
+        cleanup_errors = []
+        try:
+            assert sentinel.returncode is None
+        except AssertionError as error:
+            cleanup_errors.append(error)
+        if sentinel.returncode is None:
+            try:
+                sentinel.terminate()
+            except OSError as error:
+                cleanup_errors.append(error)
+        try:
+            await asyncio.wait_for(sentinel.wait(), 2)
+        except (OSError, TimeoutError) as error:
+            cleanup_errors.append(error)
+        sentinel_still_alive = sentinel.returncode is None
+        try:
+            os.kill(sentinel.pid, 0)
+        except ProcessLookupError:
+            sentinel_still_alive = False
+        except OSError as error:
+            cleanup_errors.append(error)
+        else:
+            sentinel_still_alive = True
+        if sentinel_still_alive and sentinel.returncode is None:
+            try:
+                sentinel.kill()
+            except OSError as error:
+                cleanup_errors.append(error)
+            try:
+                await asyncio.wait_for(sentinel.wait(), 2)
+            except (OSError, TimeoutError) as error:
+                cleanup_errors.append(error)
+        try:
+            os.kill(sentinel.pid, 0)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            cleanup_errors.append(error)
+        else:
+            cleanup_errors.append(AssertionError("仅本次sentinel兜底后未回收"))
+        if child_cleanup_timed_out:
+            cleanup_errors.append(AssertionError("仅本次改变进程组的child未回收"))
+        if cleanup_errors:
+            raise ExceptionGroup("仅本测试创建的进程清理失败", cleanup_errors)
 
 
 async def test_supervisor_preserves_cancellation_after_bounded_cleanup(controlled_lifecycle, monkeypatch):
