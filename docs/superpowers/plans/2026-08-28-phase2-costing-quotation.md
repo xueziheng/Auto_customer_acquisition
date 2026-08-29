@@ -613,9 +613,10 @@ npm --prefix apps/web run gen:api
 git diff --exit-code -- apps/web/src/api/api.d.ts
 ```
 
-- [ ] 独立审查重点：单/整单口径、低价例外、自批、basis/当前事实可信性、并发唯一、文件信息泄露及Gateway不变；修复后重跑受影响和全量。未启用真实来源/发送必须明确not_run；受控DB/S3 transport不描述为真实供应商或生产对象存储。
+- [x] 独立审查重点：完整读取92提交/89658行全分支diff；唯一NeedUnit进入取消清理Important经统一修复和scoped复审关闭，无新增Critical/Important/Minor。9项非阻断债逐项登记；真实来源/发送仍明确not_run，受控DB/S3 transport不描述为真实供应商或生产对象存储。
 - [x] HANDBOOK新增本批启用/验收步骤，ROADMAP只标本批结果，不勾完Phase2。报告分别列工程、受控、真实资料、真实发送、剩余Phase2；记录金额/报价阈值仍需用户填；不修改Phase1运营完成状态。
-- [ ] 提交 `docs: 记录Phase2成本报价闭环实际验收`；使用finishing-a-development-branch提供合并方式，未获选择不push、不部署、不清理其他工作树。
+- [x] 提交 `docs: 记录Phase2成本报价闭环实际验收`。
+- [ ] 使用finishing-a-development-branch提供合并方式；未获选择不merge、不push、不部署、不清理其他工作树。
 
 ## 3. 规格覆盖自检
 

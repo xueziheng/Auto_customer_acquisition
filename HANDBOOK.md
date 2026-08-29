@@ -553,7 +553,7 @@ artifact引用和线路保留在专用Run，原始HTML留在Artifact Store，不
 ## 十、Phase2成本与报价批次
 
 本批验收记录见[成本报价验收](docs/acceptance/2026-08-28-phase2-costing-quotation.md)，
-启用/停止及未知结果恢复见[运维说明](docs/operations/costing-quotation.md)。仅本批范围，不代表整个Phase2完成，不改变第八节Phase1真实运营标准。
+启用/停止及未知结果恢复见[运维说明](docs/operations/costing-quotation.md)。工程实现、受控验收和全分支独立审查已完成；尚未合并、推送、部署或启用真实外部服务。仅本批范围，不代表整个Phase2完成，不改变第八节Phase1真实运营标准。
 
 1. 按当前合法单head迁移，API/worker分别显式配置报价core、evidence和可选files预算，实际Linux解析能力probe通过才启用。旧部署未被测试升级。
 2. 客户原话真实验证为Need，机会当前归属明确；具有来源权的人确认单位。老板政策、供应商quoted依据、22项费用适用性与来源映射分别留痕，禁止把缺失当零。

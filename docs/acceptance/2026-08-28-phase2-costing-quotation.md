@@ -76,6 +76,24 @@ Fix3独立增量复审确认N1功能残余、两个真实故障sentinel和文档
 这些Fix4/Fix5只改测试失败路径，不改变Fix3冻结产品/监督算法或完整回归结论。T10整项审查完成；
 成本报价全分支仍须另做从`809d7b6`起点的完整审查，不能据T10通过宣称整个Phase2完成。
 
+### 全分支完整审查与统一修复
+
+全分支独立审查从`809d7b6eee743a10a0e7baced5c98b0bf1c7a336`连续读取至
+`a667938d7182feb5ab38a5381607fb2e944c1f3b`的92个提交、89658行/4020243bytes完整diff。
+无Critical；唯一Important为`SqlAlchemyNeedUnitUnitOfWork.__aenter__`在两个事务级`set_config`
+await被取消时会越过rollback/close，可能遗留连接、事务或锁。另9项均裁定为非阻断测试覆盖、失败路径
+资源卫生或结构维护债，继续显式保留，不用全绿结果将其抹除。
+
+统一修复提交`969a915db94b536a1762d2f6a0d8c1a33d455723`只改NeedUnit UoW进入失败清理并新增
+单元测试：捕获`BaseException`后依次尽力rollback、close，二次SQLAlchemy/Runtime/CancelledError
+均不覆盖首个取消或其他终止异常；普通异常仍按首因固定映射，清理日志无参数、无exc_info和异常正文。
+TDD旧实现21failed，修后21passed；真实PG `test_need_units` 26passed、`test_need_unit_access`
+6passed，Ruff和单文件mypy通过。唯一scoped独立复审判定原Important ADDRESSED、无新增
+Critical/Important/Minor，9项非阻断债未被直接恶化。
+
+因此本成本报价批次工程分支达到审查可合并状态；这不是实际合并授权，也不改变真实供应商、真实对象存储
+网络、真实可达性/投递/客户回复、本次报价发送、生产迁移/部署/启用均为`not_run`的边界。
+
 首个闭环测试缺fixture，后续DTO/CORS/来源权限/选区手势/审批视图问题均为夹具错误，未改生产校验。
 正确夹具后业务链直接GREEN，属于新增保护。完整命令、原始失败与实际输出保留于T10报告。
 真实DOM随后发现两项前端缺口，先RED后最小修复：重复原生同选区事件取消locator请求，

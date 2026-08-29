@@ -67,7 +67,7 @@ Demand Signal → Need Hypothesis → 触达 → 回复识别 → Validated Need
 可执行的真实来源验收是显式opt-in的 `research_source_acceptance`，只验证Provider与页面证据，
 不运行模型或触达，不代表完整研究worker已生产启用。
 
-### 成本与报价批次
+### 成本与报价批次（工程实现、受控验收与全分支独立审查完成）
 
 本批交付成本证据/22项适用性、Decimal确定性计算、冻结basis、报价版本/独立审批及客户PDF交付；
 最新实际验收和未运行边界见[批次验收](docs/acceptance/2026-08-28-phase2-costing-quotation.md)。
