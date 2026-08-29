@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Self
 
 from sqlalchemy import text
@@ -11,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from domains.demand.errors import NeedUnitError, NeedUnitUnavailableError
 from infra.db.repositories.need_units import NeedUnitRepositoryImpl
 from shared.schemas.identifiers import TenantId
+
+logger = logging.getLogger(__name__)
 
 
 def _failure(exc: BaseException) -> NeedUnitUnavailableError:
@@ -60,9 +63,19 @@ class SqlAlchemyNeedUnitUnitOfWork:
             )
             self.units = NeedUnitRepositoryImpl(self._session, self._tenant)
             return self
-        except Exception as exc:  # noqa: BLE001 -- 存储边界不可泄露连接异常
-            await self._close()
-            raise _failure(exc) from None
+        except BaseException as exc:  # 取消也必须释放已借出连接
+            await self._cleanup_entry_failure()
+            if isinstance(exc, Exception):
+                raise _failure(exc) from None
+            raise
+
+    async def _cleanup_entry_failure(self) -> None:
+        """进入失败后连续尝试回滚与关闭，不覆盖首个异常。"""
+        for cleanup in (self._session.rollback, self._session.close):
+            try:
+                await cleanup()
+            except BaseException:  # noqa: BLE001 -- 二次清理故障不得覆盖首异常
+                logger.warning("需求单位事务进入失败后的清理失败")
 
     async def __aexit__(
         self,
