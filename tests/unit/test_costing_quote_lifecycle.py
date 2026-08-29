@@ -226,6 +226,14 @@ print('t10_child_exit=verified', flush=True)
                 os.kill(child_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            for _ in range(100):
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(.01)
+            else:
+                pytest.fail("仅本次改变进程组的child未回收")
         assert sentinel.returncode is None
         sentinel.terminate()
         await asyncio.wait_for(sentinel.wait(), 2)
