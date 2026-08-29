@@ -18,7 +18,7 @@ T10验收任务BASE `ce2e76a71d10ce855a47f6b93fa7b242485883fe`；
 | 本次报价真实发送 | not_run；受控链也未发送，quote approved、机会未won、需求未fulfilled |
 | 前端门 | initial 6e为247passed；Fix1裁定127修后21文件252passed，typecheck/build/生成类型零漂移通过，lint 0errors、133既有warnings |
 | 后端全量 | initial 6e为6785passed；Fix1保留完整命令6819passed/11deselected、1105.00s，新增诊断过滤器另由73定向覆盖；源码时点差异见下节 |
-| 独立整项审查 | 首审3个Important经Fix1解决；Fix1增量复审新增N1 Important；Fix2复审确认仍有PGID变化后的N1残余，Fix3进行中，不能称审查通过 |
+| 独立整项审查 | 首审3个Important、Fix1新增N1及Fix2残余均已处理；Fix3核心复审通过，Fix4/Fix5补齐测试失败路径自有进程回收，最终Fix5复审clean |
 
 ### Fix轮次状态
 
@@ -68,7 +68,13 @@ Fix3冻结源码的完整not-e2e为`6825 passed, 12 deselected in 1064.45s`；�
 unknown/nonzero；最终四个生命周期共观察192个互异PID且均已退出，所有记录loopback端口关闭，T10容器/network为空。
 正常自动链产物在`output/playwright/t10-2377b2119bc04413873cd22be3a4807f/`，PDF一页42047bytes、
 SHA256 `0346cfb7896bbbb65343ea3b8c6c3dba362b7472121d053916c806c55f23d17a`；不覆盖或纳入旧五件批准样例。
-Fix3仍待独立增量复审，不能称T10审查通过。
+Fix3独立增量复审确认N1功能残余、两个真实故障sentinel和文档矛盾均已解决；仅发现新增真实进程
+测试的失败路径没有确认自有child最终消失。Fix4增加精确PID有界确认后，复审又发现child超时会先抛出而
+跳过sentinel回收。最终Fix5把两类清理失败延后汇总：始终先精确terminate/wait sentinel，必要时只对
+本测试持有的subprocess执行kill兜底并再次有界等待，确认两个PID后再用`ExceptionGroup`报告全部错误。
+单项1passed、生命周期单元文件25passed、Ruff通过；最终独立增量复审无Critical/Important/Minor。
+这些Fix4/Fix5只改测试失败路径，不改变Fix3冻结产品/监督算法或完整回归结论。T10整项审查完成；
+成本报价全分支仍须另做从`809d7b6`起点的完整审查，不能据T10通过宣称整个Phase2完成。
 
 首个闭环测试缺fixture，后续DTO/CORS/来源权限/选区手势/审批视图问题均为夹具错误，未改生产校验。
 正确夹具后业务链直接GREEN，属于新增保护。完整命令、原始失败与实际输出保留于T10报告。

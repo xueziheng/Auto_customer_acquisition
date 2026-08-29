@@ -521,6 +521,8 @@ export function createQuotePriceBody(amount: string, currency: string): componen
 
 ## Task 10：跨进程验收、回归、审查和交付记录
 
+- [x] T10整项实现与五轮上限内修复复审完成：初始三项Important、PPID孤儿误报及PGID变化残余均已关闭；Fix5最终复审无Critical/Important/Minor。Fix3冻结产品/监督代码的not-e2e为6825passed/12deselected，E2E为12passed/6825deselected；Fix4/Fix5仅补测试失败路径精确回收，定向25passed且Ruff通过。真实供应商、真实对象存储网络、真实可达性/投递和本次报价发送仍not_run；T10完成不等于本批全分支审查或整个Phase2完成。
+
 - Fix3真实runtime137夹具重复两次在最终marker前退出且原因未明，不以单次重跑取绿。仅现test-only本次artifact写固定阶段`child_started→stack_ready→owner_verified→exit137`，不含ID/path/env/log；接线后最多三次有仪表单目标稳定检查，任一未到final立即按stage停报。三次到exit137、原marker、独立sentinel与实际资源清理全过仍只证明当前路径，不回溯解释历史失败，阶段文件不升公开协议。代价是测试诊断维护和额外定向时间；若把后续通过当根因会掩盖夹具波动，故原两次失败永久保留。
 
 - Fix2全量发现既有桥关闭测试平台语义：仅test_costing_quote_transport.py对已知partial-header socket在RelayPool.close执行shutdown+close后，接受peer `recv()==b''`或精确`ConnectionResetError`作为不可再用；timeout、非空bytes及其他OSError仍失败，finally仅关该socket。保留原1failed/6823passed/12deselected全量记录，修后相关组和一次not-e2e重验；不改bridge/I2绝对deadline、清理实现或吞广义异常。代价是测试承认POSIX合法EOF/RST差异；若放宽过度会掩盖仍可用连接，故只限精确异常和具名已关闭socket。
@@ -577,7 +579,7 @@ python3 -m mypy --follow-imports=silent domains/costing/schemas.py domains/costi
 - 使用T8真实composition。T10 fixture `quote_case` 放新integration测试文件：持有tenant/current actors、已验证需求/机会、raw artifact、显式测试policy、price evidence、完整coverage和QuoteDraftCommand；业务状态通过公开服务建立，来源bytes和对象存储transport受控。现EmployeeService没有创建员工方法：仅隔离测试库的测试身份可用显式EmployeeRow初始化，租户/角色/active完整给定，后续所有授权仍读取真实持久员工；不新增生产员工接口或造授权票据。
 - fixture字段：`tenant, actor_id, file_actor_id, command, application, approvals, quotations, files, context_provider, gateway_calls`。actor_id是当前四成本角色中的起草人；file_actor_id是另经当前机会ABAC授权的客户文件读取人，不假设成本角色天然可下载。方法 `submit_and_approve(quote_id)->None` 用真实独立审批service和engine推进，不直接改quote.state。返回的gateway_calls是按tool_id计数的只读dict。
 
-- [ ] 先写新闭环验收测试。T8B2已有真实composition全链通过，不能预设其必定断开；若新测试直接GREEN，按新增保护测试记录。缺fixture、导入或环境失败与真实功能RED分列，不能破坏实现制造RED。只有观察到实际缺口时才按失败测试修复：
+- [x] 先写新闭环验收测试。T8B2已有真实composition全链通过，不能预设其必定断开；若新测试直接GREEN，按新增保护测试记录。缺fixture、导入或环境失败与真实功能RED分列，不能破坏实现制造RED。只有观察到实际缺口时才按失败测试修复：
 
 ```python
 async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
@@ -591,12 +593,12 @@ async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
                ('email.send', 'contact.enrich', 'contact.verify', 'web.search'))
 ```
 
-- [ ] RED：`env -u TEST_DATABASE_URL python3 -m pytest tests/integration/test_costing_quote_closed_loop.py -q`；记录失败原因，修复仅属于本链的实际装配缺口。
-- [ ] fixture按上述限定初始化测试身份，通过原Need/Opportunity及员工分配服务建立已验证需求和可访问机会，不能直接写ValidatedNeed/Opportunity状态或靠B2种子行宣称验证了晋升；上传受控supplierPDF为RawArtifact，T2确认，T3–T5实际创建/审批。fixture不提供默认生产利润政策，不调用真实联系人。最后另断言机会未won、需求未fulfilled、quote未sent，PDF可提取合计与域结果一致。
-- [ ] 多连接并发与重启套件：最后一次owner变更、两个修订、追加和freeze、报价已写operation未记、审批已应用mark_applied未记、PDF已存quote关联未记、unknown存储结果。通过Events/Barrier控制时序，不靠长sleep；每例必须断言最终记录数、状态及零重复副作用。
-- [ ] 真实Uvicorn+Vite+Chromium E2E：老板配政策、员工录证据与成本、独立审批人批准、下载PDF；窄屏390与桌面1280浏览，内容不溢出；自批不可用、API直调仍403；刷新和深链选中正确quote而不是列表第一条。
-- [ ] 用pdf技能做实际生成文件的文本/metadata检查和逐页视觉检查；保留受控样例、hash与截图。浏览器操作使用当前可用browser技能；不能将手工查看源代码当作浏览器验收。
-- [ ] 执行以下命令，记录每个实际结果；有失败先systematic-debugging，不能把失败tests删掉换绿色：
+- [x] RED：`env -u TEST_DATABASE_URL python3 -m pytest tests/integration/test_costing_quote_closed_loop.py -q`；记录失败原因，修复仅属于本链的实际装配缺口。
+- [x] fixture按上述限定初始化测试身份，通过原Need/Opportunity及员工分配服务建立已验证需求和可访问机会，不能直接写ValidatedNeed/Opportunity状态或靠B2种子行宣称验证了晋升；上传受控supplierPDF为RawArtifact，T2确认，T3–T5实际创建/审批。fixture不提供默认生产利润政策，不调用真实联系人。最后另断言机会未won、需求未fulfilled、quote未sent，PDF可提取合计与域结果一致。
+- [x] 多连接并发与重启套件：最后一次owner变更、两个修订、追加和freeze、报价已写operation未记、审批已应用mark_applied未记、PDF已存quote关联未记、unknown存储结果。通过Events/Barrier控制时序，不靠长sleep；每例必须断言最终记录数、状态及零重复副作用。
+- [x] 真实Uvicorn+Vite+Chromium E2E：老板配政策、员工录证据与成本、独立审批人批准、下载PDF；窄屏390与桌面1280浏览，内容不溢出；自批不可用、API直调仍403；刷新和深链选中正确quote而不是列表第一条。
+- [x] 用pdf技能做实际生成文件的文本/metadata检查和逐页视觉检查；保留受控样例、hash与截图。浏览器操作使用当前可用browser技能；不能将手工查看源代码当作浏览器验收。
+- [x] 执行以下命令，记录每个实际结果；有失败先systematic-debugging，不能把失败tests删掉换绿色：
 
 ```bash
 python3 scripts/check_boundaries.py
@@ -612,7 +614,7 @@ git diff --exit-code -- apps/web/src/api/api.d.ts
 ```
 
 - [ ] 独立审查重点：单/整单口径、低价例外、自批、basis/当前事实可信性、并发唯一、文件信息泄露及Gateway不变；修复后重跑受影响和全量。未启用真实来源/发送必须明确not_run；受控DB/S3 transport不描述为真实供应商或生产对象存储。
-- [ ] HANDBOOK新增本批启用/验收步骤，ROADMAP只标本批结果，不勾完Phase2。报告分别列工程、受控、真实资料、真实发送、剩余Phase2；记录金额/报价阈值仍需用户填；不修改Phase1运营完成状态。
+- [x] HANDBOOK新增本批启用/验收步骤，ROADMAP只标本批结果，不勾完Phase2。报告分别列工程、受控、真实资料、真实发送、剩余Phase2；记录金额/报价阈值仍需用户填；不修改Phase1运营完成状态。
 - [ ] 提交 `docs: 记录Phase2成本报价闭环实际验收`；使用finishing-a-development-branch提供合并方式，未获选择不push、不部署、不清理其他工作树。
 
 ## 3. 规格覆盖自检
