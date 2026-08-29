@@ -209,6 +209,7 @@ async def _read_output(stream, lines):
 
 
 async def run_supervised(mode):
+    """仅固定入口合作式收尾可verified；PPID快照只尽力清理已观察子孙。"""
     if mode not in TOTAL_SECONDS:
         raise ValueError("invalid_mode")
     started = time.monotonic()
@@ -219,7 +220,7 @@ async def run_supervised(mode):
     artifacts.mkdir(parents=True, exist_ok=False)
     lines, observed = [], ()
     process = tree = reader = waiter = None
-    cleanup_verified = False
+    cleanup_verified = cooperative_exit = False
     code, primary, reason = 2, None, ""
     stop = asyncio.Event()
     previous = {}
@@ -281,12 +282,14 @@ async def run_supervised(mode):
                 await asyncio.wait_for(reader, max(.01, deadline - time.monotonic()))
                 await tree.refresh(deadline)
                 observed = tuple(tree.observed.values())
-                cleanup_verified = not tree.live
-                if (process.returncode == 0 and lines.count("t10_child_exit=verified") == 1
-                    and not forced and (not reason or (mode == "visual" and reason == "requested_stop"))):
-                    code = 0
-            else:
-                cleanup_verified = True
+                cooperative_exit = (
+                    process.pid in tree.observed
+                    and process.returncode == 0
+                    and lines.count("t10_child_exit=verified") == 1
+                    and not forced
+                    and primary is None
+                    and (not reason or (mode == "visual" and reason == "requested_stop"))
+                )
         except (OSError, RuntimeError, TimeoutError, ValueError):
             cleanup_verified = False
             if process is not None and process.returncode is None:
@@ -296,8 +299,13 @@ async def run_supervised(mode):
                 except TimeoutError:
                     pass
         try:
-            cleanup_verified = await _cleanup_owned(owner, deadline) and cleanup_verified
-            cleanup_verified = _ports_closed(artifacts, deadline) and cleanup_verified
+            docker_cleared = await _cleanup_owned(owner, deadline)
+            ports_closed = _ports_closed(artifacts, deadline)
+            known_cleanup = bool(process is not None and tree is not None and not tree.live
+                                 and docker_cleared and ports_closed)
+            cleanup_verified = cooperative_exit and known_cleanup
+            if cleanup_verified:
+                code = 0
         except (OSError, RuntimeError, TimeoutError, ValueError):
             cleanup_verified = False
         finally:

@@ -18,7 +18,7 @@ T10验收任务BASE `ce2e76a71d10ce855a47f6b93fa7b242485883fe`；
 | 本次报价真实发送 | not_run；受控链也未发送，quote approved、机会未won、需求未fulfilled |
 | 前端门 | initial 6e为247passed；Fix1裁定127修后21文件252passed，typecheck/build/生成类型零漂移通过，lint 0errors、133既有warnings |
 | 后端全量 | initial 6e为6785passed；Fix1保留完整命令6819passed/11deselected、1105.00s，新增诊断过滤器另由73定向覆盖；源码时点差异见下节 |
-| 独立整项审查 | 首审Spec❌ / Needs fixes，3个Important；Fix1实施与验证完成、待提交及增量复审，不能称审查通过 |
+| 独立整项审查 | 首审3个Important经Fix1解决；Fix1增量复审新增N1 Important，Fix2进行中，不能称审查通过 |
 
 ### Fix1当前状态
 
@@ -42,6 +42,18 @@ source/unit编辑取消。裁定127仅修改单位表单读取scope及Need切换
 SHA256 `ddba1899167ff0d0db3a243022abf6b8ecc6bb7530212d533146f2bf25e02050`；
 自动实际下载/API/result hash一致。worker cycles20、禁用工具0、child/cleanup verified；
 本次159个历史观测PID均退出、四端口关闭、t10容器/network空。新产物不纳入本轮提交。
+
+Fix1复审确认原I1/I2/I3和单位读取修复已解决，但指出周期PPID快照会漏两次观察间生成并
+孤儿化的独立session子孙。Fix2真实进程RED证实run已code2仍误报cleanup_verified；
+正常DOM存在这种泄漏尚未实证。修正后PPID快照只用于尽力定位/清理已知PID；只有固定入口
+exit0、唯一正常终态回执、无父强杀/主异常、正常结束（或visual正常请求停止），再与已知PID、
+精确owner Docker资源及端口清理合取才可verified。任意异常/非零/重复或缺回执/强杀/取消均
+unknown且非零，即使已知资源另已证清理；这不宣称任意OS子孙树封闭。Fix2最终门与复审待执行。
+Fix2当前定向77passed，真实runtime137单目标取得固定owned/exit137回执并按预期unknown；
+完整E2E实际12passed/6824deselected、116.42s，正常fixed入口verified，两个故障入口unknown且
+分别核已知PID、四端口与精确owner Docker资源已清。首次后端完整门因既有bridge关闭测试只接受
+EOF、不接受本机合法RST而1failed/6823passed；仅收口该测试契约后最终6824passed/12deselected、
+1056.94s，Ruff与结构七项通过。Fix2候选尚待提交及独立增量复审，不能称审查通过。
 
 首个闭环测试缺fixture，后续DTO/CORS/来源权限/选区手势/审批视图问题均为夹具错误，未改生产校验。
 正确夹具后业务链直接GREEN，属于新增保护。完整命令、原始失败与实际输出保留于T10报告。

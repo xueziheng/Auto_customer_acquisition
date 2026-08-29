@@ -48,7 +48,9 @@ async def test_watchdog_owns_separate_group_and_closes_real_port(controlled_life
         result = await lifecycle.run_supervised("browser")
         assert time.monotonic() - started < 2.5
         assert (result.code == 0) is (scenario == "normal")
-        assert result.cleanup_verified
+        assert result.cleanup_verified is (scenario == "normal")
+        if scenario != "normal":
+            assert "t10_cleanup=unknown" in result.output
         assert cleaned and all(before_deadline for _, before_deadline in cleaned)
         evidence = json.loads((result.artifacts / "fixture.json").read_text())
         assert evidence["child_pgid"] != evidence["parent_pgid"]
@@ -78,6 +80,71 @@ async def test_cleanup_unknown_cannot_be_green(controlled_lifecycle, monkeypatch
     assert "t10_cleanup=unknown" in result.output
 
 
+async def test_unobserved_orphan_between_snapshots_cannot_claim_cleanup_verified(
+    controlled_lifecycle, monkeypatch,
+):
+    artifacts, _ = controlled_lifecycle
+    script = """
+import json, pathlib, subprocess, sys, time
+path = pathlib.Path(sys.argv[1])
+while not (path / 'spawn').exists():
+    time.sleep(.001)
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    start_new_session=True)
+(path / 'orphan.json').write_text(json.dumps({'pid': child.pid}))
+"""
+    monkeypatch.setattr(lifecycle, "_child_command", lambda mode, owner, *_: [
+        sys.executable, "-c", script, str(artifacts / ("t10-" + owner)),
+    ])
+    refresh = lifecycle.ProcessTree.refresh
+    snapshots = 0
+
+    async def observe(tree, deadline):
+        nonlocal snapshots
+        if snapshots:
+            while True:
+                try:
+                    os.kill(tree.pid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline
+                await asyncio.sleep(.001)
+        await refresh(tree, deadline)
+        snapshots += 1
+        if snapshots == 1:
+            assert tree.pid in tree.observed
+            next(artifacts.glob("t10-*")).joinpath("spawn").touch()
+
+    monkeypatch.setattr(lifecycle.ProcessTree, "refresh", observe)
+    sentinel = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(20)", start_new_session=True)
+    orphan = None
+    try:
+        result = await lifecycle.run_supervised("browser")
+        orphan = json.loads((result.artifacts / "orphan.json").read_text())["pid"]
+        os.kill(orphan, 0)
+        assert orphan not in {row["pid"] for row in result.observed}
+        assert sentinel.returncode is None
+        print("unobserved_orphan_alive=true;cleanup_verified=" + str(result.cleanup_verified).lower())
+        assert result.code != 0
+        assert not result.cleanup_verified
+        assert "t10_cleanup=unknown" in result.output
+    finally:
+        if orphan is not None:
+            os.kill(orphan, signal.SIGKILL)
+            for _ in range(100):
+                try:
+                    os.kill(orphan, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(.01)
+            else:
+                pytest.fail("仅本次孤儿进程未回收")
+        assert sentinel.returncode is None
+        sentinel.terminate()
+        await asyncio.wait_for(sentinel.wait(), 2)
+
+
 async def test_supervisor_preserves_cancellation_after_bounded_cleanup(controlled_lifecycle, monkeypatch):
     artifacts, cleaned = controlled_lifecycle
     fixture_command(monkeypatch, "blocked_initialization", artifacts)
@@ -86,9 +153,11 @@ async def test_supervisor_preserves_cancellation_after_bounded_cleanup(controlle
         if list(artifacts.glob("t10-*/fixture.json")):
             break
         await asyncio.sleep(.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    task.cancel("controlled-cancel")
+    with pytest.raises(asyncio.CancelledError) as caught:
         await task
+    assert caught.value.args == ("controlled-cancel",)
+    assert any("cleanup_unknown" in note for note in caught.value.__notes__)
     assert cleaned
     evidence = json.loads(next(artifacts.glob("t10-*/fixture.json")).read_text())
     with socket.socket() as probe:
@@ -107,7 +176,7 @@ async def test_watchdog_tracks_actual_chromium_groups_and_keeps_unrelated_proces
     try:
         result = await lifecycle.run_supervised("browser")
         assert (result.code == 0) is (scenario == "chromium_normal")
-        assert result.cleanup_verified
+        assert result.cleanup_verified is (scenario == "chromium_normal")
         chromium = json.loads((result.artifacts / "chromium.json").read_text())
         observed = {row["pid"]: row for row in result.observed}
         assert chromium and all(item["pid"] in observed for item in chromium)
@@ -118,7 +187,8 @@ async def test_watchdog_tracks_actual_chromium_groups_and_keeps_unrelated_proces
         assert sentinel.returncode is None
         print("chromium_case=" + scenario + ";owned=" + str(len(chromium))
               + ";observed=" + str(len(observed)) + ";groups="
-              + str(len({row["pgid"] for row in result.observed})) + ";sentinel_alive=true;cleanup=verified")
+              + str(len({row["pgid"] for row in result.observed})) + ";sentinel_alive=true;known_pids_gone=true;cleanup="
+              + ("verified" if result.cleanup_verified else "unknown"))
     finally:
         sentinel.terminate()
         await asyncio.wait_for(sentinel.wait(), 2)
@@ -139,6 +209,21 @@ async def test_visual_parent_sigterm_uses_bounded_graceful_cleanup(controlled_li
     result = await lifecycle.run_supervised("visual")
     await stop_task
     assert result.code == 0 and result.cleanup_verified and cleaned
+
+
+@pytest.mark.parametrize("scenario", ["missing_receipt", "duplicate_receipt", "nonzero_receipt"])
+async def test_incomplete_terminal_receipt_cannot_prove_cleanup(controlled_lifecycle, monkeypatch, scenario):
+    artifacts, _ = controlled_lifecycle
+    fixture_command(monkeypatch, scenario, artifacts)
+    result = await lifecycle.run_supervised("browser")
+    assert result.code != 0 and not result.cleanup_verified
+    assert "t10_cleanup=unknown" in result.output
+    evidence = json.loads((result.artifacts / "fixture.json").read_text())
+    for pid in (evidence["pid"], evidence["child_pid"]):
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    with socket.socket() as probe:
+        assert probe.connect_ex(("127.0.0.1", evidence["port"])) != 0
 
 
 @pytest.mark.parametrize("failure", ["wrong_owner", "wrong_name", "daemon_timeout"])
@@ -266,8 +351,12 @@ def fixture_main(scenario, artifacts):
     child.kill()
     child.wait(timeout=1)
     listener.close()
+    if scenario == "missing_receipt":
+        return 0
+    if scenario == "duplicate_receipt":
+        print("t10_child_exit=verified", flush=True)
     print("t10_child_exit=verified", flush=True)
-    return 0
+    return 2 if scenario == "nonzero_receipt" else 0
 
 
 if __name__ == "__main__":

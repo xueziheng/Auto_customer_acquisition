@@ -6,12 +6,15 @@ import asyncio
 import hashlib
 import io
 import json
+import os
+import socket
 import sys
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
+from docker.errors import NotFound
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright, expect
 from pypdf import PdfReader
@@ -299,7 +302,10 @@ try:
             print('fixed_exception_type=HostStalledAfterApiCreate', flush=True)
             time.sleep(60)
         stack.runner.kill(signal='SIGKILL')
-        assert stack.runner.wait(timeout=10)['StatusCode'] == 137
+        exit_code = stack.runner.wait(timeout=10)['StatusCode']
+        assert exit_code == 137
+        (lifecycle._ACTIVE.artifacts / 'runtime-kill.json').write_text(
+            '{"owned":true,"exit_code":137}')
         print('fixed_exception_type=RuntimeKilled137', flush=True)
 except AssertionError:
     raise SystemExit(2)
@@ -317,13 +323,35 @@ print('t10_child_exit=verified', flush=True)
         monkeypatch.setattr(lifecycle, "CLEANUP_SECONDS", 12)
         monkeypatch.setattr(lifecycle, "TERM_SECONDS", .3)
     result = await run_supervised("browser")
-    assert result.code != 0 and result.cleanup_verified, result.output
+    assert result.code != 0 and not result.cleanup_verified, result.output
+    assert "t10_cleanup=unknown" in result.output
+    if failure == "runtime_kill":
+        assert json.loads((result.artifacts / "runtime-kill.json").read_text()) == {
+            "owned": True, "exit_code": 137,
+        }
     assert ("fixed_exception_type=" + (
         "RuntimeKilled137" if failure == "runtime_kill" else "HostStalledAfterApiCreate"
     )) in result.output
     if failure == "host_stall":
         assert "t10_deadline=expired" in result.output
     assert "t10_child_exit=verified" not in result.output
+    lifecycle_record = json.loads((result.artifacts / "lifecycle.json").read_text())
+    for row in lifecycle_record["processes"]:
+        with pytest.raises(ProcessLookupError):
+            os.kill(row["pid"], 0)
+    for port in json.loads((result.artifacts / "ports.json").read_text()):
+        with socket.socket() as probe:
+            assert probe.connect_ex(("127.0.0.1", port)) != 0
+    client = __import__("docker").from_env()
+    try:
+        names = lifecycle.resource_names(lifecycle_record["owner"])
+        for key in ("api", "pg"):
+            with pytest.raises(NotFound):
+                client.containers.get(names[key])
+        with pytest.raises(NotFound):
+            client.networks.get(names["network"])
+    finally:
+        client.close()
     print(result.output)
 
 

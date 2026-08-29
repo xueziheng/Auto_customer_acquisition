@@ -147,8 +147,14 @@ def test_bridge_cleanup_closes_idle_header_connection():
         idle = socket.create_connection(("127.0.0.1", int(origin.rsplit(":", 1)[1])))
         idle.sendall(b"GET / HTTP/1.1\r\n")
     idle.settimeout(1)
-    assert idle.recv(1) == b""
-    idle.close()
+    try:
+        try:
+            closed = idle.recv(1) == b""
+        except ConnectionResetError:
+            closed = True
+        assert closed
+    finally:
+        idle.close()
 
 
 def test_bridge_admits_only_eight_connections_before_headers(monkeypatch):

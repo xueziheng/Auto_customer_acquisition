@@ -40,4 +40,9 @@ Docker daemon无响应时不能保证服务端build取消或资源已经删除�
 `t10_cleanup=unknown`与本次owner，不能显示verified；先由运维只读核对该owner的具体资源，
 不得扩大为按前缀/目录清扫。visual输出的父PID接受SIGTERM并执行同样的有界收尾；
 交接URL只在输出期限内有效，清理后是历史测试上下文，不是生产服务地址。
+周期PPID快照只能帮助终止已观察的本次子孙，不能证明任意两次观察间孤儿化的OS进程已被发现。
+因此`cleanup=verified`还要求受支持固定入口合作式完成全部owner上下文并给出唯一终态回执、
+exit0且无父强杀/主异常；异常、缺/重复回执、非零、强杀或取消一律`cleanup=unknown`并非零。
+这不会停止后续对已知PID、精确Docker名字/owner/ID和loopback端口的有界清理及实际核对，
+但known资源清理完成不能把异常入口提升为全局verified，也不能按进程名扩大扫描。
 Fix1完整验收与增量审查状态见[批次验收](../acceptance/2026-08-28-phase2-costing-quotation.md)，未过门不视为完成。
