@@ -292,11 +292,17 @@ from tests.e2e.costing_quote_stack import linux_stack
 owner, work, finish, parent, failure = sys.argv[1:]
 lifecycle._ACTIVE = lifecycle.OwnedRun(owner, float(work), float(finish),
     lifecycle.OUTPUT_ROOT / ('t10-' + owner), int(parent))
+stage_path = lifecycle._ACTIVE.artifacts / 'runtime-stage.json'
+def record_stage(stage):
+    stage_path.write_text('{"stage":"' + stage + '"}')
+record_stage('child_started')
 try:
     with linux_stack(mode='browser') as stack:
+        record_stage('stack_ready')
         stack.runner.reload()
         assert stack.runner.attrs['Name'] == '/' + lifecycle.resource_names(owner)['api']
         assert stack.runner.attrs['Config']['Labels'][lifecycle.OWNER_LABEL] == owner
+        record_stage('owner_verified')
         if failure == 'host_stall':
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             print('fixed_exception_type=HostStalledAfterApiCreate', flush=True)
@@ -304,6 +310,7 @@ try:
         stack.runner.kill(signal='SIGKILL')
         exit_code = stack.runner.wait(timeout=10)['StatusCode']
         assert exit_code == 137
+        record_stage('exit137')
         (lifecycle._ACTIVE.artifacts / 'runtime-kill.json').write_text(
             '{"owned":true,"exit_code":137}')
         print('fixed_exception_type=RuntimeKilled137', flush=True)
@@ -322,37 +329,57 @@ print('t10_child_exit=verified', flush=True)
         monkeypatch.setattr(lifecycle, "TOTAL_SECONDS", {**lifecycle.TOTAL_SECONDS, "browser": 35})
         monkeypatch.setattr(lifecycle, "CLEANUP_SECONDS", 12)
         monkeypatch.setattr(lifecycle, "TERM_SECONDS", .3)
-    result = await run_supervised("browser")
-    assert result.code != 0 and not result.cleanup_verified, result.output
-    assert "t10_cleanup=unknown" in result.output
-    if failure == "runtime_kill":
-        assert json.loads((result.artifacts / "runtime-kill.json").read_text()) == {
-            "owned": True, "exit_code": 137,
-        }
-    assert ("fixed_exception_type=" + (
-        "RuntimeKilled137" if failure == "runtime_kill" else "HostStalledAfterApiCreate"
-    )) in result.output
-    if failure == "host_stall":
-        assert "t10_deadline=expired" in result.output
-    assert "t10_child_exit=verified" not in result.output
-    lifecycle_record = json.loads((result.artifacts / "lifecycle.json").read_text())
-    for row in lifecycle_record["processes"]:
-        with pytest.raises(ProcessLookupError):
-            os.kill(row["pid"], 0)
-    for port in json.loads((result.artifacts / "ports.json").read_text()):
-        with socket.socket() as probe:
-            assert probe.connect_ex(("127.0.0.1", port)) != 0
-    client = __import__("docker").from_env()
+    sentinel = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(90)", start_new_session=True,
+    )
     try:
-        names = lifecycle.resource_names(lifecycle_record["owner"])
-        for key in ("api", "pg"):
+        result = await run_supervised("browser")
+        assert result.code != 0 and not result.cleanup_verified, result.output
+        assert "t10_cleanup=unknown" in result.output
+        expected_stage = "exit137" if failure == "runtime_kill" else "owner_verified"
+        stage_receipt = result.artifacts / "runtime-stage.json"
+        assert stage_receipt.exists(), result.output
+        assert json.loads(stage_receipt.read_text()) == {"stage": expected_stage}
+        if failure == "runtime_kill":
+            runtime_receipt = result.artifacts / "runtime-kill.json"
+            assert runtime_receipt.exists(), result.output
+            assert json.loads(runtime_receipt.read_text()) == {
+                "owned": True, "exit_code": 137,
+            }
+        assert ("fixed_exception_type=" + (
+            "RuntimeKilled137" if failure == "runtime_kill" else "HostStalledAfterApiCreate"
+        )) in result.output
+        if failure == "host_stall":
+            assert "t10_deadline=expired" in result.output
+        assert "t10_child_exit=verified" not in result.output
+        lifecycle_record = json.loads((result.artifacts / "lifecycle.json").read_text())
+        assert sentinel.pid not in {row["pid"] for row in lifecycle_record["processes"]}
+        assert sentinel.returncode is None
+        os.kill(sentinel.pid, 0)
+        for row in lifecycle_record["processes"]:
+            with pytest.raises(ProcessLookupError):
+                os.kill(row["pid"], 0)
+        for port in json.loads((result.artifacts / "ports.json").read_text()):
+            with socket.socket() as probe:
+                assert probe.connect_ex(("127.0.0.1", port)) != 0
+        client = __import__("docker").from_env()
+        try:
+            names = lifecycle.resource_names(lifecycle_record["owner"])
+            for key in ("api", "pg"):
+                with pytest.raises(NotFound):
+                    client.containers.get(names[key])
             with pytest.raises(NotFound):
-                client.containers.get(names[key])
-        with pytest.raises(NotFound):
-            client.networks.get(names["network"])
+                client.networks.get(names["network"])
+        finally:
+            client.close()
+        print(result.output)
+        print("t10_independent_sentinel=alive;failure=" + failure)
     finally:
-        client.close()
-    print(result.output)
+        if sentinel.returncode is None:
+            sentinel.terminate()
+        await asyncio.wait_for(sentinel.wait(), 2)
+        with pytest.raises(ProcessLookupError):
+            os.kill(sentinel.pid, 0)
 
 
 async def probe_initial_unit_read(stack, _artifacts):

@@ -104,8 +104,7 @@ class ProcessTree:
                 pid, ppid, pgid = map(int, fields[:3])
                 rows[pid] = {"pid": pid, "ppid": ppid, "pgid": pgid, "birth": fields[3]}
         owned = {pid for pid, row in rows.items() if pid in self.observed
-                 and row["birth"] == self.observed[pid]["birth"]
-                 and row["pgid"] == self.observed[pid]["pgid"]}
+                 and row["birth"] == self.observed[pid]["birth"]}
         if not self.observed and self.pid in rows:
             owned.add(self.pid)
         changed = True

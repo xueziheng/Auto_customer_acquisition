@@ -145,6 +145,92 @@ child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'],
         await asyncio.wait_for(sentinel.wait(), 2)
 
 
+async def test_observed_child_that_changes_process_group_remains_owned(
+    controlled_lifecycle, monkeypatch,
+):
+    artifacts, _ = controlled_lifecycle
+    child_script = """
+import json, os, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+path.joinpath('child.json').write_text(json.dumps(
+    {'pid': os.getpid(), 'initial_pgid': os.getpgrp()}))
+while not path.joinpath('change-group').exists():
+    time.sleep(.001)
+os.setsid()
+path.joinpath('changed.json').write_text(json.dumps(
+    {'pid': os.getpid(), 'changed_pgid': os.getpgrp(), 'ppid': os.getppid()}))
+while True:
+    time.sleep(1)
+"""
+    root_script = """
+import pathlib, subprocess, sys, time
+path = pathlib.Path(sys.argv[1])
+subprocess.Popen([sys.executable, '-c', sys.argv[2], str(path)],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+while not path.joinpath('changed.json').exists():
+    time.sleep(.001)
+print('t10_child_exit=verified', flush=True)
+"""
+    monkeypatch.setattr(lifecycle, "_child_command", lambda mode, owner, *_: [
+        sys.executable, "-c", root_script, str(artifacts / ("t10-" + owner)), child_script,
+    ])
+    refresh = lifecycle.ProcessTree.refresh
+    change_allowed = False
+
+    async def observe(tree, deadline):
+        nonlocal change_allowed
+        if change_allowed:
+            path = next(artifacts.glob("t10-*"))
+            while not path.joinpath("changed.json").exists():
+                assert time.monotonic() < deadline
+                await asyncio.sleep(.001)
+            while True:
+                try:
+                    os.kill(tree.pid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline
+                await asyncio.sleep(.001)
+        await refresh(tree, deadline)
+        path = next(artifacts.glob("t10-*"))
+        child_path = path / "child.json"
+        if not change_allowed and child_path.exists():
+            child_pid = json.loads(child_path.read_text())["pid"]
+            if child_pid in tree.observed:
+                path.joinpath("change-group").touch()
+                change_allowed = True
+
+    monkeypatch.setattr(lifecycle.ProcessTree, "refresh", observe)
+    sentinel = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(20)", start_new_session=True,
+    )
+    child_pid = None
+    try:
+        result = await lifecycle.run_supervised("browser")
+        initial = json.loads((result.artifacts / "child.json").read_text())
+        changed = json.loads((result.artifacts / "changed.json").read_text())
+        child_pid = initial["pid"]
+        assert changed["pid"] == child_pid
+        assert changed["changed_pgid"] != initial["initial_pgid"]
+        assert child_pid in {row["pid"] for row in result.observed}
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        print("changed_group_child_reaped=true;cleanup_verified="
+              + str(result.cleanup_verified).lower() + ";code=" + str(result.code))
+        assert result.code != 0 and not result.cleanup_verified
+        assert "t10_cleanup=unknown" in result.output
+        assert sentinel.returncode is None
+    finally:
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        assert sentinel.returncode is None
+        sentinel.terminate()
+        await asyncio.wait_for(sentinel.wait(), 2)
+
+
 async def test_supervisor_preserves_cancellation_after_bounded_cleanup(controlled_lifecycle, monkeypatch):
     artifacts, cleaned = controlled_lifecycle
     fixture_command(monkeypatch, "blocked_initialization", artifacts)
