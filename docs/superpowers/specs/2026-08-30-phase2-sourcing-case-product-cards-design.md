@@ -197,7 +197,8 @@ Agent 只负责从已安全读取的页面中生成候选草稿和逐项匹配�
 在现有模型上增加：
 
 - `workflow_version`；
-- `trigger_event_id`；
+- `trigger_key`（tenant、Need ID 与工作流版本组成的稳定业务幂等键；不含入口
+  事件类型，因此 `NeedValidated` 与 `NeedBecameSourcingReady` 共用同一键）；
 - `need_snapshot_hash`；
 - `active_search_plan_id`；
 - `stop_code` 与安全的结构化详情；
@@ -256,6 +257,10 @@ V2 不再新写语义错误的 `quoted_prices`。旧字段仅在旧 DTO/数据�
 和提交时的 Case 版本。主候选必须合格并已有现有产品引用或 `source_only`
 卡；并发的过期审核提交通过条件更新拒绝。
 
+现有产品只有同时具备内部成本金额、成本口径和可追溯来源时，才属于可自动
+交给成本域的供给选项；资料缺一项时仍可作为梯子命中记录，但不得把未知成本
+当成零或据此创建 `ESTIMATED` 成本表。
+
 审核提交后通过机会域显式服务接口按 `need_id` 精确读取 `OpportunityId`。
 只有真实存在且同租户的机会引用才写入 Case；不存在不是“无供应”，而是
 独立的 `opportunity_required` 停止原因。
@@ -285,8 +290,10 @@ NeedBecameSourcingReady
 ```
 
 - 产品域消费 `SourcingCandidatesReady` 并幂等生成产品卡；
-- 成本域消费 `SourcingCaseHandedToCosting`，只为主候选创建 `ESTIMATED`
-  成本表；
+- `SourcingCaseHandedToCosting` 只携带 Case、Need、Opportunity 和 Review 的
+  稳定引用；成本域读取同租户、同版本的 handoff snapshot，按主
+  `SourcingSupplyOption` 创建唯一 `ESTIMATED` 成本表，不假设主选项必然来自
+  Supplier Candidate；
 - demand 域仅在需求状态首次跨到 `sourcing_ready` 时发布
   `NeedBecameSourcingReady`；重复补充字段或显式重复标记不重复发布；
 - 旧人工流程继续按旧工作流版本解释 `SourcingCaseCompleted`；
