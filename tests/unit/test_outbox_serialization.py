@@ -32,6 +32,7 @@ from shared.events.catalog import (
     HandoffQueueBacklogged,
     HandoffRequested,
     MessageSent,
+    NeedBecameSourcingReady,
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
@@ -40,6 +41,8 @@ from shared.events.catalog import (
     SendingIdentityActivated,
     SendingIdentitySuspended,
     SendingIdentityThrottled,
+    SourcingCandidatesReady,
+    SourcingCaseHandedToCosting,
     SuppressionAdded,
 )
 from shared.schemas.evidence import ConfidenceTier
@@ -53,7 +56,12 @@ from shared.schemas.identifiers import (
     QuoteId,
     RunId,
     SendingIdentityId,
+    SourcingCaseId,
+    SourcingReviewId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
+    ValidatedNeedId,
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
@@ -109,6 +117,9 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedHypothesisCreated",
         "NeedHypothesisRejected",
         "NeedValidated",
+        "NeedBecameSourcingReady",
+        "SourcingCandidatesReady",
+        "SourcingCaseHandedToCosting",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["QuoteApproved"] is QuoteApproved
@@ -123,6 +134,36 @@ def test_event_registry_is_explicit_whitelist() -> None:
     )
     assert event_type is not None, "RED：AuthenticationCheckRequested 尚未创建"
     assert EVENT_REGISTRY["AuthenticationCheckRequested"] is event_type
+
+
+def test_phase2_sourcing_events_roundtrip_as_tenant_bound_facts() -> None:
+    """寻源 V2 事件经 outbox JSON 往返后不丢失强类型关联标识。"""
+    registry = _load("EVENT_REGISTRY")
+    ready = NeedBecameSourcingReady(
+        tenant_id=TenantId(new_id("tn")),
+        occurred_at=_NOW,
+        need_id=ValidatedNeedId(new_id("need")),
+        completeness=3,
+    )
+    candidates = SourcingCandidatesReady(
+        tenant_id=ready.tenant_id,
+        occurred_at=_NOW,
+        case_id=SourcingCaseId(new_id("src")),
+        option_ids=(SourcingSupplyOptionId(new_id("sop")),),
+        candidate_ids=(SupplierCandidateId(new_id("sc")),),
+    )
+    handed = SourcingCaseHandedToCosting(
+        tenant_id=ready.tenant_id,
+        occurred_at=_NOW,
+        case_id=candidates.case_id,
+        need_id=ready.need_id,
+        opportunity_id=OpportunityId(new_id("opp")),
+        review_id=SourcingReviewId(new_id("srv")),
+    )
+
+    for event in (ready, candidates, handed):
+        assert registry[type(event).__name__] is type(event)
+        assert _load("deserialize")(type(event), _load("serialize")(event)) == event
 
 
 def test_quote_approved_roundtrip_contains_only_safe_ids() -> None:

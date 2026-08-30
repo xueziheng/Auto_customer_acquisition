@@ -55,6 +55,7 @@ from domains.demand.service import (
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
+    NeedBecameSourcingReady,
     NeedClusterFormed,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
@@ -889,6 +890,8 @@ class DemandServiceImpl:
             ):
                 raise InvalidStateTransition("需求已终结，字段不可变更")
 
+            before_completeness = need.completeness
+            before_status = need.status
             updater = EmployeeId(updated_by) if updated_by else None
             updated = replace(need)
             changed = False
@@ -940,6 +943,20 @@ class DemandServiceImpl:
             ):
                 updated.status = NeedStatus.SOURCING_READY
             await uow.needs.update(updated)
+            if (
+                before_completeness < 3 <= updated.completeness
+                and before_status is NeedStatus.VALIDATED
+                and updated.status is NeedStatus.SOURCING_READY
+            ):
+                await uow.bus.publish(
+                    NeedBecameSourcingReady(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        need_id=updated.need_id,
+                        completeness=updated.completeness,
+                    )
+                )
 
     async def mark_sourcing_ready(
         self,

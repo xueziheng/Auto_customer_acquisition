@@ -35,6 +35,9 @@ from shared.schemas.identifiers import (
     RunId,
     SendingIdentityId,
     SourcingCaseId,
+    SourcingReviewId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
     ValidatedNeedId,
 )
@@ -112,6 +115,14 @@ class NeedValidated(DomainEvent):
     evidence_level: EvidenceLevel | None = None
     completeness: int = 0
     """需求完整度 0–5，见 ``docs/architecture/01-domain-model.md``。"""
+
+
+@dataclass(frozen=True)
+class NeedBecameSourcingReady(DomainEvent):
+    """已验证需求首次从未达门槛变为可寻源。"""
+
+    need_id: ValidatedNeedId = None  # type: ignore[assignment]
+    completeness: int = 0
 
 
 @dataclass(frozen=True)
@@ -442,6 +453,25 @@ class SourcingCaseCompleted(DomainEvent):
 
     case_id: SourcingCaseId = None  # type: ignore[assignment]
     candidate_count: int = 0
+
+
+@dataclass(frozen=True)
+class SourcingCandidatesReady(DomainEvent):
+    """寻源案例的候选供应选项已完成核验。"""
+
+    case_id: SourcingCaseId = None  # type: ignore[assignment]
+    option_ids: tuple[SourcingSupplyOptionId, ...] = ()
+    candidate_ids: tuple[SupplierCandidateId, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourcingCaseHandedToCosting(DomainEvent):
+    """寻源案例已交给成本核算。"""
+
+    case_id: SourcingCaseId = None  # type: ignore[assignment]
+    need_id: ValidatedNeedId = None  # type: ignore[assignment]
+    opportunity_id: OpportunityId = None  # type: ignore[assignment]
+    review_id: SourcingReviewId = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)

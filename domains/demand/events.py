@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from shared.events.catalog import (
     DemandSignalCaptured,
+    NeedBecameSourcingReady,
     NeedClusterFormed,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
@@ -23,6 +24,7 @@ PUBLISHES = (
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
+    NeedBecameSourcingReady,
     NeedClusterFormed,
 )
 """本域发布的事件。

@@ -50,6 +50,7 @@ from shared.events.catalog import (
     HandoffRequested,
     InboundMessageStored,
     MessageSent,
+    NeedBecameSourcingReady,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
@@ -62,6 +63,8 @@ from shared.events.catalog import (
     SendingIdentityActivated,
     SendingIdentitySuspended,
     SendingIdentityThrottled,
+    SourcingCandidatesReady,
+    SourcingCaseHandedToCosting,
     SuppressionAdded,
 )
 from shared.schemas.identifiers import TenantId, new_id
@@ -100,6 +103,9 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "NeedHypothesisCreated": NeedHypothesisCreated,
     "NeedHypothesisRejected": NeedHypothesisRejected,
     "NeedValidated": NeedValidated,
+    "NeedBecameSourcingReady": NeedBecameSourcingReady,
+    "SourcingCandidatesReady": SourcingCandidatesReady,
+    "SourcingCaseHandedToCosting": SourcingCaseHandedToCosting,
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享
     # outbox 入口对回复管道（切片 6 producer）开放，接线可端到端验证
     "ReplyReceived": ReplyReceived,
@@ -168,7 +174,7 @@ def _to_jsonable(value: object) -> object:
             f.name: _to_jsonable(getattr(value, f.name))
             for f in dataclasses.fields(value)
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_to_jsonable(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _to_jsonable(item) for key, item in value.items()}
@@ -335,6 +341,11 @@ def _from_jsonable(value: object, expected: object) -> object:
     if origin is list:
         (elem_type,) = get_args(expected)
         return [_from_jsonable(item, elem_type) for item in cast(list[object], value)]
+    if origin is tuple:
+        (elem_type, _) = get_args(expected)
+        return tuple(
+            _from_jsonable(item, elem_type) for item in cast(list[object], value)
+        )
     if origin is dict:
         _, val_type = get_args(expected)
         return {

@@ -66,6 +66,9 @@ ProductVariantId = NewType("ProductVariantId", str)
 SupplierId = NewType("SupplierId", str)
 SourcingCaseId = NewType("SourcingCaseId", str)
 SupplierCandidateId = NewType("SupplierCandidateId", str)
+SourcingPlanId = NewType("SourcingPlanId", str)
+SourcingReviewId = NewType("SourcingReviewId", str)
+SourcingSupplyOptionId = NewType("SourcingSupplyOptionId", str)
 
 # --- 成本与报价 ---------------------------------------------------------
 
