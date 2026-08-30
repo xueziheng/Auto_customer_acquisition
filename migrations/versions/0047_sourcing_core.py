@@ -17,10 +17,42 @@ _PLAN_STATES = (
     "'pending_confirmation','authorized','running','exhausted','blocked','completed'"
 )
 _STOP_CODES = (
-    "'usage_unknown','paid_enabled','quota_exhausted','request_uncertain',"
-    "'reconciliation_required','no_results','page_access_forbidden',"
-    "'login_or_captcha','no_qualified_candidate','no_qualified_supply',"
-    "'opportunity_required','manual_stop'"
+    "'approval_required','quota_status_unknown','paid_usage_enabled','quota_exhausted',"
+    "'provider_timeout','provider_rate_limited','page_access_forbidden','login_or_captcha',"
+    "'unsafe_redirect','no_search_results','no_verifiable_supplier',"
+    "'no_qualified_candidate','reconciliation_required','opportunity_required',"
+    "'need_incomplete','plan_confirmation_required','free_quota_unavailable',"
+    "'budget_exhausted','no_qualified_supply','manual_stop'"
+)
+_STOP_STAGES = (
+    "'intake','plan','quota','provider','page','candidate','review','cost_handoff'"
+)
+_STOP_DETAIL_CHECK = (
+    "stop_detail IS NULL OR (jsonb_typeof(stop_detail) = 'object' "
+    "AND stop_detail ? 'stage' "
+    "AND (stop_detail - 'stage' - 'query_index' - 'provider_http_status' "
+    "- 'observed_count' - 'configured_limit') = '{}'::jsonb "
+    f"AND stop_detail->>'stage' IN ({_STOP_STAGES}) "
+    "AND (NOT stop_detail ? 'query_index' OR CASE "
+    "WHEN jsonb_typeof(stop_detail->'query_index') = 'number' "
+    "THEN (stop_detail->>'query_index')::numeric >= 0 "
+    "AND (stop_detail->>'query_index')::numeric = trunc((stop_detail->>'query_index')::numeric) "
+    "ELSE false END) "
+    "AND (NOT stop_detail ? 'provider_http_status' OR CASE "
+    "WHEN jsonb_typeof(stop_detail->'provider_http_status') = 'number' "
+    "THEN (stop_detail->>'provider_http_status')::numeric BETWEEN 100 AND 599 "
+    "AND (stop_detail->>'provider_http_status')::numeric = "
+    "trunc((stop_detail->>'provider_http_status')::numeric) ELSE false END) "
+    "AND (NOT stop_detail ? 'observed_count' OR CASE "
+    "WHEN jsonb_typeof(stop_detail->'observed_count') = 'number' "
+    "THEN (stop_detail->>'observed_count')::numeric >= 0 "
+    "AND (stop_detail->>'observed_count')::numeric = "
+    "trunc((stop_detail->>'observed_count')::numeric) ELSE false END) "
+    "AND (NOT stop_detail ? 'configured_limit' OR CASE "
+    "WHEN jsonb_typeof(stop_detail->'configured_limit') = 'number' "
+    "THEN (stop_detail->>'configured_limit')::numeric >= 0 "
+    "AND (stop_detail->>'configured_limit')::numeric = "
+    "trunc((stop_detail->>'configured_limit')::numeric) ELSE false END))"
 )
 
 
@@ -80,7 +112,7 @@ def upgrade() -> None:
             name="ck_sourcing_cases_stop_code",
         ),
         sa.CheckConstraint(
-            "stop_detail IS NULL OR jsonb_typeof(stop_detail) = 'object'",
+            _STOP_DETAIL_CHECK,
             name="ck_sourcing_cases_stop_detail_json",
         ),
         sa.CheckConstraint(

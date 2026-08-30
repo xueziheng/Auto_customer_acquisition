@@ -119,3 +119,88 @@ python scripts/run_alembic.py heads
   同一迁移步骤，不修改 Gateway 或业务服务。
 - 无生产数据 backfill；新增列均可空，旧成本表可无来源继续存在。
 - 未发现需要放宽硬边界或新增 ADR 的设计冲突。
+
+## Fix Round 1（Task 3 审查）
+
+### 修复结果
+
+- 按 Ruling P3 将 `SourcingStopCode`、0047 CHECK 与 ORM CHECK 统一为领域生命周期码和
+  Ruling P1 精确公开搜索码的并集；删除 `stop_code` 中四个迁移草稿缩写。既有 Gateway
+  quota reservation 的 `stop_reason` 及搜索执行的 `provider_status` 属于不同合同，依照
+  “不修改 Gateway core / Task 10”边界未改动。
+- 新增冻结的 `SourcingStopDetail` 与固定 `SourcingStopStage`。详情只允许阶段、查询序号、
+  HTTP 状态、观察数量和配置上限；领域拒绝自由字符串，数据库拒绝未知键、错误类型、负数、
+  小数计数和越界 HTTP 状态，避免保存 Provider 原文、请求载荷或异常文本。
+- 0048 与 ORM 的产品 CHECK 显式处理 SQL NULL：候选池只接受非空 `source_only`；内部成本
+  四字段全有或全无；售价 amount/currency 成对；交期 min/max 成对且范围有效。
+- 新增真实 PostgreSQL 行为覆盖：Ladder 跳级及 UPDATE/DELETE、reconciliation
+  UPDATE/DELETE、Review 备选重复/包含主选/跨 Case/跨 tenant、supplier price DELETE，
+  以及停在 0048 插入旧 `cost_sheets` 行再升 0049 的兼容性与数据保留。
+
+### TDD RED / GREEN 证据
+
+第一组先写停止码、安全详情和 SQL NULL 绕过测试，未改实现时：
+
+```text
+pytest <2 个 stop contract tests> <2 个 migration constraint tests> -q
+=> 4 failed in 7.33s
+```
+
+失败首因分别为：领域枚举缺少精确公开码、`SourcingStopDetail` 不存在、数据库拒绝
+`approval_required`、candidate 的 NULL status 穿过 CHECK。最小实现后同组：
+
+```text
+=> 4 passed in 10.71s
+```
+
+随后扩大安全详情负例时，真实数据库暴露 JSON number 小数仍可穿过整数语义：
+
+```text
+pytest test_stop_codes_and_safe_detail_roundtrip_without_draft_shorthands \
+       test_stop_detail_rejects_invalid_structured_values -q
+=> 1 failed, 7 passed in 8.76s
+```
+
+在迁移和 ORM CHECK 增加 `trunc` 整数约束后：
+
+```text
+=> 8 passed in 7.35s
+```
+
+行为覆盖在生产触发器未变更的前提下首次运行即通过，证明审查缺口是测试覆盖而非触发器实现：
+
+```text
+pytest <ladder/reconciliation/review/supplier-delete/legacy-upgrade 5 tests> -q
+=> 5 passed in 17.92s
+```
+
+### Fix Round 1 最终验证
+
+```text
+pytest tests/integration/test_sourcing_migrations.py \
+       tests/integration/test_migrations.py \
+       tests/unit/test_work_intake_migration_head.py -q
+=> 72 passed in 106.60s
+
+pytest tests/unit/test_sourcing_models.py tests/unit/test_sourcing_v2_contracts.py -q
+=> 66 passed in 0.28s
+
+ruff check domains/sourcing/models.py infra/db/tables.py \
+  migrations/versions/0047_sourcing_core.py migrations/versions/0048_supply_pools.py \
+  tests/unit/test_sourcing_v2_contracts.py tests/integration/test_sourcing_migrations.py
+=> All checks passed!
+
+PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
+python3 scripts/check_boundaries.py
+=> 结构自检通过
+
+git diff --check
+=> exit 0
+
+python scripts/run_alembic.py heads
+=> 0049 (head)
+```
+
+全部迁移仍只在 testcontainers 隔离数据库执行。Fix Round 1 未新增迁移 revision、未修改 Task 10、
+Gateway core、Repository/UoW/Service/API/Workflow/Connector。Git 仍报告既有 AppleDouble
+pack sidecar `non-monotonic index` 警告；按约束未触碰或修复。

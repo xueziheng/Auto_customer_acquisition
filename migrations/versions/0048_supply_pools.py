@@ -96,33 +96,39 @@ def upgrade() -> None:
             "pool IN ('formal','candidate','capability')", name="ck_products_pool"
         ),
         sa.CheckConstraint(
-            "(pool = 'candidate' AND candidate_status IN ('source_only','partial','not_approved')) OR "
+            "(pool = 'candidate' AND candidate_status IS NOT NULL "
+            "AND candidate_status = 'source_only') OR "
             "(pool <> 'candidate' AND candidate_status IS NULL)",
             name="ck_products_candidate_status",
         ),
         sa.CheckConstraint("moq IS NULL OR moq >= 1", name="ck_products_moq"),
         sa.CheckConstraint(
             "(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR "
-            "(lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)",
+            "(lead_time_days_min IS NOT NULL AND lead_time_days_max IS NOT NULL "
+            "AND lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)",
             name="ck_products_lead_time",
         ),
         sa.CheckConstraint(
             "(internal_cost_amount IS NULL AND internal_cost_currency IS NULL "
             "AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR "
             "(internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 "
-            "AND internal_cost_currency ~ '^[A-Z]{3}$' AND btrim(internal_cost_basis) <> '' "
+            "AND internal_cost_currency IS NOT NULL "
+            "AND internal_cost_currency ~ '^[A-Z]{3}$' "
+            "AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' "
             "AND internal_cost_source_ref IS NOT NULL)",
             name="ck_products_internal_cost_complete",
         ),
         sa.CheckConstraint(
             "(allowed_price_min_amount IS NULL AND allowed_price_min_currency IS NULL) OR "
             "(allowed_price_min_amount IS NOT NULL AND allowed_price_min_amount >= 0 "
+            "AND allowed_price_min_currency IS NOT NULL "
             "AND allowed_price_min_currency ~ '^[A-Z]{3}$')",
             name="ck_products_allowed_min_pair",
         ),
         sa.CheckConstraint(
             "(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR "
             "(allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 "
+            "AND allowed_price_max_currency IS NOT NULL "
             "AND allowed_price_max_currency ~ '^[A-Z]{3}$')",
             name="ck_products_allowed_max_pair",
         ),

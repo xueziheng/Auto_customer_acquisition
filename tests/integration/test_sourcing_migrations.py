@@ -45,6 +45,28 @@ TENANT_A = "tn_0" + "A" * 25
 TENANT_B = "tn_0" + "B" * 25
 ARTIFACT_A = "art_0" + "C" * 25
 ARTIFACT_B = "art_0" + "D" * 25
+EXPECTED_STOP_CODES = (
+    "approval_required",
+    "quota_status_unknown",
+    "paid_usage_enabled",
+    "quota_exhausted",
+    "provider_timeout",
+    "provider_rate_limited",
+    "page_access_forbidden",
+    "login_or_captcha",
+    "unsafe_redirect",
+    "no_search_results",
+    "no_verifiable_supplier",
+    "no_qualified_candidate",
+    "reconciliation_required",
+    "opportunity_required",
+    "need_incomplete",
+    "plan_confirmation_required",
+    "free_quota_unavailable",
+    "budget_exhausted",
+    "no_qualified_supply",
+    "manual_stop",
+)
 
 
 def _run_alembic(db_url: str, *command: str) -> None:
@@ -162,6 +184,106 @@ async def _seed_need_and_case(
     )
 
 
+_INSERT_PRODUCT = (
+    "INSERT INTO products "
+    "(tenant_id, product_id, pool, candidate_status, name_zh, name_en, category, "
+    "normalized_category, lead_time_days_min, lead_time_days_max, internal_cost_amount, "
+    "internal_cost_currency, internal_cost_basis, internal_cost_source_ref, "
+    "allowed_price_min_amount, allowed_price_min_currency, allowed_price_max_amount, "
+    "allowed_price_max_currency, sellable_markets, selling_points, known_issues, "
+    "customizable, created_at) VALUES "
+    "(:tenant, :product, :pool, :candidate_status, '铰链', 'Hinge', 'hinges', 'hinges', "
+    ":lead_min, :lead_max, :cost_amount, :cost_currency, :cost_basis, :cost_source, "
+    ":min_amount, :min_currency, :max_amount, :max_currency, '[]', '[]', '[]', false, now())"
+)
+
+
+def _product_values(product_id: str, **changes: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "tenant": TENANT_A,
+        "product": product_id,
+        "pool": "formal",
+        "candidate_status": None,
+        "lead_min": None,
+        "lead_max": None,
+        "cost_amount": None,
+        "cost_currency": None,
+        "cost_basis": None,
+        "cost_source": None,
+        "min_amount": None,
+        "min_currency": None,
+        "max_amount": None,
+        "max_currency": None,
+    }
+    values.update(changes)
+    return values
+
+
+async def _seed_public_search_execution(
+    connection: AsyncConnection,
+    *,
+    tenant_id: str,
+    need_id: str,
+    case_id: str,
+    plan_id: str,
+    run_id: str,
+    execution_id: str,
+) -> None:
+    await _seed_need_and_case(
+        connection, tenant_id=tenant_id, need_id=need_id, case_id=case_id
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO sourcing_public_plans "
+            "(tenant_id, plan_id, case_id, target_countries, product_category, queries, "
+            "max_search_queries, max_pages_read, provider, search_depth, usage_credits_remaining, "
+            "worst_case_credits, version, expected_case_version, plan_hash, status, created_at) "
+            "VALUES (:tenant, :plan, :case, '[\"US\"]', 'hinges', '[\"hinge factory\"]', "
+            "1, 1, 'tavily', 'basic', 10, 1, 1, 1, :plan_hash, "
+            "'pending_confirmation', now())"
+        ),
+        {
+            "tenant": tenant_id,
+            "plan": plan_id,
+            "case": case_id,
+            "plan_hash": "b" * 64,
+        },
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO workflow_runs "
+            "(run_id, tenant_id, workflow_type, workflow_version, subject_ref, "
+            "current_step, status, context, idempotency_key) "
+            "VALUES (:run, :tenant, 'sourcing', 1, :case, 'public_search', "
+            "'running', '{}', :idempotency_key)"
+        ),
+        {
+            "run": run_id,
+            "tenant": tenant_id,
+            "case": case_id,
+            "idempotency_key": f"{case_id}:public-search",
+        },
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO sourcing_search_executions "
+            "(tenant_id, execution_id, case_id, plan_id, run_id, plan_hash, "
+            "query_index, request_key, query_text, locator_results, provider_status, created_at) "
+            "VALUES (:tenant, :execution, :case, :plan, :run, :plan_hash, "
+            "0, :request_key, 'hinge factory', '[]', 'uncertain', now())"
+        ),
+        {
+            "tenant": tenant_id,
+            "execution": execution_id,
+            "case": case_id,
+            "plan": plan_id,
+            "run": run_id,
+            "plan_hash": "b" * 64,
+            "request_key": "c" * 64,
+        },
+    )
+
+
 async def test_0047_to_0049_roundtrip(db_url: str) -> None:
     try:
         _run_alembic(db_url, "downgrade", "0046")
@@ -241,6 +363,164 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             ]
             is True
         )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_stop_codes_and_safe_detail_roundtrip_without_draft_shorthands(
+    db_url: str,
+) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-stop-codes",
+                case_id="case-stop-codes",
+            )
+            for sequence, stop_code in enumerate(EXPECTED_STOP_CODES):
+                detail = json.dumps(
+                    {
+                        "stage": "provider",
+                        "query_index": sequence,
+                        "provider_http_status": 429,
+                        "observed_count": 1,
+                        "configured_limit": 2,
+                    }
+                )
+                await connection.execute(
+                    text(
+                        "UPDATE sourcing_cases SET stop_code = :stop_code, "
+                        "stop_detail = CAST(:detail AS jsonb) "
+                        "WHERE tenant_id = :tenant AND case_id = 'case-stop-codes'"
+                    ),
+                    {
+                        "tenant": TENANT_A,
+                        "stop_code": stop_code,
+                        "detail": detail,
+                    },
+                )
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT stop_code, stop_detail FROM sourcing_cases "
+                            "WHERE tenant_id = :tenant AND case_id = 'case-stop-codes'"
+                        ),
+                        {"tenant": TENANT_A},
+                    )
+                ).one()
+                assert row.stop_code == stop_code
+                assert row.stop_detail["stage"] == "provider"
+
+            for shorthand in (
+                "usage_unknown",
+                "paid_enabled",
+                "request_uncertain",
+                "no_results",
+            ):
+                await _expect_integrity(
+                    connection,
+                    "UPDATE sourcing_cases SET stop_code = :stop_code "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-stop-codes'",
+                    {"tenant": TENANT_A, "stop_code": shorthand},
+                )
+            for unsafe_detail in (
+                json.dumps(["not-an-object"]),
+                json.dumps({"query_index": 0}),
+                json.dumps({"stage": "unknown"}),
+                json.dumps({"raw_error": "provider request payload"}),
+                json.dumps({"stage": "provider", "query_index": "0"}),
+                json.dumps({"stage": "provider", "query_index": -1}),
+                json.dumps({"stage": "provider", "query_index": 0.5}),
+                json.dumps({"stage": "provider", "provider_http_status": 99}),
+                json.dumps({"stage": "provider", "provider_http_status": 429.5}),
+            ):
+                await _expect_integrity(
+                    connection,
+                    "UPDATE sourcing_cases SET stop_detail = CAST(:detail AS jsonb) "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-stop-codes'",
+                    {"tenant": TENANT_A, "detail": unsafe_detail},
+                )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_product_checks_reject_every_sql_null_bypass(db_url: str) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_tenant_evidence(connection, TENANT_A, ARTIFACT_A)
+            rejected_values = [
+                _product_values("product-candidate-null", pool="candidate"),
+                _product_values(
+                    "product-candidate-partial",
+                    pool="candidate",
+                    candidate_status="partial",
+                ),
+            ]
+            full_cost = {
+                "cost_amount": "1.25",
+                "cost_currency": "USD",
+                "cost_basis": "supplier invoice",
+                "cost_source": ARTIFACT_A,
+            }
+            for missing in full_cost:
+                values = full_cost | {missing: None}
+                rejected_values.append(
+                    _product_values(f"product-cost-missing-{missing}", **values)
+                )
+            rejected_values.extend(
+                [
+                    _product_values(
+                        "product-min-missing-amount",
+                        min_amount=None,
+                        min_currency="USD",
+                    ),
+                    _product_values(
+                        "product-min-missing-currency",
+                        min_amount="2.00",
+                        min_currency=None,
+                    ),
+                    _product_values(
+                        "product-max-missing-amount",
+                        max_amount=None,
+                        max_currency="USD",
+                    ),
+                    _product_values(
+                        "product-max-missing-currency",
+                        max_amount="3.00",
+                        max_currency=None,
+                    ),
+                    _product_values(
+                        "product-lead-missing-min", lead_min=None, lead_max=10
+                    ),
+                    _product_values(
+                        "product-lead-missing-max", lead_min=5, lead_max=None
+                    ),
+                ]
+            )
+            for values in rejected_values:
+                await _expect_integrity(connection, _INSERT_PRODUCT, values)
+
+            await connection.execute(
+                text(_INSERT_PRODUCT),
+                _product_values(
+                    "product-source-only",
+                    pool="candidate",
+                    candidate_status="source_only",
+                ),
+            )
     finally:
         if engine is not None:
             await engine.dispose()
@@ -423,6 +703,208 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
         _run_alembic(db_url, "upgrade", "head")
 
 
+async def test_ladder_checks_reject_jumps_updates_and_deletes(db_url: str) -> None:
+    engine: AsyncEngine | None = None
+    insert_ladder_check = (
+        "INSERT INTO sourcing_ladder_checks "
+        "(tenant_id, check_id, case_id, sequence_number, rung, input_snapshot, "
+        "input_snapshot_hash, conclusion, spec_comparisons, evidence_refs, checked_by, checked_at) "
+        "VALUES (:tenant, :check, :case, :rung, :rung, '{}', :hash, "
+        "'no match', '[]', '[]', 'employee-a', now())"
+    )
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-ladder-audit",
+                case_id="case-ladder-audit",
+            )
+            values = {
+                "tenant": TENANT_A,
+                "case": "case-ladder-audit",
+                "check": "ladder-check-2",
+                "rung": 2,
+                "hash": "d" * 64,
+            }
+            await _expect_integrity(connection, insert_ladder_check, values)
+            await connection.execute(
+                text(insert_ladder_check),
+                values | {"check": "ladder-check-1", "rung": 1},
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_ladder_checks SET conclusion = 'changed' "
+                "WHERE tenant_id = :tenant AND check_id = 'ladder-check-1'",
+                {"tenant": TENANT_A},
+            )
+            await _expect_integrity(
+                connection,
+                "DELETE FROM sourcing_ladder_checks "
+                "WHERE tenant_id = :tenant AND check_id = 'ladder-check-1'",
+                {"tenant": TENANT_A},
+            )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_reconciliation_audit_rejects_updates_and_deletes(db_url: str) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_public_search_execution(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-reconciliation-audit",
+                case_id="case-reconciliation-audit",
+                plan_id="plan-reconciliation-audit",
+                run_id="run-reconciliation-audit",
+                execution_id="execution-reconciliation-audit",
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_search_reconciliations "
+                    "(tenant_id, reconciliation_id, execution_id, status, reason, "
+                    "provider_receipt, created_at) "
+                    "VALUES (:tenant, 'reconciliation-audit', :execution, 'required', "
+                    "'provider result uncertain', '{}', now())"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "execution": "execution-reconciliation-audit",
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_search_reconciliations "
+                "SET status = 'confirmed_consumed', reconciled_by = 'employee-a', "
+                "reconciled_at = now() WHERE tenant_id = :tenant "
+                "AND reconciliation_id = 'reconciliation-audit'",
+                {"tenant": TENANT_A},
+            )
+            await _expect_integrity(
+                connection,
+                "DELETE FROM sourcing_search_reconciliations WHERE tenant_id = :tenant "
+                "AND reconciliation_id = 'reconciliation-audit'",
+                {"tenant": TENANT_A},
+            )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_review_alternates_are_unique_and_bound_to_case_and_tenant(
+    db_url: str,
+) -> None:
+    engine: AsyncEngine | None = None
+    insert_review = (
+        "INSERT INTO sourcing_reviews "
+        "(tenant_id, review_id, case_id, primary_option_id, primary_selection, "
+        "alternate_option_ids, reason, expected_case_version, submitted_by, submitted_at) "
+        "VALUES (:tenant, 'review-option-guards', :case, :primary, '{}', "
+        "CAST(:alternates AS jsonb), 'best fit', 1, 'employee-a', now())"
+    )
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-review-main",
+                case_id="case-review-main",
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-review-other",
+                case_id="case-review-other",
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_B,
+                need_id="need-review-tenant",
+                case_id="case-review-tenant",
+            )
+            await connection.execute(
+                text(_INSERT_PRODUCT), _product_values("product-review-a")
+            )
+            await connection.execute(
+                text(_INSERT_PRODUCT),
+                _product_values("product-review-b", tenant=TENANT_B),
+            )
+            for option_id, tenant_id, case_id, product_id in (
+                (
+                    "option-review-primary",
+                    TENANT_A,
+                    "case-review-main",
+                    "product-review-a",
+                ),
+                ("option-review-alt", TENANT_A, "case-review-main", "product-review-a"),
+                (
+                    "option-review-other",
+                    TENANT_A,
+                    "case-review-other",
+                    "product-review-a",
+                ),
+                (
+                    "option-review-tenant",
+                    TENANT_B,
+                    "case-review-tenant",
+                    "product-review-b",
+                ),
+            ):
+                await connection.execute(
+                    text(
+                        "INSERT INTO sourcing_supply_options "
+                        "(tenant_id, option_id, case_id, source, product_id, "
+                        "is_qualified, created_at) VALUES (:tenant, :option, :case, "
+                        "'existing_product', :product, true, now())"
+                    ),
+                    {
+                        "tenant": tenant_id,
+                        "option": option_id,
+                        "case": case_id,
+                        "product": product_id,
+                    },
+                )
+
+            base_values = {
+                "tenant": TENANT_A,
+                "case": "case-review-main",
+                "primary": "option-review-primary",
+            }
+            for alternates in (
+                ["option-review-alt", "option-review-alt"],
+                ["option-review-primary"],
+                ["option-review-other"],
+                ["option-review-tenant"],
+            ):
+                await _expect_integrity(
+                    connection,
+                    insert_review,
+                    base_values | {"alternates": json.dumps(alternates)},
+                )
+            await connection.execute(
+                text(insert_review),
+                base_values | {"alternates": json.dumps(["option-review-alt"])},
+            )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
 async def test_supplier_price_history_is_append_only(db_url: str) -> None:
     engine: AsyncEngine | None = None
     try:
@@ -457,6 +939,79 @@ async def test_supplier_price_history_is_append_only(db_url: str) -> None:
                 "WHERE tenant_id = :tenant AND price_record_id = 'price-a'",
                 {"tenant": TENANT_A},
             )
+            await _expect_integrity(
+                connection,
+                "DELETE FROM supplier_price_records "
+                "WHERE tenant_id = :tenant AND price_record_id = 'price-a'",
+                {"tenant": TENANT_A},
+            )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0049_upgrade_preserves_legacy_cost_sheet_created_at_0048(
+    db_url: str,
+) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0048")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM cost_sheets WHERE tenant_id = :tenant "
+                    "AND cost_sheet_id = 'cost-legacy-before-0049'"
+                ),
+                {"tenant": TENANT_A},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM opportunities WHERE tenant_id = :tenant "
+                    "AND opportunity_id = 'opp-legacy-before-0049'"
+                ),
+                {"tenant": TENANT_A},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO opportunities "
+                    "(opportunity_id, tenant_id, account_id, account_name, country, "
+                    "need_id, product_category) VALUES ('opp-legacy-before-0049', :tenant, "
+                    "'account-legacy', 'Legacy buyer', 'US', 'need-legacy-0049', 'hinges')"
+                ),
+                {"tenant": TENANT_A},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO cost_sheets "
+                    "(tenant_id, cost_sheet_id, opportunity_id, version_type, "
+                    "version_number, quantity, base_currency, quote_currency, created_at) "
+                    "VALUES (:tenant, 'cost-legacy-before-0049', 'opp-legacy-before-0049', "
+                    "'estimated', 1, 250, 'USD', 'USD', now())"
+                ),
+                {"tenant": TENANT_A},
+            )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT quantity, source_sourcing_case_id, source_option_id, "
+                        "source_candidate_id FROM cost_sheets WHERE tenant_id = :tenant "
+                        "AND cost_sheet_id = 'cost-legacy-before-0049'"
+                    ),
+                    {"tenant": TENANT_A},
+                )
+            ).one()
+            assert row.quantity == 250
+            assert row.source_sourcing_case_id is None
+            assert row.source_option_id is None
+            assert row.source_candidate_id is None
     finally:
         if engine is not None:
             await engine.dispose()

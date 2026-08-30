@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -37,6 +38,29 @@ PROVENANCE = ProvenanceSummary(
     confirmed_by=EmployeeId("employee-a"),
     confirmed_at=NOW,
 )
+
+EXPECTED_STOP_CODES = {
+    "approval_required",
+    "quota_status_unknown",
+    "paid_usage_enabled",
+    "quota_exhausted",
+    "provider_timeout",
+    "provider_rate_limited",
+    "page_access_forbidden",
+    "login_or_captcha",
+    "unsafe_redirect",
+    "no_search_results",
+    "no_verifiable_supplier",
+    "no_qualified_candidate",
+    "reconciliation_required",
+    "opportunity_required",
+    "need_incomplete",
+    "plan_confirmation_required",
+    "free_quota_unavailable",
+    "budget_exhausted",
+    "no_qualified_supply",
+    "manual_stop",
+}
 
 
 def _type(module: object, name: str) -> type:
@@ -118,6 +142,87 @@ def _candidate_submission_payload() -> dict[str, object]:
         "evidence_hash": "b" * 64,
         "evidence_artifact_ref": "art-a",
     }
+
+
+def test_stop_codes_use_lifecycle_and_binding_public_search_vocabulary() -> None:
+    stop_code_type = _type(sourcing_models, "SourcingStopCode")
+
+    assert {item.value for item in stop_code_type} == EXPECTED_STOP_CODES
+
+
+@pytest.mark.parametrize("stop_code", sorted(EXPECTED_STOP_CODES))
+def test_stop_code_accepts_and_roundtrips_every_contract_value(stop_code: str) -> None:
+    stop_code_type = _type(sourcing_models, "SourcingStopCode")
+
+    assert stop_code_type(stop_code).value == stop_code
+
+
+@pytest.mark.parametrize(
+    "shorthand", ("usage_unknown", "paid_enabled", "request_uncertain", "no_results")
+)
+def test_stop_code_rejects_every_draft_shorthand(shorthand: str) -> None:
+    stop_code_type = _type(sourcing_models, "SourcingStopCode")
+
+    with pytest.raises(ValueError):
+        stop_code_type(shorthand)
+
+
+def test_stop_detail_is_a_safe_structured_value_and_roundtrips() -> None:
+    detail_type = _type(sourcing_models, "SourcingStopDetail")
+    stage_type = _type(sourcing_models, "SourcingStopStage")
+    stop_code_type = _type(sourcing_models, "SourcingStopCode")
+    case_type = _type(sourcing_models, "SourcingCase")
+    detail = detail_type(
+        stage=stage_type.PROVIDER,
+        query_index=2,
+        provider_http_status=429,
+        observed_count=3,
+        configured_limit=4,
+    )
+
+    restored = detail_type(**asdict(detail))
+    case = case_type(
+        SourcingCaseId("src-case-stop"),
+        TenantId("tenant-a"),
+        ValidatedNeedId("need-stop"),
+        NOW,
+        stop_code=stop_code_type.PROVIDER_RATE_LIMITED,
+        stop_detail=restored,
+    )
+
+    assert restored == detail
+    assert case.stop_detail == detail
+    with pytest.raises(DomainValidationError, match="stop_detail"):
+        case_type(
+            SourcingCaseId("src-case-unsafe"),
+            TenantId("tenant-a"),
+            ValidatedNeedId("need-stop"),
+            NOW,
+            stop_code=stop_code_type.PROVIDER_TIMEOUT,
+            stop_detail="raw provider exception with request payload",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("query_index", True),
+        ("query_index", -1),
+        ("query_index", 0.5),
+        ("provider_http_status", 99),
+        ("provider_http_status", 429.5),
+        ("observed_count", -1),
+        ("configured_limit", "4"),
+    ),
+)
+def test_stop_detail_rejects_invalid_structured_values(
+    field_name: str, invalid_value: object
+) -> None:
+    detail_type = _type(sourcing_models, "SourcingStopDetail")
+    stage_type = _type(sourcing_models, "SourcingStopStage")
+
+    with pytest.raises(DomainValidationError, match=f"stop_detail.{field_name}"):
+        detail_type(stage=stage_type.PROVIDER, **{field_name: invalid_value})
 
 
 def test_public_plan_factory_binds_trusted_tenant_to_entity() -> None:

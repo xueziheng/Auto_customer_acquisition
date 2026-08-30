@@ -172,14 +172,68 @@ PUBLIC_PLAN_TRANSITIONS: dict[PublicPlanStatus, frozenset[PublicPlanStatus]] = {
 class SourcingStopCode(str, Enum):
     """寻源停止原因；细节只保存安全、结构化说明。"""
 
+    APPROVAL_REQUIRED = "approval_required"
+    QUOTA_STATUS_UNKNOWN = "quota_status_unknown"
+    PAID_USAGE_ENABLED = "paid_usage_enabled"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    PROVIDER_RATE_LIMITED = "provider_rate_limited"
+    PAGE_ACCESS_FORBIDDEN = "page_access_forbidden"
+    LOGIN_OR_CAPTCHA = "login_or_captcha"
+    UNSAFE_REDIRECT = "unsafe_redirect"
+    NO_SEARCH_RESULTS = "no_search_results"
+    NO_VERIFIABLE_SUPPLIER = "no_verifiable_supplier"
+    NO_QUALIFIED_CANDIDATE = "no_qualified_candidate"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+    OPPORTUNITY_REQUIRED = "opportunity_required"
     NEED_INCOMPLETE = "need_incomplete"
     PLAN_CONFIRMATION_REQUIRED = "plan_confirmation_required"
     FREE_QUOTA_UNAVAILABLE = "free_quota_unavailable"
     BUDGET_EXHAUSTED = "budget_exhausted"
-    RECONCILIATION_REQUIRED = "reconciliation_required"
     NO_QUALIFIED_SUPPLY = "no_qualified_supply"
-    OPPORTUNITY_REQUIRED = "opportunity_required"
     MANUAL_STOP = "manual_stop"
+
+
+class SourcingStopStage(str, Enum):
+    """停止位置；仅允许不会泄露请求或 Provider 原文的固定阶段。"""
+
+    INTAKE = "intake"
+    PLAN = "plan"
+    QUOTA = "quota"
+    PROVIDER = "provider"
+    PAGE = "page"
+    CANDIDATE = "candidate"
+    REVIEW = "review"
+    COST_HANDOFF = "cost_handoff"
+
+
+@dataclass(frozen=True)
+class SourcingStopDetail:
+    """可持久化的安全停止上下文；禁止保存自由文本和 Provider 载荷。"""
+
+    stage: SourcingStopStage
+    query_index: int | None = None
+    provider_http_status: int | None = None
+    observed_count: int | None = None
+    configured_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, SourcingStopStage):
+            raise ValidationError("stop_detail.stage 类型无效")
+        for field_name in ("query_index", "observed_count", "configured_limit"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValidationError(f"stop_detail.{field_name} 必须是非负整数")
+        if self.provider_http_status is not None and (
+            isinstance(self.provider_http_status, bool)
+            or not isinstance(self.provider_http_status, int)
+            or not 100 <= self.provider_http_status <= 599
+        ):
+            raise ValidationError(
+                "stop_detail.provider_http_status 必须是有效 HTTP 状态码"
+            )
 
 
 def _require_aware_time(value: datetime, field_name: str) -> None:
@@ -520,9 +574,15 @@ class SourcingCase:
     need_snapshot_hash: str | None = None
     active_search_plan_id: SourcingPlanId | None = None
     stop_code: SourcingStopCode | None = None
-    stop_detail: str | None = None
+    stop_detail: SourcingStopDetail | None = None
     version: int = 1
     state_changed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.stop_detail is not None and not isinstance(
+            self.stop_detail, SourcingStopDetail
+        ):
+            raise ValidationError("stop_detail 必须是安全结构化对象")
 
     def transition_to(self, target: CaseState, *, changed_at: datetime) -> None:
         """按显式转换表推进案例并递增乐观并发版本。"""

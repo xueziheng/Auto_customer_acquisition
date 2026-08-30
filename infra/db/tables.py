@@ -4635,10 +4635,37 @@ class SourcingCaseRow(Base):
         CheckConstraint("need_snapshot_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_cases_snapshot_hash"),
         CheckConstraint("ladder_checked_to IS NULL OR ladder_checked_to BETWEEN 1 AND 7", name="ck_sourcing_cases_ladder"),
         CheckConstraint(
-            "stop_code IS NULL OR stop_code IN ('usage_unknown','paid_enabled','quota_exhausted','request_uncertain','reconciliation_required','no_results','page_access_forbidden','login_or_captcha','no_qualified_candidate','no_qualified_supply','opportunity_required','manual_stop')",
+            "stop_code IS NULL OR stop_code IN ('approval_required','quota_status_unknown','paid_usage_enabled','quota_exhausted','provider_timeout','provider_rate_limited','page_access_forbidden','login_or_captcha','unsafe_redirect','no_search_results','no_verifiable_supplier','no_qualified_candidate','reconciliation_required','opportunity_required','need_incomplete','plan_confirmation_required','free_quota_unavailable','budget_exhausted','no_qualified_supply','manual_stop')",
             name="ck_sourcing_cases_stop_code",
         ),
-        CheckConstraint("stop_detail IS NULL OR jsonb_typeof(stop_detail) = 'object'", name="ck_sourcing_cases_stop_detail_json"),
+        CheckConstraint(
+            "stop_detail IS NULL OR (jsonb_typeof(stop_detail) = 'object' "
+            "AND stop_detail ? 'stage' "
+            "AND (stop_detail - 'stage' - 'query_index' - 'provider_http_status' "
+            "- 'observed_count' - 'configured_limit') = '{}'::jsonb "
+            "AND stop_detail->>'stage' IN ('intake','plan','quota','provider','page','candidate','review','cost_handoff') "
+            "AND (NOT stop_detail ? 'query_index' OR CASE "
+            "WHEN jsonb_typeof(stop_detail->'query_index') = 'number' "
+            "THEN (stop_detail->>'query_index')::numeric >= 0 "
+            "AND (stop_detail->>'query_index')::numeric = trunc((stop_detail->>'query_index')::numeric) "
+            "ELSE false END) "
+            "AND (NOT stop_detail ? 'provider_http_status' OR CASE "
+            "WHEN jsonb_typeof(stop_detail->'provider_http_status') = 'number' "
+            "THEN (stop_detail->>'provider_http_status')::numeric BETWEEN 100 AND 599 "
+            "AND (stop_detail->>'provider_http_status')::numeric = "
+            "trunc((stop_detail->>'provider_http_status')::numeric) ELSE false END) "
+            "AND (NOT stop_detail ? 'observed_count' OR CASE "
+            "WHEN jsonb_typeof(stop_detail->'observed_count') = 'number' "
+            "THEN (stop_detail->>'observed_count')::numeric >= 0 "
+            "AND (stop_detail->>'observed_count')::numeric = "
+            "trunc((stop_detail->>'observed_count')::numeric) ELSE false END) "
+            "AND (NOT stop_detail ? 'configured_limit' OR CASE "
+            "WHEN jsonb_typeof(stop_detail->'configured_limit') = 'number' "
+            "THEN (stop_detail->>'configured_limit')::numeric >= 0 "
+            "AND (stop_detail->>'configured_limit')::numeric = "
+            "trunc((stop_detail->>'configured_limit')::numeric) ELSE false END))",
+            name="ck_sourcing_cases_stop_detail_json",
+        ),
         CheckConstraint("btrim(tenant_id) <> '' AND btrim(case_id) <> '' AND btrim(need_id) <> '' AND btrim(trigger_key) <> ''", name="ck_sourcing_cases_core_nonblank"),
         CheckConstraint("(state = 'failed') = (failed_reason IS NOT NULL AND btrim(failed_reason) <> '')", name="ck_sourcing_cases_failure"),
         CheckConstraint("(state = 'handed_to_costing') = (completed_at IS NOT NULL)", name="ck_sourcing_cases_completed_at"),
@@ -4664,7 +4691,7 @@ class SourcingCaseRow(Base):
     ladder_checked_to: Mapped[int | None] = mapped_column(Integer)
     active_search_plan_id: Mapped[str | None] = mapped_column(String(40))
     stop_code: Mapped[str | None] = mapped_column(String(40))
-    stop_detail: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    stop_detail: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB)
     assigned_to: Mapped[str | None] = mapped_column(String(40))
     version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -4945,12 +4972,12 @@ class ProductRow(Base):
         ForeignKeyConstraint(["tenant_id", "supplier_id"], ["suppliers.tenant_id", "suppliers.supplier_id"], name="fk_products_supplier", ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "internal_cost_source_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_products_internal_cost_artifact", ondelete="RESTRICT"),
         CheckConstraint("pool IN ('formal','candidate','capability')", name="ck_products_pool"),
-        CheckConstraint("(pool = 'candidate' AND candidate_status IN ('source_only','partial','not_approved')) OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
+        CheckConstraint("(pool = 'candidate' AND candidate_status IS NOT NULL AND candidate_status = 'source_only') OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
         CheckConstraint("moq IS NULL OR moq >= 1", name="ck_products_moq"),
-        CheckConstraint("(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR (lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)", name="ck_products_lead_time"),
-        CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency ~ '^[A-Z]{3}$' AND btrim(internal_cost_basis) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),
-        CheckConstraint("(allowed_price_min_amount IS NULL AND allowed_price_min_currency IS NULL) OR (allowed_price_min_amount IS NOT NULL AND allowed_price_min_amount >= 0 AND allowed_price_min_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_min_pair"),
-        CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
+        CheckConstraint("(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR (lead_time_days_min IS NOT NULL AND lead_time_days_max IS NOT NULL AND lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)", name="ck_products_lead_time"),
+        CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency IS NOT NULL AND internal_cost_currency ~ '^[A-Z]{3}$' AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),
+        CheckConstraint("(allowed_price_min_amount IS NULL AND allowed_price_min_currency IS NULL) OR (allowed_price_min_amount IS NOT NULL AND allowed_price_min_amount >= 0 AND allowed_price_min_currency IS NOT NULL AND allowed_price_min_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_min_pair"),
+        CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency IS NOT NULL AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
         CheckConstraint("allowed_price_min_amount IS NULL OR allowed_price_max_amount IS NULL OR (allowed_price_min_currency = allowed_price_max_currency AND allowed_price_min_amount <= allowed_price_max_amount)", name="ck_products_allowed_range"),
         CheckConstraint("jsonb_typeof(sellable_markets) = 'array' AND jsonb_typeof(selling_points) = 'array' AND jsonb_typeof(known_issues) = 'array'", name="ck_products_lists_json"),
         CheckConstraint("btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' AND btrim(normalized_category) <> ''", name="ck_products_core_nonblank"),
