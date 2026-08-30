@@ -51,6 +51,11 @@ Phase 2 已具备免费来源客户发现，以及成本、报价的工程闭环
 公开寻源前，才要求人工确认目标国家、品类、查询上限、页面上限和额度
 预算。
 
+需求首次升级为 `Validated Need` 时可能尚未达到完整度 3，之后补齐数量才
+跨过门槛。V2 因此同时消费 `NeedValidated(completeness >= 3)` 与新增的
+`NeedBecameSourcingReady` 事实；两条入口共用同一个开案幂等键。不得依赖
+定时全表扫描弥补缺失事件，也不得让后续补齐的需求永久漏开 Case。
+
 未确认时停在待授权状态，不调用 Tavily，也不预先消耗额度。
 
 ### 3.2 候选产品卡
@@ -70,6 +75,11 @@ Phase 2 已具备免费来源客户发现，以及成本、报价的工程闭环
 
 未经人工选择，Case 不得进入 `handed_to_costing`，成本域调用次数必须为
 零。
+
+成本表当前必须绑定 `OpportunityId`。人工提交选择后，V2 通过机会域公共
+服务按同一 `need_id` 精确读取机会；不存在时保持 `candidates_ready` 并停止
+为 `opportunity_required`，不得伪造机会或创建游离成本表。存在时把该
+Opportunity 引用与人工选择一起固化，再交接成本域。
 
 ## 四、方案选择
 
@@ -96,6 +106,7 @@ V2 复用现有 Tavily、免费额度账本、安全页面读取器和 Tool Gate
 
 ```text
 NeedValidated（completeness >= 3）
+或 NeedBecameSourcingReady
         │ 幂等消费
         ▼
 自动创建 Sourcing Case（无外部费用）
@@ -245,6 +256,10 @@ V2 不再新写语义错误的 `quoted_prices`。旧字段仅在旧 DTO/数据�
 和提交时的 Case 版本。主候选必须合格并已有现有产品引用或 `source_only`
 卡；并发的过期审核提交通过条件更新拒绝。
 
+审核提交后通过机会域显式服务接口按 `need_id` 精确读取 `OpportunityId`。
+只有真实存在且同租户的机会引用才写入 Case；不存在不是“无供应”，而是
+独立的 `opportunity_required` 停止原因。
+
 ## 八、状态机与事件兼容
 
 V2 使用现有 Case 状态：
@@ -266,11 +281,14 @@ opened -> discovering -> verifying -> candidates_ready -> handed_to_costing
 SourcingCaseOpened
 SourcingCandidatesReady
 SourcingCaseHandedToCosting
+NeedBecameSourcingReady
 ```
 
 - 产品域消费 `SourcingCandidatesReady` 并幂等生成产品卡；
 - 成本域消费 `SourcingCaseHandedToCosting`，只为主候选创建 `ESTIMATED`
   成本表；
+- demand 域仅在需求状态首次跨到 `sourcing_ready` 时发布
+  `NeedBecameSourcingReady`；重复补充字段或显式重复标记不重复发布；
 - 旧人工流程继续按旧工作流版本解释 `SourcingCaseCompleted`；
 - 产品与成本消费者在迁移期按事件/工作流版本路由，不把历史 Case 自动
   改成 V2，也不让一个 V2 Case 被两个事件重复处理。
@@ -342,6 +360,7 @@ no_search_results
 no_verifiable_supplier
 no_qualified_candidate
 reconciliation_required
+opportunity_required
 ```
 
 只有计划已授权、允许的搜索和页面预算已执行完，并且确实没有合格供给时，
@@ -435,6 +454,8 @@ POST /sourcing-cases/{id}/reconcile-uncertain-request
 - 重复事件不重复建候选或产品卡；
 - 未人工选择时成本调用为零；
 - 选择后只为主候选创建一张 `ESTIMATED` 成本表；
+- 同 Need 没有真实 Opportunity 时保持 `candidates_ready` 并返回
+  `opportunity_required`，成本调用仍为零；
 - 公开价格不能进入客户可见报价或变成 `QUOTED`。
 
 ### 15.4 最终门禁
