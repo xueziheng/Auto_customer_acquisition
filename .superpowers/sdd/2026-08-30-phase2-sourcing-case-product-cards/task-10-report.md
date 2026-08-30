@@ -189,3 +189,49 @@
   explicitly migrated.
 - The existing AppleDouble pack index warning remains outside this change.
 - Task 10B and Tasks 11–13 remain outside Task 10.
+
+## Fix round 4
+
+### RED evidence
+
+- Focused parameterized command:
+  `/Users/xueziheng/miniconda3/envs/tradeos-py312/bin/pytest -q tests/unit/workflows/test_sourcing_public_search.py -k 'claim_conflict_rejects_every_mismatched_canonical_slot_binding'`
+- Result before the fix: `16 failed, 42 deselected in 0.44s`. Every exact binding
+  mutation (tenant, Case, Run, plan ID, plan hash, query index, result index and the
+  combined stable slot identity) was incorrectly accepted for both `draft_saved` and
+  fixed rejection canonical outcomes.
+
+### Implementation
+
+- Before reading status or aggregating any page slot returned by `claim()`, compare
+  its complete durable P44 identity and authorization binding against the current
+  tenant, Case, Run, plan ID/hash, query index and result index.
+- A mismatch now raises the fixed safe `公开寻源页面槽绑定无效` error before draft or
+  rejection state is absorbed; the error retains neither raw cause nor context.
+- Existing exact completed-draft and completed-rejection canonical conflict replay
+  remains unchanged and performs no page, extraction or draft-save IO.
+
+### GREEN and gates
+
+- Binding mutations plus valid canonical-conflict replay controls:
+  `18 passed, 40 deselected in 0.31s`.
+- Focused public-search suite: `58 passed in 0.39s`.
+- Expanded related unit suite: `207 passed in 0.58s`.
+- Full unit suite: `6195 passed in 66.62s`.
+- Related PostgreSQL suite: `48 passed in 19.16s`.
+- `ruff check .`, Python 3.12 `scripts/check_boundaries.py`, explicit changed-file
+  sensitive scan, staged sensitive scan and `git diff --check`: passed.
+- Production touched-file Mypy reports no touched-file errors; it retains only the
+  existing 13-error baseline in `shared/schemas/quote_creation.py`.
+
+### Commit
+
+- Fix-round 4 implementation commit: `46ea8d6`.
+
+### Concerns
+
+- Migration 0047 remains unpublished and intentionally amended by prior Task 10
+  rounds. This round does not change its schema.
+- The existing non-monotonic AppleDouble Git pack index warning remains outside this
+  change; Git operations still complete successfully.
+- Task 10B and Tasks 11–13 remain outside Task 10.
