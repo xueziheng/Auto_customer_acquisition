@@ -5021,7 +5021,6 @@ class ProductRow(Base):
         CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency IS NOT NULL AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
         CheckConstraint("allowed_price_min_amount IS NULL OR allowed_price_max_amount IS NULL OR (allowed_price_min_currency = allowed_price_max_currency AND allowed_price_min_amount <= allowed_price_max_amount)", name="ck_products_allowed_range"),
         CheckConstraint("jsonb_typeof(sellable_markets) = 'array' AND jsonb_typeof(selling_points) = 'array' AND jsonb_typeof(known_issues) = 'array'", name="ck_products_lists_json"),
-        CheckConstraint("jsonb_typeof(match_specs) = 'object'", name="ck_products_match_specs_json"),
         CheckConstraint("btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' AND btrim(normalized_category) <> ''", name="ck_products_core_nonblank"),
         Index("ix_products_pool_category", "tenant_id", "pool", "normalized_category", "product_id"),
     )
@@ -5051,8 +5050,42 @@ class ProductRow(Base):
     customizable: Mapped[bool] = mapped_column(Boolean)
     selling_points: Mapped[list] = mapped_column(postgresql.JSONB)
     known_issues: Mapped[list] = mapped_column(postgresql.JSONB)
-    match_specs: Mapped[dict] = mapped_column(postgresql.JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductMatchSpecRow(Base):
+    """产品逐项规格事实；Evidence 必须属于同租户不可变 Raw Artifact。"""
+
+    __tablename__ = "product_match_specs"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "product_id",
+            "normalized_spec_name",
+            name="pk_product_match_specs",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "product_id"],
+            ["products.tenant_id", "products.product_id"],
+            name="fk_product_match_specs_product",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "evidence_ref"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_product_match_specs_artifact",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "btrim(normalized_spec_name) <> '' AND btrim(value) <> ''",
+            name="ck_product_match_specs_nonblank",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[str] = mapped_column(String(40))
+    normalized_spec_name: Mapped[str] = mapped_column(String(100))
+    value: Mapped[str] = mapped_column(Text)
+    evidence_ref: Mapped[str] = mapped_column(String(32))
 
 
 class ProductVariantRow(Base):

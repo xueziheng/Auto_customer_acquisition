@@ -6,6 +6,8 @@ Task 7 已按 Task BASE `005e7ac` 完成。实现范围限于 Sourcing Case V2 �
 
 Fix Round 1 按 Ruling P23 收紧了同一范围：临时依赖错误保持可重试且脱敏；Ready 精确冻结唯一合格内部梯级的 ProductId 全集；内部产品只有在所有规范化 Need 规格（包括数量/MOQ 与单位）都有证据绑定的确定性 `exact` comparison 时才能短路。本轮仍未实现 Task 8+。
 
+Fix Round 2 按 Ruling P24 将产品逐项规格事实移出 JSONB，改为同租户 Product 与 Raw Artifact 双重复合外键约束的规范化子表；workflow 重新绑定可信 Need 的逐项 `required` 值，并保存逐产品、逐规格 Evidence 映射。不存在或跨租户 Artifact、Need required 漂移和重复规格都不能进入合格梯级。
+
 ## TDD 证据
 
 ### RED
@@ -45,6 +47,14 @@ Fix Round 1 按 Ruling P23 收紧了同一范围：临时依赖错误保持可�
 5. Fix Round 1 主定向 unit：`69 passed`；全量 unit：`5648 passed`。
 6. 真实 PostgreSQL：Outbox + `PostgresWorkflowEngine` 恢复、并发 canonical Option、Ready 精确冻结/重放/就绪后拒绝补建全部通过；服务 persistence 文件 `8 passed`，migration + supply repository `27 passed`。相关 PG 宽回归为 `51 passed, 3 failed`，三个失败仍是上述已记录的基线空价格档夹具矛盾。
 
+### Fix Round 2 RED / GREEN
+
+1. P24 证据租户边界：先增加 migration contract、repository 不存在/跨租户 Artifact 测试，首跑分别因 `product_match_specs` 不存在及两个无效引用仍被 JSONB 接受而失败；规范化子表与复合外键实现后转绿。
+2. P24 Need 绑定：先增加 `material=stainless` 的 Need 遇到伪造 `required/offered=carbon exact`、重复 comparison、重复规范化 Need 名称和逐项 Evidence 映射测试，首跑 4 个失败；可信 Need map 与返回结果逐项精确比对后转绿。
+3. Repository 重启恢复：真实 PostgreSQL 保存同租户 Evidence 绑定事实，创建新的 products service/UoW 后仍可产生完整 exact comparisons；同时验证规范化 spec name、value 与 ArtifactId 往返。
+4. Fix Round 2 主定向 unit：`72 passed`；全量 unit：`5651 passed`。
+5. 真实 PostgreSQL migration + supply repository + sourcing persistence：`38 passed`，其中包含真实 Outbox + `PostgresWorkflowEngine` 恢复、canonical Option 并发以及 Ready freeze 并发/重放。相关 PG 宽回归为 `57 passed, 3 failed`；三个失败仍是既有 `test_product_candidate_idempotency.py` 空价格档夹具与非空数据库约束冲突。
+
 ## 实现摘要
 
 - `NeedValidated` 与 `NeedBecameSourcingReady` 共用精确业务键 `sourcing-case:v2:{tenant}:{need}`；低 completeness、跨租户、未知类型与 Need mismatch 均按固定边界处理。
@@ -73,16 +83,23 @@ P22 行为：精确相同的 LadderCheck 重放为 no-op、同级 payload 漂移
 
 - `domains/products/service.py` 公开导出 `ProductActor`、规格要求/事实/comparison 和 `QualifiedProductMatch`；workflow 不再使用 `Any`。
 - products service 对每个规范化 Need spec 返回稳定逐项结果；缺失、重复、无 Artifact、different、unknown、MOQ 不满足或 MOQ/单位与 Product 字段漂移都只返回 finding。
-- `products.match_specs` 是本轮修改 `0048_supply_pools.py`、ORM 与 products repository 的唯一原因：持久化“规格值 + ArtifactId”的产品事实，使确定性 comparison 在重启后仍可重建。它没有引入新数据源、商业 API 或 Task 8+ 行为。
+- Product 域模型仍以 `match_specs` 聚合公开规格事实，但 P24 已移除 `products.match_specs` JSONB 持久列；0048、ORM 与 repository 改用 `product_match_specs` 规范化子表持久化“规格值 + ArtifactId”，使确定性 comparison 在重启后仍可重建，且不存在 JSON-only qualifying 旁路。
 - qualified 内部 LadderCheck 保存非空、全 exact 比较与证据集；Ready 从唯一 qualified 梯级的 `qualified_product_ids` 重建不可变集合。
+
+## Ruling P24 最小可信证据扩展
+
+- `product_match_specs` 以 `(tenant_id, product_id, normalized_spec_name)` 为主键，分别通过 `(tenant_id, product_id)` 和 `(tenant_id, evidence_ref)` 复合外键绑定同租户 Product 与 Raw Artifact；写入、更新、读取始终带 tenant 谓词并与 Product 聚合共享事务。
+- Repository 在持久化前规范化规格名并拒绝空值、重复名或未绑定 Evidence；数据库最终拒绝不存在和跨租户 Artifact。失败提交会回滚先行 flush 的 Product，不留下孤儿产品。
+- Workflow 在调用产品服务前从可信 Need 快照重建唯一的规范化 `spec_name -> required` map；合格结果必须逐项、唯一、排序稳定、Evidence 非空，且每项 normalized `required` 精确等于可信 Need。
+- LadderCheck 的 `input_snapshot.product_spec_evidence` 保存每个合格 Product 的逐规格 ArtifactId 映射；聚合 `evidence_refs` 与 exact `spec_comparisons` 保持原有查询兼容。
 
 ## 最终门禁
 
 - Ruff（全部 touched 文件）：通过。
-- Mypy（10 个 touched source 文件）：通过。
+- Mypy（本轮 3 个 touched source 文件；Round 1 已覆盖其余 Task 7 source）：通过。
 - `python3 scripts/check_boundaries.py`：7 项全部通过。
 - `git diff --check`：通过。
-- `scripts/scan_sensitive.py`：未通过，报告 8 个均位于未修改的既有测试文件中的测试数据库口令/DSN 形态；Task 7 新增或修改文件无命中。
+- `scripts/scan_sensitive.py`（本轮 touched files）：通过；全库既有 8 个测试数据库口令/DSN 形态仍未由本任务修改。
 
 ## 残余风险
 
@@ -90,4 +107,5 @@ P22 行为：精确相同的 LadderCheck 重放为 no-op、同级 payload 漂移
 - 公开计划、真实搜索、候选核验、产品卡投影、人工审核接线与成本交接分别属于 Task 8–13，当前对应步骤会安全等待。
 - 仓库持续输出 `.git/objects/pack/._pack-*.idx` 的 `non-monotonic index` 警告；不影响本次命令退出码，但属于共享 Git 对象库卫生问题，本任务未修改。
 - 基线产品候选幂等测试的空价格阶梯夹具与数据库非空约束矛盾需由后续统一修正，不能把这 3 个失败误归因于 Task 7。
-- P23 对历史 Product 采取 fail-closed：未回填 `match_specs` 的旧数据会成为 `product_spec_unknown` finding，不会自动短路。这是预期的安全兼容，但上线前需单独安排有证据的产品规格回填，不能用无来源文本补齐。
+- P23/P24 对历史 Product 采取 fail-closed：没有 `product_match_specs` 证据事实的旧数据会成为 `product_spec_unknown` finding，不会自动短路。这是预期的安全兼容，但上线前需单独安排有证据的产品规格回填，不能用无来源文本补齐。
+- 0048 尚未发布，因此本轮直接修订该 migration；已经在本地应用旧 0048 的开发数据库必须重建或执行受控 downgrade/upgrade，不能仅修改代码后继续沿用旧表结构。

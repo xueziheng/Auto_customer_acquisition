@@ -32,6 +32,7 @@ SOURCING_TABLES = {
 }
 SUPPLY_TABLES = {
     "products",
+    "product_match_specs",
     "product_variants",
     "supply_capabilities",
     "product_candidate_sources",
@@ -347,7 +348,27 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             ("tenant_id", "opportunity_id"),
         )
         assert "internal_cost_unit" in contract["products"]["columns"]
-        assert "match_specs" in contract["products"]["columns"]
+        assert "match_specs" not in contract["products"]["columns"]
+        match_spec_contract = contract["product_match_specs"]
+        assert match_spec_contract["pk"] == (
+            "tenant_id",
+            "product_id",
+            "normalized_spec_name",
+        )
+        assert match_spec_contract["foreign_keys"][
+            "fk_product_match_specs_product"
+        ] == (
+            ("tenant_id", "product_id"),
+            "products",
+            ("tenant_id", "product_id"),
+        )
+        assert match_spec_contract["foreign_keys"][
+            "fk_product_match_specs_artifact"
+        ] == (
+            ("tenant_id", "evidence_ref"),
+            "raw_artifacts",
+            ("tenant_id", "artifact_id"),
+        )
         assert contract["sourcing_ladder_checks"]["columns"]["outcome"][
             "nullable"
         ] is False

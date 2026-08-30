@@ -369,7 +369,102 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
         "art_product_category",
         "art_unit",
     } <= set(sourcing.checks[-1].evidence_refs)
+    assert sourcing.checks[-1].input_snapshot["product_spec_evidence"] == {
+        expected_ids[0]: {
+            "application": "art_application",
+            "material": "art_material",
+            "moq": "art_moq",
+            "product_category": "art_product_category",
+            "unit": "art_unit",
+        }
+    }
     assert suppliers.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qualified_match_cannot_rewrite_trusted_need_requirement() -> None:
+    """产品服务伪造 required=carbon 的 exact 结果不能覆盖 Need 的 stainless。"""
+
+    product = _product("prd-drift", ProductPool.FORMAL)
+    comparisons = list(_qualified(product).spec_comparisons)
+    comparisons[1] = ProductSpecComparison(
+        spec_name="material",
+        required="carbon steel",
+        offered="carbon steel",
+        level=ProductSpecMatchLevel.EXACT,
+        evidence_ref=ArtifactId("art_material"),
+    )
+    products = _Products(
+        ProductMatchResult(
+            (QualifiedProductMatch(product, tuple(comparisons)),), ()
+        )
+    )
+    sourcing = _Sourcing()
+    step = _handlers(products, _Suppliers(), sourcing)[
+        "sourcing_case.v2.check_ladder"
+    ]
+
+    with pytest.raises(ValidationError, match="规格证明"):
+        await step.execute(_run())
+
+    assert sourcing.checks == []
+
+
+@pytest.mark.asyncio
+async def test_qualified_match_rejects_duplicate_returned_comparison() -> None:
+    """重复 comparison 不能用第二份 Evidence 覆盖第一份。"""
+
+    product = _product("prd-duplicate", ProductPool.FORMAL)
+    comparisons = _qualified(product).spec_comparisons
+    products = _Products(
+        ProductMatchResult(
+            (
+                QualifiedProductMatch(
+                    product,
+                    tuple(
+                        sorted(
+                            (*comparisons, comparisons[1]),
+                            key=lambda item: item.spec_name,
+                        )
+                    ),
+                ),
+            ),
+            (),
+        )
+    )
+    sourcing = _Sourcing()
+    step = _handlers(products, _Suppliers(), sourcing)[
+        "sourcing_case.v2.check_ladder"
+    ]
+
+    with pytest.raises(ValidationError, match="规格证明"):
+        await step.execute(_run())
+
+    assert sourcing.checks == []
+
+
+@pytest.mark.asyncio
+async def test_trusted_need_requirement_map_rejects_normalized_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Need 规格名规范化后重复时，调用产品服务前即失败关闭。"""
+
+    monkeypatch.setattr(
+        "workflows.sourcing_case.steps._required_specs",
+        lambda _snapshot: (
+            ProductSpecRequirement(" Material ", "stainless steel"),
+            ProductSpecRequirement("material", "stainless steel"),
+        ),
+    )
+    products = _Products(ProductMatchResult((), ()))
+    step = _handlers(products, _Suppliers(), _Sourcing())[
+        "sourcing_case.v2.check_ladder"
+    ]
+
+    with pytest.raises(ValidationError, match="可信寻源需求规格"):
+        await step.execute(_run())
+
+    assert products.calls == 0
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from infra.db.tables import (
@@ -75,6 +76,7 @@ def _product(
     *,
     category: str = " Stainless Hinges ",
     status: CandidateStatus = CandidateStatus.SOURCE_ONLY,
+    match_evidence_ref: ArtifactId | None = None,
 ) -> Product:
     return Product(
         product_id=product_id, tenant_id=tenant_id, pool=ProductPool.CANDIDATE,
@@ -84,9 +86,11 @@ def _product(
         allowed_price_max=Money(Decimal("0.987654321098"), CurrencyCode("USD")),
         sellable_markets=["US"], customizable=True, selling_points=["corrosion resistant"],
         known_issues=["finish requires confirmation"],
-        match_specs={
-            "material": ProductSpecFact("304 stainless", ArtifactId("art_material"))
-        },
+        match_specs=(
+            {"material": ProductSpecFact("304 stainless", match_evidence_ref)}
+            if match_evidence_ref is not None
+            else {}
+        ),
     )
 
 
@@ -199,7 +203,11 @@ async def test_product_round_trip_preserves_candidate_lifecycle_and_decimal(
 
     Uow = _symbol("infra.db.products_uow", "SqlAlchemyProductsUnitOfWork")
     tenant_id, product_id = _tenant(), ProductId(new_id("prd"))
-    product = _product(tenant_id, product_id, status=status)
+    evidence_ref = ArtifactId(new_id("art"))
+    await _seed_artifact(supply_engine, tenant_id, evidence_ref)
+    product = _product(
+        tenant_id, product_id, status=status, match_evidence_ref=evidence_ref
+    )
     sf = async_sessionmaker(supply_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
         await uow.products.add(tenant_id, product)
@@ -221,6 +229,126 @@ async def test_product_round_trip_preserves_candidate_lifecycle_and_decimal(
     assert loaded.allowed_price_min.amount == Decimal("0.123456789012")
     assert loaded.match_specs == product.match_specs
     assert capabilities[0].kind == " Small Batch Custom "
+
+
+@pytest.mark.parametrize("artifact_case", ["missing", "cross_tenant"])
+async def test_product_match_fact_rejects_untrusted_artifact_reference(
+    supply_engine: AsyncEngine, artifact_case: str
+) -> None:
+    """不存在或其他租户的 Artifact 不能成为产品规格证明。"""
+
+    Uow = _symbol("infra.db.products_uow", "SqlAlchemyProductsUnitOfWork")
+    tenant_id = _tenant()
+    evidence_ref = ArtifactId(new_id("art"))
+    if artifact_case == "cross_tenant":
+        await _seed_artifact(supply_engine, _tenant(), evidence_ref)
+    product = _product(
+        tenant_id,
+        ProductId(new_id("prd")),
+        match_evidence_ref=evidence_ref,
+    )
+    sf = async_sessionmaker(supply_engine, expire_on_commit=False)
+
+    with pytest.raises(IntegrityError):
+        async with Uow(sf, tenant_id) as uow:
+            await uow.products.add(tenant_id, product)
+    async with supply_engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(ProductRow).where(
+                ProductRow.tenant_id == tenant_id,
+                ProductRow.product_id == product.product_id,
+            )
+        ) == 0
+
+
+async def test_product_match_facts_round_trip_and_qualify_after_restart(
+    supply_engine: AsyncEngine,
+) -> None:
+    """只从同租户 Artifact 绑定子表恢复的逐项事实才可在重启后 qualify。"""
+
+    ProductServiceImpl = _symbol("domains.products.service_impl", "ProductServiceImpl")
+    Phase2ProductAuthorizer = _symbol(
+        "domains.products.permissions", "Phase2ProductAuthorizer"
+    )
+    ProductActor = _symbol("domains.products.service", "ProductActor")
+    ProductRole = _symbol("domains.products.permissions", "ProductRole")
+    ProductSpecRequirement = _symbol(
+        "domains.products.service", "ProductSpecRequirement"
+    )
+    Uow = _symbol("infra.db.products_uow", "SqlAlchemyProductsUnitOfWork")
+    tenant_id = _tenant()
+    product_id = ProductId(new_id("prd"))
+    evidence_ref = ArtifactId(new_id("art"))
+    cost_ref = ArtifactId(new_id("art"))
+    await _seed_artifact(supply_engine, tenant_id, evidence_ref)
+    async with supply_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO raw_artifacts "
+                "(tenant_id, artifact_id, kind, content_hash, size_bytes, mime_type, object_key, uploaded_at) "
+                "VALUES (:tenant, :artifact, 'web_snapshot', :hash, 1, 'text/html', :key, :now)"
+            ),
+            {
+                "tenant": tenant_id,
+                "artifact": cost_ref,
+                "hash": "e" * 64,
+                "key": f"raw/{tenant_id}/{cost_ref}",
+                "now": NOW,
+            },
+        )
+    product = Product(
+        product_id=product_id,
+        tenant_id=tenant_id,
+        pool=ProductPool.FORMAL,
+        name_zh="不锈钢铰链",
+        name_en="Stainless Hinge",
+        category="stainless hinges",
+        created_at=NOW,
+        moq=1000,
+        internal_cost=Money(Decimal("0.50"), CurrencyCode("USD")),
+        internal_cost_basis="EXW",
+        internal_cost_unit="piece",
+        internal_cost_source_ref=cost_ref,
+        match_specs={
+            " Material ": ProductSpecFact("stainless steel", evidence_ref),
+            "moq": ProductSpecFact("1000", evidence_ref),
+            "product_category": ProductSpecFact("stainless hinges", evidence_ref),
+            "unit": ProductSpecFact("piece", evidence_ref),
+        },
+    )
+    sf = async_sessionmaker(supply_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.products.add(tenant_id, product)
+
+    service = ProductServiceImpl(
+        lambda bound_tenant: Uow(sf, bound_tenant),
+        Phase2ProductAuthorizer(tenant_id),
+    )
+    result = await service.search_for_matching(
+        tenant_id,
+        "stainless hinges",
+        [],
+        (
+            ProductSpecRequirement("product_category", "stainless hinges"),
+            ProductSpecRequirement("material", "stainless steel"),
+            ProductSpecRequirement("moq", "5000"),
+            ProductSpecRequirement("unit", "piece"),
+        ),
+        actor=ProductActor("system:sourcing", ProductRole.SYSTEM, tenant_id),
+    )
+
+    assert [item.product.product_id for item in result.qualified_matches] == [
+        product_id
+    ]
+    assert {
+        item.spec_name: item.evidence_ref
+        for item in result.qualified_matches[0].spec_comparisons
+    } == {
+        "material": evidence_ref,
+        "moq": evidence_ref,
+        "product_category": evidence_ref,
+        "unit": evidence_ref,
+    }
 
 
 async def test_product_internal_cost_round_trip_requires_basis_unit_and_artifact(

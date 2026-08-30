@@ -62,12 +62,6 @@ def upgrade() -> None:
         sa.Column("category", sa.String(100), nullable=False),
         sa.Column("normalized_category", sa.String(100), nullable=False),
         sa.Column("spec_summary", sa.Text(), nullable=True),
-        sa.Column(
-            "match_specs",
-            postgresql.JSONB(),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
         sa.Column("moq", sa.Integer(), nullable=True),
         sa.Column("lead_time_days_min", sa.Integer(), nullable=True),
         sa.Column("lead_time_days_max", sa.Integer(), nullable=True),
@@ -153,10 +147,6 @@ def upgrade() -> None:
             name="ck_products_lists_json",
         ),
         sa.CheckConstraint(
-            "jsonb_typeof(match_specs) = 'object'",
-            name="ck_products_match_specs_json",
-        ),
-        sa.CheckConstraint(
             "btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' "
             "AND btrim(normalized_category) <> ''",
             name="ck_products_core_nonblank",
@@ -166,6 +156,37 @@ def upgrade() -> None:
         "ix_products_pool_category",
         "products",
         ["tenant_id", "pool", "normalized_category", "product_id"],
+    )
+
+    op.create_table(
+        "product_match_specs",
+        sa.Column("tenant_id", sa.String(40), nullable=False),
+        sa.Column("product_id", sa.String(40), nullable=False),
+        sa.Column("normalized_spec_name", sa.String(100), nullable=False),
+        sa.Column("value", sa.Text(), nullable=False),
+        sa.Column("evidence_ref", sa.String(32), nullable=False),
+        sa.PrimaryKeyConstraint(
+            "tenant_id",
+            "product_id",
+            "normalized_spec_name",
+            name="pk_product_match_specs",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "product_id"],
+            ["products.tenant_id", "products.product_id"],
+            name="fk_product_match_specs_product",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "evidence_ref"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_product_match_specs_artifact",
+            ondelete="RESTRICT",
+        ),
+        sa.CheckConstraint(
+            "btrim(normalized_spec_name) <> '' AND btrim(value) <> ''",
+            name="ck_product_match_specs_nonblank",
+        ),
     )
 
     op.create_table(
@@ -392,6 +413,7 @@ def downgrade() -> None:
     op.drop_index("ix_supply_capabilities_kind", table_name="supply_capabilities")
     op.drop_table("supply_capabilities")
     op.drop_table("product_variants")
+    op.drop_table("product_match_specs")
     op.drop_index("ix_products_pool_category", table_name="products")
     op.drop_table("products")
     op.drop_index("ix_suppliers_capability_tags", table_name="suppliers")

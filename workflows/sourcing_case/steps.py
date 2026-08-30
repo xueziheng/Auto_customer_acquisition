@@ -11,6 +11,7 @@ from domains.products.service import (
     ProductActor,
     ProductMatchResult,
     ProductService,
+    ProductSpecComparison,
     ProductSpecMatchLevel,
     ProductSpecRequirement,
     QualifiedProductMatch,
@@ -261,6 +262,14 @@ class InternalMatchLadderStep:
         snapshot = await _trusted_need(run, self._need_reader)
         category, keywords = _category_and_keywords(snapshot)
         requirements = _required_specs(snapshot)
+        required_by_name: dict[str, str] = {}
+        for requirement in requirements:
+            spec_name = _normalize(requirement.spec_name)
+            required = _normalize(requirement.required)
+            if not spec_name or not required or spec_name in required_by_name:
+                raise ValidationError("可信寻源需求规格必须规范化后唯一且非空")
+            required_by_name[spec_name] = required
+        required_names = tuple(sorted(required_by_name))
         failed = False
         transient = False
         product_result: ProductMatchResult | None = None
@@ -286,7 +295,6 @@ class InternalMatchLadderStep:
             raise ValidationError("寻源内部产品匹配结果无效")
 
         buckets: dict[int, list[QualifiedProductMatch]] = {1: [], 2: [], 3: []}
-        required_names = tuple(item.spec_name for item in requirements)
         for match in sorted(
             product_result.qualified_matches,
             key=lambda item: str(item.product.product_id),
@@ -296,15 +304,30 @@ class InternalMatchLadderStep:
             product = match.product
             if product.tenant_id != run.tenant_id:
                 raise ValidationError("内部产品匹配结果租户无效")
-            comparison_names = tuple(item.spec_name for item in match.spec_comparisons)
+            comparison_names: list[str] = []
+            for comparison in match.spec_comparisons:
+                if (
+                    not isinstance(comparison, ProductSpecComparison)
+                    or not isinstance(comparison.spec_name, str)
+                    or not isinstance(comparison.required, str)
+                    or not isinstance(comparison.offered, str)
+                    or comparison.level is not ProductSpecMatchLevel.EXACT
+                    or comparison.evidence_ref is None
+                    or not str(comparison.evidence_ref).strip()
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                spec_name = _normalize(comparison.spec_name)
+                if (
+                    not spec_name
+                    or not _normalize(comparison.offered)
+                    or _normalize(comparison.required)
+                    != required_by_name.get(spec_name)
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                comparison_names.append(spec_name)
             if (
-                comparison_names != tuple(sorted(required_names))
+                tuple(comparison_names) != required_names
                 or len(set(comparison_names)) != len(comparison_names)
-                or any(
-                    item.level is not ProductSpecMatchLevel.EXACT
-                    or item.evidence_ref is None
-                    for item in match.spec_comparisons
-                )
             ):
                 raise ValidationError("内部产品匹配规格证明不完整")
             pool = getattr(product.pool, "value", None)
@@ -334,6 +357,15 @@ class InternalMatchLadderStep:
                 "excluded_product_findings": finding_rows,
             }
             if matches:
+                input_snapshot["product_spec_evidence"] = {
+                    str(match.product.product_id): {
+                        _normalize(comparison.spec_name): str(
+                            comparison.evidence_ref
+                        )
+                        for comparison in match.spec_comparisons
+                    }
+                    for match in matches
+                }
                 evidence_refs = tuple(
                     sorted(
                         {

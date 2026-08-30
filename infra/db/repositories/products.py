@@ -7,7 +7,7 @@ import unicodedata
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
     ProductCandidatePriceRefRow,
     ProductCandidateSourceRow,
+    ProductMatchSpecRow,
     ProductRow,
     SupplyCapabilityRow,
 )
@@ -79,15 +80,6 @@ def _product_to_row(product: Product) -> ProductRow:
         category=product.category,
         normalized_category=_normalize(product.category),
         spec_summary=product.spec_summary,
-        match_specs={
-            name: {
-                "value": fact.value,
-                "evidence_ref": (
-                    str(fact.evidence_ref) if fact.evidence_ref is not None else None
-                ),
-            }
-            for name, fact in product.match_specs.items()
-        },
         moq=product.moq,
         lead_time_days_min=product.lead_time_days_min,
         lead_time_days_max=product.lead_time_days_max,
@@ -128,6 +120,18 @@ async def _row_to_product(session: AsyncSession, row: ProductRow) -> Product:
             ProductCandidateSourceRow.product_id == row.product_id,
         )
     )
+    spec_rows = list(
+        (
+            await session.execute(
+                select(ProductMatchSpecRow)
+                .where(
+                    ProductMatchSpecRow.tenant_id == row.tenant_id,
+                    ProductMatchSpecRow.product_id == row.product_id,
+                )
+                .order_by(ProductMatchSpecRow.normalized_spec_name)
+            )
+        ).scalars()
+    )
     return Product(
         product_id=ProductId(row.product_id),
         tenant_id=TenantId(row.tenant_id),
@@ -141,16 +145,11 @@ async def _row_to_product(session: AsyncSession, row: ProductRow) -> Product:
         ),
         spec_summary=row.spec_summary,
         match_specs={
-            str(name): ProductSpecFact(
-                value=str(payload.get("value", "")),
-                evidence_ref=(
-                    ArtifactId(str(payload["evidence_ref"]))
-                    if payload.get("evidence_ref")
-                    else None
-                ),
+            item.normalized_spec_name: ProductSpecFact(
+                value=item.value,
+                evidence_ref=ArtifactId(item.evidence_ref),
             )
-            for name, payload in row.match_specs.items()
-            if isinstance(payload, dict)
+            for item in spec_rows
         },
         moq=row.moq,
         lead_time_days_min=row.lead_time_days_min,
@@ -179,11 +178,44 @@ async def _row_to_product(session: AsyncSession, row: ProductRow) -> Product:
 
 
 class ProductRepositoryImpl(_TenantBoundRepository):
+    @staticmethod
+    def _match_spec_rows(product: Product) -> list[ProductMatchSpecRow]:
+        rows: list[ProductMatchSpecRow] = []
+        names: set[str] = set()
+        for raw_name, fact in sorted(product.match_specs.items()):
+            name = _normalize(raw_name)
+            if (
+                not name
+                or len(name) > 100
+                or name in names
+                or not isinstance(fact, ProductSpecFact)
+                or not isinstance(fact.value, str)
+                or not fact.value.strip()
+                or fact.evidence_ref is None
+            ):
+                raise ValidationError(
+                    "产品匹配规格事实必须规范化后唯一、非空并绑定 Evidence"
+                )
+            names.add(name)
+            rows.append(
+                ProductMatchSpecRow(
+                    tenant_id=product.tenant_id,
+                    product_id=product.product_id,
+                    normalized_spec_name=name,
+                    value=fact.value,
+                    evidence_ref=fact.evidence_ref,
+                )
+            )
+        return rows
+
     async def add(self, tenant_id: TenantId, product: Product) -> None:
         self._require_tenant(tenant_id)
         if product.tenant_id != tenant_id:
             raise ValueError("产品租户与请求租户不一致")
+        match_rows = self._match_spec_rows(product)
         self._session.add(_product_to_row(product))
+        await self._session.flush()
+        self._session.add_all(match_rows)
 
     async def get(self, tenant_id: TenantId, product_id: ProductId) -> Product | None:
         self._require_tenant(tenant_id)
@@ -215,6 +247,13 @@ class ProductRepositoryImpl(_TenantBoundRepository):
         )
         if cast(CursorResult[object], result).rowcount != 1:
             raise ValidationError("产品不存在或租户不匹配")
+        await self._session.execute(
+            delete(ProductMatchSpecRow).where(
+                ProductMatchSpecRow.tenant_id == tenant_id,
+                ProductMatchSpecRow.product_id == product.product_id,
+            )
+        )
+        self._session.add_all(self._match_spec_rows(product))
 
     async def search(
         self,
