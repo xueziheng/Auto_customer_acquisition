@@ -970,6 +970,24 @@ class PublicSearchStep:
                                 )
                             if not isinstance(claim, PublicPageAttemptClaim):
                                 raise ValidationError("公开寻源页面槽状态无效")
+                            if (
+                                claim.slot.tenant_id,
+                                claim.slot.case_id,
+                                claim.slot.run_id,
+                                claim.slot.plan_id,
+                                claim.slot.plan_hash,
+                                claim.slot.query_index,
+                                claim.slot.result_index,
+                            ) != (
+                                run.tenant_id,
+                                case_id,
+                                run.run_id,
+                                plan_id,
+                                plan_hash,
+                                query_index,
+                                result_index,
+                            ):
+                                raise ValidationError("公开寻源页面槽绑定无效")
                             if not claim.claimed_new:
                                 if (
                                     claim.slot.status

@@ -779,6 +779,53 @@ async def test_claim_conflict_aggregates_completed_rejection_without_reread() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("binding_field", "binding_drift"),
+    (
+        ("tenant_id", {"tenant_id": TenantId("tenant-other")}),
+        ("case_id", {"case_id": SourcingCaseId("src-other")}),
+        ("run_id", {"run_id": RunId("run-other")}),
+        ("plan_id", {"plan_id": SourcingPlanId("spl-other")}),
+        ("plan_hash", {"plan_hash": "b" * 64}),
+        ("query_index", {"query_index": 1}),
+        ("result_index", {"result_index": 1}),
+        ("stable_slot_identity", {"query_index": 1, "result_index": 1}),
+    ),
+)
+@pytest.mark.parametrize("canonical_state", ("draft_saved", "login_or_captcha"))
+async def test_claim_conflict_rejects_every_mismatched_canonical_slot_binding(
+    binding_field: str,
+    binding_drift: dict[str, object],
+    canonical_state: str,
+) -> None:
+    step, _, pages, receipts, extractor, drafts, _, _ = _step(
+        batches=[_batch(0, (_result(0),)), _batch(1, ())],
+        pages=[_page(0)],
+        plan=_plan(pages=1),
+    )
+    canonical = _page_slot(
+        0,
+        0,
+        status="completed",
+        outcome=canonical_state,
+        draft_id="scd-sensitive-cross-slot" if canonical_state == "draft_saved" else None,
+        has_supplier_identity=True if canonical_state == "draft_saved" else None,
+    )
+    receipts.claim_conflicts[(0, 0)] = canonical.model_copy(update=binding_drift)
+
+    with pytest.raises(ValidationError) as caught:
+        await step.execute(_run())
+
+    assert binding_field not in str(caught.value)
+    assert str(caught.value) == "公开寻源页面槽绑定无效"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert pages.calls == []
+    assert extractor.calls == 0
+    assert drafts.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cancellation_releases_batch_and_discards_outer_slot() -> None:
     step, searcher, pages, _, _, _, _, _ = _step()
     pages.error = asyncio.CancelledError()
