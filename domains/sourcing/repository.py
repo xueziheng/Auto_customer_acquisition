@@ -7,9 +7,20 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.sourcing.models import CaseState, SourcingCase, SupplierCandidate
+from domains.sourcing.models import (
+    CaseState,
+    PublicSourcingPlan,
+    SourcingCase,
+    SourcingReview,
+    SourcingSupplyOption,
+    SupplierCandidate,
+)
+from domains.sourcing.schemas import SourcingHandoffSnapshot
 from shared.schemas.identifiers import (
     SourcingCaseId,
+    SourcingPlanId,
+    SourcingReviewId,
+    SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
     ValidatedNeedId,
@@ -18,13 +29,17 @@ from shared.schemas.identifiers import (
 
 @runtime_checkable
 class SourcingCaseRepository(Protocol):
-    async def add(self, case: SourcingCase) -> None: ...
+    async def add(self, tenant_id: TenantId, case: SourcingCase) -> None:
+        """新增同租户案例；实现必须校验实体 tenant_id 一致。"""
+        ...
 
     async def get(
         self, tenant_id: TenantId, case_id: SourcingCaseId
     ) -> SourcingCase | None: ...
 
-    async def update(self, case: SourcingCase) -> None: ...
+    async def update(self, tenant_id: TenantId, case: SourcingCase) -> None:
+        """按实体版本条件更新，失败返回并发冲突而非覆盖。"""
+        ...
 
     async def find_active_for_need(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
@@ -39,7 +54,9 @@ class SourcingCaseRepository(Protocol):
 
 @runtime_checkable
 class CandidateRepository(Protocol):
-    async def add(self, candidate: SupplierCandidate) -> None:
+    async def add(
+        self, tenant_id: TenantId, candidate: SupplierCandidate
+    ) -> None:
         """保存候选。**被拒的候选也要存**——它们是核验规则的校准
         数据，没有被拒样本就无法评估规则是否过严或过松。"""
         ...
@@ -48,7 +65,9 @@ class CandidateRepository(Protocol):
         self, tenant_id: TenantId, candidate_id: SupplierCandidateId
     ) -> SupplierCandidate | None: ...
 
-    async def update(self, candidate: SupplierCandidate) -> None: ...
+    async def update(
+        self, tenant_id: TenantId, candidate: SupplierCandidate
+    ) -> None: ...
 
     async def list_for_case(
         self, tenant_id: TenantId, case_id: SourcingCaseId, include_rejected: bool
@@ -59,3 +78,74 @@ class CandidateRepository(Protocol):
     ) -> int:
         """合格候选数，与 ``MAX_QUALIFIED_CANDIDATES`` 比较用。"""
         ...
+
+
+@runtime_checkable
+class PublicSourcingPlanRepository(Protocol):
+    """版本化公开寻源计划存储接口。"""
+
+    async def add(
+        self, tenant_id: TenantId, plan: PublicSourcingPlan
+    ) -> None: ...
+
+    async def get(
+        self, tenant_id: TenantId, plan_id: SourcingPlanId
+    ) -> PublicSourcingPlan | None: ...
+
+    async def update(
+        self, tenant_id: TenantId, plan: PublicSourcingPlan
+    ) -> None:
+        """按版本与当前哈希更新；确认事实不可被范围改写覆盖。"""
+        ...
+
+    async def get_active_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> PublicSourcingPlan | None: ...
+
+
+@runtime_checkable
+class SupplyOptionRepository(Protocol):
+    """现有产品与候选产品的统一供给选项存储接口。"""
+
+    async def add(
+        self, tenant_id: TenantId, option: SourcingSupplyOption
+    ) -> None: ...
+
+    async def get(
+        self, tenant_id: TenantId, option_id: SourcingSupplyOptionId
+    ) -> SourcingSupplyOption | None: ...
+
+    async def list_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> list[SourcingSupplyOption]: ...
+
+
+@runtime_checkable
+class SourcingReviewRepository(Protocol):
+    """审核事实存储接口；实现用 Case 版本条件写拒绝并发过期。"""
+
+    async def add(self, tenant_id: TenantId, review: SourcingReview) -> None: ...
+
+    async def get(
+        self, tenant_id: TenantId, review_id: SourcingReviewId
+    ) -> SourcingReview | None: ...
+
+    async def get_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> SourcingReview | None: ...
+
+    async def update(
+        self, tenant_id: TenantId, review: SourcingReview
+    ) -> None: ...
+
+
+@runtime_checkable
+class SourcingHandoffRepository(Protocol):
+    """成本域读取的租户绑定、版本冻结交接快照接口。"""
+
+    async def get_snapshot(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        review_id: SourcingReviewId,
+    ) -> SourcingHandoffSnapshot | None: ...

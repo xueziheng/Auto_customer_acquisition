@@ -5,14 +5,29 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
+from hashlib import sha256
 from urllib.parse import urlsplit
 
+from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
+from domains.sourcing.schemas import (
+    PublicSourcingPlanCommand,
+    SourcingMatchInference,
+    SourcingObservedFact,
+    SourcingReviewCommand,
+    SourcingSupplierClaim,
+)
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
+    ProductId,
     SourcingCaseId,
+    SourcingPlanId,
+    SourcingReviewId,
+    SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
     ValidatedNeedId,
@@ -105,6 +120,208 @@ class CaseState(str, Enum):
     FAILED = "failed"
 
 
+CASE_STATE_TRANSITIONS: dict[CaseState, frozenset[CaseState]] = {
+    CaseState.OPENED: frozenset({CaseState.DISCOVERING, CaseState.FAILED}),
+    CaseState.DISCOVERING: frozenset({CaseState.VERIFYING, CaseState.FAILED}),
+    CaseState.VERIFYING: frozenset({CaseState.CANDIDATES_READY, CaseState.FAILED}),
+    CaseState.CANDIDATES_READY: frozenset(
+        {CaseState.HANDED_TO_COSTING, CaseState.FAILED}
+    ),
+    CaseState.HANDED_TO_COSTING: frozenset(),
+    CaseState.FAILED: frozenset(),
+}
+"""V2 案例合法转换表；非法路径不得靠调用方约定绕过。"""
+
+
+class SupplyOptionSource(str, Enum):
+    """成本交接供给选项的来源。"""
+
+    EXISTING_PRODUCT = "existing_product"
+    SUPPLIER_CANDIDATE = "supplier_candidate"
+
+
+class PublicPlanStatus(str, Enum):
+    """公开寻源计划状态；案例仍沿用既有粗粒度状态机。"""
+
+    PENDING_CONFIRMATION = "pending_confirmation"
+    AUTHORIZED = "authorized"
+    RUNNING = "running"
+    EXHAUSTED = "exhausted"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+
+
+PUBLIC_PLAN_TRANSITIONS: dict[PublicPlanStatus, frozenset[PublicPlanStatus]] = {
+    PublicPlanStatus.PENDING_CONFIRMATION: frozenset({PublicPlanStatus.AUTHORIZED}),
+    PublicPlanStatus.AUTHORIZED: frozenset(
+        {PublicPlanStatus.RUNNING, PublicPlanStatus.BLOCKED}
+    ),
+    PublicPlanStatus.RUNNING: frozenset(
+        {
+            PublicPlanStatus.EXHAUSTED,
+            PublicPlanStatus.BLOCKED,
+            PublicPlanStatus.COMPLETED,
+        }
+    ),
+    PublicPlanStatus.EXHAUSTED: frozenset(),
+    PublicPlanStatus.BLOCKED: frozenset(),
+    PublicPlanStatus.COMPLETED: frozenset(),
+}
+
+
+class SourcingStopCode(str, Enum):
+    """寻源停止原因；细节只保存安全、结构化说明。"""
+
+    NEED_INCOMPLETE = "need_incomplete"
+    PLAN_CONFIRMATION_REQUIRED = "plan_confirmation_required"
+    FREE_QUOTA_UNAVAILABLE = "free_quota_unavailable"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+    NO_QUALIFIED_SUPPLY = "no_qualified_supply"
+    OPPORTUNITY_REQUIRED = "opportunity_required"
+    MANUAL_STOP = "manual_stop"
+
+
+def _require_aware_time(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValidationError(f"{field_name} 必须含时区")
+
+
+def _plan_hash(scope: dict[str, object]) -> str:
+    """对精确计划范围做稳定 JSON 哈希；不包含确认人等审计字段。"""
+
+    encoded = json.dumps(
+        scope,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class PublicSourcingPlan:
+    """版本化公开寻源计划；确认永远绑定当时看到的精确哈希。"""
+
+    plan_id: SourcingPlanId
+    case_id: SourcingCaseId
+    target_countries: tuple[str, ...]
+    product_category: str
+    queries: tuple[str, ...]
+    max_search_queries: int
+    max_pages_read: int
+    provider: str
+    search_depth: str
+    usage_credits_remaining: int
+    worst_case_credits: int
+    version: int
+    expected_case_version: int
+    plan_hash: str
+    created_at: datetime
+    status: PublicPlanStatus = PublicPlanStatus.PENDING_CONFIRMATION
+    confirmed_by: EmployeeId | None = None
+    confirmed_at: datetime | None = None
+    authorized_plan_hash: str | None = None
+
+    @classmethod
+    def create(
+        cls, command: PublicSourcingPlanCommand, *, created_at: datetime
+    ) -> PublicSourcingPlan:
+        """从已校验命令创建待确认计划，并生成规范化内容哈希。"""
+
+        if not isinstance(command, PublicSourcingPlanCommand):
+            raise ValidationError("公开寻源计划命令类型无效")
+        _require_aware_time(created_at, "created_at")
+        values = command.model_dump(mode="json")
+        return cls(
+            **command.model_dump(mode="python"),
+            plan_hash=_plan_hash(values),
+            created_at=created_at,
+        )
+
+    def _scope(self, **changes: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "plan_id": str(self.plan_id),
+            "case_id": str(self.case_id),
+            "target_countries": self.target_countries,
+            "product_category": self.product_category,
+            "queries": self.queries,
+            "max_search_queries": self.max_search_queries,
+            "max_pages_read": self.max_pages_read,
+            "provider": self.provider,
+            "search_depth": self.search_depth,
+            "usage_credits_remaining": self.usage_credits_remaining,
+            "worst_case_credits": self.worst_case_credits,
+            "version": self.version,
+            "expected_case_version": self.expected_case_version,
+        }
+        values.update(changes)
+        return values
+
+    def confirm(
+        self, confirmed_by: EmployeeId, *, confirmed_at: datetime
+    ) -> PublicSourcingPlan:
+        """老板确认当前哈希；重复或过期状态一律拒绝。"""
+
+        if self.status is not PublicPlanStatus.PENDING_CONFIRMATION:
+            raise SourcingPlanStaleError("只有待确认计划可以确认")
+        if not str(confirmed_by).strip():
+            raise ValidationError("confirmed_by 不能为空")
+        _require_aware_time(confirmed_at, "confirmed_at")
+        return replace(
+            self,
+            status=PublicPlanStatus.AUTHORIZED,
+            confirmed_by=confirmed_by,
+            confirmed_at=confirmed_at,
+            authorized_plan_hash=self.plan_hash,
+        )
+
+    def replace_scope(
+        self,
+        *,
+        target_countries: tuple[str, ...] | None = None,
+        product_category: str | None = None,
+        queries: tuple[str, ...] | None = None,
+        max_search_queries: int | None = None,
+        max_pages_read: int | None = None,
+        usage_credits_remaining: int | None = None,
+        worst_case_credits: int | None = None,
+    ) -> PublicSourcingPlan:
+        """待确认计划改变成本/范围时创建新版本；已确认计划禁止原位改写。"""
+
+        if self.status is not PublicPlanStatus.PENDING_CONFIRMATION:
+            raise SourcingPlanStaleError("已确认计划范围不可改写，必须创建新版本")
+        changes: dict[str, object] = {"version": self.version + 1}
+        for key, value in {
+            "target_countries": target_countries,
+            "product_category": product_category,
+            "queries": queries,
+            "max_search_queries": max_search_queries,
+            "max_pages_read": max_pages_read,
+            "usage_credits_remaining": usage_credits_remaining,
+            "worst_case_credits": worst_case_credits,
+        }.items():
+            if value is not None:
+                changes[key] = value
+        command = PublicSourcingPlanCommand.model_validate(self._scope(**changes))
+        return PublicSourcingPlan.create(command, created_at=self.created_at)
+
+    def transition_to(self, target: PublicPlanStatus) -> PublicSourcingPlan:
+        """依据显式状态表返回下一状态的不可变计划。"""
+
+        if not isinstance(target, PublicPlanStatus) or target not in PUBLIC_PLAN_TRANSITIONS[self.status]:
+            allowed = ",".join(
+                sorted(item.value for item in PUBLIC_PLAN_TRANSITIONS[self.status])
+            ) or "none"
+            raise InvalidStateTransition(
+                f"公开寻源计划不能从 {self.status.value} 转为 "
+                f"{getattr(target, 'value', target)}；允许：{allowed}"
+            )
+        if self.authorized_plan_hash != self.plan_hash:
+            raise SourcingPlanStaleError("计划哈希与授权哈希不一致")
+        return replace(self, status=target)
+
+
 class PriceRejectionReason(str, Enum):
     """候选价格被拒的原因。核验清单的输出之一。"""
 
@@ -152,7 +369,7 @@ class SupplierCandidate:
         supplier_name, source_platform
         product_title
         verified_specs:      逐项核验结果
-        quoted_prices:       各数量档价格（**全部 INDICATIVE**——
+        indicative_price_tiers: 各数量档参考价（**全部 INDICATIVE**——
                              硬边界 7 的系统入口就在这里）
         moq, price_unit, currency
         evidence:            证据快照
@@ -169,8 +386,11 @@ class SupplierCandidate:
     product_title: str
     created_at: datetime
     source_platform: str | None = None
+    observed_facts: dict[str, SourcingObservedFact] = field(default_factory=dict)
+    supplier_claims: dict[str, SourcingSupplierClaim] = field(default_factory=dict)
+    match_inferences: dict[str, SourcingMatchInference] = field(default_factory=dict)
     verified_specs: list[SpecComparison] = field(default_factory=list)
-    quoted_prices: dict[int, Money] = field(default_factory=dict)
+    indicative_price_tiers: dict[int, Money] = field(default_factory=dict)
     moq: int | None = None
     price_unit: str | None = None
     currency: str | None = None
@@ -198,12 +418,12 @@ class SupplierCandidate:
             ):
                 missing.append(name)
 
-        tiers_valid = bool(self.quoted_prices) and all(
+        tiers_valid = bool(self.indicative_price_tiers) and all(
             not isinstance(quantity, bool)
             and isinstance(quantity, int)
             and quantity > 0
             and price.amount > 0
-            for quantity, price in self.quoted_prices.items()
+            for quantity, price in self.indicative_price_tiers.items()
         )
         if not tiers_valid:
             missing.append("quantity_tier")
@@ -211,7 +431,9 @@ class SupplierCandidate:
             missing.append("moq")
         if self.price_unit is None or not self.price_unit.strip():
             missing.append("price_unit")
-        currencies = {str(price.currency) for price in self.quoted_prices.values()}
+        currencies = {
+            str(price.currency) for price in self.indicative_price_tiers.values()
+        }
         if (
             self.currency is None
             or len(self.currency) != 3
@@ -263,6 +485,30 @@ class SourcingCase:
     completed_at: datetime | None = None
     failed_reason: str | None = None
     assigned_to: EmployeeId | None = None
+    workflow_version: int = 1
+    trigger_key: str | None = None
+    need_snapshot_hash: str | None = None
+    active_search_plan_id: SourcingPlanId | None = None
+    stop_code: SourcingStopCode | None = None
+    stop_detail: str | None = None
+    version: int = 1
+    state_changed_at: datetime | None = None
+
+    def transition_to(self, target: CaseState, *, changed_at: datetime) -> None:
+        """按显式转换表推进案例并递增乐观并发版本。"""
+
+        if not isinstance(target, CaseState) or target not in CASE_STATE_TRANSITIONS[self.state]:
+            allowed = ",".join(
+                sorted(item.value for item in CASE_STATE_TRANSITIONS[self.state])
+            ) or "none"
+            raise InvalidStateTransition(
+                f"寻源案例不能从 {self.state.value} 转为 "
+                f"{getattr(target, 'value', target)}；允许：{allowed}"
+            )
+        _require_aware_time(changed_at, "changed_at")
+        self.state = target
+        self.state_changed_at = changed_at
+        self.version += 1
 
     def qualified_candidates(self) -> list[SupplierCandidate]:
         """通过核验且未被拒的候选，上限 ``MAX_QUALIFIED_CANDIDATES``。"""
@@ -273,6 +519,86 @@ class SourcingCase:
         ]
         qualified.sort(key=lambda item: (item.created_at, str(item.candidate_id)))
         return qualified[:MAX_QUALIFIED_CANDIDATES]
+
+
+@dataclass(frozen=True)
+class SourcingSupplyOption:
+    """供人工审核的规范化供给选项；来源路径必须与候选 ID 一致。"""
+
+    option_id: SourcingSupplyOptionId
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    source: SupplyOptionSource
+    product_id: ProductId
+    supplier_candidate_id: SupplierCandidateId | None
+    is_qualified: bool
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        expected_candidate = self.source is SupplyOptionSource.SUPPLIER_CANDIDATE
+        if expected_candidate != (self.supplier_candidate_id is not None):
+            raise ValidationError("供给选项来源与 supplier_candidate_id 不一致")
+        _require_aware_time(self.created_at, "created_at")
+
+
+@dataclass(frozen=True)
+class SourcingReview:
+    """人工审核事实；主选唯一，备选至多两个，提交版本不可过期。"""
+
+    review_id: SourcingReviewId
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    primary_option_id: SourcingSupplyOptionId
+    alternate_option_ids: tuple[SourcingSupplyOptionId, ...]
+    reason: str
+    expected_case_version: int
+    submitted_by: EmployeeId
+    submitted_at: datetime
+    confirmed_by: EmployeeId | None = None
+    confirmed_at: datetime | None = None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        review_id: SourcingReviewId,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: SourcingReviewCommand,
+        submitted_by: EmployeeId,
+        submitted_at: datetime,
+        actual_case_version: int,
+    ) -> SourcingReview:
+        """从严格命令创建审核；Case 版本不一致时拒绝过期写入。"""
+
+        if command.expected_case_version != actual_case_version:
+            raise SourcingReviewStaleError("审核提交使用了过期的 Case 版本")
+        _require_aware_time(submitted_at, "submitted_at")
+        return cls(
+            review_id=review_id,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            primary_option_id=command.primary_option_id,
+            alternate_option_ids=command.alternate_option_ids,
+            reason=command.reason,
+            expected_case_version=command.expected_case_version,
+            submitted_by=submitted_by,
+            submitted_at=submitted_at,
+        )
+
+    def confirm(
+        self, confirmed_by: EmployeeId, *, confirmed_at: datetime
+    ) -> SourcingReview:
+        """记录老板确认；历史审核不可重复确认或改写。"""
+
+        if self.confirmed_by is not None:
+            raise SourcingReviewStaleError("审核已经确认")
+        _require_aware_time(confirmed_at, "confirmed_at")
+        return replace(
+            self,
+            confirmed_by=confirmed_by,
+            confirmed_at=confirmed_at,
+        )
 
 
 def _valid_evidence_snapshot(snapshot: EvidenceSnapshot | None) -> bool:

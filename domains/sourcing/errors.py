@@ -34,3 +34,19 @@ class NoQualifiedCandidateError(PolicyViolation):
     该走 ``fail_case``，让 NO_SUPPLY_FOUND 信号如实回流——
     把不合格候选硬算成完成，反馈闭环就被污染了。
     """
+
+
+class SourcingThresholdNotMetError(PolicyViolation):
+    """已验证需求完整度不足 3，不能启动 V2 寻源。"""
+
+
+class SourcingPlanStaleError(PolicyViolation):
+    """计划版本、状态或精确哈希已过期，必须重新确认。"""
+
+
+class SourcingReviewStaleError(PolicyViolation):
+    """审核绑定的 Case 版本已经变化，禁止覆盖新事实。"""
+
+
+class SourcingHandoffInvariantError(ValidationError):
+    """成本交接快照存在数量档、计价维度或来源路径歧义。"""

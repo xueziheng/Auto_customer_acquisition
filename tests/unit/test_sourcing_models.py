@@ -53,7 +53,9 @@ def candidate(
         product_title="Stainless steel hinge",
         created_at=created_at,
         verified_specs=specs() if verified_specs is None else verified_specs,
-        quoted_prices={1000: Money(Decimal("1.25"), CurrencyCode("USD"))},
+        indicative_price_tiers={
+            1000: Money(Decimal("1.25"), CurrencyCode("USD"))
+        },
         moq=500,
         price_unit="piece",
         currency=currency,
@@ -93,7 +95,7 @@ def test_match_explanation_reports_unknowns_and_customer_confirmation() -> None:
 
 def test_candidate_verification_collects_every_missing_item_without_short_circuit() -> None:
     item = candidate("missing", verified_specs=[])
-    item.quoted_prices = {}
+    item.indicative_price_tiers = {}
     item.moq = None
     item.price_unit = None
     item.currency = None

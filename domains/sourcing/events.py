@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
-from shared.events.catalog import SourcingCaseCompleted, SourcingCaseOpened
+from shared.events.catalog import (
+    SourcingCandidatesReady,
+    SourcingCaseCompleted,
+    SourcingCaseHandedToCosting,
+    SourcingCaseOpened,
+)
 
-PUBLISHES = (SourcingCaseOpened, SourcingCaseCompleted)
+PUBLISHES = (
+    SourcingCaseOpened,
+    SourcingCaseCompleted,
+    SourcingCandidatesReady,
+    SourcingCaseHandedToCosting,
+)
 """``SourcingCaseCompleted`` 的订阅方：
 - ``domains/costing``（起 ESTIMATED 成本表）
 - ``domains/opportunities``（更新 can_source）
