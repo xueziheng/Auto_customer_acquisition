@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -128,7 +129,7 @@ def _product(
             "material": ProductSpecFact("stainless steel", ArtifactId("art_material")),
             "moq": ProductSpecFact("1000", ArtifactId("art_moq")),
             "product_category": ProductSpecFact(
-                "industrial hinges", ArtifactId("art_category")
+                "industrial hinges", ArtifactId("art_product_category")
             ),
             "unit": ProductSpecFact("piece", ArtifactId("art_unit")),
         },
@@ -378,7 +379,47 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
             "unit": "art_unit",
         }
     }
+    assert all(
+        item.product_id == ProductId(expected_ids[0])
+        and item.evidence_ref
+        == ArtifactId(
+            sourcing.checks[-1].input_snapshot["product_spec_evidence"][
+                expected_ids[0]
+            ][item.spec_name]
+        )
+        for item in sourcing.checks[-1].spec_comparisons
+    )
     assert suppliers.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_every_qualified_product_gets_a_complete_spec_evidence_mapping() -> None:
+    matches = (
+        _product("prd-a", ProductPool.FORMAL),
+        _product("prd-b", ProductPool.FORMAL),
+    )
+    sourcing = _Sourcing()
+    step = _handlers(
+        _Products(ProductMatchResult(tuple(_qualified(item) for item in matches), ())),
+        _Suppliers(),
+        sourcing,
+    )["sourcing_case.v2.check_ladder"]
+
+    await step.execute(_run())
+
+    check = sourcing.checks[-1]
+    mapping = check.input_snapshot["product_spec_evidence"]
+    assert isinstance(mapping, dict)
+    assert set(mapping) == {"prd-a", "prd-b"}
+    assert all(
+        set(product_mapping)
+        == {"application", "material", "moq", "product_category", "unit"}
+        for product_mapping in mapping.values()
+    )
+    assert len(check.spec_comparisons) == 10
+    assert {
+        str(item.product_id) for item in check.spec_comparisons
+    } == {"prd-a", "prd-b"}
 
 
 @pytest.mark.asyncio
@@ -393,6 +434,39 @@ async def test_qualified_match_cannot_rewrite_trusted_need_requirement() -> None
         offered="carbon steel",
         level=ProductSpecMatchLevel.EXACT,
         evidence_ref=ArtifactId("art_material"),
+    )
+    products = _Products(
+        ProductMatchResult(
+            (QualifiedProductMatch(product, tuple(comparisons)),), ()
+        )
+    )
+    sourcing = _Sourcing()
+    step = _handlers(products, _Suppliers(), sourcing)[
+        "sourcing_case.v2.check_ladder"
+    ]
+
+    with pytest.raises(ValidationError, match="规格证明"):
+        await step.execute(_run())
+
+    assert sourcing.checks == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["offered", "evidence_ref"])
+async def test_qualified_match_must_equal_persisted_product_fact(
+    tamper: str,
+) -> None:
+    """Adapter 不能替换 Product 持久事实的 offered 或 Evidence。"""
+
+    product = _product("prd-product-fact", ProductPool.FORMAL)
+    comparisons = list(_qualified(product).spec_comparisons)
+    comparisons[1] = replace(
+        comparisons[1],
+        **(
+            {"offered": "carbon steel"}
+            if tamper == "offered"
+            else {"evidence_ref": ArtifactId("art_forged")}
+        ),
     )
     products = _Products(
         ProductMatchResult(

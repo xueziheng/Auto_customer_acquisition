@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -81,6 +82,10 @@ def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValidationError("寻源服务时间必须含时区")
     return value
+
+
+def _normalize(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
 def _valid_candidate_evidence_projection(
@@ -165,6 +170,69 @@ def _qualified_internal_product_ids(
     ):
         raise ValidationError("合格内部梯级的现有产品冻结集合无效")
     return tuple(ProductId(item) for item in raw_ids)
+
+
+def _validate_product_evidence_mapping(check: LadderCheck) -> None:
+    """独立封住 Product、逐项 comparison 与 Artifact 聚合之间的精确关系。"""
+
+    product_ids = tuple(map(str, _qualified_internal_product_ids([check])))
+    raw_mapping = check.input_snapshot.get("product_spec_evidence")
+    if not isinstance(raw_mapping, dict) or set(raw_mapping) != set(product_ids):
+        raise ValidationError("合格产品梯级证据映射与产品冻结集合不一致")
+    evidence_refs = {
+        str(item) for item in check.evidence_refs if str(item).strip()
+    }
+    comparisons_by_product: dict[str, dict[str, SpecComparison]] = {
+        product_id: {} for product_id in product_ids
+    }
+    for comparison in check.spec_comparisons:
+        product_id = (
+            str(comparison.product_id)
+            if comparison.product_id is not None
+            else ""
+        )
+        spec_name = _normalize(comparison.spec_name)
+        evidence_ref = (
+            str(comparison.evidence_ref)
+            if comparison.evidence_ref is not None
+            else ""
+        )
+        product_comparisons = comparisons_by_product.get(product_id)
+        if (
+            product_comparisons is None
+            or not spec_name
+            or spec_name in product_comparisons
+            or not evidence_ref
+            or evidence_ref not in evidence_refs
+        ):
+            raise ValidationError("合格产品梯级证据映射与逐项比较不一致")
+        product_comparisons[spec_name] = comparison
+    expected_spec_names: set[str] | None = None
+    for product_id in product_ids:
+        product_mapping = raw_mapping.get(product_id)
+        product_comparisons = comparisons_by_product[product_id]
+        product_spec_names = set(product_comparisons)
+        if (
+            not isinstance(product_mapping, dict)
+            or set(product_mapping) != product_spec_names
+            or not product_comparisons
+        ):
+            raise ValidationError("合格产品梯级证据映射的规格集合不一致")
+        if expected_spec_names is None:
+            expected_spec_names = product_spec_names
+        elif product_spec_names != expected_spec_names:
+            raise ValidationError("合格产品梯级证据映射的规格集合不一致")
+        for spec_name, evidence_ref in product_mapping.items():
+            if (
+                not isinstance(spec_name, str)
+                or spec_name != _normalize(spec_name)
+                or not isinstance(evidence_ref, str)
+                or not evidence_ref.strip()
+                or evidence_ref
+                != str(product_comparisons[spec_name].evidence_ref)
+                or evidence_ref not in evidence_refs
+            ):
+                raise ValidationError("合格产品梯级证据映射引用不一致")
 
 
 def _candidate_from_submission(
@@ -368,27 +436,40 @@ class SourcingServiceImpl:
         if not isinstance(check.outcome, LadderOutcome):
             raise ValidationError("匹配梯子结果必须使用类型化 outcome")
         if (
+            check.outcome is LadderOutcome.NO_QUALIFIED_SUPPLY
+            and "product_spec_evidence" in check.input_snapshot
+        ):
+            raise ValidationError("无合格供给梯级不得携带产品证据映射")
+        if (
             check.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
             and check.match_object_type == "product"
         ):
             comparisons = check.spec_comparisons
-            normalized_names = tuple(
-                item.spec_name.strip().casefold() for item in comparisons
+            normalized_keys = tuple(
+                (
+                    str(item.product_id) if item.product_id is not None else "",
+                    _normalize(item.spec_name),
+                )
+                for item in comparisons
             )
             if (
                 not comparisons
-                or len(set(normalized_names)) != len(normalized_names)
+                or len(set(normalized_keys)) != len(normalized_keys)
                 or any(
-                    not name
+                    not product_id
+                    or not name
                     or item.level is not SpecMatchLevel.EXACT
                     or item.offered is None
                     or not item.offered.strip()
-                    for name, item in zip(normalized_names, comparisons, strict=True)
+                    or item.evidence_ref is None
+                    for (product_id, name), item in zip(
+                        normalized_keys, comparisons, strict=True
+                    )
                 )
                 or not check.evidence_refs
             ):
                 raise ValidationError("合格产品梯级必须保存有证据的逐项 exact 比较")
-            _qualified_internal_product_ids([check])
+            _validate_product_evidence_mapping(check)
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))

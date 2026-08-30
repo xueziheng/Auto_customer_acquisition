@@ -12,6 +12,7 @@ from domains.products.service import (
     ProductMatchResult,
     ProductService,
     ProductSpecComparison,
+    ProductSpecFact,
     ProductSpecMatchLevel,
     ProductSpecRequirement,
     QualifiedProductMatch,
@@ -304,6 +305,20 @@ class InternalMatchLadderStep:
             product = match.product
             if product.tenant_id != run.tenant_id:
                 raise ValidationError("内部产品匹配结果租户无效")
+            product_facts: dict[str, ProductSpecFact] = {}
+            for raw_name, fact in sorted(product.match_specs.items()):
+                fact_name = _normalize(raw_name)
+                if (
+                    not fact_name
+                    or fact_name in product_facts
+                    or not isinstance(fact, ProductSpecFact)
+                    or not isinstance(fact.value, str)
+                    or not _normalize(fact.value)
+                    or fact.evidence_ref is None
+                    or not str(fact.evidence_ref).strip()
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                product_facts[fact_name] = fact
             comparison_names: list[str] = []
             for comparison in match.spec_comparisons:
                 if (
@@ -317,11 +332,17 @@ class InternalMatchLadderStep:
                 ):
                     raise ValidationError("内部产品匹配规格证明不完整")
                 spec_name = _normalize(comparison.spec_name)
+                matched_fact = product_facts.get(spec_name)
                 if (
                     not spec_name
                     or not _normalize(comparison.offered)
                     or _normalize(comparison.required)
                     != required_by_name.get(spec_name)
+                    or matched_fact is None
+                    or _normalize(comparison.offered)
+                    != _normalize(matched_fact.value)
+                    or str(comparison.evidence_ref)
+                    != str(matched_fact.evidence_ref)
                 ):
                     raise ValidationError("内部产品匹配规格证明不完整")
                 comparison_names.append(spec_name)
@@ -388,8 +409,11 @@ class InternalMatchLadderStep:
                         required=item.required,
                         offered=item.offered,
                         level=SpecMatchLevel.EXACT,
+                        product_id=match.product.product_id,
+                        evidence_ref=item.evidence_ref,
                     )
-                    for item in matches[0].spec_comparisons
+                    for match in matches
+                    for item in match.spec_comparisons
                 )
                 await self._record(
                     run,

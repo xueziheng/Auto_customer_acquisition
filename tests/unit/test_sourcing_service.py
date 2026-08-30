@@ -153,20 +153,153 @@ def _qualified_product_check(case_id: SourcingCaseId, *product_ids: ProductId) -
             "input_snapshot": {
                 **check.input_snapshot,
                 "qualified_product_ids": frozen_ids,
+                "product_spec_evidence": {
+                    product_id: {
+                        "product_category": "art-product-category",
+                    }
+                    for product_id in frozen_ids
+                },
             },
             "match_object_type": "product",
             "match_object_id": frozen_ids[0],
-            "spec_comparisons": (
+            "spec_comparisons": tuple(
                 SpecComparison(
                     spec_name="product_category",
                     required="hinges",
                     offered="hinges",
                     level=SpecMatchLevel.EXACT,
-                ),
+                    product_id=ProductId(product_id),
+                    evidence_ref=ArtifactId("art-product-category"),
+                )
+                for product_id in frozen_ids
             ),
             "evidence_refs": (ArtifactId("art-product-category"),),
         }
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_shape",
+    [
+        "missing_mapping",
+        "extra_product",
+        "missing_product",
+        "missing_spec",
+        "extra_spec",
+        "ref_mismatch",
+        "ref_outside_evidence_refs",
+    ],
+)
+async def test_qualified_product_evidence_mapping_is_exact(
+    invalid_shape: str,
+) -> None:
+    """合格 Product、spec、comparison 与 Evidence 集必须形成精确闭包。"""
+
+    service = _service(_Factory())
+    case_id = await _opened(service)
+    product_id = ProductId("prd-sealed-evidence")
+    qualified = _qualified_product_check(case_id, product_id)
+    snapshot = copy.deepcopy(qualified.input_snapshot)
+    comparisons = qualified.spec_comparisons
+    evidence_refs = qualified.evidence_refs
+    mapping = snapshot["product_spec_evidence"]
+    assert isinstance(mapping, dict)
+    if invalid_shape == "missing_mapping":
+        del snapshot["product_spec_evidence"]
+    elif invalid_shape == "extra_product":
+        mapping["prd-extra"] = {"product_category": "art-product-category"}
+    elif invalid_shape == "missing_product":
+        mapping.clear()
+    elif invalid_shape == "missing_spec":
+        mapping[str(product_id)] = {}
+    elif invalid_shape == "extra_spec":
+        mapping[str(product_id)]["material"] = "art-product-category"
+    elif invalid_shape == "ref_mismatch":
+        mapping[str(product_id)]["product_category"] = "art-forged"
+    else:
+        mapping[str(product_id)]["product_category"] = "art-forged"
+        comparison = comparisons[0]
+        comparisons = (
+            comparison.__class__(
+                **{
+                    **comparison.__dict__,
+                    "evidence_ref": ArtifactId("art-forged"),
+                }
+            ),
+        )
+
+    invalid = qualified.__class__(
+        **{
+            **qualified.__dict__,
+            "input_snapshot": snapshot,
+            "spec_comparisons": comparisons,
+            "evidence_refs": evidence_refs,
+        }
+    )
+    with pytest.raises(ValidationError, match="证据映射"):
+        await service.record_ladder_check(TENANT, case_id, invalid, actor=SYSTEM)
+
+
+@pytest.mark.asyncio
+async def test_qualified_product_evidence_mapping_rejects_spec_omitted_from_one_product() -> None:
+    """同一必需规格从某个 Product 的 comparison 与 mapping 一起删除也不能绕过闭包。"""
+
+    service = _service(_Factory())
+    case_id = await _opened(service)
+    first_product = ProductId("prd-complete-specs")
+    second_product = ProductId("prd-missing-spec")
+    qualified = _qualified_product_check(case_id, first_product, second_product)
+    snapshot = copy.deepcopy(qualified.input_snapshot)
+    mapping = snapshot["product_spec_evidence"]
+    assert isinstance(mapping, dict)
+    mapping[str(first_product)]["material"] = "art-material"
+    comparisons = (
+        *qualified.spec_comparisons,
+        SpecComparison(
+            spec_name="material",
+            required="stainless",
+            offered="stainless",
+            level=SpecMatchLevel.EXACT,
+            product_id=first_product,
+            evidence_ref=ArtifactId("art-material"),
+        ),
+    )
+    invalid = qualified.__class__(
+        **{
+            **qualified.__dict__,
+            "input_snapshot": snapshot,
+            "spec_comparisons": comparisons,
+            "evidence_refs": (
+                *qualified.evidence_refs,
+                ArtifactId("art-material"),
+            ),
+        }
+    )
+
+    with pytest.raises(ValidationError, match="证据映射"):
+        await service.record_ladder_check(TENANT, case_id, invalid, actor=SYSTEM)
+
+
+@pytest.mark.asyncio
+async def test_no_qualified_ladder_cannot_carry_product_evidence_mapping() -> None:
+    service = _service(_Factory())
+    case_id = await _opened(service)
+    check = _check(case_id, 1)
+    forged = check.__class__(
+        **{
+            **check.__dict__,
+            "input_snapshot": {
+                **check.input_snapshot,
+                "product_spec_evidence": {
+                    "prd-forged": {"material": "art-forged"}
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValidationError, match="证据映射"):
+        await service.record_ladder_check(TENANT, case_id, forged, actor=SYSTEM)
 
 
 def _plan(case_id: SourcingCaseId, version: int) -> PublicSourcingPlanCommand:

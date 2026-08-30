@@ -104,6 +104,10 @@ def _comparison_to_json(value: SpecComparison) -> dict[str, object]:
             if value.customer_confirmation is not None
             else None
         ),
+        "product_id": str(value.product_id) if value.product_id is not None else None,
+        "evidence_ref": (
+            str(value.evidence_ref) if value.evidence_ref is not None else None
+        ),
     }
 
 
@@ -121,6 +125,14 @@ def _comparison_from_json(value: dict[str, object]) -> SpecComparison:
         customer_confirmation=(
             ProvenanceSummary.model_validate(value["customer_confirmation"])
             if value.get("customer_confirmation") is not None
+            else None
+        ),
+        product_id=(
+            ProductId(str(value["product_id"])) if value.get("product_id") else None
+        ),
+        evidence_ref=(
+            ArtifactId(str(value["evidence_ref"]))
+            if value.get("evidence_ref")
             else None
         ),
     )

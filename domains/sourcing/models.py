@@ -25,6 +25,7 @@ from domains.sourcing.schemas import (
 )
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
     OpportunityId,
     ProductId,
@@ -94,6 +95,8 @@ class SpecComparison:
     substitution_impact: str | None = None
     needs_customer_confirmation: bool = False
     customer_confirmation: ProvenanceSummary | None = None
+    product_id: ProductId | None = None
+    evidence_ref: ArtifactId | None = None
 
 
 @dataclass(frozen=True)

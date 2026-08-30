@@ -33,7 +33,7 @@ from domains.sourcing.schemas import (
 )
 from domains.sourcing.service import CandidateEvidenceSnapshot
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
-from infra.db.tables import OutboxEventRow, SourcingCaseRow
+from infra.db.tables import OutboxEventRow, SourcingCaseRow, SourcingLadderCheckRow
 from shared.errors import InvalidStateTransition, TransientError, ValidationError
 from shared.events.catalog import NeedValidated
 from shared.schemas.evidence import EvidenceLevel
@@ -205,23 +205,88 @@ def _qualified_product_ladder_check(
         input_snapshot={
             "category": "hinges",
             "qualified_product_ids": frozen_ids,
+            "product_spec_evidence": {
+                product_id: {"product_category": str(evidence_ref)}
+                for product_id in frozen_ids
+            },
         },
         input_snapshot_hash="b" * 64,
         conclusion="internal_product_qualified",
         match_object_type="product",
         match_object_id=frozen_ids[0],
-        spec_comparisons=(
+        spec_comparisons=tuple(
             SpecComparison(
                 spec_name="product_category",
                 required="hinges",
                 offered="hinges",
                 level=SpecMatchLevel.EXACT,
-            ),
+                product_id=ProductId(product_id),
+                evidence_ref=evidence_ref,
+            )
+            for product_id in frozen_ids
         ),
         evidence_refs=(evidence_ref,),
         checked_by=EmployeeId("untrusted"),
         checked_at=NOW,
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_product_evidence_mapping_rolls_back_real_postgres(
+    integration_engine: AsyncEngine,
+) -> None:
+    """持久化前独立门禁失败时，Case 与 LadderCheck 都不得留下部分状态。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    product_id = ProductId(new_id("prd"))
+    opportunity_id = OpportunityId(new_id("opp"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    evidence_ref = await _seed_handoff_dependencies(
+        integration_engine, tenant_id, need_id, opportunity_id, product_id
+    )
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+    case_id = await service.open_case(
+        tenant_id, _command(tenant_id, need_id), actor=system
+    )
+    valid = _qualified_product_ladder_check(
+        tenant_id, case_id, (product_id,), evidence_ref
+    )
+    snapshot = dict(valid.input_snapshot)
+    snapshot["product_spec_evidence"] = {
+        str(product_id): {"product_category": "art-forged"}
+    }
+    invalid = valid.__class__(
+        **{**valid.__dict__, "input_snapshot": snapshot}
+    )
+
+    with pytest.raises(ValidationError, match="证据映射"):
+        await service.record_ladder_check(
+            tenant_id, case_id, invalid, actor=system
+        )
+
+    async with sf() as session:
+        case = await session.scalar(
+            select(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+        count = await session.scalar(
+            select(func.count()).select_from(SourcingLadderCheckRow).where(
+                SourcingLadderCheckRow.tenant_id == tenant_id,
+                SourcingLadderCheckRow.case_id == case_id,
+            )
+        )
+    assert case is not None and case.state == CaseState.OPENED.value
+    assert count == 0
 
 
 def _command(tenant_id: TenantId, need_id: ValidatedNeedId) -> OpenSourcingCase:
@@ -962,6 +1027,15 @@ async def test_existing_product_option_is_canonical_under_concurrent_registratio
         ),
         actor=system,
     )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        stored_checks = await uow.checks.list_for_case(tenant_id, case_id)
+    stored_comparison = stored_checks[0].spec_comparisons[0]
+    assert stored_comparison.product_id == product_id
+    assert stored_comparison.evidence_ref == evidence_ref
+    assert stored_checks[0].input_snapshot["product_spec_evidence"] == {
+        str(product_id): {"product_category": str(evidence_ref)},
+        str(missing_product): {"product_category": str(evidence_ref)},
+    }
 
     with pytest.raises(IntegrityError):
         await service.register_existing_product_option(

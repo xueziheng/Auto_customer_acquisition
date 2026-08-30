@@ -8,6 +8,8 @@ Fix Round 1 按 Ruling P23 收紧了同一范围：临时依赖错误保持可�
 
 Fix Round 2 按 Ruling P24 将产品逐项规格事实移出 JSONB，改为同租户 Product 与 Raw Artifact 双重复合外键约束的规范化子表；workflow 重新绑定可信 Need 的逐项 `required` 值，并保存逐产品、逐规格 Evidence 映射。不存在或跨租户 Artifact、Need required 漂移和重复规格都不能进入合格梯级。
 
+Fix Round 3 按 Ruling P25 封闭最后一条证据替换路径：workflow 同时将每项 comparison 的 `required` 绑定可信 Need、将 `offered` 与 `evidence_ref` 绑定持久化 Product 事实；领域服务独立要求 qualified Product、完整规格集合、comparison、逐项 Evidence 映射和聚合 Evidence 集形成精确闭包。任何单项缺失、多余、替换或跨产品不完整都不能持久化合格梯级。
+
 ## TDD 证据
 
 ### RED
@@ -55,6 +57,15 @@ Fix Round 2 按 Ruling P24 将产品逐项规格事实移出 JSONB，改为同�
 4. Fix Round 2 主定向 unit：`72 passed`；全量 unit：`5651 passed`。
 5. 真实 PostgreSQL migration + supply repository + sourcing persistence：`38 passed`，其中包含真实 Outbox + `PostgresWorkflowEngine` 恢复、canonical Option 并发以及 Ready freeze 并发/重放。相关 PG 宽回归为 `57 passed, 3 failed`；三个失败仍是既有 `test_product_candidate_idempotency.py` 空价格档夹具与非空数据库约束冲突。
 
+### Fix Round 3 RED / GREEN
+
+1. Product 事实不可替换：先增加持久事实为 `stainless/art_material`、返回 comparison 伪造为 `carbon` 或 `art_forged` 的 workflow 测试，首跑 `2 failed`；逐项绑定持久事实的 value 与 ArtifactId 后转绿。
+2. LadderCheck Evidence 闭包：先增加缺失/多余 mapping、Product、spec，mapping ref 与 comparison 不一致、ref 不属于聚合 `evidence_refs`、`no_qualified` 伪造映射等测试，首跑 `8 failed`；实现领域独立校验后转绿。
+3. 跨产品完整性：另以两个 Product 复现某一规格从第二个 Product 的 comparison 与 mapping 同时删除的旁路，首跑 `1 failed`；要求所有 qualified Product 的规格集合完全一致后转绿。
+4. 持久化与回滚：`SpecComparison` 的 ProductId/ArtifactId 经 repository 往返；真实 PostgreSQL 非法映射在写入前拒绝，Case 保持 `opened` 且 LadderCheck 数量为零；canonical Option 并发测试同时验证重读后的 comparison 与逐产品 Evidence 映射。
+5. Task 6/7 定向 unit：`84 passed`；全量 unit：`5663 passed`。
+6. 真实 PostgreSQL migration、repository、Outbox/Engine recovery、Ready freeze 与并发套件：`58 passed`。加入既有候选幂等文件后的宽回归为 `58 passed, 3 failed`；三个失败仍是上述空 `indicative_price_tiers` 基线夹具与数据库非空约束冲突。
+
 ## 实现摘要
 
 - `NeedValidated` 与 `NeedBecameSourcingReady` 共用精确业务键 `sourcing-case:v2:{tenant}:{need}`；低 completeness、跨租户、未知类型与 Need mismatch 均按固定边界处理。
@@ -93,10 +104,16 @@ P22 行为：精确相同的 LadderCheck 重放为 no-op、同级 payload 漂移
 - Workflow 在调用产品服务前从可信 Need 快照重建唯一的规范化 `spec_name -> required` map；合格结果必须逐项、唯一、排序稳定、Evidence 非空，且每项 normalized `required` 精确等于可信 Need。
 - LadderCheck 的 `input_snapshot.product_spec_evidence` 保存每个合格 Product 的逐规格 ArtifactId 映射；聚合 `evidence_refs` 与 exact `spec_comparisons` 保持原有查询兼容。
 
+## Ruling P25 Evidence 闭包
+
+- Workflow 对可信 Need 与 `Product.match_specs` 分别建立规范化唯一 map；只有每项 comparison 的 spec name、required、offered、`EXACT` 和 evidence_ref 同时精确匹配两边可信事实，且每个 Product 覆盖全部 required specs，才会生成 qualified LadderCheck。
+- Qualified LadderCheck 的每个 comparison 显式携带 ProductId 与 ArtifactId；repository JSON 往返保留这两个键，支持 PostgreSQL 重启后继续核验和重放。
+- `SourcingService.record_ladder_check` 不信任 workflow：冻结 Product 集、mapping Product 集、每个 Product 的共同规格集合、comparison 集与逐项 ref 必须完全相等，所有逐项 ref 还必须属于聚合 `evidence_refs`；`no_qualified_supply` 不允许携带产品 Evidence 映射。
+
 ## 最终门禁
 
 - Ruff（全部 touched 文件）：通过。
-- Mypy（本轮 3 个 touched source 文件；Round 1 已覆盖其余 Task 7 source）：通过。
+- Mypy（本轮 4 个 touched source 文件）：通过。
 - `python3 scripts/check_boundaries.py`：7 项全部通过。
 - `git diff --check`：通过。
 - `scripts/scan_sensitive.py`（本轮 touched files）：通过；全库既有 8 个测试数据库口令/DSN 形态仍未由本任务修改。
@@ -109,3 +126,4 @@ P22 行为：精确相同的 LadderCheck 重放为 no-op、同级 payload 漂移
 - 基线产品候选幂等测试的空价格阶梯夹具与数据库非空约束矛盾需由后续统一修正，不能把这 3 个失败误归因于 Task 7。
 - P23/P24 对历史 Product 采取 fail-closed：没有 `product_match_specs` 证据事实的旧数据会成为 `product_spec_unknown` finding，不会自动短路。这是预期的安全兼容，但上线前需单独安排有证据的产品规格回填，不能用无来源文本补齐。
 - 0048 尚未发布，因此本轮直接修订该 migration；已经在本地应用旧 0048 的开发数据库必须重建或执行受控 downgrade/upgrade，不能仅修改代码后继续沿用旧表结构。
+- `SpecComparison.product_id` 与 `evidence_ref` 为兼容供应商候选及历史 JSON 保持可空；领域服务仅在 qualified Product 梯级强制两者非空并校验精确闭包。历史记录仍能读取，但不能借空字段进入新的合格 Product 路径。
