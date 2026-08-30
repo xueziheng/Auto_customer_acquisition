@@ -783,10 +783,12 @@ async def test_concurrent_open_returns_one_canonical_case_and_event(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_public_draft_verification_seals_one_generation_in_postgres(
+@pytest.mark.parametrize("sealed", [False, True])
+async def test_concurrent_public_draft_verification_replays_canonical_tiers_in_postgres(
     integration_engine: AsyncEngine,
+    sealed: bool,
 ) -> None:
-    """相同公开草稿并发核验只生成一个 Candidate 与一个封存事件。"""
+    """降序 tier 的合格/拒绝草稿并发重放都只生成一个 canonical Candidate。"""
 
     tenant_id = TenantId(new_id("tn"))
     need_id = ValidatedNeedId(new_id("need"))
@@ -918,8 +920,14 @@ async def test_concurrent_public_draft_verification_seals_one_generation_in_post
                 ("model", "HX-4"),
             )
         ),
-        moq=500,
+        moq=500 if sealed else 6000,
         indicative_price_tiers=(
+            PublicCandidateDraftPriceTier(
+                minimum_quantity=2000,
+                amount=Decimal("1.00"),
+                currency="USD",
+                unit="piece",
+            ),
             PublicCandidateDraftPriceTier(
                 minimum_quantity=1000,
                 amount=Decimal("1.25"),
@@ -953,7 +961,15 @@ async def test_concurrent_public_draft_verification_seals_one_generation_in_post
     )
 
     assert first == second
-    assert first.verified_event is not None
+    assert (first.verified_event is not None) is sealed
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        stored_candidate = await uow.candidates.get_by_public_draft_source_key(
+            tenant_id, draft.source_key
+        )
+    assert stored_candidate is not None
+    assert [
+        tier.minimum_quantity for tier in stored_candidate.indicative_price_tiers
+    ] == [1000, 2000]
     async with sf() as session:
         candidate_count = await session.scalar(
             text(
@@ -977,12 +993,15 @@ async def test_concurrent_public_draft_verification_seals_one_generation_in_post
             )
         )
     assert candidate_count == 1
-    assert event_count == 1
+    assert event_count == int(sealed)
     assert case_row is not None
-    assert case_row.version == first.verified_event.case_version
-    assert tuple(case_row.sealed_candidate_ids) == tuple(
-        map(str, first.qualified_candidate_ids)
-    )
+    if first.verified_event is not None:
+        assert case_row.version == first.verified_event.case_version
+        assert tuple(case_row.sealed_candidate_ids) == tuple(
+            map(str, first.qualified_candidate_ids)
+        )
+    else:
+        assert tuple(case_row.sealed_candidate_ids) == ()
 
 
 @pytest.mark.asyncio

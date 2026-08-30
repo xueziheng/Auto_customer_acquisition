@@ -306,6 +306,93 @@ async def test_0047_to_0049_roundtrip(db_url: str) -> None:
         _run_alembic(db_url, "upgrade", "head")
 
 
+async def test_public_candidate_drafts_reject_update_and_delete_at_database_boundary(
+    db_url: str,
+) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_tenant_evidence(connection, TENANT_A, ARTIFACT_A)
+            await _seed_public_search_execution(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-draft-immutable",
+                case_id="case-draft-immutable",
+                plan_id="plan-draft-immutable",
+                run_id="run-draft-immutable",
+                execution_id="execution-draft-immutable",
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_candidate_drafts "
+                    "(tenant_id, draft_id, case_id, run_id, plan_id, plan_hash, "
+                    "query_index, result_index, source_key, supplier_name, product_title, "
+                    "specs, moq, indicative_price_tiers, rejection_codes, evidence_url, "
+                    "evidence_observed_at, evidence_hash, evidence_artifact_ref, created_at) "
+                    "VALUES (:tenant, 'draft-immutable', 'case-draft-immutable', "
+                    "'run-draft-immutable', 'plan-draft-immutable', :plan_hash, 0, 0, "
+                    ":source_key, 'Factory A', 'Hinge HX-4', CAST(:specs AS jsonb), 500, "
+                    "CAST(:tiers AS jsonb), '[]', 'https://factory.example/hinge', now(), "
+                    ":evidence_hash, :artifact, now())"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "plan_hash": "b" * 64,
+                    "source_key": "f" * 64,
+                    "specs": json.dumps(
+                        [
+                            {
+                                "spec_name": "model",
+                                "required": "HX-4",
+                                "observed": "HX-4",
+                            }
+                        ]
+                    ),
+                    "tiers": json.dumps(
+                        [
+                            {
+                                "minimum_quantity": 1000,
+                                "amount": "1.25",
+                                "currency": "USD",
+                                "unit": "piece",
+                            }
+                        ]
+                    ),
+                    "evidence_hash": "e" * 64,
+                    "artifact": ARTIFACT_A,
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_candidate_drafts SET product_title='Changed' "
+                "WHERE tenant_id=:tenant AND draft_id='draft-immutable'",
+                {"tenant": TENANT_A},
+            )
+            await _expect_integrity(
+                connection,
+                "DELETE FROM sourcing_candidate_drafts "
+                "WHERE tenant_id=:tenant AND draft_id='draft-immutable'",
+                {"tenant": TENANT_A},
+            )
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT product_title FROM sourcing_candidate_drafts "
+                        "WHERE tenant_id=:tenant AND draft_id='draft-immutable'"
+                    ),
+                    {"tenant": TENANT_A},
+                )
+            ).one()
+            assert row == ("Hinge HX-4",)
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
 async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts(
     db_url: str,
 ) -> None:

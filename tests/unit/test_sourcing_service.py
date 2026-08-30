@@ -457,6 +457,8 @@ class _Cases(_MemoryRepo):
         return await self.get(tenant_id, case_id)
 
     async def update(self, tenant_id: TenantId, case: Any) -> None:
+        if self.state.get("fail_case_update"):
+            raise RuntimeError("case storage unavailable")
         key = (tenant_id, case.case_id)
         current = self.state[self.name].get(key)
         if current is None or current.version != case.version - 1:
@@ -547,6 +549,8 @@ class _Candidates(_MemoryRepo):
             ):
                 return copy.deepcopy(current), False
         await self.add(tenant_id, candidate)
+        if self.state.get("fail_candidate_write"):
+            raise RuntimeError("candidate storage unavailable")
         return copy.deepcopy(candidate), True
 
     async def get_by_public_draft_source_key(
@@ -810,6 +814,8 @@ class _Factory:
             "candidate_drafts": {},
             "reconciliations": {},
             "events": [],
+            "fail_candidate_write": False,
+            "fail_case_update": False,
         }
 
     def __call__(self, tenant_id: TenantId) -> _MemoryUow:
@@ -1005,6 +1011,8 @@ async def test_public_draft_verification_converts_four_specs_and_seals_once() ->
     assert candidate.public_draft_source_key == "d" * 64
     assert candidate.supplier_claims == {}
     assert set(candidate.observed_facts) == {
+        "supplier_name",
+        "product_title",
         "product_type",
         "material",
         "size",
@@ -1016,8 +1024,15 @@ async def test_public_draft_verification_converts_four_specs_and_seals_once() ->
     assert all(
         fact.evidence_ref == ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X")
         and fact.provenance.source_type is SourceType.WEB_PAGE
+        and fact.provenance.source_id
+        == "art_01K39P9M5D6K4A91YEQ80EJZ0X"
         and fact.provenance.confirmed_by is None
         for fact in candidate.observed_facts.values()
+    )
+    assert candidate.observed_facts["supplier_name"].value == "Factory A"
+    assert (
+        candidate.observed_facts["product_title"].value
+        == "Stainless hinge HX-4"
     )
     assert reader.calls == 1
 
@@ -1216,19 +1231,96 @@ async def test_verification_requires_exact_canonical_draft_order_before_artifact
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("artifact_failure", ["time", "reader"])
+@pytest.mark.parametrize(
+    "binding_failure",
+    [
+        "missing",
+        "extra",
+        "reordered",
+        "foreign_tenant",
+        "foreign_case",
+        "foreign_run",
+        "foreign_plan",
+        "foreign_hash",
+    ],
+)
+async def test_public_verification_rejects_exact_draft_set_and_binding_drift_before_writes(
+    binding_failure: str,
+) -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    first = _stored_public_draft(factory)
+    second = first.model_copy(
+        update={
+            "draft_id": "scd-public-second",
+            "result_index": 1,
+            "source_key": "e" * 64,
+        }
+    )
+    if binding_failure in {"missing", "extra", "reordered"}:
+        _replace_public_drafts(factory, first, second)
+        draft_ids = {
+            "missing": (first.draft_id,),
+            "extra": (first.draft_id, second.draft_id, "scd-missing"),
+            "reordered": (second.draft_id, first.draft_id),
+        }[binding_failure]
+    else:
+        updates: dict[str, object] = {
+            "foreign_tenant": {"tenant_id": OTHER_TENANT},
+            "foreign_case": {"case_id": SourcingCaseId("src-foreign")},
+            "foreign_run": {"run_id": RunId("run-foreign")},
+            "foreign_plan": {"plan_id": SourcingPlanId("spl-foreign")},
+            "foreign_hash": {"plan_hash": "f" * 64},
+        }[binding_failure]
+        _replace_public_drafts(factory, first.model_copy(update=updates))
+        draft_ids = (first.draft_id,)
+
+    with pytest.raises(ValidationError, match="集合或顺序|绑定漂移") as caught:
+        await service.verify_public_candidate_drafts(
+            TENANT,
+            case_id,
+            _verification_command(plan, run_id, *draft_ids),
+            actor=SYSTEM,
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert factory.state["candidates"] == {}
+    assert reader.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "artifact_failure",
+    ["url", "hash", "tenant", "time", "artifact", "reader"],
+)
 async def test_artifact_drift_or_reader_error_rolls_back_without_error_leak(
     artifact_failure: str,
 ) -> None:
     factory = _Factory()
-    reader = (
-        _EvidenceReader(failure=RuntimeError("provider secret raw error"))
-        if artifact_failure == "reader"
-        else _EvidenceReader(
-            projection=replace(
-                _EvidenceReader().projection, observed_at=NOW - timedelta(hours=1)
-            )
+    projection = _EvidenceReader().projection
+    if artifact_failure == "url":
+        projection = replace(projection, canonical_url="https://other.example/hinge")
+    elif artifact_failure == "hash":
+        projection = replace(projection, content_hash="f" * 64)
+    elif artifact_failure == "tenant":
+        projection = replace(projection, tenant_id=OTHER_TENANT)
+    elif artifact_failure == "time":
+        projection = replace(projection, observed_at=NOW - timedelta(hours=1))
+    elif artifact_failure == "artifact":
+        projection = replace(
+            projection,
+            artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y"),
         )
+    reader = _EvidenceReader(
+        projection=projection,
+        failure=(
+            RuntimeError("provider secret raw error")
+            if artifact_failure == "reader"
+            else None
+        ),
     )
     service = _service(factory, reader)
     case_id, plan, run_id = await _running_public_case(service, factory)
@@ -1246,6 +1338,7 @@ async def test_artifact_drift_or_reader_error_rolls_back_without_error_leak(
         )
 
     assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert "secret" not in str(caught.value)
     assert factory.state["candidates"] == {}
 
@@ -1270,6 +1363,180 @@ async def test_exact_public_draft_replay_returns_original_generation_without_dup
     assert len(
         [event for event in factory.state["events"] if isinstance(event, SourcingCandidatesVerified)]
     ) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "supplier_name",
+        "product_title",
+        "spec",
+        "spec_required",
+        "spec_name",
+        "moq",
+        "price_amount",
+        "price_minimum",
+        "price_currency",
+        "price_unit",
+        "evidence_url",
+        "evidence_hash",
+        "evidence_time",
+        "evidence_artifact",
+        "reader_failure",
+        "created_at",
+        "conversion_state",
+    ],
+)
+async def test_sealed_public_draft_replay_revalidates_full_proposal_and_artifact(
+    drift: str,
+) -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    command = _verification_command(plan, run_id, draft.draft_id)
+    first = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+    case_before = copy.deepcopy(factory.state["cases"][(TENANT, case_id)])
+    candidates_before = copy.deepcopy(factory.state["candidates"])
+    events_before = copy.deepcopy(factory.state["events"])
+    if drift == "supplier_name":
+        changed = draft.model_copy(update={"supplier_name": "Factory B"})
+    elif drift == "product_title":
+        changed = draft.model_copy(update={"product_title": "Changed hinge"})
+    elif drift == "spec":
+        changed = draft.model_copy(
+            update={
+                "specs": tuple(
+                    item.model_copy(update={"observed": "brass"})
+                    if item.spec_name == "material"
+                    else item
+                    for item in draft.specs
+                )
+            }
+        )
+    elif drift == "spec_required":
+        changed = draft.model_copy(
+            update={
+                "specs": tuple(
+                    item.model_copy(update={"required": "brass"})
+                    if item.spec_name == "material"
+                    else item
+                    for item in draft.specs
+                )
+            }
+        )
+    elif drift == "spec_name":
+        changed = draft.model_copy(
+            update={
+                "specs": tuple(
+                    item.model_copy(update={"spec_name": "grade"})
+                    if item.spec_name == "material"
+                    else item
+                    for item in draft.specs
+                )
+            }
+        )
+    elif drift == "moq":
+        changed = draft.model_copy(update={"moq": 501})
+    elif drift.startswith("price_"):
+        tier_updates = {
+            "price_amount": {"amount": Decimal("1.26")},
+            "price_minimum": {"minimum_quantity": 999},
+            "price_currency": {"currency": "EUR"},
+            "price_unit": {"unit": "set"},
+        }[drift]
+        changed = draft.model_copy(
+            update={
+                "indicative_price_tiers": (
+                    draft.indicative_price_tiers[0].model_copy(
+                        update=tier_updates
+                    ),
+                )
+            }
+        )
+    elif drift == "evidence_url":
+        changed = draft.model_copy(update={"evidence_url": "https://other.example/hinge"})
+    elif drift == "evidence_hash":
+        changed = draft.model_copy(update={"evidence_hash": "e" * 64})
+    elif drift == "evidence_time":
+        changed = draft.model_copy(
+            update={"evidence_observed_at": draft.evidence_observed_at + timedelta(seconds=1)}
+        )
+    elif drift == "evidence_artifact":
+        changed = draft.model_copy(
+            update={"evidence_artifact_ref": ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y")}
+        )
+    elif drift == "reader_failure":
+        reader.failure = RuntimeError("provider secret raw error")
+        changed = draft
+    elif drift == "created_at":
+        changed = draft.model_copy(update={"created_at": draft.created_at + timedelta(seconds=1)})
+    else:
+        changed = draft.model_copy(
+            update={
+                "supplier_name": None,
+                "rejection_codes": ("supplier_identity_missing",),
+            }
+        )
+    _replace_public_drafts(factory, changed)
+
+    with pytest.raises(
+        (ValidationError, MissingEvidenceSnapshotError), match="公开候选"
+    ) as caught:
+        await service.verify_public_candidate_drafts(
+            TENANT, case_id, command, actor=SYSTEM
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert factory.state["cases"][(TENANT, case_id)] == case_before
+    assert factory.state["candidates"] == candidates_before
+    assert factory.state["events"] == events_before
+    assert first.verified_event is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sealed", [False, True])
+async def test_descending_public_price_tiers_are_canonical_before_persistence_and_replay(
+    sealed: bool,
+) -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    tiers = (
+        draft.indicative_price_tiers[0].model_copy(
+            update={"minimum_quantity": 2000, "amount": Decimal("1.00")}
+        ),
+        draft.indicative_price_tiers[0],
+    )
+    draft = draft.model_copy(
+        update={
+            "moq": 500 if sealed else 6000,
+            "indicative_price_tiers": tiers,
+        }
+    )
+    _replace_public_drafts(factory, draft)
+    command = _verification_command(plan, run_id, draft.draft_id)
+
+    first = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+    second = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+
+    candidate = next(iter(factory.state["candidates"].values()))
+    assert [tier.minimum_quantity for tier in candidate.indicative_price_tiers] == [
+        1000,
+        2000,
+    ]
+    assert second == first
+    assert (first.verified_event is not None) is sealed
 
 
 @pytest.mark.asyncio
@@ -1300,6 +1567,42 @@ async def test_public_draft_source_collision_with_changed_content_fails_closed()
         isinstance(event, SourcingCandidatesVerified)
         for event in factory.state["events"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["candidate", "case", "outbox"])
+async def test_public_verification_failure_rolls_back_candidate_seal_and_event(
+    failure_stage: str,
+) -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    case_before = copy.deepcopy(factory.state["cases"][(TENANT, case_id)])
+    events_before = copy.deepcopy(factory.state["events"])
+    if failure_stage == "candidate":
+        factory.state["fail_candidate_write"] = True
+        expected = "candidate storage unavailable"
+    elif failure_stage == "case":
+        factory.state["fail_case_update"] = True
+        expected = "case storage unavailable"
+    else:
+        factory.bus_fails = True
+        expected = "outbox unavailable"
+
+    with pytest.raises(RuntimeError, match=f"^{expected}$") as caught:
+        await service.verify_public_candidate_drafts(
+            TENANT,
+            case_id,
+            _verification_command(plan, run_id, draft.draft_id),
+            actor=SYSTEM,
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert factory.state["cases"][(TENANT, case_id)] == case_before
+    assert factory.state["candidates"] == {}
+    assert factory.state["events"] == events_before
 
 
 async def _internal_option(
@@ -1386,6 +1689,17 @@ async def test_every_public_write_is_authorizer_first() -> None:
         ),
         lambda: service.submit_candidate(
             OTHER_TENANT, case_id, _candidate(), actor=SOURCING
+        ),
+        lambda: service.verify_public_candidate_drafts(
+            OTHER_TENANT,
+            case_id,
+            VerifyPublicCandidateDraftsCommand(
+                run_id=RunId("run-never-read"),
+                plan_id=SourcingPlanId("spl-never-read"),
+                plan_hash="a" * 64,
+                draft_ids=("scd-never-read",),
+            ),
+            actor=SYSTEM,
         ),
         lambda: service.mark_candidates_verified(
             OTHER_TENANT, case_id, (SupplierCandidateId("spc-1"),), actor=SYSTEM

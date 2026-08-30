@@ -181,7 +181,12 @@ def _category_and_keywords(
     keywords = sorted(
         {
             normalized
-            for fact in (snapshot.application, snapshot.material, snapshot.size_spec)
+            for fact in (
+                snapshot.application,
+                snapshot.material,
+                snapshot.size_spec,
+                snapshot.model,
+            )
             if fact is not None and isinstance(fact.value, str)
             if (normalized := _normalize(fact.value))
         }
@@ -193,10 +198,11 @@ def _required_specs(
     snapshot: SourcingNeedSnapshot,
 ) -> tuple[ProductSpecRequirement, ...]:
     facts = (
-        ("product_category", snapshot.product_category),
+        ("product_type", snapshot.product_category),
         ("application", snapshot.application),
         ("material", snapshot.material),
-        ("size_spec", snapshot.size_spec),
+        ("size", snapshot.size_spec),
+        ("model", snapshot.model),
     )
     requirements: list[ProductSpecRequirement] = []
     for name, fact in facts:

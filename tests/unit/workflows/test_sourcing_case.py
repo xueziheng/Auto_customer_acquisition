@@ -85,6 +85,8 @@ def _need() -> SourcingNeedSnapshot:
         ),
         application=NeedFact(value="Cabinet doors", provenance=_provenance()),
         material=NeedFact(value="Stainless steel", provenance=_provenance()),
+        size_spec=NeedFact(value="4 inch", provenance=_provenance()),
+        model=NeedFact(value="HX-4", provenance=_provenance()),
         quantity=NeedFact(value=5000, provenance=_provenance()),
         unit=NeedFact(value="piece", provenance=_provenance()),
         snapshot_hash="a" * 64,
@@ -134,10 +136,12 @@ def _product(
                 "cabinet doors", ArtifactId("art_application")
             ),
             "material": ProductSpecFact("stainless steel", ArtifactId("art_material")),
+            "model": ProductSpecFact("hx-4", ArtifactId("art_model")),
             "moq": ProductSpecFact("1000", ArtifactId("art_moq")),
-            "product_category": ProductSpecFact(
-                "industrial hinges", ArtifactId("art_product_category")
+            "product_type": ProductSpecFact(
+                "industrial hinges", ArtifactId("art_product_type")
             ),
+            "size": ProductSpecFact("4 inch", ArtifactId("art_size")),
             "unit": ProductSpecFact("piece", ArtifactId("art_unit")),
         },
     )
@@ -157,8 +161,10 @@ def _qualified(product: Product) -> QualifiedProductMatch:
             for name, required, offered in (
                 ("application", "cabinet doors", "cabinet doors"),
                 ("material", "stainless steel", "stainless steel"),
+                ("model", "hx-4", "hx-4"),
                 ("moq", "5000", "1000"),
-                ("product_category", "industrial hinges", "industrial hinges"),
+                ("product_type", "industrial hinges", "industrial hinges"),
+                ("size", "4 inch", "4 inch"),
                 ("unit", "piece", "piece"),
             )
         ),
@@ -188,13 +194,15 @@ class _Products:
         assert (tenant_id, category, keywords, actor) == (
             TENANT,
             "industrial hinges",
-            ["cabinet doors", "stainless steel"],
+            ["4 inch", "cabinet doors", "hx-4", "stainless steel"],
             PRODUCT_ACTOR,
         )
         assert required_specs == (
-            ProductSpecRequirement("product_category", "industrial hinges"),
+            ProductSpecRequirement("product_type", "industrial hinges"),
             ProductSpecRequirement("application", "cabinet doors"),
             ProductSpecRequirement("material", "stainless steel"),
+            ProductSpecRequirement("size", "4 inch"),
+            ProductSpecRequirement("model", "hx-4"),
             ProductSpecRequirement("moq", "5000"),
             ProductSpecRequirement("unit", "piece"),
         )
@@ -209,7 +217,13 @@ class _Suppliers:
     async def search_by_capability(self, tenant_id, tags, *, actor):
         self.calls += 1
         assert tenant_id == TENANT and actor == SUPPLIER_ACTOR
-        assert tags == ["cabinet doors", "industrial hinges", "stainless steel"]
+        assert tags == [
+            "4 inch",
+            "cabinet doors",
+            "hx-4",
+            "industrial hinges",
+            "stainless steel",
+        ]
         return self.suppliers
 
 
@@ -434,6 +448,45 @@ async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies()
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("raw_error", "error_type", "expected"),
+    [
+        (
+            TransientError(
+                "postgres://user:secret@db/private",
+                context={"token": "raw-secret"},
+            ),
+            TransientError,
+            "公开候选草稿核验暂不可用",
+        ),
+        (
+            RuntimeError("provider token=raw-secret"),
+            ValidationError,
+            "公开候选草稿核验失败",
+        ),
+    ],
+)
+async def test_verify_candidates_dependency_errors_are_fixed_and_fully_detached(
+    raw_error: Exception,
+    error_type: type[Exception],
+    expected: str,
+) -> None:
+    sourcing = _Sourcing()
+    sourcing.verification_error = raw_error
+    step = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
+    )["sourcing_case.v2.verify_candidates"]
+
+    with pytest.raises(error_type, match=f"^{expected}$") as caught:
+        await step.execute(_verification_run())
+
+    assert getattr(caught.value, "context", {}) == {}
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("matches", "expected_rung", "expected_ids"),
     [
         ((_product("prd-exact", ProductPool.FORMAL),), 1, ["prd-exact"]),
@@ -472,23 +525,29 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
     ] == [
         ("application", "exact"),
         ("material", "exact"),
+        ("model", "exact"),
         ("moq", "exact"),
-        ("product_category", "exact"),
+        ("product_type", "exact"),
+        ("size", "exact"),
         ("unit", "exact"),
     ]
     assert {
         "art_application",
         "art_material",
+        "art_model",
         "art_moq",
-        "art_product_category",
+        "art_product_type",
+        "art_size",
         "art_unit",
     } <= set(sourcing.checks[-1].evidence_refs)
     assert sourcing.checks[-1].input_snapshot["product_spec_evidence"] == {
         expected_ids[0]: {
             "application": "art_application",
             "material": "art_material",
+            "model": "art_model",
             "moq": "art_moq",
-            "product_category": "art_product_category",
+            "product_type": "art_product_type",
+            "size": "art_size",
             "unit": "art_unit",
         }
     }
@@ -526,13 +585,64 @@ async def test_every_qualified_product_gets_a_complete_spec_evidence_mapping() -
     assert set(mapping) == {"prd-a", "prd-b"}
     assert all(
         set(product_mapping)
-        == {"application", "material", "moq", "product_category", "unit"}
+        == {
+            "application",
+            "material",
+            "model",
+            "moq",
+            "product_type",
+            "size",
+            "unit",
+        }
         for product_mapping in mapping.values()
     )
-    assert len(check.spec_comparisons) == 10
+    assert len(check.spec_comparisons) == 14
     assert {
         str(item.product_id) for item in check.spec_comparisons
     } == {"prd-a", "prd-b"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_failure", ["missing", "unknown", "different"])
+async def test_model_failure_cannot_qualify_an_early_ladder_rung(
+    model_failure: str,
+) -> None:
+    product = _product("prd-model-failure", ProductPool.FORMAL)
+    comparisons = list(_qualified(product).spec_comparisons)
+    model_index = next(
+        index
+        for index, comparison in enumerate(comparisons)
+        if comparison.spec_name == "model"
+    )
+    if model_failure == "missing":
+        comparisons.pop(model_index)
+    else:
+        comparisons[model_index] = ProductSpecComparison(
+            spec_name="model",
+            required="hx-4",
+            offered=None if model_failure == "unknown" else "hx-5",
+            level=(
+                ProductSpecMatchLevel.UNKNOWN
+                if model_failure == "unknown"
+                else ProductSpecMatchLevel.DIFFERENT
+            ),
+            evidence_ref=None if model_failure == "unknown" else ArtifactId("art_model"),
+        )
+    sourcing = _Sourcing()
+    step = _handlers(
+        _Products(
+            ProductMatchResult(
+                (QualifiedProductMatch(product, tuple(comparisons)),), ()
+            )
+        ),
+        _Suppliers(),
+        sourcing,
+    )["sourcing_case.v2.check_ladder"]
+
+    with pytest.raises(ValidationError, match="规格证明"):
+        await step.execute(_run())
+
+    assert sourcing.checks == []
 
 
 @pytest.mark.asyncio

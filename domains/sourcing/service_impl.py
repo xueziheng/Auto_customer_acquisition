@@ -381,6 +381,8 @@ def _candidate_from_public_draft(
 ) -> SupplierCandidate:
     """只从安全草稿和同一可信 Artifact 投影构造确定性候选。"""
 
+    if draft.supplier_name is None or draft.product_title is None:
+        raise ValidationError("公开候选草稿身份不完整")
     expected = _public_draft_expected_specs(case)
     expected_by_name = dict(expected)
     offered_by_name: dict[str, str | None] = {}
@@ -437,7 +439,20 @@ def _candidate_from_public_draft(
             provenance=provenance,
             evidence_ref=artifact_id,
         )
-        for tier in draft.indicative_price_tiers
+        for tier in sorted(
+            draft.indicative_price_tiers,
+            key=lambda item: item.minimum_quantity,
+        )
+    )
+    observed_facts["supplier_name"] = SourcingObservedFact(
+        value=draft.supplier_name,
+        provenance=provenance,
+        evidence_ref=artifact_id,
+    )
+    observed_facts["product_title"] = SourcingObservedFact(
+        value=draft.product_title,
+        provenance=provenance,
+        evidence_ref=artifact_id,
     )
     if draft.moq is not None:
         observed_facts["moq"] = SourcingObservedFact(
@@ -464,8 +479,8 @@ def _candidate_from_public_draft(
         candidate_id=SupplierCandidateId(new_id("spc")),
         tenant_id=tenant_id,
         case_id=case.case_id,
-        supplier_name=draft.supplier_name or "",
-        product_title=draft.product_title or "",
+        supplier_name=draft.supplier_name,
+        product_title=draft.product_title,
         created_at=draft.created_at,
         source_platform="public_web",
         observed_facts=observed_facts,
@@ -503,6 +518,56 @@ def _same_public_candidate(
     """冲突只允许 candidate_id 不同，其余不可变内容和绑定必须精确一致。"""
 
     return canonical == replace(proposed, candidate_id=canonical.candidate_id)
+
+
+async def _public_candidate_proposal(
+    reader: CandidateEvidenceSnapshotReader,
+    tenant_id: TenantId,
+    case: SourcingCase,
+    draft: PublicCandidateDraft,
+) -> SupplierCandidate:
+    """读取同一可信 Artifact 并返回可比较的完整候选 proposal。"""
+
+    projection = await _read_candidate_evidence(
+        reader, tenant_id, draft.evidence_artifact_ref
+    )
+    if (
+        projection is None
+        or not isinstance(projection, CandidateEvidenceSnapshot)
+        or not _valid_candidate_evidence_projection(projection)
+        or projection.tenant_id != tenant_id
+        or projection.artifact_id != draft.evidence_artifact_ref
+        or projection.canonical_url != draft.evidence_url
+        or projection.content_hash != draft.evidence_hash
+        or projection.observed_at != draft.evidence_observed_at
+    ):
+        raise MissingEvidenceSnapshotError("公开候选草稿 Artifact 元数据不一致")
+    return _candidate_from_public_draft(tenant_id, case, draft, projection)
+
+
+def _apply_public_candidate_verification(
+    candidate: SupplierCandidate,
+    *,
+    quantity: int,
+    qualified_count: int,
+) -> None:
+    """按普通候选清单、MOQ、数量档与三候选上限写入固定拒绝原因。"""
+
+    passed, _missing = candidate.passes_verification()
+    reasons: list[PriceRejectionReason] = []
+    if not passed:
+        reasons.append(PriceRejectionReason.VERIFICATION_INCOMPLETE)
+    if candidate.moq is None or quantity < candidate.moq:
+        reasons.append(PriceRejectionReason.MOQ_NOT_MET)
+    if not any(
+        tier.minimum_quantity <= quantity
+        for tier in candidate.indicative_price_tiers
+    ):
+        reasons.append(PriceRejectionReason.QUANTITY_TIER_MISSING)
+    if not reasons and qualified_count >= MAX_QUALIFIED_CANDIDATES:
+        reasons.append(PriceRejectionReason.QUALIFIED_LIMIT_REACHED)
+    candidate.rejection_reasons = list(dict.fromkeys(reasons))
+    candidate.rejected = bool(candidate.rejection_reasons)
 
 
 def _candidate_view(candidate: SupplierCandidate) -> CandidateView:
@@ -1528,18 +1593,42 @@ class SourcingServiceImpl:
             convertible = tuple(
                 draft for draft in drafts if _public_draft_can_convert(draft)
             )
+            draft_sources = {draft.source_key for draft in drafts}
+            existing = await uow.candidates.list_for_case(tenant_id, case_id, True)
+            qualified_count = sum(
+                not candidate.rejected and candidate.passes_verification()[0]
+                for candidate in existing
+                if candidate.public_draft_source_key not in draft_sources
+            )
+            quantity = _quantity(case)
             if case.sealed_candidate_ids:
                 converted: list[SupplierCandidateId] = []
                 rejected: list[SupplierCandidateId] = []
-                for draft in convertible:
+                for draft in drafts:
                     canonical = await uow.candidates.get_by_public_draft_source_key(
                         tenant_id, draft.source_key
                     )
+                    if not _public_draft_can_convert(draft):
+                        if canonical is not None:
+                            raise ValidationError("已封存公开候选转换状态漂移")
+                        continue
+                    proposal = await _public_candidate_proposal(
+                        self._evidence_reader, tenant_id, case, draft
+                    )
+                    _apply_public_candidate_verification(
+                        proposal,
+                        quantity=quantity,
+                        qualified_count=qualified_count,
+                    )
                     if canonical is None or canonical.case_id != case_id:
                         raise ValidationError("已封存公开候选缺少 canonical 绑定")
+                    if not _same_public_candidate(canonical, proposal):
+                        raise ValidationError("已封存公开候选内容或绑定漂移")
                     converted.append(canonical.candidate_id)
                     if canonical.rejected:
                         rejected.append(canonical.candidate_id)
+                    elif canonical.passes_verification()[0]:
+                        qualified_count += 1
                 qualified = tuple(
                     sorted(
                         (
@@ -1573,54 +1662,17 @@ class SourcingServiceImpl:
                     verified_event=replay_event,
                 )
 
-            command_sources = {draft.source_key for draft in convertible}
-            existing = await uow.candidates.list_for_case(tenant_id, case_id, True)
-            qualified_count = sum(
-                not candidate.rejected and candidate.passes_verification()[0]
-                for candidate in existing
-                if candidate.public_draft_source_key not in command_sources
-            )
             converted_ids: list[SupplierCandidateId] = []
             rejected_ids: list[SupplierCandidateId] = []
-            quantity = _quantity(case)
             for draft in convertible:
-                projection = await _read_candidate_evidence(
-                    self._evidence_reader, tenant_id, draft.evidence_artifact_ref
+                candidate = await _public_candidate_proposal(
+                    self._evidence_reader, tenant_id, case, draft
                 )
-                if (
-                    projection is None
-                    or not isinstance(projection, CandidateEvidenceSnapshot)
-                    or not _valid_candidate_evidence_projection(projection)
-                    or projection.tenant_id != tenant_id
-                    or projection.artifact_id != draft.evidence_artifact_ref
-                    or projection.canonical_url != draft.evidence_url
-                    or projection.content_hash != draft.evidence_hash
-                    or projection.observed_at != draft.evidence_observed_at
-                ):
-                    raise MissingEvidenceSnapshotError(
-                        "公开候选草稿 Artifact 元数据不一致"
-                    )
-                candidate = _candidate_from_public_draft(
-                    tenant_id, case, draft, projection
+                _apply_public_candidate_verification(
+                    candidate,
+                    quantity=quantity,
+                    qualified_count=qualified_count,
                 )
-                passed, _missing = candidate.passes_verification()
-                reasons: list[PriceRejectionReason] = []
-                if not passed:
-                    reasons.append(PriceRejectionReason.VERIFICATION_INCOMPLETE)
-                if candidate.moq is None or quantity < candidate.moq:
-                    reasons.append(PriceRejectionReason.MOQ_NOT_MET)
-                if not any(
-                    tier.minimum_quantity <= quantity
-                    for tier in candidate.indicative_price_tiers
-                ):
-                    reasons.append(PriceRejectionReason.QUANTITY_TIER_MISSING)
-                if (
-                    not reasons
-                    and qualified_count >= MAX_QUALIFIED_CANDIDATES
-                ):
-                    reasons.append(PriceRejectionReason.QUALIFIED_LIMIT_REACHED)
-                candidate.rejection_reasons = list(dict.fromkeys(reasons))
-                candidate.rejected = bool(candidate.rejection_reasons)
                 canonical, _created = await uow.candidates.get_or_create_public_draft(
                     tenant_id, candidate
                 )

@@ -877,9 +877,22 @@ def upgrade() -> None:
         "CREATE TRIGGER trg_sourcing_reconciliation_audit BEFORE UPDATE OR DELETE ON sourcing_search_reconciliations "
         "FOR EACH ROW EXECUTE FUNCTION guard_sourcing_reconciliation_audit()"
     )
+    op.execute(
+        "CREATE FUNCTION guard_sourcing_candidate_draft_immutable() RETURNS trigger AS $$ BEGIN "
+        "RAISE EXCEPTION 'immutable sourcing candidate draft' USING ERRCODE='23514'; "
+        "END; $$ LANGUAGE plpgsql"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_sourcing_candidate_draft_immutable BEFORE UPDATE OR DELETE ON sourcing_candidate_drafts "
+        "FOR EACH ROW EXECUTE FUNCTION guard_sourcing_candidate_draft_immutable()"
+    )
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP TRIGGER trg_sourcing_candidate_draft_immutable ON sourcing_candidate_drafts"
+    )
+    op.execute("DROP FUNCTION guard_sourcing_candidate_draft_immutable()")
     op.execute(
         "DROP TRIGGER trg_sourcing_reconciliation_audit ON sourcing_search_reconciliations"
     )
