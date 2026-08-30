@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from shared.schemas.identifiers import SupplierId, TenantId
+from shared.schemas.identifiers import ArtifactId, SupplierId, TenantId
 from shared.schemas.money import Money
 
 
@@ -58,5 +58,5 @@ class SupplierPriceRecord:
     price: Money
     basis: str
     observed_at: datetime
-    evidence_ref: str
+    evidence_ref: ArtifactId
     valid_until: datetime | None = None

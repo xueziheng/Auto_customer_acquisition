@@ -69,7 +69,9 @@ def _product_to_row(product: Product) -> ProductRow:
         product_id=product.product_id,
         pool=product.pool.value,
         candidate_status=(
-            product.candidate_status.value if product.candidate_status is not None else None
+            product.candidate_status.value
+            if product.candidate_status is not None
+            else None
         ),
         name_zh=product.name_zh,
         name_en=product.name_en,
@@ -161,9 +163,7 @@ class ProductRepositoryImpl(_TenantBoundRepository):
             raise ValueError("产品租户与请求租户不一致")
         self._session.add(_product_to_row(product))
 
-    async def get(
-        self, tenant_id: TenantId, product_id: ProductId
-    ) -> Product | None:
+    async def get(self, tenant_id: TenantId, product_id: ProductId) -> Product | None:
         self._require_tenant(tenant_id)
         row = (
             await self._session.execute(
@@ -213,14 +213,14 @@ class ProductRepositoryImpl(_TenantBoundRepository):
         rows = (
             await self._session.execute(query.order_by(ProductRow.product_id))
         ).scalars()
-        normalized_keywords = [_normalize(item) for item in keywords if _normalize(item)]
+        normalized_keywords = [
+            _normalize(item) for item in keywords if _normalize(item)
+        ]
         results: list[Product] = []
         cap = min(limit, 50)
         for row in rows:
             haystack = _normalize(
-                " ".join(
-                    [row.name_zh, row.name_en, row.category, *row.selling_points]
-                )
+                " ".join([row.name_zh, row.name_en, row.category, *row.selling_points])
             )
             if normalized_keywords and not any(
                 keyword in haystack for keyword in normalized_keywords
@@ -233,9 +233,7 @@ class ProductRepositoryImpl(_TenantBoundRepository):
 
 
 class CapabilityRepositoryImpl(_TenantBoundRepository):
-    async def add(
-        self, tenant_id: TenantId, capability: SupplyCapability
-    ) -> None:
+    async def add(self, tenant_id: TenantId, capability: SupplyCapability) -> None:
         self._require_tenant(tenant_id)
         if capability.tenant_id != tenant_id:
             raise ValueError("供应能力租户与请求租户不一致")
@@ -319,9 +317,36 @@ class ProductCandidateSourceRepositoryImpl(_TenantBoundRepository):
             (
                 await self._session.execute(
                     self.scoped_query(ProductCandidatePriceRefRow)
-                    .where(
-                        ProductCandidatePriceRefRow.product_id == source.product_id
+                    .where(ProductCandidatePriceRefRow.product_id == source.product_id)
+                    .order_by(
+                        ProductCandidatePriceRefRow.minimum_quantity,
+                        ProductCandidatePriceRefRow.artifact_id,
                     )
+                )
+            ).scalars()
+        )
+        if not prices:
+            raise ValidationError("候选产品来源缺少逐档价格 Evidence")
+        return _candidate_source_from_rows(source, prices)
+
+    async def get_by_product(
+        self, tenant_id: TenantId, product_id: ProductId
+    ) -> ProductCandidateSource | None:
+        self._require_tenant(tenant_id)
+        source = (
+            await self._session.execute(
+                self.scoped_query(ProductCandidateSourceRow).where(
+                    ProductCandidateSourceRow.product_id == product_id
+                )
+            )
+        ).scalar_one_or_none()
+        if source is None:
+            return None
+        prices = list(
+            (
+                await self._session.execute(
+                    self.scoped_query(ProductCandidatePriceRefRow)
+                    .where(ProductCandidatePriceRefRow.product_id == product_id)
                     .order_by(
                         ProductCandidatePriceRefRow.minimum_quantity,
                         ProductCandidatePriceRefRow.artifact_id,

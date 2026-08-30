@@ -45,9 +45,7 @@ class ProductRepository(Protocol):
 
 @runtime_checkable
 class CapabilityRepository(Protocol):
-    async def add(
-        self, tenant_id: TenantId, capability: SupplyCapability
-    ) -> None: ...
+    async def add(self, tenant_id: TenantId, capability: SupplyCapability) -> None: ...
 
     async def list_all(self, tenant_id: TenantId) -> list[SupplyCapability]: ...
 
@@ -66,6 +64,12 @@ class ProductCandidateSourceRepository(Protocol):
         sourcing_case_id: SourcingCaseId,
         supplier_candidate_id: SupplierCandidateId,
     ) -> ProductCandidateSource | None: ...
+
+    async def get_by_product(
+        self, tenant_id: TenantId, product_id: ProductId
+    ) -> ProductCandidateSource | None:
+        """按同租户产品读取来源；只供内部视图显示原始 Evidence。"""
+        ...
 
 
 @runtime_checkable

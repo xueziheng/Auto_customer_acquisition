@@ -199,13 +199,17 @@ class ProductInternalView:
     name_zh: str
     name_en: str
     category: str
-    supplier_name: str | None
+    supplier_id: SupplierId | None
     internal_cost: Money | None
+    internal_cost_basis: str | None
+    internal_cost_unit: str | None
+    internal_cost_source_ref: ArtifactId | None
     margin_note: str | None
     known_issues: list[str]
     moq: int | None
     lead_time_display: str | None
     candidate_status: str | None = None
+    candidate_source: ProductCandidateSource | None = None
 
 
 @dataclass(frozen=True)
@@ -238,3 +242,20 @@ class ProductCustomerView:
     image_refs: list[str] = field(default_factory=list)
     inquiry_enabled: bool = True
     sample_request_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ProductMatchFinding:
+    """现有产品不能自动交接的结构化原因；未知成本绝不补零。"""
+
+    product_id: ProductId
+    code: str
+    missing_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ProductMatchResult:
+    """内部匹配的确定性结果与被排除项。"""
+
+    qualified_matches: tuple[Product, ...]
+    findings: tuple[ProductMatchFinding, ...]
