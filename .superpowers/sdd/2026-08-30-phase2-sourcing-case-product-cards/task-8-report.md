@@ -2,7 +2,7 @@
 
 ## 结果
 
-Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27/P28/P29 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
+Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27/P28/P29/P30 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
 
 ## TDD 证据
 
@@ -102,6 +102,47 @@ pytest tests/unit -q
 - 仅当 `find_active_run` 明确返回无 active Run 时，running 计划才允许走终态历史重放；历史查询在同租户 SQL 条件中绑定 owning Run workflow version 2 与 exact `context.case_id`。
 - Workflow Engine 的 durable event 查询新增可选、参数化的 version/context 过滤，旧调用保持兼容；context 键值经过有界验证并通过 SQLAlchemy JSONB 条件绑定，没有自由 SQL/JSON 注入。
 - 新增真实 PostgreSQL application 端到端用例：先持久化 exact event，再制造两个 active sourcing Case Run；重放仍先因 active Run 不唯一而拒绝，不能由历史指纹绕过。
+
+### Fix Round 3 / Ruling P30
+
+RED 证据：
+
+1. 保留并单独复现既有真实 PostgreSQL 回归 `test_terminal_accepted_repeat_uses_durable_evidence_after_restart`：同 subject 的第二代 active human-handoff Run 创建后，无过滤 legacy 查询错误命中第一代终态指纹，断言 `not True` 失败。
+2. 增加严格过滤 generation 场景与参数化验证：第二代 active Run 存在时 legacy 查询仍错误返回 true；只给 version 或只给 context 的部分过滤均未拒绝。组合首跑为 4 failed / 1 passed，失败均落在目标契约。
+
+GREEN 证据：
+
+```text
+pytest tests/integration/test_human_handoff_workflow.py::test_terminal_accepted_repeat_uses_durable_evidence_after_restart \
+       tests/integration/test_workflow_engine.py::test_delivered_event_evidence_survives_later_active_step_and_terminal \
+       tests/integration/test_workflow_engine.py::test_delivered_event_history_filters_owning_version_and_immutable_context \
+       tests/integration/test_workflow_engine.py::test_delivered_event_history_filters_must_be_complete_and_nonempty -q
+=> 6 passed
+
+pytest tests/integration/test_workflow_engine.py \
+       tests/integration/test_human_handoff_workflow.py -q
+=> 59 passed
+
+pytest tests/unit/workflows/test_sourcing_plan.py \
+       tests/unit/test_sourcing_service.py \
+       tests/integration/test_sourcing_plan_confirmation.py \
+       tests/integration/test_search_quota.py \
+       tests/integration/test_sourcing_repositories.py \
+       tests/integration/test_workflow_engine.py -q
+=> 177 passed
+
+pytest tests/integration/test_human_handoff_workflow.py \
+       tests/integration/test_country_policy_change_postgres.py \
+       tests/integration/test_playbook_change_postgres.py -q
+=> 17 passed
+
+pytest tests/unit -q
+=> 5697 passed
+```
+
+- 无 version/context 参数的 legacy 查询恢复 generation 边界：同 tenant/type/subject 只要存在任一非终态 Run，就返回 false，不允许旧终态事件指纹命中新一代流程。
+- 跨当前步骤、终态和 generation 的历史查询只在 version 与非空 context 同时提供时启用；只给一个过滤、空 context、非法版本或非法 context 均以固定 `ValidationError` fail closed。
+- sourcing application 仍固定同时提供 workflow version 2 与 exact immutable `context.case_id`，因此 P29 的终态精确重放不受 legacy 兼容修复影响。
 
 ## 实现摘要
 

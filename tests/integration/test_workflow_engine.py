@@ -1083,7 +1083,7 @@ async def test_two_distinct_wait_events_persist_ledger_copy_on_write(
 async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
     db_url: str,
 ) -> None:
-    """持久事件指纹不以当前 step/终态为条件，精确 payload 才能命中。"""
+    """严格 owning Run 过滤显式允许跨当前 step 与终态查询精确指纹。"""
 
     handlers = {
         "h_init": _handler(lambda run: ("advance", "wait", {})),
@@ -1092,10 +1092,16 @@ async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
     }
     engine, handle = _make_engine(db_url, handlers)
     try:
-        engine.register(_advance_flow())
+        engine.register(replace(_advance_flow(), version=2))
         tenant = TenantId("tDurableEvidenceProgress")
         payload = {"plan_id": "spl_exact", "plan_hash": "a" * 64}
-        run_id = await engine.start(tenant, "wf", "case-subject", {}, "durable-event")
+        run_id = await engine.start(
+            tenant,
+            "wf",
+            "case-subject",
+            {"case_id": "case-subject"},
+            "durable-event",
+        )
         assert await engine.poll_due(tenant, 1) == 1
         assert await engine.deliver_event(tenant, run_id, "approval", payload)
 
@@ -1104,7 +1110,13 @@ async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
         assert progressed.current_step == "done"
         assert progressed.status is StepStatus.RUNNING
         assert await engine.has_delivered_event(
-            tenant, "wf", "case-subject", "approval", payload
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context={"case_id": "case-subject"},
         )
         assert not await engine.has_delivered_event(
             tenant,
@@ -1112,13 +1124,21 @@ async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
             "case-subject",
             "approval",
             {"plan_id": "spl_exact", "plan_hash": "b" * 64},
+            workflow_version=2,
+            required_context={"case_id": "case-subject"},
         )
 
         assert await engine.poll_due(tenant, 1) == 1
         terminal = await engine.get_run(tenant, run_id)
         assert terminal is not None and terminal.status is StepStatus.COMPLETED
         assert await engine.has_delivered_event(
-            tenant, "wf", "case-subject", "approval", payload
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context={"case_id": "case-subject"},
         )
     finally:
         await handle.dispose()
@@ -1176,6 +1196,55 @@ async def test_delivered_event_history_filters_owning_version_and_immutable_cont
             workflow_version=2,
             required_context={"case_id": "src_case-other"},
         )
+
+        assert await engine.poll_due(tenant, 1) == 1
+        await engine.start(
+            tenant,
+            "wf",
+            "case-subject",
+            {"case_id": "case-subject"},
+            "bound-durable-event-next-generation",
+        )
+        assert not await engine.has_delivered_event(
+            tenant, "wf", "case-subject", "approval", payload
+        )
+        assert await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context={"case_id": "case-subject"},
+        )
+    finally:
+        await handle.dispose()
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"workflow_version": 2},
+        {"required_context": {"case_id": "case-subject"}},
+        {"workflow_version": 2, "required_context": {}},
+    ],
+)
+async def test_delivered_event_history_filters_must_be_complete_and_nonempty(
+    db_url: str, filters: dict[str, object]
+) -> None:
+    """部分或空 owning Run 过滤不得意外开启跨 generation 历史查询。"""
+
+    engine, handle = _make_engine(db_url, {})
+    try:
+        with pytest.raises(ValidationError, match="过滤条件无效"):
+            await engine.has_delivered_event(
+                TenantId("tInvalidDurableEventFilters"),
+                "wf",
+                "case-subject",
+                "approval",
+                {"plan_id": "spl_exact", "plan_hash": "a" * 64},
+                **filters,
+            )
     finally:
         await handle.dispose()
 

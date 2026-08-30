@@ -360,9 +360,16 @@ class PostgresWorkflowEngine:
         workflow_version: int | None = None,
         required_context: Mapping[str, str] | None = None,
     ) -> bool:
-        """只比较持久化 SHA-256 指纹；可参数化绑定 owning Run 元数据。"""
+        """查询当前 generation；完整 owning Run 过滤显式开启历史查询。"""
+        history_query = workflow_version is not None or required_context is not None
+        if history_query and (
+            workflow_version is None or required_context is None
+        ):
+            raise ValidationError("workflow event history 过滤条件无效")
         if workflow_version is not None and (
-            isinstance(workflow_version, bool) or workflow_version < 1
+            not isinstance(workflow_version, int)
+            or isinstance(workflow_version, bool)
+            or workflow_version < 1
         ):
             raise ValidationError("workflow_version 过滤条件无效")
         context_filter: dict[str, str] | None = None
@@ -397,12 +404,18 @@ class PostgresWorkflowEngine:
                 )
             if context_filter is not None:
                 conditions.append(WorkflowRunRow.context.contains(context_filter))
-            contexts = (
+            rows = (
                 await session.execute(
-                    select(WorkflowRunRow.context).where(*conditions)
+                    select(WorkflowRunRow.status, WorkflowRunRow.context).where(
+                        *conditions
+                    )
                 )
-            ).scalars().all()
-            for context in contexts:
+            ).all()
+            if not history_query and any(
+                status not in _TERMINAL_STATUSES for status, _ in rows
+            ):
+                return False
+            for _, context in rows:
                 if not isinstance(context, dict):
                     continue
                 delivered = _validated_event_fingerprints(
