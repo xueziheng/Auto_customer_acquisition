@@ -52,9 +52,7 @@ _PRICE_CHECK_KEYS = frozenset(
 _EVIDENCE_KEYS = frozenset(
     {"source_url", "content_hash", "snapshot_artifact_ref", "observed_at"}
 )
-_OUTPUT_KEYS = frozenset(
-    {"comparisons", "summary", "price_rejection_suggestions"}
-)
+_OUTPUT_KEYS = frozenset({"comparisons", "summary", "price_rejection_suggestions"})
 _COMPARISON_KEYS = frozenset(
     {
         "spec_name",
@@ -68,12 +66,202 @@ _COMPARISON_KEYS = frozenset(
 _PRICE_SUGGESTION_KEYS = frozenset({"reason", "explanation"})
 _CONTENT_HASH = re.compile(r"[0-9a-f]{64}")
 _ARTIFACT_REF = re.compile(r"art_[0-9A-HJKMNP-TV-Z]{26}")
+_ISO_4217_CODES = frozenset(
+    [
+        "AED",
+        "AFN",
+        "ALL",
+        "AMD",
+        "AOA",
+        "ARS",
+        "AUD",
+        "AWG",
+        "AZN",
+        "BAM",
+        "BBD",
+        "BDT",
+        "BGN",
+        "BHD",
+        "BIF",
+        "BMD",
+        "BND",
+        "BOB",
+        "BOV",
+        "BRL",
+        "BSD",
+        "BTN",
+        "BWP",
+        "BYN",
+        "BZD",
+        "CAD",
+        "CDF",
+        "CHE",
+        "CHF",
+        "CHW",
+        "CLF",
+        "CLP",
+        "CNY",
+        "COP",
+        "COU",
+        "CRC",
+        "CUC",
+        "CUP",
+        "CVE",
+        "CZK",
+        "DJF",
+        "DKK",
+        "DOP",
+        "DZD",
+        "EGP",
+        "ERN",
+        "ETB",
+        "EUR",
+        "FJD",
+        "FKP",
+        "GBP",
+        "GEL",
+        "GHS",
+        "GIP",
+        "GMD",
+        "GNF",
+        "GTQ",
+        "GYD",
+        "HKD",
+        "HNL",
+        "HTG",
+        "HUF",
+        "IDR",
+        "ILS",
+        "INR",
+        "IQD",
+        "IRR",
+        "ISK",
+        "JMD",
+        "JOD",
+        "JPY",
+        "KES",
+        "KGS",
+        "KHR",
+        "KMF",
+        "KPW",
+        "KRW",
+        "KWD",
+        "KYD",
+        "KZT",
+        "LAK",
+        "LBP",
+        "LKR",
+        "LRD",
+        "LSL",
+        "LYD",
+        "MAD",
+        "MDL",
+        "MGA",
+        "MKD",
+        "MMK",
+        "MNT",
+        "MOP",
+        "MRU",
+        "MUR",
+        "MVR",
+        "MWK",
+        "MXN",
+        "MXV",
+        "MYR",
+        "MZN",
+        "NAD",
+        "NGN",
+        "NIO",
+        "NOK",
+        "NPR",
+        "NZD",
+        "OMR",
+        "PAB",
+        "PEN",
+        "PGK",
+        "PHP",
+        "PKR",
+        "PLN",
+        "PYG",
+        "QAR",
+        "RON",
+        "RSD",
+        "RUB",
+        "RWF",
+        "SAR",
+        "SBD",
+        "SCR",
+        "SDG",
+        "SEK",
+        "SGD",
+        "SHP",
+        "SLE",
+        "SLL",
+        "SOS",
+        "SRD",
+        "SSP",
+        "STN",
+        "SVC",
+        "SYP",
+        "SZL",
+        "THB",
+        "TJS",
+        "TMT",
+        "TND",
+        "TOP",
+        "TRY",
+        "TTD",
+        "TWD",
+        "TZS",
+        "UAH",
+        "UGX",
+        "USD",
+        "USN",
+        "UYI",
+        "UYU",
+        "UYW",
+        "UZS",
+        "VED",
+        "VES",
+        "VND",
+        "VUV",
+        "WST",
+        "XAF",
+        "XAG",
+        "XAU",
+        "XBA",
+        "XBB",
+        "XBC",
+        "XBD",
+        "XCD",
+        "XDR",
+        "XOF",
+        "XPD",
+        "XPF",
+        "XPT",
+        "XSU",
+        "XTS",
+        "XUA",
+        "YER",
+        "ZAR",
+        "ZMW",
+        "ZWG",
+        "ZWL",
+    ]
+)
+_ISO_4217_PATTERN = "|".join(sorted(_ISO_4217_CODES))
+_PRICE_UNIT_PATTERN = (
+    r"(?:bag|bottle|box|carton|case|drum|g|gram|kg|kilogram|l|liter|litre|m|"
+    r"meter|metre|ml|pack|pair|pallet|pc|pcs|piece|roll|set|sheet|sqm|ton|"
+    r"tonne|unit)s?"
+)
 _MODEL_MONEY = re.compile(
-    r"(?:[$€£¥₹]\s*\d)|"
-    r"(?:(?i:\b(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\s*\d))|"
-    r"(?:\b[A-Z]{3}\s*\d)|"
-    r"(?:(?i:\d(?:[\d,.]*\d)?\s*(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\b))|"
-    r"(?:\d(?:[\d,.]*\d)?\s*[A-Z]{3}\b)"
+    rf"(?:[$€£¥₹]\s*\d|\d(?:[\d,.]*\d)?\s*[$€£¥₹])|"
+    rf"(?:(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*\d)|"
+    rf"(?:\d(?:[\d,.]*\d)?\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b))|"
+    r"(?:(?i:\b(?:unit[ -]?price|price|cost|amount)\b)[^\d\n]{0,24}\d)|"
+    r"(?:\d(?:[\d,.]*\d)?[^\d\n]{0,12}(?i:\b(?:unit[ -]?price|price|cost|amount)\b))|"
+    rf"(?:\d(?:[\d,.]*\d)?\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b))"
 )
 
 _SYSTEM_PROMPT = """你是 TradeOS 的候选供应商寻源分析能力。输入只包含人工录入的
@@ -196,9 +384,9 @@ class SourcingAgent(CapabilityAgent):
                     "vague_range" in tier.rejection_reasons
                     for tier in draft.price_tiers
                 ),
-                "has_quantity_tier": any(
-                    tier.minimum_quantity is not None and tier.amount is not None
-                    for tier in draft.price_tiers
+                "has_quantity_tier": has_tiers
+                and all(
+                    tier.minimum_quantity is not None for tier in draft.price_tiers
                 ),
                 "unit_clear": has_tiers
                 and all(tier.unit is not None for tier in draft.price_tiers),
@@ -208,9 +396,7 @@ class SourcingAgent(CapabilityAgent):
             "evidence": {
                 "source_url": draft.evidence.source_url,
                 "content_hash": draft.evidence.content_hash,
-                "snapshot_artifact_ref": str(
-                    draft.evidence.snapshot_artifact_ref
-                ),
+                "snapshot_artifact_ref": str(draft.evidence.snapshot_artifact_ref),
                 "observed_at": draft.evidence.observed_at.isoformat(),
             },
         }
@@ -290,9 +476,7 @@ class SourcingAgent(CapabilityAgent):
                     "payload": {
                         "case_id": projection["case_id"],
                         "candidate_id": projection["candidate_id"],
-                        "reasons": tuple(
-                            str(item["reason"]) for item in suggestions
-                        ),
+                        "reasons": tuple(str(item["reason"]) for item in suggestions),
                         "explanations": tuple(
                             str(item["explanation"]) for item in suggestions
                         ),
@@ -394,9 +578,7 @@ class SourcingAgent(CapabilityAgent):
         if isinstance(rung, bool) or not isinstance(rung, int) or not 1 <= rung <= 7:
             raise ValidationError("寻源匹配梯级无效")
         return {
-            "case_id": _text(
-                review.get("case_id"), field="寻源案例引用", maximum=200
-            ),
+            "case_id": _text(review.get("case_id"), field="寻源案例引用", maximum=200),
             "candidate_id": _text(
                 review.get("candidate_id"), field="寻源候选引用", maximum=200
             ),
@@ -419,9 +601,7 @@ class SourcingAgent(CapabilityAgent):
         }
 
     @staticmethod
-    def _validate_output(
-        raw: str, projection: dict[str, object]
-    ) -> dict[str, object]:
+    def _validate_output(raw: str, projection: dict[str, object]) -> dict[str, object]:
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > _MAX_OUTPUT_BYTES:
             raise ValidationError("寻源分析模型输出无效")
         try:
@@ -434,14 +614,12 @@ class SourcingAgent(CapabilityAgent):
         required_specs = projection["required_specs"]
         offered_specs = projection["offered_specs"]
         assert isinstance(required_specs, tuple) and isinstance(offered_specs, tuple)
-        if (
-            not isinstance(raw_comparisons, list)
-            or len(raw_comparisons) != len(required_specs)
+        if not isinstance(raw_comparisons, list) or len(raw_comparisons) != len(
+            required_specs
         ):
             raise ValidationError("寻源逐项匹配未覆盖全部规格")
         required_by_name = {
-            str(item["spec_name"]): str(item["required"])
-            for item in required_specs
+            str(item["spec_name"]): str(item["required"]) for item in required_specs
         }
         offered_by_name = {
             str(item["spec_name"]): item["offered"] for item in offered_specs
@@ -479,13 +657,13 @@ class SourcingAgent(CapabilityAgent):
                 if not isinstance(substitutable, bool):
                     raise ValidationError("不同规格缺少可替代性判断")
                 if substitutable and (
-                    not isinstance(impact, str) or not impact.strip() or not confirmation
+                    not isinstance(impact, str)
+                    or not impact.strip()
+                    or not confirmation
                 ):
                     raise ValidationError("可替代规格缺少影响或客户确认")
                 if impact is not None:
-                    impact = _text(
-                        impact, field="寻源替代影响", maximum=4_000
-                    )
+                    impact = _text(impact, field="寻源替代影响", maximum=4_000)
             comparisons_by_name[name] = {
                 "spec_name": name,
                 "required": required_by_name[name],
@@ -507,9 +685,7 @@ class SourcingAgent(CapabilityAgent):
         for item in raw_suggestions:
             if not isinstance(item, dict) or set(item) != _PRICE_SUGGESTION_KEYS:
                 raise ValidationError("寻源分析模型输出含未授权字段")
-            reason = _text(
-                item.get("reason"), field="寻源参考价拒绝原因", maximum=64
-            )
+            reason = _text(item.get("reason"), field="寻源参考价拒绝原因", maximum=64)
             if reason not in allowed_reasons or reason in suggestions_by_reason:
                 raise ValidationError("寻源参考价拒绝建议无效")
             suggestions_by_reason[reason] = {
@@ -525,20 +701,21 @@ class SourcingAgent(CapabilityAgent):
         ordered_suggestions = tuple(
             suggestions_by_reason[reason] for reason in expected_reasons
         )
-        summary = _text(
-            payload.get("summary"), field="寻源逐项匹配摘要", maximum=8_000
-        )
+        summary = _text(payload.get("summary"), field="寻源逐项匹配摘要", maximum=8_000)
         model_text = [
             summary,
-            *(str(item["substitution_impact"]) for item in comparisons_by_name.values() if item["substitution_impact"] is not None),
+            *(
+                str(item["substitution_impact"])
+                for item in comparisons_by_name.values()
+                if item["substitution_impact"] is not None
+            ),
             *(item["explanation"] for item in ordered_suggestions),
         ]
         if any(_MODEL_MONEY.search(value) is not None for value in model_text):
             raise ValidationError("寻源分析不得生成价格")
         return {
             "comparisons": tuple(
-                comparisons_by_name[str(item["spec_name"])]
-                for item in required_specs
+                comparisons_by_name[str(item["spec_name"])] for item in required_specs
             ),
             "summary": summary,
             "price_rejection_suggestions": ordered_suggestions,
@@ -557,9 +734,7 @@ class SourcingAgent(CapabilityAgent):
             ("unit_clear", False, "unit_unclear"),
             ("currency_clear", False, "currency_unclear"),
         )
-        return tuple(
-            reason for key, trigger, reason in rules if checks[key] is trigger
-        )
+        return tuple(reason for key, trigger, reason in rules if checks[key] is trigger)
 
     @staticmethod
     def _empty(task: AgentTask, summary: str) -> ChangeSet:

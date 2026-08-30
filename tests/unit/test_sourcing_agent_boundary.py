@@ -206,7 +206,63 @@ def _page_review_task(review: dict[str, object]) -> AgentTask:
     )
 
 
-def _page_review_response(*, rewrite: bool = False, money: bool = False) -> dict[str, object]:
+def _page_draft_with_incomplete_tier(
+    reason: str,
+) -> SourcingPageCandidateDraft:
+    draft = _page_draft()
+    artifact = draft.evidence.snapshot_artifact_ref
+    quote = "Observed tier USD 3.00 per piece for minimum quantity 200."
+
+    def observed(literal: str) -> SourcingObservedLiteral:
+        return SourcingObservedLiteral(
+            literal=literal,
+            source_quote=quote,
+            snapshot_artifact_ref=artifact,
+        )
+
+    quantity = 200
+    unit = "piece"
+    currency = "USD"
+    quantity_literal = observed("200")
+    unit_literal = observed("piece")
+    currency_literal = observed("USD")
+    if reason == "quantity_tier_missing":
+        quantity = None  # type: ignore[assignment]
+        quantity_literal = None  # type: ignore[assignment]
+    elif reason == "unit_unclear":
+        unit = None  # type: ignore[assignment]
+        unit_literal = None  # type: ignore[assignment]
+    elif reason == "currency_unclear":
+        currency = None  # type: ignore[assignment]
+        currency_literal = None  # type: ignore[assignment]
+    else:
+        raise AssertionError("unsupported controlled reason")
+    incomplete = SourcingObservedPriceTier(
+        minimum_quantity=quantity,
+        amount=None,
+        unit=unit,
+        currency=currency,
+        quantity_literal=quantity_literal,
+        price_literal=observed("USD 3.00"),
+        unit_literal=unit_literal,
+        currency_literal=currency_literal,
+        rejection_reasons=(reason,),
+    )
+    return SourcingPageCandidateDraft(
+        evidence=draft.evidence,
+        supplier_name=draft.supplier_name,
+        product_title=draft.product_title,
+        specs=draft.specs,
+        moq=draft.moq,
+        moq_literal=draft.moq_literal,
+        price_tiers=(*draft.price_tiers, incomplete),
+        rejection_reasons=(reason,),
+    )
+
+
+def _page_review_response(
+    *, rewrite: bool = False, money: bool = False
+) -> dict[str, object]:
     return {
         "comparisons": [
             {
@@ -226,16 +282,16 @@ def _page_review_response(*, rewrite: bool = False, money: bool = False) -> dict
                 "needs_customer_confirmation": False,
             },
         ],
-        "summary": "Observed price is USD 2.50." if money else "One subtype needs confirmation.",
+        "summary": "Observed price is USD 2.50."
+        if money
+        else "One subtype needs confirmation.",
         "price_rejection_suggestions": [],
     }
 
 
 @pytest.mark.asyncio
 async def test_review_preserves_unknowns_and_marks_prices_indicative() -> None:
-    result = await _agent(_ReviewPort(json.dumps(_safe_response()))).run(
-        _task(), None
-    )
+    result = await _agent(_ReviewPort(json.dumps(_safe_response()))).run(_task(), None)
 
     assert result.guardrail_violations == []
     assert [change["operation"] for change in result.changes] == [
@@ -278,9 +334,9 @@ async def test_missing_offered_spec_cannot_be_promoted_to_exact() -> None:
 @pytest.mark.asyncio
 async def test_price_rejection_reasons_must_match_deterministic_checks() -> None:
     response = _safe_response()
-    response["price_rejection_suggestions"] = response[
-        "price_rejection_suggestions"
-    ][1:]
+    response["price_rejection_suggestions"] = response["price_rejection_suggestions"][
+        1:
+    ]
 
     result = await _agent(_ReviewPort(json.dumps(response))).run(_task(), None)
 
@@ -311,7 +367,9 @@ async def test_sourcing_credentials_are_rejected_before_model_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_page_draft_handoff_preserves_observations_and_immutable_evidence() -> None:
+async def test_page_draft_handoff_preserves_observations_and_immutable_evidence() -> (
+    None
+):
     module = __import__(
         "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
     )
@@ -338,13 +396,40 @@ async def test_page_draft_handoff_preserves_observations_and_immutable_evidence(
         "snapshot_artifact_ref": "art_01H00000000000000000000000",
         "observed_at": "2026-08-30T12:00:00+00:00",
     }
-    result = await _agent(
-        _ReviewPort(json.dumps(_page_review_response()))
-    ).run(_page_review_task(review), None)
+    result = await _agent(_ReviewPort(json.dumps(_page_review_response()))).run(
+        _page_review_task(review), None
+    )
     assert [change["operation"] for change in result.changes] == [
         "record_match_explanation"
     ]
     assert result.changes[0]["payload"]["price_basis"] == "indicative"
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_check"),
+    [
+        ("quantity_tier_missing", "has_quantity_tier"),
+        ("unit_unclear", "unit_clear"),
+        ("currency_unclear", "currency_clear"),
+    ],
+)
+def test_page_review_requires_every_price_tier_to_be_complete(
+    reason: str, expected_check: str
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft_with_incomplete_tier(reason),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+
+    checks = review["price_checks"]
+    assert isinstance(checks, dict)
+    assert checks[expected_check] is False
+    assert reason in module.SourcingAgent._deterministic_price_reasons(review)
 
 
 @pytest.mark.asyncio
@@ -396,3 +481,70 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
 
     assert result.changes == []
     assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Observed cost is chf 2.50.",
+        "Unit price 2.50 per piece.",
+        "The amount is 2.50.",
+        "Available for 2.50 per unit.",
+        "Supplier asks €2.50.",
+        "Wholesale value 2.50 AED.",
+        "BWP 2.50 is listed.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_currency_keyword_and_per_unit_money_forms(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The plate measures 304 mm by 4 mm.",
+        "The set contains 2 pieces and weighs 500 g.",
+        "Model AED-250 uses grade 304 steel.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_money_guard_does_not_block_normal_specs(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert [change["operation"] for change in result.changes] == [
+        "record_match_explanation"
+    ]

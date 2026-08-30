@@ -29,7 +29,94 @@ _PRICE = re.compile(
 _POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*")
 _RANGE_SEPARATOR = re.compile(r"(?:-|–|—|\bto\b)", re.IGNORECASE)
 _NUMBER_FRAGMENT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-_UNIT = re.compile(r"[A-Za-z][A-Za-z0-9 ._/-]{0,49}")
+_NUMERIC_HOST = re.compile(r"(?:0[xX][0-9A-Fa-f]+|[0-9.]+)")
+_EMAIL_TEXT = re.compile(
+    r"(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![A-Z0-9.-])"
+)
+_URL_TEXT = re.compile(r"(?i)(?:\bhttps?://|\bwww\.)\S+")
+_PHONE_TEXT = re.compile(
+    r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\s*[:=]\s*\+?[0-9]"
+)
+_INSTRUCTION_TEXT = re.compile(
+    r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|"
+    r"system\s+(?:message|prompt)|developer\s+message|assistant\s+message|"
+    r"follow\s+(?:these|the)\s+instructions?|call\s+(?:the\s+)?tool|"
+    r"execute\s+(?:this|the)\s+(?:tool|command))\b"
+)
+_TRADE_UNIT_ALIASES = {
+    "bag": "bag",
+    "bags": "bag",
+    "bottle": "bottle",
+    "bottles": "bottle",
+    "box": "box",
+    "boxes": "box",
+    "bundle": "bundle",
+    "bundles": "bundle",
+    "can": "can",
+    "cans": "can",
+    "carton": "carton",
+    "cartons": "carton",
+    "case": "case",
+    "cases": "case",
+    "cbm": "cubic meter",
+    "cubic meter": "cubic meter",
+    "cubic meters": "cubic meter",
+    "cubic metre": "cubic meter",
+    "cubic metres": "cubic meter",
+    "drum": "drum",
+    "drums": "drum",
+    "g": "g",
+    "gram": "g",
+    "grams": "g",
+    "kg": "kg",
+    "kgs": "kg",
+    "kilogram": "kg",
+    "kilograms": "kg",
+    "l": "liter",
+    "liter": "liter",
+    "liters": "liter",
+    "litre": "liter",
+    "litres": "liter",
+    "m": "meter",
+    "m2": "sqm",
+    "m3": "cubic meter",
+    "meter": "meter",
+    "meters": "meter",
+    "metre": "meter",
+    "metres": "meter",
+    "milliliter": "ml",
+    "milliliters": "ml",
+    "millilitre": "ml",
+    "millilitres": "ml",
+    "ml": "ml",
+    "pack": "pack",
+    "packs": "pack",
+    "pair": "pair",
+    "pairs": "pair",
+    "pallet": "pallet",
+    "pallets": "pallet",
+    "pc": "piece",
+    "pcs": "piece",
+    "piece": "piece",
+    "pieces": "piece",
+    "roll": "roll",
+    "rolls": "roll",
+    "set": "set",
+    "sets": "set",
+    "sheet": "sheet",
+    "sheets": "sheet",
+    "sqm": "sqm",
+    "square meter": "sqm",
+    "square meters": "sqm",
+    "square metre": "sqm",
+    "square metres": "sqm",
+    "ton": "ton",
+    "tons": "ton",
+    "tonne": "tonne",
+    "tonnes": "tonne",
+    "unit": "unit",
+    "units": "unit",
+}
 
 _TOP_LEVEL_KEYS = frozenset(
     {"supplier_name", "product_title", "specs", "moq", "price_tiers"}
@@ -112,7 +199,7 @@ class SourcingObservedLiteral(BaseModel):
 
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
     literal: str = Field(repr=False)
-    source_quote: str = Field(repr=False)
+    source_quote: str = Field(repr=False, exclude=True)
     snapshot_artifact_ref: ArtifactId
 
     @model_validator(mode="after")
@@ -120,8 +207,8 @@ class SourcingObservedLiteral(BaseModel):
         """公开值与原文摘录不得携带控制字符或伪 Artifact。"""
 
         if (
-            _safe_model_text(self.literal, 4_000) is None
-            or _safe_model_text(self.source_quote, 4_000) is None
+            _safe_observation_text(self.literal, 4_000) is None
+            or _safe_observation_text(self.source_quote, 4_000) is None
             or self.literal not in self.source_quote
             or _ARTIFACT_REF.fullmatch(str(self.snapshot_artifact_ref)) is None
         ):
@@ -180,9 +267,10 @@ class SourcingObservedPriceTier(BaseModel):
                 or self.currency is None
             ):
                 raise ValueError("公开寻源解析金额无效")
-            if parse_observed_price_literal(
-                self.price_literal.literal, self.currency
-            ) != self.amount:
+            if (
+                parse_observed_price_literal(self.price_literal.literal, self.currency)
+                != self.amount
+            ):
                 raise ValueError("公开寻源解析金额与字面值不一致")
         if self.minimum_quantity is not None and (
             self.minimum_quantity < 1
@@ -191,7 +279,8 @@ class SourcingObservedPriceTier(BaseModel):
         ):
             raise ValueError("公开寻源数量档不一致")
         if self.unit is not None and (
-            self.unit_literal is None or self.unit_literal.literal != self.unit
+            self.unit_literal is None
+            or _canonical_trade_unit(self.unit_literal.literal) != self.unit
         ):
             raise ValueError("公开寻源计价单位不一致")
         if self.currency is not None and (
@@ -301,10 +390,30 @@ def _safe_model_text(value: object, maximum: int) -> str | None:
         or not value
         or value != value.strip()
         or len(value) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or _has_disallowed_unicode(value)
     ):
         return None
     return value
+
+
+def _has_disallowed_unicode(value: str) -> bool:
+    return any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value
+    )
+
+
+def _safe_observation_text(value: object, maximum: int) -> str | None:
+    parsed = _safe_model_text(value, maximum)
+    if parsed is None or any(
+        pattern.search(parsed) is not None
+        for pattern in (_EMAIL_TEXT, _URL_TEXT, _PHONE_TEXT, _INSTRUCTION_TEXT)
+    ):
+        return None
+    return parsed
+
+
+def _canonical_trade_unit(value: str) -> str | None:
+    return _TRADE_UNIT_ALIASES.get(_normalize(value))
 
 
 def _valid_public_url(value: object) -> bool:
@@ -313,7 +422,7 @@ def _valid_public_url(value: object) -> bool:
         or not value
         or value != value.strip()
         or len(value) > 2_048
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or _has_disallowed_unicode(value)
     ):
         return False
     parsed = urlsplit(value)
@@ -326,6 +435,19 @@ def _valid_public_url(value: object) -> bool:
     ):
         return False
     hostname = parsed.hostname.casefold()
+    if "%" in parsed.netloc or _NUMERIC_HOST.fullmatch(hostname) is not None:
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            return False
+        return not (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        )
     if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
         return False
     try:
@@ -359,15 +481,23 @@ def _safe_text(
         or not value
         or value != value.strip()
         or len(value) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or _has_disallowed_unicode(value)
     ):
         raise ValidationError(f"{field_name} 无效")
     return value
 
 
 def _json_object(raw: object) -> dict[str, object]:
-    if not isinstance(raw, str) or len(raw.encode("utf-8")) > _MAX_MODEL_OUTPUT_BYTES:
+    if not isinstance(raw, str):
         raise ValidationError("公开寻源页面模型输出无效")
+    encoding_failed = False
+    encoded_size = 0
+    try:
+        encoded_size = len(raw.encode("utf-8"))
+    except UnicodeError:
+        encoding_failed = True
+    if encoding_failed or encoded_size > _MAX_MODEL_OUTPUT_BYTES:
+        raise ValidationError("公开寻源页面模型输出无效") from None
 
     def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -390,7 +520,9 @@ def _json_object(raw: object) -> dict[str, object]:
     return value
 
 
-def _snapshot_projection(page: SafeSourcingPageSnapshot) -> tuple[str, SourcingPageEvidence]:
+def _snapshot_projection(
+    page: SafeSourcingPageSnapshot,
+) -> tuple[str, SourcingPageEvidence]:
     try:
         text = page.text
         url = page.url
@@ -408,8 +540,7 @@ def _snapshot_projection(page: SafeSourcingPageSnapshot) -> tuple[str, SourcingP
         or not text
         or len(text) > _MAX_PAGE_CHARACTERS
         or any(
-            ord(character) < 32 and character not in {"\n", "\t"}
-            for character in text
+            ord(character) < 32 and character not in {"\n", "\t"} for character in text
         )
         or "\x7f" in text
     ):
@@ -420,9 +551,15 @@ def _snapshot_projection(page: SafeSourcingPageSnapshot) -> tuple[str, SourcingP
         raise ValidationError("公开寻源页面快照无效")
     if not isinstance(observed_at, datetime) or observed_at.tzinfo is not UTC:
         raise ValidationError("公开寻源页面快照无效")
-    if not isinstance(content_hash, str) or _CONTENT_HASH.fullmatch(content_hash) is None:
+    if (
+        not isinstance(content_hash, str)
+        or _CONTENT_HASH.fullmatch(content_hash) is None
+    ):
         raise ValidationError("公开寻源页面快照无效")
-    if not isinstance(artifact_ref, str) or _ARTIFACT_REF.fullmatch(artifact_ref) is None:
+    if (
+        not isinstance(artifact_ref, str)
+        or _ARTIFACT_REF.fullmatch(artifact_ref) is None
+    ):
         raise ValidationError("公开寻源页面快照无效")
     return text, SourcingPageEvidence(
         source_url=url,
@@ -487,14 +624,12 @@ def _anchored_literal(
         if source_quote is not None:
             raise ValidationError(f"{field_name} 未知值不得带原文")
         return None
-    parsed_literal = _safe_text(
-        literal, maximum=maximum, field_name=field_name
-    )
-    parsed_quote = _safe_text(
-        source_quote,
-        maximum=4_000,
-        field_name=f"{field_name}原文",
-    )
+    parsed_literal = _safe_observation_text(literal, maximum)
+    parsed_quote = _safe_observation_text(source_quote, 4_000)
+    if parsed_literal is None:
+        raise ValidationError(f"{field_name} 无效")
+    if parsed_quote is None:
+        raise ValidationError(f"{field_name}原文 无效")
     assert parsed_literal is not None and parsed_quote is not None
     if parsed_quote not in page_text:
         raise ValidationError(f"{field_name}原文锚点无效")
@@ -573,7 +708,9 @@ def _price_tier(
     if quote not in page_text:
         raise ValidationError("公开寻源数量价格档原文锚点无效")
 
-    def observed(key: str, field_name: str, maximum: int) -> SourcingObservedLiteral | None:
+    def observed(
+        key: str, field_name: str, maximum: int
+    ) -> SourcingObservedLiteral | None:
         return _anchored_literal(
             literal=payload.get(key),
             source_quote=quote if payload.get(key) is not None else None,
@@ -583,9 +720,7 @@ def _price_tier(
             maximum=maximum,
         )
 
-    quantity_literal = observed(
-        "minimum_quantity_literal", "公开寻源数量档", 40
-    )
+    quantity_literal = observed("minimum_quantity_literal", "公开寻源数量档", 40)
     price_literal = observed("price_literal", "公开寻源价格", 100)
     unit_literal = observed("unit_literal", "公开寻源计价单位", 50)
     currency_literal = observed("currency_literal", "公开寻源币种", 3)
@@ -602,12 +737,18 @@ def _price_tier(
     else:
         minimum_quantity = int(quantity_literal.literal)
     unit: str | None = None
-    if unit_literal is None or _UNIT.fullmatch(unit_literal.literal) is None:
+    if unit_literal is None:
         reasons.append("unit_unclear")
     else:
-        unit = unit_literal.literal
+        unit = _canonical_trade_unit(unit_literal.literal)
+        if unit is None:
+            reasons.append("unit_unclear")
+            unit_literal = None
     currency: str | None = None
-    if currency_literal is None or _CURRENCY.fullmatch(currency_literal.literal) is None:
+    if (
+        currency_literal is None
+        or _CURRENCY.fullmatch(currency_literal.literal) is None
+    ):
         reasons.append("currency_unclear")
     else:
         currency = currency_literal.literal
@@ -720,7 +861,9 @@ def _validate_model_output(
                 maximum=4_000,
             ),
         )
-    if len(raw_specs) != len(required_specs) or set(observed_by_name) != set(required_by_name):
+    if len(raw_specs) != len(required_specs) or set(observed_by_name) != set(
+        required_by_name
+    ):
         raise ValidationError("公开寻源规格未逐项覆盖")
 
     raw_tiers = payload.get("price_tiers")
@@ -749,9 +892,7 @@ def _validate_model_output(
         if raw_key in normalized_tiers:
             raise ValidationError("公开寻源数量价格档重复")
         normalized_tiers.add(raw_key)
-        tiers.append(
-            _price_tier(item, page_text=page_text, artifact_ref=artifact_ref)
-        )
+        tiers.append(_price_tier(item, page_text=page_text, artifact_ref=artifact_ref))
     rejection_reasons = tuple(
         dict.fromkeys(reason for tier in tiers for reason in tier.rejection_reasons)
     )
