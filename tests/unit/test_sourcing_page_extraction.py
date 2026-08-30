@@ -851,6 +851,16 @@ async def test_selected_observations_reject_contact_cta_phone_and_domain_path(
         ("unit_literal", "+86.138.0013.8000"),
         ("product_title", "supplier.example"),
         ("material", "supplier.example/contact"),
+        ("supplier_name", "Contact our sales team"),
+        ("product_title", "Email our sales team"),
+        ("material", "Reach our sales team"),
+        ("unit_literal", "Get in touch"),
+        ("supplier_name", "Talk to sales"),
+        ("product_title", "Call today"),
+        ("unit_literal", "+86·138·0013·8000"),
+        ("supplier_name", "Catalog supplier.example"),
+        ("product_title", "Model X. supplier.example"),
+        ("supplier_name", "Series X. 13800138000"),
     ],
 )
 @pytest.mark.asyncio
@@ -890,6 +900,9 @@ async def test_selected_observations_reject_expanded_contact_shapes_before_seria
         ("product_title", "ReachGuard relay enclosure"),
         ("product_title", "Model ZX-13800138000-A"),
         ("product_title", "Plate 1380 x 013 mm"),
+        ("product_title", "Series X.Pro"),
+        ("product_title", "Model v2.assembly"),
+        ("product_title", "Model 123456789012"),
     ],
 )
 @pytest.mark.asyncio

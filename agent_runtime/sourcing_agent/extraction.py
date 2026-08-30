@@ -34,21 +34,30 @@ _EMAIL_TEXT = re.compile(
     r"(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![A-Z0-9.-])"
 )
 _URL_TEXT = re.compile(r"(?i)(?:\bhttps?://|\bwww\.)\S+")
-_DOMAIN_PATH_TEXT = re.compile(
+_DOMAIN_TEXT = re.compile(
     r"(?i)(?<![A-Z0-9.-])"
     r"(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+"
     r"[A-Z]{2,63}(?:/[^\s]*)?(?![A-Z0-9-])"
 )
 _CONTACT_CTA_TEXT = re.compile(
-    r"(?i)\b(?:(?:contact|e-?mail|call)\s+(?:us|me|sales|now)|"
-    r"reach\s+(?:us|me|sales|out))\b"
+    r"(?i)\b(?:"
+    r"(?:contact|e-?mail|reach)\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team)|"
+    r"reach\s+out|"
+    r"call\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team|now|today)|"
+    r"talk\s+to\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team)|"
+    r"get\s+in\s+touch"
+    r")\b"
 )
 _PHONE_LABEL_TEXT = re.compile(
     r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\b\s*[:=]?\s*\+?[0-9]"
 )
 _PHONE_SHAPE_TEXT = re.compile(
-    r"(?<![A-Z0-9-])\+?[0-9][0-9 ().-]{7,}[0-9](?![A-Z0-9-])"
+    r"(?<![A-Z0-9])\+?[0-9][0-9 ()./\-\xb7\u2022\u2219\u2010-\u2015]*[0-9](?![A-Z0-9])"
 )
+_PHONE_IDENTIFIER_CUE = re.compile(
+    r"(?i)\b(?:model|series|part(?:\s+(?:no\.?|number))?|sku|code)\b"
+)
+_DOMAIN_IDENTIFIER_CUE = re.compile(r"(?i)\b(?:model|series|version)\b")
 _INSTRUCTION_TEXT = re.compile(
     r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|"
     r"system\s+(?:message|prompt)|developer\s+message|assistant\s+message|"
@@ -421,19 +430,45 @@ def _safe_observation_text(value: object, maximum: int) -> str | None:
         for pattern in (
             _EMAIL_TEXT,
             _URL_TEXT,
-            _DOMAIN_PATH_TEXT,
             _CONTACT_CTA_TEXT,
             _PHONE_LABEL_TEXT,
             _INSTRUCTION_TEXT,
         )
     ):
         return None
-    if any(
-        sum(character.isdecimal() for character in match.group()) >= 10
-        for match in _PHONE_SHAPE_TEXT.finditer(parsed)
-    ):
+    if _contains_unsafe_domain(parsed) or _contains_unsafe_phone(parsed):
         return None
     return parsed
+
+
+def _has_identifier_cue(value: str, start: int, pattern: re.Pattern[str]) -> bool:
+    context = value[max(0, start - 64) : start]
+    matches = tuple(pattern.finditer(context))
+    if not matches:
+        return False
+    trailing = context[matches[-1].end() :]
+    return re.search(r"[.\n,;!?]", trailing) is None
+
+
+def _contains_unsafe_domain(value: str) -> bool:
+    for match in _DOMAIN_TEXT.finditer(value):
+        if "/" in match.group() or not _has_identifier_cue(
+            value, match.start(), _DOMAIN_IDENTIFIER_CUE
+        ):
+            return True
+    return False
+
+
+def _contains_unsafe_phone(value: str) -> bool:
+    for match in _PHONE_SHAPE_TEXT.finditer(value):
+        token = match.group()
+        if sum(character.isdecimal() for character in token) < 10:
+            continue
+        if "+" in token or not _has_identifier_cue(
+            value, match.start(), _PHONE_IDENTIFIER_CUE
+        ):
+            return True
+    return False
 
 
 def _canonical_trade_unit(value: str) -> str | None:

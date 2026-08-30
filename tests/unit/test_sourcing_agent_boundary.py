@@ -459,7 +459,12 @@ async def test_existing_agent_cannot_rewrite_page_facts_or_generate_money(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "summary", ["Observed price is CHF 2.50.", "Observed price is usd 2.50."]
+    "summary",
+    [
+        "Observed price is CHF 2.50.",
+        "Observed price is usd 2.50.",
+        "Model X. AED 250 is listed.",
+    ],
 )
 async def test_existing_agent_rejects_money_in_any_three_letter_currency(
     summary: str,
@@ -552,6 +557,75 @@ async def test_existing_agent_rejects_tightly_connected_qualified_money_forms(
 
 
 @pytest.mark.parametrize(
+    ("keyword", "connector", "qualifier", "separator"),
+    [
+        ("cost", "is", "approx.", ""),
+        ("price", "was", "roughly", " "),
+        ("unit price", "at", "about", " "),
+        ("price", "from", "around", " "),
+        ("cost", "starts at", "approximately", " "),
+        ("price", "starts from", "roughly", " "),
+        ("cost", "begins at", "about", " "),
+        ("unit-price", "begins from", "around", " "),
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_composed_money_predicate_variants(
+    keyword: str, connector: str, qualifier: str, separator: str
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = (
+        f"Observed {keyword} {connector} {qualifier}{separator}2.50 today."
+    )
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The tolerance is 2.50 mm.",
+        "The value changed to 3.75.",
+        "2.50 was the cost.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_untrusted_decimals_and_reverse_price_predicate(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
     "summary",
     [
         "The plate measures 304 mm by 4 mm.",
@@ -561,8 +635,11 @@ async def test_existing_agent_rejects_tightly_connected_qualified_money_forms(
         "The price-sensitive model is AED-250.",
         "Grade 304 steel has an unknown cost impact.",
         "The amount of 304 stainless steel is sufficient.",
+        "The amount is about 304 pieces.",
         "The 304 cost impact is unknown.",
         "cost impact for grade 304",
+        "Model AED 250 uses grade304 steel.",
+        "Series CHF 250 matches the requested type.",
     ],
 )
 @pytest.mark.asyncio
@@ -579,6 +656,37 @@ async def test_existing_agent_money_guard_does_not_block_normal_specs(
     )
     response = _page_review_response()
     response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert [change["operation"] for change in result.changes] == [
+        "record_match_explanation"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_existing_agent_allows_decimal_only_inside_exact_trusted_spec_literal(
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    required_specs = review["required_specs"]
+    offered_specs = review["offered_specs"]
+    assert isinstance(required_specs, tuple) and isinstance(offered_specs, tuple)
+    required_specs[1]["required"] = "Tolerance 2.50 mm"
+    offered_specs[1]["offered"] = "Tolerance 2.50 mm"
+    response = _page_review_response()
+    comparisons = response["comparisons"]
+    assert isinstance(comparisons, list)
+    comparisons[1]["offered"] = "Tolerance 2.50 mm"
+    response["summary"] = "Tolerance 2.50 mm matches the required specification."
 
     result = await _agent(_ReviewPort(json.dumps(response))).run(
         _page_review_task(review), None

@@ -255,18 +255,79 @@ _PRICE_UNIT_PATTERN = (
     r"meter|metre|ml|pack|pair|pallet|pc|pcs|piece|roll|set|sheet|sqm|ton|"
     r"tonne|unit)s?"
 )
-_MONEY_KEYWORD_PATTERN = r"(?:unit[ -]?price|price|cost|amount)"
-_MODEL_MONEY = re.compile(
-    rf"(?:[$€£¥₹]\s*\d|\d(?:[\d,.]*\d)?\s*[$€£¥₹])|"
-    rf"(?:(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*\d)|"
-    rf"(?:\d(?:[\d,.]*\d)?\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b))|"
-    rf"(?:(?i:\b{_MONEY_KEYWORD_PATTERN}\b"
-    r"(?:\s*[:=]\s*|\s+(?:(?:is|was|starts\s+at|begins\s+at)\s+)?)"
-    r"(?:(?:approximately|about|around)\s+)?\d))|"
-    rf"(?:\d(?:[\d,.]*\d)?\s+"
-    rf"(?i:(?:is|was)\s+the\s+{_MONEY_KEYWORD_PATTERN}\b))|"
-    rf"(?:\d(?:[\d,.]*\d)?\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b))"
+_NUMBER_TOKEN_PATTERN = r"[0-9]+(?:[.,][0-9]+)?"
+_MONEY_KEYWORD_PATTERN = r"(?:unit[ -]?price|price|cost)"
+_MONEY_QUALIFIER_PATTERN = (
+    r"(?:approx(?:imately)?\.?|roughly|about|around)"
 )
+_CURRENCY_SYMBOL = re.compile(r"[$€£¥₹]")
+_ISO_BEFORE_NUMBER = re.compile(
+    rf"(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*{_NUMBER_TOKEN_PATTERN}"
+)
+_NUMBER_BEFORE_ISO = re.compile(
+    rf"{_NUMBER_TOKEN_PATTERN}\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)"
+)
+_PRICE_PREDICATE = re.compile(
+    rf"(?i:\b{_MONEY_KEYWORD_PATTERN}\b"
+    r"(?:\s*[:=]\s*|\s+(?:(?:is|was|at|from|"
+    r"starts\s+(?:at|from)|begins\s+(?:at|from))\s+)?)"
+    rf"(?:{_MONEY_QUALIFIER_PATTERN}\s*)?{_NUMBER_TOKEN_PATTERN})"
+)
+_REVERSE_PRICE_PREDICATE = re.compile(
+    rf"{_NUMBER_TOKEN_PATTERN}\s+"
+    rf"(?i:(?:is|was)\s+the\s+{_MONEY_KEYWORD_PATTERN}\b)"
+)
+_PER_UNIT_AMOUNT = re.compile(
+    rf"{_NUMBER_TOKEN_PATTERN}\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b)"
+)
+_DECIMAL_TOKEN = re.compile(r"(?<![0-9])[0-9]+[.,][0-9]+(?![0-9])")
+_MONEY_IDENTITY_CUE = re.compile(
+    r"(?i)\b(?:model|series|grade|type|part(?:\s+(?:no\.?|number))?|sku|code)\b"
+)
+
+
+def _money_identity_context(value: str, start: int) -> bool:
+    context = value[max(0, start - 64) : start]
+    matches = tuple(_MONEY_IDENTITY_CUE.finditer(context))
+    if not matches:
+        return False
+    trailing = context[matches[-1].end() :]
+    return re.search(r"[.\n,;!?]", trailing) is None
+
+
+def _literal_spans(value: str, literals: tuple[str, ...]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for literal in literals:
+        start = value.find(literal)
+        while start >= 0:
+            spans.append((start, start + len(literal)))
+            start = value.find(literal, start + 1)
+    return spans
+
+
+def _span_is_allowed(span: tuple[int, int], allowed: list[tuple[int, int]]) -> bool:
+    return any(start <= span[0] and span[1] <= end for start, end in allowed)
+
+
+def _contains_model_money(value: str, trusted_literals: tuple[str, ...]) -> bool:
+    if (
+        _CURRENCY_SYMBOL.search(value) is not None
+        or _PRICE_PREDICATE.search(value) is not None
+        or _REVERSE_PRICE_PREDICATE.search(value) is not None
+        or _PER_UNIT_AMOUNT.search(value) is not None
+    ):
+        return True
+
+    allowed_spans = _literal_spans(value, trusted_literals)
+    for pattern in (_ISO_BEFORE_NUMBER, _NUMBER_BEFORE_ISO):
+        for match in pattern.finditer(value):
+            if not _money_identity_context(value, match.start()):
+                return True
+            allowed_spans.append(match.span())
+    return any(
+        not _span_is_allowed(match.span(), allowed_spans)
+        for match in _DECIMAL_TOKEN.finditer(value)
+    )
 
 _SYSTEM_PROMPT = """你是 TradeOS 的候选供应商寻源分析能力。输入只包含人工录入的
 客户必需规格、候选供应规格、确定性价格检查和证据快照。逐项比较规格，禁止生成综合
@@ -715,7 +776,17 @@ class SourcingAgent(CapabilityAgent):
             ),
             *(item["explanation"] for item in ordered_suggestions),
         ]
-        if any(_MODEL_MONEY.search(value) is not None for value in model_text):
+        trusted_literals = (
+            *required_by_name.values(),
+            *(
+                str(value)
+                for value in offered_by_name.values()
+                if value is not None
+            ),
+        )
+        if any(
+            _contains_model_money(value, trusted_literals) for value in model_text
+        ):
             raise ValidationError("寻源分析不得生成价格")
         return {
             "comparisons": tuple(
