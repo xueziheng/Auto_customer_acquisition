@@ -17,6 +17,7 @@ from domains.sourcing.schemas import (
     IndicativePriceTier,
     ProvenanceSummary,
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -29,6 +30,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -294,7 +296,7 @@ class PublicSourcingPlan:
     case_id: SourcingCaseId
     target_countries: tuple[str, ...]
     product_category: str
-    queries: tuple[str, ...]
+    queries: tuple[PublicSourcingQuery, ...]
     max_search_queries: int
     max_pages_read: int
     provider: str
@@ -331,9 +333,11 @@ class PublicSourcingPlan:
         _require_aware_time(created_at, "created_at")
         values = command.model_dump(mode="json")
         values["tenant_id"] = str(tenant_id)
+        command_values = command.model_dump(mode="python")
+        command_values["queries"] = command.queries
         return cls(
             tenant_id=tenant_id,
-            **command.model_dump(mode="python"),
+            **command_values,
             plan_hash=_plan_hash(values),
             created_at=created_at,
         )
@@ -380,7 +384,7 @@ class PublicSourcingPlan:
         *,
         target_countries: tuple[str, ...] | None = None,
         product_category: str | None = None,
-        queries: tuple[str, ...] | None = None,
+        queries: tuple[PublicSourcingQuery, ...] | None = None,
         max_search_queries: int | None = None,
         max_pages_read: int | None = None,
         usage_credits_remaining: int | None = None,
@@ -504,11 +508,11 @@ class SourcingSearchExecution:
     tenant_id: TenantId
     case_id: SourcingCaseId
     plan_id: SourcingPlanId
-    run_id: str
+    run_id: RunId
     plan_hash: str
     query_index: int
     request_key: str
-    query_text: str
+    query_hash: str
     locator_results: tuple[dict[str, object], ...]
     provider_status: SourcingSearchExecutionStatus
     created_at: datetime

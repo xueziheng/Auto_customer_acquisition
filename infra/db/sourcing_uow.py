@@ -11,6 +11,7 @@ from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.sourcing import (
     CandidateRepositoryImpl,
     LadderCheckRepositoryImpl,
+    PublicCandidateDraftRepositoryImpl,
     PublicSourcingPlanRepositoryImpl,
     SourcingCaseRepositoryImpl,
     SourcingHandoffRepositoryImpl,
@@ -45,6 +46,9 @@ class SqlAlchemySourcingUnitOfWork:
             self._session, self._tenant_id
         )
         self.search_executions = SourcingSearchExecutionRepositoryImpl(
+            self._session, self._tenant_id
+        )
+        self.candidate_drafts = PublicCandidateDraftRepositoryImpl(
             self._session, self._tenant_id
         )
         self.reconciliations = SourcingSearchReconciliationRepositoryImpl(

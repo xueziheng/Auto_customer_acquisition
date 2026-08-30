@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from domains.sourcing.service import SourcingNeedSnapshot
-from shared.schemas.identifiers import OpportunityId, TenantId, ValidatedNeedId
+from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
+from connectors.web_search.client import PageSnapshot
+from domains.sourcing.service import PublicSourcingPlan, SourcingNeedSnapshot
+from shared.schemas.identifiers import (
+    OpportunityId,
+    RunId,
+    SourcingCaseId,
+    SourcingPlanId,
+    TenantId,
+    ValidatedNeedId,
+)
+from tool_gateway.handlers.web_slots import SearchResultBatch
 
 
 @runtime_checkable
@@ -30,4 +40,73 @@ class OpportunityLinkReader(Protocol):
         ...
 
 
-__all__ = ("OpportunityLinkReader", "SourcingNeedReader")
+class AuthorizedPublicSourcingPlanReader(Protocol):
+    async def load_authorized(
+        self,
+        *,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        plan_id: SourcingPlanId,
+        plan_hash: str,
+    ) -> PublicSourcingPlan: ...
+
+
+class PersistedSearchReceiptPort(Protocol):
+    async def restore(
+        self, *, tenant_id: TenantId, run_id: RunId, plan_hash: str, query_index: int
+    ) -> SearchResultBatch | None: ...
+
+    async def commit_locator_receipt(self, **values: object) -> None: ...
+
+    async def record_uncertain(self, **values: object) -> None: ...
+
+
+class PublicSourcingSearcher(Protocol):
+    async def search(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        query: str,
+        country: str,
+        category: str,
+        limit: int,
+        *,
+        quota_request_key: str,
+    ) -> SearchResultBatch: ...
+
+    def release(self, batch: SearchResultBatch) -> None: ...
+
+    def discard_all(self) -> None: ...
+
+
+class PublicPageReader(Protocol):
+    async def read_page(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        batch: SearchResultBatch,
+        result_index: int,
+    ) -> PageSnapshot: ...
+
+
+class PublicCandidateExtractor(Protocol):
+    async def extract(
+        self, need: SourcingNeedSnapshot, page: PageSnapshot
+    ) -> SourcingPageCandidateDraft: ...
+
+
+class PublicCandidateDraftWriter(Protocol):
+    async def save(self, **values: object) -> str: ...
+
+
+__all__ = (
+    "AuthorizedPublicSourcingPlanReader",
+    "OpportunityLinkReader",
+    "PersistedSearchReceiptPort",
+    "PublicCandidateDraftWriter",
+    "PublicCandidateExtractor",
+    "PublicPageReader",
+    "PublicSourcingSearcher",
+    "SourcingNeedReader",
+)

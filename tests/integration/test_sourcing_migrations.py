@@ -244,7 +244,8 @@ async def _seed_public_search_execution(
             "(tenant_id, plan_id, case_id, target_countries, product_category, queries, "
             "max_search_queries, max_pages_read, provider, search_depth, usage_credits_remaining, "
             "worst_case_credits, version, expected_case_version, plan_hash, status, created_at) "
-            "VALUES (:tenant, :plan, :case, '[\"US\"]', 'hinges', '[\"hinge factory\"]', "
+            "VALUES (:tenant, :plan, :case, '[\"US\"]', 'hinges', "
+            "'[{\"query_text\":\"hinge factory\",\"target_country\":\"US\"}]', "
             "1, 1, 'tavily', 'basic', 10, 1, 1, 1, :plan_hash, "
             "'pending_confirmation', now())"
         ),
@@ -274,9 +275,9 @@ async def _seed_public_search_execution(
         text(
             "INSERT INTO sourcing_search_executions "
             "(tenant_id, execution_id, case_id, plan_id, run_id, plan_hash, "
-            "query_index, request_key, query_text, locator_results, provider_status, created_at) "
+            "query_index, request_key, query_hash, locator_results, provider_status, created_at) "
             "VALUES (:tenant, :execution, :case, :plan, :run, :plan_hash, "
-            "0, :request_key, 'hinge factory', '[]', 'uncertain', now())"
+            "0, :request_key, :query_hash, '[]', 'uncertain', now())"
         ),
         {
             "tenant": tenant_id,
@@ -286,6 +287,7 @@ async def _seed_public_search_execution(
             "run": run_id,
             "plan_hash": "b" * 64,
             "request_key": "c" * 64,
+            "query_hash": "d" * 64,
         },
     )
 

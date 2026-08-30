@@ -25,6 +25,7 @@ from domains.sourcing.schemas import (
     NeedFact,
     OpenSourcingCase,
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -846,7 +847,11 @@ async def test_candidate_seal_cas_cannot_publish_a_stale_subset(
             case_id=case_id,
             target_countries=("US",),
             product_category="hinges",
-            queries=("hinge factory",),
+            queries=(
+                PublicSourcingQuery(
+                    query_text="hinge factory", target_country="US"
+                ),
+            ),
             max_search_queries=1,
             max_pages_read=3,
             provider="tavily",
@@ -968,7 +973,11 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
             case_id=case_id,
             target_countries=("US",),
             product_category="hinges",
-            queries=("hinge factory",),
+            queries=(
+                PublicSourcingQuery(
+                    query_text="hinge factory", target_country="US"
+                ),
+            ),
             max_search_queries=1,
             max_pages_read=3,
             provider="tavily",

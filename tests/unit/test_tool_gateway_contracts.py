@@ -35,6 +35,9 @@ def test_error_categories_and_delivery_certainty_cover_safe_recovery_paths() -> 
         "provider_auth_required",
         "provider_permanent",
         "provider_transient",
+        "page_access_forbidden",
+        "login_or_captcha",
+        "unsafe_redirect",
         "reconciliation_required",
         "unexpected",
     }

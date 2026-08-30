@@ -18,6 +18,9 @@ class ToolErrorCategory(str, Enum):
     PROVIDER_AUTH_REQUIRED = "provider_auth_required"
     PROVIDER_PERMANENT = "provider_permanent"
     PROVIDER_TRANSIENT = "provider_transient"
+    PAGE_ACCESS_FORBIDDEN = "page_access_forbidden"
+    LOGIN_OR_CAPTCHA = "login_or_captcha"
+    UNSAFE_REDIRECT = "unsafe_redirect"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     UNEXPECTED = "unexpected"
 

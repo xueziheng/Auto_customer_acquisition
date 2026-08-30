@@ -10,12 +10,13 @@ import socket
 import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Protocol, runtime_checkable
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 
 from shared.errors import TransientError, ValidationError
 
-from .page_policy import is_restricted_page, robots_allows
+from .page_policy import restricted_page_reason, robots_allows
 
 _BRAVE_HOST = "api.search.brave.com"
 _BRAVE_PATH = "/res/v1/web/search"
@@ -43,9 +44,23 @@ class WebSearchProviderError(ValidationError):
         super().__init__("公开搜索服务拒绝请求")
 
 
+class PublicPageRejectedReason(str, Enum):
+    """可持久审计的页面拒绝分类；不得携带 URL 或响应正文。"""
+
+    PAGE_ACCESS_FORBIDDEN = "page_access_forbidden"
+    LOGIN_OR_CAPTCHA = "login_or_captcha"
+    UNSAFE_REDIRECT = "unsafe_redirect"
+
+
 class PublicPageRejectedError(ValidationError):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        reason: PublicPageRejectedReason = PublicPageRejectedReason.PAGE_ACCESS_FORBIDDEN,
+    ) -> None:
+        if not isinstance(reason, PublicPageRejectedReason):
+            raise ValidationError("公开页面拒绝分类无效")
         super().__init__("公开页面地址或响应不允许")
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -214,7 +229,7 @@ class SafePublicPageHttpTransport:
         for redirect_count in range(_MAX_REDIRECTS + 1):
             parsed = _validated_public_split(current)
             if parsed.netloc != origin.netloc or parsed.scheme != origin.scheme:
-                raise PublicPageRejectedError()
+                raise PublicPageRejectedError(PublicPageRejectedReason.UNSAFE_REDIRECT)
             if parsed.hostname in self._denied_hosts:
                 raise PublicPageRejectedError()
             if robots is not None and not robots_allows(robots, current):
@@ -222,8 +237,15 @@ class SafePublicPageHttpTransport:
             response = self._request_once(parsed)
             if response[0] in _REDIRECT_STATUSES:
                 if redirect_count == _MAX_REDIRECTS or response[1] is None:
-                    raise PublicPageRejectedError()
-                current = _validate_public_url_sync(urljoin(current, response[1]))
+                    raise PublicPageRejectedError(
+                        PublicPageRejectedReason.UNSAFE_REDIRECT
+                    )
+                try:
+                    current = _validate_public_url_sync(urljoin(current, response[1]))
+                except PublicPageRejectedError:
+                    raise PublicPageRejectedError(
+                        PublicPageRejectedReason.UNSAFE_REDIRECT
+                    ) from None
                 continue
             status, _location, content_type, content_encoding, body = response
             if (
@@ -238,10 +260,13 @@ class SafePublicPageHttpTransport:
                 if status >= 500:
                     raise TransientError("公开页面暂时不可用")
                 raise PublicPageRejectedError()
-            if is_restricted_page(body):
-                raise PublicPageRejectedError()
+            restricted_reason = restricted_page_reason(body)
+            if restricted_reason is not None:
+                raise PublicPageRejectedError(
+                    PublicPageRejectedReason(restricted_reason)
+                )
             return PublicPageResponse(current, body)
-        raise PublicPageRejectedError()
+        raise PublicPageRejectedError(PublicPageRejectedReason.UNSAFE_REDIRECT)
 
     def _read_robots(self, origin: SplitResult) -> bytes | None:
         """robots与正文共用逐跳DNS/peer校验；网络不确定、跨来源或限制均关闭。"""
@@ -251,12 +276,17 @@ class SafePublicPageHttpTransport:
         for count in range(_MAX_REDIRECTS + 1):
             parsed = _validated_public_split(_validate_public_url_sync(current))
             if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
-                raise PublicPageRejectedError()
+                raise PublicPageRejectedError(PublicPageRejectedReason.UNSAFE_REDIRECT)
             status, location, content_type, encoding, body = self._request_once(parsed)
             if status in {404, 410}:
                 return None
             if status in _REDIRECT_STATUSES and location and count < _MAX_REDIRECTS:
-                current = _validate_public_url_sync(urljoin(current, location))
+                try:
+                    current = _validate_public_url_sync(urljoin(current, location))
+                except PublicPageRejectedError:
+                    raise PublicPageRejectedError(
+                        PublicPageRejectedReason.UNSAFE_REDIRECT
+                    ) from None
                 continue
             if (
                 status != 200 or encoding not in {None, "", "identity"}
@@ -266,7 +296,7 @@ class SafePublicPageHttpTransport:
             ):
                 raise PublicPageRejectedError()
             return body
-        raise PublicPageRejectedError()
+        raise PublicPageRejectedError(PublicPageRejectedReason.UNSAFE_REDIRECT)
 
     def _request_once(
         self, parsed: SplitResult

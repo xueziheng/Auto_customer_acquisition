@@ -533,6 +533,7 @@ class ToolCallRow(Base):
             "('validation','permission_denied','suppressed','approval_required',"
             "'idempotency_conflict','in_progress','rate_limited',"
             "'provider_auth_required','provider_permanent','provider_transient',"
+            "'page_access_forbidden','login_or_captcha','unsafe_redirect',"
             "'reconciliation_required','unexpected')",
             name="ck_tool_calls_error_category",
         ),
@@ -658,6 +659,7 @@ class ToolCallEventRow(Base):
             "('validation','permission_denied','suppressed','approval_required',"
             "'idempotency_conflict','in_progress','rate_limited',"
             "'provider_auth_required','provider_permanent','provider_transient',"
+            "'page_access_forbidden','login_or_captcha','unsafe_redirect',"
             "'reconciliation_required','unexpected')",
             name="ck_tool_call_events_category",
         ),
@@ -4774,7 +4776,13 @@ class SourcingPublicPlanRow(Base):
         UniqueConstraint("tenant_id", "case_id", "version", name="uq_sourcing_public_plans_version"),
         ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_public_plans_case", ondelete="RESTRICT"),
         CheckConstraint("jsonb_typeof(target_countries) = 'array' AND jsonb_array_length(target_countries) > 0", name="ck_sourcing_public_plans_countries_json"),
-        CheckConstraint("jsonb_typeof(queries) = 'array' AND jsonb_array_length(queries) > 0", name="ck_sourcing_public_plans_queries_json"),
+        CheckConstraint(
+            "jsonb_typeof(queries) = 'array' AND jsonb_array_length(queries) > 0 "
+            "AND NOT jsonb_path_exists(queries, '$[*] ? (@.type() != \"object\" || "
+            "!exists(@.query_text) || @.query_text.type() != \"string\" || "
+            "!exists(@.target_country) || @.target_country.type() != \"string\")')",
+            name="ck_sourcing_public_plans_queries_json",
+        ),
         CheckConstraint("max_search_queries >= jsonb_array_length(queries) AND max_pages_read >= 1", name="ck_sourcing_public_plans_limits"),
         CheckConstraint("usage_credits_remaining >= 0 AND worst_case_credits >= 1", name="ck_sourcing_public_plans_credits"),
         CheckConstraint("provider = 'tavily' AND search_depth = 'basic'", name="ck_sourcing_public_plans_provider"),
@@ -4935,7 +4943,7 @@ class SourcingSearchExecutionRow(Base):
         ForeignKeyConstraint(["tenant_id", "case_id", "plan_id"], ["sourcing_public_plans.tenant_id", "sourcing_public_plans.case_id", "sourcing_public_plans.plan_id"], name="fk_sourcing_search_executions_plan", ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "run_id"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_sourcing_search_executions_run", ondelete="RESTRICT"),
         CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$' AND request_key ~ '^[0-9a-f]{64}$'", name="ck_sourcing_search_executions_hashes"),
-        CheckConstraint("query_index >= 0 AND btrim(query_text) <> ''", name="ck_sourcing_search_executions_query"),
+        CheckConstraint("query_index >= 0 AND query_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_search_executions_query"),
         CheckConstraint("jsonb_typeof(locator_results) = 'array'", name="ck_sourcing_search_executions_locators_json"),
         CheckConstraint("provider_status IN ('succeeded','no_results','uncertain','failed')", name="ck_sourcing_search_executions_status"),
         CheckConstraint("(provider_status IN ('succeeded','no_results')) = (completed_at IS NOT NULL)", name="ck_sourcing_search_executions_completed"),
@@ -4948,11 +4956,48 @@ class SourcingSearchExecutionRow(Base):
     plan_hash: Mapped[str] = mapped_column(String(64))
     query_index: Mapped[int] = mapped_column(Integer)
     request_key: Mapped[str] = mapped_column(String(64))
-    query_text: Mapped[str] = mapped_column(Text)
+    query_hash: Mapped[str] = mapped_column(String(64))
     locator_results: Mapped[list] = mapped_column(postgresql.JSONB)
     provider_status: Mapped[str] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingCandidateDraftRow(Base):
+    """未核验公开页面草稿；原文、联系方式与模型输出不入库。"""
+
+    __tablename__ = "sourcing_candidate_drafts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "draft_id", name="pk_sourcing_candidate_drafts"),
+        UniqueConstraint("tenant_id", "source_key", name="uq_sourcing_candidate_drafts_source"),
+        UniqueConstraint("tenant_id", "case_id", "run_id", "plan_hash", "query_index", "result_index", "evidence_artifact_ref", name="uq_sourcing_candidate_drafts_location"),
+        ForeignKeyConstraint(["tenant_id", "case_id", "plan_id"], ["sourcing_public_plans.tenant_id", "sourcing_public_plans.case_id", "sourcing_public_plans.plan_id"], name="fk_sourcing_candidate_drafts_plan", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "run_id"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_sourcing_candidate_drafts_run", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "evidence_artifact_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_sourcing_candidate_drafts_artifact", ondelete="RESTRICT"),
+        CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$' AND source_key ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_candidate_drafts_hashes"),
+        CheckConstraint("query_index >= 0 AND result_index >= 0", name="ck_sourcing_candidate_drafts_indexes"),
+        CheckConstraint("jsonb_typeof(specs) = 'array' AND jsonb_typeof(indicative_price_tiers) = 'array' AND jsonb_typeof(rejection_codes) = 'array'", name="ck_sourcing_candidate_drafts_json"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    draft_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    plan_id: Mapped[str] = mapped_column(String(40))
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    query_index: Mapped[int] = mapped_column(Integer)
+    result_index: Mapped[int] = mapped_column(Integer)
+    source_key: Mapped[str] = mapped_column(String(64))
+    supplier_name: Mapped[str | None] = mapped_column(String(300))
+    product_title: Mapped[str | None] = mapped_column(String(500))
+    specs: Mapped[list] = mapped_column(postgresql.JSONB)
+    moq: Mapped[int | None] = mapped_column(Integer)
+    indicative_price_tiers: Mapped[list] = mapped_column(postgresql.JSONB)
+    rejection_codes: Mapped[list] = mapped_column(postgresql.JSONB)
+    evidence_url: Mapped[str] = mapped_column(Text)
+    evidence_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    evidence_artifact_ref: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class SourcingSearchReconciliationRow(Base):

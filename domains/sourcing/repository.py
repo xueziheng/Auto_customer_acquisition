@@ -19,7 +19,7 @@ from domains.sourcing.models import (
     SourcingSupplyOption,
     SupplierCandidate,
 )
-from domains.sourcing.schemas import SourcingHandoffSnapshot
+from domains.sourcing.schemas import PublicCandidateDraft, SourcingHandoffSnapshot
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     SourcingCaseId,
@@ -211,6 +211,10 @@ class SourcingSearchExecutionRepository(Protocol):
         self, tenant_id: TenantId, execution: SourcingSearchExecution
     ) -> None: ...
 
+    async def get_or_create_canonical(
+        self, tenant_id: TenantId, execution: SourcingSearchExecution
+    ) -> SourcingSearchExecution: ...
+
     async def get_by_request_key(
         self, tenant_id: TenantId, request_key: str
     ) -> SourcingSearchExecution | None: ...
@@ -219,6 +223,18 @@ class SourcingSearchExecutionRepository(Protocol):
         self, tenant_id: TenantId, execution: SourcingSearchExecution
     ) -> None: ...
 
+
+@runtime_checkable
+class PublicCandidateDraftRepository(Protocol):
+    """未核验公开页面草稿的 tenant-bound 幂等存储。"""
+
+    async def get_or_create_canonical(
+        self, tenant_id: TenantId, draft: PublicCandidateDraft
+    ) -> PublicCandidateDraft: ...
+
+    async def get_by_source_key(
+        self, tenant_id: TenantId, source_key: str
+    ) -> PublicCandidateDraft | None: ...
 
 @runtime_checkable
 class SourcingSearchReconciliationRepository(Protocol):
@@ -251,6 +267,7 @@ class SourcingUnitOfWork(Protocol):
     reviews: SourcingReviewRepository
     handoffs: SourcingHandoffRepository
     search_executions: SourcingSearchExecutionRepository
+    candidate_drafts: PublicCandidateDraftRepository
     reconciliations: SourcingSearchReconciliationRepository
     bus: EventBus
 

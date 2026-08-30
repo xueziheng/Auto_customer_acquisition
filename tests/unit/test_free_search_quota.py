@@ -49,9 +49,11 @@ class BoundReader:
 class ReaderFactory:
     def __init__(self) -> None:
         self.calls: list[RunId] = []
+        self.keys: list[str] = []
 
     def for_run(self, tenant_id, run_id, request_key, *, fingerprint_version):
         assert fingerprint_version == "v1"
+        self.keys.append(request_key)
         return BoundReader(run_id, self.calls)
 
 
@@ -101,6 +103,109 @@ async def test_handler_binds_run_to_prepared_payload_without_mutable_current_run
                 {"query": "factory", "country": "US", "category": "hinges", "limit": 1},
             ),
             preflight,
+        )
+
+
+async def test_free_handler_uses_explicit_sourcing_quota_key_without_changing_fingerprint() -> None:
+    key = "a" * 64
+    tenant = TenantId("tn_test")
+    factory = ReaderFactory()
+    fingerprints = HmacFingerprintProvider("v1", b"x" * 32)
+    handler = WebSearchHandler(
+        None,
+        WebSearchResultSlot(new_id, maximum_batches=10),
+        fingerprints,
+        reader_factory=factory,
+    )
+    params = {
+        "query": "factory",
+        "country": "US",
+        "category": "hinges",
+        "limit": 1,
+    }
+    ordinary = await handler.prepare(
+        ToolCallContext(
+            tenant,
+            UserId("usr_test"),
+            "web.search",
+            params,
+            run_id=RunId("run_ordinary"),
+        ),
+        WebResearchPreflight(tenant, "US", "hinges"),
+    )
+    sourcing = await handler.prepare(
+        ToolCallContext(
+            tenant,
+            UserId("usr_test"),
+            "web.search",
+            {**params, "quota_request_key": key},
+            run_id=RunId("run_sourcing"),
+        ),
+        WebResearchPreflight(tenant, "US", "hinges"),
+    )
+
+    assert sourcing.request_fingerprint == ordinary.request_fingerprint
+    assert factory.keys == [ordinary.request_fingerprint, key]
+
+
+@pytest.mark.parametrize("value", ["short", "g" * 64, 7, None])
+async def test_free_handler_rejects_malformed_explicit_quota_key(value: object) -> None:
+    tenant = TenantId("tn_test")
+    handler = WebSearchHandler(
+        None,
+        WebSearchResultSlot(new_id, maximum_batches=10),
+        HmacFingerprintProvider("v1", b"x" * 32),
+        reader_factory=ReaderFactory(),
+    )
+
+    with pytest.raises(ValidationError):
+        await handler.prepare(
+            ToolCallContext(
+                tenant,
+                UserId("usr_test"),
+                "web.search",
+                {
+                    "query": "factory",
+                    "country": "US",
+                    "category": "hinges",
+                    "limit": 1,
+                    "quota_request_key": value,
+                },
+                run_id=RunId("run_sourcing"),
+            ),
+            WebResearchPreflight(tenant, "US", "hinges"),
+        )
+
+
+async def test_non_free_handler_rejects_explicit_quota_key() -> None:
+    tenant = TenantId("tn_test")
+
+    class Searcher:
+        async def search(self, *args):
+            return ()
+
+    handler = WebSearchHandler(
+        Searcher(),
+        WebSearchResultSlot(new_id, maximum_batches=10),
+        HmacFingerprintProvider("v1", b"x" * 32),
+    )
+
+    with pytest.raises(ValidationError):
+        await handler.prepare(
+            ToolCallContext(
+                tenant,
+                UserId("usr_test"),
+                "web.search",
+                {
+                    "query": "factory",
+                    "country": "US",
+                    "category": "hinges",
+                    "limit": 1,
+                    "quota_request_key": "a" * 64,
+                },
+                run_id=RunId("run_sourcing"),
+            ),
+            WebResearchPreflight(tenant, "US", "hinges"),
         )
 
 

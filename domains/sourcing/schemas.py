@@ -25,6 +25,7 @@ from shared.schemas.identifiers import (
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
+    TenantId,
     ValidatedNeedId,
 )
 from shared.schemas.money import Money, WireDecimal
@@ -99,6 +100,125 @@ class OpenSourcingCase(BaseModel):
         return self
 
 
+class PublicSourcingQuery(BaseModel):
+    """老板确认的单条公开寻源查询及其精确国家边界。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    query_text: str = Field(min_length=1, max_length=500)
+    target_country: str = Field(pattern=r"^[A-Z]{2}$")
+
+    @model_validator(mode="after")
+    def validate_query(self) -> Self:
+        """查询正文不得依赖隐式修剪或控制字符。"""
+
+        _bounded_text(self.query_text, field_name="query_text", maximum=500)
+        return self
+
+
+class PublicCandidateDraftSpec(BaseModel):
+    """公开页面中可安全持久化的单项观察值。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    spec_name: str = Field(min_length=1, max_length=100)
+    required: str = Field(min_length=1, max_length=2_000)
+    observed: str | None = Field(default=None, max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_spec(self) -> Self:
+        _bounded_text(self.spec_name, field_name="spec_name", maximum=100)
+        _bounded_text(self.required, field_name="required")
+        if self.observed is not None:
+            _bounded_text(self.observed, field_name="observed", maximum=4_000)
+        return self
+
+
+class PublicCandidateDraftPriceTier(BaseModel):
+    """仅保存已完整解析的参考价格档，不保存原文。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    minimum_quantity: int = Field(ge=1)
+    amount: WireDecimal
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    unit: str = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_tier(self) -> Self:
+        if not self.amount.is_finite() or self.amount <= Decimal(0):
+            raise ValueError("amount 必须是有限正 Decimal")
+        _bounded_text(self.unit, field_name="unit", maximum=50)
+        return self
+
+
+class PublicCandidateDraft(BaseModel):
+    """搜索步产生的 tenant-bound 校准草稿；尚不是供应商候选。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    draft_id: str = Field(min_length=1, max_length=40)
+    tenant_id: TenantId = Field(min_length=1, max_length=40)
+    case_id: SourcingCaseId
+    run_id: RunId
+    plan_id: SourcingPlanId
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    query_index: int = Field(ge=0)
+    result_index: int = Field(ge=0)
+    source_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    supplier_name: str | None = Field(default=None, max_length=300)
+    product_title: str | None = Field(default=None, max_length=500)
+    specs: tuple[PublicCandidateDraftSpec, ...]
+    moq: int | None = Field(default=None, ge=1)
+    indicative_price_tiers: tuple[PublicCandidateDraftPriceTier, ...]
+    rejection_codes: tuple[
+        Literal[
+            "supplier_identity_missing",
+            "product_identity_missing",
+            "quantity_tier_missing",
+            "unit_unclear",
+            "currency_unclear",
+            "vague_range",
+        ],
+        ...,
+    ]
+    evidence_url: str = Field(min_length=1, max_length=2_000)
+    evidence_observed_at: AwareDatetime
+    evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_artifact_ref: ArtifactId
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_draft(self) -> Self:
+        for field_name in ("draft_id", "tenant_id", "evidence_url"):
+            _bounded_text(str(getattr(self, field_name)), field_name=field_name)
+        for field_name in ("supplier_name", "product_title"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _bounded_text(value, field_name=field_name, maximum=500)
+        names = tuple(item.spec_name.casefold() for item in self.specs)
+        if len(names) != len(set(names)):
+            raise ValueError("specs 不得重复")
+        if len(self.rejection_codes) != len(set(self.rejection_codes)):
+            raise ValueError("rejection_codes 不得重复")
+        if (self.supplier_name is None) != (
+            "supplier_identity_missing" in self.rejection_codes
+        ):
+            raise ValueError("供应商身份拒绝码不一致")
+        if (self.product_title is None) != (
+            "product_identity_missing" in self.rejection_codes
+        ):
+            raise ValueError("产品身份拒绝码不一致")
+        return self
+
+    @property
+    def is_verification_complete(self) -> bool:
+        """草稿只有完整身份和价格维度时才能进入 Task 10B 核验。"""
+
+        return (
+            self.supplier_name is not None
+            and self.product_title is not None
+            and bool(self.indicative_price_tiers)
+            and not self.rejection_codes
+        )
+
+
 class PublicSourcingPlanCommand(BaseModel):
     """待老板确认的公开寻源精确范围，不包含请求身份或凭证。"""
 
@@ -107,7 +227,7 @@ class PublicSourcingPlanCommand(BaseModel):
     case_id: SourcingCaseId
     target_countries: tuple[str, ...] = Field(min_length=1)
     product_category: str = Field(min_length=1, max_length=200)
-    queries: tuple[str, ...] = Field(min_length=1)
+    queries: tuple[PublicSourcingQuery, ...] = Field(min_length=1)
     max_search_queries: int = Field(ge=1)
     max_pages_read: int = Field(ge=1)
     provider: Literal["tavily"]
@@ -127,10 +247,12 @@ class PublicSourcingPlanCommand(BaseModel):
                 raise ValueError("target_countries 必须使用两位大写国家代码")
         if len(set(self.target_countries)) != len(self.target_countries):
             raise ValueError("target_countries 不得重复")
-        for query in self.queries:
-            _bounded_text(query, field_name="query", maximum=500)
+        if any(query.target_country not in self.target_countries for query in self.queries):
+            raise ValueError("queries 的 target_country 必须属于 target_countries")
+        if {query.target_country for query in self.queries} != set(self.target_countries):
+            raise ValueError("每个 target_country 必须至少有一条 query")
         if len(set(self.queries)) != len(self.queries):
-            raise ValueError("queries 不得重复")
+            raise ValueError("queries 的文本与国家组合不得重复")
         if len(self.queries) > self.max_search_queries:
             raise ValueError("queries 数量不得超过 max_search_queries")
         return self

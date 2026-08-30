@@ -13,6 +13,7 @@ from connectors.search_contracts import SearchCostStatus
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import (
@@ -62,7 +63,11 @@ def _plan_command() -> PublicSourcingPlanCommand:
         case_id=CASE_ID,
         target_countries=("US",),
         product_category="hinges",
-        queries=("hinge factory US",),
+        queries=(
+            PublicSourcingQuery(
+                query_text="hinge factory US", target_country="US"
+            ),
+        ),
         max_search_queries=1,
         max_pages_read=2,
         provider="tavily",
@@ -114,7 +119,7 @@ class _Sourcing:
             plan_hash=PLAN_HASH,
             query_index=0,
             request_key=REQUEST_KEY,
-            query_text="hinge factory US",
+            query_hash="c" * 64,
             locator_results=(),
             provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
             created_at=NOW,

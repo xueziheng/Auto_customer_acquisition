@@ -29,6 +29,7 @@ from domains.sourcing.schemas import (
     NeedFact,
     OpenSourcingCase,
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -317,7 +318,11 @@ def _plan(case_id: SourcingCaseId, version: int) -> PublicSourcingPlanCommand:
         case_id=case_id,
         target_countries=("US",),
         product_category="hinges",
-        queries=(f"hinge factory v{version}",),
+        queries=(
+            PublicSourcingQuery(
+                query_text=f"hinge factory v{version}", target_country="US"
+            ),
+        ),
         max_search_queries=1,
         max_pages_read=3,
         provider="tavily",
@@ -1826,7 +1831,7 @@ async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_rep
         plan_hash=confirmed.plan_hash,
         query_index=0,
         request_key="b" * 64,
-        query_text="hinge factory",
+        query_hash="c" * 64,
         locator_results=(),
         provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
         created_at=NOW,
@@ -1915,7 +1920,7 @@ async def test_reconciliation_rejects_untrusted_or_cross_tenant_usage_evidence()
             plan_hash=confirmed.plan_hash,
             query_index=0,
             request_key="b" * 64,
-            query_text="hinge factory",
+            query_hash="c" * 64,
             locator_results=(),
             provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
             created_at=NOW,

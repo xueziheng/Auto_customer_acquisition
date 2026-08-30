@@ -281,7 +281,10 @@ def upgrade() -> None:
             name="ck_sourcing_public_plans_countries_json",
         ),
         sa.CheckConstraint(
-            "jsonb_typeof(queries) = 'array' AND jsonb_array_length(queries) > 0",
+            "jsonb_typeof(queries) = 'array' AND jsonb_array_length(queries) > 0 "
+            "AND NOT jsonb_path_exists(queries, '$[*] ? (@.type() != \"object\" || "
+            "!exists(@.query_text) || @.query_text.type() != \"string\" || "
+            "!exists(@.target_country) || @.target_country.type() != \"string\")')",
             name="ck_sourcing_public_plans_queries_json",
         ),
         sa.CheckConstraint(
@@ -571,7 +574,7 @@ def upgrade() -> None:
         sa.Column("plan_hash", sa.String(64), nullable=False),
         sa.Column("query_index", sa.Integer(), nullable=False),
         sa.Column("request_key", sa.String(64), nullable=False),
-        sa.Column("query_text", sa.Text(), nullable=False),
+        sa.Column("query_hash", sa.String(64), nullable=False),
         sa.Column("locator_results", postgresql.JSONB(), nullable=False),
         sa.Column("provider_status", sa.String(24), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
@@ -610,7 +613,7 @@ def upgrade() -> None:
             name="ck_sourcing_search_executions_hashes",
         ),
         sa.CheckConstraint(
-            "query_index >= 0 AND btrim(query_text) <> ''",
+            "query_index >= 0 AND query_hash ~ '^[0-9a-f]{64}$'",
             name="ck_sourcing_search_executions_query",
         ),
         sa.CheckConstraint(
@@ -625,6 +628,39 @@ def upgrade() -> None:
             "(provider_status IN ('succeeded','no_results')) = (completed_at IS NOT NULL)",
             name="ck_sourcing_search_executions_completed",
         ),
+    )
+
+    op.create_table(
+        "sourcing_candidate_drafts",
+        sa.Column("tenant_id", sa.String(40), nullable=False),
+        sa.Column("draft_id", sa.String(40), nullable=False),
+        sa.Column("case_id", sa.String(40), nullable=False),
+        sa.Column("run_id", sa.String(40), nullable=False),
+        sa.Column("plan_id", sa.String(40), nullable=False),
+        sa.Column("plan_hash", sa.String(64), nullable=False),
+        sa.Column("query_index", sa.Integer(), nullable=False),
+        sa.Column("result_index", sa.Integer(), nullable=False),
+        sa.Column("source_key", sa.String(64), nullable=False),
+        sa.Column("supplier_name", sa.String(300), nullable=True),
+        sa.Column("product_title", sa.String(500), nullable=True),
+        sa.Column("specs", postgresql.JSONB(), nullable=False),
+        sa.Column("moq", sa.Integer(), nullable=True),
+        sa.Column("indicative_price_tiers", postgresql.JSONB(), nullable=False),
+        sa.Column("rejection_codes", postgresql.JSONB(), nullable=False),
+        sa.Column("evidence_url", sa.Text(), nullable=False),
+        sa.Column("evidence_observed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("evidence_hash", sa.String(64), nullable=False),
+        sa.Column("evidence_artifact_ref", sa.String(32), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("tenant_id", "draft_id", name="pk_sourcing_candidate_drafts"),
+        sa.UniqueConstraint("tenant_id", "source_key", name="uq_sourcing_candidate_drafts_source"),
+        sa.UniqueConstraint("tenant_id", "case_id", "run_id", "plan_hash", "query_index", "result_index", "evidence_artifact_ref", name="uq_sourcing_candidate_drafts_location"),
+        sa.ForeignKeyConstraint(["tenant_id", "case_id", "plan_id"], ["sourcing_public_plans.tenant_id", "sourcing_public_plans.case_id", "sourcing_public_plans.plan_id"], name="fk_sourcing_candidate_drafts_plan", ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["tenant_id", "run_id"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_sourcing_candidate_drafts_run", ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["tenant_id", "evidence_artifact_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_sourcing_candidate_drafts_artifact", ondelete="RESTRICT"),
+        sa.CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$' AND source_key ~ '^[0-9a-f]{64}$' AND evidence_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_candidate_drafts_hashes"),
+        sa.CheckConstraint("query_index >= 0 AND result_index >= 0", name="ck_sourcing_candidate_drafts_indexes"),
+        sa.CheckConstraint("jsonb_typeof(specs) = 'array' AND jsonb_typeof(indicative_price_tiers) = 'array' AND jsonb_typeof(rejection_codes) = 'array'", name="ck_sourcing_candidate_drafts_json"),
     )
 
     op.create_table(
@@ -727,6 +763,7 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER trg_sourcing_ladder_check ON sourcing_ladder_checks")
     op.execute("DROP FUNCTION guard_sourcing_ladder_check()")
     op.drop_table("sourcing_search_reconciliations")
+    op.drop_table("sourcing_candidate_drafts")
     op.drop_table("sourcing_search_executions")
     op.drop_table("sourcing_reviews")
     op.drop_index(

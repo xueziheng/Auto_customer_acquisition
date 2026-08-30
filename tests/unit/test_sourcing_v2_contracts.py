@@ -72,13 +72,23 @@ def _type(module: object, name: str) -> type:
 
 def _plan_command() -> object:
     command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
+    query_type = _type(sourcing_schemas, "PublicSourcingQuery")
     return command_type(
         plan_id=SourcingPlanId("spl-plan-a"),
         case_id=SourcingCaseId("src-case-a"),
         target_countries=("DE", "FR"),
         product_category="stainless steel hinge",
-        queries=("Germany stainless steel hinge supplier",),
-        max_search_queries=1,
+        queries=(
+            query_type(
+                query_text="Germany stainless steel hinge supplier",
+                target_country="DE",
+            ),
+            query_type(
+                query_text="France stainless steel hinge supplier",
+                target_country="FR",
+            ),
+        ),
+        max_search_queries=2,
         max_pages_read=4,
         provider="tavily",
         search_depth="basic",
@@ -87,6 +97,65 @@ def _plan_command() -> object:
         version=1,
         expected_case_version=1,
     )
+
+
+def test_public_sourcing_queries_bind_each_ordered_query_to_an_authorized_country() -> None:
+    query_type = _type(sourcing_schemas, "PublicSourcingQuery")
+    command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
+    queries = (
+        query_type(query_text="same supplier query", target_country="DE"),
+        query_type(query_text="same supplier query", target_country="FR"),
+    )
+
+    command = command_type(
+        plan_id=SourcingPlanId("spl-country-bound"),
+        case_id=SourcingCaseId("src-country-bound"),
+        target_countries=("DE", "FR"),
+        product_category="hinges",
+        queries=queries,
+        max_search_queries=2,
+        max_pages_read=4,
+        provider="tavily",
+        search_depth="basic",
+        usage_credits_remaining=20,
+        worst_case_credits=2,
+        version=1,
+        expected_case_version=1,
+    )
+
+    assert command.queries == queries
+
+
+@pytest.mark.parametrize(
+    "queries",
+    [
+        ({"query_text": "Germany supplier", "target_country": "US"},),
+        ({"query_text": "Germany supplier", "target_country": "DE"},) * 2,
+        ({"query_text": "Germany supplier", "target_country": "de"},),
+        ("legacy string query",),
+    ],
+)
+def test_public_sourcing_queries_fail_closed_on_unbound_duplicate_or_legacy_values(
+    queries: tuple[object, ...],
+) -> None:
+    command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
+
+    with pytest.raises(PydanticValidationError):
+        command_type(
+            plan_id=SourcingPlanId("spl-invalid-query"),
+            case_id=SourcingCaseId("src-invalid-query"),
+            target_countries=("DE", "FR"),
+            product_category="hinges",
+            queries=queries,
+            max_search_queries=2,
+            max_pages_read=4,
+            provider="tavily",
+            search_depth="basic",
+            usage_credits_remaining=20,
+            worst_case_credits=2,
+            version=1,
+            expected_case_version=1,
+        )
 
 
 def _price_option(

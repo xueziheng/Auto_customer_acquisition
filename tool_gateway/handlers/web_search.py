@@ -14,6 +14,7 @@ from connectors.web_search.client import (
 )
 from connectors.web_search.transport import (
     PublicPageRejectedError,
+    PublicPageRejectedReason,
     WebSearchAuthRequiredError,
     WebSearchProviderError,
     WebSearchRateLimitedError,
@@ -68,6 +69,7 @@ MANIFEST = ToolManifest(
 )
 
 _COUNTRY = re.compile(r"[A-Z]{2}")
+_QUOTA_REQUEST_KEY = re.compile(r"[0-9a-f]{64}")
 
 
 @runtime_checkable
@@ -169,12 +171,18 @@ class WebSearchHandler:
         ctx: ToolCallContext,
         preflight: object | None,
     ) -> PreparedToolCall:
-        if set(ctx.params) != {"query", "country", "category", "limit"}:
+        allowed = {"query", "country", "category", "limit"}
+        if self._reader_factory is not None:
+            allowed.add("quota_request_key")
+        if not {"query", "country", "category", "limit"} <= set(
+            ctx.params
+        ) or not set(ctx.params) <= allowed:
             raise ValidationError("公开搜索工具参数无效")
         query = ctx.params.get("query")
         country = ctx.params.get("country")
         category = ctx.params.get("category")
         limit = ctx.params.get("limit")
+        quota_request_key = ctx.params.get("quota_request_key")
         if (
             not _safe_text(query, 400)
             or not isinstance(query, str)
@@ -185,6 +193,13 @@ class WebSearchHandler:
             or not isinstance(category, str)
             or type(limit) is not int
             or not 1 <= limit <= 20
+            or (
+                "quota_request_key" in ctx.params
+                and (
+                    not isinstance(quota_request_key, str)
+                    or _QUOTA_REQUEST_KEY.fullmatch(quota_request_key) is None
+                )
+            )
             or not isinstance(preflight, WebResearchPreflight)
             or preflight.tenant_id != ctx.tenant_id
             or preflight.country != country
@@ -205,7 +220,10 @@ class WebSearchHandler:
             if ctx.run_id is None:
                 raise ValidationError("公开搜索缺少 Run 绑定")
             reader = self._reader_factory.for_run(
-                ctx.tenant_id, ctx.run_id, fingerprint, fingerprint_version=version
+                ctx.tenant_id,
+                ctx.run_id,
+                quota_request_key or fingerprint,
+                fingerprint_version=version,
             )
         if not isinstance(reader, _ProviderWebSearcher):
             raise ValidationError("公开搜索 reader 绑定无效")
@@ -291,19 +309,24 @@ class ToolGatewayWebSearcher:
         country: str,
         category: str,
         limit: int,
+        *,
+        quota_request_key: str | None = None,
     ) -> SearchResultBatch:
+        params: dict[str, object] = {
+            "query": query,
+            "country": country,
+            "category": category,
+            "limit": limit,
+        }
+        if quota_request_key is not None:
+            params["quota_request_key"] = quota_request_key
         try:
             result = await self._gateway.invoke(
                 ToolCallContext(
                     tenant_id,
                     self._user_id,
                     MANIFEST.tool_id,
-                    {
-                        "query": query,
-                        "country": country,
-                        "category": category,
-                        "limit": limit,
-                    },
+                    params,
                     run_id=run_id,
                 )
             )
@@ -348,7 +371,15 @@ def map_web_provider_error(error: BaseException) -> ToolGatewayError:
         )
     if isinstance(error, TransientError):
         return ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT)
-    if isinstance(error, (WebSearchProviderError, PublicPageRejectedError)):
+    if isinstance(error, PublicPageRejectedError):
+        return ToolGatewayError(
+            {
+                PublicPageRejectedReason.PAGE_ACCESS_FORBIDDEN: ToolErrorCategory.PAGE_ACCESS_FORBIDDEN,
+                PublicPageRejectedReason.LOGIN_OR_CAPTCHA: ToolErrorCategory.LOGIN_OR_CAPTCHA,
+                PublicPageRejectedReason.UNSAFE_REDIRECT: ToolErrorCategory.UNSAFE_REDIRECT,
+            }[error.reason]
+        )
+    if isinstance(error, WebSearchProviderError):
         return ToolGatewayError(ToolErrorCategory.PROVIDER_PERMANENT)
     if isinstance(error, ValidationError):
         return ToolGatewayError(ToolErrorCategory.VALIDATION)

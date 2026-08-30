@@ -11,13 +11,44 @@ import pytest
 from connectors.web_search.client import PageSnapshot, WebSearchResult
 from connectors.web_search.transport import (
     PublicPageRejectedError,
+    PublicPageRejectedReason,
     SafePublicPageHttpTransport,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, new_id
+from tool_gateway.errors import ToolErrorCategory
+from tool_gateway.handlers.web_search import map_web_provider_error
 from tool_gateway.handlers.web_slots import WebPageSnapshotSlot, WebSearchResultSlot
 
 NOW = datetime(2026, 8, 25, 9, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("reason", "category"),
+    (
+        (
+            PublicPageRejectedReason.PAGE_ACCESS_FORBIDDEN,
+            ToolErrorCategory.PAGE_ACCESS_FORBIDDEN,
+        ),
+        (
+            PublicPageRejectedReason.LOGIN_OR_CAPTCHA,
+            ToolErrorCategory.LOGIN_OR_CAPTCHA,
+        ),
+        (
+            PublicPageRejectedReason.UNSAFE_REDIRECT,
+            ToolErrorCategory.UNSAFE_REDIRECT,
+        ),
+    ),
+)
+def test_public_page_rejection_reason_survives_gateway_mapping(
+    reason: PublicPageRejectedReason, category: ToolErrorCategory
+) -> None:
+    error = PublicPageRejectedError(reason)
+
+    mapped = map_web_provider_error(error)
+
+    assert mapped.category is category
+    assert reason.value not in repr(error)
 
 
 @pytest.mark.parametrize("body", [
@@ -35,6 +66,51 @@ async def test_blocked_pages_never_become_public_snapshots(monkeypatch, body):
     ))
     with pytest.raises(PublicPageRejectedError):
         await transport.fetch("https://example.com/about")
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    (
+        (
+            b"<html><title>Sign in required</title><form><input type='password'></form></html>",
+            PublicPageRejectedReason.LOGIN_OR_CAPTCHA,
+        ),
+        (
+            b"<html><title>Verify you are human</title><div class='g-recaptcha'></div></html>",
+            PublicPageRejectedReason.LOGIN_OR_CAPTCHA,
+        ),
+        (
+            b"<html><h1>Access denied</h1>Automated access is prohibited.</html>",
+            PublicPageRejectedReason.PAGE_ACCESS_FORBIDDEN,
+        ),
+    ),
+)
+async def test_blocked_page_kind_is_preserved_without_response_text(
+    monkeypatch, body: bytes, reason: PublicPageRejectedReason
+) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+    transport = SafePublicPageHttpTransport()
+    monkeypatch.setattr(
+        transport,
+        "_request_once",
+        lambda parsed: (
+            (404, None, "text/plain", None, b"")
+            if parsed.path == "/robots.txt"
+            else (200, None, "text/html", None, body)
+        ),
+    )
+
+    with pytest.raises(PublicPageRejectedError) as caught:
+        await transport.fetch("https://example.com/about")
+
+    assert caught.value.reason is reason
+    assert body.decode() not in repr(caught.value)
 
 
 async def test_robots_disallow_prevents_target_read(monkeypatch):
@@ -97,8 +173,9 @@ async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypa
             return 404, None, "text/plain", None, b""
         return 302, "https://other.example/about", None, None, None
     monkeypatch.setattr(transport, "_request_once", response)
-    with pytest.raises(PublicPageRejectedError):
+    with pytest.raises(PublicPageRejectedError) as caught:
         await transport.fetch("https://example.com/about")
+    assert caught.value.reason is PublicPageRejectedReason.UNSAFE_REDIRECT
     assert set(requested) == {"example.com"}
 
 

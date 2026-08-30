@@ -20,7 +20,23 @@ from tool_gateway.handlers.web_search import ToolGatewayWebSearcher
 from tool_gateway.handlers.web_slots import SearchResultBatch
 from tool_gateway.manifest import CostClass
 
-MANIFEST = replace(WEB_SEARCH_MANIFEST, version="v1.free", cost_class=CostClass.FREE)
+MANIFEST = replace(
+    WEB_SEARCH_MANIFEST,
+    version="v1.free",
+    cost_class=CostClass.FREE,
+    input_schema={
+        "type": "object",
+        "required": ("query", "country", "category", "limit"),
+        "properties": {
+            **WEB_SEARCH_MANIFEST.input_schema["properties"],
+            "quota_request_key": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+        },
+        "additionalProperties": False,
+    },
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -130,12 +146,19 @@ class FreeSearchGatewaySearcher:
         country: str,
         category: str,
         limit: int,
+        *,
+        quota_request_key: str | None = None,
     ) -> SearchResultBatch:
         if tenant_id != self._tenant_id:
             raise ValidationError("免费搜索租户不匹配")
         try:
+            if quota_request_key is None:
+                return await self._delegate.search(
+                    tenant_id, run_id, query, country, category, limit
+                )
             return await self._delegate.search(
-                tenant_id, run_id, query, country, category, limit
+                tenant_id, run_id, query, country, category, limit,
+                quota_request_key=quota_request_key,
             )
         except ToolGatewayError as error:
             if error.category not in {

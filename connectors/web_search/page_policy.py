@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 _ROBOT_AGENT = "tradeos-agent"
@@ -46,8 +47,10 @@ def _normalized_path(value: str, *, is_rule: bool) -> str | None:
     return "".join(result)
 
 
-def is_restricted_page(body: bytes) -> bool:
-    """只识别拦截标题/明确禁用文案，不因普通登录导航或表单CAPTCHA误拒。"""
+def restricted_page_reason(
+    body: bytes,
+) -> Literal["page_access_forbidden", "login_or_captcha"] | None:
+    """区分访问禁止与整页登录墙；普通导航或联系表单不构成拦截。"""
     text = body.decode("utf-8", errors="replace")
     forms = re.findall(r"<form\b[^>]*>.*?</form>", text, re.IGNORECASE | re.DOTALL)
     if any(
@@ -63,31 +66,43 @@ def is_restricted_page(body: bytes) -> bool:
         visible = html.unescape(re.sub(r"<[^>]*>", " ", outside))
         # 少量导航/标题并不构成可读的公开内容；不把有正文的嵌入登录框当整页墙。
         if len(visible.split()) < 12 and len(visible.strip()) < 80:
-            return True
+            return "login_or_captcha"
     headings = re.findall(
         r"<(?:title|h1)\b[^>]*>(.*?)</(?:title|h1)>", text, re.IGNORECASE | re.DOTALL
     )
     for heading in headings:
         visible = re.sub(r"<[^>]*>", " ", heading).strip()
         if re.search(
-            r"^(?:access denied|forbidden|verify (?:that )?you are human|"
-            r"security (?:check|verification)|just a moment|"
-            r"(?:sign in|log in|login|authentication) required|"
-            r"请先登录|访问被拒绝|请完成人机验证)[.!… ]*$",
+            r"^(?:verify (?:that )?you are human|security (?:check|verification)|"
+            r"just a moment|(?:sign in|log in|login|authentication) required|"
+            r"请先登录|请完成人机验证)[.!… ]*$",
             visible,
             re.IGNORECASE,
         ):
-            return True
-    return (
-        re.search(
-            r"(?:automated access|automated scraping|web scraping) is (?:prohibited|not permitted)"
-            r"|(?:sign in|log in) to (?:view|access) (?:this|the) (?:page|content)"
-            r"|禁止自动(?:抓取|访问)",
-            re.sub(r"<[^>]*>", " ", text),
-            re.IGNORECASE,
-        )
-        is not None
-    )
+            return "login_or_captcha"
+        if re.search(r"^(?:access denied|forbidden|访问被拒绝)[.!… ]*$", visible, re.IGNORECASE):
+            return "page_access_forbidden"
+    visible_text = re.sub(r"<[^>]*>", " ", text)
+    if re.search(
+        r"(?:sign in|log in) to (?:view|access) (?:this|the) (?:page|content)",
+        visible_text,
+        re.IGNORECASE,
+    ):
+        return "login_or_captcha"
+    if re.search(
+        r"(?:automated access|automated scraping|web scraping) is (?:prohibited|not permitted)"
+        r"|禁止自动(?:抓取|访问)",
+        visible_text,
+        re.IGNORECASE,
+    ):
+        return "page_access_forbidden"
+    return None
+
+
+def is_restricted_page(body: bytes) -> bool:
+    """兼容旧调用方的布尔限制判断。"""
+
+    return restricted_page_reason(body) is not None
 
 
 def robots_allows(body: bytes, url: str) -> bool:

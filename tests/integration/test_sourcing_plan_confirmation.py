@@ -22,6 +22,7 @@ from domains.sourcing.schemas import (
     NeedFact,
     OpenSourcingCase,
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingNeedSnapshot,
     SourcingUncertainReconciliationCommand,
 )
@@ -164,7 +165,11 @@ def _plan(
         case_id=case_id,
         target_countries=("US",),
         product_category="hinges",
-        queries=(f"hinge factory scope {version}",),
+        queries=(
+            PublicSourcingQuery(
+                query_text=f"hinge factory scope {version}", target_country="US"
+            ),
+        ),
         max_search_queries=1,
         max_pages_read=2,
         provider="tavily",
@@ -411,7 +416,7 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
         plan_hash=replacement.plan_hash,
         query_index=0,
         request_key=request_key,
-        query_text="hinge factory scope 2",
+        query_hash="c" * 64,
         locator_results=(),
         provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
         created_at=NOW,

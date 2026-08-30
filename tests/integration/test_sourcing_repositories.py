@@ -18,7 +18,11 @@ from domains.sourcing.errors import SourcingPlanStaleError
 from domains.sourcing.schemas import (
     IndicativePriceTier,
     NeedFact,
+    PublicCandidateDraft,
+    PublicCandidateDraftPriceTier,
+    PublicCandidateDraftSpec,
     PublicSourcingPlanCommand,
+    PublicSourcingQuery,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -242,7 +246,11 @@ def _plan(tenant_id: TenantId, case_id: SourcingCaseId) -> PublicSourcingPlan:
             case_id=case_id,
             target_countries=("US",),
             product_category="hinges",
-            queries=("hinge manufacturer",),
+            queries=(
+                PublicSourcingQuery(
+                    query_text="hinge manufacturer", target_country="US"
+                ),
+            ),
             max_search_queries=1,
             max_pages_read=3,
             provider="tavily",
@@ -399,7 +407,7 @@ async def _seed_reconciliation_scope(
                     plan_hash=plan.plan_hash,
                     query_index=index,
                     request_key=f"{index + 1:064x}",
-                    query_text=f"hinge manufacturer {index}",
+                    query_hash=f"{index + 10:064x}",
                     locator_results=(),
                     provider_status=SearchExecutionStatus.UNCERTAIN,
                     created_at=NOW,
@@ -700,12 +708,52 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         execution = SearchExecution(
             execution_id=new_id("sex"), tenant_id=tenant_id, case_id=case_id,
             plan_id=plan.plan_id, run_id=run_id, plan_hash=plan.plan_hash,
-            query_index=0, request_key="e" * 64, query_text="hinge manufacturer",
+            query_index=0, request_key="e" * 64, query_hash="c" * 64,
             locator_results=({"url": "https://factory.example"},),
             provider_status=SearchExecutionStatus.SUCCEEDED,
             created_at=NOW, completed_at=NOW,
         )
         await uow.search_executions.add(tenant_id, execution)
+        public_draft = PublicCandidateDraft(
+            draft_id=new_id("scd"),
+            tenant_id=str(tenant_id),
+            case_id=case_id,
+            run_id=run_id,
+            plan_id=plan.plan_id,
+            plan_hash=plan.plan_hash,
+            query_index=0,
+            result_index=0,
+            source_key="f" * 64,
+            supplier_name=None,
+            product_title="Stainless hinge",
+            specs=(
+                PublicCandidateDraftSpec(
+                    spec_name="material",
+                    required="stainless steel",
+                    observed="stainless steel",
+                ),
+            ),
+            moq=100,
+            indicative_price_tiers=(
+                PublicCandidateDraftPriceTier(
+                    minimum_quantity=100,
+                    amount=Decimal("2.50"),
+                    currency="USD",
+                    unit="piece",
+                ),
+            ),
+            rejection_codes=("supplier_identity_missing",),
+            evidence_url="https://factory.example/early",
+            evidence_observed_at=NOW,
+            evidence_hash="c" * 64,
+            evidence_artifact_ref=artifact_early,
+            created_at=NOW,
+        )
+        canonical_draft = await uow.candidate_drafts.get_or_create_canonical(
+            tenant_id, public_draft
+        )
+        assert canonical_draft == public_draft
+        assert not canonical_draft.is_verification_complete
         reconciliation = SearchReconciliation(
             reconciliation_id=new_id("srr"),
             tenant_id=tenant_id,
@@ -730,6 +778,9 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         loaded_reconciliation = await uow.reconciliations.get_for_execution(
             tenant_id, execution.execution_id
         )
+        loaded_draft = await uow.candidate_drafts.get_by_source_key(
+            tenant_id, public_draft.source_key
+        )
 
     assert loaded_case == case
     assert loaded_case.stop_detail == SourcingStopDetail(stage=SourcingStopStage.PROVIDER)
@@ -749,6 +800,19 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
     assert loaded_review == review
     assert loaded_execution == execution
     assert loaded_reconciliation == reconciliation
+    assert loaded_draft == public_draft
+    assert "source_quote" not in json.dumps(public_draft.model_dump(mode="json"))
+    with pytest.raises(ValueError, match="租户"):
+        async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+            await uow.candidate_drafts.get_by_source_key(
+                TenantId(new_id("tn")), public_draft.source_key
+            )
+    with pytest.raises(ValidationError, match="幂等键"):
+        async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+            await uow.candidate_drafts.get_or_create_canonical(
+                tenant_id,
+                public_draft.model_copy(update={"product_title": "Different hinge"}),
+            )
 
 
 async def test_legacy_candidate_duplicate_specs_round_trip_but_never_qualify(

@@ -82,6 +82,7 @@ def build_sourcing_case_handlers(
     product_actor: ProductActor,
     supplier_actor: SupplierActor,
     sourcing_actor: SourcingActor,
+    public_search_handler: StepHandler | None = None,
 ) -> dict[str, StepHandler]:
     """装配 Task 7 内部路径；后续步骤保持显式无副作用等待。"""
 
@@ -96,9 +97,8 @@ def build_sourcing_case_handlers(
             sourcing_actor=sourcing_actor,
         ),
         "sourcing_case.v2.await_public_plan": AwaitPublicPlanStep(),
-        "sourcing_case.v2.public_search": FixedWaitStep(
-            "public_search_pending_implementation"
-        ),
+        "sourcing_case.v2.public_search": public_search_handler
+        or FixedWaitStep("public_search_dependencies_not_composed"),
         "sourcing_case.v2.verify_candidates": FixedWaitStep(
             "candidate_verification_pending_implementation"
         ),

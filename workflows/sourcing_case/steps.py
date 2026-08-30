@@ -7,6 +7,7 @@ import json
 import unicodedata
 from typing import Any
 
+from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
 from domains.products.service import (
     ProductActor,
     ProductMatchResult,
@@ -36,8 +37,22 @@ from shared.schemas.identifiers import (
     SourcingPlanId,
     ValidatedNeedId,
 )
+from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+from tool_gateway.free_search_contracts import (
+    FreeSearchError,
+    FreeSearchStopReason,
+    SearchQuotaRepository,
+)
 from workflows.engine.runner import WorkflowRun
-from workflows.sourcing_case.ports import SourcingNeedReader
+from workflows.sourcing_case.ports import (
+    AuthorizedPublicSourcingPlanReader,
+    PersistedSearchReceiptPort,
+    PublicCandidateDraftWriter,
+    PublicCandidateExtractor,
+    PublicPageReader,
+    PublicSourcingSearcher,
+    SourcingNeedReader,
+)
 
 _PRODUCT_CONCLUSIONS = {
     1: ("no_qualified_catalog_exact", "qualified_catalog_exact"),
@@ -588,6 +603,253 @@ class AwaitProductCardsStep:
         return ("wait", None, {})
 
 
+def sourcing_search_request_key(plan_hash: str, query_index: int) -> str:
+    """绑定已授权计划与查询位置的免费额度操作键。"""
+
+    if (
+        not isinstance(plan_hash, str)
+        or len(plan_hash) != 64
+        or any(character not in "0123456789abcdef" for character in plan_hash)
+        or isinstance(query_index, bool)
+        or not isinstance(query_index, int)
+        or query_index < 0
+    ):
+        raise ValidationError("公开寻源查询操作键绑定无效")
+    payload = (
+        b"tradeos:sourcing-search:v1\0"
+        + plan_hash.encode("ascii")
+        + b"\0"
+        + str(query_index).encode("ascii")
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+_TOOL_STOP_REASONS = {
+    ToolErrorCategory.PAGE_ACCESS_FORBIDDEN: "page_access_forbidden",
+    ToolErrorCategory.LOGIN_OR_CAPTCHA: "login_or_captcha",
+    ToolErrorCategory.UNSAFE_REDIRECT: "unsafe_redirect",
+    ToolErrorCategory.RATE_LIMITED: "provider_rate_limited",
+    ToolErrorCategory.PROVIDER_TRANSIENT: "provider_timeout",
+    ToolErrorCategory.RECONCILIATION_REQUIRED: "reconciliation_required",
+}
+
+_FREE_STOP_REASONS = {
+    FreeSearchStopReason.QUOTA_EXHAUSTED: "quota_exhausted",
+    FreeSearchStopReason.USAGE_UNKNOWN: "quota_status_unknown",
+    FreeSearchStopReason.PAID_ENABLED: "paid_usage_enabled",
+    FreeSearchStopReason.REQUEST_UNCERTAIN: "reconciliation_required",
+    FreeSearchStopReason.UNSUPPORTED: "quota_status_unknown",
+}
+
+
+class PublicSearchStep:
+    """已授权计划下的有界公开寻源；只生成未核验草稿。"""
+
+    def __init__(
+        self,
+        *,
+        need_reader: SourcingNeedReader,
+        plan_reader: AuthorizedPublicSourcingPlanReader,
+        quota: SearchQuotaRepository,
+        searcher: PublicSourcingSearcher,
+        page_reader: PublicPageReader,
+        receipts: PersistedSearchReceiptPort,
+        extractor: PublicCandidateExtractor,
+        drafts: PublicCandidateDraftWriter,
+    ) -> None:
+        self._need_reader = need_reader
+        self._plan_reader = plan_reader
+        self._quota = quota
+        self._searcher = searcher
+        self._page_reader = page_reader
+        self._receipts = receipts
+        self._extractor = extractor
+        self._drafts = drafts
+
+    @staticmethod
+    def _wait(reason: str, *, searches: int, pages: int) -> tuple[str, None, dict[str, Any]]:
+        return (
+            "wait",
+            None,
+            {
+                "sourcing_stop_reason": reason,
+                "sourcing_searches_used": searches,
+                "sourcing_pages_used": pages,
+            },
+        )
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _snapshot_hash = _base(run)
+        plan_id = SourcingPlanId(
+            _text(run.context.get("sourcing_plan_id"), "寻源计划 ID 无效", maximum=40)
+        )
+        plan_hash = _text(
+            run.context.get("sourcing_plan_hash"), "寻源计划哈希无效", maximum=64
+        )
+        need = await _trusted_need(run, self._need_reader)
+        try:
+            plan = await self._plan_reader.load_authorized(
+                tenant_id=run.tenant_id,
+                case_id=case_id,
+                run_id=run.run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            )
+        except TransientError:
+            raise TransientError("已授权公开寻源计划暂不可用") from None
+        except Exception:  # noqa: BLE001 - 下层异常原文不得进入 Workflow。
+            raise ValidationError("已授权公开寻源计划读取失败") from None
+        if (
+            plan.tenant_id != run.tenant_id
+            or plan.case_id != case_id
+            or plan.plan_id != plan_id
+            or plan.plan_hash != plan_hash
+            or plan.authorized_plan_hash != plan_hash
+            or plan.status.value != "running"
+            or plan.provider != "tavily"
+            or plan.search_depth != "basic"
+        ):
+            raise ValidationError("已授权公开寻源计划绑定无效")
+
+        searches_used = 0
+        pages_used = 0
+        result_count = 0
+        verifiable_count = 0
+        draft_ids: list[str] = []
+        rejected_page_reason: str | None = None
+        try:
+            for query_index, query in enumerate(plan.queries):
+                if searches_used >= plan.max_search_queries or pages_used >= plan.max_pages_read:
+                    break
+                request_key = sourcing_search_request_key(plan_hash, query_index)
+                batch = await self._receipts.restore(
+                    tenant_id=run.tenant_id,
+                    run_id=run.run_id,
+                    plan_hash=plan_hash,
+                    query_index=query_index,
+                )
+                try:
+                    if batch is None:
+                        if await self._quota.get(run.run_id, request_key) is not None:
+                            return self._wait(
+                                "reconciliation_required",
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        try:
+                            batch = await self._searcher.search(
+                                run.tenant_id,
+                                run.run_id,
+                                query.query_text,
+                                query.target_country,
+                                plan.product_category,
+                                min(20, plan.max_pages_read - pages_used),
+                                quota_request_key=request_key,
+                            )
+                        except FreeSearchError as error:
+                            if error.reason is FreeSearchStopReason.REQUEST_UNCERTAIN:
+                                await self._receipts.record_uncertain(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    request_key=request_key,
+                                    query_hash=hashlib.sha256(
+                                        query.query_text.encode()
+                                    ).hexdigest(),
+                                )
+                            return self._wait(
+                                _FREE_STOP_REASONS[error.reason],
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        except ToolGatewayError as error:
+                            return self._wait(
+                                _TOOL_STOP_REASONS.get(
+                                    error.category, "provider_timeout"
+                                ),
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        searches_used += 1
+                        try:
+                            await self._receipts.commit_locator_receipt(
+                                tenant_id=run.tenant_id,
+                                case_id=case_id,
+                                run_id=run.run_id,
+                                plan_id=plan_id,
+                                plan_hash=plan_hash,
+                                query_index=query_index,
+                                request_key=request_key,
+                                query_hash=hashlib.sha256(
+                                    query.query_text.encode()
+                                ).hexdigest(),
+                                batch=batch,
+                            )
+                        except Exception:  # noqa: BLE001 - 持久异常可能含 locator。
+                            raise ValidationError("公开寻源安全回执保存失败") from None
+                    else:
+                        searches_used += 1
+                    result_count += len(batch.results)
+                    for result_index in range(
+                        min(len(batch.results), plan.max_pages_read - pages_used)
+                    ):
+                        try:
+                            pages_used += 1
+                            page = await self._page_reader.read_page(
+                                run.tenant_id, run.run_id, batch, result_index
+                            )
+                            draft = await self._extractor.extract(need, page)
+                            if not isinstance(draft, SourcingPageCandidateDraft):
+                                raise ValidationError("公开寻源抽取草稿无效")
+                            try:
+                                draft_id = await self._drafts.save(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    draft=draft,
+                                )
+                            except Exception:  # noqa: BLE001 - 存储异常不得带原文。
+                                raise ValidationError("公开寻源安全草稿保存失败") from None
+                            draft_ids.append(draft_id)
+                            if draft.supplier_name is not None:
+                                verifiable_count += 1
+                        except ToolGatewayError as error:
+                            rejected_page_reason = _TOOL_STOP_REASONS.get(
+                                error.category, "page_access_forbidden"
+                            )
+                            continue
+                finally:
+                    if batch is not None:
+                        self._searcher.release(batch)
+        finally:
+            self._searcher.discard_all()
+
+        if result_count == 0:
+            return self._wait("no_search_results", searches=searches_used, pages=pages_used)
+        if not draft_ids and rejected_page_reason is not None:
+            return self._wait(rejected_page_reason, searches=searches_used, pages=pages_used)
+        if verifiable_count == 0:
+            return self._wait(
+                "no_verifiable_supplier", searches=searches_used, pages=pages_used
+            )
+        return (
+            "advance",
+            "verify_candidates",
+            {
+                "sourcing_searches_used": searches_used,
+                "sourcing_pages_used": pages_used,
+                "supplier_candidate_draft_ids": draft_ids,
+            },
+        )
+
+
 class FixedWaitStep:
     """后续 Task 的显式无副作用占位，不伪造任何完成事实。"""
 
@@ -638,4 +900,6 @@ __all__ = (
     "FixedWaitStep",
     "InternalMatchLadderStep",
     "PrepareCandidatesStep",
+    "PublicSearchStep",
+    "sourcing_search_request_key",
 )
