@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1118,6 +1119,62 @@ async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
         assert terminal is not None and terminal.status is StepStatus.COMPLETED
         assert await engine.has_delivered_event(
             tenant, "wf", "case-subject", "approval", payload
+        )
+    finally:
+        await handle.dispose()
+
+
+async def test_delivered_event_history_filters_owning_version_and_immutable_context(
+    db_url: str,
+) -> None:
+    """历史指纹查询必须在 SQL 边界绑定 owning Run 版本与不可变 context。"""
+
+    handlers = {
+        "h_init": _handler(lambda run: ("advance", "wait", {})),
+        "h_wait": _handler(lambda run: ("advance", "done", {})),
+        "h_done": _handler(lambda run: ("complete", None, {})),
+    }
+    engine, handle = _make_engine(db_url, handlers)
+    try:
+        engine.register(replace(_advance_flow(), version=2))
+        tenant = TenantId("tBoundDurableEventHistory")
+        payload = {"plan_id": "spl_exact", "plan_hash": "a" * 64}
+        run_id = await engine.start(
+            tenant,
+            "wf",
+            "case-subject",
+            {"case_id": "case-subject"},
+            "bound-durable-event",
+        )
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.deliver_event(tenant, run_id, "approval", payload)
+
+        assert await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context={"case_id": "case-subject"},
+        )
+        assert not await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=1,
+            required_context={"case_id": "case-subject"},
+        )
+        assert not await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context={"case_id": "src_case-other"},
         )
     finally:
         await handle.dispose()

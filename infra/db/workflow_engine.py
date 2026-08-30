@@ -356,21 +356,53 @@ class PostgresWorkflowEngine:
         subject_ref: str,
         event_type: str,
         payload: dict[str, Any],
+        *,
+        workflow_version: int | None = None,
+        required_context: Mapping[str, str] | None = None,
     ) -> bool:
-        """只比较持久化 SHA-256 指纹，不返回或持久化 raw payload。"""
+        """只比较持久化 SHA-256 指纹；可参数化绑定 owning Run 元数据。"""
+        if workflow_version is not None and (
+            isinstance(workflow_version, bool) or workflow_version < 1
+        ):
+            raise ValidationError("workflow_version 过滤条件无效")
+        context_filter: dict[str, str] | None = None
+        if required_context is not None:
+            if (
+                not isinstance(required_context, Mapping)
+                or not required_context
+                or len(required_context) > 16
+                or any(
+                    not isinstance(key, str)
+                    or not key
+                    or len(key) > 100
+                    or not isinstance(value, str)
+                    or not value
+                    or len(value) > 200
+                    for key, value in required_context.items()
+                )
+            ):
+                raise ValidationError("workflow context 过滤条件无效")
+            context_filter = dict(required_context)
         fingerprint = _event_fingerprint(event_type, payload)
         session = self._factory()
         try:
-            rows = (
-                await session.execute(
-                    select(WorkflowRunRow.status, WorkflowRunRow.context).where(
-                        WorkflowRunRow.tenant_id == tenant_id,
-                        WorkflowRunRow.workflow_type == workflow_type,
-                        WorkflowRunRow.subject_ref == subject_ref,
-                    )
+            conditions = [
+                WorkflowRunRow.tenant_id == tenant_id,
+                WorkflowRunRow.workflow_type == workflow_type,
+                WorkflowRunRow.subject_ref == subject_ref,
+            ]
+            if workflow_version is not None:
+                conditions.append(
+                    WorkflowRunRow.workflow_version == workflow_version
                 )
-            ).all()
-            for _, context in rows:
+            if context_filter is not None:
+                conditions.append(WorkflowRunRow.context.contains(context_filter))
+            contexts = (
+                await session.execute(
+                    select(WorkflowRunRow.context).where(*conditions)
+                )
+            ).scalars().all()
+            for context in contexts:
                 if not isinstance(context, dict):
                     continue
                 delivered = _validated_event_fingerprints(

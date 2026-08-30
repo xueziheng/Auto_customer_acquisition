@@ -45,7 +45,7 @@ from infra.db.tables import (
     WorkflowStepRow,
 )
 from infra.db.workflow_engine import PostgresWorkflowEngine
-from shared.errors import TransientError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -476,6 +476,92 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
                 SourcingPublicPlanRow.plan_id == replacement.plan_id,
             )
         ) == "running"
+
+
+@pytest.mark.asyncio
+async def test_exact_event_replay_fails_closed_before_history_when_active_run_is_duplicate(
+    integration_engine: AsyncEngine,
+) -> None:
+    """即使 exact event 已持久化，两个 active Case Run 也必须先触发唯一性拒绝。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    evidence_id = ArtifactId(new_id("art"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    await _seed_artifact(integration_engine, tenant_id, evidence_id)
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    await _seed_free_account(factory, tenant_id)
+    system = SourcingActor("system-duplicate", tenant_id, SourcingScope.SYSTEM, "system")
+    boss = SourcingActor("boss-duplicate", tenant_id, SourcingScope.TENANT, "boss")
+    service = SourcingServiceImpl(
+        lambda bound: SqlAlchemySourcingUnitOfWork(factory, bound),
+        Phase2SourcingAuthorizer(tenant_id),
+        _UnusedCandidateEvidenceReader(),
+        provider_usage_evidence_reader=_UsageReader(tenant_id, evidence_id),
+        now=lambda: NOW,
+    )
+    case_id = await _prepare_case(service, tenant_id, need_id, system)
+    engine, owning_run_id = await _seed_waiting_run(
+        factory, tenant_id, case_id, need_id
+    )
+    application = SourcingCaseApplication(
+        sourcing=service,
+        quota=PostgresSearchQuotaRepository(factory, tenant_id, now=lambda: NOW),
+        engine=engine,
+    )
+    plan = await application.create_plan(
+        tenant_id, case_id, _plan(case_id, 1, 6), actor=boss
+    )
+    await application.confirm_plan(
+        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    await application.run(
+        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    payload = {"plan_id": str(plan.plan_id), "plan_hash": plan.plan_hash}
+    assert await engine.has_delivered_event(
+        tenant_id,
+        "sourcing_case",
+        str(case_id),
+        "SourcingPlanConfirmed",
+        payload,
+        workflow_version=2,
+        required_context={"case_id": str(case_id)},
+    )
+
+    duplicate_run_id = RunId(new_id("run"))
+    async with factory() as session, session.begin():
+        session.add(
+            WorkflowRunRow(
+                run_id=duplicate_run_id,
+                tenant_id=tenant_id,
+                workflow_type="sourcing_case",
+                workflow_version=2,
+                subject_ref=case_id,
+                current_step="public_search",
+                status="running",
+                created_at=NOW,
+                context={"case_id": str(case_id)},
+                idempotency_key=f"duplicate-active:{case_id}",
+            )
+        )
+
+    with pytest.raises(ValidationError, match="not unique"):
+        await application.run(
+            tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+        )
+    async with factory() as session:
+        active_ids = (
+            await session.execute(
+                select(WorkflowRunRow.run_id).where(
+                    WorkflowRunRow.tenant_id == tenant_id,
+                    WorkflowRunRow.workflow_type == "sourcing_case",
+                    WorkflowRunRow.subject_ref == case_id,
+                    WorkflowRunRow.status == "running",
+                )
+            )
+        ).scalars().all()
+    assert set(active_ids) == {str(owning_run_id), str(duplicate_run_id)}
 
 
 async def _rebuild_engine(factory, run_id: RunId) -> tuple[PostgresWorkflowEngine, RunId]:

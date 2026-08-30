@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -200,8 +201,11 @@ class WorkflowEngine(Protocol):
         subject_ref: str,
         event_type: str,
         payload: dict[str, Any],
+        *,
+        workflow_version: int | None = None,
+        required_context: Mapping[str, str] | None = None,
     ) -> bool:
-        """查询同租户/type/subject 是否已有同一事件的 durable 指纹证据。"""
+        """查询同租户/type/subject 及可选 owning Run 约束下的 durable 指纹。"""
         ...
 
     async def cancel(self, tenant_id: TenantId, run_id: RunId, reason: str) -> None: ...

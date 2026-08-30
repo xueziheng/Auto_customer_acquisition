@@ -217,12 +217,16 @@ class _Engine:
         self.delivery_error: Exception | None = None
         self.event_query_error: Exception | None = None
         self.event_queries: list[tuple[object, ...]] = []
+        self.duplicate_active = False
 
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
+        if self.duplicate_active:
+            raise ValidationError("active workflow run is not unique")
         if (
             tenant_id == TENANT
             and workflow_type == "sourcing_case"
             and subject_ref == str(CASE_ID)
+            and self.run.status is StepStatus.RUNNING
         ):
             return self.run.run_id
         return None
@@ -231,14 +235,37 @@ class _Engine:
         return self.run if tenant_id == TENANT and run_id == self.run.run_id else None
 
     async def has_delivered_event(
-        self, tenant_id, workflow_type, subject_ref, event_type, payload
+        self,
+        tenant_id,
+        workflow_type,
+        subject_ref,
+        event_type,
+        payload,
+        *,
+        workflow_version=None,
+        required_context=None,
     ):
         if self.event_query_error is not None:
             raise self.event_query_error
         self.event_queries.append(
-            (tenant_id, workflow_type, subject_ref, event_type, dict(payload))
+            (
+                tenant_id,
+                workflow_type,
+                subject_ref,
+                event_type,
+                dict(payload),
+                workflow_version,
+                dict(required_context or {}),
+            )
         )
-        return self.already_delivered
+        if not self.already_delivered:
+            return False
+        if workflow_version is not None and self.run.workflow_version != workflow_version:
+            return False
+        return required_context is None or all(
+            self.run.context.get(key) == value
+            for key, value in required_context.items()
+        )
 
     async def deliver_event(self, tenant_id, run_id, event_type, payload):
         if self.delivery_error is not None:
@@ -473,6 +500,8 @@ async def test_running_replay_accepts_existing_exact_event_without_redelivery() 
             str(CASE_ID),
             "SourcingPlanConfirmed",
             {"plan_id": str(PLAN_ID), "plan_hash": PLAN_HASH},
+            2,
+            {"case_id": str(CASE_ID)},
         )
     ]
 
@@ -500,6 +529,89 @@ async def test_running_replay_uses_durable_event_after_progress_or_terminal(
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run"]
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active_run",
+    [
+        replace(_run("public_search"), workflow_version=1),
+        replace(_run("public_search"), context={"case_id": "src_case-other"}),
+    ],
+)
+async def test_running_replay_rejects_incompatible_active_run_before_event_history(
+    active_run: WorkflowRun,
+) -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(active_run)
+    engine.already_delivered = True
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    with pytest.raises(ValidationError, match="绑定无效"):
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+
+    assert engine.event_queries == []
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+async def test_running_replay_rejects_duplicate_active_runs_before_event_history() -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(_run("public_search"))
+    engine.already_delivered = True
+    engine.duplicate_active = True
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    with pytest.raises(ValidationError, match="not unique"):
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+
+    assert engine.event_queries == []
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("history_run", "accepted"),
+    [
+        (replace(_run("handoff_costing"), status=StepStatus.COMPLETED), True),
+        (
+            replace(
+                _run("handoff_costing"),
+                workflow_version=1,
+                status=StepStatus.COMPLETED,
+            ),
+            False,
+        ),
+        (
+            replace(
+                _run("handoff_costing"),
+                status=StepStatus.COMPLETED,
+                context={"case_id": "src_case-other"},
+            ),
+            False,
+        ),
+    ],
+)
+async def test_terminal_replay_requires_compatible_owning_run_history(
+    history_run: WorkflowRun, accepted: bool
+) -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(history_run)
+    engine.already_delivered = True
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    if accepted:
+        result = await application.run(
+            TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
+        )
+        assert result.status is PublicPlanStatus.RUNNING
+    else:
+        with pytest.raises(ValidationError, match="活动 Workflow Run"):
+            await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
     assert engine.delivered == []
 
 

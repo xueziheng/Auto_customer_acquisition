@@ -2,7 +2,7 @@
 
 ## 结果
 
-Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27/P28 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
+Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27/P28/P29 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
 
 ## TDD 证据
 
@@ -68,6 +68,40 @@ pytest tests/unit -q
 - `quota.snapshot()` 的任意读取/反序列化/底层异常均被丢弃，并在 `except` 外转成无 cause/context 的固定 `quota_status_unknown`；付费和不足仍分别保持 `paid_usage_enabled` 与 `quota_exhausted`。
 - exact replay 只以同 tenant、workflow type、Case subject、event type 和精确 `{plan_id, plan_hash}` 的 durable fingerprint 为证明。后续活跃步骤及终态均可幂等返回；事件不存在、context/Run 边界错误均 fail closed。事件证据查询的 transient 与永久异常均固定脱敏，transient 保持可重试。
 - reconciliation 通过 operation ID 与 execution 唯一键的 PostgreSQL `ON CONFLICT DO NOTHING` canonical get-or-create 串行化。barrier 同时事务的精确 payload 返回同一事实且只有一行；任一键或 payload 漂移返回固定领域冲突，不传播 `IntegrityError`。真实 PostgreSQL 同时覆盖跨租户相同键与先插入事务 rollback 后的存活重放。
+
+### Fix Round 2 / Ruling P29
+
+RED 证据：
+
+1. running 计划已有 exact durable event 时，旧实现会在读取 active Run 前直接返回；新增 active v1、错误 immutable `context.case_id` 与 duplicate-active 单测后出现 3 个预期失败。
+2. 终态历史只按 tenant/type/subject 与事件指纹查询，无法证明 owning Run 是 workflow v2 且绑定 exact Case context；新增 v1、错误 context 与合法 v2 历史用例后出现 3 个预期失败。
+3. 真实 PostgreSQL Workflow Engine 测试首次调用 owning Run 过滤参数时以 `TypeError` 失败，证明持久层合同尚未实现。
+
+GREEN 证据：
+
+```text
+pytest tests/unit/workflows/test_sourcing_plan.py \
+       tests/unit/test_sourcing_service.py \
+       tests/integration/test_sourcing_plan_confirmation.py \
+       tests/integration/test_search_quota.py \
+       tests/integration/test_sourcing_repositories.py \
+       tests/integration/test_workflow_engine.py -q
+=> 174 passed
+
+pytest tests/unit/workflows/test_sourcing_case.py \
+       tests/unit/test_scheduler_sourcing_events.py \
+       tests/integration/test_sourcing_service_persistence.py \
+       tests/integration/test_sourcing_migrations.py -q
+=> 45 passed
+
+pytest tests/unit -q
+=> 5697 passed
+```
+
+- `run()` 现在只要存在 active Run，就先通过唯一解析与 tenant/type/version 2/subject/immutable Case context 完整校验，之后才允许查询 exact event；v1、错误 context 与 duplicate-active 均在历史查询前 fail closed。
+- 仅当 `find_active_run` 明确返回无 active Run 时，running 计划才允许走终态历史重放；历史查询在同租户 SQL 条件中绑定 owning Run workflow version 2 与 exact `context.case_id`。
+- Workflow Engine 的 durable event 查询新增可选、参数化的 version/context 过滤，旧调用保持兼容；context 键值经过有界验证并通过 SQLAlchemy JSONB 条件绑定，没有自由 SQL/JSON 注入。
+- 新增真实 PostgreSQL application 端到端用例：先持久化 exact event，再制造两个 active sourcing Case Run；重放仍先因 active Run 不唯一而拒绝，不能由历史指纹绕过。
 
 ## 实现摘要
 

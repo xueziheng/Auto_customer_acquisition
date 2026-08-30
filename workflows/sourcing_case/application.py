@@ -144,18 +144,26 @@ class SourcingCaseApplication:
         )
         return plan
 
-    async def _active_run(
+    async def _find_active_run(
         self, tenant_id: TenantId, case_id: SourcingCaseId
-    ) -> WorkflowRun:
+    ) -> WorkflowRun | None:
         run_id = await self._engine.find_active_run(
             tenant_id, _WORKFLOW_TYPE, str(case_id)
         )
         if run_id is None:
-            raise ValidationError("公开寻源缺少唯一活动 Workflow Run")
+            return None
         run = await self._engine.get_run(tenant_id, run_id)
         if not _run_is_bound(run, tenant_id, case_id):
             raise ValidationError("公开寻源 Workflow Run 绑定无效")
         assert run is not None
+        return run
+
+    async def _active_run(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> WorkflowRun:
+        run = await self._find_active_run(tenant_id, case_id)
+        if run is None:
+            raise ValidationError("公开寻源缺少唯一活动 Workflow Run")
         return run
 
     async def _has_plan_event(
@@ -175,6 +183,8 @@ class SourcingCaseApplication:
                 str(case_id),
                 "SourcingPlanConfirmed",
                 payload,
+                workflow_version=_WORKFLOW_VERSION,
+                required_context={"case_id": str(case_id)},
             )
         except Exception as exc:  # noqa: BLE001 -- 丢弃 Engine/存储自由异常
             error = exc
@@ -206,12 +216,19 @@ class SourcingCaseApplication:
             self._quota, tenant_id, view.active_plan.worst_case_credits
         )
         payload = {"plan_id": str(plan_id), "plan_hash": expected_plan_hash}
+        run = await self._find_active_run(tenant_id, case_id)
+        if run is None:
+            if (
+                view.active_plan.status is PublicPlanStatus.RUNNING
+                and await self._has_plan_event(tenant_id, case_id, payload)
+            ):
+                return view.active_plan
+            raise ValidationError("公开寻源缺少唯一活动 Workflow Run")
         if (
             view.active_plan.status is PublicPlanStatus.RUNNING
             and await self._has_plan_event(tenant_id, case_id, payload)
         ):
             return view.active_plan
-        run = await self._active_run(tenant_id, case_id)
         if run.current_step != "await_public_plan":
             if await self._has_plan_event(tenant_id, case_id, payload):
                 refreshed = await self._sourcing.get_public_plan_run_view(
