@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
-from domains.products.permissions import ProductActor, ProductRole
-from domains.products.service import Product, ProductMatchResult, ProductPool
+from domains.products.permissions import ProductRole
+from domains.products.service import (
+    Product,
+    ProductActor,
+    ProductMatchResult,
+    ProductPool,
+    ProductSpecComparison,
+    ProductSpecFact,
+    ProductSpecMatchLevel,
+    ProductSpecRequirement,
+    QualifiedProductMatch,
+)
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
 from domains.sourcing.service import LadderOutcome
 from domains.suppliers.service import Supplier, SupplierActor, SupplierRole
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -108,7 +119,41 @@ def _product(
         internal_cost_basis="EXW",
         internal_cost_unit="piece",
         internal_cost_source_ref=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+        moq=1000,
         customizable=customizable,
+        match_specs={
+            "application": ProductSpecFact(
+                "cabinet doors", ArtifactId("art_application")
+            ),
+            "material": ProductSpecFact("stainless steel", ArtifactId("art_material")),
+            "moq": ProductSpecFact("1000", ArtifactId("art_moq")),
+            "product_category": ProductSpecFact(
+                "industrial hinges", ArtifactId("art_category")
+            ),
+            "unit": ProductSpecFact("piece", ArtifactId("art_unit")),
+        },
+    )
+
+
+def _qualified(product: Product) -> QualifiedProductMatch:
+    return QualifiedProductMatch(
+        product=product,
+        spec_comparisons=tuple(
+            ProductSpecComparison(
+                spec_name=name,
+                required=required,
+                offered=offered,
+                level=ProductSpecMatchLevel.EXACT,
+                evidence_ref=ArtifactId(f"art_{name}"),
+            )
+            for name, required, offered in (
+                ("application", "cabinet doors", "cabinet doors"),
+                ("material", "stainless steel", "stainless steel"),
+                ("moq", "5000", "1000"),
+                ("product_category", "industrial hinges", "industrial hinges"),
+                ("unit", "piece", "piece"),
+            )
+        ),
     )
 
 
@@ -128,13 +173,22 @@ class _Products:
         self.result = result
         self.calls = 0
 
-    async def search_for_matching(self, tenant_id, category, keywords, *, actor):
+    async def search_for_matching(
+        self, tenant_id, category, keywords, required_specs, *, actor
+    ):
         self.calls += 1
         assert (tenant_id, category, keywords, actor) == (
             TENANT,
             "industrial hinges",
             ["cabinet doors", "stainless steel"],
             PRODUCT_ACTOR,
+        )
+        assert required_specs == (
+            ProductSpecRequirement("product_category", "industrial hinges"),
+            ProductSpecRequirement("application", "cabinet doors"),
+            ProductSpecRequirement("material", "stainless steel"),
+            ProductSpecRequirement("moq", "5000"),
+            ProductSpecRequirement("unit", "piece"),
         )
         return self.result
 
@@ -158,9 +212,14 @@ class _Sourcing:
         self.ready_calls: list[
             tuple[tuple[SourcingSupplyOptionId, ...], tuple[object, ...]]
         ] = []
+        self.record_error: Exception | None = None
+        self.option_error: Exception | None = None
 
     async def record_ladder_check(self, tenant_id, case_id, check, *, actor):
         assert (tenant_id, case_id, actor) == (TENANT, CASE_ID, SOURCING_ACTOR)
+        if self.record_error is not None:
+            error, self.record_error = self.record_error, None
+            raise error
         existing = next((item for item in self.checks if item.rung == check.rung), None)
         if existing is not None:
             if existing != check:
@@ -172,6 +231,9 @@ class _Sourcing:
         self, tenant_id, case_id, product_id, *, actor
     ):
         assert (tenant_id, case_id, actor) == (TENANT, CASE_ID, SOURCING_ACTOR)
+        if self.option_error is not None:
+            error, self.option_error = self.option_error, None
+            raise error
         self.options.setdefault(
             product_id, SourcingSupplyOptionId(f"sop-{product_id!s}")
         )
@@ -272,7 +334,9 @@ def test_definition_has_exact_v2_steps_transitions_and_wait_contracts() -> None:
 async def test_first_qualified_product_rung_short_circuits_supplier_search(
     matches: tuple[Product, ...], expected_rung: int, expected_ids: list[str]
 ) -> None:
-    products = _Products(ProductMatchResult(matches, ()))
+    products = _Products(
+        ProductMatchResult(tuple(_qualified(item) for item in matches), ())
+    )
     suppliers = _Suppliers()
     sourcing = _Sourcing()
     step = _handlers(products, suppliers, sourcing)["sourcing_case.v2.check_ladder"]
@@ -288,6 +352,23 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
         range(1, expected_rung + 1)
     )
     assert sourcing.checks[-1].outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+    assert [
+        (item.spec_name, item.level.value)
+        for item in sourcing.checks[-1].spec_comparisons
+    ] == [
+        ("application", "exact"),
+        ("material", "exact"),
+        ("moq", "exact"),
+        ("product_category", "exact"),
+        ("unit", "exact"),
+    ]
+    assert {
+        "art_application",
+        "art_material",
+        "art_moq",
+        "art_product_category",
+        "art_unit",
+    } <= set(sourcing.checks[-1].evidence_refs)
     assert suppliers.calls == 0
 
 
@@ -329,7 +410,12 @@ async def test_partial_ladder_retry_replays_same_fact_and_continues_without_drif
 ):
     products = _Products(
         ProductMatchResult(
-            (_product("prd-custom", ProductPool.FORMAL, customizable=True),), ()
+            (
+                _qualified(
+                    _product("prd-custom", ProductPool.FORMAL, customizable=True)
+                ),
+            ),
+            (),
         )
     )
     sourcing = _Sourcing()
@@ -407,3 +493,54 @@ def test_handler_map_covers_every_definition_handler_ref() -> None:
     definition = build_sourcing_case_definition()
 
     assert set(handlers) == {step.handler_ref for step in definition.steps}
+
+
+def test_handler_builder_uses_public_product_actor_type() -> None:
+    from domains.products.service import ProductActor as PublicProductActor
+
+    annotation = (
+        inspect.signature(build_sourcing_case_handlers)
+        .parameters["product_actor"]
+        .annotation
+    )
+    assert annotation == "ProductActor" or annotation is PublicProductActor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["ladder_record", "option_registration"])
+async def test_committed_partial_work_stays_retryable_without_leaking_dependency_error(
+    failure_stage: str,
+) -> None:
+    products = _Products(
+        ProductMatchResult((_qualified(_product("prd-exact", ProductPool.FORMAL)),), ())
+    )
+    sourcing = _Sourcing()
+    raw_error = TransientError(
+        "postgres://user:secret@db/private",
+        context={"token": "raw-secret"},
+    )
+    handlers = _handlers(products, _Suppliers(), sourcing)
+    if failure_stage == "ladder_record":
+        sourcing.record_error = raw_error
+        operation = handlers["sourcing_case.v2.check_ladder"].execute(_run())
+        expected = "寻源内部匹配记录暂不可用"
+    else:
+        sourcing.option_error = raw_error
+        operation = handlers["sourcing_case.v2.prepare_candidates"].execute(
+            _run(
+                {
+                    **_run().context,
+                    "internal_product_ids": ["prd-exact"],
+                    "supplier_candidate_ids": [],
+                }
+            )
+        )
+        expected = "寻源内部产品准备暂不可用"
+
+    with pytest.raises(TransientError, match=f"^{expected}$") as caught:
+        await operation
+
+    assert caught.value.context == {}
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "raw-secret" not in str(caught.value)

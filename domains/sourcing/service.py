@@ -13,6 +13,7 @@ from domains.sourcing.models import (
     PriceRejectionReason,
     PublicSourcingPlan,
     SourcingReview,
+    SpecComparison,
     SpecMatchLevel,
 )
 from domains.sourcing.permissions import SourcingActor

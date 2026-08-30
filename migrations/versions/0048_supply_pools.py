@@ -62,6 +62,12 @@ def upgrade() -> None:
         sa.Column("category", sa.String(100), nullable=False),
         sa.Column("normalized_category", sa.String(100), nullable=False),
         sa.Column("spec_summary", sa.Text(), nullable=True),
+        sa.Column(
+            "match_specs",
+            postgresql.JSONB(),
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
+        ),
         sa.Column("moq", sa.Integer(), nullable=True),
         sa.Column("lead_time_days_min", sa.Integer(), nullable=True),
         sa.Column("lead_time_days_max", sa.Integer(), nullable=True),
@@ -145,6 +151,10 @@ def upgrade() -> None:
             "jsonb_typeof(sellable_markets) = 'array' AND jsonb_typeof(selling_points) = 'array' "
             "AND jsonb_typeof(known_issues) = 'array'",
             name="ck_products_lists_json",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(match_specs) = 'object'",
+            name="ck_products_match_specs_json",
         ),
         sa.CheckConstraint(
             "btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' "

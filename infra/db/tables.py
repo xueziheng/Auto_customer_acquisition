@@ -5021,6 +5021,7 @@ class ProductRow(Base):
         CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency IS NOT NULL AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
         CheckConstraint("allowed_price_min_amount IS NULL OR allowed_price_max_amount IS NULL OR (allowed_price_min_currency = allowed_price_max_currency AND allowed_price_min_amount <= allowed_price_max_amount)", name="ck_products_allowed_range"),
         CheckConstraint("jsonb_typeof(sellable_markets) = 'array' AND jsonb_typeof(selling_points) = 'array' AND jsonb_typeof(known_issues) = 'array'", name="ck_products_lists_json"),
+        CheckConstraint("jsonb_typeof(match_specs) = 'object'", name="ck_products_match_specs_json"),
         CheckConstraint("btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' AND btrim(normalized_category) <> ''", name="ck_products_core_nonblank"),
         Index("ix_products_pool_category", "tenant_id", "pool", "normalized_category", "product_id"),
     )
@@ -5050,6 +5051,7 @@ class ProductRow(Base):
     customizable: Mapped[bool] = mapped_column(Boolean)
     selling_points: Mapped[list] = mapped_column(postgresql.JSONB)
     known_issues: Mapped[list] = mapped_column(postgresql.JSONB)
+    match_specs: Mapped[dict] = mapped_column(postgresql.JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

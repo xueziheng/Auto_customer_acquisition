@@ -75,6 +75,8 @@ LadderOutcome = _models.LadderOutcome
 MatchLadderRung = _models.MatchLadderRung
 PriceRejectionReason = _models.PriceRejectionReason
 SourcingSupplyOption = _models.SourcingSupplyOption
+SpecComparison = _models.SpecComparison
+SpecMatchLevel = _models.SpecMatchLevel
 SupplyOptionSource = _models.SupplyOptionSource
 
 
@@ -135,6 +137,35 @@ def _check(
         evidence_refs=(),
         checked_by=EmployeeId("untrusted-request-value"),
         checked_at=NOW,
+    )
+
+
+def _qualified_product_check(case_id: SourcingCaseId, *product_ids: ProductId) -> Any:
+    check = _check(
+        case_id,
+        1,
+        outcome=LadderOutcome.QUALIFIED_SUPPLY_FOUND,
+    )
+    frozen_ids = sorted(map(str, product_ids))
+    return check.__class__(
+        **{
+            **check.__dict__,
+            "input_snapshot": {
+                **check.input_snapshot,
+                "qualified_product_ids": frozen_ids,
+            },
+            "match_object_type": "product",
+            "match_object_id": frozen_ids[0],
+            "spec_comparisons": (
+                SpecComparison(
+                    spec_name="product_category",
+                    required="hinges",
+                    offered="hinges",
+                    level=SpecMatchLevel.EXACT,
+                ),
+            ),
+            "evidence_refs": (ArtifactId("art-product-category"),),
+        }
     )
 
 
@@ -256,9 +287,7 @@ class _MemoryRepo:
 
 
 class _Cases(_MemoryRepo):
-    async def get_or_create(
-        self, tenant_id: TenantId, case: Any
-    ) -> tuple[Any, bool]:
+    async def get_or_create(self, tenant_id: TenantId, case: Any) -> tuple[Any, bool]:
         existing = await self.get_by_trigger(tenant_id, case.trigger_key)
         if existing is not None:
             return existing, False
@@ -580,6 +609,16 @@ async def _discovering(service: Any) -> SourcingCaseId:
     return case_id
 
 
+async def _internal_option(
+    service: Any, case_id: SourcingCaseId, product_id: ProductId
+) -> SourcingSupplyOptionId:
+    qualified = _qualified_product_check(case_id, product_id)
+    await service.record_ladder_check(TENANT, case_id, qualified, actor=SYSTEM)
+    return await service.register_existing_product_option(
+        TENANT, case_id, product_id, actor=SYSTEM
+    )
+
+
 @pytest.mark.asyncio
 async def test_open_case_requires_level_three_and_is_idempotent_per_tenant() -> None:
     factory = _Factory()
@@ -746,11 +785,35 @@ async def test_ladder_exact_replay_is_noop_but_same_rung_drift_conflicts() -> No
 
 
 @pytest.mark.asyncio
-async def test_existing_product_option_is_canonical_and_moves_internal_path_to_verifying() -> None:
+async def test_existing_product_option_is_canonical_and_moves_internal_path_to_verifying() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id = await _opened(service)
     product_id = ProductId("prd-existing")
+    qualified = _qualified_product_check(case_id, product_id)
+    await service.record_ladder_check(TENANT, case_id, qualified, actor=SYSTEM)
+
+    first = await service.register_existing_product_option(
+        TENANT, case_id, product_id, actor=SYSTEM
+    )
+    second = await service.register_existing_product_option(
+        TENANT, case_id, product_id, actor=SYSTEM
+    )
+
+    assert first == second
+    assert len(factory.state["options"]) == 1
+    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.VERIFYING
+    await service.mark_candidates_ready(TENANT, case_id, (first,), (), actor=SYSTEM)
+    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.CANDIDATES_READY
+
+
+@pytest.mark.asyncio
+async def test_qualified_product_ladder_requires_nonempty_exact_comparisons() -> None:
+    service = _service(_Factory())
+    case_id = await _opened(service)
+    product_id = ProductId("prd-evidence-bound")
     qualified = _check(
         case_id,
         1,
@@ -767,22 +830,66 @@ async def test_existing_product_option_is_canonical_and_moves_internal_path_to_v
             "match_object_id": str(product_id),
         }
     )
+
+    with pytest.raises(ValidationError, match="逐项 exact"):
+        await service.record_ladder_check(TENANT, case_id, qualified, actor=SYSTEM)
+
+    different = qualified.__class__(
+        **{
+            **qualified.__dict__,
+            "spec_comparisons": (
+                SpecComparison(
+                    spec_name="material",
+                    required="304 stainless steel",
+                    offered="201 stainless steel",
+                    level=SpecMatchLevel.DIFFERENT,
+                ),
+            ),
+            "evidence_refs": (ArtifactId("art-spec-evidence"),),
+        }
+    )
+    with pytest.raises(ValidationError, match="逐项 exact"):
+        await service.record_ladder_check(TENANT, case_id, different, actor=SYSTEM)
+
+
+@pytest.mark.asyncio
+async def test_ready_freezes_exact_internal_products_and_forbids_late_option_creation() -> (
+    None
+):
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    first_product = ProductId("prd-first")
+    second_product = ProductId("prd-second")
+    qualified = _qualified_product_check(case_id, first_product, second_product)
     await service.record_ladder_check(TENANT, case_id, qualified, actor=SYSTEM)
-
-    first = await service.register_existing_product_option(
-        TENANT, case_id, product_id, actor=SYSTEM
-    )
-    second = await service.register_existing_product_option(
-        TENANT, case_id, product_id, actor=SYSTEM
+    first_option = await service.register_existing_product_option(
+        TENANT, case_id, first_product, actor=SYSTEM
     )
 
-    assert first == second
-    assert len(factory.state["options"]) == 1
-    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.VERIFYING
+    with pytest.raises(ValidationError, match="现有产品.*冻结集合"):
+        await service.mark_candidates_ready(
+            TENANT, case_id, (first_option,), (), actor=SYSTEM
+        )
+
+    second_option = await service.register_existing_product_option(
+        TENANT, case_id, second_product, actor=SYSTEM
+    )
     await service.mark_candidates_ready(
-        TENANT, case_id, (first,), (), actor=SYSTEM
+        TENANT, case_id, (first_option, second_option), (), actor=SYSTEM
     )
-    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.CANDIDATES_READY
+    assert (
+        await service.register_existing_product_option(
+            TENANT, case_id, first_product, actor=SYSTEM
+        )
+        == first_option
+    )
+
+    del factory.state["options"][(TENANT, second_option)]
+    with pytest.raises(InvalidStateTransition, match="就绪后禁止新增"):
+        await service.register_existing_product_option(
+            TENANT, case_id, second_product, actor=SYSTEM
+        )
 
 
 @pytest.mark.asyncio
@@ -804,9 +911,7 @@ async def test_qualified_ladder_outcome_stops_later_rungs_and_public_search() ->
             TENANT, case_id, _check(case_id, 2), actor=SYSTEM
         )
     with pytest.raises(ValidationError, match="无合格供给"):
-        await service.save_public_plan(
-            TENANT, case_id, _plan(case_id, 1), actor=BOSS
-        )
+        await service.save_public_plan(TENANT, case_id, _plan(case_id, 1), actor=BOSS)
 
 
 @pytest.mark.asyncio
@@ -995,15 +1100,11 @@ async def test_candidate_decision_fields_must_match_trusted_evidence(
         tier = submission.indicative_price_tiers[0].model_copy(
             update={"evidence_ref": wrong_ref}
         )
-        submission = submission.model_copy(
-            update={"indicative_price_tiers": (tier,)}
-        )
+        submission = submission.model_copy(update={"indicative_price_tiers": (tier,)})
 
     if mutation == "wrong_tier_ref":
         with pytest.raises(MissingEvidenceSnapshotError):
-            await service.submit_candidate(
-                TENANT, case_id, submission, actor=SOURCING
-            )
+            await service.submit_candidate(TENANT, case_id, submission, actor=SOURCING)
         return
     candidate_id = await service.submit_candidate(
         TENANT, case_id, submission, actor=SOURCING
@@ -1103,7 +1204,9 @@ async def test_incompatible_or_unconfirmed_spec_cannot_qualify(
 
 
 @pytest.mark.asyncio
-async def test_submit_candidate_fails_closed_for_validation_bypassed_duplicate_specs() -> None:
+async def test_submit_candidate_fails_closed_for_validation_bypassed_duplicate_specs() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id = await _discovering(service)
@@ -1173,37 +1276,21 @@ async def test_substitution_with_customer_conversation_provenance_can_qualify() 
 async def test_mark_ready_publishes_exact_ids_and_rejects_empty_options() -> None:
     factory = _Factory()
     service = _service(factory)
-    case_id = await _discovering(service)
-    plan = await service.save_public_plan(
-        TENANT, case_id, _plan(case_id, 1), actor=BOSS
-    )
-    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    case_id = await _opened(service)
     with pytest.raises(ValidationError):
         await service.mark_candidates_ready(TENANT, case_id, (), (), actor=SYSTEM)
-    option = SourcingSupplyOption(
-        option_id=SourcingSupplyOptionId("sop-internal"),
-        tenant_id=TENANT,
-        case_id=case_id,
-        source=SupplyOptionSource.EXISTING_PRODUCT,
-        product_id=ProductId("prd-internal"),
-        supplier_candidate_id=None,
-        is_qualified=True,
-        created_at=NOW,
-    )
-    _MemoryUow(factory.state).options.state["options"][(TENANT, option.option_id)] = (
-        option
-    )
-    await service.mark_candidates_ready(
-        TENANT, case_id, (option.option_id,), (), actor=SYSTEM
-    )
+    option_id = await _internal_option(service, case_id, ProductId("prd-internal"))
+    await service.mark_candidates_ready(TENANT, case_id, (option_id,), (), actor=SYSTEM)
     event = factory.state["events"][-1]
     assert isinstance(event, SourcingCandidatesReady)
-    assert event.option_ids == (option.option_id,)
+    assert event.option_ids == (option_id,)
     assert event.candidate_ids == ()
 
 
 @pytest.mark.asyncio
-async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets() -> None:
+async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id = await _discovering(service)
@@ -1233,9 +1320,7 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
     assert repeated_generation == verified
     assert len(factory.state["events"]) == event_count
     with pytest.raises(InvalidStateTransition):
-        await service.submit_candidate(
-            TENANT, case_id, _candidate(), actor=SOURCING
-        )
+        await service.submit_candidate(TENANT, case_id, _candidate(), actor=SOURCING)
 
     product_id = ProductId("prd-card")
     option_id = await service.register_supplier_candidate_option(
@@ -1280,10 +1365,11 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
             (),
             actor=SYSTEM,
         )
+    del factory.state["options"][(TENANT, extra_option.option_id)]
     await service.mark_candidates_ready(
         TENANT,
         case_id,
-        (option_id, extra_option.option_id),
+        (option_id,),
         (candidate_id,),
         expected_case_version=verified.case_version,
         expected_candidate_set_hash=verified.candidate_set_hash,
@@ -1291,17 +1377,20 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
     )
     ready = factory.state["events"][-1]
     assert isinstance(ready, SourcingCandidatesReady)
-    assert set(ready.option_ids) == {option_id, extra_option.option_id}
+    assert ready.option_ids == (option_id,)
     assert ready.candidate_ids == (candidate_id,)
-    assert await service.register_supplier_candidate_option(
-        TENANT,
-        case_id,
-        candidate_id,
-        product_id,
-        expected_case_version=verified.case_version,
-        expected_candidate_set_hash=verified.candidate_set_hash,
-        actor=SYSTEM,
-    ) == option_id
+    assert (
+        await service.register_supplier_candidate_option(
+            TENANT,
+            case_id,
+            candidate_id,
+            product_id,
+            expected_case_version=verified.case_version,
+            expected_candidate_set_hash=verified.candidate_set_hash,
+            actor=SYSTEM,
+        )
+        == option_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1337,31 +1426,15 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
 ):
     factory = _Factory()
     service = _service(factory)
-    case_id = await _discovering(service)
-    plan = await service.save_public_plan(
-        TENANT, case_id, _plan(case_id, 1), actor=BOSS
-    )
-    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
-    option = SourcingSupplyOption(
-        option_id=SourcingSupplyOptionId("sop-main"),
-        tenant_id=TENANT,
-        case_id=case_id,
-        source=SupplyOptionSource.EXISTING_PRODUCT,
-        product_id=ProductId("prd-main"),
-        supplier_candidate_id=None,
-        is_qualified=True,
-        created_at=NOW,
-    )
-    factory.state["options"][(TENANT, option.option_id)] = option
-    await service.mark_candidates_ready(
-        TENANT, case_id, (option.option_id,), (), actor=SYSTEM
-    )
+    case_id = await _opened(service)
+    option_id = await _internal_option(service, case_id, ProductId("prd-main"))
+    await service.mark_candidates_ready(TENANT, case_id, (option_id,), (), actor=SYSTEM)
     case = next(iter(factory.state["cases"].values()))
     review = await service.review(
         TENANT,
         case_id,
         SourcingReviewCommand(
-            primary_option_id=option.option_id,
+            primary_option_id=option_id,
             alternate_option_ids=(),
             reason="证据最完整",
             expected_case_version=case.version,
@@ -1398,28 +1471,14 @@ async def test_outbox_failure_rolls_back_case_creation_and_ready_transition() ->
 
     ready_factory = _Factory()
     ready_service = _service(ready_factory)
-    case_id = await _discovering(ready_service)
-    plan = await ready_service.save_public_plan(
-        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    case_id = await _opened(ready_service)
+    option_id = await _internal_option(
+        ready_service, case_id, ProductId("prd-rollback")
     )
-    await ready_service.confirm_public_plan(
-        TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
-    )
-    option = SourcingSupplyOption(
-        option_id=SourcingSupplyOptionId("sop-rollback"),
-        tenant_id=TENANT,
-        case_id=case_id,
-        source=SupplyOptionSource.EXISTING_PRODUCT,
-        product_id=ProductId("prd-rollback"),
-        supplier_candidate_id=None,
-        is_qualified=True,
-        created_at=NOW,
-    )
-    ready_factory.state["options"][(TENANT, option.option_id)] = option
     ready_factory.bus_fails = True
     with pytest.raises(RuntimeError, match="outbox unavailable"):
         await ready_service.mark_candidates_ready(
-            TENANT, case_id, (option.option_id,), (), actor=SYSTEM
+            TENANT, case_id, (option_id,), (), actor=SYSTEM
         )
     current = ready_factory.state["cases"][(TENANT, case_id)]
     assert current.state is CaseState.VERIFYING

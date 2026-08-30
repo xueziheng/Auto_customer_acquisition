@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from domains.products.service import ProductService
+from domains.products.service import ProductActor, ProductService
 from domains.sourcing.service import SourcingActor, SourcingService
 from domains.suppliers.service import SupplierActor, SupplierService
 from workflows.engine.runner import StepDefinition, StepHandler, WorkflowDefinition
@@ -80,7 +78,7 @@ def build_sourcing_case_handlers(
     products: ProductService,
     suppliers: SupplierService,
     sourcing: SourcingService,
-    product_actor: Any,
+    product_actor: ProductActor,
     supplier_actor: SupplierActor,
     sourcing_actor: SourcingActor,
 ) -> dict[str, StepHandler]:

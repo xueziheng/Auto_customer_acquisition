@@ -347,6 +347,7 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             ("tenant_id", "opportunity_id"),
         )
         assert "internal_cost_unit" in contract["products"]["columns"]
+        assert "match_specs" in contract["products"]["columns"]
         assert contract["sourcing_ladder_checks"]["columns"]["outcome"][
             "nullable"
         ] is False

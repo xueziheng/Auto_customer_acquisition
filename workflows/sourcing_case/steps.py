@@ -7,7 +7,14 @@ import json
 import unicodedata
 from typing import Any
 
-from domains.products.service import ProductMatchResult, ProductService
+from domains.products.service import (
+    ProductActor,
+    ProductMatchResult,
+    ProductService,
+    ProductSpecMatchLevel,
+    ProductSpecRequirement,
+    QualifiedProductMatch,
+)
 from domains.sourcing.service import (
     LadderCheck,
     LadderOutcome,
@@ -15,9 +22,11 @@ from domains.sourcing.service import (
     SourcingActor,
     SourcingNeedSnapshot,
     SourcingService,
+    SpecComparison,
+    SpecMatchLevel,
 )
 from domains.suppliers.service import SupplierActor, SupplierService
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
     ProductId,
@@ -32,6 +41,17 @@ _PRODUCT_CONCLUSIONS = {
     2: ("no_qualified_catalog_modifiable", "qualified_catalog_modifiable"),
     3: ("no_qualified_candidate_product", "qualified_candidate_product"),
 }
+
+
+def _raise_dependency_error(
+    *, transient: bool, failed: bool, transient_message: str, permanent_message: str
+) -> None:
+    """在 ``except`` 外按可重试性抛固定错误，避免保留下层异常链或 context。"""
+
+    if transient:
+        raise TransientError(transient_message)
+    if failed:
+        raise ValidationError(permanent_message)
 
 
 def _text(value: object, message: str, *, maximum: int = 200) -> str:
@@ -72,13 +92,20 @@ async def _trusted_need(
 ) -> SourcingNeedSnapshot:
     _case_id, need_id, snapshot_hash = _base(run)
     failed = False
+    transient = False
     snapshot: SourcingNeedSnapshot | None = None
     try:
         snapshot = await reader.read(run.tenant_id, need_id)
+    except TransientError:
+        transient = True
     except Exception:  # noqa: BLE001 - 丢弃 reader 自由异常，防止写入 run.last_error
         failed = True
-    if failed:
-        raise ValidationError("可信寻源需求快照读取失败")
+    _raise_dependency_error(
+        transient=transient,
+        failed=failed,
+        transient_message="可信寻源需求快照暂不可用",
+        permanent_message="可信寻源需求快照读取失败",
+    )
     if (
         not isinstance(snapshot, SourcingNeedSnapshot)
         or snapshot.need_id != need_id
@@ -107,6 +134,39 @@ def _category_and_keywords(
     return category, keywords
 
 
+def _required_specs(
+    snapshot: SourcingNeedSnapshot,
+) -> tuple[ProductSpecRequirement, ...]:
+    facts = (
+        ("product_category", snapshot.product_category),
+        ("application", snapshot.application),
+        ("material", snapshot.material),
+        ("size_spec", snapshot.size_spec),
+    )
+    requirements: list[ProductSpecRequirement] = []
+    for name, fact in facts:
+        if fact is None:
+            continue
+        if not isinstance(fact.value, str):
+            raise ValidationError("可信寻源产品规格必须是文本")
+        value = _normalize(fact.value)
+        if not value:
+            raise ValidationError("可信寻源产品规格不能为空")
+        requirements.append(ProductSpecRequirement(name, value))
+    quantity = snapshot.quantity.value
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        raise ValidationError("可信寻源需求数量必须是正整数")
+    requirements.append(ProductSpecRequirement("moq", str(quantity)))
+    if snapshot.unit is not None:
+        if not isinstance(snapshot.unit.value, str):
+            raise ValidationError("可信寻源计价单位必须是文本")
+        unit = _normalize(snapshot.unit.value)
+        if not unit:
+            raise ValidationError("可信寻源计价单位不能为空")
+        requirements.append(ProductSpecRequirement("unit", unit))
+    return tuple(requirements)
+
+
 def _stable_check_id(
     case_id: SourcingCaseId,
     rung: int,
@@ -132,6 +192,7 @@ def _ladder_check(
     match_object_type: str | None = None,
     match_object_id: str | None = None,
     evidence_refs: tuple[str, ...] = (),
+    spec_comparisons: tuple[SpecComparison, ...] = (),
 ) -> LadderCheck:
     case_id, _need_id, _hash = _base(run)
     return LadderCheck(
@@ -146,7 +207,7 @@ def _ladder_check(
         conclusion=conclusion,
         match_object_type=match_object_type,
         match_object_id=match_object_id,
-        spec_comparisons=(),
+        spec_comparisons=spec_comparisons,
         evidence_refs=evidence_refs,
         checked_by=EmployeeId(actor.actor_id),
         checked_at=run.created_at,
@@ -163,7 +224,7 @@ class InternalMatchLadderStep:
         products: ProductService,
         suppliers: SupplierService,
         sourcing: SourcingService,
-        product_actor: Any,
+        product_actor: ProductActor,
         supplier_actor: SupplierActor,
         sourcing_actor: SourcingActor,
     ) -> None:
@@ -177,6 +238,7 @@ class InternalMatchLadderStep:
 
     async def _record(self, run: WorkflowRun, check: LadderCheck) -> None:
         failed = False
+        transient = False
         try:
             await self._sourcing.record_ladder_check(
                 run.tenant_id,
@@ -184,41 +246,72 @@ class InternalMatchLadderStep:
                 check,
                 actor=self._sourcing_actor,
             )
+        except TransientError:
+            transient = True
         except Exception:  # noqa: BLE001 - 域/仓储异常原文不得进入 run.last_error
             failed = True
-        if failed:
-            raise ValidationError("寻源内部匹配记录失败")
+        _raise_dependency_error(
+            transient=transient,
+            failed=failed,
+            transient_message="寻源内部匹配记录暂不可用",
+            permanent_message="寻源内部匹配记录失败",
+        )
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         snapshot = await _trusted_need(run, self._need_reader)
         category, keywords = _category_and_keywords(snapshot)
+        requirements = _required_specs(snapshot)
         failed = False
+        transient = False
         product_result: ProductMatchResult | None = None
         try:
             product_result = await self._products.search_for_matching(
                 run.tenant_id,
                 category,
                 keywords,
+                requirements,
                 actor=self._product_actor,
             )
+        except TransientError:
+            transient = True
         except Exception:  # noqa: BLE001 - 下层异常可能携带内部价格或连接信息
             failed = True
-        if failed:
-            raise ValidationError("寻源内部产品匹配失败")
+        _raise_dependency_error(
+            transient=transient,
+            failed=failed,
+            transient_message="寻源内部产品匹配暂不可用",
+            permanent_message="寻源内部产品匹配失败",
+        )
         if not isinstance(product_result, ProductMatchResult):
             raise ValidationError("寻源内部产品匹配结果无效")
 
-        buckets: dict[int, list[Any]] = {1: [], 2: [], 3: []}
-        for product in sorted(
-            product_result.qualified_matches, key=lambda item: str(item.product_id)
+        buckets: dict[int, list[QualifiedProductMatch]] = {1: [], 2: [], 3: []}
+        required_names = tuple(item.spec_name for item in requirements)
+        for match in sorted(
+            product_result.qualified_matches,
+            key=lambda item: str(item.product.product_id),
         ):
+            if not isinstance(match, QualifiedProductMatch):
+                raise ValidationError("内部产品匹配缺少逐项规格比较")
+            product = match.product
             if product.tenant_id != run.tenant_id:
                 raise ValidationError("内部产品匹配结果租户无效")
+            comparison_names = tuple(item.spec_name for item in match.spec_comparisons)
+            if (
+                comparison_names != tuple(sorted(required_names))
+                or len(set(comparison_names)) != len(comparison_names)
+                or any(
+                    item.level is not ProductSpecMatchLevel.EXACT
+                    or item.evidence_ref is None
+                    for item in match.spec_comparisons
+                )
+            ):
+                raise ValidationError("内部产品匹配规格证明不完整")
             pool = getattr(product.pool, "value", None)
             if pool == "formal":
-                buckets[2 if product.customizable else 1].append(product)
+                buckets[2 if product.customizable else 1].append(match)
             elif pool == "candidate":
-                buckets[3].append(product)
+                buckets[3].append(match)
 
         finding_rows = sorted(
             (
@@ -233,7 +326,7 @@ class InternalMatchLadderStep:
         )
         for rung in (1, 2, 3):
             matches = buckets[rung]
-            product_ids = [str(item.product_id) for item in matches]
+            product_ids = [str(item.product.product_id) for item in matches]
             input_snapshot: dict[str, object] = {
                 "need_id": str(snapshot.need_id),
                 "category": category,
@@ -245,10 +338,26 @@ class InternalMatchLadderStep:
                     sorted(
                         {
                             str(item.internal_cost_source_ref)
-                            for item in matches
+                            for match in matches
+                            for item in (match.product,)
                             if item.internal_cost_source_ref is not None
                         }
+                        | {
+                            str(comparison.evidence_ref)
+                            for match in matches
+                            for comparison in match.spec_comparisons
+                            if comparison.evidence_ref is not None
+                        }
                     )
+                )
+                comparisons = tuple(
+                    SpecComparison(
+                        spec_name=item.spec_name,
+                        required=item.required,
+                        offered=item.offered,
+                        level=SpecMatchLevel.EXACT,
+                    )
+                    for item in matches[0].spec_comparisons
                 )
                 await self._record(
                     run,
@@ -263,6 +372,7 @@ class InternalMatchLadderStep:
                         match_object_type="product",
                         match_object_id=product_ids[0],
                         evidence_refs=evidence_refs,
+                        spec_comparisons=comparisons,
                     ),
                 )
                 return (
@@ -288,15 +398,22 @@ class InternalMatchLadderStep:
 
         tags = sorted({category, *keywords})
         supplier_failed = False
+        supplier_transient = False
         suppliers: list[Any] = []
         try:
             suppliers = await self._suppliers.search_by_capability(
                 run.tenant_id, tags, actor=self._supplier_actor
             )
+        except TransientError:
+            supplier_transient = True
         except Exception:  # noqa: BLE001 - 下层异常可能携带供应商敏感内容
             supplier_failed = True
-        if supplier_failed:
-            raise ValidationError("寻源内部供应商能力匹配失败")
+        _raise_dependency_error(
+            transient=supplier_transient,
+            failed=supplier_failed,
+            transient_message="寻源内部供应商能力匹配暂不可用",
+            permanent_message="寻源内部供应商能力匹配失败",
+        )
         ordered_suppliers = sorted(suppliers, key=lambda item: str(item.supplier_id))
         if any(item.tenant_id != run.tenant_id for item in ordered_suppliers):
             raise ValidationError("内部供应商能力匹配结果租户无效")
@@ -353,6 +470,7 @@ class PrepareCandidatesStep:
             raise ValidationError("内部候选准备上下文无效")
         option_ids = []
         failed = False
+        transient = False
         try:
             for product_id in raw_ids:
                 option_ids.append(
@@ -370,10 +488,16 @@ class PrepareCandidatesStep:
                 (),
                 actor=self._sourcing_actor,
             )
+        except TransientError:
+            transient = True
         except Exception:  # noqa: BLE001 - 只向 workflow 暴露固定失败分类
             failed = True
-        if failed:
-            raise ValidationError("寻源内部产品准备失败")
+        _raise_dependency_error(
+            transient=transient,
+            failed=failed,
+            transient_message="寻源内部产品准备暂不可用",
+            permanent_message="寻源内部产品准备失败",
+        )
         return (
             "advance",
             "await_product_cards",

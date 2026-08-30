@@ -10,7 +10,7 @@ import pytest
 from apps.scheduler_worker.sourcing_events import SourcingTriggerHandler
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.events.catalog import NeedBecameSourcingReady, NeedValidated
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
@@ -86,6 +86,18 @@ class _Engine:
         if self.fail_first:
             self.fail_first = False
             raise RuntimeError("postgres-dsn-secret")
+        self.created_keys.add(args[4])
+        return self._run
+
+
+class _TransientFirstEngine(_Engine):
+    async def start(self, *args, **kwargs):
+        self.calls.append((*args, kwargs))
+        if len(self.calls) == 1:
+            raise TransientError(
+                "postgres://user:secret@workflow-db/private",
+                context={"credential": "raw-token"},
+            )
         self.created_keys.add(args[4])
         return self._run
 
@@ -205,3 +217,24 @@ async def test_opened_case_is_reused_when_first_workflow_start_fails() -> None:
     assert sourcing.created_keys == engine.created_keys
     assert engine.calls[0][4] == engine.calls[1][4]
     assert engine.calls[0][2] == engine.calls[1][2] == str(CASE_ID)
+
+
+@pytest.mark.asyncio
+async def test_transient_start_failure_stays_retryable_and_drops_raw_exception_chain() -> (
+    None
+):
+    reader = _Reader()
+    sourcing = _Sourcing()
+    engine = _TransientFirstEngine()
+    handler = _handler(reader, sourcing, engine)
+
+    with pytest.raises(TransientError, match="^寻源工作流启动暂不可用$") as caught:
+        await handler.handle(_validated())
+
+    assert caught.value.context == {}
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "raw-token" not in str(caught.value)
+    await handler.handle(_validated())
+    assert len(sourcing.commands) == len(engine.calls) == 2
+    assert engine.created_keys == {f"sourcing-case:v2:{TENANT}:{NEED_ID}"}

@@ -21,6 +21,11 @@ from domains.products.models import (
     ProductMatchResult,
     ProductPool,
     ProductSalesView,
+    ProductSpecComparison,
+    ProductSpecFact,
+    ProductSpecMatchLevel,
+    ProductSpecRequirement,
+    QualifiedProductMatch,
 )
 from domains.products.permissions import ProductAction, ProductActor, ProductAuthorizer
 from domains.products.repository import ProductsUnitOfWork
@@ -82,6 +87,94 @@ def _missing_cost_fields(product: Product) -> tuple[str, ...]:
     ):
         missing.append("internal_cost_source_ref")
     return tuple(dict.fromkeys(missing))
+
+
+def _normalized_requirements(
+    required_specs: tuple[ProductSpecRequirement, ...],
+) -> tuple[ProductSpecRequirement, ...]:
+    normalized: list[ProductSpecRequirement] = []
+    names: set[str] = set()
+    for item in required_specs:
+        if not isinstance(item, ProductSpecRequirement):
+            raise ValidationError("产品匹配规格要求类型无效")
+        name = _normalize(item.spec_name)
+        required = _normalize(item.required)
+        if not name or not required or name in names:
+            raise ValidationError("产品匹配规格要求必须非空且规范化后不重复")
+        names.add(name)
+        normalized.append(ProductSpecRequirement(name, required))
+    if not normalized:
+        raise ValidationError("产品匹配至少需要一项逐项规格要求")
+    return tuple(sorted(normalized, key=lambda item: item.spec_name))
+
+
+def _compare_specs(
+    product: Product,
+    requirements: tuple[ProductSpecRequirement, ...],
+) -> tuple[tuple[ProductSpecComparison, ...], bool]:
+    normalized_facts: dict[str, ProductSpecFact] = {}
+    duplicate = False
+    for raw_name, fact in sorted(product.match_specs.items()):
+        name = _normalize(raw_name)
+        if (
+            not name
+            or not isinstance(fact, ProductSpecFact)
+            or name in normalized_facts
+        ):
+            duplicate = True
+            continue
+        normalized_facts[name] = fact
+    comparisons: list[ProductSpecComparison] = []
+    for requirement in requirements:
+        matched_fact = normalized_facts.get(requirement.spec_name)
+        offered = (
+            _normalize(matched_fact.value)
+            if matched_fact is not None
+            and isinstance(matched_fact.value, str)
+            and _normalize(matched_fact.value)
+            else None
+        )
+        evidence_ref = matched_fact.evidence_ref if matched_fact is not None else None
+        if offered is None or evidence_ref is None or not str(evidence_ref).strip():
+            level = ProductSpecMatchLevel.UNKNOWN
+        elif requirement.spec_name == "moq":
+            try:
+                required_quantity = int(requirement.required)
+                offered_moq = int(offered)
+            except ValueError:
+                level = ProductSpecMatchLevel.UNKNOWN
+            else:
+                if (
+                    isinstance(product.moq, bool)
+                    or not isinstance(product.moq, int)
+                    or product.moq < 1
+                    or required_quantity < 1
+                    or offered_moq != product.moq
+                ):
+                    level = ProductSpecMatchLevel.UNKNOWN
+                elif required_quantity >= offered_moq:
+                    level = ProductSpecMatchLevel.EXACT
+                else:
+                    level = ProductSpecMatchLevel.DIFFERENT
+        elif requirement.spec_name == "unit" and (
+            not isinstance(product.internal_cost_unit, str)
+            or offered != _normalize(product.internal_cost_unit)
+        ):
+            level = ProductSpecMatchLevel.UNKNOWN
+        elif offered == requirement.required:
+            level = ProductSpecMatchLevel.EXACT
+        else:
+            level = ProductSpecMatchLevel.DIFFERENT
+        comparisons.append(
+            ProductSpecComparison(
+                spec_name=requirement.spec_name,
+                required=requirement.required,
+                offered=offered,
+                level=level,
+                evidence_ref=evidence_ref,
+            )
+        )
+    return tuple(comparisons), duplicate
 
 
 class ProductServiceImpl:
@@ -170,6 +263,7 @@ class ProductServiceImpl:
         tenant_id: TenantId,
         category: str,
         keywords: list[str],
+        required_specs: tuple[ProductSpecRequirement, ...],
         *,
         actor: ProductActor,
     ) -> ProductMatchResult:
@@ -180,6 +274,7 @@ class ProductServiceImpl:
         normalized_keywords = sorted(
             {_normalize(keyword) for keyword in keywords if _normalize(keyword)}
         )
+        normalized_requirements = _normalized_requirements(required_specs)
         async with self._uow_factory(tenant_id) as uow:
             matches = await uow.products.search(
                 tenant_id,
@@ -188,20 +283,59 @@ class ProductServiceImpl:
                 normalized_keywords,
                 50,
             )
-        qualified: list[Product] = []
+        qualified: list[QualifiedProductMatch] = []
         findings: list[ProductMatchFinding] = []
         for product in sorted(matches, key=lambda item: str(item.product_id))[:50]:
             missing = _missing_cost_fields(product)
+            comparisons, duplicate_specs = _compare_specs(
+                product, normalized_requirements
+            )
             if missing:
                 findings.append(
                     ProductMatchFinding(
                         product_id=product.product_id,
                         code="internal_cost_incomplete",
                         missing_fields=missing,
+                        spec_comparisons=comparisons,
+                    )
+                )
+            elif duplicate_specs:
+                findings.append(
+                    ProductMatchFinding(
+                        product_id=product.product_id,
+                        code="product_spec_duplicate",
+                        missing_fields=(),
+                        spec_comparisons=comparisons,
+                    )
+                )
+            elif any(
+                item.level is ProductSpecMatchLevel.UNKNOWN for item in comparisons
+            ):
+                findings.append(
+                    ProductMatchFinding(
+                        product_id=product.product_id,
+                        code="product_spec_unknown",
+                        missing_fields=tuple(
+                            item.spec_name
+                            for item in comparisons
+                            if item.level is ProductSpecMatchLevel.UNKNOWN
+                        ),
+                        spec_comparisons=comparisons,
+                    )
+                )
+            elif any(
+                item.level is ProductSpecMatchLevel.DIFFERENT for item in comparisons
+            ):
+                findings.append(
+                    ProductMatchFinding(
+                        product_id=product.product_id,
+                        code="product_spec_different",
+                        missing_fields=(),
+                        spec_comparisons=comparisons,
                     )
                 )
             else:
-                qualified.append(product)
+                qualified.append(QualifiedProductMatch(product, comparisons))
         return ProductMatchResult(tuple(qualified), tuple(findings))
 
     async def _get(self, tenant_id: TenantId, product_id: ProductId) -> Product:

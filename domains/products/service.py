@@ -12,6 +12,11 @@ from domains.products.models import (
     ProductMatchResult,
     ProductPool,
     ProductSalesView,
+    ProductSpecComparison,
+    ProductSpecFact,
+    ProductSpecMatchLevel,
+    ProductSpecRequirement,
+    QualifiedProductMatch,
 )
 from domains.products.permissions import ProductActor
 from domains.products.schemas import CandidateProductCreate
@@ -27,6 +32,7 @@ class ProductService(Protocol):
         tenant_id: TenantId,
         category: str,
         keywords: list[str],
+        required_specs: tuple[ProductSpecRequirement, ...],
         *,
         actor: ProductActor,
     ) -> ProductMatchResult:
@@ -62,10 +68,16 @@ class ProductService(Protocol):
 __all__ = (
     "CandidateStatus",
     "Product",
+    "ProductActor",
     "ProductCustomerView",
     "ProductInternalView",
     "ProductMatchResult",
     "ProductPool",
     "ProductSalesView",
     "ProductService",
+    "ProductSpecComparison",
+    "ProductSpecFact",
+    "ProductSpecMatchLevel",
+    "ProductSpecRequirement",
+    "QualifiedProductMatch",
 )

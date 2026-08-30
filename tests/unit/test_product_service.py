@@ -12,7 +12,13 @@ from typing import Any, Self
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from domains.products.service import CandidateStatus, Product, ProductPool
+from domains.products.service import (
+    CandidateStatus,
+    Product,
+    ProductPool,
+    ProductSpecFact,
+    ProductSpecRequirement,
+)
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -202,6 +208,9 @@ def _formal_product(product_id: str, *, complete_cost: bool = True) -> Product:
         internal_cost_basis="EXW supplier quote",
         internal_cost_unit="piece",
         internal_cost_source_ref=ArtifactId("art_cost"),
+        match_specs={
+            "product_category": ProductSpecFact("hinges", ArtifactId("art_category"))
+        },
     )
     if not complete_cost:
         product.internal_cost_source_ref = None
@@ -215,9 +224,7 @@ def test_candidate_command_is_strict_exact_and_evidence_bound() -> None:
         "domains.products.schemas", "CandidateProductCreate"
     )
     command = _command()
-    assert command.indicative_prices[0].unit_amount == Decimal(
-        "0.123456789012"
-    )
+    assert command.indicative_prices[0].unit_amount == Decimal("0.123456789012")
     assert (
         command.model_dump(mode="json")["indicative_prices"][0]["unit_amount"]
         == "0.123456789012"
@@ -410,9 +417,13 @@ async def test_matching_requires_complete_internal_cost_five_tuple(
         setattr(incomplete, missing, None)
     service, _, _ = _service(products=_Products([incomplete, complete]))
     result = await service.search_for_matching(
-        TENANT, " HINGES ", [" hinge "], actor=_actor()
+        TENANT,
+        " HINGES ",
+        [" hinge "],
+        (ProductSpecRequirement("product_category", "hinges"),),
+        actor=_actor(),
     )
-    assert [item.product_id for item in result.qualified_matches] == [
+    assert [item.product.product_id for item in result.qualified_matches] == [
         complete.product_id
     ]
     finding = next(
@@ -420,3 +431,90 @@ async def test_matching_requires_complete_internal_cost_five_tuple(
     )
     assert finding.code == "internal_cost_incomplete"
     assert missing in finding.missing_fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fact_shape",
+    [
+        "exact",
+        "different",
+        "missing",
+        "unbound",
+        "duplicate",
+        "moq_too_high",
+        "moq_drift",
+    ],
+)
+async def test_matching_requires_complete_exact_evidence_bound_spec_comparisons(
+    fact_shape: str,
+) -> None:
+    """删除逐项比较、把 unknown/different 当 exact、或丢 Evidence 都会误交接。"""
+
+    ProductSpecFact = _symbol("domains.products.service", "ProductSpecFact")
+    ProductSpecRequirement = _symbol(
+        "domains.products.service", "ProductSpecRequirement"
+    )
+    ProductSpecMatchLevel = _symbol("domains.products.service", "ProductSpecMatchLevel")
+    product = _formal_product(f"prd_{fact_shape}")
+    facts = {
+        "product_category": ProductSpecFact("hinges", ArtifactId("art_category")),
+        "material": ProductSpecFact("304 stainless", ArtifactId("art_material")),
+        "moq": ProductSpecFact("1000", ArtifactId("art_moq")),
+    }
+    product.moq = 1000
+    if fact_shape == "different":
+        facts["material"] = ProductSpecFact("201 stainless", ArtifactId("art_material"))
+    elif fact_shape == "missing":
+        del facts["material"]
+    elif fact_shape == "unbound":
+        facts["material"] = ProductSpecFact("304 stainless", None)
+    elif fact_shape == "duplicate":
+        facts[" MATERIAL "] = ProductSpecFact(
+            "304 stainless", ArtifactId("art_duplicate")
+        )
+    elif fact_shape == "moq_too_high":
+        product.moq = 6000
+        facts["moq"] = ProductSpecFact("6000", ArtifactId("art_moq"))
+    elif fact_shape == "moq_drift":
+        facts["moq"] = ProductSpecFact("500", ArtifactId("art_moq"))
+    product.match_specs = facts
+    requirements = (
+        ProductSpecRequirement("product_category", "hinges"),
+        ProductSpecRequirement("material", "304 stainless"),
+        ProductSpecRequirement("moq", "5000"),
+    )
+    service, _, _ = _service(products=_Products([product]))
+
+    result = await service.search_for_matching(
+        TENANT,
+        "hinges",
+        ["stainless"],
+        requirements,
+        actor=_actor(),
+    )
+
+    if fact_shape == "exact":
+        assert len(result.qualified_matches) == 1
+        qualified = result.qualified_matches[0]
+        assert qualified.product.product_id == product.product_id
+        assert [item.spec_name for item in qualified.spec_comparisons] == [
+            "material",
+            "moq",
+            "product_category",
+        ]
+        assert all(
+            item.level is ProductSpecMatchLevel.EXACT and item.evidence_ref is not None
+            for item in qualified.spec_comparisons
+        )
+        assert result.findings == ()
+    else:
+        assert result.qualified_matches == ()
+        assert len(result.findings) == 1
+        finding = result.findings[0]
+        assert finding.code in {
+            "product_spec_different",
+            "product_spec_unknown",
+            "product_spec_duplicate",
+        }
+        assert finding.spec_comparisons

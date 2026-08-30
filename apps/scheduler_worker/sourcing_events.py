@@ -10,7 +10,7 @@ from domains.sourcing.service import (
     SourcingNeedSnapshot,
     SourcingService,
 )
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.events.catalog import NeedBecameSourcingReady, NeedValidated
 from shared.schemas.identifiers import TenantId, ValidatedNeedId
 from workflows.engine.runner import WorkflowEngine
@@ -45,6 +45,17 @@ def _safe_context(snapshot: SourcingNeedSnapshot, case_id: str) -> dict[str, obj
     }
 
 
+def _raise_dependency_error(
+    *, transient: bool, failed: bool, transient_message: str, permanent_message: str
+) -> None:
+    """在 ``except`` 外按可重试性抛固定错误，彻底丢弃原异常链与 context。"""
+
+    if transient:
+        raise TransientError(transient_message)
+    if failed:
+        raise ValidationError(permanent_message)
+
+
 class SourcingTriggerHandler:
     """仅消费两种需求就绪事实；重复/乱序投递共享同一业务键。"""
 
@@ -74,13 +85,20 @@ class SourcingTriggerHandler:
             return
         need_id = ValidatedNeedId(event.need_id)
         read_failed = False
+        read_transient = False
         snapshot: SourcingNeedSnapshot | None = None
         try:
             snapshot = await self._need_reader.read(self._tenant_id, need_id)
+        except TransientError:
+            read_transient = True
         except Exception:  # noqa: BLE001 - 丢弃下层自由异常，避免 outbox 日志泄漏
             read_failed = True
-        if read_failed:
-            raise ValidationError("可信寻源需求快照读取失败")
+        _raise_dependency_error(
+            transient=read_transient,
+            failed=read_failed,
+            transient_message="可信寻源需求快照暂不可用",
+            permanent_message="可信寻源需求快照读取失败",
+        )
         if (
             not isinstance(snapshot, SourcingNeedSnapshot)
             or snapshot.need_id != need_id
@@ -88,6 +106,7 @@ class SourcingTriggerHandler:
             raise ValidationError("可信需求快照与触发事件不匹配")
         trigger_key = f"sourcing-case:v2:{self._tenant_id}:{need_id}"
         open_failed = False
+        open_transient = False
         case_id = None
         try:
             case_id = await self._sourcing.open_case(
@@ -95,11 +114,20 @@ class SourcingTriggerHandler:
                 OpenSourcingCase(need=snapshot, trigger_key=trigger_key),
                 actor=self._sourcing_actor,
             )
+        except TransientError:
+            open_transient = True
         except Exception:  # noqa: BLE001 - 丢弃数据库异常原文，仅暴露固定分类
             open_failed = True
+        _raise_dependency_error(
+            transient=open_transient,
+            failed=open_failed,
+            transient_message="寻源案例开案暂不可用",
+            permanent_message="寻源案例开案失败",
+        )
         if open_failed or case_id is None:
             raise ValidationError("寻源案例开案失败")
         start_failed = False
+        start_transient = False
         try:
             await self._engine.start(
                 self._tenant_id,
@@ -108,10 +136,16 @@ class SourcingTriggerHandler:
                 _safe_context(snapshot, str(case_id)),
                 trigger_key,
             )
+        except TransientError:
+            start_transient = True
         except Exception:  # noqa: BLE001 - 引擎异常可能含连接信息，必须清洗
             start_failed = True
-        if start_failed:
-            raise ValidationError("寻源工作流启动失败")
+        _raise_dependency_error(
+            transient=start_transient,
+            failed=start_failed,
+            transient_message="寻源工作流启动暂不可用",
+            permanent_message="寻源工作流启动失败",
+        )
 
 
 __all__ = ("SourcingTriggerHandler",)

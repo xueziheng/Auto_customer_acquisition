@@ -104,8 +104,7 @@ def _valid_candidate_evidence_projection(
         and projection.observed_at.utcoffset() is not None
         and len(projection.content_hash) == 64
         and all(
-            character in "0123456789abcdef"
-            for character in projection.content_hash
+            character in "0123456789abcdef" for character in projection.content_hash
         )
         and str(projection.artifact_id).startswith("art_")
         and str(projection.artifact_id) == str(projection.artifact_id).strip()
@@ -142,6 +141,30 @@ def _quantity(case: SourcingCase) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError("需求数量必须是正整数")
     return value
+
+
+def _qualified_internal_product_ids(
+    checks: list[LadderCheck],
+) -> tuple[ProductId, ...]:
+    """从唯一合格内部梯级重建不可变 Product 全集；公开路径返回空集。"""
+
+    qualified = tuple(
+        item for item in checks if item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+    )
+    if not qualified:
+        return ()
+    if len(qualified) != 1 or qualified[0].match_object_type != "product":
+        raise ValidationError("现有产品 Option 缺少唯一合格内部梯级事实")
+    raw_ids = qualified[0].input_snapshot.get("qualified_product_ids")
+    if (
+        not isinstance(raw_ids, list)
+        or not raw_ids
+        or any(not isinstance(item, str) or not item.strip() for item in raw_ids)
+        or raw_ids != sorted(set(raw_ids))
+        or qualified[0].match_object_id != raw_ids[0]
+    ):
+        raise ValidationError("合格内部梯级的现有产品冻结集合无效")
+    return tuple(ProductId(item) for item in raw_ids)
 
 
 def _candidate_from_submission(
@@ -217,9 +240,7 @@ def _candidate_view(candidate: SupplierCandidate) -> CandidateView:
             for item in candidate.verified_specs
         ],
         quoted_prices={
-            tier.minimum_quantity: Money(
-                tier.amount, CurrencyCode(tier.currency)
-            )
+            tier.minimum_quantity: Money(tier.amount, CurrencyCode(tier.currency))
             for tier in candidate.indicative_price_tiers
         },
         match_summary=candidate.match.summary if candidate.match is not None else None,
@@ -295,9 +316,7 @@ class SourcingServiceImpl:
             raise ValidationError("寻源开案命令无效")
         if command.need.completeness < 3:
             raise SourcingThresholdNotMetError("已验证需求完整度不足 3")
-        expected_trigger = (
-            f"sourcing-case:v2:{tenant_id}:{command.need.need_id}"
-        )
+        expected_trigger = f"sourcing-case:v2:{tenant_id}:{command.need.need_id}"
         if command.trigger_key != expected_trigger:
             raise ValidationError("寻源开案 trigger_key 与可信业务键不一致")
         now = _aware(self._now())
@@ -348,6 +367,28 @@ class SourcingServiceImpl:
             raise ValidationError("匹配梯子检查命令无效")
         if not isinstance(check.outcome, LadderOutcome):
             raise ValidationError("匹配梯子结果必须使用类型化 outcome")
+        if (
+            check.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+            and check.match_object_type == "product"
+        ):
+            comparisons = check.spec_comparisons
+            normalized_names = tuple(
+                item.spec_name.strip().casefold() for item in comparisons
+            )
+            if (
+                not comparisons
+                or len(set(normalized_names)) != len(normalized_names)
+                or any(
+                    not name
+                    or item.level is not SpecMatchLevel.EXACT
+                    or item.offered is None
+                    or not item.offered.strip()
+                    for name, item in zip(normalized_names, comparisons, strict=True)
+                )
+                or not check.evidence_refs
+            ):
+                raise ValidationError("合格产品梯级必须保存有证据的逐项 exact 比较")
+            _qualified_internal_product_ids([check])
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
@@ -371,8 +412,7 @@ class SourcingServiceImpl:
                     return
                 raise ValidationError("匹配梯子同级事实冲突")
             if any(
-                item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
-                for item in checks
+                item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND for item in checks
             ):
                 raise ValidationError("较早梯级已找到合格供给，禁止继续向后检查")
             expected = len(checks) + 1
@@ -424,8 +464,7 @@ class SourcingServiceImpl:
                 raise ValidationError("公开寻源计划案例不匹配")
             checks = await uow.checks.list_for_case(tenant_id, case_id)
             if any(
-                item.outcome is not LadderOutcome.NO_QUALIFIED_SUPPLY
-                for item in checks
+                item.outcome is not LadderOutcome.NO_QUALIFIED_SUPPLY for item in checks
             ):
                 raise ValidationError("公开寻源前五级必须全部确认无合格供给")
             if [item.rung.value for item in checks] != [1, 2, 3, 4, 5]:
@@ -536,12 +575,10 @@ class SourcingServiceImpl:
             raise MissingEvidenceSnapshotError("候选证据快照与提交字段不一致")
         evidence_refs = {projection.artifact_id}
         observed_fact_refs = {
-            item.evidence_ref
-            for item in submission.observed_facts.values()
+            item.evidence_ref for item in submission.observed_facts.values()
         }
         supplier_claim_refs = {
-            item.evidence_ref
-            for item in submission.supplier_claims.values()
+            item.evidence_ref for item in submission.supplier_claims.values()
         }
         field_refs = observed_fact_refs | supplier_claim_refs
         inference_refs = {
@@ -555,9 +592,7 @@ class SourcingServiceImpl:
             or not inference_refs <= evidence_refs
             or not tier_refs <= evidence_refs
         ):
-            raise MissingEvidenceSnapshotError(
-                "候选字段 Provenance 未绑定可信证据快照"
-            )
+            raise MissingEvidenceSnapshotError("候选字段 Provenance 未绑定可信证据快照")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
@@ -755,9 +790,11 @@ class SourcingServiceImpl:
             candidate_ids
         ):
             raise ValidationError("候选就绪事件 ID 不得重复")
+        if not option_ids:
+            raise ValidationError("候选就绪至少需要一个合格供应 Option")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
             if case.state not in {CaseState.VERIFYING, CaseState.CANDIDATES_READY}:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能标记候选就绪"
@@ -770,6 +807,19 @@ class SourcingServiceImpl:
             )
             options = await uow.options.list_for_case(tenant_id, case_id)
             qualified_options = tuple(item for item in options if item.is_qualified)
+            frozen_product_ids = _qualified_internal_product_ids(
+                await uow.checks.list_for_case(tenant_id, case_id)
+            )
+            existing_product_ids = tuple(
+                sorted(
+                    (
+                        item.product_id
+                        for item in qualified_options
+                        if item.source is SupplyOptionSource.EXISTING_PRODUCT
+                    ),
+                    key=str,
+                )
+            )
             canonical_candidate_ids = tuple(
                 sorted(
                     (item.candidate_id for item in qualified_candidates),
@@ -785,6 +835,8 @@ class SourcingServiceImpl:
                 or len(option_ids) != len(canonical_option_ids)
             ):
                 raise ValidationError("候选就绪必须提交仓储重建的完整合格集合")
+            if existing_product_ids != frozen_product_ids:
+                raise ValidationError("现有产品 Option 必须精确等于合格梯级冻结集合")
             if canonical_candidate_ids:
                 self._require_candidate_generation(
                     case,
@@ -855,9 +907,8 @@ class SourcingServiceImpl:
                     key=str,
                 )
             )
-            if (
-                set(candidate_ids) != set(canonical_ids)
-                or len(candidate_ids) != len(canonical_ids)
+            if set(candidate_ids) != set(canonical_ids) or len(candidate_ids) != len(
+                canonical_ids
             ):
                 raise ValidationError("候选核验事件必须是精确的合格候选全集")
             generation_hash = candidate_set_hash(canonical_ids)
@@ -980,24 +1031,25 @@ class SourcingServiceImpl:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能登记现有产品供给选项"
                 )
-            checks = await uow.checks.list_for_case(tenant_id, case_id)
-            qualified = tuple(
-                item
-                for item in checks
-                if item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+            frozen_product_ids = _qualified_internal_product_ids(
+                await uow.checks.list_for_case(tenant_id, case_id)
             )
-            if len(qualified) != 1 or qualified[0].match_object_type != "product":
-                raise ValidationError("现有产品 Option 缺少唯一合格内部梯级事实")
-            raw_ids = qualified[0].input_snapshot.get("qualified_product_ids")
-            if (
-                not isinstance(raw_ids, list)
-                or not raw_ids
-                or any(not isinstance(item, str) or not item.strip() for item in raw_ids)
-                or len(set(raw_ids)) != len(raw_ids)
-                or str(product_id) not in raw_ids
-                or qualified[0].match_object_id != raw_ids[0]
-            ):
+            if product_id not in frozen_product_ids:
                 raise ValidationError("现有产品不属于合格内部梯级冻结集合")
+            existing_options = await uow.options.list_for_case(tenant_id, case_id)
+            canonical_existing = next(
+                (
+                    item
+                    for item in existing_options
+                    if item.source is SupplyOptionSource.EXISTING_PRODUCT
+                    and item.product_id == product_id
+                ),
+                None,
+            )
+            if canonical_existing is not None:
+                return canonical_existing.option_id
+            if case.state is CaseState.CANDIDATES_READY:
+                raise InvalidStateTransition("候选就绪后禁止新增现有产品 Option")
             option = SourcingSupplyOption(
                 option_id=SourcingSupplyOptionId(new_id("sop")),
                 tenant_id=tenant_id,

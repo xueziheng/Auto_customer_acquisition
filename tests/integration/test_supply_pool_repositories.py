@@ -47,6 +47,7 @@ def _symbol(module: str, name: str) -> Any:
 CandidateStatus = _symbol("domains.products.models", "CandidateStatus")
 Product = _symbol("domains.products.models", "Product")
 ProductPool = _symbol("domains.products.models", "ProductPool")
+ProductSpecFact = _symbol("domains.products.models", "ProductSpecFact")
 SupplyCapability = _symbol("domains.products.models", "SupplyCapability")
 Supplier = _symbol("domains.suppliers.models", "Supplier")
 SupplierPriceRecord = _symbol("domains.suppliers.models", "SupplierPriceRecord")
@@ -83,6 +84,9 @@ def _product(
         allowed_price_max=Money(Decimal("0.987654321098"), CurrencyCode("USD")),
         sellable_markets=["US"], customizable=True, selling_points=["corrosion resistant"],
         known_issues=["finish requires confirmation"],
+        match_specs={
+            "material": ProductSpecFact("304 stainless", ArtifactId("art_material"))
+        },
     )
 
 
@@ -215,6 +219,7 @@ async def test_product_round_trip_preserves_candidate_lifecycle_and_decimal(
     assert loaded.candidate_status is status
     assert loaded.allowed_price_min is not None
     assert loaded.allowed_price_min.amount == Decimal("0.123456789012")
+    assert loaded.match_specs == product.match_specs
     assert capabilities[0].kind == " Small Batch Custom "
 
 

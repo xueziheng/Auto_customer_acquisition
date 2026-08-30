@@ -17,6 +17,7 @@ from domains.products.models import (
     Product,
     ProductCandidateSource,
     ProductPool,
+    ProductSpecFact,
     SupplyCapability,
 )
 from infra.db.base import TenantScopedRepository
@@ -78,6 +79,15 @@ def _product_to_row(product: Product) -> ProductRow:
         category=product.category,
         normalized_category=_normalize(product.category),
         spec_summary=product.spec_summary,
+        match_specs={
+            name: {
+                "value": fact.value,
+                "evidence_ref": (
+                    str(fact.evidence_ref) if fact.evidence_ref is not None else None
+                ),
+            }
+            for name, fact in product.match_specs.items()
+        },
         moq=product.moq,
         lead_time_days_min=product.lead_time_days_min,
         lead_time_days_max=product.lead_time_days_max,
@@ -130,6 +140,18 @@ async def _row_to_product(session: AsyncSession, row: ProductRow) -> Product:
             CandidateStatus(row.candidate_status) if row.candidate_status else None
         ),
         spec_summary=row.spec_summary,
+        match_specs={
+            str(name): ProductSpecFact(
+                value=str(payload.get("value", "")),
+                evidence_ref=(
+                    ArtifactId(str(payload["evidence_ref"]))
+                    if payload.get("evidence_ref")
+                    else None
+                ),
+            )
+            for name, payload in row.match_specs.items()
+            if isinstance(payload, dict)
+        },
         moq=row.moq,
         lead_time_days_min=row.lead_time_days_min,
         lead_time_days_max=row.lead_time_days_max,

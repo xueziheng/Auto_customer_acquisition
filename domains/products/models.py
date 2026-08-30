@@ -43,6 +43,41 @@ class CandidateStatus(str, Enum):
     NOT_APPROVED = "not_approved"
 
 
+class ProductSpecMatchLevel(str, Enum):
+    """内部产品事实与 Need 规格的确定性逐项比较结果。"""
+
+    EXACT = "exact"
+    DIFFERENT = "different"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ProductSpecFact:
+    """产品侧结构化规格事实；缺 Evidence 的旧数据只能产生 unknown finding。"""
+
+    value: str
+    evidence_ref: ArtifactId | None
+
+
+@dataclass(frozen=True)
+class ProductSpecRequirement:
+    """工作流传入的单项规范化 Need 规格。"""
+
+    spec_name: str
+    required: str
+
+
+@dataclass(frozen=True)
+class ProductSpecComparison:
+    """产品服务返回的逐项、证据绑定比较，不包含概率或综合分数。"""
+
+    spec_name: str
+    required: str
+    offered: str | None
+    level: ProductSpecMatchLevel
+    evidence_ref: ArtifactId | None
+
+
 @dataclass(frozen=True)
 class CandidateIndicativePriceRef:
     """候选产品的单个参考价数量档；金额与 Evidence 引用不可分离。"""
@@ -129,6 +164,7 @@ class Product:
     selling_points: list[str] = field(default_factory=list)
     known_issues: list[str] = field(default_factory=list)
     source_sourcing_case: str | None = None
+    match_specs: dict[str, ProductSpecFact] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         cost_parts = (
@@ -251,11 +287,20 @@ class ProductMatchFinding:
     product_id: ProductId
     code: str
     missing_fields: tuple[str, ...]
+    spec_comparisons: tuple[ProductSpecComparison, ...] = ()
+
+
+@dataclass(frozen=True)
+class QualifiedProductMatch:
+    """满足成本与全部逐项规格证据门禁的内部产品命中。"""
+
+    product: Product
+    spec_comparisons: tuple[ProductSpecComparison, ...]
 
 
 @dataclass(frozen=True)
 class ProductMatchResult:
     """内部匹配的确定性结果与被排除项。"""
 
-    qualified_matches: tuple[Product, ...]
+    qualified_matches: tuple[QualifiedProductMatch, ...]
     findings: tuple[ProductMatchFinding, ...]
