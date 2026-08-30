@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import (
@@ -219,6 +220,72 @@ class PublicCandidateDraft(BaseModel):
             and bool(self.indicative_price_tiers)
             and not self.rejection_codes
         )
+
+
+class PublicPageAttemptStatus(StrEnum):
+    """公开页面槽的持久执行状态。"""
+
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+
+
+class PublicPageAttemptOutcome(StrEnum):
+    """页面槽可安全重放的固定完成结果。"""
+
+    DRAFT_SAVED = "draft_saved"
+    PAGE_ACCESS_FORBIDDEN = "page_access_forbidden"
+    LOGIN_OR_CAPTCHA = "login_or_captcha"
+    UNSAFE_REDIRECT = "unsafe_redirect"
+    PROVIDER_RATE_LIMITED = "provider_rate_limited"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class PublicPageAttempt(BaseModel):
+    """绑定已授权计划的 canonical 页面槽；不包含页面正文或 locator。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    run_id: RunId
+    plan_id: SourcingPlanId
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    query_index: int = Field(ge=0)
+    result_index: int = Field(ge=0)
+    status: PublicPageAttemptStatus
+    outcome: PublicPageAttemptOutcome | None = None
+    draft_id: str | None = Field(default=None, min_length=1, max_length=40)
+    has_supplier_identity: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if self.status is PublicPageAttemptStatus.CLAIMED:
+            if any(
+                value is not None
+                for value in (
+                    self.outcome,
+                    self.draft_id,
+                    self.has_supplier_identity,
+                )
+            ):
+                raise ValueError("claimed 页面槽不得携带完成结果")
+            return self
+        if self.outcome is None:
+            raise ValueError("completed 页面槽必须携带固定结果")
+        if self.outcome is PublicPageAttemptOutcome.DRAFT_SAVED:
+            if self.draft_id is None or self.has_supplier_identity is None:
+                raise ValueError("draft_saved 页面槽必须绑定已核验草稿")
+        elif self.draft_id is not None or self.has_supplier_identity is not None:
+            raise ValueError("页面拒绝结果不得绑定草稿")
+        return self
+
+
+class PublicPageAttemptClaim(BaseModel):
+    """原子 claim 的结果；冲突时仍返回 canonical 页面槽。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    claimed_new: bool
+    slot: PublicPageAttempt
 
 
 class PublicSourcingPlanCommand(BaseModel):

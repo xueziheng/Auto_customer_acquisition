@@ -21,12 +21,16 @@ from connectors.search_contracts import SearchResult
 from connectors.web_search.client import PageSnapshot
 from domains.sourcing.schemas import (
     NeedFact,
+    PublicPageAttempt,
+    PublicPageAttemptClaim,
+    PublicPageAttemptOutcome,
+    PublicPageAttemptStatus,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingNeedSnapshot,
 )
 from domains.sourcing.service import PublicPlanStatus, PublicSourcingPlan
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -218,8 +222,11 @@ class _NeedReader:
 class _PlanReader:
     def __init__(self, plan: PublicSourcingPlan | None = None) -> None:
         self.plan = plan or _plan()
+        self.error: BaseException | None = None
 
     async def load_authorized(self, **binding):
+        if self.error is not None:
+            raise self.error
         assert binding == {
             "tenant_id": TENANT,
             "case_id": CASE_ID,
@@ -233,9 +240,36 @@ class _PlanReader:
 class _Quota:
     def __init__(self) -> None:
         self.reservations: dict[tuple[RunId, str], object] = {}
+        self.error: BaseException | None = None
 
     async def get(self, run_id, request_key):
+        if self.error is not None:
+            raise self.error
         return self.reservations.get((run_id, request_key))
+
+
+def _page_slot(
+    query_index: int,
+    result_index: int,
+    *,
+    status: str = "claimed",
+    outcome: str | None = None,
+    draft_id: str | None = None,
+    has_supplier_identity: bool | None = None,
+):
+    return PublicPageAttempt(
+        tenant_id=TENANT,
+        case_id=CASE_ID,
+        run_id=RUN_ID,
+        plan_id=PLAN_ID,
+        plan_hash=PLAN_HASH,
+        query_index=query_index,
+        result_index=result_index,
+        status=PublicPageAttemptStatus(status),
+        outcome=PublicPageAttemptOutcome(outcome) if outcome is not None else None,
+        draft_id=draft_id,
+        has_supplier_identity=has_supplier_identity,
+    )
 
 
 class _Receipts:
@@ -245,9 +279,16 @@ class _Receipts:
         self.saved: list[tuple[int, tuple[dict[str, str], ...]]] = []
         self.uncertain: list[int] = []
         self.commit_error: BaseException | None = None
-        self.page_attempts: set[tuple[int, int]] = set()
+        self.restore_error: BaseException | None = None
+        self.record_uncertain_error: BaseException | None = None
+        self.page_attempt_restore_error: BaseException | None = None
+        self.page_attempt_claim_error: BaseException | None = None
+        self.page_completion_error: BaseException | None = None
+        self.page_slots: dict[tuple[int, int], object] = {}
 
     async def restore(self, *, tenant_id, run_id, plan_hash, query_index):
+        if self.restore_error is not None:
+            raise self.restore_error
         assert (tenant_id, run_id, plan_hash) == (TENANT, RUN_ID, PLAN_HASH)
         return self.restored.get(query_index)
 
@@ -264,17 +305,43 @@ class _Receipts:
         self.timeline.append(f"receipt:{values['query_index']}")
 
     async def record_uncertain(self, **values):
+        if self.record_uncertain_error is not None:
+            raise self.record_uncertain_error
         self.uncertain.append(values["query_index"])
 
-    async def count_page_attempts(self, **values):
-        return len(self.page_attempts)
+    async def restore_page_attempts(self, **values):
+        if self.page_attempt_restore_error is not None:
+            raise self.page_attempt_restore_error
+        return tuple(self.page_slots.values())
 
     async def claim_page_attempt(self, **values):
+        if self.page_attempt_claim_error is not None:
+            raise self.page_attempt_claim_error
         key = (values["query_index"], values["result_index"])
-        if key in self.page_attempts:
-            return False
-        self.page_attempts.add(key)
-        return True
+        existing = self.page_slots.get(key)
+        if existing is not None:
+            return PublicPageAttemptClaim(claimed_new=False, slot=existing)
+        slot = _page_slot(*key)
+        self.page_slots[key] = slot
+        return PublicPageAttemptClaim(claimed_new=True, slot=slot)
+
+    async def complete_page_attempt(self, **values):
+        if self.page_completion_error is not None:
+            raise self.page_completion_error
+        key = (values["query_index"], values["result_index"])
+        existing = self.page_slots[key]
+        completed = _page_slot(
+            *key,
+            status="completed",
+            outcome=str(values["outcome"]),
+            draft_id=values.get("draft_id"),
+            has_supplier_identity=(
+                True if values.get("draft_id") is not None else None
+            ),
+        )
+        assert existing.status == "claimed" or existing == completed
+        self.page_slots[key] = completed
+        return completed
 
 
 class _Searcher:
@@ -328,8 +395,11 @@ class _Extractor:
         self.pages = pages
         self.calls = 0
         self.no_identity = False
+        self.error: BaseException | None = None
 
     async def extract(self, need, page):
+        if self.error is not None:
+            raise self.error
         assert need == _need()
         draft = _draft(page, self.calls)
         self.calls += 1
@@ -341,8 +411,11 @@ class _Extractor:
 class _Drafts:
     def __init__(self) -> None:
         self.calls: list[SourcingPageCandidateDraft] = []
+        self.error: BaseException | None = None
 
     async def save(self, **values):
+        if self.error is not None:
+            raise self.error
         self.calls.append(values["draft"])
         return f"scd-{len(self.calls)}"
 
@@ -548,45 +621,38 @@ async def test_gateway_validation_is_never_mislabeled_provider_timeout() -> None
 
 
 @pytest.mark.asyncio
-async def test_restart_counts_and_skips_durable_page_attempt() -> None:
+async def test_restart_of_claimed_but_incomplete_page_requires_reconciliation() -> None:
     step, _, pages, receipts, _, drafts, _, _ = _step(plan=_plan(pages=1))
-    receipts.page_attempts.add((0, 0))
+    receipts.page_slots[(0, 0)] = _page_slot(0, 0)
 
     result = await step.execute(_run())
 
     assert result[2]["sourcing_pages_used"] == 1
+    assert result[2]["sourcing_stop_reason"] == "reconciliation_required"
     assert pages.calls == []
     assert drafts.calls == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ["read", "extract", "save"])
-async def test_crash_after_page_claim_never_rereads_same_slot(
+@pytest.mark.parametrize("failure_stage", ["after_read", "after_extract", "after_draft_save"])
+async def test_crash_windows_leave_claimed_slot_for_exact_restart_reconciliation(
     failure_stage: str,
 ) -> None:
     step, _, pages, receipts, extractor, drafts, _, _ = _step(plan=_plan(pages=1))
-    if failure_stage == "read":
-        pages.error = RuntimeError("sensitive-page")
-    elif failure_stage == "extract":
-
-        async def fail_extract(*_args):
-            raise RuntimeError("sensitive-extract")
-
-        extractor.extract = fail_extract
+    if failure_stage == "after_read":
+        extractor.error = RuntimeError("sensitive-extract")
+    elif failure_stage == "after_extract":
+        drafts.error = RuntimeError("sensitive-save")
     else:
-
-        async def fail_save(**_values):
-            raise RuntimeError("sensitive-save")
-
-        drafts.save = fail_save
+        receipts.page_completion_error = RuntimeError("sensitive-completion")
 
     with pytest.raises(ValidationError) as caught:
         await step.execute(_run())
     assert "sensitive" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
-    pages.error = None
-    extractor = _Extractor([_page(0)])
-    drafts = _Drafts()
+    receipts.page_completion_error = None
     restarted = PublicSearchStep(
         need_reader=_NeedReader(),
         plan_reader=_PlanReader(_plan(pages=1)),
@@ -594,11 +660,59 @@ async def test_crash_after_page_claim_never_rereads_same_slot(
         searcher=_Searcher([_batch(0, (_result(0),)), _batch(1, ())], []),
         page_reader=pages,
         receipts=receipts,
-        extractor=extractor,
-        drafts=drafts,
+        extractor=_Extractor([_page(0)]),
+        drafts=_Drafts(),
     )
-    await restarted.execute(_run())
+    result = await restarted.execute(_run())
+    assert result[2]["sourcing_stop_reason"] == "reconciliation_required"
     assert len(pages.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_rehydrates_completed_draft_without_page_io() -> None:
+    step, _, pages, receipts, _, drafts, _, _ = _step(plan=_plan(pages=1))
+    receipts.page_slots[(0, 0)] = _page_slot(
+        0,
+        0,
+        status="completed",
+        outcome="draft_saved",
+        draft_id="scd-existing",
+        has_supplier_identity=True,
+    )
+    receipts.restored[0] = _batch(0, (_result(0),))
+
+    result = await step.execute(_run())
+
+    assert result == (
+        "advance",
+        "verify_candidates",
+        {
+            "sourcing_searches_used": 1,
+            "sourcing_pages_used": 1,
+            "supplier_candidate_draft_ids": ["scd-existing"],
+        },
+    )
+    assert pages.calls == []
+    assert drafts.calls == []
+
+
+@pytest.mark.asyncio
+async def test_restart_rehydrates_completed_page_rejection_without_no_results_label() -> None:
+    step, _, pages, receipts, _, drafts, _, _ = _step(plan=_plan(pages=1))
+    receipts.page_slots[(0, 0)] = _page_slot(
+        0,
+        0,
+        status="completed",
+        outcome="page_access_forbidden",
+    )
+    receipts.restored[0] = _batch(0, (_result(0),))
+
+    result = await step.execute(_run())
+
+    assert result[2]["sourcing_stop_reason"] == "page_access_forbidden"
+    assert result[2]["sourcing_pages_used"] == 1
+    assert pages.calls == []
+    assert drafts.calls == []
 
 
 @pytest.mark.asyncio
@@ -636,6 +750,59 @@ async def test_cleanup_failures_do_not_mask_primary_safe_result() -> None:
     result = await step.execute(_run())
 
     assert result[2]["sourcing_stop_reason"] == "page_access_forbidden"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "receipt_restore",
+        "quota_get",
+        "attempt_restore",
+        "attempt_claim",
+        "page_reader",
+        "extractor",
+        "draft_repository",
+        "record_uncertain",
+        "attempt_completion",
+        "locator_commit",
+    ),
+)
+async def test_dependency_exceptions_are_fully_detached(
+    boundary: str,
+) -> None:
+    step, searcher, pages, receipts, extractor, drafts, quota, _ = _step(
+        plan=_plan(pages=1)
+    )
+    sensitive = RuntimeError(f"sensitive-{boundary}")
+    if boundary == "receipt_restore":
+        receipts.restore_error = sensitive
+    elif boundary == "quota_get":
+        quota.error = sensitive
+    elif boundary == "attempt_restore":
+        receipts.page_attempt_restore_error = sensitive
+    elif boundary == "attempt_claim":
+        receipts.page_attempt_claim_error = sensitive
+    elif boundary == "page_reader":
+        pages.error = sensitive
+    elif boundary == "extractor":
+        extractor.error = sensitive
+    elif boundary == "draft_repository":
+        drafts.error = sensitive
+    elif boundary == "record_uncertain":
+        searcher.error = FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN)
+        receipts.record_uncertain_error = sensitive
+    elif boundary == "attempt_completion":
+        receipts.page_completion_error = sensitive
+    else:
+        receipts.commit_error = sensitive
+
+    with pytest.raises((TransientError, ValidationError)) as caught:
+        await step.execute(_run())
+
+    assert "sensitive" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from agent_runtime.sourcing_agent import (
     SafeSourcingPageSnapshot,
     SourcingPageCandidateDraft,
 )
+from domains.sourcing.schemas import PublicPageAttempt, PublicPageAttemptClaim
 from domains.sourcing.service import PublicSourcingPlan, SourcingNeedSnapshot
 from shared.schemas.identifiers import (
     OpportunityId,
@@ -63,9 +64,15 @@ class PersistedSearchReceiptPort(Protocol):
 
     async def record_uncertain(self, **values: object) -> None: ...
 
-    async def count_page_attempts(self, **values: object) -> int: ...
+    async def restore_page_attempts(
+        self, **values: object
+    ) -> tuple[PublicPageAttempt, ...]: ...
 
-    async def claim_page_attempt(self, **values: object) -> bool: ...
+    async def claim_page_attempt(
+        self, **values: object
+    ) -> PublicPageAttemptClaim | None: ...
+
+    async def complete_page_attempt(self, **values: object) -> PublicPageAttempt: ...
 
 
 class PublicSourcingSearcher(Protocol):

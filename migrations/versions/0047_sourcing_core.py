@@ -639,7 +639,16 @@ def upgrade() -> None:
         sa.Column("plan_hash", sa.String(64), nullable=False),
         sa.Column("query_index", sa.Integer(), nullable=False),
         sa.Column("result_index", sa.Integer(), nullable=False),
+        sa.Column(
+            "status",
+            sa.String(24),
+            nullable=False,
+            server_default=sa.text("'claimed'"),
+        ),
+        sa.Column("outcome", sa.String(40), nullable=True),
+        sa.Column("draft_id", sa.String(40), nullable=True),
         sa.Column("attempted_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint(
             "tenant_id",
             "run_id",
@@ -667,6 +676,17 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "plan_hash ~ '^[0-9a-f]{64}$' AND query_index >= 0 AND result_index >= 0",
             name="ck_sourcing_page_attempts_binding",
+        ),
+        sa.CheckConstraint(
+            "(status = 'claimed' AND outcome IS NULL AND draft_id IS NULL "
+            "AND completed_at IS NULL) OR "
+            "(status = 'completed' AND completed_at IS NOT NULL AND "
+            "((outcome = 'draft_saved' AND draft_id IS NOT NULL) OR "
+            "(outcome IN ('page_access_forbidden','login_or_captcha',"
+            "'unsafe_redirect','provider_rate_limited','provider_timeout',"
+            "'reconciliation_required') "
+            "AND draft_id IS NULL)))",
+            name="ck_sourcing_page_attempts_state",
         ),
     )
 
@@ -742,6 +762,15 @@ def upgrade() -> None:
             "jsonb_typeof(specs) = 'array' AND jsonb_typeof(indicative_price_tiers) = 'array' AND jsonb_typeof(rejection_codes) = 'array'",
             name="ck_sourcing_candidate_drafts_json",
         ),
+    )
+
+    op.create_foreign_key(
+        "fk_sourcing_page_attempts_draft",
+        "sourcing_page_attempts",
+        "sourcing_candidate_drafts",
+        ["tenant_id", "draft_id"],
+        ["tenant_id", "draft_id"],
+        ondelete="RESTRICT",
     )
 
     op.create_table(
@@ -844,8 +873,8 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER trg_sourcing_ladder_check ON sourcing_ladder_checks")
     op.execute("DROP FUNCTION guard_sourcing_ladder_check()")
     op.drop_table("sourcing_search_reconciliations")
-    op.drop_table("sourcing_candidate_drafts")
     op.drop_table("sourcing_page_attempts")
+    op.drop_table("sourcing_candidate_drafts")
     op.drop_table("sourcing_search_executions")
     op.drop_table("sourcing_reviews")
     op.drop_index(

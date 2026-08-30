@@ -356,6 +356,15 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "raw_artifacts",
             ("tenant_id", "artifact_id"),
         )
+        page_attempt = contract["sourcing_page_attempts"]
+        assert {"status", "outcome", "draft_id", "completed_at"} <= set(
+            page_attempt["columns"]
+        )
+        assert page_attempt["foreign_keys"]["fk_sourcing_page_attempts_draft"] == (
+            ("tenant_id", "draft_id"),
+            "sourcing_candidate_drafts",
+            ("tenant_id", "draft_id"),
+        )
         assert "internal_cost_unit" in contract["products"]["columns"]
         assert "match_specs" not in contract["products"]["columns"]
         match_spec_contract = contract["product_match_specs"]

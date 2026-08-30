@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -15,13 +16,16 @@ from apps.scheduler_worker.sourcing_web import PostgresSourcingWebPersistence
 from connectors.search_contracts import SearchResult
 from domains.sourcing.schemas import (
     NeedFact,
+    PublicPageAttemptClaim,
+    PublicPageAttemptOutcome,
+    PublicPageAttemptStatus,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingNeedSnapshot,
 )
 from domains.sourcing.service import PublicPlanStatus, PublicSourcingPlan
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
-from infra.db.tables import SourcingSearchExecutionRow
+from infra.db.tables import SourcingPageAttemptRow, SourcingSearchExecutionRow
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -45,6 +49,7 @@ SourcingCase = importlib.import_module("domains.sourcing.models").SourcingCase
 
 async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_payload(
     integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tenant_id = TenantId(new_id("tn"))
     need_id = ValidatedNeedId(new_id("need"))
@@ -92,7 +97,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
                 ),
             ),
             max_search_queries=1,
-            max_pages_read=2,
+            max_pages_read=1,
             provider="tavily",
             search_depth="basic",
             usage_credits_remaining=10,
@@ -183,6 +188,11 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
                 "https://factory.example/products/hinge",
                 "locator only",
             ),
+            SearchResult(
+                "Factory B",
+                "https://factory-b.example/products/hinge",
+                "locator only",
+            ),
         ),
     )
     request_key = sourcing_search_request_key(plan.plan_hash, 0)
@@ -223,7 +233,12 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
             "title": "Factory A",
             "url": "https://factory.example/products/hinge",
             "description": "locator only",
-        }
+        },
+        {
+            "title": "Factory B",
+            "url": "https://factory-b.example/products/hinge",
+            "description": "locator only",
+        },
     ]
 
     binding = {
@@ -235,8 +250,127 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         "query_index": 0,
         "result_index": 0,
     }
-    assert await persistence.claim_page_attempt(**binding) is True
-    assert await persistence.claim_page_attempt(**binding) is False
+    original_load = persistence._load
+    both_loaded = asyncio.Event()
+    load_count = 0
+
+    async def align_competing_claims(*args, **kwargs):
+        nonlocal load_count
+        loaded = await original_load(*args, **kwargs)
+        load_count += 1
+        if load_count == 2:
+            both_loaded.set()
+        await asyncio.wait_for(both_loaded.wait(), timeout=2)
+        return loaded
+
+    monkeypatch.setattr(persistence, "_load", align_competing_claims)
+    competing = {**binding, "result_index": 1}
+    claims = await asyncio.gather(
+        persistence.claim_page_attempt(**binding),
+        persistence.claim_page_attempt(**competing),
+    )
+    assert sum(
+        isinstance(claim, PublicPageAttemptClaim) and claim.claimed_new
+        for claim in claims
+    ) == 1
+    assert sum(claim is None for claim in claims) == 1
+    monkeypatch.setattr(persistence, "_load", original_load)
+    winner = next(
+        claim
+        for claim in claims
+        if isinstance(claim, PublicPageAttemptClaim) and claim.claimed_new
+    )
+    restored_attempts = await persistence.restore_page_attempts(
+        **{
+            key: value
+            for key, value in binding.items()
+            if key not in {"query_index", "result_index"}
+        }
+    )
+    assert restored_attempts == (winner.slot,)
+    assert winner.slot.status is PublicPageAttemptStatus.CLAIMED
+
+    draft_id = f"scd_{new_id('src')[:26]}"
+    async with factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO sourcing_candidate_drafts "
+                "(tenant_id, draft_id, case_id, run_id, plan_id, plan_hash, query_index, "
+                "result_index, source_key, supplier_name, product_title, specs, moq, "
+                "indicative_price_tiers, rejection_codes, evidence_url, evidence_observed_at, "
+                "evidence_hash, evidence_artifact_ref, created_at) VALUES "
+                "(:tenant, :draft, :case, :run, :plan, :hash, 0, :result, :source, "
+                "'Factory A', 'Hinge', '[]', NULL, '[]', '[]', :url, :now, :evidence_hash, "
+                ":artifact, :now)"
+            ),
+            {
+                "tenant": tenant_id,
+                "draft": draft_id,
+                "case": case_id,
+                "run": run_id,
+                "plan": plan_id,
+                "hash": plan.plan_hash,
+                "result": winner.slot.result_index,
+                "source": "e" * 64,
+                "url": batch.results[winner.slot.result_index].url,
+                "now": NOW,
+                "evidence_hash": "b" * 64,
+                "artifact": artifact_id,
+            },
+        )
+    completed = await persistence.complete_page_attempt(
+        **{
+            **binding,
+            "result_index": winner.slot.result_index,
+            "outcome": PublicPageAttemptOutcome.DRAFT_SAVED,
+            "draft_id": draft_id,
+        }
+    )
+    assert completed.status is PublicPageAttemptStatus.COMPLETED
+    assert completed.outcome is PublicPageAttemptOutcome.DRAFT_SAVED
+    assert completed.draft_id == draft_id
+    assert completed.has_supplier_identity is True
+    assert await persistence.restore_page_attempts(
+        **{
+            key: value
+            for key, value in binding.items()
+            if key not in {"query_index", "result_index"}
+        }
+    ) == (completed,)
+    canonical = await persistence.claim_page_attempt(
+        **{**binding, "result_index": winner.slot.result_index}
+    )
+    assert canonical == PublicPageAttemptClaim(claimed_new=False, slot=completed)
+    async with factory() as session, session.begin():
+        stored_attempt = (
+            await session.execute(
+                select(SourcingPageAttemptRow).where(
+                    SourcingPageAttemptRow.tenant_id == str(tenant_id),
+                    SourcingPageAttemptRow.run_id == str(run_id),
+                    SourcingPageAttemptRow.plan_hash == plan.plan_hash,
+                )
+            )
+        ).scalar_one()
+        stored_attempt.result_index = 99
+    with pytest.raises(ValidationError, match="页面槽绑定无效"):
+        await persistence.restore_page_attempts(
+            **{
+                key: value
+                for key, value in binding.items()
+                if key not in {"query_index", "result_index"}
+            }
+        )
+    async with factory() as session, session.begin():
+        stored_attempt = (
+            await session.execute(
+                select(SourcingPageAttemptRow).where(
+                    SourcingPageAttemptRow.tenant_id == str(tenant_id),
+                    SourcingPageAttemptRow.run_id == str(run_id),
+                    SourcingPageAttemptRow.plan_hash == plan.plan_hash,
+                )
+            )
+        ).scalar_one()
+        stored_attempt.result_index = winner.slot.result_index
     assert (
         await persistence.count_page_attempts(
             **{

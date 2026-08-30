@@ -4982,9 +4982,29 @@ class SourcingPageAttemptRow(Base):
             ["workflow_runs.tenant_id", "workflow_runs.run_id"],
             name="fk_sourcing_page_attempts_run", ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "draft_id"],
+            [
+                "sourcing_candidate_drafts.tenant_id",
+                "sourcing_candidate_drafts.draft_id",
+            ],
+            name="fk_sourcing_page_attempts_draft",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "plan_hash ~ '^[0-9a-f]{64}$' AND query_index >= 0 AND result_index >= 0",
             name="ck_sourcing_page_attempts_binding",
+        ),
+        CheckConstraint(
+            "(status = 'claimed' AND outcome IS NULL AND draft_id IS NULL "
+            "AND completed_at IS NULL) OR "
+            "(status = 'completed' AND completed_at IS NOT NULL AND "
+            "((outcome = 'draft_saved' AND draft_id IS NOT NULL) OR "
+            "(outcome IN ('page_access_forbidden','login_or_captcha',"
+            "'unsafe_redirect','provider_rate_limited','provider_timeout',"
+            "'reconciliation_required') "
+            "AND draft_id IS NULL)))",
+            name="ck_sourcing_page_attempts_state",
         ),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
@@ -4994,7 +5014,11 @@ class SourcingPageAttemptRow(Base):
     plan_hash: Mapped[str] = mapped_column(String(64))
     query_index: Mapped[int] = mapped_column(Integer)
     result_index: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), server_default=text("'claimed'"))
+    outcome: Mapped[str | None] = mapped_column(String(40))
+    draft_id: Mapped[str | None] = mapped_column(String(40))
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SourcingCandidateDraftRow(Base):

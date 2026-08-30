@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from collections.abc import Awaitable
 from typing import Any
 
 from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
@@ -17,6 +18,12 @@ from domains.products.service import (
     ProductSpecMatchLevel,
     ProductSpecRequirement,
     QualifiedProductMatch,
+)
+from domains.sourcing.schemas import (
+    PublicPageAttempt,
+    PublicPageAttemptClaim,
+    PublicPageAttemptOutcome,
+    PublicPageAttemptStatus,
 )
 from domains.sourcing.service import (
     LadderCheck,
@@ -60,7 +67,6 @@ _PRODUCT_CONCLUSIONS = {
     3: ("no_qualified_candidate_product", "qualified_candidate_product"),
 }
 
-
 def _raise_dependency_error(
     *, transient: bool, failed: bool, transient_message: str, permanent_message: str
 ) -> None:
@@ -70,6 +76,34 @@ def _raise_dependency_error(
         raise TransientError(transient_message)
     if failed:
         raise ValidationError(permanent_message)
+
+
+async def _await_dependency(
+    awaitable: Awaitable[Any],
+    *,
+    transient_message: str,
+    permanent_message: str,
+    passthrough: tuple[type[Exception], ...] = (),
+) -> Any:
+    """将依赖异常转换成与原异常对象完全脱离的固定安全错误。"""
+
+    transient = False
+    failed = False
+    try:
+        return await awaitable
+    except passthrough:
+        raise
+    except TransientError:
+        transient = True
+    except Exception:  # noqa: BLE001 - 下层原文和异常对象都不得越界。
+        failed = True
+    _raise_dependency_error(
+        transient=transient,
+        failed=failed,
+        transient_message=transient_message,
+        permanent_message=permanent_message,
+    )
+    raise AssertionError("依赖错误分类必须终止执行")
 
 
 def _text(value: object, message: str, *, maximum: int = 200) -> str:
@@ -684,18 +718,17 @@ class PublicSearchStep:
             run.context.get("sourcing_plan_hash"), "寻源计划哈希无效", maximum=64
         )
         need = await _trusted_need(run, self._need_reader)
-        try:
-            plan = await self._plan_reader.load_authorized(
+        plan = await _await_dependency(
+            self._plan_reader.load_authorized(
                 tenant_id=run.tenant_id,
                 case_id=case_id,
                 run_id=run.run_id,
                 plan_id=plan_id,
                 plan_hash=plan_hash,
-            )
-        except TransientError:
-            raise TransientError("已授权公开寻源计划暂不可用") from None
-        except Exception:  # noqa: BLE001 - 下层异常原文不得进入 Workflow。
-            raise ValidationError("已授权公开寻源计划读取失败") from None
+            ),
+            transient_message="已授权公开寻源计划暂不可用",
+            permanent_message="已授权公开寻源计划读取失败",
+        )
         if (
             plan.tenant_id != run.tenant_id
             or plan.case_id != case_id
@@ -708,44 +741,88 @@ class PublicSearchStep:
         ):
             raise ValidationError("已授权公开寻源计划绑定无效")
 
-        searches_used = 0
-        try:
-            pages_used = await self._receipts.count_page_attempts(
+        page_attempts = await _await_dependency(
+            self._receipts.restore_page_attempts(
                 tenant_id=run.tenant_id,
                 case_id=case_id,
                 run_id=run.run_id,
                 plan_id=plan_id,
                 plan_hash=plan_hash,
-            )
-        except Exception:  # noqa: BLE001 - 持久异常原文不得进入 Workflow。
-            raise ValidationError("公开寻源页面预算读取失败") from None
-        if (
-            not isinstance(pages_used, int)
-            or isinstance(pages_used, bool)
-            or not 0 <= pages_used <= plan.max_pages_read
+            ),
+            transient_message="公开寻源页面预算暂不可用",
+            permanent_message="公开寻源页面预算读取失败",
+        )
+        if not isinstance(page_attempts, tuple) or any(
+            not isinstance(attempt, PublicPageAttempt)
+            or attempt.tenant_id != run.tenant_id
+            or attempt.case_id != case_id
+            or attempt.run_id != run.run_id
+            or attempt.plan_id != plan_id
+            or attempt.plan_hash != plan_hash
+            or attempt.query_index >= len(plan.queries)
+            for attempt in page_attempts
         ):
             raise ValidationError("公开寻源页面预算状态无效")
-        result_count = 0
-        verifiable_count = 0
-        draft_ids: list[str] = []
+        pages_used = len(page_attempts)
+        if pages_used > plan.max_pages_read:
+            raise ValidationError("公开寻源页面预算状态无效")
+        counted_queries = {attempt.query_index for attempt in page_attempts}
+        searches_used = len(counted_queries)
+        result_count = pages_used
+        draft_ids = [
+            attempt.draft_id
+            for attempt in page_attempts
+            if attempt.status is PublicPageAttemptStatus.COMPLETED
+            and attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED
+            and attempt.draft_id is not None
+        ]
+        verifiable_count = sum(
+            attempt.has_supplier_identity is True
+            for attempt in page_attempts
+            if attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED
+        )
         rejected_page_reason: str | None = None
+        for attempt in page_attempts:
+            if attempt.status is PublicPageAttemptStatus.CLAIMED:
+                return self._wait(
+                    "reconciliation_required",
+                    searches=searches_used,
+                    pages=pages_used,
+                )
+            if (
+                attempt.outcome is not PublicPageAttemptOutcome.DRAFT_SAVED
+                and attempt.outcome is not None
+            ):
+                rejected_page_reason = attempt.outcome.value
+        completed_slots = {
+            (attempt.query_index, attempt.result_index): attempt
+            for attempt in page_attempts
+        }
         try:
             for query_index, query in enumerate(plan.queries):
-                if (
-                    searches_used >= plan.max_search_queries
-                    or pages_used >= plan.max_pages_read
-                ):
+                if searches_used >= plan.max_search_queries:
                     break
                 request_key = sourcing_search_request_key(plan_hash, query_index)
-                batch = await self._receipts.restore(
-                    tenant_id=run.tenant_id,
-                    run_id=run.run_id,
-                    plan_hash=plan_hash,
-                    query_index=query_index,
+                batch = await _await_dependency(
+                    self._receipts.restore(
+                        tenant_id=run.tenant_id,
+                        run_id=run.run_id,
+                        plan_hash=plan_hash,
+                        query_index=query_index,
+                    ),
+                    transient_message="公开寻源安全回执暂不可用",
+                    permanent_message="公开寻源安全回执读取失败",
                 )
                 try:
                     if batch is None:
-                        if await self._quota.get(run.run_id, request_key) is not None:
+                        if pages_used >= plan.max_pages_read:
+                            break
+                        reservation = await _await_dependency(
+                            self._quota.get(run.run_id, request_key),
+                            transient_message="公开寻源额度状态暂不可用",
+                            permanent_message="公开寻源额度状态读取失败",
+                        )
+                        if reservation is not None:
                             searches_used += 1
                             return self._wait(
                                 "reconciliation_required",
@@ -753,6 +830,10 @@ class PublicSearchStep:
                                 pages=pages_used,
                             )
                         searches_used += 1
+                        free_error: FreeSearchError | None = None
+                        tool_error: ToolGatewayError | None = None
+                        dependency_transient = False
+                        dependency_failed = False
                         try:
                             batch = await self._searcher.search(
                                 run.tenant_id,
@@ -764,36 +845,59 @@ class PublicSearchStep:
                                 quota_request_key=request_key,
                             )
                         except FreeSearchError as error:
-                            if error.reason is FreeSearchStopReason.REQUEST_UNCERTAIN:
-                                await self._receipts.record_uncertain(
-                                    tenant_id=run.tenant_id,
-                                    case_id=case_id,
-                                    run_id=run.run_id,
-                                    plan_id=plan_id,
-                                    plan_hash=plan_hash,
-                                    query_index=query_index,
-                                    request_key=request_key,
-                                    query_hash=hashlib.sha256(
-                                        query.query_text.encode()
-                                    ).hexdigest(),
+                            free_error = error
+                        except ToolGatewayError as error:
+                            tool_error = error
+                        except TransientError:
+                            dependency_transient = True
+                        except Exception:  # noqa: BLE001 - 搜索异常不得越界。
+                            dependency_failed = True
+                        _raise_dependency_error(
+                            transient=dependency_transient,
+                            failed=dependency_failed,
+                            transient_message="公开寻源搜索暂不可用",
+                            permanent_message="公开寻源搜索失败",
+                        )
+                        if free_error is not None:
+                            if (
+                                free_error.reason
+                                is FreeSearchStopReason.REQUEST_UNCERTAIN
+                            ):
+                                await _await_dependency(
+                                    self._receipts.record_uncertain(
+                                        tenant_id=run.tenant_id,
+                                        case_id=case_id,
+                                        run_id=run.run_id,
+                                        plan_id=plan_id,
+                                        plan_hash=plan_hash,
+                                        query_index=query_index,
+                                        request_key=request_key,
+                                        query_hash=hashlib.sha256(
+                                            query.query_text.encode()
+                                        ).hexdigest(),
+                                    ),
+                                    transient_message="公开寻源不确定回执暂不可用",
+                                    permanent_message="公开寻源不确定回执保存失败",
                                 )
                             return self._wait(
-                                _FREE_STOP_REASONS[error.reason],
+                                _FREE_STOP_REASONS[free_error.reason],
                                 searches=searches_used,
                                 pages=pages_used,
                             )
-                        except ToolGatewayError as error:
-                            if error.category is ToolErrorCategory.VALIDATION:
-                                raise ValidationError("公开寻源搜索请求无效") from None
+                        if tool_error is not None:
+                            if tool_error.category is ToolErrorCategory.VALIDATION:
+                                raise ValidationError("公开寻源搜索请求无效")
                             return self._wait(
                                 _TOOL_STOP_REASONS.get(
-                                    error.category, "provider_timeout"
+                                    tool_error.category, "provider_timeout"
                                 ),
                                 searches=searches_used,
                                 pages=pages_used,
                             )
-                        try:
-                            await self._receipts.commit_locator_receipt(
+                        if batch is None:
+                            raise ValidationError("公开寻源搜索结果无效")
+                        await _await_dependency(
+                            self._receipts.commit_locator_receipt(
                                 tenant_id=run.tenant_id,
                                 case_id=case_id,
                                 run_id=run.run_id,
@@ -805,18 +909,23 @@ class PublicSearchStep:
                                     query.query_text.encode()
                                 ).hexdigest(),
                                 batch=batch,
-                            )
-                        except Exception:  # noqa: BLE001 - 持久异常可能含 locator。
-                            raise ValidationError("公开寻源安全回执保存失败") from None
+                            ),
+                            transient_message="公开寻源安全回执暂不可用",
+                            permanent_message="公开寻源安全回执保存失败",
+                        )
                     else:
-                        searches_used += 1
+                        if query_index not in counted_queries:
+                            searches_used += 1
+                    counted_queries.add(query_index)
                     result_count += len(batch.results)
                     for result_index in range(len(batch.results)):
+                        if (query_index, result_index) in completed_slots:
+                            continue
                         if pages_used >= plan.max_pages_read:
                             break
                         try:
-                            try:
-                                claimed = await self._receipts.claim_page_attempt(
+                            claim = await _await_dependency(
+                                self._receipts.claim_page_attempt(
                                     tenant_id=run.tenant_id,
                                     case_id=case_id,
                                     run_id=run.run_id,
@@ -824,36 +933,61 @@ class PublicSearchStep:
                                     plan_hash=plan_hash,
                                     query_index=query_index,
                                     result_index=result_index,
+                                ),
+                                transient_message="公开寻源页面预算暂不可用",
+                                permanent_message="公开寻源页面预算保存失败",
+                            )
+                            if claim is None:
+                                current = await _await_dependency(
+                                    self._receipts.restore_page_attempts(
+                                        tenant_id=run.tenant_id,
+                                        case_id=case_id,
+                                        run_id=run.run_id,
+                                        plan_id=plan_id,
+                                        plan_hash=plan_hash,
+                                    ),
+                                    transient_message="公开寻源页面预算暂不可用",
+                                    permanent_message="公开寻源页面预算读取失败",
                                 )
-                            except Exception:  # noqa: BLE001 - DB异常不得泄露。
-                                raise ValidationError(
-                                    "公开寻源页面预算保存失败"
-                                ) from None
-                            if not claimed:
+                                return self._wait(
+                                    "reconciliation_required",
+                                    searches=searches_used,
+                                    pages=len(current),
+                                )
+                            if not isinstance(claim, PublicPageAttemptClaim):
+                                raise ValidationError("公开寻源页面槽状态无效")
+                            if not claim.claimed_new:
+                                if (
+                                    claim.slot.status
+                                    is PublicPageAttemptStatus.CLAIMED
+                                ):
+                                    return self._wait(
+                                        "reconciliation_required",
+                                        searches=searches_used,
+                                        pages=pages_used,
+                                    )
+                                completed_slots[(query_index, result_index)] = (
+                                    claim.slot
+                                )
                                 continue
                             pages_used += 1
-                            try:
-                                page = await self._page_reader.read_page(
+                            page = await _await_dependency(
+                                self._page_reader.read_page(
                                     run.tenant_id, run.run_id, batch, result_index
-                                )
-                            except ToolGatewayError:
-                                raise
-                            except TransientError:
-                                raise TransientError("公开寻源页面暂不可用") from None
-                            except Exception:  # noqa: BLE001 - 页面异常可能含URL或正文。
-                                raise ValidationError("公开寻源页面读取失败") from None
-                            try:
-                                draft = await self._extractor.extract(need, page)
-                            except TransientError:
-                                raise TransientError(
-                                    "公开寻源页面抽取暂不可用"
-                                ) from None
-                            except Exception:  # noqa: BLE001 - 模型异常不得进入 Workflow。
-                                raise ValidationError("公开寻源页面抽取失败") from None
+                                ),
+                                transient_message="公开寻源页面暂不可用",
+                                permanent_message="公开寻源页面读取失败",
+                                passthrough=(ToolGatewayError,),
+                            )
+                            draft = await _await_dependency(
+                                self._extractor.extract(need, page),
+                                transient_message="公开寻源页面抽取暂不可用",
+                                permanent_message="公开寻源页面抽取失败",
+                            )
                             if not isinstance(draft, SourcingPageCandidateDraft):
                                 raise ValidationError("公开寻源抽取草稿无效")
-                            try:
-                                draft_id = await self._drafts.save(
+                            draft_id = await _await_dependency(
+                                self._drafts.save(
                                     tenant_id=run.tenant_id,
                                     case_id=case_id,
                                     run_id=run.run_id,
@@ -862,11 +996,28 @@ class PublicSearchStep:
                                     query_index=query_index,
                                     result_index=result_index,
                                     draft=draft,
-                                )
-                            except Exception:  # noqa: BLE001 - 存储异常不得带原文。
-                                raise ValidationError(
-                                    "公开寻源安全草稿保存失败"
-                                ) from None
+                                ),
+                                transient_message="公开寻源安全草稿暂不可用",
+                                permanent_message="公开寻源安全草稿保存失败",
+                            )
+                            completed = await _await_dependency(
+                                self._receipts.complete_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    outcome=PublicPageAttemptOutcome.DRAFT_SAVED,
+                                    draft_id=draft_id,
+                                ),
+                                transient_message="公开寻源页面结果暂不可用",
+                                permanent_message="公开寻源页面结果保存失败",
+                            )
+                            if not isinstance(completed, PublicPageAttempt):
+                                raise ValidationError("公开寻源页面结果状态无效")
+                            completed_slots[(query_index, result_index)] = completed
                             draft_ids.append(draft_id)
                             if draft.supplier_name is not None:
                                 verifiable_count += 1
@@ -874,6 +1025,26 @@ class PublicSearchStep:
                             rejected_page_reason = _TOOL_STOP_REASONS.get(
                                 error.category, "page_access_forbidden"
                             )
+                            completed = await _await_dependency(
+                                self._receipts.complete_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    outcome=PublicPageAttemptOutcome(
+                                        rejected_page_reason
+                                    ),
+                                    draft_id=None,
+                                ),
+                                transient_message="公开寻源页面结果暂不可用",
+                                permanent_message="公开寻源页面结果保存失败",
+                            )
+                            if not isinstance(completed, PublicPageAttempt):
+                                raise ValidationError("公开寻源页面结果状态无效")
+                            completed_slots[(query_index, result_index)] = completed
                             continue
                 finally:
                     if batch is not None:
