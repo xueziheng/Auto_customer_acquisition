@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass
 
 _MAX_TEXT_CHARS = 16_000
@@ -282,6 +283,27 @@ class _Sentence:
     currency_symbols: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _SpanCoverage:
+    starts: tuple[int, ...]
+    prefix_max_ends: tuple[int, ...]
+
+    @classmethod
+    def from_spans(cls, spans: tuple[tuple[int, int], ...]) -> _SpanCoverage:
+        starts: list[int] = []
+        prefix_max_ends: list[int] = []
+        maximum_end = -1
+        for start, end in spans:
+            starts.append(start)
+            maximum_end = max(maximum_end, end)
+            prefix_max_ends.append(maximum_end)
+        return cls(tuple(starts), tuple(prefix_max_ends))
+
+    def covers(self, span: tuple[int, int]) -> bool:
+        index = bisect_right(self.starts, span[0]) - 1
+        return index >= 0 and self.prefix_max_ends[index] >= span[1]
+
+
 def _is_valid_bounded_text(value: object, *, maximum: int) -> bool:
     if not isinstance(value, str) or len(value) > maximum:
         return False
@@ -420,19 +442,30 @@ def _literal_spans(text: str, literals: tuple[str, ...]) -> tuple[tuple[int, int
         while cursor >= 0:
             spans.append((cursor, cursor + len(literal)))
             cursor = text.find(literal, cursor + 1)
-    return tuple(spans)
+    return tuple(sorted(spans))
 
 
 def _covered(span: tuple[int, int], allowed: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= span[0] and span[1] <= end for start, end in allowed)
 
 
-def _sentence_local_spans(
-    sentence: _Sentence, spans: tuple[tuple[int, int], ...]
+def _spans_within_sentences(
+    spans: tuple[tuple[int, int], ...],
+    sentences: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
-    return tuple(
-        span for span in spans if sentence.start <= span[0] and span[1] <= sentence.end
-    )
+    bounded: list[tuple[int, int]] = []
+    sentence_index = 0
+    for span in spans:
+        while (
+            sentence_index < len(sentences) and sentences[sentence_index][1] <= span[0]
+        ):
+            sentence_index += 1
+        if sentence_index >= len(sentences):
+            break
+        sentence_start, sentence_end = sentences[sentence_index]
+        if sentence_start <= span[0] and span[1] <= sentence_end:
+            bounded.append(span)
+    return tuple(bounded)
 
 
 def _identity_spans(text: str, sentence: _Sentence) -> tuple[tuple[int, int], ...]:
@@ -602,12 +635,7 @@ def _currency_pairs_are_identity_bound(
     ]
     if outside_numbers:
         return False
-    allowed_word_shapes: tuple[tuple[str, ...], ...] = (
-        (),
-        ("price", "sensitive"),
-        ("uses", "steel"),
-    )
-    if outside_words not in allowed_word_shapes:
+    if outside_words:
         return False
     for index, character in enumerate(text[sentence.start : sentence.end]):
         absolute = sentence.start + index
@@ -623,7 +651,7 @@ def _currency_pairs_are_identity_bound(
 def _sentence_contains_untrusted_money(
     text: str,
     sentence: _Sentence,
-    trusted_spans: tuple[tuple[int, int], ...],
+    trusted_coverage: _SpanCoverage,
 ) -> bool:
     if sentence.currency_symbols:
         return True
@@ -651,9 +679,11 @@ def _sentence_contains_untrusted_money(
             or "=" in text[sentence.start : sentence.end]
         ):
             return True
-        allowed = (*trusted_spans, *identities)
         if any(
-            not _covered((number.start, number.end), allowed)
+            not (
+                trusted_coverage.covers((number.start, number.end))
+                or _covered((number.start, number.end), identities)
+            )
             for number in sentence.numbers
         ):
             return True
@@ -665,8 +695,8 @@ def _sentence_contains_untrusted_money(
                     return True
 
     for number in sentence.numbers:
-        if number.is_decimal and not _covered(
-            (number.start, number.end), trusted_spans
+        if number.is_decimal and not trusted_coverage.covers(
+            (number.start, number.end)
         ):
             return True
     return False
@@ -694,10 +724,14 @@ def contains_untrusted_money(
         if total_trusted_chars > _MAX_TOTAL_TRUSTED_CHARS:
             return True
 
-    literal_spans = _literal_spans(text, trusted_literals)
-    for start, end in _sentence_spans(text):
+    unique_literals = tuple(dict.fromkeys(trusted_literals))
+    sentence_spans = _sentence_spans(text)
+    literal_spans = _literal_spans(text, unique_literals)
+    trusted_coverage = _SpanCoverage.from_spans(
+        _spans_within_sentences(literal_spans, sentence_spans)
+    )
+    for start, end in sentence_spans:
         sentence = _lex_sentence(text, start, end)
-        trusted_spans = _sentence_local_spans(sentence, literal_spans)
-        if _sentence_contains_untrusted_money(text, sentence, trusted_spans):
+        if _sentence_contains_untrusted_money(text, sentence, trusted_coverage):
             return True
     return False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unicodedata
+from collections.abc import Iterator
 
 import pytest
 
@@ -21,6 +22,8 @@ from agent_runtime.sourcing_agent.money_guard import contains_untrusted_money
         "250\u2009/AED",
         "Grade 304 costs AED 250",
         "Model X。 AED 250 is listed",
+        "Model AED 250 uses grade 304 steel",
+        "price-sensitive Model AED-250",
     ],
 )
 def test_currency_and_number_pairs_reject_outside_identity(text: str) -> None:
@@ -42,7 +45,6 @@ def test_currency_aliases_and_integer_per_unit_forms_reject(text: str) -> None:
         "Series no CHF250",
         "Code 250/AED",
         "Grade 304",
-        "Model AED 250 uses grade 304 steel",
     ],
 )
 def test_strict_identity_spans_can_protect_currency_shaped_identifiers(
@@ -56,6 +58,69 @@ def test_identity_composition_rejects_incomplete_grade_prose() -> None:
         contains_untrusted_money("Model AED 250 uses grade steel", trusted_literals=())
         is True
     )
+
+
+def test_identity_cannot_protect_trailing_uses_prose() -> None:
+    assert (
+        contains_untrusted_money("Model AED250 uses steel", trusted_literals=()) is True
+    )
+
+
+def test_duplicate_trusted_literals_are_deduplicated_before_occurrence_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.money_guard", fromlist=["_literal_spans"]
+    )
+    original = module._literal_spans
+
+    def checked_literal_spans(
+        text: str, literals: tuple[str, ...]
+    ) -> tuple[tuple[int, int], ...]:
+        assert literals == ("a",)
+        return original(text, literals)
+
+    monkeypatch.setattr(module, "_literal_spans", checked_literal_spans)
+
+    assert (
+        contains_untrusted_money(
+            "a." * 4_000,
+            trusted_literals=("a",) * 100,
+        )
+        is False
+    )
+
+
+def test_literal_occurrences_are_not_rescanned_for_every_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.money_guard", fromlist=["_literal_spans"]
+    )
+    original = module._literal_spans
+    work = {"span_visits": 0}
+    text = "a." * 4_000
+
+    class CountedSpans(tuple[tuple[int, int], ...]):
+        def __iter__(self) -> Iterator[tuple[int, int]]:
+            work["span_visits"] += len(self)
+            if work["span_visits"] > len(text) * 2:
+                raise AssertionError("literal-span work exceeded the linear budget")
+            return super().__iter__()
+
+    def counted_literal_spans(
+        value: str, literals: tuple[str, ...]
+    ) -> tuple[tuple[int, int], ...]:
+        return CountedSpans(original(value, literals))
+
+    monkeypatch.setattr(
+        module,
+        "_literal_spans",
+        counted_literal_spans,
+    )
+
+    assert contains_untrusted_money(text, trusted_literals=("a",)) is False
+    assert work["span_visits"] <= len(text)
 
 
 _UNICODE_CURRENCY_SYMBOLS = tuple(
@@ -141,8 +206,6 @@ def test_price_cost_predicates_and_targeted_exemptions_reject(text: str) -> None
         "amount of 304 stainless steel",
         "The 304 cost impact is unknown",
         "cost impact for grade 304 steel is unknown",
-        "price-sensitive Model AED-250",
-        "Model AED 250 uses grade 304 steel",
     ],
 )
 def test_closed_non_money_phrases_pass(text: str) -> None:

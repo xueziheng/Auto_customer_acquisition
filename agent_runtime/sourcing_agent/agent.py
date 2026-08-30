@@ -80,6 +80,13 @@ price_rejection_suggestions 只能逐项解释输入中确定性检查触发的�
 """
 
 
+def _utf8_size(value: str) -> int | None:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+
+
 @runtime_checkable
 class SourcingCandidateModelPort(Protocol):
     """结构化候选分析端口；凭证、外部访问和业务写入均不属于该端口。"""
@@ -407,11 +414,8 @@ class SourcingAgent(CapabilityAgent):
     def _validate_output(raw: str, projection: dict[str, object]) -> dict[str, object]:
         if not isinstance(raw, str):
             raise ValidationError("寻源分析模型输出无效")
-        try:
-            output_size = len(raw.encode("utf-8"))
-        except UnicodeEncodeError:
-            raise ValidationError("寻源分析模型输出无效") from None
-        if output_size > _MAX_OUTPUT_BYTES:
+        output_size = _utf8_size(raw)
+        if output_size is None or output_size > _MAX_OUTPUT_BYTES:
             raise ValidationError("寻源分析模型输出无效")
         try:
             payload = json.loads(raw)

@@ -20,6 +20,7 @@ from agent_runtime.sourcing_agent.extraction import (
     SourcingPageCandidateDraft,
     SourcingPageEvidence,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     RunId,
@@ -495,6 +496,7 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
     [
         "Grade 304 costs AED250.",
         "Model AED 250 extra.",
+        "Model AED-250 uses grade 304 steel.",
         "The price-sensitive model is AED-250.",
         "Series CHF 250 matches the requested type.",
         "Cost impact 304。Price 250.",
@@ -715,7 +717,6 @@ async def test_existing_agent_rejects_untrusted_decimals_and_reverse_price_predi
         "cost implication for grade 304",
         "Cost\u2028304 steel matches.",
         "Model AED 250",
-        "Model AED-250 uses grade 304 steel.",
         "Series CHF-250",
         "Grade 304",
     ],
@@ -920,3 +921,26 @@ async def test_agent_fails_closed_on_raw_surrogate_without_leaking_exception() -
     assert result.changes == []
     assert result.summary == "模型输出被护栏拦截：寻源分析模型输出无效"
     assert result.summary.encode("utf-8")
+
+
+def test_raw_surrogate_validation_error_drops_exception_object_and_secret() -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    projection = module.SourcingAgent._safe_projection(_page_review_task(review))
+    response = _page_review_response()
+    response["summary"] = "raw-secret-marker\ud800"
+    raw = json.dumps(response, ensure_ascii=False)
+
+    with pytest.raises(ValidationError) as raised:
+        module.SourcingAgent._validate_output(raw, projection)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "raw-secret-marker" not in str(raised.value)
+    assert "raw-secret-marker" not in repr(raised.value)

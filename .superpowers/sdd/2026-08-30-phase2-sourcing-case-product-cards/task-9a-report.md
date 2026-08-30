@@ -8,6 +8,12 @@ Task 9A 已按 BASE `e542a65ba023680c0d9ab7d3980611b195c8f75b` 和 Ruling P38 �
 有界、确定性的 Unicode 词法和句级分类。联系人、URL、单位、默认序列化、网页抽取、
 工作流、域、Connector、Gateway、数据库和 Task 10 行为均未改动。
 
+Fix Round 1 已关闭审查的 1 Important 与 2 Minor：重复可信 literal 在 occurrence 扫描前
+精确去重；所有 occurrence 只排序一次、只分配一次句界，再用 prefix-max interval index
+按位置查询，不再为每句话扫描全部 span。UTF-8 编码探测在受控 helper 内吞掉原异常并
+返回固定状态，外层在无活动异常上下文时创建 `ValidationError`。币种形标识只允许整字段
+strict identity，`uses steel`、双 identity prose 和 `price-sensitive` 前缀均不能扩大豁免。
+
 ## TDD 证据
 
 ### RED
@@ -26,6 +32,13 @@ Task 9A 已按 BASE `e542a65ba023680c0d9ab7d3980611b195c8f75b` 和 Ruling P38 �
    `2.50` 改用逗号而非句界，独立证明可信 occurrence 只覆盖自己的原始坐标。
 5. 新增 `Model AED 250 uses grade steel`，得到 1 个预期失败，证明 identity 组合不能靠
    宽前缀吞掉不完整的后续 prose。
+6. Fix Round 1 先用内部工作量边界为三项审查建立 4 个 RED：重复 literal 未在 occurrence
+   扫描前去重；同一批 span 被第二句话再次全量扫描；`Model AED250 uses steel` 被宽松
+   identity allowance 放过；Unicode 编码错误仍通过 `ValidationError.__context__` 持有
+   raw JSON。最小实现后 4 项全部转绿。
+7. 将“只有 strict whole-field identity 可保护币种形标识”继续组合到既有非金额豁免，
+   `price-sensitive Model AED-250` 产生独立 1 个 RED；移除最后一个外部词形 allowance 后
+   转绿，同时 `Model AED250`、`Series no CHF250` 保持通过。
 
 ### GREEN
 
@@ -33,10 +46,10 @@ Task 9A 已按 BASE `e542a65ba023680c0d9ab7d3980611b195c8f75b` 和 Ruling P38 �
 pytest tests/unit/test_sourcing_page_extraction.py \
        tests/unit/test_sourcing_agent_boundary.py \
        tests/unit/test_sourcing_money_guard.py -q
-=> 415 passed
+=> 418 passed
 
 pytest tests/unit -q
-=> 6107 passed
+=> 6110 passed
 ```
 
 ## 实现摘要
@@ -49,13 +62,16 @@ pytest tests/unit -q
 - 每个 `Sc` 字符单独记录并失败关闭。alpha token 用 NFKC/casefold 分类，因此小写、
   全角及与数字直接相连的 ISO-4217 code 都能识别；保留既有 `RMB` 安全别名。
 - ISO/数字同句默认拒绝；只允许受控 `model|series|grade|type|part|sku|code` identity span。
-  `price-sensitive Model AED-250` 和 brief 指定的双 identity 组合可通过，但额外 prose、
-  不完整 grade 或第二段金额表达不能借前置 cue 获得豁免。
+  只有 identity 覆盖整个句字段时才能保护币种形标识；`price-sensitive`、`uses steel`、
+  双 identity 或任何额外 prose 都不能借前置 cue 获得豁免。
 - price/cost token 只采用封闭词类。非豁免句只要同时含数字即拒绝；`cost impact`、
   `cost implication`、`price-sensitive` 只有在每个数字都被同句 exact trusted occurrence
   或严格 identity span 覆盖，且不存在 `:`、`=` 或指向数字的后置构造时才能通过。
 - 任意未被 exact trusted occurrence 覆盖的小数独立拒绝。同一数字出现在别处、另一句
   或仅有相同 digit 文本都不能获得覆盖。
+- trusted literals 在查找前按精确字符串去重；occurrence 按原坐标排序并通过单调游标
+  一次过滤跨句 span，再构造 start/prefix-max-end index。查询保持“必须由某个完整 exact
+  occurrence 覆盖”的语义，重叠 occurrence 不会合并成虚假的更大可信区间。
 - 输入、可信 literal 数量、单项长度和总长度均有确定上限；Cc（句界 CR/LF 除外）、Cf、
   surrogate 和越界输入只返回 fail-closed boolean，不返回或记录原始文本。
 - Agent 对 raw model output 的 UTF-8 计数显式包装 `UnicodeEncodeError` 为固定
@@ -65,8 +81,8 @@ pytest tests/unit -q
 
 ## 最终门禁
 
-- Task 9 完整定向套件：`415 passed`。
-- 全量单元测试：`6107 passed`。
+- Task 9 完整定向套件：`418 passed`。
+- 全量单元测试：`6110 passed`。
 - Ruff 全库及 touched format check：通过。
 - touched Mypy：
   `mypy --follow-imports=skip agent_runtime/sourcing_agent/money_guard.py agent_runtime/sourcing_agent/agent.py`
