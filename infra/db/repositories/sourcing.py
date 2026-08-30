@@ -927,8 +927,10 @@ class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
                     SourcingReviewRow.confirmed_by.is_not(None),
                     SourcingReviewRow.confirmed_at.is_not(None),
                     SourcingSupplyOptionRow.is_qualified.is_(True),
+                    SourcingCaseRow.state == CaseState.HANDED_TO_COSTING.value,
+                    SourcingCaseRow.opportunity_id.is_not(None),
                     SourcingCaseRow.version
-                    == SourcingReviewRow.expected_case_version,
+                    == SourcingReviewRow.expected_case_version + 1,
                 )
             )
         ).one_or_none()

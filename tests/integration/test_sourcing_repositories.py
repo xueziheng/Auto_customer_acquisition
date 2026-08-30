@@ -210,6 +210,25 @@ def _case(
     )
 
 
+async def _advance_case_to_candidates_ready(
+    uow_type: Any,
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: TenantId,
+    case_id: SourcingCaseId,
+) -> None:
+    """通过真实 Case CAS 逐步推进到审核可绑定的 version 4。"""
+
+    for offset, target in enumerate(
+        (CaseState.DISCOVERING, CaseState.VERIFYING, CaseState.CANDIDATES_READY),
+        start=1,
+    ):
+        async with uow_type(session_factory, tenant_id) as uow:
+            case = await uow.cases.get(tenant_id, case_id)
+            assert case is not None
+            case.transition_to(target, changed_at=NOW + timedelta(seconds=offset))
+            await uow.cases.update(tenant_id, case)
+
+
 def _plan(tenant_id: TenantId, case_id: SourcingCaseId) -> PublicSourcingPlan:
     plan_id = SourcingPlanId(new_id("spl"))
     return PublicSourcingPlan.create(
@@ -687,11 +706,11 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
         tenant_id, case_id, candidate_id, (evidence,)
     )
     case = _case(tenant_id, need_id, case_id, artifact_id)
-    case.opportunity_id = opportunity_id
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
         await uow.cases.add(tenant_id, case)
         await uow.candidates.add(tenant_id, candidate)
+    await _advance_case_to_candidates_ready(Uow, sf, tenant_id, case_id)
     async with sourcing_engine.begin() as connection:
         for current_product in (product_id, alternate_product_id):
             await connection.execute(
@@ -740,11 +759,11 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
             primary_option_id=option_id,
             alternate_option_ids=(alternate_option_id,),
             reason="主候选证据完整",
-            expected_case_version=1,
+            expected_case_version=4,
         ),
         submitted_by=EmployeeId("emp-reviewer"),
         submitted_at=NOW,
-        actual_case_version=1,
+        actual_case_version=4,
     )
     async with Uow(sf, tenant_id) as uow:
         await uow.options.add(
@@ -781,6 +800,20 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
     confirmed = review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW)
     async with Uow(sf, tenant_id) as uow:
         await uow.reviews.update(tenant_id, confirmed)
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+    async with Uow(sf, tenant_id) as uow:
+        current_case = await uow.cases.get(tenant_id, case_id)
+        assert current_case is not None
+        current_case.opportunity_id = opportunity_id
+        current_case.transition_to(
+            CaseState.HANDED_TO_COSTING,
+            changed_at=NOW + timedelta(seconds=4),
+        )
+        current_case.completed_at = NOW + timedelta(seconds=4)
+        await uow.cases.update(tenant_id, current_case)
     async with Uow(sf, tenant_id) as uow:
         snapshot = await uow.handoffs.get_snapshot(
             tenant_id, case_id, review_id
@@ -910,7 +943,6 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
         sourcing_engine, tenant_id, opportunity_id, need_id
     )
     case = _case(tenant_id, need_id, case_id, artifact_id)
-    case.opportunity_id = opportunity_id
     async with sourcing_engine.begin() as connection:
         await connection.execute(
             text(
@@ -932,6 +964,22 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
             },
         )
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(tenant_id, case)
+        await uow.options.add(
+            tenant_id,
+            SourcingSupplyOption(
+                option_id=option_id,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.EXISTING_PRODUCT,
+                product_id=product_id,
+                supplier_candidate_id=None,
+                is_qualified=True,
+                created_at=NOW,
+            ),
+        )
+    await _advance_case_to_candidates_ready(Uow, sf, tenant_id, case_id)
     review = Review.create(
         review_id=review_id,
         tenant_id=tenant_id,
@@ -940,12 +988,117 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
             primary_option_id=option_id,
             alternate_option_ids=(),
             reason="现货成本资料完整",
-            expected_case_version=1,
+            expected_case_version=4,
         ),
         submitted_by=EmployeeId("emp-reviewer"),
         submitted_at=NOW,
-        actual_case_version=1,
+        actual_case_version=4,
     )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.reviews.add(tenant_id, review)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.reviews.update(
+            tenant_id,
+            review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW),
+        )
+    async with Uow(sf, tenant_id) as uow:
+        current_case = await uow.cases.get(tenant_id, case_id)
+        assert current_case is not None
+        current_case.opportunity_id = opportunity_id
+        current_case.transition_to(
+            CaseState.HANDED_TO_COSTING,
+            changed_at=NOW + timedelta(seconds=4),
+        )
+        current_case.completed_at = NOW + timedelta(seconds=4)
+        await uow.cases.update(tenant_id, current_case)
+    async with Uow(sf, tenant_id) as uow:
+        snapshot = await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        )
+    assert snapshot is not None
+    assert snapshot.supplier_candidate_id is None
+    assert snapshot.quantity == 5000
+    assert snapshot.moq == 500
+    assert snapshot.price_options[0].minimum_quantity == 500
+    assert snapshot.price_options[0].unit_amount == Decimal("0.222222222222")
+    assert snapshot.price_options[0].unit == "piece"
+    assert snapshot.price_options[0].evidence_ref == artifact_id
+    assert snapshot.price_options[0].source_kind == "existing_product"
+
+
+@pytest.mark.parametrize(
+    ("case_state", "case_version"),
+    (
+        (CaseState.OPENED, 4),
+        (CaseState.CANDIDATES_READY, 4),
+        (CaseState.HANDED_TO_COSTING, 4),
+    ),
+    ids=("opened", "candidates-ready", "wrong-handoff-version"),
+)
+async def test_handoff_snapshot_requires_completed_transition_and_next_version(
+    sourcing_engine: AsyncEngine,
+    case_state: Any,
+    case_version: int,
+) -> None:
+    """缺少 handed_to_costing 状态或 expected+1 版本时不得读取交接。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    Review = _symbol("domains.sourcing.models", "SourcingReview")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, opportunity_id = SourcingCaseId(new_id("src")), OpportunityId(
+        new_id("opp")
+    )
+    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
+        new_id("sop")
+    )
+    review_id, artifact_id = SourcingReviewId(new_id("srv")), _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_id, content_hash="f" * 64
+    )
+    await _seed_opportunity(
+        sourcing_engine, tenant_id, opportunity_id, need_id
+    )
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO products "
+                "(tenant_id, product_id, pool, name_zh, name_en, category, "
+                "normalized_category, moq, internal_cost_amount, internal_cost_currency, "
+                "internal_cost_basis, internal_cost_unit, internal_cost_source_ref, "
+                "sellable_markets, customizable, selling_points, known_issues, created_at) "
+                "VALUES (:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', "
+                "'hinges', 500, :amount, 'USD', 'supplier_quote', 'piece', :artifact, "
+                "'[]', false, '[]', '[]', :now)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "amount": Decimal("0.333333333333"),
+                "artifact": artifact_id,
+                "now": NOW,
+            },
+        )
+    case = _case(tenant_id, need_id, case_id, artifact_id)
+    case.opportunity_id = opportunity_id
+    case.state = case_state
+    case.version = case_version
+    case.completed_at = NOW if case_state is CaseState.HANDED_TO_COSTING else None
+    review = Review.create(
+        review_id=review_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        command=SourcingReviewCommand(
+            primary_option_id=option_id,
+            alternate_option_ids=(),
+            reason="生命周期门禁",
+            expected_case_version=4,
+        ),
+        submitted_by=EmployeeId("emp-reviewer"),
+        submitted_at=NOW,
+        actual_case_version=4,
+    ).confirm(EmployeeId("emp-boss"), confirmed_at=NOW)
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
         await uow.cases.add(tenant_id, case)
         await uow.options.add(
@@ -963,23 +1116,9 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
         )
         await uow.reviews.add(tenant_id, review)
     async with Uow(sf, tenant_id) as uow:
-        await uow.reviews.update(
-            tenant_id,
-            review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW),
-        )
-    async with Uow(sf, tenant_id) as uow:
-        snapshot = await uow.handoffs.get_snapshot(
+        assert await uow.handoffs.get_snapshot(
             tenant_id, case_id, review_id
-        )
-    assert snapshot is not None
-    assert snapshot.supplier_candidate_id is None
-    assert snapshot.quantity == 5000
-    assert snapshot.moq == 500
-    assert snapshot.price_options[0].minimum_quantity == 500
-    assert snapshot.price_options[0].unit_amount == Decimal("0.222222222222")
-    assert snapshot.price_options[0].unit == "piece"
-    assert snapshot.price_options[0].evidence_ref == artifact_id
-    assert snapshot.price_options[0].source_kind == "existing_product"
+        ) is None
 
 
 async def test_sourcing_tenant_mismatch_fails_before_query_and_bound_lookup_isolated(
