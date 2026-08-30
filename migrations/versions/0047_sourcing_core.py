@@ -634,7 +634,7 @@ def upgrade() -> None:
         sa.Column("execution_id", sa.String(40), nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column("provider_receipt", postgresql.JSONB(), nullable=False),
+        sa.Column("provider_usage_artifact_ref", sa.String(32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("reconciled_by", sa.String(40), nullable=True),
         sa.Column("reconciled_at", sa.DateTime(timezone=True), nullable=True),
@@ -655,13 +655,19 @@ def upgrade() -> None:
             name="fk_sourcing_search_reconciliations_execution",
             ondelete="RESTRICT",
         ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "provider_usage_artifact_ref"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_sourcing_search_reconciliations_artifact",
+            ondelete="RESTRICT",
+        ),
         sa.CheckConstraint(
             "status IN ('required','confirmed_consumed','confirmed_not_consumed')",
             name="ck_sourcing_search_reconciliations_status",
         ),
         sa.CheckConstraint(
-            "jsonb_typeof(provider_receipt) = 'object'",
-            name="ck_sourcing_search_reconciliations_receipt_json",
+            "provider_usage_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$'",
+            name="ck_sourcing_search_reconciliations_artifact",
         ),
         sa.CheckConstraint(
             "btrim(reason) <> ''", name="ck_sourcing_search_reconciliations_reason"

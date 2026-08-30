@@ -9,6 +9,7 @@ from workflows.engine.runner import StepDefinition, StepHandler, WorkflowDefinit
 from workflows.sourcing_case.ports import SourcingNeedReader
 from workflows.sourcing_case.steps import (
     AwaitProductCardsStep,
+    AwaitPublicPlanStep,
     FixedWaitStep,
     InternalMatchLadderStep,
     PrepareCandidatesStep,
@@ -94,7 +95,7 @@ def build_sourcing_case_handlers(
             supplier_actor=supplier_actor,
             sourcing_actor=sourcing_actor,
         ),
-        "sourcing_case.v2.await_public_plan": FixedWaitStep("approval_required"),
+        "sourcing_case.v2.await_public_plan": AwaitPublicPlanStep(),
         "sourcing_case.v2.public_search": FixedWaitStep(
             "public_search_pending_implementation"
         ),

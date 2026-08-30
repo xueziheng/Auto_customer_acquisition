@@ -20,6 +20,8 @@ class SourcingAction(str, Enum):
     FACT_PUBLISH = "sourcing_fact:publish"
     PLAN_DRAFT = "sourcing_plan:draft"
     PLAN_CONFIRM = "sourcing_plan:confirm"
+    PLAN_RUN = "sourcing_plan:run"
+    SEARCH_RECONCILE = "sourcing_search:reconcile"
     CANDIDATE_ENTER = "sourcing_candidate:enter"
     REVIEW_SUBMIT = "sourcing_review:submit"
     REVIEW_CONFIRM = "sourcing_review:confirm"
@@ -97,6 +99,8 @@ _BOSS_ACTIONS = _READ_ACTIONS | frozenset(
     {
         SourcingAction.PLAN_DRAFT,
         SourcingAction.PLAN_CONFIRM,
+        SourcingAction.PLAN_RUN,
+        SourcingAction.SEARCH_RECONCILE,
         SourcingAction.REVIEW_CONFIRM,
     }
 )

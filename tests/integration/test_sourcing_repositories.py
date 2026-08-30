@@ -455,10 +455,13 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         )
         await uow.search_executions.add(tenant_id, execution)
         reconciliation = SearchReconciliation(
-            reconciliation_id=new_id("srr"), tenant_id=tenant_id,
+            reconciliation_id=new_id("srr"),
+            tenant_id=tenant_id,
             execution_id=execution.execution_id,
-            status=ReconciliationStatus.REQUIRED, reason="人工核对提供商账单",
-            provider_receipt={}, created_at=NOW,
+            status=ReconciliationStatus.REQUIRED,
+            reason="人工核对提供商账单",
+            provider_usage_artifact_ref=artifact_early,
+            created_at=NOW,
         )
         await uow.reconciliations.add(tenant_id, reconciliation)
 

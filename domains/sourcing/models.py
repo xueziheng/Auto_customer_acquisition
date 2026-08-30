@@ -532,7 +532,7 @@ class SourcingSearchReconciliation:
     execution_id: str
     status: SourcingReconciliationStatus
     reason: str
-    provider_receipt: dict[str, object]
+    provider_usage_artifact_ref: ArtifactId
     created_at: datetime
     reconciled_by: EmployeeId | None = None
     reconciled_at: datetime | None = None

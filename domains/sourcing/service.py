@@ -11,7 +11,12 @@ from domains.sourcing.models import (
     LadderOutcome,
     MatchLadderRung,
     PriceRejectionReason,
+    PublicPlanStatus,
     PublicSourcingPlan,
+    SourcingReconciliationStatus,
+    SourcingSearchExecution,
+    SourcingSearchExecutionStatus,
+    SourcingSearchReconciliation,
     SourcingReview,
     SpecComparison,
     SpecMatchLevel,
@@ -25,18 +30,21 @@ from domains.sourcing.schemas import (
     SourcingHandoffSnapshot,
     SourcingNeedSnapshot,
     SourcingReviewCommand,
+    SourcingUncertainReconciliationCommand,
 )
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
+    ValidatedNeedId,
 )
 
 
@@ -60,6 +68,39 @@ class CandidateEvidenceSnapshotReader(Protocol):
     ) -> CandidateEvidenceSnapshot:
         """未知、不可读或不安全的 Artifact 必须失败关闭。"""
         ...
+
+
+@dataclass(frozen=True)
+class ProviderUsageEvidenceSnapshot:
+    """可信 reader 返回的 Tavily 账户用量原件安全投影。"""
+
+    tenant_id: TenantId
+    artifact_id: ArtifactId
+    provider: str
+    content_hash: str
+    observed_at: datetime
+
+
+@runtime_checkable
+class ProviderUsageEvidenceReader(Protocol):
+    """按 tenant+Artifact 核验不可变 Provider 账户用量原件。"""
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> ProviderUsageEvidenceSnapshot:
+        """未知、跨租户、非 Tavily 用量原件或读取失败必须关闭。"""
+        ...
+
+
+@dataclass(frozen=True)
+class PublicSourcingRunView:
+    """老板运行公开计划前由域服务重建的精确授权快照。"""
+
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    need_id: ValidatedNeedId
+    case_version: int
+    active_plan: PublicSourcingPlan
 
 
 def spec_match_level_values() -> tuple[str, ...]:
@@ -281,8 +322,56 @@ class SourcingService(Protocol):
         expected_plan_hash: str,
         *,
         actor: SourcingActor,
+        expected_case_id: SourcingCaseId | None = None,
     ) -> PublicSourcingPlan:
-        """老板确认精确哈希；计划已变化时拒绝，不做“确认最新版”补全。"""
+        """确认精确哈希；显式 Case 必须在任何状态变更前精确绑定。"""
+        ...
+
+    async def get_public_plan_run_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        plan_id: SourcingPlanId,
+        expected_plan_hash: str,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingRunView:
+        """boss-only 重建当前 Case 与精确活跃计划，不改变状态。"""
+        ...
+
+    async def authorize_public_plan_run(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        plan_id: SourcingPlanId,
+        expected_plan_hash: str,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingPlan:
+        """boss-only 原子执行 authorized→running；精确 running 重放为 no-op。"""
+        ...
+
+    async def get_uncertain_search_execution(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        request_key: str,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSearchExecution:
+        """boss-only 重读同 Case/Run/request 的不确定搜索回执。"""
+        ...
+
+    async def record_confirmed_consumed_reconciliation(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: SourcingUncertainReconciliationCommand,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSearchReconciliation:
+        """核验证据后只增 confirmed_consumed；精确重放不重复写。"""
         ...
 
     async def submit_review(

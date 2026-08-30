@@ -215,6 +215,31 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
         """只在 connector 成功后前进到 consumed；不退款、不删除。"""
         await self._transition(run_id, request_key, "uncertain", "consumed")
 
+    async def acknowledge_uncertain_as_consumed(
+        self, run_id: RunId, request_key: str
+    ) -> None:
+        """人工核对只把原 uncertain 键收紧；不退款、不删行、不改累计预留。"""
+
+        _validate_operation(run_id, request_key)
+        async with self._factory() as session, session.begin():
+            row = (
+                await session.execute(
+                    self.scoped_query(SearchQuotaReservationRow)
+                    .where(
+                        SearchQuotaReservationRow.provider == _PROVIDER,
+                        SearchQuotaReservationRow.run_id == str(run_id),
+                        SearchQuotaReservationRow.request_key == request_key,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None or row.status not in {"uncertain", "consumed"}:
+                raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)
+            if row.status == "uncertain":
+                row.status = "consumed"
+                row.updated_at = self._timestamp()
+                await self._record_run(session, run_id, None)
+
     async def _transition(
         self,
         run_id: RunId,

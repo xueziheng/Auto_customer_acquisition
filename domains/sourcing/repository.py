@@ -115,6 +115,12 @@ class PublicSourcingPlanRepository(Protocol):
         self, tenant_id: TenantId, plan_id: SourcingPlanId
     ) -> PublicSourcingPlan | None: ...
 
+    async def get_for_update(
+        self, tenant_id: TenantId, plan_id: SourcingPlanId
+    ) -> PublicSourcingPlan | None:
+        """锁定同租户计划，串行化 authorize→running 的精确重放。"""
+        ...
+
     async def update(
         self, tenant_id: TenantId, plan: PublicSourcingPlan
     ) -> None:

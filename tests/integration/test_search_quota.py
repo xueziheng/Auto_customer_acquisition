@@ -202,6 +202,51 @@ async def test_crash_before_dispatch_keeps_reserved_and_blocks_replay(quota) -> 
     assert transport.usage_calls == 0
 
 
+async def test_uncertain_acknowledgement_is_exact_replay_and_never_releases_credit(
+    quota,
+) -> None:
+    repository, factory, tenant = quota
+    run = RunId(new_id("run"))
+    request_key = "d" * 64
+    await repository.reserve(
+        run,
+        request_key,
+        SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE),
+        fingerprint_version="v1",
+    )
+    await repository.mark_dispatched(run, request_key)
+    before = await repository.snapshot()
+
+    await repository.acknowledge_uncertain_as_consumed(run, request_key)
+    rebuilt = _modules()[0].PostgresSearchQuotaRepository(
+        factory, tenant, now=lambda: NOW + timedelta(minutes=1)
+    )
+    await rebuilt.acknowledge_uncertain_as_consumed(run, request_key)
+
+    assert (await rebuilt.get(run, request_key)).status == "consumed"
+    after = await rebuilt.snapshot()
+    assert after.reservations == before.reservations == 1
+    assert after.remaining == before.remaining
+    with pytest.raises(ToolGatewayError):
+        await rebuilt.acknowledge_uncertain_as_consumed(run, "e" * 64)
+
+
+async def test_reserved_quota_cannot_be_acknowledged_as_consumed(quota) -> None:
+    repository, _, _ = quota
+    run = RunId(new_id("run"))
+    request_key = "f" * 64
+    await repository.reserve(
+        run,
+        request_key,
+        SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE),
+        fingerprint_version="v1",
+    )
+
+    with pytest.raises(ToolGatewayError):
+        await repository.acknowledge_uncertain_as_consumed(run, request_key)
+    assert (await repository.get(run, request_key)).status == "reserved"
+
+
 @pytest.mark.parametrize("case", ["usage_failure", "paygo", "unknown", "missing_paygo"])
 async def test_unverified_free_usage_cannot_dispatch(quota, case: str) -> None:
     repository, _, tenant = quota

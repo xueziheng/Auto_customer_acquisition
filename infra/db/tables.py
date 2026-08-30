@@ -4963,8 +4963,9 @@ class SourcingSearchReconciliationRow(Base):
         PrimaryKeyConstraint("tenant_id", "reconciliation_id", name="pk_sourcing_search_reconciliations"),
         UniqueConstraint("tenant_id", "execution_id", name="uq_sourcing_search_reconciliations_execution"),
         ForeignKeyConstraint(["tenant_id", "execution_id"], ["sourcing_search_executions.tenant_id", "sourcing_search_executions.execution_id"], name="fk_sourcing_search_reconciliations_execution", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "provider_usage_artifact_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_sourcing_search_reconciliations_artifact", ondelete="RESTRICT"),
         CheckConstraint("status IN ('required','confirmed_consumed','confirmed_not_consumed')", name="ck_sourcing_search_reconciliations_status"),
-        CheckConstraint("jsonb_typeof(provider_receipt) = 'object'", name="ck_sourcing_search_reconciliations_receipt_json"),
+        CheckConstraint("provider_usage_artifact_ref ~ '^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$'", name="ck_sourcing_search_reconciliations_artifact"),
         CheckConstraint("btrim(reason) <> ''", name="ck_sourcing_search_reconciliations_reason"),
         CheckConstraint("(status = 'required' AND reconciled_by IS NULL AND reconciled_at IS NULL) OR (status <> 'required' AND reconciled_by IS NOT NULL AND reconciled_at IS NOT NULL)", name="ck_sourcing_search_reconciliations_resolution"),
     )
@@ -4973,7 +4974,7 @@ class SourcingSearchReconciliationRow(Base):
     execution_id: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str] = mapped_column(Text)
-    provider_receipt: Mapped[dict] = mapped_column(postgresql.JSONB)
+    provider_usage_artifact_ref: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     reconciled_by: Mapped[str | None] = mapped_column(String(40))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

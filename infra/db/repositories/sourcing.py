@@ -502,6 +502,19 @@ class PublicSourcingPlanRepositoryImpl(_TenantBoundRepository):
         ).scalar_one_or_none()
         return _row_to_plan(row) if row is not None else None
 
+    async def get_for_update(
+        self, tenant_id: TenantId, plan_id: SourcingPlanId
+    ) -> PublicSourcingPlan | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingPublicPlanRow)
+                .where(SourcingPublicPlanRow.plan_id == plan_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        return _row_to_plan(row) if row is not None else None
+
     async def update(self, tenant_id: TenantId, plan: PublicSourcingPlan) -> None:
         self._require_tenant(tenant_id)
         if plan.tenant_id != tenant_id:
@@ -1326,7 +1339,7 @@ def _reconciliation_from_row(
         execution_id=row.execution_id,
         status=SourcingReconciliationStatus(row.status),
         reason=row.reason,
-        provider_receipt=row.provider_receipt,
+        provider_usage_artifact_ref=ArtifactId(row.provider_usage_artifact_ref),
         created_at=row.created_at,
         reconciled_by=EmployeeId(row.reconciled_by) if row.reconciled_by else None,
         reconciled_at=row.reconciled_at,
@@ -1347,7 +1360,7 @@ class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
                 execution_id=reconciliation.execution_id,
                 status=reconciliation.status.value,
                 reason=reconciliation.reason,
-                provider_receipt=reconciliation.provider_receipt,
+                provider_usage_artifact_ref=reconciliation.provider_usage_artifact_ref,
                 created_at=reconciliation.created_at,
                 reconciled_by=reconciliation.reconciled_by,
                 reconciled_at=reconciliation.reconciled_at,

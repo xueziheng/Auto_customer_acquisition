@@ -89,6 +89,12 @@ class SearchQuotaRepository(Protocol):
 
     async def consume(self, run_id: RunId, request_key: str) -> None: ...
 
+    async def acknowledge_uncertain_as_consumed(
+        self, run_id: RunId, request_key: str
+    ) -> None:
+        """人工核对后仅收紧 uncertain→consumed；精确 consumed 重放为 no-op。"""
+        ...
+
     async def snapshot(self) -> SearchQuotaSnapshot | None: ...
 
     async def get(

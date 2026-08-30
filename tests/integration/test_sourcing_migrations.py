@@ -347,6 +347,16 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "opportunities",
             ("tenant_id", "opportunity_id"),
         )
+        reconciliation_fks = contract["sourcing_search_reconciliations"][
+            "foreign_keys"
+        ]
+        assert reconciliation_fks[
+            "fk_sourcing_search_reconciliations_artifact"
+        ] == (
+            ("tenant_id", "provider_usage_artifact_ref"),
+            "raw_artifacts",
+            ("tenant_id", "artifact_id"),
+        )
         assert "internal_cost_unit" in contract["products"]["columns"]
         assert "match_specs" not in contract["products"]["columns"]
         match_spec_contract = contract["product_match_specs"]
@@ -1087,17 +1097,19 @@ async def test_reconciliation_audit_rejects_updates_and_deletes(db_url: str) -> 
                 run_id="run-reconciliation-audit",
                 execution_id="execution-reconciliation-audit",
             )
+            await _seed_tenant_evidence(connection, TENANT_A, ARTIFACT_A)
             await connection.execute(
                 text(
                     "INSERT INTO sourcing_search_reconciliations "
                     "(tenant_id, reconciliation_id, execution_id, status, reason, "
-                    "provider_receipt, created_at) "
+                    "provider_usage_artifact_ref, created_at) "
                     "VALUES (:tenant, 'reconciliation-audit', :execution, 'required', "
-                    "'provider result uncertain', '{}', now())"
+                    "'provider result uncertain', :artifact, now())"
                 ),
                 {
                     "tenant": TENANT_A,
                     "execution": "execution-reconciliation-audit",
+                    "artifact": ARTIFACT_A,
                 },
             )
             await _expect_integrity(

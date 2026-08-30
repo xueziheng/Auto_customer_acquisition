@@ -23,9 +23,14 @@ from domains.sourcing.models import (
     MatchExplanation,
     MatchLadderRung,
     PriceRejectionReason,
+    PublicPlanStatus,
     PublicSourcingPlan,
     SourcingCase,
+    SourcingReconciliationStatus,
     SourcingReview,
+    SourcingSearchExecution,
+    SourcingSearchExecutionStatus,
+    SourcingSearchReconciliation,
     SourcingStopCode,
     SourcingSupplyOption,
     SpecComparison,
@@ -49,11 +54,15 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     SourcingHandoffSnapshot,
     SourcingReviewCommand,
+    SourcingUncertainReconciliationCommand,
     SpecComparisonView,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
     CandidateEvidenceSnapshotReader,
+    ProviderUsageEvidenceReader,
+    ProviderUsageEvidenceSnapshot,
+    PublicSourcingRunView,
 )
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
@@ -67,6 +76,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -127,6 +137,38 @@ async def _read_candidate_evidence(
         return await reader.read_verified(tenant_id, artifact_id)
     except Exception:  # noqa: BLE001 -- reader 边界必须吞掉全部不可信异常类型
         return None
+
+
+async def _read_provider_usage_evidence(
+    reader: ProviderUsageEvidenceReader | None,
+    tenant_id: TenantId,
+    artifact_id: ArtifactId,
+) -> ProviderUsageEvidenceSnapshot | None:
+    """丢弃受信 reader 边界外的自由异常，避免原因链进入日志。"""
+
+    if reader is None:
+        return None
+    try:
+        return await reader.read_verified(tenant_id, artifact_id)
+    except Exception:  # noqa: BLE001 -- Provider 原始异常不得跨越领域边界
+        return None
+
+
+def _valid_provider_usage_evidence(
+    projection: ProviderUsageEvidenceSnapshot,
+    tenant_id: TenantId,
+    artifact_id: ArtifactId,
+) -> bool:
+    return (
+        isinstance(projection, ProviderUsageEvidenceSnapshot)
+        and projection.tenant_id == tenant_id
+        and projection.artifact_id == artifact_id
+        and projection.provider == "tavily"
+        and len(projection.content_hash) == 64
+        and all(character in "0123456789abcdef" for character in projection.content_hash)
+        and projection.observed_at.tzinfo is not None
+        and projection.observed_at.utcoffset() is not None
+    )
 
 
 def _employee(actor: SourcingActor) -> EmployeeId:
@@ -350,6 +392,7 @@ class SourcingServiceImpl:
         authorizer: SourcingAuthorizer,
         evidence_reader: CandidateEvidenceSnapshotReader,
         *,
+        provider_usage_evidence_reader: ProviderUsageEvidenceReader | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         if not callable(uow_factory):
@@ -361,6 +404,11 @@ class SourcingServiceImpl:
         self._uow_factory = uow_factory
         self._authorizer = authorizer
         self._evidence_reader = evidence_reader
+        if provider_usage_evidence_reader is not None and not isinstance(
+            provider_usage_evidence_reader, ProviderUsageEvidenceReader
+        ):
+            raise ValidationError("Provider 用量 Evidence reader 无效")
+        self._provider_usage_evidence_reader = provider_usage_evidence_reader
         self._now = now or (lambda: datetime.now(UTC))
 
     def _require(
@@ -536,8 +584,8 @@ class SourcingServiceImpl:
             raise ValidationError("公开寻源计划命令无效")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get(tenant_id, case_id))
-            if case.state is not CaseState.DISCOVERING:
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            if case.state not in {CaseState.DISCOVERING, CaseState.VERIFYING}:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能保存公开计划"
                 )
@@ -553,6 +601,12 @@ class SourcingServiceImpl:
             if command.expected_case_version != case.version:
                 raise SourcingPlanStaleError("公开寻源计划绑定的 Case 版本已变化")
             active = await uow.plans.get_active_for_case(tenant_id, case_id)
+            if case.active_search_plan_id is not None:
+                bound = await uow.plans.get(tenant_id, case.active_search_plan_id)
+                if bound is None:
+                    raise SourcingPlanStaleError("Case 绑定的公开寻源计划不存在")
+                if bound.status is PublicPlanStatus.RUNNING:
+                    raise InvalidStateTransition("公开寻源已经运行，不能替换计划范围")
             expected_plan_version = 1 if active is None else active.version + 1
             if command.version != expected_plan_version:
                 raise SourcingPlanStaleError("公开寻源计划版本不连续")
@@ -584,6 +638,7 @@ class SourcingServiceImpl:
         expected_plan_hash: str,
         *,
         actor: SourcingActor,
+        expected_case_id: SourcingCaseId | None = None,
     ) -> PublicSourcingPlan:
         self._require(
             tenant_id,
@@ -596,22 +651,239 @@ class SourcingServiceImpl:
             plan = await uow.plans.get(tenant_id, plan_id)
             if plan is None:
                 raise ValidationError("公开寻源计划不存在或租户不匹配")
+            if expected_case_id is not None and plan.case_id != expected_case_id:
+                raise ValidationError("公开寻源计划与 Case 不一致")
+            case = _case_required(
+                await uow.cases.get_for_update(tenant_id, plan.case_id)
+            )
+            plan = await uow.plans.get_for_update(tenant_id, plan_id)
+            if plan is None or plan.case_id != case.case_id:
+                raise ValidationError("公开寻源计划不存在或租户不匹配")
             if plan.plan_hash != expected_plan_hash:
                 raise SourcingPlanStaleError("确认哈希与当前公开寻源计划不一致")
             active = await uow.plans.get_active_for_case(tenant_id, plan.case_id)
             if active is None or active.plan_id != plan.plan_id:
                 raise SourcingPlanStaleError("公开寻源计划已被新版本取代")
-            case = _case_required(await uow.cases.get(tenant_id, plan.case_id))
-            if case.state is not CaseState.DISCOVERING:
+            if case.state not in {CaseState.DISCOVERING, CaseState.VERIFYING}:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能确认公开计划"
                 )
             confirmed = plan.confirm(_employee(actor), confirmed_at=now)
             await uow.plans.update(tenant_id, confirmed)
             case.active_search_plan_id = plan.plan_id
-            case.transition_to(CaseState.VERIFYING, changed_at=now)
+            if case.state is CaseState.DISCOVERING:
+                case.transition_to(CaseState.VERIFYING, changed_at=now)
+            else:
+                case.version += 1
+                case.state_changed_at = now
             await uow.cases.update(tenant_id, case)
             return confirmed
+
+    async def _public_plan_run_view(
+        self,
+        uow: SourcingUnitOfWork,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        plan_id: SourcingPlanId,
+        expected_plan_hash: str,
+        *,
+        lock: bool,
+    ) -> PublicSourcingRunView:
+        case = _case_required(
+            await (
+                uow.cases.get_for_update(tenant_id, case_id)
+                if lock
+                else uow.cases.get(tenant_id, case_id)
+            )
+        )
+        plan = await (
+            uow.plans.get_for_update(tenant_id, plan_id)
+            if lock
+            else uow.plans.get(tenant_id, plan_id)
+        )
+        active = await uow.plans.get_active_for_case(tenant_id, case_id)
+        if (
+            plan is None
+            or plan.case_id != case_id
+            or active is None
+            or active.plan_id != plan_id
+            or case.active_search_plan_id != plan_id
+            or plan.plan_hash != expected_plan_hash
+            or plan.authorized_plan_hash != plan.plan_hash
+            or plan.status not in {PublicPlanStatus.AUTHORIZED, PublicPlanStatus.RUNNING}
+        ):
+            raise SourcingPlanStaleError("公开寻源计划不是当前精确授权版本")
+        if case.state is not CaseState.VERIFYING:
+            raise InvalidStateTransition(
+                f"寻源案例处于 {case.state.value}，不能运行公开计划"
+            )
+        return PublicSourcingRunView(
+            tenant_id=tenant_id,
+            case_id=case.case_id,
+            need_id=case.need_id,
+            case_version=case.version,
+            active_plan=plan,
+        )
+
+    async def get_public_plan_run_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        plan_id: SourcingPlanId,
+        expected_plan_hash: str,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingRunView:
+        self._require(tenant_id, actor, SourcingAction.PLAN_RUN, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            return await self._public_plan_run_view(
+                uow,
+                tenant_id,
+                case_id,
+                plan_id,
+                expected_plan_hash,
+                lock=False,
+            )
+
+    async def authorize_public_plan_run(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        plan_id: SourcingPlanId,
+        expected_plan_hash: str,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingPlan:
+        self._require(tenant_id, actor, SourcingAction.PLAN_RUN, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            view = await self._public_plan_run_view(
+                uow,
+                tenant_id,
+                case_id,
+                plan_id,
+                expected_plan_hash,
+                lock=True,
+            )
+            if view.active_plan.status is PublicPlanStatus.RUNNING:
+                return view.active_plan
+            running = view.active_plan.transition_to(PublicPlanStatus.RUNNING)
+            await uow.plans.update(tenant_id, running)
+            return running
+
+    async def _uncertain_execution(
+        self,
+        uow: SourcingUnitOfWork,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        request_key: str,
+    ) -> SourcingSearchExecution:
+        execution = await uow.search_executions.get_by_request_key(
+            tenant_id, request_key
+        )
+        if (
+            execution is None
+            or execution.tenant_id != tenant_id
+            or execution.case_id != case_id
+            or execution.run_id != str(run_id)
+            or execution.request_key != request_key
+            or execution.provider_status is not SourcingSearchExecutionStatus.UNCERTAIN
+        ):
+            raise ValidationError("不确定搜索执行不存在或绑定不一致")
+        case = _case_required(await uow.cases.get(tenant_id, case_id))
+        plan = await uow.plans.get(tenant_id, execution.plan_id)
+        active = await uow.plans.get_active_for_case(tenant_id, case_id)
+        if (
+            case.state is not CaseState.VERIFYING
+            or case.active_search_plan_id != execution.plan_id
+            or plan is None
+            or active is None
+            or active.plan_id != plan.plan_id
+            or plan.status is not PublicPlanStatus.RUNNING
+            or plan.plan_hash != execution.plan_hash
+            or plan.authorized_plan_hash != execution.plan_hash
+        ):
+            raise SourcingPlanStaleError("不确定搜索执行不属于当前运行计划")
+        return execution
+
+    async def get_uncertain_search_execution(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        request_key: str,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSearchExecution:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.SEARCH_RECONCILE,
+            SourcingScope.TENANT,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            return await self._uncertain_execution(
+                uow, tenant_id, case_id, run_id, request_key
+            )
+
+    async def record_confirmed_consumed_reconciliation(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: SourcingUncertainReconciliationCommand,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSearchReconciliation:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.SEARCH_RECONCILE,
+            SourcingScope.TENANT,
+        )
+        if not isinstance(command, SourcingUncertainReconciliationCommand):
+            raise ValidationError("不确定搜索核对命令无效")
+        projection = await _read_provider_usage_evidence(
+            self._provider_usage_evidence_reader,
+            tenant_id,
+            command.provider_usage_artifact_ref,
+        )
+        if projection is None or not _valid_provider_usage_evidence(
+            projection, tenant_id, command.provider_usage_artifact_ref
+        ):
+            raise ValidationError("Provider 用量核对证据不可验证")
+        now = _aware(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            execution = await self._uncertain_execution(
+                uow, tenant_id, case_id, command.run_id, command.request_key
+            )
+            existing = await uow.reconciliations.get_for_execution(
+                tenant_id, execution.execution_id
+            )
+            if existing is not None:
+                if (
+                    existing.reconciliation_id == command.reconciliation_id
+                    and existing.status
+                    is SourcingReconciliationStatus.CONFIRMED_CONSUMED
+                    and existing.reason == command.reason
+                    and existing.provider_usage_artifact_ref
+                    == command.provider_usage_artifact_ref
+                    and existing.reconciled_by == _employee(actor)
+                ):
+                    return existing
+                raise SourcingPlanStaleError("不确定搜索核对事实已存在且内容不同")
+            reconciliation = SourcingSearchReconciliation(
+                reconciliation_id=command.reconciliation_id,
+                tenant_id=tenant_id,
+                execution_id=execution.execution_id,
+                status=SourcingReconciliationStatus.CONFIRMED_CONSUMED,
+                reason=command.reason,
+                provider_usage_artifact_ref=command.provider_usage_artifact_ref,
+                created_at=now,
+                reconciled_by=_employee(actor),
+                reconciled_at=now,
+            )
+            await uow.reconciliations.add(tenant_id, reconciliation)
+            return reconciliation
 
     async def submit_candidate(
         self,

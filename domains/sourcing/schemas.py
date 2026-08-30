@@ -19,6 +19,7 @@ from shared.schemas.identifiers import (
     ArtifactId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -132,6 +133,36 @@ class PublicSourcingPlanCommand(BaseModel):
             raise ValueError("queries 不得重复")
         if len(self.queries) > self.max_search_queries:
             raise ValueError("queries 数量不得超过 max_search_queries")
+        return self
+
+
+class SourcingUncertainReconciliationCommand(BaseModel):
+    """人工确认一次不确定搜索已经消耗额度；不接受 Provider 原始响应。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    reconciliation_id: str = Field(min_length=1, max_length=40)
+    run_id: RunId
+    request_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resolution: Literal["count_as_consumed"]
+    reason: str = Field(min_length=1, max_length=2_000)
+    provider_usage_artifact_ref: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_reconciliation(self) -> Self:
+        """操作 ID、理由与证据引用必须是可安全审计的有界标识。"""
+
+        _bounded_text(
+            self.reconciliation_id,
+            field_name="reconciliation_id",
+            maximum=40,
+        )
+        _bounded_text(str(self.run_id), field_name="run_id", maximum=40)
+        _bounded_text(self.reason, field_name="reason")
+        _bounded_text(
+            str(self.provider_usage_artifact_ref),
+            field_name="provider_usage_artifact_ref",
+            maximum=32,
+        )
         return self
 
 

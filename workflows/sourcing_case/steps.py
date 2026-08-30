@@ -33,6 +33,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     ProductId,
     SourcingCaseId,
+    SourcingPlanId,
     ValidatedNeedId,
 )
 from workflows.engine.runner import WorkflowRun
@@ -598,8 +599,42 @@ class FixedWaitStep:
         return ("wait", None, {"sourcing_wait_status": self._status})
 
 
+class AwaitPublicPlanStep:
+    """入口只等待；收到精确授权事件后携带安全计划绑定推进公开搜索。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _base(run)
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {"sourcing_wait_status": "approval_required"})
+        if not isinstance(event, dict) or set(event) != {"event_type", "payload"}:
+            raise ValidationError("公开寻源计划授权事件无效")
+        if event.get("event_type") != "SourcingPlanConfirmed":
+            raise ValidationError("公开寻源计划授权事件类型无效")
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or set(payload) != {"plan_id", "plan_hash"}:
+            raise ValidationError("公开寻源计划授权载荷无效")
+        plan_id = _text(payload.get("plan_id"), "公开寻源计划 ID 无效", maximum=40)
+        plan_hash = _text(
+            payload.get("plan_hash"), "公开寻源计划哈希无效", maximum=64
+        )
+        if len(plan_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in plan_hash
+        ):
+            raise ValidationError("公开寻源计划哈希无效")
+        return (
+            "advance",
+            "public_search",
+            {
+                "sourcing_plan_id": str(SourcingPlanId(plan_id)),
+                "sourcing_plan_hash": plan_hash,
+            },
+        )
+
+
 __all__ = (
     "AwaitProductCardsStep",
+    "AwaitPublicPlanStep",
     "FixedWaitStep",
     "InternalMatchLadderStep",
     "PrepareCandidatesStep",

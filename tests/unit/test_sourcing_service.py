@@ -33,11 +33,14 @@ from domains.sourcing.schemas import (
     SourcingObservedFact,
     SourcingReviewCommand,
     SourcingSupplierClaim,
+    SourcingUncertainReconciliationCommand,
     SpecComparisonView,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
     CandidateEvidenceSnapshotReader,
+    ProviderUsageEvidenceReader,
+    ProviderUsageEvidenceSnapshot,
     SourcingService,
 )
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
@@ -52,6 +55,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingSupplyOptionId,
@@ -74,6 +78,10 @@ LadderCheck = _models.LadderCheck
 LadderOutcome = _models.LadderOutcome
 MatchLadderRung = _models.MatchLadderRung
 PriceRejectionReason = _models.PriceRejectionReason
+PublicPlanStatus = _models.PublicPlanStatus
+SourcingReconciliationStatus = _models.SourcingReconciliationStatus
+SourcingSearchExecution = _models.SourcingSearchExecution
+SourcingSearchExecutionStatus = _models.SourcingSearchExecutionStatus
 SourcingSupplyOption = _models.SourcingSupplyOption
 SpecComparison = _models.SpecComparison
 SpecMatchLevel = _models.SpecMatchLevel
@@ -487,6 +495,11 @@ class _Plans(_MemoryRepo):
     async def get(self, tenant_id: TenantId, plan_id: SourcingPlanId) -> Any | None:
         return copy.deepcopy(self.state[self.name].get((tenant_id, plan_id)))
 
+    async def get_for_update(
+        self, tenant_id: TenantId, plan_id: SourcingPlanId
+    ) -> Any | None:
+        return await self.get(tenant_id, plan_id)
+
     async def update(self, tenant_id: TenantId, plan: Any) -> None:
         self.state[self.name][(tenant_id, plan.plan_id)] = copy.deepcopy(plan)
 
@@ -606,6 +619,21 @@ class _Reviews(_MemoryRepo):
         self.state[self.name][(tenant_id, review.review_id)] = copy.deepcopy(review)
 
 
+class _SearchExecutions(_MemoryRepo):
+    async def get_by_request_key(self, tenant_id: TenantId, request_key: str) -> Any:
+        return copy.deepcopy(self.state[self.name].get((tenant_id, request_key)))
+
+
+class _Reconciliations(_MemoryRepo):
+    async def add(self, tenant_id: TenantId, reconciliation: Any) -> None:
+        self.state[self.name][(tenant_id, reconciliation.execution_id)] = copy.deepcopy(
+            reconciliation
+        )
+
+    async def get_for_execution(self, tenant_id: TenantId, execution_id: str) -> Any:
+        return copy.deepcopy(self.state[self.name].get((tenant_id, execution_id)))
+
+
 class _Handoffs:
     def __init__(self, uow: _MemoryUow) -> None:
         self.uow = uow
@@ -650,6 +678,8 @@ class _MemoryUow:
         self.candidates = _Candidates(state, "candidates")
         self.options = _Options(state, "options")
         self.reviews = _Reviews(state, "reviews")
+        self.search_executions = _SearchExecutions(state, "search_executions")
+        self.reconciliations = _Reconciliations(state, "reconciliations")
         self.handoffs = _Handoffs(self)
         self.bus = _Bus(state, fail=bus_fails)
 
@@ -679,6 +709,8 @@ class _Factory:
             "candidates": {},
             "options": {},
             "reviews": {},
+            "search_executions": {},
+            "reconciliations": {},
             "events": [],
         }
 
@@ -713,14 +745,41 @@ class _EvidenceReader:
         return self.projection
 
 
+class _ProviderUsageReader:
+    def __init__(
+        self,
+        projection: ProviderUsageEvidenceSnapshot | None = None,
+        failure: BaseException | None = None,
+    ) -> None:
+        self.calls = 0
+        self.failure = failure
+        self.projection = projection or ProviderUsageEvidenceSnapshot(
+            tenant_id=TENANT,
+            artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Z"),
+            provider="tavily",
+            content_hash="e" * 64,
+            observed_at=NOW,
+        )
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> ProviderUsageEvidenceSnapshot:
+        self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+        return self.projection
+
+
 def _service(
     factory: _Factory,
     evidence_reader: CandidateEvidenceSnapshotReader | None = None,
+    provider_usage_reader: ProviderUsageEvidenceReader | None = None,
 ) -> Any:
     return _service_type()(
         factory,
         Phase2SourcingAuthorizer(TENANT),
         evidence_reader or _EvidenceReader(),
+        provider_usage_evidence_reader=provider_usage_reader,
         now=lambda: NOW,
     )
 
@@ -1615,3 +1674,214 @@ async def test_outbox_failure_rolls_back_case_creation_and_ready_transition() ->
         )
     current = ready_factory.state["cases"][(TENANT, case_id)]
     assert current.state is CaseState.VERIFYING
+
+
+@pytest.mark.asyncio
+async def test_confirmed_plan_can_be_replaced_before_run_but_running_plan_cannot() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    first = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(
+        TENANT, first.plan_id, first.plan_hash, actor=BOSS
+    )
+    replacement_command = _plan(case_id, 2).model_copy(
+        update={"expected_case_version": 7}
+    )
+
+    replacement = await service.save_public_plan(
+        TENANT, case_id, replacement_command, actor=SOURCING
+    )
+
+    with pytest.raises(SourcingPlanStaleError):
+        await service.get_public_plan_run_view(
+            TENANT, case_id, first.plan_id, first.plan_hash, actor=BOSS
+        )
+    with pytest.raises(SourcingPlanStaleError):
+        await service.get_public_plan_run_view(
+            TENANT, case_id, replacement.plan_id, replacement.plan_hash, actor=BOSS
+        )
+    confirmed = await service.confirm_public_plan(
+        TENANT, replacement.plan_id, replacement.plan_hash, actor=BOSS
+    )
+    running = await service.authorize_public_plan_run(
+        TENANT, case_id, confirmed.plan_id, confirmed.plan_hash, actor=BOSS
+    )
+    replay = await service.authorize_public_plan_run(
+        TENANT, case_id, confirmed.plan_id, confirmed.plan_hash, actor=BOSS
+    )
+    assert running.status is PublicPlanStatus.RUNNING
+    assert replay == running
+    blocked = _plan(case_id, 3).model_copy(update={"expected_case_version": 8})
+    with pytest.raises(InvalidStateTransition):
+        await service.save_public_plan(TENANT, case_id, blocked, actor=BOSS)
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rejects_wrong_expected_case_before_mutation() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    pending = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    case_before = factory.state["cases"][(TENANT, case_id)]
+
+    with pytest.raises(ValidationError, match="Case 不一致"):
+        await service.confirm_public_plan(
+            TENANT,
+            pending.plan_id,
+            pending.plan_hash,
+            actor=BOSS,
+            expected_case_id=SourcingCaseId("src-other"),
+        )
+
+    assert factory.state["plans"][(TENANT, pending.plan_id)].status is PublicPlanStatus.PENDING_CONFIRMATION
+    assert factory.state["cases"][(TENANT, case_id)] == case_before
+
+
+@pytest.mark.asyncio
+async def test_plan_run_and_reconciliation_are_boss_only_before_repository_read() -> None:
+    factory = _Factory()
+    service = _service(factory, provider_usage_reader=_ProviderUsageReader())
+    calls = [
+        lambda: service.get_public_plan_run_view(
+            TENANT, SourcingCaseId("src-never"), SourcingPlanId("spl-never"), "a" * 64,
+            actor=SOURCING,
+        ),
+        lambda: service.authorize_public_plan_run(
+            TENANT, SourcingCaseId("src-never"), SourcingPlanId("spl-never"), "a" * 64,
+            actor=SOURCING,
+        ),
+        lambda: service.get_uncertain_search_execution(
+            TENANT,
+            SourcingCaseId("src-never"),
+            RunId("run-never"),
+            "b" * 64,
+            actor=SOURCING,
+        ),
+    ]
+    for call in calls:
+        with pytest.raises(PermissionDenied):
+            await call()
+    assert factory.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_replay() -> None:
+    factory = _Factory()
+    usage_reader = _ProviderUsageReader()
+    service = _service(factory, provider_usage_reader=usage_reader)
+    case_id = await _discovering(service)
+    pending = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    confirmed = await service.confirm_public_plan(
+        TENANT, pending.plan_id, pending.plan_hash, actor=BOSS
+    )
+    await service.authorize_public_plan_run(
+        TENANT, case_id, confirmed.plan_id, confirmed.plan_hash, actor=BOSS
+    )
+    execution = SourcingSearchExecution(
+        execution_id="sse-execution",
+        tenant_id=TENANT,
+        case_id=case_id,
+        plan_id=confirmed.plan_id,
+        run_id="run-sourcing",
+        plan_hash=confirmed.plan_hash,
+        query_index=0,
+        request_key="b" * 64,
+        query_text="hinge factory",
+        locator_results=(),
+        provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
+        created_at=NOW,
+    )
+    factory.state["search_executions"][(TENANT, execution.request_key)] = execution
+    command = SourcingUncertainReconciliationCommand(
+        reconciliation_id="src-reconciliation",
+        run_id=RunId(execution.run_id),
+        request_key=execution.request_key,
+        resolution="count_as_consumed",
+        reason="已在提供商用量页人工核对",
+        provider_usage_artifact_ref=usage_reader.projection.artifact_id,
+    )
+
+    first = await service.record_confirmed_consumed_reconciliation(
+        TENANT, case_id, command, actor=BOSS
+    )
+    second = await service.record_confirmed_consumed_reconciliation(
+        TENANT, case_id, command, actor=BOSS
+    )
+
+    assert first == second
+    assert first.status is SourcingReconciliationStatus.CONFIRMED_CONSUMED
+    assert len(factory.state["reconciliations"]) == 1
+    assert usage_reader.calls == 2
+    with pytest.raises(SourcingPlanStaleError):
+        await service.record_confirmed_consumed_reconciliation(
+            TENANT,
+            case_id,
+            command.model_copy(update={"reason": "不同核对事实"}),
+            actor=BOSS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_rejects_untrusted_or_cross_tenant_usage_evidence() -> None:
+    for reader in (
+        _ProviderUsageReader(failure=RuntimeError("secret-provider-payload")),
+        _ProviderUsageReader(
+            ProviderUsageEvidenceSnapshot(
+                tenant_id=OTHER_TENANT,
+                artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Z"),
+                provider="tavily",
+                content_hash="e" * 64,
+                observed_at=NOW,
+            )
+        ),
+    ):
+        factory = _Factory()
+        service = _service(factory, provider_usage_reader=reader)
+        case_id = await _discovering(service)
+        pending = await service.save_public_plan(
+            TENANT, case_id, _plan(case_id, 1), actor=BOSS
+        )
+        confirmed = await service.confirm_public_plan(
+            TENANT, pending.plan_id, pending.plan_hash, actor=BOSS
+        )
+        await service.authorize_public_plan_run(
+            TENANT, case_id, confirmed.plan_id, confirmed.plan_hash, actor=BOSS
+        )
+        execution = SourcingSearchExecution(
+            execution_id="sse-execution",
+            tenant_id=TENANT,
+            case_id=case_id,
+            plan_id=confirmed.plan_id,
+            run_id="run-sourcing",
+            plan_hash=confirmed.plan_hash,
+            query_index=0,
+            request_key="b" * 64,
+            query_text="hinge factory",
+            locator_results=(),
+            provider_status=SourcingSearchExecutionStatus.UNCERTAIN,
+            created_at=NOW,
+        )
+        factory.state["search_executions"][(TENANT, execution.request_key)] = execution
+        command = SourcingUncertainReconciliationCommand(
+            reconciliation_id="src-reconciliation",
+            run_id=RunId(execution.run_id),
+            request_key=execution.request_key,
+            resolution="count_as_consumed",
+            reason="已在提供商用量页人工核对",
+            provider_usage_artifact_ref=ArtifactId(
+                "art_01K39P9M5D6K4A91YEQ80EJZ0Z"
+            ),
+        )
+        with pytest.raises(ValidationError) as failure:
+            await service.record_confirmed_consumed_reconciliation(
+                TENANT, case_id, command, actor=BOSS
+            )
+        assert "secret" not in str(failure.value)
+        assert factory.state["reconciliations"] == {}
