@@ -11,12 +11,18 @@ from urllib.parse import urlsplit
 from agent_runtime.base import AgentTask, CapabilityAgent, ChangeSet
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.guardrails.rails import guard_phase1_change_set
+from agent_runtime.sourcing_agent.extraction import SourcingPageCandidateDraft
 from domains.sourcing.service import (
     price_rejection_reason_values,
     spec_match_level_values,
 )
 from shared.errors import ValidationError
-from shared.schemas.identifiers import ChangeSetId, new_id
+from shared.schemas.identifiers import (
+    ChangeSetId,
+    SourcingCaseId,
+    SupplierCandidateId,
+    new_id,
+)
 
 _MAX_OUTPUT_BYTES = 200_000
 _REVIEW_KEYS = frozenset(
@@ -63,9 +69,11 @@ _PRICE_SUGGESTION_KEYS = frozenset({"reason", "explanation"})
 _CONTENT_HASH = re.compile(r"[0-9a-f]{64}")
 _ARTIFACT_REF = re.compile(r"art_[0-9A-HJKMNP-TV-Z]{26}")
 _MODEL_MONEY = re.compile(
-    r"(?i)(?:[$€£¥₹]\s*\d)|"
-    r"(?:\b(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\s*\d)|"
-    r"(?:\d(?:[\d,.]*\d)?\s*(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\b)"
+    r"(?:[$€£¥₹]\s*\d)|"
+    r"(?:(?i:\b(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\s*\d))|"
+    r"(?:\b[A-Z]{3}\s*\d)|"
+    r"(?:(?i:\d(?:[\d,.]*\d)?\s*(?:usd|eur|gbp|cny|rmb|jpy|cad|aud)\b))|"
+    r"(?:\d(?:[\d,.]*\d)?\s*[A-Z]{3}\b)"
 )
 
 _SYSTEM_PROMPT = """你是 TradeOS 的候选供应商寻源分析能力。输入只包含人工录入的
@@ -144,6 +152,69 @@ class SourcingAgent(CapabilityAgent):
     """核验逐项匹配与参考价拒绝建议，再产出待人工处理的变更。"""
 
     name = "sourcing_agent"
+
+    @staticmethod
+    def build_page_candidate_review(
+        *,
+        draft: SourcingPageCandidateDraft,
+        case_id: SourcingCaseId,
+        candidate_id: SupplierCandidateId,
+    ) -> dict[str, object]:
+        """把安全页面观察值确定性映射到既有逐项解释入口。"""
+
+        if not isinstance(draft, SourcingPageCandidateDraft):
+            raise ValidationError("公开寻源候选草稿无效")
+        if draft.supplier_name is None or draft.product_title is None:
+            raise ValidationError("公开寻源候选缺少供应商或产品标题")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValidationError("寻源案例引用无效")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise ValidationError("寻源候选引用无效")
+        has_tiers = bool(draft.price_tiers)
+        review = {
+            "case_id": str(case_id),
+            "candidate_id": str(candidate_id),
+            "supplier_name": draft.supplier_name.literal,
+            "product_title": draft.product_title.literal,
+            "rung": 6,
+            "required_specs": tuple(
+                {"spec_name": item.spec_name, "required": item.required}
+                for item in draft.specs
+            ),
+            "offered_specs": tuple(
+                {
+                    "spec_name": item.spec_name,
+                    "offered": (
+                        item.observed.literal if item.observed is not None else None
+                    ),
+                }
+                for item in draft.specs
+            ),
+            "price_checks": {
+                "far_below_market_without_tier": False,
+                "has_vague_range": any(
+                    "vague_range" in tier.rejection_reasons
+                    for tier in draft.price_tiers
+                ),
+                "has_quantity_tier": any(
+                    tier.minimum_quantity is not None and tier.amount is not None
+                    for tier in draft.price_tiers
+                ),
+                "unit_clear": has_tiers
+                and all(tier.unit is not None for tier in draft.price_tiers),
+                "currency_clear": has_tiers
+                and all(tier.currency is not None for tier in draft.price_tiers),
+            },
+            "evidence": {
+                "source_url": draft.evidence.source_url,
+                "content_hash": draft.evidence.content_hash,
+                "snapshot_artifact_ref": str(
+                    draft.evidence.snapshot_artifact_ref
+                ),
+                "observed_at": draft.evidence.observed_at.isoformat(),
+            },
+        }
+        return review
 
     def __init__(
         self,

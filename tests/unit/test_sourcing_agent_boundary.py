@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
 from agent_runtime.base import AgentTask
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
-from shared.schemas.identifiers import RunId, TenantId, UserId, new_id
+from agent_runtime.sourcing_agent.extraction import (
+    SourcingObservedLiteral,
+    SourcingObservedPriceTier,
+    SourcingObservedSpec,
+    SourcingPageCandidateDraft,
+    SourcingPageEvidence,
+)
+from shared.schemas.identifiers import (
+    ArtifactId,
+    RunId,
+    SourcingCaseId,
+    SupplierCandidateId,
+    TenantId,
+    UserId,
+    new_id,
+)
 
 
 class _ReviewPort:
@@ -120,6 +137,100 @@ def _safe_response() -> dict[str, object]:
     }
 
 
+def _page_draft() -> SourcingPageCandidateDraft:
+    artifact = ArtifactId("art_01H00000000000000000000000")
+
+    def observed(literal: str, quote: str) -> SourcingObservedLiteral:
+        return SourcingObservedLiteral(
+            literal=literal,
+            source_quote=quote,
+            snapshot_artifact_ref=artifact,
+        )
+
+    price_quote = "Price USD 2.50 per piece for minimum quantity 100."
+    return SourcingPageCandidateDraft(
+        evidence=SourcingPageEvidence(
+            source_url="https://supplier.example/item",
+            observed_at=datetime(2026, 8, 30, 12, tzinfo=UTC),
+            content_hash="a" * 64,
+            snapshot_artifact_ref=artifact,
+        ),
+        supplier_name=observed(
+            "Example Hardware Factory", "Supplier: Example Hardware Factory."
+        ),
+        product_title=observed(
+            "Stainless outdoor hinge", "Product: Stainless outdoor hinge."
+        ),
+        specs=(
+            SourcingObservedSpec(
+                spec_name="product_type",
+                required="outdoor hinge",
+                observed=observed(
+                    "Stainless outdoor hinge", "Product: Stainless outdoor hinge."
+                ),
+            ),
+            SourcingObservedSpec(
+                spec_name="material",
+                required="304 stainless steel",
+                observed=observed(
+                    "304 stainless steel", "Material 304 stainless steel."
+                ),
+            ),
+        ),
+        moq=100,
+        moq_literal=observed("100", "MOQ 100 pieces."),
+        price_tiers=(
+            SourcingObservedPriceTier(
+                minimum_quantity=100,
+                amount=Decimal("2.50"),
+                unit="piece",
+                currency="USD",
+                quantity_literal=observed("100", price_quote),
+                price_literal=observed("USD 2.50", price_quote),
+                unit_literal=observed("piece", price_quote),
+                currency_literal=observed("USD", price_quote),
+                rejection_reasons=(),
+            ),
+        ),
+        rejection_reasons=(),
+    )
+
+
+def _page_review_task(review: dict[str, object]) -> AgentTask:
+    return AgentTask(
+        tenant_id=TenantId(new_id("tn")),
+        run_id=RunId(new_id("run")),
+        acting_user=UserId(new_id("usr")),
+        objective="review_public_supplier_candidate",
+        inputs={"candidate_review": review},
+    )
+
+
+def _page_review_response(*, rewrite: bool = False, money: bool = False) -> dict[str, object]:
+    return {
+        "comparisons": [
+            {
+                "spec_name": "product_type",
+                "offered": "Stainless outdoor hinge",
+                "level": "different",
+                "substitutable": True,
+                "substitution_impact": "Confirm the exact hinge subtype.",
+                "needs_customer_confirmation": True,
+            },
+            {
+                "spec_name": "material",
+                "offered": "agent rewrite" if rewrite else "304 stainless steel",
+                "level": "exact",
+                "substitutable": None,
+                "substitution_impact": None,
+                "needs_customer_confirmation": False,
+            },
+        ],
+        "summary": "Observed price is USD 2.50." if money else "One subtype needs confirmation.",
+        "price_rejection_suggestions": [],
+    }
+
+
 @pytest.mark.asyncio
 async def test_review_preserves_unknowns_and_marks_prices_indicative() -> None:
     result = await _agent(_ReviewPort(json.dumps(_safe_response()))).run(
@@ -197,3 +308,91 @@ async def test_sourcing_credentials_are_rejected_before_model_call() -> None:
 
     assert result.changes == []
     assert result.summary == "寻源分析输入被安全边界拒绝"
+
+
+@pytest.mark.asyncio
+async def test_page_draft_handoff_preserves_observations_and_immutable_evidence() -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+
+    assert review["offered_specs"] == (
+        {"spec_name": "product_type", "offered": "Stainless outdoor hinge"},
+        {"spec_name": "material", "offered": "304 stainless steel"},
+    )
+    assert review["price_checks"] == {
+        "far_below_market_without_tier": False,
+        "has_vague_range": False,
+        "has_quantity_tier": True,
+        "unit_clear": True,
+        "currency_clear": True,
+    }
+    assert review["evidence"] == {
+        "source_url": "https://supplier.example/item",
+        "content_hash": "a" * 64,
+        "snapshot_artifact_ref": "art_01H00000000000000000000000",
+        "observed_at": "2026-08-30T12:00:00+00:00",
+    }
+    result = await _agent(
+        _ReviewPort(json.dumps(_page_review_response()))
+    ).run(_page_review_task(review), None)
+    assert [change["operation"] for change in result.changes] == [
+        "record_match_explanation"
+    ]
+    assert result.changes[0]["payload"]["price_basis"] == "indicative"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("rewrite", "money"), [(True, False), (False, True)])
+async def test_existing_agent_cannot_rewrite_page_facts_or_generate_money(
+    rewrite: bool, money: bool
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+
+    result = await _agent(
+        _ReviewPort(json.dumps(_page_review_response(rewrite=rewrite, money=money)))
+    ).run(_page_review_task(review), None)
+
+    assert result.changes == []
+    if rewrite:
+        assert result.summary == "模型输出被护栏拦截：模型改写了供应规格事实"
+    else:
+        assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "summary", ["Observed price is CHF 2.50.", "Observed price is usd 2.50."]
+)
+async def test_existing_agent_rejects_money_in_any_three_letter_currency(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
