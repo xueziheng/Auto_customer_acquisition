@@ -5,17 +5,22 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from types import TracebackType
+from typing import Protocol, Self, runtime_checkable
 
 from domains.sourcing.models import (
     CaseState,
+    LadderCheck,
     PublicSourcingPlan,
     SourcingCase,
     SourcingReview,
+    SourcingSearchExecution,
+    SourcingSearchReconciliation,
     SourcingSupplyOption,
     SupplierCandidate,
 )
 from domains.sourcing.schemas import SourcingHandoffSnapshot
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     SourcingCaseId,
     SourcingPlanId,
@@ -149,3 +154,68 @@ class SourcingHandoffRepository(Protocol):
         case_id: SourcingCaseId,
         review_id: SourcingReviewId,
     ) -> SourcingHandoffSnapshot | None: ...
+
+
+@runtime_checkable
+class LadderCheckRepository(Protocol):
+    """不可变阶梯检查事实存储。"""
+
+    async def add(self, tenant_id: TenantId, check: LadderCheck) -> None: ...
+
+    async def list_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> list[LadderCheck]: ...
+
+
+@runtime_checkable
+class SourcingSearchExecutionRepository(Protocol):
+    """稳定请求键绑定的搜索回执存储。"""
+
+    async def add(
+        self, tenant_id: TenantId, execution: SourcingSearchExecution
+    ) -> None: ...
+
+    async def get_by_request_key(
+        self, tenant_id: TenantId, request_key: str
+    ) -> SourcingSearchExecution | None: ...
+
+    async def update(
+        self, tenant_id: TenantId, execution: SourcingSearchExecution
+    ) -> None: ...
+
+
+@runtime_checkable
+class SourcingSearchReconciliationRepository(Protocol):
+    """只增人工核对事实存储。"""
+
+    async def add(
+        self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
+    ) -> None: ...
+
+    async def get_for_execution(
+        self, tenant_id: TenantId, execution_id: str
+    ) -> SourcingSearchReconciliation | None: ...
+
+
+@runtime_checkable
+class SourcingUnitOfWork(Protocol):
+    """寻源聚合与 Outbox 共事务边界。"""
+
+    cases: SourcingCaseRepository
+    checks: LadderCheckRepository
+    plans: PublicSourcingPlanRepository
+    candidates: CandidateRepository
+    options: SupplyOptionRepository
+    reviews: SourcingReviewRepository
+    search_executions: SourcingSearchExecutionRepository
+    reconciliations: SourcingSearchReconciliationRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...

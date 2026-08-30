@@ -16,6 +16,7 @@ from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleE
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     SourcingMatchInference,
+    SourcingNeedSnapshot,
     SourcingObservedFact,
     SourcingReviewCommand,
     SourcingSupplierClaim,
@@ -431,6 +432,77 @@ class EvidenceSnapshot:
     artifact_ref: str
 
 
+@dataclass(frozen=True)
+class LadderCheck:
+    """不可变的单级匹配检查事实。"""
+
+    check_id: str
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    sequence_number: int
+    rung: MatchLadderRung
+    input_snapshot: dict[str, object]
+    input_snapshot_hash: str
+    conclusion: str
+    match_object_type: str | None
+    match_object_id: str | None
+    spec_comparisons: tuple[SpecComparison, ...]
+    evidence_refs: tuple[str, ...]
+    checked_by: EmployeeId
+    checked_at: datetime
+
+
+class SourcingSearchExecutionStatus(str, Enum):
+    """单次 Provider 请求的持久回执状态。"""
+
+    SUCCEEDED = "succeeded"
+    NO_RESULTS = "no_results"
+    UNCERTAIN = "uncertain"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class SourcingSearchExecution:
+    """搜索定位回执；locator 不是 Evidence。"""
+
+    execution_id: str
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    plan_id: SourcingPlanId
+    run_id: str
+    plan_hash: str
+    query_index: int
+    request_key: str
+    query_text: str
+    locator_results: tuple[dict[str, object], ...]
+    provider_status: SourcingSearchExecutionStatus
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class SourcingReconciliationStatus(str, Enum):
+    """不确定搜索请求的人工核对状态。"""
+
+    REQUIRED = "required"
+    CONFIRMED_CONSUMED = "confirmed_consumed"
+    CONFIRMED_NOT_CONSUMED = "confirmed_not_consumed"
+
+
+@dataclass(frozen=True)
+class SourcingSearchReconciliation:
+    """只增的人工核对事实，不保存 Provider 原始敏感响应。"""
+
+    reconciliation_id: str
+    tenant_id: TenantId
+    execution_id: str
+    status: SourcingReconciliationStatus
+    reason: str
+    provider_receipt: dict[str, object]
+    created_at: datetime
+    reconciled_by: EmployeeId | None = None
+    reconciled_at: datetime | None = None
+
+
 @dataclass
 class SupplierCandidate:
     """候选供应商。
@@ -466,6 +538,7 @@ class SupplierCandidate:
     price_unit: str | None = None
     currency: str | None = None
     evidence: EvidenceSnapshot | None = None
+    evidence_snapshots: tuple[EvidenceSnapshot, ...] = ()
     match: MatchExplanation | None = None
     rejected: bool = False
     rejection_reasons: list[PriceRejectionReason] = field(default_factory=list)
@@ -571,6 +644,7 @@ class SourcingCase:
     assigned_to: EmployeeId | None = None
     workflow_version: int = 1
     trigger_key: str | None = None
+    need_snapshot: SourcingNeedSnapshot | None = None
     need_snapshot_hash: str | None = None
     active_search_plan_id: SourcingPlanId | None = None
     stop_code: SourcingStopCode | None = None

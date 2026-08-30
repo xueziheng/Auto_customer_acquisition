@@ -48,5 +48,9 @@ class SourcingReviewStaleError(PolicyViolation):
     """审核绑定的 Case 版本已经变化，禁止覆盖新事实。"""
 
 
+class SourcingCaseConflictError(PolicyViolation):
+    """案例或审核的乐观并发版本已过期，禁止覆盖已提交事实。"""
+
+
 class SourcingHandoffInvariantError(ValidationError):
     """成本交接快照存在数量档、计价维度或来源路径歧义。"""

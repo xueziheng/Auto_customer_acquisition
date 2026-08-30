@@ -5,21 +5,23 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from types import TracebackType
+from typing import Protocol, Self, runtime_checkable
 
 from domains.products.models import Product, ProductPool, SupplyCapability
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import ProductId, TenantId
 
 
 @runtime_checkable
 class ProductRepository(Protocol):
-    async def add(self, product: Product) -> None: ...
+    async def add(self, tenant_id: TenantId, product: Product) -> None: ...
 
     async def get(
         self, tenant_id: TenantId, product_id: ProductId
     ) -> Product | None: ...
 
-    async def update(self, product: Product) -> None: ...
+    async def update(self, tenant_id: TenantId, product: Product) -> None: ...
 
     async def search(
         self,
@@ -33,6 +35,26 @@ class ProductRepository(Protocol):
 
 @runtime_checkable
 class CapabilityRepository(Protocol):
-    async def add(self, capability: SupplyCapability) -> None: ...
+    async def add(
+        self, tenant_id: TenantId, capability: SupplyCapability
+    ) -> None: ...
 
     async def list_all(self, tenant_id: TenantId) -> list[SupplyCapability]: ...
+
+
+@runtime_checkable
+class ProductsUnitOfWork(Protocol):
+    """产品聚合与 Outbox 共事务边界。"""
+
+    products: ProductRepository
+    capabilities: CapabilityRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...

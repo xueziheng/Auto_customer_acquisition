@@ -1,0 +1,978 @@
+"""Sourcing V2 的 tenant-bound SQLAlchemy 仓储。"""
+
+from __future__ import annotations
+
+import json
+from decimal import Decimal
+from typing import cast
+
+from pydantic import BaseModel
+from sqlalchemy import CursorResult, Select, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domains.sourcing.errors import SourcingCaseConflictError
+from domains.sourcing.models import (
+    CaseState,
+    EvidenceSnapshot,
+    LadderCheck,
+    MatchExplanation,
+    MatchLadderRung,
+    PriceRejectionReason,
+    PublicPlanStatus,
+    PublicSourcingPlan,
+    SourcingCase,
+    SourcingReconciliationStatus,
+    SourcingReview,
+    SourcingSearchExecution,
+    SourcingSearchExecutionStatus,
+    SourcingSearchReconciliation,
+    SourcingStopCode,
+    SourcingStopDetail,
+    SourcingStopStage,
+    SourcingSupplyOption,
+    SpecComparison,
+    SpecMatchLevel,
+    SupplierCandidate,
+    SupplyOptionSource,
+)
+from domains.sourcing.schemas import (
+    SourcingMatchInference,
+    SourcingNeedSnapshot,
+    SourcingObservedFact,
+    SourcingSupplierClaim,
+)
+from infra.db.base import TenantScopedRepository
+from infra.db.tables import (
+    SourcingCandidateEvidenceRow,
+    SourcingCandidateRow,
+    SourcingCaseRow,
+    SourcingLadderCheckRow,
+    SourcingPublicPlanRow,
+    SourcingReviewRow,
+    SourcingSearchExecutionRow,
+    SourcingSearchReconciliationRow,
+    SourcingSupplyOptionRow,
+)
+from shared.errors import ValidationError
+from shared.schemas.identifiers import (
+    EmployeeId,
+    ProductId,
+    SourcingCaseId,
+    SourcingPlanId,
+    SourcingReviewId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
+    TenantId,
+    ValidatedNeedId,
+)
+from shared.schemas.money import CurrencyCode, Money
+
+
+class _TenantBoundRepository(TenantScopedRepository):
+    """构造绑定 tenant，且每个公共入口再次核对显式 tenant。"""
+
+    def __init__(self, session: AsyncSession, tenant_id: TenantId) -> None:
+        super().__init__(tenant_id)
+        self._session = session
+
+    def _require_tenant(self, tenant_id: TenantId) -> None:
+        if tenant_id != self._tenant_id:
+            raise ValueError("请求租户与仓储绑定租户不一致")
+
+
+def _comparison_to_json(value: SpecComparison) -> dict[str, object]:
+    return {
+        "spec_name": value.spec_name,
+        "required": value.required,
+        "offered": value.offered,
+        "level": value.level.value,
+        "substitutable": value.substitutable,
+        "substitution_impact": value.substitution_impact,
+        "needs_customer_confirmation": value.needs_customer_confirmation,
+    }
+
+
+def _comparison_from_json(value: dict[str, object]) -> SpecComparison:
+    return SpecComparison(
+        spec_name=str(value["spec_name"]),
+        required=str(value["required"]),
+        offered=cast(str | None, value.get("offered")),
+        level=SpecMatchLevel(str(value["level"])),
+        substitutable=cast(bool | None, value.get("substitutable")),
+        substitution_impact=cast(str | None, value.get("substitution_impact")),
+        needs_customer_confirmation=bool(
+            value.get("needs_customer_confirmation", False)
+        ),
+    )
+
+
+def _stop_detail_to_json(value: SourcingStopDetail | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "stage": value.stage.value,
+        "query_index": value.query_index,
+        "provider_http_status": value.provider_http_status,
+        "observed_count": value.observed_count,
+        "configured_limit": value.configured_limit,
+    }
+
+
+def _stop_detail_from_json(value: dict[str, object] | None) -> SourcingStopDetail | None:
+    if value is None:
+        return None
+    return SourcingStopDetail(
+        stage=SourcingStopStage(str(value["stage"])),
+        query_index=cast(int | None, value.get("query_index")),
+        provider_http_status=cast(int | None, value.get("provider_http_status")),
+        observed_count=cast(int | None, value.get("observed_count")),
+        configured_limit=cast(int | None, value.get("configured_limit")),
+    )
+
+
+def _case_to_row(case: SourcingCase) -> SourcingCaseRow:
+    if case.need_snapshot is None:
+        raise ValidationError("V2 SourcingCase 必须携带不可变需求快照")
+    if case.trigger_key is None or case.need_snapshot_hash is None:
+        raise ValidationError("V2 SourcingCase 缺少 trigger_key 或 need_snapshot_hash")
+    if case.need_snapshot_hash != case.need_snapshot.snapshot_hash:
+        raise ValidationError("案例快照哈希与需求快照正文不一致")
+    return SourcingCaseRow(
+        tenant_id=case.tenant_id,
+        case_id=case.case_id,
+        need_id=case.need_id,
+        workflow_version=case.workflow_version,
+        trigger_key=case.trigger_key,
+        need_snapshot=case.need_snapshot.model_dump(mode="json"),
+        need_snapshot_hash=case.need_snapshot_hash,
+        state=case.state.value,
+        ladder_checked_to=(
+            case.ladder_checked_to.value if case.ladder_checked_to is not None else None
+        ),
+        active_search_plan_id=case.active_search_plan_id,
+        stop_code=case.stop_code.value if case.stop_code is not None else None,
+        stop_detail=_stop_detail_to_json(case.stop_detail),
+        assigned_to=case.assigned_to,
+        version=case.version,
+        opened_at=case.opened_at,
+        state_changed_at=case.state_changed_at or case.opened_at,
+        completed_at=case.completed_at,
+        failed_reason=case.failed_reason,
+    )
+
+
+def _row_to_case(row: SourcingCaseRow) -> SourcingCase:
+    return SourcingCase(
+        case_id=SourcingCaseId(row.case_id),
+        tenant_id=TenantId(row.tenant_id),
+        need_id=ValidatedNeedId(row.need_id),
+        opened_at=row.opened_at,
+        state=CaseState(row.state),
+        ladder_checked_to=(
+            MatchLadderRung(row.ladder_checked_to)
+            if row.ladder_checked_to is not None
+            else None
+        ),
+        completed_at=row.completed_at,
+        failed_reason=row.failed_reason,
+        assigned_to=EmployeeId(row.assigned_to) if row.assigned_to else None,
+        workflow_version=row.workflow_version,
+        trigger_key=row.trigger_key,
+        need_snapshot=SourcingNeedSnapshot.model_validate_json(
+            json.dumps(row.need_snapshot)
+        ),
+        need_snapshot_hash=row.need_snapshot_hash,
+        active_search_plan_id=(
+            SourcingPlanId(row.active_search_plan_id)
+            if row.active_search_plan_id is not None
+            else None
+        ),
+        stop_code=SourcingStopCode(row.stop_code) if row.stop_code else None,
+        stop_detail=_stop_detail_from_json(row.stop_detail),
+        version=row.version,
+        state_changed_at=row.state_changed_at,
+    )
+
+
+class SourcingCaseRepositoryImpl(_TenantBoundRepository):
+    """案例 CRUD；更新以实体上一版本做 CAS。"""
+
+    def _scoped(self) -> Select[tuple[SourcingCaseRow]]:
+        return self.scoped_query(SourcingCaseRow)
+
+    async def add(self, tenant_id: TenantId, case: SourcingCase) -> None:
+        self._require_tenant(tenant_id)
+        if case.tenant_id != tenant_id:
+            raise ValueError("案例租户与请求租户不一致")
+        self._session.add(_case_to_row(case))
+        await self._session.flush()
+
+    async def get(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> SourcingCase | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self._scoped().where(SourcingCaseRow.case_id == case_id)
+            )
+        ).scalar_one_or_none()
+        return _row_to_case(row) if row is not None else None
+
+    async def update(self, tenant_id: TenantId, case: SourcingCase) -> None:
+        self._require_tenant(tenant_id)
+        if case.tenant_id != tenant_id:
+            raise ValueError("案例租户与请求租户不一致")
+        if case.version <= 1:
+            raise SourcingCaseConflictError("案例更新缺少可比较的上一版本")
+        row = _case_to_row(case)
+        values = {
+            column.name: getattr(row, column.name)
+            for column in SourcingCaseRow.__table__.columns
+            if column.name not in {"tenant_id", "case_id", "need_id", "workflow_version", "trigger_key", "need_snapshot", "need_snapshot_hash", "opened_at"}
+        }
+        result = await self._session.execute(
+            update(SourcingCaseRow)
+            .where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case.case_id,
+                SourcingCaseRow.version == case.version - 1,
+            )
+            .values(**values)
+        )
+        if cast(CursorResult[object], result).rowcount != 1:
+            raise SourcingCaseConflictError("案例版本已变化，拒绝过期覆盖")
+
+    async def find_active_for_need(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> SourcingCase | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self._scoped().where(
+                    SourcingCaseRow.need_id == need_id,
+                    SourcingCaseRow.state.in_(
+                        ("opened", "discovering", "verifying", "candidates_ready")
+                    ),
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_case(row) if row is not None else None
+
+    async def list_by_state(
+        self, tenant_id: TenantId, state: CaseState, limit: int
+    ) -> list[SourcingCase]:
+        self._require_tenant(tenant_id)
+        rows = (
+            await self._session.execute(
+                self._scoped()
+                .where(SourcingCaseRow.state == state.value)
+                .order_by(SourcingCaseRow.opened_at, SourcingCaseRow.case_id)
+                .limit(max(0, min(limit, 50)))
+            )
+        ).scalars()
+        return [_row_to_case(row) for row in rows]
+
+
+def _ladder_to_row(value: LadderCheck) -> SourcingLadderCheckRow:
+    return SourcingLadderCheckRow(
+        tenant_id=value.tenant_id,
+        check_id=value.check_id,
+        case_id=value.case_id,
+        sequence_number=value.sequence_number,
+        rung=value.rung.value,
+        input_snapshot=value.input_snapshot,
+        input_snapshot_hash=value.input_snapshot_hash,
+        conclusion=value.conclusion,
+        match_object_type=value.match_object_type,
+        match_object_id=value.match_object_id,
+        spec_comparisons=[_comparison_to_json(item) for item in value.spec_comparisons],
+        evidence_refs=list(value.evidence_refs),
+        checked_by=value.checked_by,
+        checked_at=value.checked_at,
+    )
+
+
+def _row_to_ladder(row: SourcingLadderCheckRow) -> LadderCheck:
+    return LadderCheck(
+        check_id=row.check_id,
+        tenant_id=TenantId(row.tenant_id),
+        case_id=SourcingCaseId(row.case_id),
+        sequence_number=row.sequence_number,
+        rung=MatchLadderRung(row.rung),
+        input_snapshot=row.input_snapshot,
+        input_snapshot_hash=row.input_snapshot_hash,
+        conclusion=row.conclusion,
+        match_object_type=row.match_object_type,
+        match_object_id=row.match_object_id,
+        spec_comparisons=tuple(_comparison_from_json(item) for item in row.spec_comparisons),
+        evidence_refs=tuple(str(item) for item in row.evidence_refs),
+        checked_by=EmployeeId(row.checked_by),
+        checked_at=row.checked_at,
+    )
+
+
+class LadderCheckRepositoryImpl(_TenantBoundRepository):
+    async def add(self, tenant_id: TenantId, check: LadderCheck) -> None:
+        self._require_tenant(tenant_id)
+        if check.tenant_id != tenant_id:
+            raise ValueError("阶梯检查租户与请求租户不一致")
+        self._session.add(_ladder_to_row(check))
+
+    async def list_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> list[LadderCheck]:
+        self._require_tenant(tenant_id)
+        rows = (
+            await self._session.execute(
+                self.scoped_query(SourcingLadderCheckRow)
+                .where(SourcingLadderCheckRow.case_id == case_id)
+                .order_by(SourcingLadderCheckRow.sequence_number)
+            )
+        ).scalars()
+        return [_row_to_ladder(row) for row in rows]
+
+
+def _plan_to_row(plan: PublicSourcingPlan) -> SourcingPublicPlanRow:
+    return SourcingPublicPlanRow(
+        tenant_id=plan.tenant_id,
+        plan_id=plan.plan_id,
+        case_id=plan.case_id,
+        target_countries=list(plan.target_countries),
+        product_category=plan.product_category,
+        queries=list(plan.queries),
+        max_search_queries=plan.max_search_queries,
+        max_pages_read=plan.max_pages_read,
+        provider=plan.provider,
+        search_depth=plan.search_depth,
+        usage_credits_remaining=plan.usage_credits_remaining,
+        worst_case_credits=plan.worst_case_credits,
+        version=plan.version,
+        expected_case_version=plan.expected_case_version,
+        plan_hash=plan.plan_hash,
+        status=plan.status.value,
+        confirmed_by=plan.confirmed_by,
+        confirmed_at=plan.confirmed_at,
+        authorized_plan_hash=plan.authorized_plan_hash,
+        created_at=plan.created_at,
+    )
+
+
+def _row_to_plan(row: SourcingPublicPlanRow) -> PublicSourcingPlan:
+    return PublicSourcingPlan(
+        tenant_id=TenantId(row.tenant_id),
+        plan_id=SourcingPlanId(row.plan_id),
+        case_id=SourcingCaseId(row.case_id),
+        target_countries=tuple(str(item) for item in row.target_countries),
+        product_category=row.product_category,
+        queries=tuple(str(item) for item in row.queries),
+        max_search_queries=row.max_search_queries,
+        max_pages_read=row.max_pages_read,
+        provider=row.provider,
+        search_depth=row.search_depth,
+        usage_credits_remaining=row.usage_credits_remaining,
+        worst_case_credits=row.worst_case_credits,
+        version=row.version,
+        expected_case_version=row.expected_case_version,
+        plan_hash=row.plan_hash,
+        created_at=row.created_at,
+        status=PublicPlanStatus(row.status),
+        confirmed_by=EmployeeId(row.confirmed_by) if row.confirmed_by else None,
+        confirmed_at=row.confirmed_at,
+        authorized_plan_hash=row.authorized_plan_hash,
+    )
+
+
+class PublicSourcingPlanRepositoryImpl(_TenantBoundRepository):
+    async def add(self, tenant_id: TenantId, plan: PublicSourcingPlan) -> None:
+        self._require_tenant(tenant_id)
+        if plan.tenant_id != tenant_id:
+            raise ValueError("计划租户与请求租户不一致")
+        self._session.add(_plan_to_row(plan))
+
+    async def get(
+        self, tenant_id: TenantId, plan_id: SourcingPlanId
+    ) -> PublicSourcingPlan | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingPublicPlanRow).where(
+                    SourcingPublicPlanRow.plan_id == plan_id
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_plan(row) if row is not None else None
+
+    async def update(self, tenant_id: TenantId, plan: PublicSourcingPlan) -> None:
+        self._require_tenant(tenant_id)
+        if plan.tenant_id != tenant_id:
+            raise ValueError("计划租户与请求租户不一致")
+        row = _plan_to_row(plan)
+        predecessor_statuses = {
+            PublicPlanStatus.PENDING_CONFIRMATION: ("pending_confirmation",),
+            PublicPlanStatus.AUTHORIZED: ("pending_confirmation",),
+            PublicPlanStatus.RUNNING: ("authorized",),
+            PublicPlanStatus.EXHAUSTED: ("running",),
+            PublicPlanStatus.BLOCKED: ("authorized", "running"),
+            PublicPlanStatus.COMPLETED: ("running",),
+        }[plan.status]
+        expected_version = (
+            plan.version - 1
+            if plan.status is PublicPlanStatus.PENDING_CONFIRMATION
+            else plan.version
+        )
+        predicates = [
+            SourcingPublicPlanRow.tenant_id == tenant_id,
+            SourcingPublicPlanRow.plan_id == plan.plan_id,
+            SourcingPublicPlanRow.version == expected_version,
+            SourcingPublicPlanRow.status.in_(predecessor_statuses),
+        ]
+        if plan.status is not PublicPlanStatus.PENDING_CONFIRMATION:
+            predicates.append(SourcingPublicPlanRow.plan_hash == plan.plan_hash)
+        result = await self._session.execute(
+            update(SourcingPublicPlanRow)
+            .where(*predicates)
+            .values(
+                **{
+                    column.name: getattr(row, column.name)
+                    for column in SourcingPublicPlanRow.__table__.columns
+                    if column.name not in {"tenant_id", "plan_id", "case_id", "created_at"}
+                }
+            )
+        )
+        if cast(CursorResult[object], result).rowcount != 1:
+            raise SourcingCaseConflictError("公开寻源计划版本已变化")
+
+    async def get_active_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> PublicSourcingPlan | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingPublicPlanRow)
+                .where(
+                    SourcingPublicPlanRow.case_id == case_id,
+                    SourcingPublicPlanRow.status.in_(
+                        ("pending_confirmation", "authorized", "running")
+                    ),
+                )
+                .order_by(SourcingPublicPlanRow.version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return _row_to_plan(row) if row is not None else None
+
+
+def _pydantic_map_to_json(values: dict[str, BaseModel]) -> dict[str, object]:
+    return {key: value.model_dump(mode="json") for key, value in values.items()}
+
+
+def _candidate_to_row(candidate: SupplierCandidate) -> SourcingCandidateRow:
+    if candidate.indicative_price_tiers and not candidate.price_unit:
+        raise ValidationError("参考价数量档必须有计价单位")
+    tiers = [
+        {
+            "minimum_quantity": quantity,
+            "amount": str(money.amount),
+            "currency": str(money.currency),
+            "unit": candidate.price_unit,
+        }
+        for quantity, money in sorted(candidate.indicative_price_tiers.items())
+    ]
+    match = None
+    if candidate.match is not None:
+        match = {
+            "rung": candidate.match.rung.value,
+            "comparisons": [
+                _comparison_to_json(item) for item in candidate.match.comparisons
+            ],
+            "summary": candidate.match.summary,
+        }
+    return SourcingCandidateRow(
+        tenant_id=candidate.tenant_id,
+        candidate_id=candidate.candidate_id,
+        case_id=candidate.case_id,
+        supplier_name=candidate.supplier_name,
+        source_platform=candidate.source_platform,
+        product_title=candidate.product_title,
+        observed_facts=_pydantic_map_to_json(
+            cast(dict[str, BaseModel], candidate.observed_facts)
+        ),
+        supplier_claims=_pydantic_map_to_json(
+            cast(dict[str, BaseModel], candidate.supplier_claims)
+        ),
+        match_inferences=_pydantic_map_to_json(
+            cast(dict[str, BaseModel], candidate.match_inferences)
+        ),
+        verified_specs=[_comparison_to_json(item) for item in candidate.verified_specs],
+        indicative_price_tiers=tiers,
+        moq=candidate.moq,
+        price_unit=candidate.price_unit,
+        currency=candidate.currency,
+        match_explanation=match,
+        rejected=candidate.rejected,
+        rejection_reasons=[item.value for item in candidate.rejection_reasons],
+        verified_by=candidate.verified_by,
+        created_at=candidate.created_at,
+    )
+
+
+async def _row_to_candidate(
+    session: AsyncSession, row: SourcingCandidateRow
+) -> SupplierCandidate:
+    evidence_rows = (
+        await session.execute(
+            select(SourcingCandidateEvidenceRow)
+            .where(
+                SourcingCandidateEvidenceRow.tenant_id == row.tenant_id,
+                SourcingCandidateEvidenceRow.candidate_id == row.candidate_id,
+            )
+            .order_by(
+                SourcingCandidateEvidenceRow.observed_at,
+                SourcingCandidateEvidenceRow.artifact_id,
+            )
+        )
+    ).scalars()
+    evidence = tuple(
+        EvidenceSnapshot(
+            url=item.url,
+            observed_at=item.observed_at,
+            content_hash=item.content_hash,
+            artifact_ref=item.artifact_id,
+        )
+        for item in evidence_rows
+    )
+    match = None
+    if row.match_explanation is not None:
+        match = MatchExplanation(
+            rung=MatchLadderRung(int(row.match_explanation["rung"])),
+            comparisons=[
+                _comparison_from_json(item)
+                for item in cast(list[dict[str, object]], row.match_explanation["comparisons"])
+            ],
+            summary=str(row.match_explanation["summary"]),
+        )
+    prices = {
+        int(item["minimum_quantity"]): Money(
+            Decimal(str(item["amount"])), CurrencyCode(str(item["currency"]))
+        )
+        for item in row.indicative_price_tiers
+    }
+    return SupplierCandidate(
+        candidate_id=SupplierCandidateId(row.candidate_id),
+        tenant_id=TenantId(row.tenant_id),
+        case_id=SourcingCaseId(row.case_id),
+        supplier_name=row.supplier_name,
+        product_title=row.product_title,
+        created_at=row.created_at,
+        source_platform=row.source_platform,
+        observed_facts={
+            key: SourcingObservedFact.model_validate_json(json.dumps(value))
+            for key, value in row.observed_facts.items()
+        },
+        supplier_claims={
+            key: SourcingSupplierClaim.model_validate_json(json.dumps(value))
+            for key, value in row.supplier_claims.items()
+        },
+        match_inferences={
+            key: SourcingMatchInference.model_validate_json(json.dumps(value))
+            for key, value in row.match_inferences.items()
+        },
+        verified_specs=[_comparison_from_json(item) for item in row.verified_specs],
+        indicative_price_tiers=prices,
+        moq=row.moq,
+        price_unit=row.price_unit,
+        currency=row.currency,
+        evidence=evidence[0] if evidence else None,
+        evidence_snapshots=evidence,
+        match=match,
+        rejected=row.rejected,
+        rejection_reasons=[PriceRejectionReason(item) for item in row.rejection_reasons],
+        verified_by=EmployeeId(row.verified_by) if row.verified_by else None,
+    )
+
+
+class CandidateRepositoryImpl(_TenantBoundRepository):
+    async def add(self, tenant_id: TenantId, candidate: SupplierCandidate) -> None:
+        self._require_tenant(tenant_id)
+        if candidate.tenant_id != tenant_id:
+            raise ValueError("候选租户与请求租户不一致")
+        self._session.add(_candidate_to_row(candidate))
+        await self._session.flush()
+        snapshots = candidate.evidence_snapshots or (
+            (candidate.evidence,) if candidate.evidence is not None else ()
+        )
+        seen: set[str] = set()
+        for snapshot in snapshots:
+            if snapshot.artifact_ref in seen:
+                continue
+            seen.add(snapshot.artifact_ref)
+            self._session.add(
+                SourcingCandidateEvidenceRow(
+                    tenant_id=tenant_id,
+                    candidate_id=candidate.candidate_id,
+                    artifact_id=snapshot.artifact_ref,
+                    url=snapshot.url,
+                    observed_at=snapshot.observed_at,
+                    content_hash=snapshot.content_hash,
+                )
+            )
+
+    async def get(
+        self, tenant_id: TenantId, candidate_id: SupplierCandidateId
+    ) -> SupplierCandidate | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingCandidateRow).where(
+                    SourcingCandidateRow.candidate_id == candidate_id
+                )
+            )
+        ).scalar_one_or_none()
+        return await _row_to_candidate(self._session, row) if row is not None else None
+
+    async def update(
+        self, tenant_id: TenantId, candidate: SupplierCandidate
+    ) -> None:
+        self._require_tenant(tenant_id)
+        if candidate.tenant_id != tenant_id:
+            raise ValueError("候选租户与请求租户不一致")
+        row = _candidate_to_row(candidate)
+        await self._session.execute(
+            update(SourcingCandidateRow)
+            .where(
+                SourcingCandidateRow.tenant_id == tenant_id,
+                SourcingCandidateRow.candidate_id == candidate.candidate_id,
+            )
+            .values(
+                **{
+                    column.name: getattr(row, column.name)
+                    for column in SourcingCandidateRow.__table__.columns
+                    if column.name not in {"tenant_id", "candidate_id", "case_id", "created_at"}
+                }
+            )
+        )
+
+    async def list_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, include_rejected: bool
+    ) -> list[SupplierCandidate]:
+        self._require_tenant(tenant_id)
+        query = self.scoped_query(SourcingCandidateRow).where(
+            SourcingCandidateRow.case_id == case_id
+        )
+        if not include_rejected:
+            query = query.where(SourcingCandidateRow.rejected.is_(False))
+        rows = (
+            await self._session.execute(
+                query.order_by(
+                    SourcingCandidateRow.created_at, SourcingCandidateRow.candidate_id
+                )
+            )
+        ).scalars()
+        return [await _row_to_candidate(self._session, row) for row in rows]
+
+    async def count_qualified(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> int:
+        candidates = await self.list_for_case(tenant_id, case_id, False)
+        return sum(candidate.passes_verification()[0] for candidate in candidates)
+
+
+def _option_from_row(row: SourcingSupplyOptionRow) -> SourcingSupplyOption:
+    return SourcingSupplyOption(
+        option_id=SourcingSupplyOptionId(row.option_id),
+        tenant_id=TenantId(row.tenant_id),
+        case_id=SourcingCaseId(row.case_id),
+        source=SupplyOptionSource(row.source),
+        product_id=ProductId(row.product_id),
+        supplier_candidate_id=(
+            SupplierCandidateId(row.supplier_candidate_id)
+            if row.supplier_candidate_id
+            else None
+        ),
+        is_qualified=row.is_qualified,
+        created_at=row.created_at,
+    )
+
+
+class SupplyOptionRepositoryImpl(_TenantBoundRepository):
+    async def add(self, tenant_id: TenantId, option: SourcingSupplyOption) -> None:
+        self._require_tenant(tenant_id)
+        if option.tenant_id != tenant_id:
+            raise ValueError("供给选项租户与请求租户不一致")
+        self._session.add(
+            SourcingSupplyOptionRow(
+                tenant_id=tenant_id,
+                option_id=option.option_id,
+                case_id=option.case_id,
+                source=option.source.value,
+                product_id=option.product_id,
+                supplier_candidate_id=option.supplier_candidate_id,
+                is_qualified=option.is_qualified,
+                created_at=option.created_at,
+            )
+        )
+
+    async def get(
+        self, tenant_id: TenantId, option_id: SourcingSupplyOptionId
+    ) -> SourcingSupplyOption | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingSupplyOptionRow).where(
+                    SourcingSupplyOptionRow.option_id == option_id
+                )
+            )
+        ).scalar_one_or_none()
+        return _option_from_row(row) if row is not None else None
+
+    async def list_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> list[SourcingSupplyOption]:
+        self._require_tenant(tenant_id)
+        rows = (
+            await self._session.execute(
+                self.scoped_query(SourcingSupplyOptionRow)
+                .where(SourcingSupplyOptionRow.case_id == case_id)
+                .order_by(SourcingSupplyOptionRow.option_id)
+            )
+        ).scalars()
+        return [_option_from_row(row) for row in rows]
+
+
+def _review_from_row(row: SourcingReviewRow) -> SourcingReview:
+    return SourcingReview(
+        review_id=SourcingReviewId(row.review_id),
+        tenant_id=TenantId(row.tenant_id),
+        case_id=SourcingCaseId(row.case_id),
+        primary_option_id=SourcingSupplyOptionId(row.primary_option_id),
+        alternate_option_ids=tuple(
+            SourcingSupplyOptionId(item) for item in row.alternate_option_ids
+        ),
+        reason=row.reason,
+        expected_case_version=row.expected_case_version,
+        submitted_by=EmployeeId(row.submitted_by),
+        submitted_at=row.submitted_at,
+        confirmed_by=EmployeeId(row.confirmed_by) if row.confirmed_by else None,
+        confirmed_at=row.confirmed_at,
+    )
+
+
+class SourcingReviewRepositoryImpl(_TenantBoundRepository):
+    async def _require_case_version(self, review: SourcingReview) -> None:
+        matched = await self._session.scalar(
+            select(SourcingCaseRow.case_id)
+            .where(
+                SourcingCaseRow.tenant_id == review.tenant_id,
+                SourcingCaseRow.case_id == review.case_id,
+                SourcingCaseRow.version == review.expected_case_version,
+            )
+            .with_for_update()
+        )
+        if matched is None:
+            raise SourcingCaseConflictError("审核绑定的案例版本已变化")
+
+    async def add(self, tenant_id: TenantId, review: SourcingReview) -> None:
+        self._require_tenant(tenant_id)
+        if review.tenant_id != tenant_id:
+            raise ValueError("审核租户与请求租户不一致")
+        await self._require_case_version(review)
+        self._session.add(
+            SourcingReviewRow(
+                tenant_id=tenant_id,
+                review_id=review.review_id,
+                case_id=review.case_id,
+                primary_option_id=review.primary_option_id,
+                primary_selection={"option_id": str(review.primary_option_id)},
+                alternate_option_ids=list(review.alternate_option_ids),
+                reason=review.reason,
+                expected_case_version=review.expected_case_version,
+                submitted_by=review.submitted_by,
+                submitted_at=review.submitted_at,
+                confirmed_by=review.confirmed_by,
+                confirmed_at=review.confirmed_at,
+            )
+        )
+
+    async def get(
+        self, tenant_id: TenantId, review_id: SourcingReviewId
+    ) -> SourcingReview | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingReviewRow).where(
+                    SourcingReviewRow.review_id == review_id
+                )
+            )
+        ).scalar_one_or_none()
+        return _review_from_row(row) if row is not None else None
+
+    async def get_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> SourcingReview | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingReviewRow).where(
+                    SourcingReviewRow.case_id == case_id
+                )
+            )
+        ).scalar_one_or_none()
+        return _review_from_row(row) if row is not None else None
+
+    async def update(self, tenant_id: TenantId, review: SourcingReview) -> None:
+        self._require_tenant(tenant_id)
+        if review.tenant_id != tenant_id:
+            raise ValueError("审核租户与请求租户不一致")
+        await self._require_case_version(review)
+        result = await self._session.execute(
+            update(SourcingReviewRow)
+            .where(
+                SourcingReviewRow.tenant_id == tenant_id,
+                SourcingReviewRow.review_id == review.review_id,
+                SourcingReviewRow.case_id == review.case_id,
+                SourcingReviewRow.expected_case_version == review.expected_case_version,
+            )
+            .values(confirmed_by=review.confirmed_by, confirmed_at=review.confirmed_at)
+        )
+        if cast(CursorResult[object], result).rowcount != 1:
+            raise SourcingCaseConflictError("审核事实已变化")
+
+
+def _execution_from_row(row: SourcingSearchExecutionRow) -> SourcingSearchExecution:
+    return SourcingSearchExecution(
+        execution_id=row.execution_id,
+        tenant_id=TenantId(row.tenant_id),
+        case_id=SourcingCaseId(row.case_id),
+        plan_id=SourcingPlanId(row.plan_id),
+        run_id=row.run_id,
+        plan_hash=row.plan_hash,
+        query_index=row.query_index,
+        request_key=row.request_key,
+        query_text=row.query_text,
+        locator_results=tuple(cast(dict[str, object], item) for item in row.locator_results),
+        provider_status=SourcingSearchExecutionStatus(row.provider_status),
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+    )
+
+
+class SourcingSearchExecutionRepositoryImpl(_TenantBoundRepository):
+    async def add(
+        self, tenant_id: TenantId, execution: SourcingSearchExecution
+    ) -> None:
+        self._require_tenant(tenant_id)
+        if execution.tenant_id != tenant_id:
+            raise ValueError("搜索回执租户与请求租户不一致")
+        self._session.add(
+            SourcingSearchExecutionRow(
+                tenant_id=tenant_id,
+                execution_id=execution.execution_id,
+                case_id=execution.case_id,
+                plan_id=execution.plan_id,
+                run_id=execution.run_id,
+                plan_hash=execution.plan_hash,
+                query_index=execution.query_index,
+                request_key=execution.request_key,
+                query_text=execution.query_text,
+                locator_results=list(execution.locator_results),
+                provider_status=execution.provider_status.value,
+                created_at=execution.created_at,
+                completed_at=execution.completed_at,
+            )
+        )
+
+    async def get_by_request_key(
+        self, tenant_id: TenantId, request_key: str
+    ) -> SourcingSearchExecution | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingSearchExecutionRow).where(
+                    SourcingSearchExecutionRow.request_key == request_key
+                )
+            )
+        ).scalar_one_or_none()
+        return _execution_from_row(row) if row is not None else None
+
+    async def update(
+        self, tenant_id: TenantId, execution: SourcingSearchExecution
+    ) -> None:
+        self._require_tenant(tenant_id)
+        if execution.tenant_id != tenant_id:
+            raise ValueError("搜索回执租户与请求租户不一致")
+        await self._session.execute(
+            update(SourcingSearchExecutionRow)
+            .where(
+                SourcingSearchExecutionRow.tenant_id == tenant_id,
+                SourcingSearchExecutionRow.execution_id == execution.execution_id,
+                SourcingSearchExecutionRow.request_key == execution.request_key,
+            )
+            .values(
+                locator_results=list(execution.locator_results),
+                provider_status=execution.provider_status.value,
+                completed_at=execution.completed_at,
+            )
+        )
+
+
+def _reconciliation_from_row(
+    row: SourcingSearchReconciliationRow,
+) -> SourcingSearchReconciliation:
+    return SourcingSearchReconciliation(
+        reconciliation_id=row.reconciliation_id,
+        tenant_id=TenantId(row.tenant_id),
+        execution_id=row.execution_id,
+        status=SourcingReconciliationStatus(row.status),
+        reason=row.reason,
+        provider_receipt=row.provider_receipt,
+        created_at=row.created_at,
+        reconciled_by=EmployeeId(row.reconciled_by) if row.reconciled_by else None,
+        reconciled_at=row.reconciled_at,
+    )
+
+
+class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
+    async def add(
+        self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
+    ) -> None:
+        self._require_tenant(tenant_id)
+        if reconciliation.tenant_id != tenant_id:
+            raise ValueError("人工核对租户与请求租户不一致")
+        self._session.add(
+            SourcingSearchReconciliationRow(
+                tenant_id=tenant_id,
+                reconciliation_id=reconciliation.reconciliation_id,
+                execution_id=reconciliation.execution_id,
+                status=reconciliation.status.value,
+                reason=reconciliation.reason,
+                provider_receipt=reconciliation.provider_receipt,
+                created_at=reconciliation.created_at,
+                reconciled_by=reconciliation.reconciled_by,
+                reconciled_at=reconciliation.reconciled_at,
+            )
+        )
+
+    async def get_for_execution(
+        self, tenant_id: TenantId, execution_id: str
+    ) -> SourcingSearchReconciliation | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingSearchReconciliationRow).where(
+                    SourcingSearchReconciliationRow.execution_id == execution_id
+                )
+            )
+        ).scalar_one_or_none()
+        return _reconciliation_from_row(row) if row is not None else None
+
+
+__all__ = (
+    "CandidateRepositoryImpl",
+    "LadderCheckRepositoryImpl",
+    "PublicSourcingPlanRepositoryImpl",
+    "SourcingCaseRepositoryImpl",
+    "SourcingReviewRepositoryImpl",
+    "SourcingSearchExecutionRepositoryImpl",
+    "SourcingSearchReconciliationRepositoryImpl",
+    "SupplyOptionRepositoryImpl",
+)
