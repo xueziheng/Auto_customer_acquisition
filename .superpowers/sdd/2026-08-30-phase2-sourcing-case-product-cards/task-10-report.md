@@ -76,3 +76,65 @@
 - The repository continues to emit its pre-existing non-monotonic AppleDouble pack
   index warning. This round does not modify Git object storage.
 - Task 10B candidate qualification and Tasks 11–13 remain intentionally out of scope.
+
+## Fix round 2
+
+### RED evidence
+
+- Initial focused command:
+  `/Users/xueziheng/miniconda3/envs/tradeos-py312/bin/pytest -q tests/unit/workflows/test_sourcing_public_search.py tests/integration/test_sourcing_search_quota.py tests/integration/test_sourcing_migrations.py`
+- Initial result: `35 failed, 17 passed`. The failures demonstrated that restart had
+  only a count/bare claim instead of durable slot state, completed draft/rejection
+  outcomes could not be rehydrated, claimed crash windows could be reread or
+  mislabeled, and safe wrapper exceptions retained raw dependency exceptions in
+  `__context__`.
+- A second focused corruption RED changed a completed slot's `result_index` outside
+  its locator receipt; `restore_page_attempts` incorrectly accepted it (`1 failed`).
+- The Postgres concurrency regression aligns two different-slot claims after plan
+  load and before the budget serialization boundary, then asserts exactly one new
+  claim under `max_pages_read=1`.
+
+### Implementation
+
+- Added strict frozen page-attempt status/outcome/claim contracts containing only
+  tenant/Run/authorized-plan slot bindings, fixed safe outcomes, draft ID, and the
+  derived supplier-identity flag; no locator or page payload is persisted there.
+- Amended unpublished 0047 and current ORM with `claimed`/`completed` state,
+  completion time, fixed outcome whitelist, and tenant-bound draft FK.
+- Claims now take a tenant/Run/plan advisory transaction lock before canonical-slot
+  lookup, page-budget count, and insert. Same-slot conflicts return the canonical
+  slot; different-slot races cannot exceed the authorized budget.
+- Completion is idempotent for the exact same result, rejects conflicts, and verifies
+  an exact tenant/case/Run/plan/query/result draft binding before storing
+  `draft_saved`.
+- Restart validates every page slot against its exact successful search receipt and
+  rehydrates completed drafts or fixed page stops without page IO. A claimed but
+  unfinished slot always returns `reconciliation_required`.
+- Search, quota, receipt, page-attempt, page-reader, extractor, draft and uncertain
+  persistence exceptions are converted outside their `except` blocks. Outward safe
+  errors have both `__cause__` and `__context__` unset; cleanup remains non-masking.
+
+### GREEN and gates
+
+- Focused public-search + migration/Postgres: `52 passed in 17.89s`.
+- Expanded related sourcing suite: `233 passed in 18.97s`.
+- Full unit suite: `6173 passed in 65.23s`.
+- Related Postgres suite: `48 passed in 19.25s`.
+- `ruff check .`, Python 3.12 `scripts/check_boundaries.py`, `git diff --check`, and
+  staged sensitive scan: passed.
+- Touched-file Mypy has no touched errors; it retains only the existing 13-error
+  baseline in `shared/schemas/quote_creation.py`.
+- Full sensitive scan retains only the existing eight unrelated test-fixture shapes.
+
+### Commit
+
+- Fix-round 2 implementation commit:
+  `bcb8181c524b1759219f96e20679d6d39f027859`.
+
+### Concerns
+
+- Migration 0047 is still unpublished and intentionally amended in place. A local
+  Phase 2 database that applied its older shape must be rebuilt or explicitly
+  migrated.
+- The existing AppleDouble pack index warning remains outside this change.
+- Task 10B and Tasks 11–13 remain outside Task 10.
