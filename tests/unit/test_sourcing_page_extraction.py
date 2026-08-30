@@ -445,8 +445,8 @@ async def test_invalid_unit_and_repeated_currency_range_are_structured_rejection
 async def test_arbitrary_words_are_not_accepted_as_trade_units() -> None:
     output = _valid_output()
     tier = output["price_tiers"][0]  # type: ignore[index]
-    quote = "Price USD 2.50 per email us for minimum quantity 100."
-    tier["unit_literal"] = "email us"  # type: ignore[index]
+    quote = "Price USD 2.50 per widgets for minimum quantity 100."
+    tier["unit_literal"] = "widgets"  # type: ignore[index]
     tier["source_quote"] = quote  # type: ignore[index]
 
     draft, _ = await _extract(output, text=_page_text() + "\n" + quote)
@@ -456,7 +456,7 @@ async def test_arbitrary_words_are_not_accepted_as_trade_units() -> None:
     assert observed.unit_literal is None
     assert observed.amount is None
     assert observed.rejection_reasons == ("unit_unclear",)
-    assert "email us" not in draft.model_dump_json()
+    assert "widgets" not in draft.model_dump_json()
 
 
 @pytest.mark.parametrize(
@@ -639,6 +639,11 @@ async def test_obviously_private_snapshot_is_rejected_before_model_call() -> Non
         "http://127.1/private",
         "http://2130706433/private",
         "http://0x7f000001/private",
+        "http://0x7f.0.0.1/private",
+        "http://127.0x0.0.1/private",
+        "http://0x7f.0x0.0x0.0x1/private",
+        "http://0177.0.0x0.1/private",
+        "http://127.00.0x0.01/private",
         "http://0177.0.0.1/private",
         "http://127.0.0.01/private",
         "http://999.999.999.999/private",
@@ -657,6 +662,25 @@ async def test_legacy_numeric_and_encoded_hosts_are_rejected_before_model_call(
             _need(), _Snapshot(text=_page_text(), url=url)
         )
 
+    assert port.calls == 0
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "https://[2001:db8::1"])
+@pytest.mark.asyncio
+async def test_malformed_url_parser_errors_are_sanitized_without_context(
+    url: str,
+) -> None:
+    port = _ExtractionPort(json.dumps(_valid_output()))
+
+    with pytest.raises(ValidationError) as caught:
+        await SourcingPageExtractor(port).extract(
+            _need(), _Snapshot(text=_page_text(), url=url)
+        )
+
+    assert str(caught.value) == "公开寻源页面快照无效"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert url not in repr(caught.value)
     assert port.calls == 0
 
 
@@ -777,6 +801,73 @@ async def test_selected_literals_and_quotes_reject_contact_instruction_and_unico
 
     with pytest.raises(ValidationError, match="供应商名称"):
         await _extract(output, text=_page_text() + "\n" + quote)
+
+
+@pytest.mark.parametrize(
+    ("field", "literal"),
+    [
+        ("supplier_name", "Contact us"),
+        ("product_title", "email us"),
+        ("material", "call us"),
+        ("unit_literal", "email us"),
+        ("unit_literal", "+86 13800138000"),
+        ("supplier_name", "tel +86 13800138000"),
+        ("product_title", "13800138000"),
+        ("material", "supplier.example/contact"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_selected_observations_reject_contact_cta_phone_and_domain_path(
+    field: str, literal: str
+) -> None:
+    output = _valid_output()
+    quote = f"Observed {field}: {literal}."
+    if field == "material":
+        output["specs"][1] = {  # type: ignore[index]
+            "spec_name": "material",
+            "literal": literal,
+            "source_quote": quote,
+        }
+    elif field == "unit_literal":
+        quote = f"Price USD 2.50 per {literal} for minimum quantity 100."
+        tier = output["price_tiers"][0]  # type: ignore[index]
+        tier[field] = literal  # type: ignore[index]
+        tier["source_quote"] = quote  # type: ignore[index]
+    else:
+        output[field] = {"literal": literal, "source_quote": quote}
+
+    with pytest.raises(ValidationError):
+        await _extract(output, text=_page_text() + "\n" + quote)
+
+
+@pytest.mark.parametrize(
+    ("field", "literal"),
+    [
+        ("supplier_name", "Contact Hardware Factory"),
+        ("product_title", "Email-compatible relay enclosure"),
+        ("material", "304/316 stainless steel"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_contact_guard_does_not_reject_normal_product_language(
+    field: str, literal: str
+) -> None:
+    output = _valid_output()
+    quote = f"Observed {field}: {literal}."
+    if field == "material":
+        output["specs"][1] = {  # type: ignore[index]
+            "spec_name": "material",
+            "literal": literal,
+            "source_quote": quote,
+        }
+    else:
+        output[field] = {"literal": literal, "source_quote": quote}
+
+    draft, _ = await _extract(output, text=_page_text() + "\n" + quote)
+
+    dumped = draft.model_dump_json()
+    assert literal in dumped
+    assert "source_quote" not in dumped
 
 
 @pytest.mark.asyncio

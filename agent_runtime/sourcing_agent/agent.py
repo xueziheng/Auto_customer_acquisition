@@ -259,8 +259,9 @@ _MODEL_MONEY = re.compile(
     rf"(?:[$€£¥₹]\s*\d|\d(?:[\d,.]*\d)?\s*[$€£¥₹])|"
     rf"(?:(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*\d)|"
     rf"(?:\d(?:[\d,.]*\d)?\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b))|"
-    r"(?:(?i:\b(?:unit[ -]?price|price|cost|amount)\b)[^\d\n]{0,24}\d)|"
-    r"(?:\d(?:[\d,.]*\d)?[^\d\n]{0,12}(?i:\b(?:unit[ -]?price|price|cost|amount)\b))|"
+    r"(?:(?i:\b(?:unit[ -]?price|price|cost|amount)\b)"
+    r"(?:\s*[:=]\s*|\s+(?:is|was|at|of)\s+|\s+)\d)|"
+    r"(?:\d(?:[\d,.]*\d)?\s+(?i:(?:unit[ -]?)?(?:price|cost|amount)\b))|"
     rf"(?:\d(?:[\d,.]*\d)?\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b))"
 )
 

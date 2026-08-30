@@ -488,6 +488,7 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
     [
         "Observed cost is chf 2.50.",
         "Unit price 2.50 per piece.",
+        "The cost is 2.50.",
         "The amount is 2.50.",
         "Available for 2.50 per unit.",
         "Supplier asks €2.50.",
@@ -524,6 +525,9 @@ async def test_existing_agent_rejects_currency_keyword_and_per_unit_money_forms(
         "The plate measures 304 mm by 4 mm.",
         "The set contains 2 pieces and weighs 500 g.",
         "Model AED-250 uses grade 304 steel.",
+        "The cost impact for grade 304 steel is unknown.",
+        "The price-sensitive model is AED-250.",
+        "Grade 304 steel has an unknown cost impact.",
     ],
 )
 @pytest.mark.asyncio

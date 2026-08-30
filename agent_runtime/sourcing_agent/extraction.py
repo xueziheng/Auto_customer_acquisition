@@ -29,14 +29,19 @@ _PRICE = re.compile(
 _POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*")
 _RANGE_SEPARATOR = re.compile(r"(?:-|–|—|\bto\b)", re.IGNORECASE)
 _NUMBER_FRAGMENT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-_NUMERIC_HOST = re.compile(r"(?:0[xX][0-9A-Fa-f]+|[0-9.]+)")
+_NUMERIC_HOST_TOKEN = re.compile(r"(?:[0-9]+|0[xX][0-9A-Fa-f]+)")
 _EMAIL_TEXT = re.compile(
     r"(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![A-Z0-9.-])"
 )
 _URL_TEXT = re.compile(r"(?i)(?:\bhttps?://|\bwww\.)\S+")
-_PHONE_TEXT = re.compile(
-    r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\s*[:=]\s*\+?[0-9]"
+_DOMAIN_PATH_TEXT = re.compile(
+    r"(?i)(?<![A-Z0-9.-])(?:[A-Z0-9-]+\.)+[A-Z]{2,63}/[^\s]*"
 )
+_CONTACT_CTA_TEXT = re.compile(r"(?i)\b(?:contact|e-?mail|call)\s+(?:us|me)\b")
+_PHONE_LABEL_TEXT = re.compile(
+    r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\b\s*[:=]?\s*\+?[0-9]"
+)
+_PHONE_SHAPE_TEXT = re.compile(r"(?<![A-Z0-9])\+?[0-9][0-9 ()-]{7,}[0-9](?![A-Z0-9])")
 _INSTRUCTION_TEXT = re.compile(
     r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|"
     r"system\s+(?:message|prompt)|developer\s+message|assistant\s+message|"
@@ -406,7 +411,19 @@ def _safe_observation_text(value: object, maximum: int) -> str | None:
     parsed = _safe_model_text(value, maximum)
     if parsed is None or any(
         pattern.search(parsed) is not None
-        for pattern in (_EMAIL_TEXT, _URL_TEXT, _PHONE_TEXT, _INSTRUCTION_TEXT)
+        for pattern in (
+            _EMAIL_TEXT,
+            _URL_TEXT,
+            _DOMAIN_PATH_TEXT,
+            _CONTACT_CTA_TEXT,
+            _PHONE_LABEL_TEXT,
+            _INSTRUCTION_TEXT,
+        )
+    ):
+        return None
+    if any(
+        sum(character.isdecimal() for character in match.group()) >= 10
+        for match in _PHONE_SHAPE_TEXT.finditer(parsed)
     ):
         return None
     return parsed
@@ -414,6 +431,28 @@ def _safe_observation_text(value: object, maximum: int) -> str | None:
 
 def _canonical_trade_unit(value: str) -> str | None:
     return _TRADE_UNIT_ALIASES.get(_normalize(value))
+
+
+def _is_legacy_or_invalid_numeric_host(hostname: str) -> bool:
+    components = hostname.split(".")
+    if not components or any(not component for component in components):
+        return all(
+            character in "0123456789abcdefABCDEFxX." for character in hostname
+        )
+    if not all(_NUMERIC_HOST_TOKEN.fullmatch(component) for component in components):
+        return False
+    is_standard_shape = len(components) == 4 and all(
+        component.isdecimal()
+        and (component == "0" or not component.startswith("0"))
+        for component in components
+    )
+    if not is_standard_shape:
+        return True
+    try:
+        ipaddress.IPv4Address(hostname)
+    except ipaddress.AddressValueError:
+        return True
+    return False
 
 
 def _valid_public_url(value: object) -> bool:
@@ -425,29 +464,22 @@ def _valid_public_url(value: object) -> bool:
         or _has_disallowed_unicode(value)
     ):
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+        hostname_value = parsed.hostname
+        has_userinfo = parsed.username is not None or parsed.password is not None
+    except ValueError:
+        return False
     if (
         parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
+        or not hostname_value
+        or has_userinfo
         or parsed.fragment
     ):
         return False
-    hostname = parsed.hostname.casefold()
-    if "%" in parsed.netloc or _NUMERIC_HOST.fullmatch(hostname) is not None:
-        try:
-            address = ipaddress.ip_address(hostname)
-        except ValueError:
-            return False
-        return not (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_multicast
-            or address.is_reserved
-            or address.is_unspecified
-        )
+    hostname = hostname_value.casefold()
+    if "%" in parsed.netloc or _is_legacy_or_invalid_numeric_host(hostname):
+        return False
     if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
         return False
     try:
