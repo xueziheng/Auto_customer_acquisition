@@ -185,7 +185,6 @@ def _category_and_keywords(
                 snapshot.application,
                 snapshot.material,
                 snapshot.size_spec,
-                snapshot.model,
             )
             if fact is not None and isinstance(fact.value, str)
             if (normalized := _normalize(fact.value))
@@ -198,10 +197,10 @@ def _required_specs(
     snapshot: SourcingNeedSnapshot,
 ) -> tuple[ProductSpecRequirement, ...]:
     facts = (
-        ("product_type", snapshot.product_category),
+        ("product_category", snapshot.product_category),
         ("application", snapshot.application),
         ("material", snapshot.material),
-        ("size", snapshot.size_spec),
+        ("size_spec", snapshot.size_spec),
         ("model", snapshot.model),
     )
     requirements: list[ProductSpecRequirement] = []

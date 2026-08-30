@@ -138,10 +138,10 @@ def _product(
             "material": ProductSpecFact("stainless steel", ArtifactId("art_material")),
             "model": ProductSpecFact("hx-4", ArtifactId("art_model")),
             "moq": ProductSpecFact("1000", ArtifactId("art_moq")),
-            "product_type": ProductSpecFact(
-                "industrial hinges", ArtifactId("art_product_type")
+            "product_category": ProductSpecFact(
+                "industrial hinges", ArtifactId("art_product_category")
             ),
-            "size": ProductSpecFact("4 inch", ArtifactId("art_size")),
+            "size_spec": ProductSpecFact("4 inch", ArtifactId("art_size_spec")),
             "unit": ProductSpecFact("piece", ArtifactId("art_unit")),
         },
     )
@@ -163,8 +163,8 @@ def _qualified(product: Product) -> QualifiedProductMatch:
                 ("material", "stainless steel", "stainless steel"),
                 ("model", "hx-4", "hx-4"),
                 ("moq", "5000", "1000"),
-                ("product_type", "industrial hinges", "industrial hinges"),
-                ("size", "4 inch", "4 inch"),
+                ("product_category", "industrial hinges", "industrial hinges"),
+                ("size_spec", "4 inch", "4 inch"),
                 ("unit", "piece", "piece"),
             )
         ),
@@ -194,14 +194,14 @@ class _Products:
         assert (tenant_id, category, keywords, actor) == (
             TENANT,
             "industrial hinges",
-            ["4 inch", "cabinet doors", "hx-4", "stainless steel"],
+            ["4 inch", "cabinet doors", "stainless steel"],
             PRODUCT_ACTOR,
         )
         assert required_specs == (
-            ProductSpecRequirement("product_type", "industrial hinges"),
+            ProductSpecRequirement("product_category", "industrial hinges"),
             ProductSpecRequirement("application", "cabinet doors"),
             ProductSpecRequirement("material", "stainless steel"),
-            ProductSpecRequirement("size", "4 inch"),
+            ProductSpecRequirement("size_spec", "4 inch"),
             ProductSpecRequirement("model", "hx-4"),
             ProductSpecRequirement("moq", "5000"),
             ProductSpecRequirement("unit", "piece"),
@@ -220,7 +220,6 @@ class _Suppliers:
         assert tags == [
             "4 inch",
             "cabinet doors",
-            "hx-4",
             "industrial hinges",
             "stainless steel",
         ]
@@ -527,8 +526,8 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
         ("material", "exact"),
         ("model", "exact"),
         ("moq", "exact"),
-        ("product_type", "exact"),
-        ("size", "exact"),
+        ("product_category", "exact"),
+        ("size_spec", "exact"),
         ("unit", "exact"),
     ]
     assert {
@@ -536,8 +535,8 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
         "art_material",
         "art_model",
         "art_moq",
-        "art_product_type",
-        "art_size",
+        "art_product_category",
+        "art_size_spec",
         "art_unit",
     } <= set(sourcing.checks[-1].evidence_refs)
     assert sourcing.checks[-1].input_snapshot["product_spec_evidence"] == {
@@ -546,8 +545,8 @@ async def test_first_qualified_product_rung_short_circuits_supplier_search(
             "material": "art_material",
             "model": "art_model",
             "moq": "art_moq",
-            "product_type": "art_product_type",
-            "size": "art_size",
+            "product_category": "art_product_category",
+            "size_spec": "art_size_spec",
             "unit": "art_unit",
         }
     }
@@ -590,8 +589,8 @@ async def test_every_qualified_product_gets_a_complete_spec_evidence_mapping() -
             "material",
             "model",
             "moq",
-            "product_type",
-            "size",
+            "product_category",
+            "size_spec",
             "unit",
         }
         for product_mapping in mapping.values()

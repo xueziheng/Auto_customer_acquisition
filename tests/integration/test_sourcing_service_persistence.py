@@ -548,6 +548,202 @@ class _SealReadUow(SqlAlchemySourcingUnitOfWork):
         return entered
 
 
+async def _public_verification_scenario(
+    integration_engine: AsyncEngine,
+    *,
+    sealed: bool = True,
+    descending_tiers: bool = False,
+) -> dict[str, Any]:
+    """用真实服务/UoW 建立一个尚未核验的公开草稿场景。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    artifact_id = ArtifactId(new_id("art"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    await _seed_candidate_artifact(integration_engine, tenant_id, artifact_id)
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    boss = SourcingActor("emp-boss", tenant_id, SourcingScope.TENANT, "boss")
+    projection = CandidateEvidenceSnapshot(
+        tenant_id=tenant_id,
+        artifact_id=artifact_id,
+        canonical_url="https://factory.example/public-hinge",
+        content_hash="c" * 64,
+        observed_at=NOW,
+    )
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _FixedEvidenceReader(projection),
+        now=lambda: NOW,
+    )
+    open_command = _command(tenant_id, need_id)
+    provenance = open_command.need.product_category.provenance
+    need = open_command.need.model_copy(
+        update={
+            "material": NeedFact(value="steel", provenance=provenance),
+            "size_spec": NeedFact(value="4 inch", provenance=provenance),
+            "model": NeedFact(value="HX-4", provenance=provenance),
+        }
+    )
+    case_id = await service.open_case(
+        tenant_id,
+        open_command.model_copy(update={"need": need}),
+        actor=system,
+    )
+    for rung in range(1, 6):
+        await service.record_ladder_check(
+            tenant_id,
+            case_id,
+            LadderCheck(
+                check_id=new_id("slc"),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                sequence_number=rung,
+                rung=MatchLadderRung(rung),
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
+                input_snapshot={"category": "hinges"},
+                input_snapshot_hash="b" * 64,
+                conclusion="无合格供给",
+                match_object_type=None,
+                match_object_id=None,
+                spec_comparisons=(),
+                evidence_refs=(),
+                checked_by=EmployeeId("untrusted"),
+                checked_at=NOW,
+            ),
+            actor=system,
+        )
+    plan = await service.save_public_plan(
+        tenant_id,
+        case_id,
+        PublicSourcingPlanCommand(
+            plan_id=SourcingPlanId(new_id("spl")),
+            case_id=case_id,
+            target_countries=("US",),
+            product_category="hinges",
+            queries=(
+                PublicSourcingQuery(
+                    query_text="hinge factory", target_country="US"
+                ),
+            ),
+            max_search_queries=1,
+            max_pages_read=3,
+            provider="tavily",
+            search_depth="basic",
+            usage_credits_remaining=100,
+            worst_case_credits=1,
+            version=1,
+            expected_case_version=6,
+        ),
+        actor=boss,
+    )
+    await service.confirm_public_plan(
+        tenant_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    await service.authorize_public_plan_run(
+        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    run_id = RunId(new_id("run"))
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO workflow_runs "
+                "(run_id, tenant_id, workflow_type, workflow_version, subject_ref, "
+                "current_step, status, context, idempotency_key) VALUES "
+                "(:run, :tenant, 'sourcing_case', 2, :case, 'verify_candidates', "
+                "'running', '{}', :key)"
+            ),
+            {
+                "run": run_id,
+                "tenant": tenant_id,
+                "case": case_id,
+                "key": f"verify:{run_id}",
+            },
+        )
+    draft = PublicCandidateDraft(
+        draft_id=new_id("scd"),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        query_index=0,
+        result_index=0,
+        source_key="f" * 64,
+        supplier_name="Factory A",
+        product_title="Stainless hinge HX-4",
+        specs=tuple(
+            PublicCandidateDraftSpec(
+                spec_name=name,
+                required=required,
+                observed=required,
+            )
+            for name, required in (
+                ("product_type", "hinges"),
+                ("material", "steel"),
+                ("size", "4 inch"),
+                ("model", "HX-4"),
+            )
+        ),
+        moq=500 if sealed else 6000,
+        indicative_price_tiers=(
+            *(
+                (
+                    PublicCandidateDraftPriceTier(
+                        minimum_quantity=2000,
+                        amount=Decimal("1.00"),
+                        currency="USD",
+                        unit="piece",
+                    ),
+                )
+                if descending_tiers
+                else ()
+            ),
+            PublicCandidateDraftPriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+            ),
+        ),
+        rejection_codes=(),
+        evidence_url=projection.canonical_url,
+        evidence_observed_at=projection.observed_at,
+        evidence_hash=projection.content_hash,
+        evidence_artifact_ref=artifact_id,
+        created_at=NOW,
+    )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        await uow.candidate_drafts.get_or_create_canonical(tenant_id, draft)
+    command = VerifyPublicCandidateDraftsCommand(
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        draft_ids=(draft.draft_id,),
+    )
+    async with sf() as session:
+        case_version = await session.scalar(
+            select(SourcingCaseRow.version).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+    assert case_version is not None
+    return {
+        "tenant_id": tenant_id,
+        "case_id": case_id,
+        "source_key": draft.source_key,
+        "command": command,
+        "projection": projection,
+        "session_factory": sf,
+        "system": system,
+        "case_version": case_version,
+        "service": service,
+        "draft": draft,
+    }
+
+
 @pytest.mark.asyncio
 async def test_open_case_is_idempotent_and_event_is_atomic_in_postgres(
     integration_engine: AsyncEngine,
@@ -790,166 +986,18 @@ async def test_concurrent_public_draft_verification_replays_canonical_tiers_in_p
 ) -> None:
     """降序 tier 的合格/拒绝草稿并发重放都只生成一个 canonical Candidate。"""
 
-    tenant_id = TenantId(new_id("tn"))
-    need_id = ValidatedNeedId(new_id("need"))
-    artifact_id = ArtifactId(new_id("art"))
-    await _seed_need(integration_engine, tenant_id, need_id)
-    await _seed_candidate_artifact(integration_engine, tenant_id, artifact_id)
-    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
-    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
-    boss = SourcingActor("emp-boss", tenant_id, SourcingScope.TENANT, "boss")
-    projection = CandidateEvidenceSnapshot(
-        tenant_id=tenant_id,
-        artifact_id=artifact_id,
-        canonical_url="https://factory.example/public-hinge",
-        content_hash="c" * 64,
-        observed_at=NOW,
+    scenario = await _public_verification_scenario(
+        integration_engine,
+        sealed=sealed,
+        descending_tiers=True,
     )
-    service = _service_type()(
-        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
-        Phase2SourcingAuthorizer(tenant_id),
-        _FixedEvidenceReader(projection),
-        now=lambda: NOW,
-    )
-    open_command = _command(tenant_id, need_id)
-    provenance = open_command.need.product_category.provenance
-    need = open_command.need.model_copy(
-        update={
-            "material": NeedFact(value="steel", provenance=provenance),
-            "size_spec": NeedFact(value="4 inch", provenance=provenance),
-            "model": NeedFact(value="HX-4", provenance=provenance),
-        }
-    )
-    case_id = await service.open_case(
-        tenant_id,
-        open_command.model_copy(update={"need": need}),
-        actor=system,
-    )
-    for rung in range(1, 6):
-        await service.record_ladder_check(
-            tenant_id,
-            case_id,
-            LadderCheck(
-                check_id=new_id("slc"),
-                tenant_id=tenant_id,
-                case_id=case_id,
-                sequence_number=rung,
-                rung=MatchLadderRung(rung),
-                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
-                input_snapshot={"category": "hinges"},
-                input_snapshot_hash="b" * 64,
-                conclusion="无合格供给",
-                match_object_type=None,
-                match_object_id=None,
-                spec_comparisons=(),
-                evidence_refs=(),
-                checked_by=EmployeeId("untrusted"),
-                checked_at=NOW,
-            ),
-            actor=system,
-        )
-    plan = await service.save_public_plan(
-        tenant_id,
-        case_id,
-        PublicSourcingPlanCommand(
-            plan_id=SourcingPlanId(new_id("spl")),
-            case_id=case_id,
-            target_countries=("US",),
-            product_category="hinges",
-            queries=(
-                PublicSourcingQuery(
-                    query_text="hinge factory", target_country="US"
-                ),
-            ),
-            max_search_queries=1,
-            max_pages_read=3,
-            provider="tavily",
-            search_depth="basic",
-            usage_credits_remaining=100,
-            worst_case_credits=1,
-            version=1,
-            expected_case_version=6,
-        ),
-        actor=boss,
-    )
-    await service.confirm_public_plan(
-        tenant_id, plan.plan_id, plan.plan_hash, actor=boss
-    )
-    await service.authorize_public_plan_run(
-        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
-    )
-    run_id = RunId(new_id("run"))
-    async with integration_engine.begin() as connection:
-        await connection.execute(
-            text(
-                "INSERT INTO workflow_runs "
-                "(run_id, tenant_id, workflow_type, workflow_version, subject_ref, "
-                "current_step, status, context, idempotency_key) VALUES "
-                "(:run, :tenant, 'sourcing_case', 2, :case, 'verify_candidates', "
-                "'running', '{}', :key)"
-            ),
-            {
-                "run": run_id,
-                "tenant": tenant_id,
-                "case": case_id,
-                "key": f"verify:{run_id}",
-            },
-        )
-    draft = PublicCandidateDraft(
-        draft_id=new_id("scd"),
-        tenant_id=tenant_id,
-        case_id=case_id,
-        run_id=run_id,
-        plan_id=plan.plan_id,
-        plan_hash=plan.plan_hash,
-        query_index=0,
-        result_index=0,
-        source_key="f" * 64,
-        supplier_name="Factory A",
-        product_title="Stainless hinge HX-4",
-        specs=tuple(
-            PublicCandidateDraftSpec(
-                spec_name=name,
-                required=required,
-                observed=required,
-            )
-            for name, required in (
-                ("product_type", "hinges"),
-                ("material", "steel"),
-                ("size", "4 inch"),
-                ("model", "HX-4"),
-            )
-        ),
-        moq=500 if sealed else 6000,
-        indicative_price_tiers=(
-            PublicCandidateDraftPriceTier(
-                minimum_quantity=2000,
-                amount=Decimal("1.00"),
-                currency="USD",
-                unit="piece",
-            ),
-            PublicCandidateDraftPriceTier(
-                minimum_quantity=1000,
-                amount=Decimal("1.25"),
-                currency="USD",
-                unit="piece",
-            ),
-        ),
-        rejection_codes=(),
-        evidence_url=projection.canonical_url,
-        evidence_observed_at=projection.observed_at,
-        evidence_hash=projection.content_hash,
-        evidence_artifact_ref=artifact_id,
-        created_at=NOW,
-    )
-    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
-        await uow.candidate_drafts.get_or_create_canonical(tenant_id, draft)
-    command = VerifyPublicCandidateDraftsCommand(
-        run_id=run_id,
-        plan_id=plan.plan_id,
-        plan_hash=plan.plan_hash,
-        draft_ids=(draft.draft_id,),
-    )
+    tenant_id = scenario["tenant_id"]
+    case_id = scenario["case_id"]
+    sf = scenario["session_factory"]
+    system = scenario["system"]
+    service = scenario["service"]
+    draft = scenario["draft"]
+    command = scenario["command"]
 
     first, second = await asyncio.gather(
         service.verify_public_candidate_drafts(
@@ -1002,6 +1050,144 @@ async def test_concurrent_public_draft_verification_replays_canonical_tiers_in_p
         )
     else:
         assert tuple(case_row.sealed_candidate_ids) == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["candidate", "case", "outbox"])
+async def test_public_draft_verification_rolls_back_each_real_postgres_write_stage(
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """Candidate、Case seal、Outbox 任一写后失败都不得留下部分 generation。"""
+
+    from infra.db.outbox import PostgresEventBus
+    from infra.db.repositories.sourcing import (
+        CandidateRepositoryImpl,
+        SourcingCaseRepositoryImpl,
+    )
+
+    scenario = await _public_verification_scenario(integration_engine)
+    tenant_id = scenario["tenant_id"]
+    case_id = scenario["case_id"]
+    command = scenario["command"]
+    projection = scenario["projection"]
+    sf = scenario["session_factory"]
+    system = scenario["system"]
+    if failure_stage == "candidate":
+        original = CandidateRepositoryImpl.get_or_create_public_draft
+
+        async def fail_after_candidate(self: Any, *args: Any, **kwargs: Any) -> Any:
+            await original(self, *args, **kwargs)
+            raise RuntimeError("candidate write fault")
+
+        target: type[Any] = CandidateRepositoryImpl
+        method_name = "get_or_create_public_draft"
+        injected = fail_after_candidate
+    elif failure_stage == "case":
+        original = SourcingCaseRepositoryImpl.update
+
+        async def fail_after_case(self: Any, *args: Any, **kwargs: Any) -> Any:
+            await original(self, *args, **kwargs)
+            raise RuntimeError("case write fault")
+
+        target = SourcingCaseRepositoryImpl
+        method_name = "update"
+        injected = fail_after_case
+    else:
+        original = PostgresEventBus.publish
+
+        async def fail_after_outbox(self: Any, *args: Any, **kwargs: Any) -> Any:
+            await original(self, *args, **kwargs)
+            await self._session.flush()
+            raise RuntimeError("outbox write fault")
+
+        target = PostgresEventBus
+        method_name = "publish"
+        injected = fail_after_outbox
+    monkeypatch.setattr(target, method_name, injected)
+    failing_service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _FixedEvidenceReader(projection),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(RuntimeError, match=f"^{failure_stage} write fault$"):
+        await failing_service.verify_public_candidate_drafts(
+            tenant_id, case_id, command, actor=system
+        )
+
+    monkeypatch.setattr(target, method_name, original)
+    async with sf() as session:
+        candidate_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_candidates "
+                "WHERE tenant_id=:tenant AND public_draft_source_key=:source"
+            ),
+            {"tenant": str(tenant_id), "source": scenario["source_key"]},
+        )
+        case_row = await session.scalar(
+            select(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+        event_count = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
+                OutboxEventRow.tenant_id == tenant_id,
+                OutboxEventRow.event_type == "SourcingCandidatesVerified",
+            )
+        )
+    assert candidate_count == 0
+    assert case_row is not None
+    assert case_row.version == scenario["case_version"]
+    assert tuple(case_row.sealed_candidate_ids) == ()
+    assert case_row.candidate_set_hash is None
+    assert case_row.candidates_verified_at is None
+    assert event_count == 0
+
+    retry_service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _FixedEvidenceReader(projection),
+        now=lambda: NOW,
+    )
+    result = await retry_service.verify_public_candidate_drafts(
+        tenant_id, case_id, command, actor=system
+    )
+
+    assert result.verified_event is not None
+    async with sf() as session:
+        retry_candidate_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_candidates "
+                "WHERE tenant_id=:tenant AND public_draft_source_key=:source"
+            ),
+            {"tenant": str(tenant_id), "source": scenario["source_key"]},
+        )
+        retry_case = await session.scalar(
+            select(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+        retry_event_count = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
+                OutboxEventRow.tenant_id == tenant_id,
+                OutboxEventRow.event_type == "SourcingCandidatesVerified",
+            )
+        )
+    assert retry_candidate_count == 1
+    assert retry_case is not None
+    assert tuple(retry_case.sealed_candidate_ids) == tuple(
+        map(str, result.qualified_candidate_ids)
+    )
+    assert retry_event_count == 1
 
 
 @pytest.mark.asyncio

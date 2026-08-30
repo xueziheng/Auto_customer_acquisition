@@ -14,6 +14,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from domains.products.permissions import Phase2ProductAuthorizer, ProductRole
+from domains.products.service import ProductActor
+from domains.sourcing.permissions import SourcingActor, SourcingScope
+from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
+from domains.sourcing.service import LadderCheck
+from domains.suppliers.service import SupplierActor, SupplierRole
 from infra.db.tables import (
     OutboxEventRow,
     ProductCandidatePriceRefRow,
@@ -25,7 +31,9 @@ from shared.errors import ValidationError
 from shared.events.catalog import SourcingCandidatesReady
 from shared.schemas.identifiers import (
     ArtifactId,
+    EmployeeId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SupplierCandidateId,
     SupplierId,
@@ -34,6 +42,9 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import ProvenanceSummary, SourceType
+from workflows.engine.runner import StepStatus, WorkflowRun
+from workflows.sourcing_case.steps import InternalMatchLadderStep
 
 NOW = datetime(2026, 8, 30, 11, 0, tzinfo=UTC)
 
@@ -349,6 +360,208 @@ async def test_product_match_facts_round_trip_and_qualify_after_restart(
         "product_category": evidence_ref,
         "unit": evidence_ref,
     }
+
+
+class _CompositionNeedReader:
+    def __init__(self, tenant_id: TenantId, snapshot: SourcingNeedSnapshot) -> None:
+        self._tenant_id = tenant_id
+        self._snapshot = snapshot
+
+    async def read(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> SourcingNeedSnapshot:
+        assert tenant_id == self._tenant_id
+        assert need_id == self._snapshot.need_id
+        return self._snapshot
+
+
+class _CompositionSuppliers:
+    def __init__(self, tenant_id: TenantId, actor: SupplierActor) -> None:
+        self._tenant_id = tenant_id
+        self._actor = actor
+
+    async def search_by_capability(
+        self, tenant_id: TenantId, tags: list[str], *, actor: SupplierActor
+    ) -> list[object]:
+        assert tenant_id == self._tenant_id
+        assert actor == self._actor
+        assert "hx-4" not in tags
+        return []
+
+
+class _CompositionSourcing:
+    def __init__(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, actor: SourcingActor
+    ) -> None:
+        self._tenant_id = tenant_id
+        self._case_id = case_id
+        self._actor = actor
+        self.checks: list[LadderCheck] = []
+
+    async def record_ladder_check(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        check: LadderCheck,
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        assert tenant_id == self._tenant_id
+        assert case_id == self._case_id
+        assert actor == self._actor
+        self.checks.append(check)
+
+
+@pytest.mark.parametrize(
+    ("model_fact", "model_only_need", "expected_step"),
+    [
+        ("HX-4", False, "prepare_candidates"),
+        ("HX-4", True, "prepare_candidates"),
+        (None, False, "await_public_plan"),
+        ("HX-5", False, "await_public_plan"),
+    ],
+)
+async def test_real_product_service_repository_composition_keeps_legacy_specs_and_requires_model(
+    supply_engine: AsyncEngine,
+    model_fact: str | None,
+    model_only_need: bool,
+    expected_step: str,
+) -> None:
+    """真实仓储事实使用旧键；model 只由逐项比较证明，不能充当广搜关键词。"""
+
+    ProductServiceImpl = _symbol("domains.products.service_impl", "ProductServiceImpl")
+    Uow = _symbol("infra.db.products_uow", "SqlAlchemyProductsUnitOfWork")
+    tenant_id = _tenant()
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    product_id = ProductId(new_id("prd"))
+    evidence_ref = ArtifactId(new_id("art"))
+    await _seed_artifact(supply_engine, tenant_id, evidence_ref)
+    match_specs = {
+        "product_category": ProductSpecFact("industrial hinges", evidence_ref),
+        "application": ProductSpecFact("cabinet doors", evidence_ref),
+        "material": ProductSpecFact("stainless steel", evidence_ref),
+        "size_spec": ProductSpecFact("4 inch", evidence_ref),
+        "moq": ProductSpecFact("1000", evidence_ref),
+        "unit": ProductSpecFact("piece", evidence_ref),
+    }
+    if model_fact is not None:
+        match_specs["model"] = ProductSpecFact(model_fact, evidence_ref)
+    product = Product(
+        product_id=product_id,
+        tenant_id=tenant_id,
+        pool=ProductPool.FORMAL,
+        name_zh="工业铰链",
+        name_en=(
+            "Industrial hinge"
+            if model_only_need
+            else "4 inch stainless steel cabinet door hinge"
+        ),
+        category="industrial hinges",
+        created_at=NOW,
+        moq=1000,
+        internal_cost=Money(Decimal("0.50"), CurrencyCode("USD")),
+        internal_cost_basis="EXW",
+        internal_cost_unit="piece",
+        internal_cost_source_ref=evidence_ref,
+        match_specs=match_specs,
+    )
+    sf = async_sessionmaker(supply_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.products.add(tenant_id, product)
+    provenance = ProvenanceSummary(
+        source_type=SourceType.CONVERSATION,
+        source_id=str(tenant_id),
+        extracted_by="human",
+        extracted_at=NOW,
+        confirmed_by=EmployeeId("emp-review"),
+        confirmed_at=NOW,
+    )
+    snapshot = SourcingNeedSnapshot(
+        need_id=need_id,
+        completeness=3,
+        derivation_version="need-completeness-v1",
+        product_category=NeedFact(
+            value="industrial hinges", provenance=provenance
+        ),
+        application=(
+            None
+            if model_only_need
+            else NeedFact(value="cabinet doors", provenance=provenance)
+        ),
+        material=(
+            None
+            if model_only_need
+            else NeedFact(value="stainless steel", provenance=provenance)
+        ),
+        size_spec=(
+            None
+            if model_only_need
+            else NeedFact(value="4 inch", provenance=provenance)
+        ),
+        model=NeedFact(value="HX-4", provenance=provenance),
+        quantity=NeedFact(value=5000, provenance=provenance),
+        unit=NeedFact(value="piece", provenance=provenance),
+        snapshot_hash="a" * 64,
+    )
+    products = ProductServiceImpl(
+        lambda bound_tenant: Uow(sf, bound_tenant),
+        Phase2ProductAuthorizer(tenant_id),
+    )
+    product_actor = ProductActor(
+        "system:sourcing", ProductRole.SYSTEM, tenant_id
+    )
+    supplier_actor = SupplierActor(
+        "system:sourcing", SupplierRole.SYSTEM, tenant_id
+    )
+    sourcing_actor = SourcingActor(
+        "system:sourcing", tenant_id, SourcingScope.SYSTEM, "system"
+    )
+    sourcing = _CompositionSourcing(tenant_id, case_id, sourcing_actor)
+    step = InternalMatchLadderStep(
+        need_reader=_CompositionNeedReader(tenant_id, snapshot),
+        products=products,
+        suppliers=_CompositionSuppliers(tenant_id, supplier_actor),
+        sourcing=sourcing,
+        product_actor=product_actor,
+        supplier_actor=supplier_actor,
+        sourcing_actor=sourcing_actor,
+    )
+    run = WorkflowRun(
+        run_id=RunId(new_id("run")),
+        tenant_id=tenant_id,
+        workflow_type="sourcing_case",
+        workflow_version=2,
+        subject_ref=str(case_id),
+        current_step="check_ladder",
+        status=StepStatus.RUNNING,
+        created_at=NOW,
+        context={
+            "case_id": str(case_id),
+            "need_id": str(need_id),
+            "need_snapshot_hash": snapshot.snapshot_hash,
+        },
+    )
+
+    action, next_step, updates = await step.execute(run)
+
+    assert (action, next_step) == ("advance", expected_step)
+    if expected_step == "prepare_candidates":
+        assert updates["internal_product_ids"] == [str(product_id)]
+        comparison_names = {
+            item.spec_name
+            for item in sourcing.checks[0].spec_comparisons
+        }
+        assert "model" in comparison_names
+        if not model_only_need:
+            assert {
+                "product_category",
+                "application",
+                "material",
+                "size_spec",
+            } <= comparison_names
+    else:
+        assert updates["internal_product_ids"] == []
 
 
 async def test_product_internal_cost_round_trip_requires_basis_unit_and_artifact(
