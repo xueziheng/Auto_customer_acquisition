@@ -138,3 +138,54 @@
   migrated.
 - The existing AppleDouble pack index warning remains outside this change.
 - Task 10B and Tasks 11–13 remain outside Task 10.
+
+## Fix round 3
+
+### RED evidence
+
+- Focused command:
+  `/Users/xueziheng/miniconda3/envs/tradeos-py312/bin/pytest -q tests/unit/workflows/test_sourcing_public_search.py`
+- Result before fixes: `6 failed, 36 passed in 0.56s`.
+- Two failures showed that completed canonical slots returned by a claim conflict
+  were skipped instead of contributing their exact page, draft, supplier-identity,
+  and rejection outcome, even though no page reread occurred.
+- Four parametrized failures showed that raw `asyncio.CancelledError` from either
+  `release` or `discard_all` escaped on a successful primary result and also masked
+  an already-sanitized primary dependency failure.
+
+### Implementation
+
+- Added one completed-slot aggregation path shared by initial restart restoration
+  and completed claim-conflict results. It records the canonical slot once, counts
+  its durable page, restores its exact draft ID and derived supplier-identity flag,
+  or retains its fixed rejection reason. A raced winner therefore advances or stops
+  exactly like a slot restored at process start, with zero page/extractor/draft IO.
+- Cleanup boundaries now contain every `BaseException`, including raw cancellation
+  raised synchronously by `release` or `discard_all`; cleanup cannot replace either
+  the primary safe result or the detached safe exception.
+
+### GREEN and gates
+
+- Focused public-search suite: `42 passed in 0.46s`.
+- Expanded related unit suite: `191 passed in 0.57s`.
+- Full unit suite: `6179 passed in 66.37s`.
+- Related Postgres suite: `48 passed in 19.09s`.
+- `ruff check .`, Python 3.12 `scripts/check_boundaries.py`, explicit changed-file
+  sensitive scan, staged sensitive scan, and `git diff --check`: passed.
+- Production touched-file Mypy has no touched errors; it retains only the existing
+  13-error baseline in `shared/schemas/quote_creation.py`. Including the touched
+  test file also exposes three existing fake/protocol typing errors in that test.
+- Full sensitive scan retains only the existing eight unrelated test-fixture shapes.
+
+### Commit
+
+- Fix-round 3 implementation commit:
+  `6b297b1`.
+
+### Concerns
+
+- Migration 0047 remains unpublished and intentionally amended by prior Task 10
+  rounds. A local Phase 2 database that applied its older shape must be rebuilt or
+  explicitly migrated.
+- The existing AppleDouble pack index warning remains outside this change.
+- Task 10B and Tasks 11–13 remain outside Task 10.
