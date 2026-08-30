@@ -2,7 +2,7 @@
 
 ## 结果
 
-Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
+Task 8 已按 BASE `ddd3f82975ebbd1e4ffe97d94486d7bea8c189d3`、ADR 0023、Ruling P26/P27/P28 完成。实现范围只包含公开寻源计划的创建、精确确认、免费状态运行门禁、Workflow Engine 安全事件投递，以及不确定搜索的 `count_as_consumed` 保守恢复；没有实现 Task 9+ 的真实搜索、联系人、邮件、报价或成本。
 
 ## TDD 证据
 
@@ -34,6 +34,40 @@ pytest tests/unit -q
 ```
 
 真实 PostgreSQL 综合场景覆盖：确认后替换计划、旧授权失效、两次并发 run、计划只发生一次 durable `authorized -> running`、真实 Workflow Engine 从 `await_public_plan` 接受精确事件并进入 `public_search`、审计事实提交后额度确认失败、重建 service/quota/engine 后恢复、旧 request key 保持 consumed、累计预留不释放、精确重放只保留一条核对事实，以及跨租户读取不可见。
+
+### Fix Round 1 / Ruling P28
+
+RED 证据：
+
+1. 额度仓储抛出包含 `tavily_api_key=raw-secret` 的底层异常时，`run` 原样传播 `RuntimeError`，新增测试稳定失败。
+2. running 计划在 Workflow 已推进或终态时仍依赖 `current_step == public_search`；新增精确事件查询、错误 context、后续活跃步骤和终态重放测试后出现 6 个预期失败。真实 Workflow Engine 测试进一步证明活跃 Run 的 durable fingerprint 被错误返回为 `False`。
+3. 同一 reconciliation operation ID 换 execution 时，旧的 check-then-add 路径会接受第二条事实；新增领域测试稳定失败。真实 PostgreSQL barrier 测试在仓储尚无 atomic API 时以缺失方法失败。
+4. 聚焦组合回归暴露并稳定复现一个授权快照竞态：第二个并发 `run` 可先读到旧 `authorized`，随后看到另一个事务已推进 Workflow；首次修订仍错误拒绝。新增确定性单测后再修正为 exact event 命中后重读 running 领域事实。
+
+GREEN 证据：
+
+```text
+pytest tests/unit/workflows/test_sourcing_plan.py \
+       tests/unit/test_sourcing_service.py \
+       tests/integration/test_sourcing_plan_confirmation.py \
+       tests/integration/test_search_quota.py \
+       tests/integration/test_sourcing_repositories.py \
+       tests/integration/test_workflow_engine.py -q
+=> 166 passed
+
+pytest tests/unit/workflows/test_sourcing_case.py \
+       tests/unit/test_scheduler_sourcing_events.py \
+       tests/integration/test_sourcing_service_persistence.py \
+       tests/integration/test_sourcing_migrations.py -q
+=> 45 passed
+
+pytest tests/unit -q
+=> 5691 passed
+```
+
+- `quota.snapshot()` 的任意读取/反序列化/底层异常均被丢弃，并在 `except` 外转成无 cause/context 的固定 `quota_status_unknown`；付费和不足仍分别保持 `paid_usage_enabled` 与 `quota_exhausted`。
+- exact replay 只以同 tenant、workflow type、Case subject、event type 和精确 `{plan_id, plan_hash}` 的 durable fingerprint 为证明。后续活跃步骤及终态均可幂等返回；事件不存在、context/Run 边界错误均 fail closed。事件证据查询的 transient 与永久异常均固定脱敏，transient 保持可重试。
+- reconciliation 通过 operation ID 与 execution 唯一键的 PostgreSQL `ON CONFLICT DO NOTHING` canonical get-or-create 串行化。barrier 同时事务的精确 payload 返回同一事实且只有一行；任一键或 payload 漂移返回固定领域冲突，不传播 `IntegrityError`。真实 PostgreSQL 同时覆盖跨租户相同键与先插入事务 rollback 后的存活重放。
 
 ## 实现摘要
 

@@ -224,6 +224,12 @@ class SourcingSearchExecutionRepository(Protocol):
 class SourcingSearchReconciliationRepository(Protocol):
     """只增人工核对事实存储。"""
 
+    async def get_or_create_canonical(
+        self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
+    ) -> SourcingSearchReconciliation:
+        """按操作 ID 与 execution 唯一键原子返回精确 canonical 事实；漂移冲突。"""
+        ...
+
     async def add(
         self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
     ) -> None: ...

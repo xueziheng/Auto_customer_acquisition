@@ -43,7 +43,12 @@ from workflows.account_discovery.flow import (
     build_legacy_account_discovery_definition,
     register_account_discovery,
 )
-from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
+from workflows.engine.runner import (
+    StepDefinition,
+    StepStatus,
+    WorkflowDefinition,
+    WorkflowRun,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NOW = datetime(2026, 8, 9, 8, 0, 0, tzinfo=UTC)
@@ -1069,6 +1074,50 @@ async def test_two_distinct_wait_events_persist_ledger_copy_on_write(
             "subject",
             "approval_two",
             second_payload,
+        )
+    finally:
+        await handle.dispose()
+
+
+async def test_delivered_event_evidence_survives_later_active_step_and_terminal(
+    db_url: str,
+) -> None:
+    """持久事件指纹不以当前 step/终态为条件，精确 payload 才能命中。"""
+
+    handlers = {
+        "h_init": _handler(lambda run: ("advance", "wait", {})),
+        "h_wait": _handler(lambda run: ("advance", "done", {})),
+        "h_done": _handler(lambda run: ("complete", None, {})),
+    }
+    engine, handle = _make_engine(db_url, handlers)
+    try:
+        engine.register(_advance_flow())
+        tenant = TenantId("tDurableEvidenceProgress")
+        payload = {"plan_id": "spl_exact", "plan_hash": "a" * 64}
+        run_id = await engine.start(tenant, "wf", "case-subject", {}, "durable-event")
+        assert await engine.poll_due(tenant, 1) == 1
+        assert await engine.deliver_event(tenant, run_id, "approval", payload)
+
+        progressed = await engine.get_run(tenant, run_id)
+        assert progressed is not None
+        assert progressed.current_step == "done"
+        assert progressed.status is StepStatus.RUNNING
+        assert await engine.has_delivered_event(
+            tenant, "wf", "case-subject", "approval", payload
+        )
+        assert not await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            {"plan_id": "spl_exact", "plan_hash": "b" * 64},
+        )
+
+        assert await engine.poll_due(tenant, 1) == 1
+        terminal = await engine.get_run(tenant, run_id)
+        assert terminal is not None and terminal.status is StepStatus.COMPLETED
+        assert await engine.has_delivered_event(
+            tenant, "wf", "case-subject", "approval", payload
         )
     finally:
         await handle.dispose()

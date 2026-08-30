@@ -856,21 +856,6 @@ class SourcingServiceImpl:
             execution = await self._uncertain_execution(
                 uow, tenant_id, case_id, command.run_id, command.request_key
             )
-            existing = await uow.reconciliations.get_for_execution(
-                tenant_id, execution.execution_id
-            )
-            if existing is not None:
-                if (
-                    existing.reconciliation_id == command.reconciliation_id
-                    and existing.status
-                    is SourcingReconciliationStatus.CONFIRMED_CONSUMED
-                    and existing.reason == command.reason
-                    and existing.provider_usage_artifact_ref
-                    == command.provider_usage_artifact_ref
-                    and existing.reconciled_by == _employee(actor)
-                ):
-                    return existing
-                raise SourcingPlanStaleError("不确定搜索核对事实已存在且内容不同")
             reconciliation = SourcingSearchReconciliation(
                 reconciliation_id=command.reconciliation_id,
                 tenant_id=tenant_id,
@@ -882,8 +867,22 @@ class SourcingServiceImpl:
                 reconciled_by=_employee(actor),
                 reconciled_at=now,
             )
-            await uow.reconciliations.add(tenant_id, reconciliation)
-            return reconciliation
+            canonical = await uow.reconciliations.get_or_create_canonical(
+                tenant_id, reconciliation
+            )
+            if (
+                canonical.reconciliation_id != reconciliation.reconciliation_id
+                or canonical.tenant_id != tenant_id
+                or canonical.execution_id != reconciliation.execution_id
+                or canonical.status
+                is not SourcingReconciliationStatus.CONFIRMED_CONSUMED
+                or canonical.reason != reconciliation.reason
+                or canonical.provider_usage_artifact_ref
+                != reconciliation.provider_usage_artifact_ref
+                or canonical.reconciled_by != reconciliation.reconciled_by
+            ):
+                raise SourcingPlanStaleError("不确定搜索核对事实冲突")
+            return canonical
 
     async def submit_candidate(
         self,

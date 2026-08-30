@@ -24,7 +24,7 @@ from domains.sourcing.service import (
     SourcingSearchExecutionStatus,
     SourcingSearchReconciliation,
 )
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     RunId,
@@ -215,6 +215,8 @@ class _Engine:
         self.delivered: list[tuple[str, dict[str, Any]]] = []
         self.already_delivered = False
         self.delivery_error: Exception | None = None
+        self.event_query_error: Exception | None = None
+        self.event_queries: list[tuple[object, ...]] = []
 
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
         if (
@@ -231,6 +233,11 @@ class _Engine:
     async def has_delivered_event(
         self, tenant_id, workflow_type, subject_ref, event_type, payload
     ):
+        if self.event_query_error is not None:
+            raise self.event_query_error
+        self.event_queries.append(
+            (tenant_id, workflow_type, subject_ref, event_type, dict(payload))
+        )
         return self.already_delivered
 
     async def deliver_event(self, tenant_id, run_id, event_type, payload):
@@ -413,13 +420,34 @@ async def test_run_returns_distinct_free_quota_stop_codes_without_delivery(
 
 
 @pytest.mark.asyncio
+async def test_run_sanitizes_quota_snapshot_failure_as_unknown_without_exception_chain() -> None:
+    class _FailingQuota(_Quota):
+        async def snapshot(self):
+            self.calls.append("snapshot")
+            raise RuntimeError("tavily_api_key=raw-secret")
+
+    quota = _FailingQuota()
+    application, sourcing, _, engine = _application(quota=quota)
+
+    with pytest.raises(SourcingPublicSearchBlockedError) as failure:
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+
+    assert failure.value.stop_code == "quota_status_unknown"
+    assert failure.value.__cause__ is None
+    assert failure.value.__context__ is None
+    assert "raw-secret" not in str(failure.value)
+    assert sourcing.calls == ["read_run"]
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
 async def test_run_rejects_wrong_workflow_boundary_before_plan_transition() -> None:
     application, sourcing, _, engine = _application(engine=_Engine(_run("public_search")))
 
     with pytest.raises(ValidationError, match="授权边界"):
         await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
-    assert sourcing.calls == ["read_run", "read_run"]
+    assert sourcing.calls == ["read_run"]
     assert engine.delivered == []
 
 
@@ -437,6 +465,136 @@ async def test_running_replay_accepts_existing_exact_event_without_redelivery() 
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run"]
+    assert engine.delivered == []
+    assert engine.event_queries == [
+        (
+            TENANT,
+            "sourcing_case",
+            str(CASE_ID),
+            "SourcingPlanConfirmed",
+            {"plan_id": str(PLAN_ID), "plan_hash": PLAN_HASH},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run",
+    [
+        _run("verify_candidates"),
+        replace(_run("handoff_costing"), status=StepStatus.COMPLETED),
+    ],
+)
+async def test_running_replay_uses_durable_event_after_progress_or_terminal(
+    run: WorkflowRun,
+) -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(run)
+    engine.already_delivered = True
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    result = await application.run(
+        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
+    )
+
+    assert result.status is PublicPlanStatus.RUNNING
+    assert sourcing.calls == ["read_run"]
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+async def test_running_plan_without_event_evidence_fails_closed_on_progressed_run() -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(_run("public_search"))
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    with pytest.raises(ValidationError, match="授权边界"):
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+
+    assert engine.event_queries
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+async def test_authorized_snapshot_race_rechecks_exact_event_and_running_domain_fact() -> None:
+    class _RacingSourcing(_Sourcing):
+        async def get_public_plan_run_view(
+            self, tenant_id, case_id, plan_id, expected_plan_hash, *, actor
+        ):
+            view = await super().get_public_plan_run_view(
+                tenant_id,
+                case_id,
+                plan_id,
+                expected_plan_hash,
+                actor=actor,
+            )
+            if self.calls.count("read_run") == 1:
+                self.plan = _plan(PublicPlanStatus.RUNNING)
+            return view
+
+    sourcing = _RacingSourcing()
+    engine = _Engine(_run("public_search"))
+    engine.already_delivered = True
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    result = await application.run(
+        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
+    )
+
+    assert result.status is PublicPlanStatus.RUNNING
+    assert sourcing.calls == ["read_run", "read_run"]
+    assert engine.event_queries
+    assert engine.delivered == []
+
+
+@pytest.mark.asyncio
+async def test_running_plan_without_event_can_redeliver_only_at_exact_waiting_boundary() -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    wrong_context = replace(_run(), context={"case_id": "src_case-other"})
+    engine = _Engine(wrong_context)
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    with pytest.raises(ValidationError, match="绑定无效"):
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+    assert engine.delivered == []
+
+    engine.run = _run()
+    recovered = await application.run(
+        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
+    )
+    assert recovered.status is PublicPlanStatus.RUNNING
+    assert engine.delivered == [
+        ("SourcingPlanConfirmed", {"plan_id": str(PLAN_ID), "plan_hash": PLAN_HASH})
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query_error", "expected_type", "retryable"),
+    [
+        (TransientError("token=raw-secret"), SourcingPlanDeliveryError, True),
+        (RuntimeError("token=raw-secret"), ValidationError, False),
+    ],
+)
+async def test_running_replay_sanitizes_event_evidence_query_failures(
+    query_error: Exception, expected_type: type[Exception], retryable: bool
+) -> None:
+    sourcing = _Sourcing()
+    sourcing.plan = _plan(PublicPlanStatus.RUNNING)
+    engine = _Engine(_run("verify_candidates"))
+    engine.event_query_error = query_error
+    application, _, _, _ = _application(sourcing=sourcing, engine=engine)
+
+    with pytest.raises(expected_type) as failure:
+        await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
+
+    assert getattr(failure.value, "is_retryable", False) is retryable
+    assert failure.value.__cause__ is None
+    assert failure.value.__context__ is None
+    assert "raw-secret" not in str(failure.value)
     assert engine.delivered == []
 
 

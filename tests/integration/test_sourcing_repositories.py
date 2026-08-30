@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ import pytest_asyncio
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from domains.sourcing.errors import SourcingPlanStaleError
 from domains.sourcing.schemas import (
     IndicativePriceTier,
     NeedFact,
@@ -338,6 +340,256 @@ def _candidate(
         rejection_reasons=[],
         verified_by=EmployeeId("emp-verifier"),
     )
+
+
+async def _seed_reconciliation_scope(
+    engine: AsyncEngine,
+    tenant_id: TenantId,
+    *,
+    execution_ids: tuple[str, ...],
+) -> tuple[Any, ArtifactId, RunId]:
+    """为原子核对仓储建立同租户 Case/plan/Run/execution 真实 FK 图。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    SearchExecution = _symbol(
+        "domains.sourcing.models", "SourcingSearchExecution"
+    )
+    SearchExecutionStatus = _symbol(
+        "domains.sourcing.models", "SourcingSearchExecutionStatus"
+    )
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    artifact_id = ArtifactId(new_id("art"))
+    run_id = RunId(new_id("run"))
+    await _seed_need(engine, tenant_id, need_id)
+    await _seed_artifact(engine, tenant_id, artifact_id, content_hash="e" * 64)
+    plan = _plan(tenant_id, case_id)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO workflow_runs "
+                "(run_id, tenant_id, workflow_type, workflow_version, subject_ref, "
+                "current_step, status, context, idempotency_key) VALUES "
+                "(:run, :tenant, 'sourcing_case', 2, :case, 'public_search', "
+                "'running', CAST(:context AS jsonb), :key)"
+            ),
+            {
+                "run": run_id,
+                "tenant": tenant_id,
+                "case": case_id,
+                "context": json.dumps({"case_id": str(case_id)}),
+                "key": f"reconciliation:{tenant_id}",
+            },
+        )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with Uow(factory, tenant_id) as uow:
+        await uow.cases.add(
+            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+        )
+        await uow.plans.add(tenant_id, plan)
+        for index, execution_id in enumerate(execution_ids):
+            await uow.search_executions.add(
+                tenant_id,
+                SearchExecution(
+                    execution_id=execution_id,
+                    tenant_id=tenant_id,
+                    case_id=case_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    plan_hash=plan.plan_hash,
+                    query_index=index,
+                    request_key=f"{index + 1:064x}",
+                    query_text=f"hinge manufacturer {index}",
+                    locator_results=(),
+                    provider_status=SearchExecutionStatus.UNCERTAIN,
+                    created_at=NOW,
+                ),
+            )
+    return factory, artifact_id, run_id
+
+
+def _confirmed_reconciliation(
+    tenant_id: TenantId,
+    execution_id: str,
+    artifact_id: ArtifactId,
+    reconciliation_id: str,
+    *,
+    reason: str = "已核对提供商账户用量",
+) -> Any:
+    SearchReconciliation = _symbol(
+        "domains.sourcing.models", "SourcingSearchReconciliation"
+    )
+    ReconciliationStatus = _symbol(
+        "domains.sourcing.models", "SourcingReconciliationStatus"
+    )
+    return SearchReconciliation(
+        reconciliation_id=reconciliation_id,
+        tenant_id=tenant_id,
+        execution_id=execution_id,
+        status=ReconciliationStatus.CONFIRMED_CONSUMED,
+        reason=reason,
+        provider_usage_artifact_ref=artifact_id,
+        created_at=NOW,
+        reconciled_by=EmployeeId("emp-boss"),
+        reconciled_at=NOW,
+    )
+
+
+async def test_reconciliation_canonical_get_or_create_is_atomic_under_barrier(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """并发精确重放只留一行；任一唯一键漂移都返回固定领域冲突。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    tenant_id = _tenant()
+    execution_ids = tuple(new_id("sex") for _ in range(5))
+    factory, artifact_id, _ = await _seed_reconciliation_scope(
+        sourcing_engine, tenant_id, execution_ids=execution_ids
+    )
+
+    async def race(
+        left: Any, right: Any
+    ) -> tuple[object, object]:
+        barrier = asyncio.Barrier(2)
+
+        async def write(candidate: Any) -> Any:
+            async with Uow(factory, tenant_id) as uow:
+                await barrier.wait()
+                return await uow.reconciliations.get_or_create_canonical(
+                    tenant_id, candidate
+                )
+
+        results = await asyncio.gather(
+            write(left), write(right), return_exceptions=True
+        )
+        return results[0], results[1]
+
+    exact = _confirmed_reconciliation(
+        tenant_id, execution_ids[0], artifact_id, new_id("srr")
+    )
+    exact_results = await race(exact, exact)
+    assert exact_results == (exact, exact)
+
+    shared_id = new_id("srr")
+    operation_drift = await race(
+        _confirmed_reconciliation(
+            tenant_id, execution_ids[1], artifact_id, shared_id
+        ),
+        _confirmed_reconciliation(
+            tenant_id, execution_ids[2], artifact_id, shared_id
+        ),
+    )
+    assert sum(isinstance(item, SourcingPlanStaleError) for item in operation_drift) == 1
+    operation_error = next(
+        item for item in operation_drift if isinstance(item, SourcingPlanStaleError)
+    )
+    assert str(operation_error) == "不确定搜索核对事实冲突"
+    assert operation_error.__cause__ is None
+    assert operation_error.__context__ is None
+
+    execution_drift = await race(
+        _confirmed_reconciliation(
+            tenant_id, execution_ids[3], artifact_id, new_id("srr")
+        ),
+        _confirmed_reconciliation(
+            tenant_id,
+            execution_ids[3],
+            artifact_id,
+            new_id("srr"),
+            reason="不同核对载荷",
+        ),
+    )
+    assert sum(isinstance(item, SourcingPlanStaleError) for item in execution_drift) == 1
+    execution_error = next(
+        item for item in execution_drift if isinstance(item, SourcingPlanStaleError)
+    )
+    assert str(execution_error) == "不确定搜索核对事实冲突"
+    assert execution_error.__cause__ is None
+    assert execution_error.__context__ is None
+
+    async with sourcing_engine.connect() as connection:
+        count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_search_reconciliations "
+                "WHERE tenant_id = :tenant"
+            ),
+            {"tenant": tenant_id},
+        )
+    assert count == 3
+
+
+async def test_reconciliation_canonical_is_tenant_bound_and_rollback_safe(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """相同外部键可跨租户隔离；先插入事务回滚后并发重放可成为 canonical。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    execution_id = new_id("sex")
+    reconciliation_id = new_id("srr")
+    tenants = (_tenant(), _tenant())
+    scopes = [
+        await _seed_reconciliation_scope(
+            sourcing_engine, tenant, execution_ids=(execution_id,)
+        )
+        for tenant in tenants
+    ]
+    canonical = []
+    for tenant, (factory, artifact_id, _) in zip(tenants, scopes, strict=True):
+        candidate = _confirmed_reconciliation(
+            tenant, execution_id, artifact_id, reconciliation_id
+        )
+        async with Uow(factory, tenant) as uow:
+            canonical.append(
+                await uow.reconciliations.get_or_create_canonical(tenant, candidate)
+            )
+    assert [item.tenant_id for item in canonical] == list(tenants)
+
+    rollback_tenant = _tenant()
+    rollback_execution = new_id("sex")
+    factory, artifact_id, _ = await _seed_reconciliation_scope(
+        sourcing_engine, rollback_tenant, execution_ids=(rollback_execution,)
+    )
+    candidate = _confirmed_reconciliation(
+        rollback_tenant, rollback_execution, artifact_id, new_id("srr")
+    )
+    barrier = asyncio.Barrier(2)
+    inserted = asyncio.Event()
+    contender_started = asyncio.Event()
+
+    async def rolled_back_writer() -> None:
+        with pytest.raises(RuntimeError, match="force rollback"):
+            async with Uow(factory, rollback_tenant) as uow:
+                await barrier.wait()
+                await uow.reconciliations.get_or_create_canonical(
+                    rollback_tenant, candidate
+                )
+                inserted.set()
+                await contender_started.wait()
+                raise RuntimeError("force rollback")
+
+    async def surviving_writer() -> Any:
+        async with Uow(factory, rollback_tenant) as uow:
+            await barrier.wait()
+            await inserted.wait()
+            contender_started.set()
+            return await uow.reconciliations.get_or_create_canonical(
+                rollback_tenant, candidate
+            )
+
+    _, survivor = await asyncio.gather(rolled_back_writer(), surviving_writer())
+    assert survivor == candidate
+    async with sourcing_engine.connect() as connection:
+        count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_search_reconciliations "
+                "WHERE tenant_id = :tenant AND reconciliation_id = :reconciliation"
+            ),
+            {
+                "tenant": rollback_tenant,
+                "reconciliation": candidate.reconciliation_id,
+            },
+        )
+    assert count == 1
 
 
 async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(

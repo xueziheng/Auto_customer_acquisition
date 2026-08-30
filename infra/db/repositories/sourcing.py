@@ -7,11 +7,11 @@ from decimal import Decimal
 from typing import cast
 
 from pydantic import BaseModel
-from sqlalchemy import CursorResult, Select, select, text, update
+from sqlalchemy import CursorResult, Select, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domains.sourcing.errors import SourcingCaseConflictError
+from domains.sourcing.errors import SourcingCaseConflictError, SourcingPlanStaleError
 from domains.sourcing.models import (
     CaseState,
     EvidenceSnapshot,
@@ -1347,6 +1347,62 @@ def _reconciliation_from_row(
 
 
 class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
+    async def get_or_create_canonical(
+        self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
+    ) -> SourcingSearchReconciliation:
+        self._require_tenant(tenant_id)
+        if reconciliation.tenant_id != tenant_id:
+            raise ValueError("人工核对租户与请求租户不一致")
+        values = {
+            "tenant_id": tenant_id,
+            "reconciliation_id": reconciliation.reconciliation_id,
+            "execution_id": reconciliation.execution_id,
+            "status": reconciliation.status.value,
+            "reason": reconciliation.reason,
+            "provider_usage_artifact_ref": reconciliation.provider_usage_artifact_ref,
+            "created_at": reconciliation.created_at,
+            "reconciled_by": reconciliation.reconciled_by,
+            "reconciled_at": reconciliation.reconciled_at,
+        }
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingSearchReconciliationRow)
+                .values(**values)
+                .on_conflict_do_nothing()
+                .returning(SourcingSearchReconciliationRow.reconciliation_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return reconciliation
+        rows = (
+            await self._session.execute(
+                self.scoped_query(SourcingSearchReconciliationRow)
+                .where(
+                    or_(
+                        SourcingSearchReconciliationRow.reconciliation_id
+                        == reconciliation.reconciliation_id,
+                        SourcingSearchReconciliationRow.execution_id
+                        == reconciliation.execution_id,
+                    )
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+        if len(rows) != 1:
+            raise SourcingPlanStaleError("不确定搜索核对事实冲突")
+        canonical = _reconciliation_from_row(rows[0])
+        if (
+            canonical.reconciliation_id != reconciliation.reconciliation_id
+            or canonical.execution_id != reconciliation.execution_id
+            or canonical.status is not reconciliation.status
+            or canonical.reason != reconciliation.reason
+            or canonical.provider_usage_artifact_ref
+            != reconciliation.provider_usage_artifact_ref
+            or canonical.reconciled_by != reconciliation.reconciled_by
+        ):
+            raise SourcingPlanStaleError("不确定搜索核对事实冲突")
+        return canonical
+
     async def add(
         self, tenant_id: TenantId, reconciliation: SourcingSearchReconciliation
     ) -> None:

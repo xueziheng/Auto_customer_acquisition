@@ -370,8 +370,6 @@ class PostgresWorkflowEngine:
                     )
                 )
             ).all()
-            if any(status not in _TERMINAL_STATUSES for status, _ in rows):
-                return False
             for _, context in rows:
                 if not isinstance(context, dict):
                     continue

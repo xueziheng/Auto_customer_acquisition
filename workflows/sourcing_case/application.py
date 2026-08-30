@@ -41,7 +41,7 @@ class SourcingPlanDeliveryError(TransientError):
 def _free_snapshot(
     snapshot: SearchQuotaSnapshot | None, tenant_id: TenantId, needed: int
 ) -> None:
-    if snapshot is None:
+    if not isinstance(snapshot, SearchQuotaSnapshot):
         raise SourcingPublicSearchBlockedError("quota_status_unknown")
     if snapshot.paygo_enabled is True or snapshot.cost_status is SearchCostStatus.PAID:
         raise SourcingPublicSearchBlockedError("paid_usage_enabled")
@@ -59,6 +59,22 @@ def _free_snapshot(
         raise SourcingPublicSearchBlockedError("quota_exhausted")
 
 
+async def _read_free_snapshot(
+    quota: SearchQuotaRepository, tenant_id: TenantId, needed: int
+) -> None:
+    """把额度存储的任意读取失败收敛为无异常链的未知免费状态。"""
+
+    snapshot: SearchQuotaSnapshot | None = None
+    failed = False
+    try:
+        snapshot = await quota.snapshot()
+    except Exception:  # noqa: BLE001 -- 原始异常可能包含 Provider 凭证或响应
+        failed = True
+    if failed:
+        raise SourcingPublicSearchBlockedError("quota_status_unknown")
+    _free_snapshot(snapshot, tenant_id, needed)
+
+
 def _run_is_bound(run: WorkflowRun | None, tenant_id: TenantId, case_id: SourcingCaseId) -> bool:
     return (
         isinstance(run, WorkflowRun)
@@ -67,6 +83,8 @@ def _run_is_bound(run: WorkflowRun | None, tenant_id: TenantId, case_id: Sourcin
         and run.workflow_version == _WORKFLOW_VERSION
         and run.subject_ref == str(case_id)
         and run.status is StepStatus.RUNNING
+        and isinstance(run.context, dict)
+        and run.context.get("case_id") == str(case_id)
     )
 
 
@@ -76,12 +94,6 @@ def _raise_delivery_error(error: Exception) -> None:
     if isinstance(error, TransientError):
         raise SourcingPlanDeliveryError("寻源计划工作流投递暂不可用") from None
     raise ValidationError("寻源计划工作流投递失败") from None
-
-
-def _plan_event_applied(run: WorkflowRun, plan: PublicSourcingPlan) -> bool:
-    """公开搜索步骤只能由精确计划事件进入；用于提交后崩溃与并发重放。"""
-
-    return run.current_step == "public_search" and plan.status is PublicPlanStatus.RUNNING
 
 
 class SourcingCaseApplication:
@@ -146,6 +158,32 @@ class SourcingCaseApplication:
         assert run is not None
         return run
 
+    async def _has_plan_event(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        payload: dict[str, str],
+    ) -> bool:
+        """只以 Engine 的持久事件指纹作为精确计划已交付证明。"""
+
+        delivered: object = False
+        error: Exception | None = None
+        try:
+            delivered = await self._engine.has_delivered_event(
+                tenant_id,
+                _WORKFLOW_TYPE,
+                str(case_id),
+                "SourcingPlanConfirmed",
+                payload,
+            )
+        except Exception as exc:  # noqa: BLE001 -- 丢弃 Engine/存储自由异常
+            error = exc
+        if error is not None:
+            _raise_delivery_error(error)
+        if not isinstance(delivered, bool):
+            raise ValidationError("寻源计划工作流事件证据无效")
+        return delivered
+
     async def run(
         self,
         tenant_id: TenantId,
@@ -164,17 +202,18 @@ class SourcingCaseApplication:
             expected_plan_hash,
             actor=actor,
         )
-        _free_snapshot(
-            await self._quota.snapshot(),
-            tenant_id,
-            view.active_plan.worst_case_credits,
+        await _read_free_snapshot(
+            self._quota, tenant_id, view.active_plan.worst_case_credits
         )
-        run = await self._active_run(tenant_id, case_id)
         payload = {"plan_id": str(plan_id), "plan_hash": expected_plan_hash}
+        if (
+            view.active_plan.status is PublicPlanStatus.RUNNING
+            and await self._has_plan_event(tenant_id, case_id, payload)
+        ):
+            return view.active_plan
+        run = await self._active_run(tenant_id, case_id)
         if run.current_step != "await_public_plan":
-            if _plan_event_applied(run, view.active_plan):
-                return view.active_plan
-            if run.current_step == "public_search":
+            if await self._has_plan_event(tenant_id, case_id, payload):
                 refreshed = await self._sourcing.get_public_plan_run_view(
                     tenant_id,
                     case_id,
@@ -182,7 +221,7 @@ class SourcingCaseApplication:
                     expected_plan_hash,
                     actor=actor,
                 )
-                if _plan_event_applied(run, refreshed.active_plan):
+                if refreshed.active_plan.status is PublicPlanStatus.RUNNING:
                     return refreshed.active_plan
             raise ValidationError("公开寻源 Run 不在计划授权边界")
         running = await self._sourcing.authorize_public_plan_run(
@@ -205,10 +244,10 @@ class SourcingCaseApplication:
             error = exc
         if error is not None:
             _raise_delivery_error(error)
-        if not accepted:
-            replay = await self._engine.get_run(tenant_id, run.run_id)
-            if replay is None or not _plan_event_applied(replay, running):
-                raise ValidationError("寻源计划工作流未接受确认事件")
+        if not accepted and not await self._has_plan_event(
+            tenant_id, case_id, payload
+        ):
+            raise ValidationError("寻源计划工作流未接受确认事件")
         return running
 
     async def reconcile_uncertain(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 import traceback
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
@@ -632,6 +633,38 @@ class _Reconciliations(_MemoryRepo):
 
     async def get_for_execution(self, tenant_id: TenantId, execution_id: str) -> Any:
         return copy.deepcopy(self.state[self.name].get((tenant_id, execution_id)))
+
+    async def get_or_create_canonical(
+        self, tenant_id: TenantId, reconciliation: Any
+    ) -> Any:
+        matches = [
+            item
+            for (candidate_tenant, _), item in self.state[self.name].items()
+            if candidate_tenant == tenant_id
+            and (
+                item.reconciliation_id == reconciliation.reconciliation_id
+                or item.execution_id == reconciliation.execution_id
+            )
+        ]
+        if not matches:
+            self.state[self.name][(tenant_id, reconciliation.execution_id)] = copy.deepcopy(
+                reconciliation
+            )
+            return copy.deepcopy(reconciliation)
+        if len(matches) != 1:
+            raise SourcingPlanStaleError("不确定搜索核对事实冲突")
+        canonical = matches[0]
+        if (
+            canonical.reconciliation_id != reconciliation.reconciliation_id
+            or canonical.execution_id != reconciliation.execution_id
+            or canonical.status != reconciliation.status
+            or canonical.reason != reconciliation.reason
+            or canonical.provider_usage_artifact_ref
+            != reconciliation.provider_usage_artifact_ref
+            or canonical.reconciled_by != reconciliation.reconciled_by
+        ):
+            raise SourcingPlanStaleError("不确定搜索核对事实冲突")
+        return copy.deepcopy(canonical)
 
 
 class _Handoffs:
@@ -1826,6 +1859,25 @@ async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_rep
             command.model_copy(update={"reason": "不同核对事实"}),
             actor=BOSS,
         )
+
+    second_execution = replace(
+        execution,
+        execution_id="sse-execution-second",
+        request_key="c" * 64,
+    )
+    factory.state["search_executions"][(TENANT, second_execution.request_key)] = (
+        second_execution
+    )
+    with pytest.raises(SourcingPlanStaleError, match="核对事实冲突") as conflict:
+        await service.record_confirmed_consumed_reconciliation(
+            TENANT,
+            case_id,
+            command.model_copy(update={"request_key": second_execution.request_key}),
+            actor=BOSS,
+        )
+    assert conflict.value.__cause__ is None
+    assert conflict.value.__context__ is None
+    assert len(factory.state["reconciliations"]) == 1
 
 
 @pytest.mark.asyncio
