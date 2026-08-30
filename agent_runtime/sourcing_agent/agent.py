@@ -255,13 +255,16 @@ _PRICE_UNIT_PATTERN = (
     r"meter|metre|ml|pack|pair|pallet|pc|pcs|piece|roll|set|sheet|sqm|ton|"
     r"tonne|unit)s?"
 )
+_MONEY_KEYWORD_PATTERN = r"(?:unit[ -]?price|price|cost|amount)"
 _MODEL_MONEY = re.compile(
     rf"(?:[$€£¥₹]\s*\d|\d(?:[\d,.]*\d)?\s*[$€£¥₹])|"
     rf"(?:(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*\d)|"
     rf"(?:\d(?:[\d,.]*\d)?\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b))|"
-    r"(?:(?i:\b(?:unit[ -]?price|price|cost|amount)\b)"
-    r"(?:\s*[:=]\s*|\s+(?:is|was|at|of)\s+|\s+)\d)|"
-    r"(?:\d(?:[\d,.]*\d)?\s+(?i:(?:unit[ -]?)?(?:price|cost|amount)\b))|"
+    rf"(?:(?i:\b{_MONEY_KEYWORD_PATTERN}\b"
+    r"(?:\s*[:=]\s*|\s+(?:(?:is|was|starts\s+at|begins\s+at)\s+)?)"
+    r"(?:(?:approximately|about|around)\s+)?\d))|"
+    rf"(?:\d(?:[\d,.]*\d)?\s+"
+    rf"(?i:(?:is|was)\s+the\s+{_MONEY_KEYWORD_PATTERN}\b))|"
     rf"(?:\d(?:[\d,.]*\d)?\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b))"
 )
 

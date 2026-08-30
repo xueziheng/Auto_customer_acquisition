@@ -8,6 +8,8 @@ Fix Round 1 已按 P33/P34 完成：价格单位改为受控 alias 到 canonical
 
 Fix Round 2 已按 P35 完成：混合 hex/octal-like/decimal 组件的 legacy 数字主机全部拒绝，标准公网 IPv4 与普通域名保持可用；`urlsplit` 的畸形 IPv6 URL 异常被固定脱敏；联系 CTA、裸电话、带标签电话和无 scheme 域名路径不能成为 supplier/product/spec/unit 观察值；金额关键词从宽泛字符窗口收紧为有限连接词/标点语法，避免把成本影响、价格敏感型号和钢材牌号误判为金额。
 
+Fix Round 3 已按后续审查完成：联系 CTA 扩展到 sales/now/reach out 等目标与动词，电话形状允许点分隔并继续按总十进制数字数判断，裸无 scheme 域名与域名路径均失败关闭；金额关键词语法进一步限制为紧邻标点、`is/was/starts at/begins at` 和可选 `approximately/about/around`，去除 `of` 与裸 `number + cost` 误报。
+
 ## TDD 证据
 
 ### RED
@@ -19,16 +21,17 @@ Fix Round 2 已按 P35 完成：混合 hex/octal-like/decimal 组件的 legacy �
 5. 增加 CHF 与小写 USD 金额文本用例；既有 Agent 原金额正则未覆盖 CHF，随后扩展时又用单独 RED 证明小写常见币种行为没有回归。
 6. Fix Round 1 先新增六组审查回归，定向首跑为 `35 failed, 89 passed`：任意字母单位、canonical alias、多档数量聚合、非硬编码币种/无币种价格表达、legacy IPv4/编码主机、原文默认序列化、联系/指令/Unicode 夹带和 raw surrogate 均分别暴露旧边界。多档测试的受控 quote 锚点修正后，得到预期的数量聚合 `1 failed, 2 passed`；单位与币种原本已采用 all-tier 聚合，不误报为本轮回归。
 7. Fix Round 2 增加 P35 手工/表驱动 hostile 边界；修正 unit 价格档共同 quote 后得到 `16` 个真实 RED，随后用独立 RED 证明 `unit_literal=email us` 也必须按 P35 失败关闭：合计 5 个混合 legacy 数字主机绕过、2 个 `urlsplit` 原始 `ValueError`、8 个联系 CTA/电话/域名路径夹带和 2 个金额误报。实现后全部转绿，正常公网 IP、产品语言、尺寸、型号与成本影响说明继续通过。
+8. Fix Round 3 先增加确定性表驱动边界变体，首跑得到 `13 failed, 151 passed`：7 个新联系 CTA、点分电话及裸域名绕过，1 个长数字产品型号误杀，3 个带近似词或起始谓词的金额漏检，以及 2 个规格/成本说明金额误报。既有 `/contact` 与 `Unit price 2.50 per piece` 用例保持通过，证明它们是防回归覆盖而非本轮新增缺口。
 
 ### GREEN
 
 ```text
 pytest tests/unit/test_sourcing_page_extraction.py \
        tests/unit/test_sourcing_agent_boundary.py -q
-=> 146 passed
+=> 164 passed
 
 pytest tests/unit -q
-=> 5838 passed
+=> 5856 passed, 1 unrelated subprocess cleanup warning
 ```
 
 受控测试覆盖：
@@ -54,6 +57,8 @@ pytest tests/unit -q
 - `parse_observed_price_literal` 直接从正则捕获串构造 `Decimal`，不经过 `float`、不舍入、不选择区间端点；公共价格类型的 `price_basis` 只有 `Literal["indicative"]`。
 - `SourcingAgent.build_page_candidate_review` 只做窄映射；网页原价不进入模型解释输入，既有输出护栏继续拒绝改写规格和生成金额。
 - `SourcingAgent` 金额护栏使用静态 ISO 4217 集合且大小写无关，同时拒绝货币符号、紧语法的 `price/cost/amount/unit-price` 数字及数字 `per` 受控单位表达；不再使用“关键词后任意 24 字符”的宽窗口，正常尺寸、数量、型号、`cost impact ... 304 steel` 和 `price-sensitive ... AED-250` 文本可通过。
+- 联系文本护栏使用小型确定性 CTA、域名和电话形状规则：电话号码只在候选片段累计至少 10 个十进制数字后拒绝，并用字母/连字符边界避免把 `ZX-13800138000-A` 等明确型号误判为电话。
+- 金额关键词后只允许紧邻数字，或经有限谓词与可选近似词连接；数字在关键词前只接受 `number is/was the price/cost/amount`，因此 `amount of 304 steel`、`304 cost impact` 等规格说明不会被当作金额。
 
 ## 最终门禁
 
@@ -62,7 +67,7 @@ pytest tests/unit -q
 - `python3 scripts/check_boundaries.py`：7 项全部通过。
 - `git diff --check`：通过。
 - `scripts/scan_sensitive.py`（全部 touched 文件与 fixture）：通过。
-- 全量 unit：`5838 passed`；`tests/evals/sourcing` 目前只有既有 `.gitkeep`，本任务的 hostile/valid 样本明确放在 controlled fixture 层，不冒充真实模型或联网 eval。
+- 全量 unit：`5856 passed`，另有 1 条 Task 9 未触及的 costing 子进程析构 warning；`tests/evals/sourcing` 目前只有既有 `.gitkeep`，本任务的 hostile/valid 样本明确放在 controlled fixture 层，不冒充真实模型或联网 eval。
 
 ## 残余风险
 

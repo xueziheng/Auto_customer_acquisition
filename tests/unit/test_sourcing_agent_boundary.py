@@ -522,12 +522,47 @@ async def test_existing_agent_rejects_currency_keyword_and_per_unit_money_forms(
 @pytest.mark.parametrize(
     "summary",
     [
+        "The cost is approximately 2.50.",
+        "The price starts at 2.50.",
+        "cost is about 2.50",
+        "Unit price 2.50 per piece.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_tightly_connected_qualified_money_forms(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
         "The plate measures 304 mm by 4 mm.",
         "The set contains 2 pieces and weighs 500 g.",
         "Model AED-250 uses grade 304 steel.",
         "The cost impact for grade 304 steel is unknown.",
         "The price-sensitive model is AED-250.",
         "Grade 304 steel has an unknown cost impact.",
+        "The amount of 304 stainless steel is sufficient.",
+        "The 304 cost impact is unknown.",
+        "cost impact for grade 304",
     ],
 )
 @pytest.mark.asyncio

@@ -843,9 +843,53 @@ async def test_selected_observations_reject_contact_cta_phone_and_domain_path(
 @pytest.mark.parametrize(
     ("field", "literal"),
     [
+        ("supplier_name", "Contact sales"),
+        ("product_title", "Email sales"),
+        ("material", "Call now"),
+        ("unit_literal", "Reach us"),
+        ("supplier_name", "reach out"),
+        ("unit_literal", "+86.138.0013.8000"),
+        ("product_title", "supplier.example"),
+        ("material", "supplier.example/contact"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_selected_observations_reject_expanded_contact_shapes_before_serialization(
+    field: str, literal: str
+) -> None:
+    output = _valid_output()
+    quote = f"Observed {field}: {literal}."
+    if field == "material":
+        output["specs"][1] = {  # type: ignore[index]
+            "spec_name": "material",
+            "literal": literal,
+            "source_quote": quote,
+        }
+    elif field == "unit_literal":
+        quote = f"Price USD 2.50 per {literal} for minimum quantity 100."
+        tier = output["price_tiers"][0]  # type: ignore[index]
+        tier[field] = literal  # type: ignore[index]
+        tier["source_quote"] = quote  # type: ignore[index]
+    else:
+        output[field] = {"literal": literal, "source_quote": quote}
+
+    with pytest.raises(ValidationError) as caught:
+        await _extract(output, text=_page_text() + "\n" + quote)
+
+    assert literal not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("field", "literal"),
+    [
         ("supplier_name", "Contact Hardware Factory"),
         ("product_title", "Email-compatible relay enclosure"),
         ("material", "304/316 stainless steel"),
+        ("product_title", "ReachGuard relay enclosure"),
+        ("product_title", "Model ZX-13800138000-A"),
+        ("product_title", "Plate 1380 x 013 mm"),
     ],
 )
 @pytest.mark.asyncio

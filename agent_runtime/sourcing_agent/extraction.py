@@ -35,13 +35,20 @@ _EMAIL_TEXT = re.compile(
 )
 _URL_TEXT = re.compile(r"(?i)(?:\bhttps?://|\bwww\.)\S+")
 _DOMAIN_PATH_TEXT = re.compile(
-    r"(?i)(?<![A-Z0-9.-])(?:[A-Z0-9-]+\.)+[A-Z]{2,63}/[^\s]*"
+    r"(?i)(?<![A-Z0-9.-])"
+    r"(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+"
+    r"[A-Z]{2,63}(?:/[^\s]*)?(?![A-Z0-9-])"
 )
-_CONTACT_CTA_TEXT = re.compile(r"(?i)\b(?:contact|e-?mail|call)\s+(?:us|me)\b")
+_CONTACT_CTA_TEXT = re.compile(
+    r"(?i)\b(?:(?:contact|e-?mail|call)\s+(?:us|me|sales|now)|"
+    r"reach\s+(?:us|me|sales|out))\b"
+)
 _PHONE_LABEL_TEXT = re.compile(
     r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\b\s*[:=]?\s*\+?[0-9]"
 )
-_PHONE_SHAPE_TEXT = re.compile(r"(?<![A-Z0-9])\+?[0-9][0-9 ()-]{7,}[0-9](?![A-Z0-9])")
+_PHONE_SHAPE_TEXT = re.compile(
+    r"(?<![A-Z0-9-])\+?[0-9][0-9 ().-]{7,}[0-9](?![A-Z0-9-])"
+)
 _INSTRUCTION_TEXT = re.compile(
     r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|"
     r"system\s+(?:message|prompt)|developer\s+message|assistant\s+message|"
