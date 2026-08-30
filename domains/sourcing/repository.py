@@ -48,6 +48,12 @@ class SourcingCaseRepository(Protocol):
         self, tenant_id: TenantId, case_id: SourcingCaseId
     ) -> SourcingCase | None: ...
 
+    async def get_for_update(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> SourcingCase | None:
+        """锁定单个同租户 Case，串行化跨聚合的 canonical Option 准备。"""
+        ...
+
     async def update(self, tenant_id: TenantId, case: SourcingCase) -> None:
         """按实体版本条件更新，失败返回并发冲突而非覆盖。"""
         ...
@@ -132,6 +138,12 @@ class SupplyOptionRepository(Protocol):
         self, tenant_id: TenantId, option: SourcingSupplyOption
     ) -> tuple[SourcingSupplyOption, bool]:
         """按 tenant+Case+Supplier Candidate 原子返回 canonical Option。"""
+        ...
+
+    async def get_or_create_existing_product(
+        self, tenant_id: TenantId, option: SourcingSupplyOption
+    ) -> tuple[SourcingSupplyOption, bool]:
+        """按 tenant+Case+Product 原子返回现有产品 canonical Option。"""
         ...
 
     async def get(

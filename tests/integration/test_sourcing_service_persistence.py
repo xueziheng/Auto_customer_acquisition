@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from domains.sourcing.errors import SourcingCaseConflictError
@@ -651,6 +652,82 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
     assert case.active_search_plan_id == plan.plan_id
     assert case.version == 7
     assert stored is not None and stored.authorized_plan_hash == plan.plan_hash
+
+
+@pytest.mark.asyncio
+async def test_existing_product_option_is_canonical_under_concurrent_registration(
+    integration_engine: AsyncEngine,
+) -> None:
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    opportunity_id = OpportunityId(new_id("opp"))
+    product_id = ProductId(new_id("prd"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    await _seed_handoff_dependencies(
+        integration_engine, tenant_id, need_id, opportunity_id, product_id
+    )
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+    case_id = await service.open_case(
+        tenant_id, _command(tenant_id, need_id), actor=system
+    )
+    await service.record_ladder_check(
+        tenant_id,
+        case_id,
+        LadderCheck(
+            check_id=new_id("slc"),
+            tenant_id=tenant_id,
+            case_id=case_id,
+            sequence_number=1,
+            rung=MatchLadderRung(1),
+            outcome=LadderOutcome.QUALIFIED_SUPPLY_FOUND,
+            input_snapshot={
+                "category": "hinges",
+                "qualified_product_ids": [str(product_id), "prd-missing"],
+            },
+            input_snapshot_hash="b" * 64,
+            conclusion="internal_product_qualified",
+            match_object_type="product",
+            match_object_id=str(product_id),
+            spec_comparisons=(),
+            evidence_refs=(),
+            checked_by=EmployeeId("untrusted"),
+            checked_at=NOW,
+        ),
+        actor=system,
+    )
+
+    with pytest.raises(IntegrityError):
+        await service.register_existing_product_option(
+            tenant_id, case_id, ProductId("prd-missing"), actor=system
+        )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        rolled_back_case = await uow.cases.get(tenant_id, case_id)
+        rolled_back_options = await uow.options.list_for_case(tenant_id, case_id)
+    assert rolled_back_case is not None and rolled_back_case.state is CaseState.DISCOVERING
+    assert rolled_back_options == []
+
+    first, second = await asyncio.gather(
+        service.register_existing_product_option(
+            tenant_id, case_id, product_id, actor=system
+        ),
+        service.register_existing_product_option(
+            tenant_id, case_id, product_id, actor=system
+        ),
+    )
+
+    assert first == second
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        case = await uow.cases.get(tenant_id, case_id)
+        options = await uow.options.list_for_case(tenant_id, case_id)
+    assert case is not None and case.state is CaseState.VERIFYING
+    assert len(options) == 1 and options[0].product_id == product_id
 
 
 @pytest.mark.asyncio

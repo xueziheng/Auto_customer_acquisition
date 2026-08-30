@@ -358,6 +358,18 @@ class SourcingServiceImpl:
             if check.tenant_id != tenant_id or check.case_id != case_id:
                 raise ValidationError("匹配梯子检查租户或案例不匹配")
             checks = await uow.checks.list_for_case(tenant_id, case_id)
+            existing_same_rung = next(
+                (item for item in checks if item.rung is check.rung), None
+            )
+            if existing_same_rung is not None:
+                replay = replace(
+                    check,
+                    checked_by=_employee(actor),
+                    checked_at=existing_same_rung.checked_at,
+                )
+                if replay == existing_same_rung:
+                    return
+                raise ValidationError("匹配梯子同级事实冲突")
             if any(
                 item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
                 for item in checks
@@ -937,6 +949,73 @@ class SourcingServiceImpl:
             )
             if canonical.product_id != product_id:
                 raise ValidationError("候选已绑定不同的 canonical 产品卡")
+            return canonical.option_id
+
+    async def register_existing_product_option(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        product_id: ProductId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSupplyOptionId:
+        """把内部梯级已证明的真实 Product 原子登记为 canonical Option。"""
+
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.WORKFLOW_PROGRESS,
+            SourcingScope.SYSTEM,
+        )
+        if not str(product_id).strip():
+            raise ValidationError("现有产品 ProductId 不能为空")
+        now = _aware(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            if case.state not in {
+                CaseState.DISCOVERING,
+                CaseState.VERIFYING,
+                CaseState.CANDIDATES_READY,
+            }:
+                raise InvalidStateTransition(
+                    f"寻源案例处于 {case.state.value}，不能登记现有产品供给选项"
+                )
+            checks = await uow.checks.list_for_case(tenant_id, case_id)
+            qualified = tuple(
+                item
+                for item in checks
+                if item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+            )
+            if len(qualified) != 1 or qualified[0].match_object_type != "product":
+                raise ValidationError("现有产品 Option 缺少唯一合格内部梯级事实")
+            raw_ids = qualified[0].input_snapshot.get("qualified_product_ids")
+            if (
+                not isinstance(raw_ids, list)
+                or not raw_ids
+                or any(not isinstance(item, str) or not item.strip() for item in raw_ids)
+                or len(set(raw_ids)) != len(raw_ids)
+                or str(product_id) not in raw_ids
+                or qualified[0].match_object_id != raw_ids[0]
+            ):
+                raise ValidationError("现有产品不属于合格内部梯级冻结集合")
+            option = SourcingSupplyOption(
+                option_id=SourcingSupplyOptionId(new_id("sop")),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.EXISTING_PRODUCT,
+                product_id=product_id,
+                supplier_candidate_id=None,
+                is_qualified=True,
+                created_at=now,
+            )
+            canonical, _ = await uow.options.get_or_create_existing_product(
+                tenant_id, option
+            )
+            if canonical.product_id != product_id:
+                raise ValidationError("现有产品已绑定不同的 canonical Option")
+            if case.state is CaseState.DISCOVERING:
+                case.transition_to(CaseState.VERIFYING, changed_at=now)
+                await uow.cases.update(tenant_id, case)
             return canonical.option_id
 
     async def review(

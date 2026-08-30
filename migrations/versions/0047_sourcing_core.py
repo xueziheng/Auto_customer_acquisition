@@ -508,6 +508,13 @@ def upgrade() -> None:
             name="ck_sourcing_supply_options_source",
         ),
     )
+    op.create_index(
+        "uq_sourcing_supply_options_existing_product",
+        "sourcing_supply_options",
+        ["tenant_id", "case_id", "product_id"],
+        unique=True,
+        postgresql_where=sa.text("source = 'existing_product'"),
+    )
 
     op.create_table(
         "sourcing_reviews",
@@ -716,6 +723,10 @@ def downgrade() -> None:
     op.drop_table("sourcing_search_reconciliations")
     op.drop_table("sourcing_search_executions")
     op.drop_table("sourcing_reviews")
+    op.drop_index(
+        "uq_sourcing_supply_options_existing_product",
+        table_name="sourcing_supply_options",
+    )
     op.drop_table("sourcing_supply_options")
     op.drop_table("sourcing_candidate_evidence")
     op.drop_table("sourcing_candidates")

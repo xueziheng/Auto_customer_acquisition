@@ -271,6 +271,11 @@ class _Cases(_MemoryRepo):
     async def get(self, tenant_id: TenantId, case_id: SourcingCaseId) -> Any | None:
         return copy.deepcopy(self.state[self.name].get((tenant_id, case_id)))
 
+    async def get_for_update(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> Any | None:
+        return await self.get(tenant_id, case_id)
+
     async def update(self, tenant_id: TenantId, case: Any) -> None:
         key = (tenant_id, case.case_id)
         current = self.state[self.name].get(key)
@@ -375,6 +380,20 @@ class _Candidates(_MemoryRepo):
 
 
 class _Options(_MemoryRepo):
+    async def get_or_create_existing_product(
+        self, tenant_id: TenantId, option: Any
+    ) -> tuple[Any, bool]:
+        for (candidate_tenant, _), current in self.state[self.name].items():
+            if (
+                candidate_tenant == tenant_id
+                and current.case_id == option.case_id
+                and current.product_id == option.product_id
+                and current.source is SupplyOptionSource.EXISTING_PRODUCT
+            ):
+                return copy.deepcopy(current), False
+        await self.add(tenant_id, option)
+        return copy.deepcopy(option), True
+
     async def get_or_create_supplier_candidate(
         self, tenant_id: TenantId, option: Any
     ) -> tuple[Any, bool]:
@@ -646,6 +665,12 @@ async def test_every_public_write_is_authorizer_first() -> None:
             ProductId("prd-1"),
             actor=SYSTEM,
         ),
+        lambda: service.register_existing_product_option(
+            OTHER_TENANT,
+            case_id,
+            ProductId("prd-1"),
+            actor=SYSTEM,
+        ),
         lambda: service.mark_candidates_ready(
             OTHER_TENANT, case_id, (SourcingSupplyOptionId("sop-1"),), (), actor=SYSTEM
         ),
@@ -680,10 +705,7 @@ async def test_ladder_checks_are_contiguous_and_plan_hash_is_exact() -> None:
             TENANT, case_id, _check(case_id, 2), actor=SYSTEM
         )
     await service.record_ladder_check(TENANT, case_id, _check(case_id, 1), actor=SYSTEM)
-    with pytest.raises(ValidationError):
-        await service.record_ladder_check(
-            TENANT, case_id, _check(case_id, 1), actor=SYSTEM
-        )
+    await service.record_ladder_check(TENANT, case_id, _check(case_id, 1), actor=SYSTEM)
     with pytest.raises(ValidationError):
         await service.save_public_plan(TENANT, case_id, _plan(case_id, 1), actor=BOSS)
     for rung in range(2, 6):
@@ -699,6 +721,68 @@ async def test_ladder_checks_are_contiguous_and_plan_hash_is_exact() -> None:
         TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
     )
     assert confirmed.authorized_plan_hash == plan.plan_hash
+
+
+@pytest.mark.asyncio
+async def test_ladder_exact_replay_is_noop_but_same_rung_drift_conflicts() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    first = _check(case_id, 1)
+
+    await service.record_ladder_check(TENANT, case_id, first, actor=SYSTEM)
+    case_version = factory.state["cases"][(TENANT, case_id)].version
+    await service.record_ladder_check(TENANT, case_id, first, actor=SYSTEM)
+
+    assert len(factory.state["checks"]) == 1
+    assert factory.state["cases"][(TENANT, case_id)].version == case_version
+    with pytest.raises(ValidationError, match="同级事实冲突"):
+        await service.record_ladder_check(
+            TENANT,
+            case_id,
+            first.__class__(**{**first.__dict__, "conclusion": "changed"}),
+            actor=SYSTEM,
+        )
+
+
+@pytest.mark.asyncio
+async def test_existing_product_option_is_canonical_and_moves_internal_path_to_verifying() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    product_id = ProductId("prd-existing")
+    qualified = _check(
+        case_id,
+        1,
+        outcome=LadderOutcome.QUALIFIED_SUPPLY_FOUND,
+    )
+    qualified = qualified.__class__(
+        **{
+            **qualified.__dict__,
+            "input_snapshot": {
+                **qualified.input_snapshot,
+                "qualified_product_ids": [str(product_id)],
+            },
+            "match_object_type": "product",
+            "match_object_id": str(product_id),
+        }
+    )
+    await service.record_ladder_check(TENANT, case_id, qualified, actor=SYSTEM)
+
+    first = await service.register_existing_product_option(
+        TENANT, case_id, product_id, actor=SYSTEM
+    )
+    second = await service.register_existing_product_option(
+        TENANT, case_id, product_id, actor=SYSTEM
+    )
+
+    assert first == second
+    assert len(factory.state["options"]) == 1
+    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.VERIFYING
+    await service.mark_candidates_ready(
+        TENANT, case_id, (first,), (), actor=SYSTEM
+    )
+    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.CANDIDATES_READY
 
 
 @pytest.mark.asyncio

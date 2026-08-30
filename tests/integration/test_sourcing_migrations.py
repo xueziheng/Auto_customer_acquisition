@@ -353,6 +353,9 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
         assert contract["sourcing_supply_options"]["unique_constraints"][
             "uq_sourcing_supply_options_supplier_candidate"
         ] == ("tenant_id", "case_id", "supplier_candidate_id")
+        assert contract["sourcing_supply_options"]["indexes"][
+            "uq_sourcing_supply_options_existing_product"
+        ]["unique"] is True
         cost_fks = contract["cost_sheets"]["foreign_keys"]
         assert cost_fks["fk_cost_sheets_sourcing_option"] == (
             ("tenant_id", "source_sourcing_case_id", "source_option_id"),
@@ -1133,6 +1136,9 @@ async def test_review_alternates_are_unique_and_bound_to_case_and_tenant(
                 text(_INSERT_PRODUCT), _product_values("product-review-a")
             )
             await connection.execute(
+                text(_INSERT_PRODUCT), _product_values("product-review-alt")
+            )
+            await connection.execute(
                 text(_INSERT_PRODUCT),
                 _product_values("product-review-b", tenant=TENANT_B),
             )
@@ -1143,7 +1149,7 @@ async def test_review_alternates_are_unique_and_bound_to_case_and_tenant(
                     "case-review-main",
                     "product-review-a",
                 ),
-                ("option-review-alt", TENANT_A, "case-review-main", "product-review-a"),
+                ("option-review-alt", TENANT_A, "case-review-main", "product-review-alt"),
                 (
                     "option-review-other",
                     TENANT_A,

@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import cast
 
 from pydantic import BaseModel
-from sqlalchemy import CursorResult, Select, select, update
+from sqlalchemy import CursorResult, Select, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -276,6 +276,19 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
         row = (
             await self._session.execute(
                 self._scoped().where(SourcingCaseRow.case_id == case_id)
+            )
+        ).scalar_one_or_none()
+        return _row_to_case(row) if row is not None else None
+
+    async def get_for_update(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> SourcingCase | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingCaseRow)
+                .where(SourcingCaseRow.case_id == case_id)
+                .with_for_update()
             )
         ).scalar_one_or_none()
         return _row_to_case(row) if row is not None else None
@@ -777,6 +790,50 @@ def _option_from_row(row: SourcingSupplyOptionRow) -> SourcingSupplyOption:
 
 
 class SupplyOptionRepositoryImpl(_TenantBoundRepository):
+    async def get_or_create_existing_product(
+        self, tenant_id: TenantId, option: SourcingSupplyOption
+    ) -> tuple[SourcingSupplyOption, bool]:
+        self._require_tenant(tenant_id)
+        if (
+            option.tenant_id != tenant_id
+            or option.source is not SupplyOptionSource.EXISTING_PRODUCT
+            or option.supplier_candidate_id is not None
+        ):
+            raise ValueError("现有产品 Option 绑定无效")
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingSupplyOptionRow)
+                .values(
+                    tenant_id=tenant_id,
+                    option_id=option.option_id,
+                    case_id=option.case_id,
+                    source=option.source.value,
+                    product_id=option.product_id,
+                    supplier_candidate_id=None,
+                    is_qualified=option.is_qualified,
+                    created_at=option.created_at,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=("tenant_id", "case_id", "product_id"),
+                    index_where=text("source = 'existing_product'"),
+                )
+                .returning(SourcingSupplyOptionRow.option_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return option, True
+        canonical = (
+            await self._session.execute(
+                self.scoped_query(SourcingSupplyOptionRow).where(
+                    SourcingSupplyOptionRow.case_id == option.case_id,
+                    SourcingSupplyOptionRow.product_id == option.product_id,
+                    SourcingSupplyOptionRow.source
+                    == SupplyOptionSource.EXISTING_PRODUCT.value,
+                )
+            )
+        ).scalar_one()
+        return _option_from_row(canonical), False
+
     async def get_or_create_supplier_candidate(
         self, tenant_id: TenantId, option: SourcingSupplyOption
     ) -> tuple[SourcingSupplyOption, bool]:

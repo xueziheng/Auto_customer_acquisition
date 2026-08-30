@@ -8,6 +8,8 @@ from typing import Protocol, runtime_checkable
 
 from domains.sourcing.models import (
     LadderCheck,
+    LadderOutcome,
+    MatchLadderRung,
     PriceRejectionReason,
     PublicSourcingPlan,
     SourcingReview,
@@ -20,6 +22,7 @@ from domains.sourcing.schemas import (
     OpenSourcingCase,
     PublicSourcingPlanCommand,
     SourcingHandoffSnapshot,
+    SourcingNeedSnapshot,
     SourcingReviewCommand,
 )
 from shared.events.catalog import SourcingCandidatesVerified
@@ -158,6 +161,17 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> SourcingSupplyOptionId:
         """SYSTEM 幂等登记真实候选产品卡与供应商候选的供给选项绑定。"""
+        ...
+
+    async def register_existing_product_option(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        product_id: ProductId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSupplyOptionId:
+        """SYSTEM 幂等登记已由合格内部梯级证明的真实产品供给选项。"""
         ...
 
     async def review(
