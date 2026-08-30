@@ -26,7 +26,7 @@ from shared.schemas.identifiers import (
     SupplierCandidateId,
     ValidatedNeedId,
 )
-from shared.schemas.money import Money
+from shared.schemas.money import Money, WireDecimal
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 
@@ -36,6 +36,13 @@ def _bounded_text(value: str, *, field_name: str, maximum: int = 2_000) -> str:
     if not value or value != value.strip() or len(value) > maximum:
         raise ValueError(f"{field_name} 必须是非空且无首尾空白的文本")
     return value
+
+
+def _validate_provenance_summary(value: ProvenanceSummary) -> None:
+    """在业务 wrapper 边界拒绝不可定位的安全来源摘要。"""
+
+    _bounded_text(value.source_id, field_name="source_id", maximum=200)
+    _bounded_text(value.extracted_by, field_name="extracted_by", maximum=200)
 
 
 class NeedFact(BaseModel):
@@ -49,6 +56,7 @@ class NeedFact(BaseModel):
     def validate_fact(self) -> Self:
         """事实必须有可追溯来源，且不得来自 Agent 推断。"""
 
+        _validate_provenance_summary(self.provenance)
         if self.provenance.source_type is SourceType.AGENT_INFERENCE:
             raise ValueError("NeedFact 不得使用 AGENT_INFERENCE 来源")
         if isinstance(self.value, str):
@@ -157,7 +165,7 @@ class SourcingCostPriceOption(BaseModel):
 
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
     minimum_quantity: int = Field(ge=1)
-    unit_amount: Decimal
+    unit_amount: WireDecimal
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     unit: str = Field(min_length=1, max_length=50)
     evidence_ref: ArtifactId
@@ -221,6 +229,10 @@ class SourcingObservedFact(BaseModel):
     def validate_observed_fact(self) -> Self:
         """观察事实不得使用 Agent 推断来源。"""
 
+        _validate_provenance_summary(self.provenance)
+        _bounded_text(
+            str(self.evidence_ref), field_name="evidence_ref", maximum=200
+        )
         if self.provenance.source_type is SourceType.AGENT_INFERENCE:
             raise ValueError("observed_facts 不得使用 AGENT_INFERENCE 来源")
         return self
@@ -238,6 +250,10 @@ class SourcingSupplierClaim(BaseModel):
     def validate_supplier_claim(self) -> Self:
         """供应商自述必须来自可追溯来源，不能由 Agent 代写成事实。"""
 
+        _validate_provenance_summary(self.provenance)
+        _bounded_text(
+            str(self.evidence_ref), field_name="evidence_ref", maximum=200
+        )
         if self.provenance.source_type is SourceType.AGENT_INFERENCE:
             raise ValueError("supplier_claims 不得使用 AGENT_INFERENCE 来源")
         return self
@@ -258,6 +274,10 @@ class SourcingMatchInference(BaseModel):
 
         _bounded_text(self.value, field_name="match inference")
         _bounded_text(self.inferred_by, field_name="inferred_by", maximum=200)
+        for evidence_ref in self.based_on:
+            _bounded_text(
+                str(evidence_ref), field_name="based_on", maximum=200
+            )
         if len(set(self.based_on)) != len(self.based_on):
             raise ValueError("based_on 不得重复")
         return self
@@ -294,7 +314,6 @@ class CandidateSubmission(BaseModel):
     evidence_url: str
     evidence_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_artifact_ref: str
-    verified_by: str | None = None
 
     @model_validator(mode="after")
     def validate_candidate(self) -> Self:

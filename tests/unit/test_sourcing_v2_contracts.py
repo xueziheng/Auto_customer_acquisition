@@ -11,6 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 from domains.sourcing import models as sourcing_models
 from domains.sourcing import schemas as sourcing_schemas
 from shared.errors import InvalidStateTransition
+from shared.errors import ValidationError as DomainValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -21,6 +22,7 @@ from shared.schemas.identifiers import (
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
+    TenantId,
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
@@ -100,12 +102,49 @@ def _handoff(*, supplier_candidate: bool, price_options: tuple[object, ...]) -> 
     )
 
 
+def _candidate_submission_payload() -> dict[str, object]:
+    return {
+        "supplier_name": "Supplier A",
+        "product_title": "Hinge",
+        "source_platform": "supplier.example",
+        "specs": (),
+        "indicative_price_tiers": {
+            1000: Money(Decimal("1.25"), CurrencyCode("USD"))
+        },
+        "moq": 500,
+        "price_unit": "piece",
+        "currency": "USD",
+        "evidence_url": "https://supplier.example/hinge",
+        "evidence_hash": "b" * 64,
+        "evidence_artifact_ref": "art-a",
+    }
+
+
+def test_public_plan_factory_binds_trusted_tenant_to_entity() -> None:
+    plan_type = _type(sourcing_models, "PublicSourcingPlan")
+
+    plan = plan_type.create(
+        TenantId("tenant-a"),
+        _plan_command(),
+        created_at=NOW,
+    )
+
+    assert plan.tenant_id == TenantId("tenant-a")
+
+
+def test_public_plan_factory_rejects_blank_trusted_tenant() -> None:
+    plan_type = _type(sourcing_models, "PublicSourcingPlan")
+
+    with pytest.raises(DomainValidationError, match="tenant_id"):
+        plan_type.create(TenantId("   "), _plan_command(), created_at=NOW)
+
+
 def test_public_plan_confirmation_is_bound_to_exact_hash() -> None:
     plan_type = _type(sourcing_models, "PublicSourcingPlan")
     status_type = _type(sourcing_models, "PublicPlanStatus")
     stale_error = _type(__import__("domains.sourcing.errors", fromlist=["SourcingPlanStaleError"]), "SourcingPlanStaleError")
 
-    plan = plan_type.create(_plan_command(), created_at=NOW)
+    plan = plan_type.create(TenantId("tenant-a"), _plan_command(), created_at=NOW)
     confirmed = plan.confirm(EmployeeId("boss-a"), confirmed_at=NOW)
 
     assert confirmed.status is status_type.AUTHORIZED
@@ -117,7 +156,7 @@ def test_public_plan_confirmation_is_bound_to_exact_hash() -> None:
 def test_unconfirmed_plan_scope_change_creates_new_version_and_hash() -> None:
     plan_type = _type(sourcing_models, "PublicSourcingPlan")
     status_type = _type(sourcing_models, "PublicPlanStatus")
-    plan = plan_type.create(_plan_command(), created_at=NOW)
+    plan = plan_type.create(TenantId("tenant-a"), _plan_command(), created_at=NOW)
 
     replacement = plan.replace_scope(max_pages_read=5)
 
@@ -201,6 +240,48 @@ def test_supplier_claim_cannot_be_agent_inference() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [("source_id", ""), ("source_id", " source "), ("extracted_by", "   ")],
+)
+def test_need_fact_rejects_unusable_provenance_labels(
+    field_name: str, bad_value: str
+) -> None:
+    fact_type = _type(sourcing_schemas, "NeedFact")
+    provenance = PROVENANCE.model_copy(update={field_name: bad_value})
+
+    with pytest.raises(PydanticValidationError, match=field_name):
+        fact_type(value="hinge", provenance=provenance)
+
+
+@pytest.mark.parametrize(
+    "wrapper_name", ["SourcingObservedFact", "SourcingSupplierClaim"]
+)
+def test_candidate_fact_wrappers_reject_unusable_evidence_refs(
+    wrapper_name: str,
+) -> None:
+    wrapper_type = _type(sourcing_schemas, wrapper_name)
+
+    with pytest.raises(PydanticValidationError, match="evidence_ref"):
+        wrapper_type(
+            value="304 stainless steel",
+            provenance=PROVENANCE,
+            evidence_ref=ArtifactId("   "),
+        )
+
+
+def test_match_inference_rejects_unusable_evidence_refs() -> None:
+    inference_type = _type(sourcing_schemas, "SourcingMatchInference")
+
+    with pytest.raises(PydanticValidationError, match="based_on"):
+        inference_type(
+            value="材质与型号可匹配",
+            based_on=(ArtifactId("   "),),
+            inferred_by="human",
+            inferred_at=NOW,
+        )
+
+
+@pytest.mark.parametrize(
     "amount",
     [Decimal(0), Decimal("-0.01"), Decimal("NaN"), Decimal("Infinity")],
 )
@@ -215,6 +296,24 @@ def test_cost_price_option_requires_finite_positive_decimal(amount: Decimal) -> 
             evidence_ref=ArtifactId("art-a"),
             source_kind="existing_product",
         )
+
+
+def test_cost_price_option_wire_decimal_preserves_long_string_and_rejects_json_number() -> None:
+    option_type = _type(sourcing_schemas, "SourcingCostPriceOption")
+    exact = "12345678901234567890.123456789012345678901234567890"
+    string_payload = (
+        '{"minimum_quantity":1,"unit_amount":"'
+        + exact
+        + '","currency":"USD","unit":"piece",'
+        '"evidence_ref":"art-a","source_kind":"existing_product"}'
+    )
+    numeric_payload = string_payload.replace(f'"{exact}"', exact)
+
+    option = option_type.model_validate_json(string_payload)
+
+    assert option.unit_amount == Decimal(exact)
+    with pytest.raises(PydanticValidationError, match="十进制字符串"):
+        option_type.model_validate_json(numeric_payload)
 
 
 def test_handoff_supports_existing_product_and_supplier_candidate_paths() -> None:
@@ -294,26 +393,21 @@ def test_handoff_rejects_ambiguous_price_dimensions_or_source_path(
 
 def test_v2_candidate_write_uses_only_indicative_price_tiers() -> None:
     submission_type = _type(sourcing_schemas, "CandidateSubmission")
-    valid = {
-        "supplier_name": "Supplier A",
-        "product_title": "Hinge",
-        "source_platform": "supplier.example",
-        "specs": (),
-        "indicative_price_tiers": {
-            1000: Money(Decimal("1.25"), CurrencyCode("USD"))
-        },
-        "moq": 500,
-        "price_unit": "piece",
-        "currency": "USD",
-        "evidence_url": "https://supplier.example/hinge",
-        "evidence_hash": "b" * 64,
-        "evidence_artifact_ref": "art-a",
-    }
+    valid = _candidate_submission_payload()
     submission = submission_type.model_validate(valid)
     assert 1000 in submission.indicative_price_tiers
     with pytest.raises(PydanticValidationError):
         submission_type.model_validate(
             {**valid, "quoted_prices": valid["indicative_price_tiers"]}
+        )
+
+
+def test_candidate_submission_rejects_caller_supplied_verified_by() -> None:
+    submission_type = _type(sourcing_schemas, "CandidateSubmission")
+
+    with pytest.raises(PydanticValidationError):
+        submission_type.model_validate(
+            {**_candidate_submission_payload(), "verified_by": "employee-forged"}
         )
 
 

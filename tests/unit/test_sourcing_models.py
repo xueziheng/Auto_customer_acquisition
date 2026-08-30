@@ -4,7 +4,9 @@ import importlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from domains.sourcing.schemas import SourcingMatchInference, SourcingObservedFact
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
     SourcingCaseId,
     SupplierCandidateId,
@@ -12,6 +14,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 _models = importlib.import_module("domains.sourcing.models")
 EvidenceSnapshot = _models.EvidenceSnapshot
@@ -23,6 +26,14 @@ SpecMatchLevel = _models.SpecMatchLevel
 SupplierCandidate = _models.SupplierCandidate
 
 NOW = datetime(2026, 8, 21, 10, tzinfo=UTC)
+PROVENANCE = ProvenanceSummary(
+    source_type=SourceType.WEB_PAGE,
+    source_id="page-hinge-a",
+    extracted_by="human",
+    extracted_at=NOW,
+    confirmed_by=EmployeeId("employee-one"),
+    confirmed_at=NOW,
+)
 
 
 def specs(*, unknown: str | None = None) -> list[SpecComparison]:
@@ -52,6 +63,25 @@ def candidate(
         supplier_name=f"Supplier {suffix}",
         product_title="Stainless steel hinge",
         created_at=created_at,
+        observed_facts={
+            name: SourcingObservedFact(
+                value=f"offered-{name}",
+                provenance=PROVENANCE,
+                evidence_ref=ArtifactId(f"art-{name}"),
+            )
+            for name in ("product_type", "material", "size", "model")
+        },
+        match_inferences={
+            "fit": SourcingMatchInference(
+                value="四项规格已核对",
+                based_on=tuple(
+                    ArtifactId(f"art-{name}")
+                    for name in ("product_type", "material", "size", "model")
+                ),
+                inferred_by="human",
+                inferred_at=NOW,
+            )
+        },
         verified_specs=specs() if verified_specs is None else verified_specs,
         indicative_price_tiers={
             1000: Money(Decimal("1.25"), CurrencyCode("USD"))
@@ -124,6 +154,24 @@ def test_candidate_requires_resolved_specs_and_matching_price_currency() -> None
     assert unknown.passes_verification() == (False, ["material"])
     assert mismatch.passes_verification() == (False, ["currency"])
     assert candidate("valid").passes_verification() == (True, [])
+
+
+def test_candidate_verification_rejects_legacy_only_unstructured_evidence() -> None:
+    item = candidate("legacy-only")
+    item.observed_facts = {}
+    item.supplier_claims = {}
+    item.match_inferences = {}
+
+    assert item.passes_verification() == (
+        False,
+        [
+            "structured_spec:product_type",
+            "structured_spec:material",
+            "structured_spec:size",
+            "structured_spec:model",
+            "match_inference",
+        ],
+    )
 
 
 def test_case_returns_only_first_three_deterministically_qualified_candidates() -> None:

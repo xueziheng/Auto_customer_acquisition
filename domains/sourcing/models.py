@@ -203,6 +203,7 @@ def _plan_hash(scope: dict[str, object]) -> str:
 class PublicSourcingPlan:
     """版本化公开寻源计划；确认永远绑定当时看到的精确哈希。"""
 
+    tenant_id: TenantId
     plan_id: SourcingPlanId
     case_id: SourcingCaseId
     target_countries: tuple[str, ...]
@@ -225,15 +226,27 @@ class PublicSourcingPlan:
 
     @classmethod
     def create(
-        cls, command: PublicSourcingPlanCommand, *, created_at: datetime
+        cls,
+        tenant_id: TenantId,
+        command: PublicSourcingPlanCommand,
+        *,
+        created_at: datetime,
     ) -> PublicSourcingPlan:
         """从已校验命令创建待确认计划，并生成规范化内容哈希。"""
 
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or tenant_id != tenant_id.strip()
+        ):
+            raise ValidationError("公开寻源计划 tenant_id 无效")
         if not isinstance(command, PublicSourcingPlanCommand):
             raise ValidationError("公开寻源计划命令类型无效")
         _require_aware_time(created_at, "created_at")
         values = command.model_dump(mode="json")
+        values["tenant_id"] = str(tenant_id)
         return cls(
+            tenant_id=tenant_id,
             **command.model_dump(mode="python"),
             plan_hash=_plan_hash(values),
             created_at=created_at,
@@ -304,7 +317,11 @@ class PublicSourcingPlan:
             if value is not None:
                 changes[key] = value
         command = PublicSourcingPlanCommand.model_validate(self._scope(**changes))
-        return PublicSourcingPlan.create(command, created_at=self.created_at)
+        return PublicSourcingPlan.create(
+            self.tenant_id,
+            command,
+            created_at=self.created_at,
+        )
 
     def transition_to(self, target: PublicPlanStatus) -> PublicSourcingPlan:
         """依据显式状态表返回下一状态的不可变计划。"""
@@ -417,6 +434,19 @@ class SupplierCandidate:
                 or not item.offered.strip()
             ):
                 missing.append(name)
+
+        for name in ("product_type", "material", "size", "model"):
+            observed = self.observed_facts.get(name)
+            claimed = self.supplier_claims.get(name)
+            if not isinstance(observed, SourcingObservedFact) and not isinstance(
+                claimed, SourcingSupplierClaim
+            ):
+                missing.append(f"structured_spec:{name}")
+        if not any(
+            isinstance(item, SourcingMatchInference)
+            for item in self.match_inferences.values()
+        ):
+            missing.append("match_inference")
 
         tiers_valid = bool(self.indicative_price_tiers) and all(
             not isinstance(quantity, bool)
