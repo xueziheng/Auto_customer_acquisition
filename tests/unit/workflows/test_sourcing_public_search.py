@@ -285,6 +285,7 @@ class _Receipts:
         self.page_attempt_claim_error: BaseException | None = None
         self.page_completion_error: BaseException | None = None
         self.page_slots: dict[tuple[int, int], object] = {}
+        self.claim_conflicts: dict[tuple[int, int], PublicPageAttempt] = {}
 
     async def restore(self, *, tenant_id, run_id, plan_hash, query_index):
         if self.restore_error is not None:
@@ -318,6 +319,10 @@ class _Receipts:
         if self.page_attempt_claim_error is not None:
             raise self.page_attempt_claim_error
         key = (values["query_index"], values["result_index"])
+        conflict = self.claim_conflicts.get(key)
+        if conflict is not None:
+            self.page_slots[key] = conflict
+            return PublicPageAttemptClaim(claimed_new=False, slot=conflict)
         existing = self.page_slots.get(key)
         if existing is not None:
             return PublicPageAttemptClaim(claimed_new=False, slot=existing)
@@ -716,6 +721,64 @@ async def test_restart_rehydrates_completed_page_rejection_without_no_results_la
 
 
 @pytest.mark.asyncio
+async def test_claim_conflict_aggregates_completed_qualified_draft_without_reread() -> None:
+    step, _, pages, receipts, extractor, drafts, _, _ = _step(
+        batches=[_batch(0, (_result(0),)), _batch(1, ())],
+        pages=[_page(0)],
+        plan=_plan(pages=1),
+    )
+    receipts.claim_conflicts[(0, 0)] = _page_slot(
+        0,
+        0,
+        status="completed",
+        outcome="draft_saved",
+        draft_id="scd-race-winner",
+        has_supplier_identity=True,
+    )
+
+    result = await step.execute(_run())
+
+    assert result == (
+        "advance",
+        "verify_candidates",
+        {
+            "sourcing_searches_used": 1,
+            "sourcing_pages_used": 1,
+            "supplier_candidate_draft_ids": ["scd-race-winner"],
+        },
+    )
+    assert pages.calls == []
+    assert extractor.calls == 0
+    assert drafts.calls == []
+
+
+@pytest.mark.asyncio
+async def test_claim_conflict_aggregates_completed_rejection_without_reread() -> None:
+    step, _, pages, receipts, extractor, drafts, _, _ = _step(
+        batches=[_batch(0, (_result(0),)), _batch(1, ())],
+        pages=[_page(0)],
+        plan=_plan(pages=1),
+    )
+    receipts.claim_conflicts[(0, 0)] = _page_slot(
+        0,
+        0,
+        status="completed",
+        outcome="login_or_captcha",
+    )
+
+    result = await step.execute(_run())
+
+    assert result[2] == {
+        "sourcing_stop_reason": "login_or_captcha",
+        "sourcing_searches_used": 1,
+        "sourcing_pages_used": 1,
+    }
+    assert pages.calls == []
+    assert extractor.calls == 0
+    assert drafts.calls == []
+
+
+@pytest.mark.asyncio
 async def test_cancellation_releases_batch_and_discards_outer_slot() -> None:
     step, searcher, pages, _, _, _, _, _ = _step()
     pages.error = asyncio.CancelledError()
@@ -750,6 +813,42 @@ async def test_cleanup_failures_do_not_mask_primary_safe_result() -> None:
     result = await step.execute(_run())
 
     assert result[2]["sourcing_stop_reason"] == "page_access_forbidden"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup", ("release", "discard"))
+async def test_cleanup_cancelled_error_never_masks_success(cleanup: str) -> None:
+    step, searcher, _, _, _, _, _, _ = _step()
+    error = asyncio.CancelledError(f"sensitive-{cleanup}")
+    if cleanup == "release":
+        searcher.release_error = error
+    else:
+        searcher.discard_error = error
+
+    result = await step.execute(_run())
+
+    assert result[0:2] == ("advance", "verify_candidates")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup", ("release", "discard"))
+async def test_cleanup_cancelled_error_never_masks_prior_safe_failure(
+    cleanup: str,
+) -> None:
+    step, searcher, pages, _, _, _, _, _ = _step()
+    pages.error = RuntimeError("sensitive-primary-page")
+    cleanup_error = asyncio.CancelledError(f"sensitive-{cleanup}")
+    if cleanup == "release":
+        searcher.release_error = cleanup_error
+    else:
+        searcher.discard_error = cleanup_error
+
+    with pytest.raises(ValidationError) as caught:
+        await step.execute(_run())
+
+    assert str(caught.value) == "公开寻源页面读取失败"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 @pytest.mark.asyncio

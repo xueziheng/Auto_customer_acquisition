@@ -763,41 +763,55 @@ class PublicSearchStep:
             for attempt in page_attempts
         ):
             raise ValidationError("公开寻源页面预算状态无效")
-        pages_used = len(page_attempts)
-        if pages_used > plan.max_pages_read:
+        if len(page_attempts) > plan.max_pages_read:
             raise ValidationError("公开寻源页面预算状态无效")
         counted_queries = {attempt.query_index for attempt in page_attempts}
         searches_used = len(counted_queries)
-        result_count = pages_used
-        draft_ids = [
-            attempt.draft_id
-            for attempt in page_attempts
-            if attempt.status is PublicPageAttemptStatus.COMPLETED
-            and attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED
-            and attempt.draft_id is not None
-        ]
-        verifiable_count = sum(
-            attempt.has_supplier_identity is True
-            for attempt in page_attempts
-            if attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED
+        claimed_attempt = next(
+            (
+                attempt
+                for attempt in page_attempts
+                if attempt.status is PublicPageAttemptStatus.CLAIMED
+            ),
+            None,
         )
+        if claimed_attempt is not None:
+            return self._wait(
+                "reconciliation_required",
+                searches=searches_used,
+                pages=len(page_attempts),
+            )
+
+        pages_used = 0
+        draft_ids: list[str] = []
+        verifiable_count = 0
         rejected_page_reason: str | None = None
-        for attempt in page_attempts:
-            if attempt.status is PublicPageAttemptStatus.CLAIMED:
-                return self._wait(
-                    "reconciliation_required",
-                    searches=searches_used,
-                    pages=pages_used,
-                )
+        completed_slots: dict[tuple[int, int], PublicPageAttempt] = {}
+
+        def aggregate_completed_slot(attempt: PublicPageAttempt) -> None:
+            nonlocal pages_used, rejected_page_reason, verifiable_count
+            key = (attempt.query_index, attempt.result_index)
+            if key in completed_slots:
+                return
             if (
-                attempt.outcome is not PublicPageAttemptOutcome.DRAFT_SAVED
-                and attempt.outcome is not None
+                attempt.status is not PublicPageAttemptStatus.COMPLETED
+                or attempt.outcome is None
             ):
-                rejected_page_reason = attempt.outcome.value
-        completed_slots = {
-            (attempt.query_index, attempt.result_index): attempt
-            for attempt in page_attempts
-        }
+                raise ValidationError("公开寻源页面槽状态无效")
+            completed_slots[key] = attempt
+            pages_used += 1
+            if attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED:
+                if attempt.draft_id is None:
+                    raise ValidationError("公开寻源页面槽状态无效")
+                draft_ids.append(attempt.draft_id)
+                if attempt.has_supplier_identity is True:
+                    verifiable_count += 1
+                return
+            rejected_page_reason = attempt.outcome.value
+
+        for attempt in page_attempts:
+            aggregate_completed_slot(attempt)
+        result_count = pages_used
         try:
             for query_index, query in enumerate(plan.queries):
                 if searches_used >= plan.max_search_queries:
@@ -966,9 +980,7 @@ class PublicSearchStep:
                                         searches=searches_used,
                                         pages=pages_used,
                                     )
-                                completed_slots[(query_index, result_index)] = (
-                                    claim.slot
-                                )
+                                aggregate_completed_slot(claim.slot)
                                 continue
                             pages_used += 1
                             page = await _await_dependency(
@@ -1050,12 +1062,12 @@ class PublicSearchStep:
                     if batch is not None:
                         try:
                             self._searcher.release(batch)
-                        except Exception:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                        except BaseException:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
                             pass
         finally:
             try:
                 self._searcher.discard_all()
-            except Exception:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+            except BaseException:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
                 pass
 
         if result_count == 0:
