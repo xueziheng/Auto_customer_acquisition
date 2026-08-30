@@ -203,6 +203,19 @@ def test_stop_detail_is_a_safe_structured_value_and_roundtrips() -> None:
         )
 
 
+def test_stop_detail_default_asdict_keeps_json_null_optional_fields() -> None:
+    detail_type = _type(sourcing_models, "SourcingStopDetail")
+    stage_type = _type(sourcing_models, "SourcingStopStage")
+
+    assert asdict(detail_type(stage=stage_type.PROVIDER)) == {
+        "stage": stage_type.PROVIDER,
+        "query_index": None,
+        "provider_http_status": None,
+        "observed_count": None,
+        "configured_limit": None,
+    }
+
+
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     (

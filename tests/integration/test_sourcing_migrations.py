@@ -453,7 +453,89 @@ async def test_stop_codes_and_safe_detail_roundtrip_without_draft_shorthands(
         _run_alembic(db_url, "upgrade", "head")
 
 
-async def test_product_checks_reject_every_sql_null_bypass(db_url: str) -> None:
+async def test_stop_detail_requires_a_non_null_string_stage(db_url: str) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-stop-stage",
+                case_id="case-stop-stage",
+            )
+            for invalid_stage in (None, 1, True):
+                await _expect_integrity(
+                    connection,
+                    "UPDATE sourcing_cases SET stop_detail = CAST(:detail AS jsonb) "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-stop-stage'",
+                    {
+                        "tenant": TENANT_A,
+                        "detail": json.dumps({"stage": invalid_stage}),
+                    },
+                )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_stop_detail_accepts_omitted_and_json_null_optional_fields(
+    db_url: str,
+) -> None:
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-stop-null-optionals",
+                case_id="case-stop-null-optionals",
+            )
+            details = (
+                {"stage": "provider"},
+                {
+                    "stage": "provider",
+                    "query_index": None,
+                    "provider_http_status": None,
+                    "observed_count": None,
+                    "configured_limit": None,
+                },
+            )
+            for detail in details:
+                await connection.execute(
+                    text(
+                        "UPDATE sourcing_cases SET stop_detail = CAST(:detail AS jsonb) "
+                        "WHERE tenant_id = :tenant "
+                        "AND case_id = 'case-stop-null-optionals'"
+                    ),
+                    {"tenant": TENANT_A, "detail": json.dumps(detail)},
+                )
+                stored = (
+                    await connection.execute(
+                        text(
+                            "SELECT stop_detail FROM sourcing_cases "
+                            "WHERE tenant_id = :tenant "
+                            "AND case_id = 'case-stop-null-optionals'"
+                        ),
+                        {"tenant": TENANT_A},
+                    )
+                ).scalar_one()
+                assert stored == detail
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_product_checks_enforce_null_pairs_and_candidate_lifecycle_statuses(
+    db_url: str,
+) -> None:
     engine: AsyncEngine | None = None
     try:
         _run_alembic(db_url, "downgrade", "0046")
@@ -464,8 +546,18 @@ async def test_product_checks_reject_every_sql_null_bypass(db_url: str) -> None:
             rejected_values = [
                 _product_values("product-candidate-null", pool="candidate"),
                 _product_values(
-                    "product-candidate-partial",
+                    "product-candidate-unknown",
                     pool="candidate",
+                    candidate_status="unknown",
+                ),
+                _product_values(
+                    "product-formal-with-candidate-status",
+                    pool="formal",
+                    candidate_status="source_only",
+                ),
+                _product_values(
+                    "product-capability-with-candidate-status",
+                    pool="capability",
                     candidate_status="partial",
                 ),
             ]
@@ -513,14 +605,26 @@ async def test_product_checks_reject_every_sql_null_bypass(db_url: str) -> None:
             for values in rejected_values:
                 await _expect_integrity(connection, _INSERT_PRODUCT, values)
 
-            await connection.execute(
-                text(_INSERT_PRODUCT),
-                _product_values(
-                    "product-source-only",
-                    pool="candidate",
-                    candidate_status="source_only",
-                ),
-            )
+            for candidate_status in ("source_only", "partial", "not_approved"):
+                await connection.execute(
+                    text(_INSERT_PRODUCT),
+                    _product_values(
+                        f"product-{candidate_status}",
+                        pool="candidate",
+                        candidate_status=candidate_status,
+                    ),
+                )
+            statuses = (
+                await connection.execute(
+                    text(
+                        "SELECT candidate_status FROM products "
+                        "WHERE tenant_id = :tenant AND pool = 'candidate' "
+                        "ORDER BY candidate_status"
+                    ),
+                    {"tenant": TENANT_A},
+                )
+            ).scalars()
+            assert list(statuses) == ["not_approved", "partial", "source_only"]
     finally:
         if engine is not None:
             await engine.dispose()
@@ -735,6 +839,17 @@ async def test_ladder_checks_reject_jumps_updates_and_deletes(db_url: str) -> No
                 text(insert_ladder_check),
                 values | {"check": "ladder-check-1", "rung": 1},
             )
+            await connection.execute(text(insert_ladder_check), values)
+            persisted_rungs = (
+                await connection.execute(
+                    text(
+                        "SELECT rung FROM sourcing_ladder_checks "
+                        "WHERE tenant_id = :tenant AND case_id = :case ORDER BY rung"
+                    ),
+                    {"tenant": TENANT_A, "case": "case-ladder-audit"},
+                )
+            ).scalars()
+            assert list(persisted_rungs) == [1, 2]
             await _expect_integrity(
                 connection,
                 "UPDATE sourcing_ladder_checks SET conclusion = 'changed' "

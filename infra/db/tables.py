@@ -4643,23 +4643,28 @@ class SourcingCaseRow(Base):
             "AND stop_detail ? 'stage' "
             "AND (stop_detail - 'stage' - 'query_index' - 'provider_http_status' "
             "- 'observed_count' - 'configured_limit') = '{}'::jsonb "
+            "AND jsonb_typeof(stop_detail->'stage') = 'string' "
             "AND stop_detail->>'stage' IN ('intake','plan','quota','provider','page','candidate','review','cost_handoff') "
-            "AND (NOT stop_detail ? 'query_index' OR CASE "
+            "AND (NOT stop_detail ? 'query_index' "
+            "OR jsonb_typeof(stop_detail->'query_index') = 'null' OR CASE "
             "WHEN jsonb_typeof(stop_detail->'query_index') = 'number' "
             "THEN (stop_detail->>'query_index')::numeric >= 0 "
             "AND (stop_detail->>'query_index')::numeric = trunc((stop_detail->>'query_index')::numeric) "
             "ELSE false END) "
-            "AND (NOT stop_detail ? 'provider_http_status' OR CASE "
+            "AND (NOT stop_detail ? 'provider_http_status' "
+            "OR jsonb_typeof(stop_detail->'provider_http_status') = 'null' OR CASE "
             "WHEN jsonb_typeof(stop_detail->'provider_http_status') = 'number' "
             "THEN (stop_detail->>'provider_http_status')::numeric BETWEEN 100 AND 599 "
             "AND (stop_detail->>'provider_http_status')::numeric = "
             "trunc((stop_detail->>'provider_http_status')::numeric) ELSE false END) "
-            "AND (NOT stop_detail ? 'observed_count' OR CASE "
+            "AND (NOT stop_detail ? 'observed_count' "
+            "OR jsonb_typeof(stop_detail->'observed_count') = 'null' OR CASE "
             "WHEN jsonb_typeof(stop_detail->'observed_count') = 'number' "
             "THEN (stop_detail->>'observed_count')::numeric >= 0 "
             "AND (stop_detail->>'observed_count')::numeric = "
             "trunc((stop_detail->>'observed_count')::numeric) ELSE false END) "
-            "AND (NOT stop_detail ? 'configured_limit' OR CASE "
+            "AND (NOT stop_detail ? 'configured_limit' "
+            "OR jsonb_typeof(stop_detail->'configured_limit') = 'null' OR CASE "
             "WHEN jsonb_typeof(stop_detail->'configured_limit') = 'number' "
             "THEN (stop_detail->>'configured_limit')::numeric >= 0 "
             "AND (stop_detail->>'configured_limit')::numeric = "
@@ -4972,7 +4977,7 @@ class ProductRow(Base):
         ForeignKeyConstraint(["tenant_id", "supplier_id"], ["suppliers.tenant_id", "suppliers.supplier_id"], name="fk_products_supplier", ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "internal_cost_source_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_products_internal_cost_artifact", ondelete="RESTRICT"),
         CheckConstraint("pool IN ('formal','candidate','capability')", name="ck_products_pool"),
-        CheckConstraint("(pool = 'candidate' AND candidate_status IS NOT NULL AND candidate_status = 'source_only') OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
+        CheckConstraint("(pool = 'candidate' AND candidate_status IS NOT NULL AND candidate_status IN ('source_only','partial','not_approved')) OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
         CheckConstraint("moq IS NULL OR moq >= 1", name="ck_products_moq"),
         CheckConstraint("(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR (lead_time_days_min IS NOT NULL AND lead_time_days_max IS NOT NULL AND lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)", name="ck_products_lead_time"),
         CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency IS NOT NULL AND internal_cost_currency ~ '^[A-Z]{3}$' AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),

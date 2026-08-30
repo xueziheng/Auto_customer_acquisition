@@ -204,3 +204,75 @@ python scripts/run_alembic.py heads
 全部迁移仍只在 testcontainers 隔离数据库执行。Fix Round 1 未新增迁移 revision、未修改 Task 10、
 Gateway core、Repository/UoW/Service/API/Workflow/Connector。Git 仍报告既有 AppleDouble
 pack sidecar `non-monotonic index` 警告；按约束未触碰或修复。
+
+## Fix Round 2（Task 3 定向复审）
+
+### 修复结果
+
+- 按 Ruling P4 收紧 `stop_detail.stage`：键必须存在，JSON 类型必须为 string，且值属于
+  固定阶段集合；`stage: null`、number、boolean 均由 PostgreSQL CHECK 拒绝。
+- 四个可选详情字段同时支持“键省略”和普通 dataclass/asdict 生成的 JSON null；只有非 null
+  值才进入 number、integer 与 range 校验。未知键、错误类型、负数、小数计数及越界 HTTP
+  状态仍被拒绝。0047 与 ORM CHECK 保持一致。
+- 0048 与 ORM 允许 candidate pool 持久化完整生命周期
+  `source_only | partial | not_approved`，同时拒绝 NULL 和未知值；formal/capability pool 仍只
+  接受 NULL。创建时只能是 `source_only` 的边界留给 Task 5 服务，未下沉为永久表约束。
+- Ladder 测试在 rung 1 后实际插入并读取 rung 2，再验证预先跳级以及 UPDATE/DELETE 拒绝。
+  触发器实现无需改动。
+
+### TDD RED / GREEN
+
+生产修改前运行四个定向 PostgreSQL 测试：
+
+```text
+pytest <stage-type/null-optionals/candidate-lifecycle/ladder tests> -q
+=> 3 failed, 1 passed in 13.48s
+```
+
+三个预期失败分别是：`stage:null` 未被拒绝、asdict 的 JSON null 可选字段被拒绝、
+`candidate_status=partial` 被拒绝；Ladder 1→2 已由既有触发器正确支持。最小修改 0047、
+0048 与 ORM CHECK 后：
+
+```text
+=> 4 passed in 15.20s
+```
+
+补充域 dataclass/asdict 默认值断言，并将 integration 测试改为不跨层导入域私有实现后：
+
+```text
+pytest <domain-asdict + 4 PostgreSQL tests> -q
+=> 5 passed in 13.96s
+```
+
+中间结构门禁曾准确报告 integration test 直接导入 `domains.sourcing.models`；该问题只修正
+测试分层，数据库断言未放宽。随后结构门禁恢复通过。
+
+### Fix Round 2 最终验证
+
+```text
+pytest tests/integration/test_sourcing_migrations.py \
+       tests/integration/test_migrations.py \
+       tests/unit/test_work_intake_migration_head.py -q
+=> 74 passed in 99.42s
+
+pytest tests/unit/test_sourcing_models.py tests/unit/test_sourcing_v2_contracts.py -q
+=> 67 passed in 0.24s
+
+ruff check infra/db/tables.py migrations/versions/0047_sourcing_core.py \
+  migrations/versions/0048_supply_pools.py tests/integration/test_sourcing_migrations.py \
+  tests/unit/test_sourcing_v2_contracts.py
+=> All checks passed!
+
+PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
+python3 scripts/check_boundaries.py
+=> 结构自检通过
+
+git diff --check
+=> exit 0
+
+python scripts/run_alembic.py heads
+=> 0049 (head)
+```
+
+本轮没有新增 revision，没有修改域业务实现、Task 5/Task 10、Gateway core 或其它持久化
+范围。迁移仍只在隔离测试 PostgreSQL 执行；AppleDouble pack 警告继续按约束原样保留。

@@ -97,7 +97,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(pool = 'candidate' AND candidate_status IS NOT NULL "
-            "AND candidate_status = 'source_only') OR "
+            "AND candidate_status IN ('source_only','partial','not_approved')) OR "
             "(pool <> 'candidate' AND candidate_status IS NULL)",
             name="ck_products_candidate_status",
         ),
