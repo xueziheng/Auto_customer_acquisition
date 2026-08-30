@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import unicodedata
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -491,6 +493,80 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
 @pytest.mark.parametrize(
     "summary",
     [
+        "Grade 304 costs AED250.",
+        "Model AED 250 extra.",
+        "Model AED-250 uses grade 304 steel.",
+        "The price-sensitive model is AED-250.",
+        "Model AED 250 uses grade304 steel.",
+        "Series CHF 250 matches the requested type.",
+        "Cost impact 304。Price 250.",
+        "cost implication 304；pricing 250.",
+        "Pricing guidance applies to model 304.",
+        "The item was priced for a 304-piece batch.",
+        "Costs changed for grade 304 steel.",
+        "Price details are pending for model 304.",
+        "cost impact 304\u2028pricing 250",
+        "Observed €；250.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_non_strict_iso_identity_and_sentence_mix(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+_UNICODE_CURRENCY_SYMBOLS = tuple(
+    chr(codepoint)
+    for codepoint in range(sys.maxunicode + 1)
+    if unicodedata.category(chr(codepoint)) == "Sc"
+)
+
+
+@pytest.mark.parametrize("symbol", _UNICODE_CURRENCY_SYMBOLS)
+@pytest.mark.asyncio
+async def test_existing_agent_rejects_every_unicode_currency_symbol_with_number(
+    symbol: str,
+) -> None:
+    assert len(_UNICODE_CURRENCY_SYMBOLS) == 63
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = f"Observed {symbol} 250 today."
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
         "Observed cost is chf 2.50.",
         "Unit price 2.50 per piece.",
         "The cost is 2.50.",
@@ -599,6 +675,7 @@ async def test_existing_agent_rejects_composed_money_predicate_variants(
     [
         "The tolerance is 2.50 mm.",
         "The value changed to 3.75.",
+        "The tolerance is ٢.٥٠ mm.",
         "2.50 was the cost.",
     ],
 )
@@ -630,16 +707,19 @@ async def test_existing_agent_rejects_untrusted_decimals_and_reverse_price_predi
     [
         "The plate measures 304 mm by 4 mm.",
         "The set contains 2 pieces and weighs 500 g.",
-        "Model AED-250 uses grade 304 steel.",
         "The cost impact for grade 304 steel is unknown.",
-        "The price-sensitive model is AED-250.",
+        "The price-sensitive model X250 uses grade 304 steel.",
         "Grade 304 steel has an unknown cost impact.",
         "The amount of 304 stainless steel is sufficient.",
         "The amount is about 304 pieces.",
         "The 304 cost impact is unknown.",
         "cost impact for grade 304",
-        "Model AED 250 uses grade304 steel.",
-        "Series CHF 250 matches the requested type.",
+        "cost implication for grade 304",
+        "Cost\u2028304 steel matches.",
+        "Currency symbol € unavailable.",
+        "Model AED 250",
+        "Series CHF-250",
+        "Grade 304",
     ],
 )
 @pytest.mark.asyncio
@@ -666,8 +746,23 @@ async def test_existing_agent_money_guard_does_not_block_normal_specs(
     ]
 
 
+@pytest.mark.parametrize(
+    ("trusted_literal", "summary"),
+    [
+        (
+            "Tolerance 2.50 mm",
+            "Tolerance 2.50 mm matches the required specification.",
+        ),
+        (
+            "Tolerance 2.50 mm",
+            "The first statement is complete. Tolerance 2.50 mm matches exactly.",
+        ),
+        ("2.50", "The first statement is complete. 2.50 matches exactly."),
+    ],
+)
 @pytest.mark.asyncio
 async def test_existing_agent_allows_decimal_only_inside_exact_trusted_spec_literal(
+    trusted_literal: str, summary: str
 ) -> None:
     module = __import__(
         "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
@@ -680,13 +775,13 @@ async def test_existing_agent_allows_decimal_only_inside_exact_trusted_spec_lite
     required_specs = review["required_specs"]
     offered_specs = review["offered_specs"]
     assert isinstance(required_specs, tuple) and isinstance(offered_specs, tuple)
-    required_specs[1]["required"] = "Tolerance 2.50 mm"
-    offered_specs[1]["offered"] = "Tolerance 2.50 mm"
+    required_specs[1]["required"] = trusted_literal
+    offered_specs[1]["offered"] = trusted_literal
     response = _page_review_response()
     comparisons = response["comparisons"]
     assert isinstance(comparisons, list)
-    comparisons[1]["offered"] = "Tolerance 2.50 mm"
-    response["summary"] = "Tolerance 2.50 mm matches the required specification."
+    comparisons[1]["offered"] = trusted_literal
+    response["summary"] = summary
 
     result = await _agent(_ReviewPort(json.dumps(response))).run(
         _page_review_task(review), None
@@ -695,3 +790,35 @@ async def test_existing_agent_allows_decimal_only_inside_exact_trusted_spec_lite
     assert [change["operation"] for change in result.changes] == [
         "record_match_explanation"
     ]
+
+
+@pytest.mark.parametrize("summary", ["Cost 2.50 mm", "Cost: 2.50", "USD: 2.50"])
+@pytest.mark.asyncio
+async def test_trusted_decimal_cannot_exempt_explicit_cost_sentence(
+    summary: str,
+) -> None:
+    module = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    )
+    review = module.SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    required_specs = review["required_specs"]
+    offered_specs = review["offered_specs"]
+    assert isinstance(required_specs, tuple) and isinstance(offered_specs, tuple)
+    required_specs[1]["required"] = "2.50"
+    offered_specs[1]["offered"] = "2.50"
+    response = _page_review_response()
+    comparisons = response["comparisons"]
+    assert isinstance(comparisons, list)
+    comparisons[1]["offered"] = "2.50"
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"

@@ -39,25 +39,34 @@ _DOMAIN_TEXT = re.compile(
     r"(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+"
     r"[A-Z]{2,63}(?:/[^\s]*)?(?![A-Z0-9-])"
 )
-_CONTACT_CTA_TEXT = re.compile(
-    r"(?i)\b(?:"
-    r"(?:contact|e-?mail|reach)\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team)|"
-    r"reach\s+out|"
-    r"call\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team|now|today)|"
-    r"talk\s+to\s+(?:us|me|sales(?:\s+team)?|our\s+sales\s+team)|"
-    r"get\s+in\s+touch"
-    r")\b"
+_CONTACT_LEXEMES = frozenset(
+    {
+        "call",
+        "contact",
+        "email",
+        "message",
+        "mobile",
+        "phone",
+        "reach",
+        "sales",
+        "support",
+        "talk",
+        "tel",
+        "wechat",
+        "whatsapp",
+    }
 )
-_PHONE_LABEL_TEXT = re.compile(
-    r"(?i)\b(?:tel(?:ephone)?|phone|mobile|whatsapp)\b\s*[:=]?\s*\+?[0-9]"
+_CONTACT_PHRASES = (
+    ("e", "mail"),
+    ("get", "in", "touch"),
+    ("sales", "team"),
+    ("support", "number"),
 )
-_PHONE_SHAPE_TEXT = re.compile(
-    r"(?<![A-Z0-9])\+?[0-9][0-9 ()./\-\xb7\u2022\u2219\u2010-\u2015]*[0-9](?![A-Z0-9])"
+_STRICT_IDENTIFIER = re.compile(
+    r"(?i)(?:model|series|grade|type|part|sku|code)"
+    r"(?:\s+(?:no\.?|number))?\s+(?P<identifier>\S+)"
 )
-_PHONE_IDENTIFIER_CUE = re.compile(
-    r"(?i)\b(?:model|series|part(?:\s+(?:no\.?|number))?|sku|code)\b"
-)
-_DOMAIN_IDENTIFIER_CUE = re.compile(r"(?i)\b(?:model|series|version)\b")
+_UNICODE_SENTENCE_BOUNDARIES = frozenset({"。", "！", "？", "；", "\u2028", "\u2029"})
 _INSTRUCTION_TEXT = re.compile(
     r"(?i)\b(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|"
     r"system\s+(?:message|prompt)|developer\s+message|assistant\s+message|"
@@ -229,7 +238,10 @@ class SourcingObservedLiteral(BaseModel):
 
         if (
             _safe_observation_text(self.literal, 4_000) is None
-            or _safe_observation_text(self.source_quote, 4_000) is None
+            or _safe_observation_quote(
+                self.source_quote, 4_000, literal=self.literal
+            )
+            is None
             or self.literal not in self.source_quote
             or _ARTIFACT_REF.fullmatch(str(self.snapshot_artifact_ref)) is None
         ):
@@ -430,44 +442,99 @@ def _safe_observation_text(value: object, maximum: int) -> str | None:
         for pattern in (
             _EMAIL_TEXT,
             _URL_TEXT,
-            _CONTACT_CTA_TEXT,
-            _PHONE_LABEL_TEXT,
             _INSTRUCTION_TEXT,
         )
     ):
         return None
-    if _contains_unsafe_domain(parsed) or _contains_unsafe_phone(parsed):
+    if _contains_contact_text(parsed):
+        return None
+    if (
+        _contains_unsafe_domain(parsed) or _contains_phone_shape(parsed)
+    ) and not _strict_identifier_literal(parsed):
         return None
     return parsed
 
 
-def _has_identifier_cue(value: str, start: int, pattern: re.Pattern[str]) -> bool:
-    context = value[max(0, start - 64) : start]
-    matches = tuple(pattern.finditer(context))
-    if not matches:
+def _contact_tokens(value: str) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    separated = "".join(
+        " "
+        if character.isspace()
+        or unicodedata.category(character).startswith(("P", "Z"))
+        else character
+        for character in normalized
+    )
+    return tuple(separated.split())
+
+
+def _contains_contact_text(value: str) -> bool:
+    tokens = _contact_tokens(value)
+    if any(token in _CONTACT_LEXEMES for token in tokens):
+        return True
+    return any(
+        tokens[index : index + len(phrase)] == phrase
+        for phrase in _CONTACT_PHRASES
+        for index in range(len(tokens) - len(phrase) + 1)
+    )
+
+
+def _strict_identifier_literal(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value)
+    if any(character in _UNICODE_SENTENCE_BOUNDARIES for character in normalized):
         return False
-    trailing = context[matches[-1].end() :]
-    return re.search(r"[.\n,;!?]", trailing) is None
+    matched = _STRICT_IDENTIFIER.fullmatch(normalized)
+    if matched is None:
+        return False
+    identifier = matched.group("identifier")
+    return identifier[0].isalnum() and identifier[-1].isalnum()
 
 
 def _contains_unsafe_domain(value: str) -> bool:
-    for match in _DOMAIN_TEXT.finditer(value):
-        if "/" in match.group() or not _has_identifier_cue(
-            value, match.start(), _DOMAIN_IDENTIFIER_CUE
-        ):
-            return True
-    return False
+    normalized = (
+        unicodedata.normalize("NFKC", value).replace("。", ".").replace("｡", ".")
+    )
+    return _DOMAIN_TEXT.search(normalized) is not None
 
 
-def _contains_unsafe_phone(value: str) -> bool:
-    for match in _PHONE_SHAPE_TEXT.finditer(value):
-        token = match.group()
-        if sum(character.isdecimal() for character in token) < 10:
+def _contains_phone_shape(value: str) -> bool:
+    digit_count = 0
+    active = False
+    for character in unicodedata.normalize("NFKC", value):
+        if character.isdecimal():
+            digit_count += 1
+            active = True
             continue
-        if "+" in token or not _has_identifier_cue(
-            value, match.start(), _PHONE_IDENTIFIER_CUE
-        ):
+        category = unicodedata.category(character)
+        if active and (character.isspace() or category.startswith(("P", "Z"))):
+            continue
+        if digit_count >= 10:
             return True
+        digit_count = 0
+        active = False
+    return digit_count >= 10
+
+
+def _safe_observation_quote(
+    value: object, maximum: int, *, literal: str
+) -> str | None:
+    parsed = _safe_model_text(value, maximum)
+    if parsed is None:
+        return None
+    masked = parsed
+    if _strict_identifier_literal(literal):
+        masked = masked.replace(literal, "identifier")
+    if any(
+        pattern.search(masked) is not None
+        for pattern in (_EMAIL_TEXT, _URL_TEXT, _INSTRUCTION_TEXT)
+    ):
+        return None
+    if (
+        _contains_contact_text(masked)
+        or _contains_unsafe_domain(masked)
+        or _contains_phone_shape(masked)
+    ):
+        return None
+    return parsed
     return False
 
 
@@ -699,9 +766,11 @@ def _anchored_literal(
             raise ValidationError(f"{field_name} 未知值不得带原文")
         return None
     parsed_literal = _safe_observation_text(literal, maximum)
-    parsed_quote = _safe_observation_text(source_quote, 4_000)
     if parsed_literal is None:
         raise ValidationError(f"{field_name} 无效")
+    parsed_quote = _safe_observation_quote(
+        source_quote, 4_000, literal=parsed_literal
+    )
     if parsed_quote is None:
         raise ValidationError(f"{field_name}原文 无效")
     assert parsed_literal is not None and parsed_quote is not None

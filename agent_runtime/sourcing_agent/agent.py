@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
@@ -255,14 +256,14 @@ _PRICE_UNIT_PATTERN = (
     r"meter|metre|ml|pack|pair|pallet|pc|pcs|piece|roll|set|sheet|sqm|ton|"
     r"tonne|unit)s?"
 )
-_NUMBER_TOKEN_PATTERN = r"[0-9]+(?:[.,][0-9]+)?"
+_NUMBER_TOKEN_PATTERN = r"\d+(?:[.,]\d+)?"
 _MONEY_KEYWORD_PATTERN = r"(?:unit[ -]?price|price|cost)"
 _MONEY_QUALIFIER_PATTERN = (
     r"(?:approx(?:imately)?\.?|roughly|about|around)"
 )
-_CURRENCY_SYMBOL = re.compile(r"[$€£¥₹]")
 _ISO_BEFORE_NUMBER = re.compile(
-    rf"(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)\s*[:=]?\s*{_NUMBER_TOKEN_PATTERN}"
+    rf"(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)"
+    rf"(?:\s*[:=-]\s*|\s*){_NUMBER_TOKEN_PATTERN}"
 )
 _NUMBER_BEFORE_ISO = re.compile(
     rf"{_NUMBER_TOKEN_PATTERN}\s*(?i:\b(?:{_ISO_4217_PATTERN}|RMB)\b)"
@@ -280,19 +281,18 @@ _REVERSE_PRICE_PREDICATE = re.compile(
 _PER_UNIT_AMOUNT = re.compile(
     rf"{_NUMBER_TOKEN_PATTERN}\s*(?i:(?:/|per)\s*{_PRICE_UNIT_PATTERN}\b)"
 )
-_DECIMAL_TOKEN = re.compile(r"(?<![0-9])[0-9]+[.,][0-9]+(?![0-9])")
-_MONEY_IDENTITY_CUE = re.compile(
-    r"(?i)\b(?:model|series|grade|type|part(?:\s+(?:no\.?|number))?|sku|code)\b"
+_DECIMAL_TOKEN = re.compile(r"(?<!\d)\d+[.,]\d+(?!\d)")
+_PRICE_COST_LEXEME = re.compile(
+    r"(?i)(?<![\w-])(?:price|cost|priced|pricing|costs)(?![\w-])"
 )
-
-
-def _money_identity_context(value: str, start: int) -> bool:
-    context = value[max(0, start - 64) : start]
-    matches = tuple(_MONEY_IDENTITY_CUE.finditer(context))
-    if not matches:
-        return False
-    trailing = context[matches[-1].end() :]
-    return re.search(r"[.\n,;!?]", trailing) is None
+_UNIT_PRICE_LEXEME = re.compile(r"(?i)\bunit-price\b")
+_STRICT_ISO_IDENTIFIER = re.compile(
+    rf"(?i)(?:model|series|grade|type|part|sku|code)"
+    rf"(?:\s+(?:no\.?|number))?\s+(?:{_ISO_4217_PATTERN}|RMB)"
+    rf"(?:\s*-\s*|\s*){_NUMBER_TOKEN_PATTERN}"
+)
+_SENTENCE_BOUNDARIES = frozenset("?!;:。！？；\n\r\u2028\u2029")
+_LINE_SENTENCE_BOUNDARIES = frozenset("\n\r\u2028\u2029")
 
 
 def _literal_spans(value: str, literals: tuple[str, ...]) -> list[tuple[int, int]]:
@@ -309,25 +309,127 @@ def _span_is_allowed(span: tuple[int, int], allowed: list[tuple[int, int]]) -> b
     return any(start <= span[0] and span[1] <= end for start, end in allowed)
 
 
+def _sentence_spans(value: str) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for index, character in enumerate(value):
+        decimal_point = (
+            character == "."
+            and index > 0
+            and index + 1 < len(value)
+            and value[index - 1].isdecimal()
+            and value[index + 1].isdecimal()
+        )
+        if not decimal_point and (
+            character == "." or character in _SENTENCE_BOUNDARIES
+        ):
+            if start < index:
+                spans.append((start, index))
+            start = index + 1
+    if start < len(value):
+        spans.append((start, len(value)))
+    return tuple(spans)
+
+
+def _currency_adjacent_to_digit(value: str) -> bool:
+    for index, character in enumerate(value):
+        if unicodedata.category(character) != "Sc":
+            continue
+        for direction in (-1, 1):
+            cursor = index + direction
+            while 0 <= cursor < len(value):
+                nearby = value[cursor]
+                if nearby.isdecimal():
+                    return True
+                category = unicodedata.category(nearby)
+                if not (
+                    nearby.isspace()
+                    or nearby == "."
+                    or nearby in _SENTENCE_BOUNDARIES
+                    or category.startswith(("P", "Z"))
+                ):
+                    break
+                cursor += direction
+    return False
+
+
+def _only_non_money_price_phrases(
+    sentence: str, matches: tuple[re.Match[str], ...]
+) -> bool:
+    for match in matches:
+        if match.group().casefold() != "cost" or re.match(
+            r"(?i)\s+(?:impact|implication)\b", sentence[match.end() :]
+        ) is None:
+            return False
+    return True
+
+
+def _has_line_local_match(pattern: re.Pattern[str], value: str) -> bool:
+    return any(
+        not any(character in _LINE_SENTENCE_BOUNDARIES for character in match.group())
+        for match in pattern.finditer(value)
+    )
+
+
 def _contains_model_money(value: str, trusted_literals: tuple[str, ...]) -> bool:
+    if _currency_adjacent_to_digit(value):
+        return True
     if (
-        _CURRENCY_SYMBOL.search(value) is not None
-        or _PRICE_PREDICATE.search(value) is not None
-        or _REVERSE_PRICE_PREDICATE.search(value) is not None
-        or _PER_UNIT_AMOUNT.search(value) is not None
+        _has_line_local_match(_PRICE_PREDICATE, value)
+        or _has_line_local_match(_REVERSE_PRICE_PREDICATE, value)
+        or _has_line_local_match(_PER_UNIT_AMOUNT, value)
     ):
+        return True
+    if (
+        _has_line_local_match(_ISO_BEFORE_NUMBER, value)
+        or _has_line_local_match(_NUMBER_BEFORE_ISO, value)
+    ) and _STRICT_ISO_IDENTIFIER.fullmatch(value.strip()) is None:
         return True
 
     allowed_spans = _literal_spans(value, trusted_literals)
-    for pattern in (_ISO_BEFORE_NUMBER, _NUMBER_BEFORE_ISO):
-        for match in pattern.finditer(value):
-            if not _money_identity_context(value, match.start()):
+    for sentence_start, sentence_end in _sentence_spans(value):
+        sentence = value[sentence_start:sentence_end]
+        stripped_sentence = sentence.strip()
+        if not stripped_sentence:
+            continue
+        if (
+            _PRICE_PREDICATE.search(sentence) is not None
+            or _REVERSE_PRICE_PREDICATE.search(sentence) is not None
+            or _PER_UNIT_AMOUNT.search(sentence) is not None
+        ):
+            return True
+        has_number = any(character.isdecimal() for character in sentence)
+        has_currency_symbol = any(
+            unicodedata.category(character) == "Sc" for character in sentence
+        )
+        if has_currency_symbol and has_number:
+            return True
+
+        iso_matches = tuple(_ISO_BEFORE_NUMBER.finditer(sentence))
+        reverse_iso_matches = tuple(_NUMBER_BEFORE_ISO.finditer(sentence))
+        if iso_matches or reverse_iso_matches:
+            if (
+                reverse_iso_matches
+                or _STRICT_ISO_IDENTIFIER.fullmatch(stripped_sentence) is None
+            ):
                 return True
-            allowed_spans.append(match.span())
-    return any(
-        not _span_is_allowed(match.span(), allowed_spans)
-        for match in _DECIMAL_TOKEN.finditer(value)
-    )
+            allowed_spans.append((sentence_start, sentence_end))
+
+        price_matches = tuple(_PRICE_COST_LEXEME.finditer(sentence))
+        if has_number and (
+            _UNIT_PRICE_LEXEME.search(sentence) is not None
+            or (
+                price_matches
+                and not _only_non_money_price_phrases(sentence, price_matches)
+            )
+        ):
+            return True
+
+        for match in _DECIMAL_TOKEN.finditer(sentence):
+            span = (sentence_start + match.start(), sentence_start + match.end())
+            if not _span_is_allowed(span, allowed_spans):
+                return True
+    return False
 
 _SYSTEM_PROMPT = """你是 TradeOS 的候选供应商寻源分析能力。输入只包含人工录入的
 客户必需规格、候选供应规格、确定性价格检查和证据快照。逐项比较规格，禁止生成综合

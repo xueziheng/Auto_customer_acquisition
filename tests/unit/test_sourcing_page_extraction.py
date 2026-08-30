@@ -861,6 +861,20 @@ async def test_selected_observations_reject_contact_cta_phone_and_domain_path(
         ("supplier_name", "Catalog supplier.example"),
         ("product_title", "Model X. supplier.example"),
         ("supplier_name", "Series X. 13800138000"),
+        ("supplier_name", "Contact Hardware Factory"),
+        ("product_title", "Email-compatible relay enclosure"),
+        ("material", "Ｃｏｎｔａｃｔ／sales"),
+        ("unit_literal", "Get‧in‧touch"),
+        ("supplier_name", "Message sales"),
+        ("product_title", "Phone support"),
+        ("material", "WeChat support"),
+        ("product_title", "Model support.example"),
+        ("product_title", "Model X。supplier.example"),
+        ("supplier_name", "Model 12345\u00a067890"),
+        ("product_title", "Model 12345—67890 extra"),
+        ("material", "Part number 123 4567890"),
+        ("unit_literal", "١٢٣·٤٥٦·٧٨٩٠"),
+        ("supplier_name", "supplier。example"),
     ],
 )
 @pytest.mark.asyncio
@@ -894,8 +908,6 @@ async def test_selected_observations_reject_expanded_contact_shapes_before_seria
 @pytest.mark.parametrize(
     ("field", "literal"),
     [
-        ("supplier_name", "Contact Hardware Factory"),
-        ("product_title", "Email-compatible relay enclosure"),
         ("material", "304/316 stainless steel"),
         ("product_title", "ReachGuard relay enclosure"),
         ("product_title", "Model ZX-13800138000-A"),
@@ -903,6 +915,9 @@ async def test_selected_observations_reject_expanded_contact_shapes_before_seria
         ("product_title", "Series X.Pro"),
         ("product_title", "Model v2.assembly"),
         ("product_title", "Model 123456789012"),
+        ("product_title", "Part No. ZX-1234567890"),
+        ("supplier_name", "SKU 123456789012"),
+        ("material", "Code supplier.example"),
     ],
 )
 @pytest.mark.asyncio
