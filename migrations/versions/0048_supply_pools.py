@@ -69,6 +69,7 @@ def upgrade() -> None:
         sa.Column("internal_cost_amount", sa.Numeric(28, 12), nullable=True),
         sa.Column("internal_cost_currency", sa.CHAR(3), nullable=True),
         sa.Column("internal_cost_basis", sa.Text(), nullable=True),
+        sa.Column("internal_cost_unit", sa.String(50), nullable=True),
         sa.Column("internal_cost_source_ref", sa.String(32), nullable=True),
         sa.Column("allowed_price_min_amount", sa.Numeric(28, 12), nullable=True),
         sa.Column("allowed_price_min_currency", sa.CHAR(3), nullable=True),
@@ -110,11 +111,13 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(internal_cost_amount IS NULL AND internal_cost_currency IS NULL "
-            "AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR "
+            "AND internal_cost_basis IS NULL AND internal_cost_unit IS NULL "
+            "AND internal_cost_source_ref IS NULL) OR "
             "(internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 "
             "AND internal_cost_currency IS NOT NULL "
             "AND internal_cost_currency ~ '^[A-Z]{3}$' "
             "AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' "
+            "AND internal_cost_unit IS NOT NULL AND btrim(internal_cost_unit) <> '' "
             "AND internal_cost_source_ref IS NOT NULL)",
             name="ck_products_internal_cost_complete",
         ),

@@ -188,12 +188,12 @@ _INSERT_PRODUCT = (
     "INSERT INTO products "
     "(tenant_id, product_id, pool, candidate_status, name_zh, name_en, category, "
     "normalized_category, lead_time_days_min, lead_time_days_max, internal_cost_amount, "
-    "internal_cost_currency, internal_cost_basis, internal_cost_source_ref, "
+    "internal_cost_currency, internal_cost_basis, internal_cost_unit, internal_cost_source_ref, "
     "allowed_price_min_amount, allowed_price_min_currency, allowed_price_max_amount, "
     "allowed_price_max_currency, sellable_markets, selling_points, known_issues, "
     "customizable, created_at) VALUES "
     "(:tenant, :product, :pool, :candidate_status, '铰链', 'Hinge', 'hinges', 'hinges', "
-    ":lead_min, :lead_max, :cost_amount, :cost_currency, :cost_basis, :cost_source, "
+    ":lead_min, :lead_max, :cost_amount, :cost_currency, :cost_basis, :cost_unit, :cost_source, "
     ":min_amount, :min_currency, :max_amount, :max_currency, '[]', '[]', '[]', false, now())"
 )
 
@@ -209,6 +209,7 @@ def _product_values(product_id: str, **changes: object) -> dict[str, object]:
         "cost_amount": None,
         "cost_currency": None,
         "cost_basis": None,
+        "cost_unit": None,
         "cost_source": None,
         "min_amount": None,
         "min_currency": None,
@@ -335,6 +336,13 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "sourcing_candidates",
             ("tenant_id", "case_id", "candidate_id"),
         )
+        case_fks = contract["sourcing_cases"]["foreign_keys"]
+        assert case_fks["fk_sourcing_cases_opportunity"] == (
+            ("tenant_id", "opportunity_id"),
+            "opportunities",
+            ("tenant_id", "opportunity_id"),
+        )
+        assert "internal_cost_unit" in contract["products"]["columns"]
         cost_fks = contract["cost_sheets"]["foreign_keys"]
         assert cost_fks["fk_cost_sheets_sourcing_option"] == (
             ("tenant_id", "source_sourcing_case_id", "source_option_id"),
@@ -363,6 +371,76 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             ]
             is True
         )
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_sourcing_case_opportunity_reference_is_nullable_and_tenant_bound(
+    db_url: str,
+) -> None:
+    """旧 Case 可无机会；一旦绑定只能引用同租户真实 Opportunity。"""
+
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0046")
+        _run_alembic(db_url, "upgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-case-opportunity",
+                case_id="case-opportunity",
+            )
+            assert await connection.scalar(
+                text(
+                    "SELECT opportunity_id FROM sourcing_cases "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'"
+                ),
+                {"tenant": TENANT_A},
+            ) is None
+            await connection.execute(
+                text(
+                    "INSERT INTO opportunities "
+                    "(opportunity_id, tenant_id, account_id, account_name, country, "
+                    "need_id, product_category) VALUES "
+                    "('opp-cross-tenant', :tenant, 'account-b', 'Buyer B', 'US', "
+                    "'need-b', 'hinges')"
+                ),
+                {"tenant": TENANT_B},
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_cases SET opportunity_id = 'opp-cross-tenant' "
+                "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'",
+                {"tenant": TENANT_A},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO opportunities "
+                    "(opportunity_id, tenant_id, account_id, account_name, country, "
+                    "need_id, product_category) VALUES "
+                    "('opp-same-tenant', :tenant, 'account-a', 'Buyer A', 'US', "
+                    "'need-a', 'hinges')"
+                ),
+                {"tenant": TENANT_A},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_cases SET opportunity_id = 'opp-same-tenant' "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'"
+                ),
+                {"tenant": TENANT_A},
+            )
+            assert await connection.scalar(
+                text(
+                    "SELECT opportunity_id FROM sourcing_cases "
+                    "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'"
+                ),
+                {"tenant": TENANT_A},
+            ) == "opp-same-tenant"
     finally:
         if engine is not None:
             await engine.dispose()
@@ -565,6 +643,7 @@ async def test_product_checks_enforce_null_pairs_and_candidate_lifecycle_statuse
                 "cost_amount": "1.25",
                 "cost_currency": "USD",
                 "cost_basis": "supplier invoice",
+                "cost_unit": "piece",
                 "cost_source": ARTIFACT_A,
             }
             for missing in full_cost:
@@ -625,6 +704,33 @@ async def test_product_checks_enforce_null_pairs_and_candidate_lifecycle_statuse
                 )
             ).scalars()
             assert list(statuses) == ["not_approved", "partial", "source_only"]
+            await connection.execute(
+                text(_INSERT_PRODUCT),
+                _product_values(
+                    "product-complete-cost",
+                    cost_amount="0.123456789012",
+                    cost_currency="USD",
+                    cost_basis="supplier invoice",
+                    cost_unit="piece",
+                    cost_source=ARTIFACT_A,
+                ),
+            )
+            stored_cost = (
+                await connection.execute(
+                    text(
+                        "SELECT internal_cost_amount, internal_cost_currency, "
+                        "internal_cost_basis, internal_cost_unit, internal_cost_source_ref "
+                        "FROM products WHERE tenant_id = :tenant "
+                        "AND product_id = 'product-complete-cost'"
+                    ),
+                    {"tenant": TENANT_A},
+                )
+            ).one()
+            assert str(stored_cost.internal_cost_amount) == "0.123456789012"
+            assert stored_cost.internal_cost_currency == "USD"
+            assert stored_cost.internal_cost_basis == "supplier invoice"
+            assert stored_cost.internal_cost_unit == "piece"
+            assert stored_cost.internal_cost_source_ref == ARTIFACT_A
     finally:
         if engine is not None:
             await engine.dispose()

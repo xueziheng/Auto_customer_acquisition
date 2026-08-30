@@ -207,6 +207,7 @@ class SourcingUnitOfWork(Protocol):
     candidates: CandidateRepository
     options: SupplyOptionRepository
     reviews: SourcingReviewRepository
+    handoffs: SourcingHandoffRepository
     search_executions: SourcingSearchExecutionRepository
     reconciliations: SourcingSearchReconciliationRepository
     bus: EventBus

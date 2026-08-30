@@ -8,9 +8,19 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Protocol, Self, runtime_checkable
 
-from domains.products.models import Product, ProductPool, SupplyCapability
+from domains.products.models import (
+    Product,
+    ProductCandidateSource,
+    ProductPool,
+    SupplyCapability,
+)
 from shared.events.bus import EventBus
-from shared.schemas.identifiers import ProductId, TenantId
+from shared.schemas.identifiers import (
+    ProductId,
+    SourcingCaseId,
+    SupplierCandidateId,
+    TenantId,
+)
 
 
 @runtime_checkable
@@ -43,11 +53,28 @@ class CapabilityRepository(Protocol):
 
 
 @runtime_checkable
+class ProductCandidateSourceRepository(Protocol):
+    """候选产品来源与逐档 Evidence 价格的幂等聚合仓储。"""
+
+    async def add(
+        self, tenant_id: TenantId, source: ProductCandidateSource
+    ) -> ProductCandidateSource: ...
+
+    async def get_by_origin(
+        self,
+        tenant_id: TenantId,
+        sourcing_case_id: SourcingCaseId,
+        supplier_candidate_id: SupplierCandidateId,
+    ) -> ProductCandidateSource | None: ...
+
+
+@runtime_checkable
 class ProductsUnitOfWork(Protocol):
     """产品聚合与 Outbox 共事务边界。"""
 
     products: ProductRepository
     capabilities: CapabilityRepository
+    candidate_sources: ProductCandidateSourceRepository
     bus: EventBus
 
     async def __aenter__(self) -> Self: ...

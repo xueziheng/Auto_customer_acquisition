@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.products import (
     CapabilityRepositoryImpl,
+    ProductCandidateSourceRepositoryImpl,
     ProductRepositoryImpl,
 )
 from shared.schemas.identifiers import TenantId
@@ -28,6 +29,9 @@ class SqlAlchemyProductsUnitOfWork:
         self._session = self._factory()
         self.products = ProductRepositoryImpl(self._session, self._tenant_id)
         self.capabilities = CapabilityRepositoryImpl(self._session, self._tenant_id)
+        self.candidate_sources = ProductCandidateSourceRepositoryImpl(
+            self._session, self._tenant_id
+        )
         self.bus = PostgresEventBus(self._session, self._tenant_id)
         return self
 

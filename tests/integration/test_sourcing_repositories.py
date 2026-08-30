@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.sourcing.schemas import (
     NeedFact,
@@ -20,12 +20,16 @@ from domains.sourcing.schemas import (
     SourcingReviewCommand,
     SourcingSupplierClaim,
 )
-from infra.db.tables import OutboxEventRow, SourcingCaseRow
+from infra.db.tables import (
+    OutboxEventRow,
+    SourcingCaseRow,
+)
 from shared.errors import ValidationError
 from shared.events.catalog import SourcingCandidatesReady
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
+    OpportunityId,
     ProductId,
     RunId,
     SourcingCaseId,
@@ -41,6 +45,14 @@ from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 NOW = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
+
+
+class _CommitFailingSession(AsyncSession):
+    """在真实 flush 后模拟数据库提交失败，验证 UoW 必须 rollback。"""
+
+    async def commit(self) -> None:
+        await self.flush()
+        raise RuntimeError("simulated commit failure")
 
 
 def _symbol(module: str, name: str) -> Any:
@@ -146,6 +158,29 @@ async def _seed_artifact(
                 "hash": content_hash,
                 "object_key": f"raw/{tenant_id}/{artifact_id}",
                 "uploaded_at": NOW,
+            },
+        )
+
+
+async def _seed_opportunity(
+    engine: AsyncEngine,
+    tenant_id: TenantId,
+    opportunity_id: OpportunityId,
+    need_id: ValidatedNeedId,
+) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO opportunities "
+                "(opportunity_id, tenant_id, account_id, account_name, country, "
+                "need_id, product_category) VALUES "
+                "(:opportunity, :tenant, :account, 'Buyer A', 'US', :need, 'hinges')"
+            ),
+            {
+                "opportunity": opportunity_id,
+                "tenant": tenant_id,
+                "account": new_id("acc"),
+                "need": need_id,
             },
         )
 
@@ -497,6 +532,456 @@ async def test_public_plan_confirmation_cas_rejects_a_second_stale_confirmation(
             await uow.plans.update(tenant_id, stale)
 
 
+async def test_public_plan_confirmation_rejects_changed_case_atomically(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """计划确认必须在同事务锁定并核对其绑定的 Case 版本。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    Conflict = _symbol("domains.sourcing.errors", "SourcingCaseConflictError")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, artifact_id = SourcingCaseId(new_id("src")), _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    plan = _plan(tenant_id, case_id)
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(
+            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+        )
+        await uow.plans.add(tenant_id, plan)
+    async with Uow(sf, tenant_id) as uow:
+        changed_case = await uow.cases.get(tenant_id, case_id)
+        pending_plan = await uow.plans.get(tenant_id, plan.plan_id)
+    assert changed_case is not None and pending_plan is not None
+    changed_case.transition_to(
+        CaseState.DISCOVERING, changed_at=NOW + timedelta(minutes=1)
+    )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.update(tenant_id, changed_case)
+    authorized = pending_plan.confirm(EmployeeId("emp-boss"), confirmed_at=NOW)
+
+    with pytest.raises(Conflict, match="案例版本"):
+        async with Uow(sf, tenant_id) as uow:
+            await uow.plans.update(tenant_id, authorized)
+
+    async with Uow(sf, tenant_id) as uow:
+        stored = await uow.plans.get(tenant_id, plan.plan_id)
+    assert stored is not None
+    assert stored.status.value == "pending_confirmation"
+    assert stored.confirmed_by is None
+
+
+async def test_review_confirmation_cas_preserves_first_confirmer(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """两个基于未确认前态的确认中，第二个必须冲突且不能覆盖第一人。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    Conflict = _symbol("domains.sourcing.errors", "SourcingCaseConflictError")
+    Review = _symbol("domains.sourcing.models", "SourcingReview")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, artifact_id = SourcingCaseId(new_id("src")), _artifact()
+    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
+        new_id("sop")
+    )
+    review_id = SourcingReviewId(new_id("srv"))
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO products "
+                "(tenant_id, product_id, pool, name_zh, name_en, category, "
+                "normalized_category, sellable_markets, customizable, selling_points, "
+                "known_issues, created_at) VALUES "
+                "(:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', 'hinges', "
+                "'[]', false, '[]', '[]', :now)"
+            ),
+            {"tenant": tenant_id, "product": product_id, "now": NOW},
+        )
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    review = Review.create(
+        review_id=review_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        command=SourcingReviewCommand(
+            primary_option_id=option_id,
+            alternate_option_ids=(),
+            reason="主选",
+            expected_case_version=1,
+        ),
+        submitted_by=EmployeeId("emp-reviewer"),
+        submitted_at=NOW,
+        actual_case_version=1,
+    )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(
+            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+        )
+        await uow.options.add(
+            tenant_id,
+            SourcingSupplyOption(
+                option_id=option_id,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.EXISTING_PRODUCT,
+                product_id=product_id,
+                supplier_candidate_id=None,
+                is_qualified=True,
+                created_at=NOW,
+            ),
+        )
+        await uow.reviews.add(tenant_id, review)
+    async with Uow(sf, tenant_id) as uow:
+        first = await uow.reviews.get(tenant_id, review_id)
+    async with Uow(sf, tenant_id) as uow:
+        stale = await uow.reviews.get(tenant_id, review_id)
+    assert first is not None and stale is not None
+    first = first.confirm(EmployeeId("emp-boss-a"), confirmed_at=NOW)
+    stale = stale.confirm(EmployeeId("emp-boss-b"), confirmed_at=NOW)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.reviews.update(tenant_id, first)
+    with pytest.raises(Conflict):
+        async with Uow(sf, tenant_id) as uow:
+            await uow.reviews.update(tenant_id, stale)
+    async with Uow(sf, tenant_id) as uow:
+        stored = await uow.reviews.get(tenant_id, review_id)
+    assert stored is not None
+    assert stored.confirmed_by == EmployeeId("emp-boss-a")
+
+
+async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """交接只从绑定机会、已确认主选和完整逐档证据构建，不补造字段。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    Review = _symbol("domains.sourcing.models", "SourcingReview")
+    tenant_id, other_tenant = _tenant(), _tenant()
+    need_id, case_id = ValidatedNeedId(new_id("need")), SourcingCaseId(
+        new_id("src")
+    )
+    opportunity_id = OpportunityId(new_id("opp"))
+    candidate_id = SupplierCandidateId(new_id("spc"))
+    product_id, alternate_product_id = ProductId(new_id("prd")), ProductId(
+        new_id("prd")
+    )
+    option_id, alternate_option_id = SourcingSupplyOptionId(
+        new_id("sop")
+    ), SourcingSupplyOptionId(new_id("sop"))
+    review_id = SourcingReviewId(new_id("srv"))
+    artifact_id = _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64
+    )
+    await _seed_opportunity(
+        sourcing_engine, tenant_id, opportunity_id, need_id
+    )
+    evidence = EvidenceSnapshot(
+        "https://factory.example/product",
+        NOW,
+        "d" * 64,
+        str(artifact_id),
+    )
+    candidate = _candidate(
+        tenant_id, case_id, candidate_id, (evidence,)
+    )
+    case = _case(tenant_id, need_id, case_id, artifact_id)
+    case.opportunity_id = opportunity_id
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(tenant_id, case)
+        await uow.candidates.add(tenant_id, candidate)
+    async with sourcing_engine.begin() as connection:
+        for current_product in (product_id, alternate_product_id):
+            await connection.execute(
+                text(
+                    "INSERT INTO products "
+                    "(tenant_id, product_id, pool, candidate_status, name_zh, name_en, "
+                    "category, normalized_category, moq, sellable_markets, customizable, "
+                    "selling_points, known_issues, created_at) VALUES "
+                    "(:tenant, :product, 'candidate', 'source_only', '铰链', 'Hinge', "
+                    "'hinges', 'hinges', 1000, '[]', false, '[]', '[]', :now)"
+                ),
+                {"tenant": tenant_id, "product": current_product, "now": NOW},
+            )
+        await connection.execute(
+            text(
+                "INSERT INTO product_candidate_sources "
+                "(tenant_id, product_id, sourcing_case_id, supplier_candidate_id, created_at) "
+                "VALUES (:tenant, :product, :case, :candidate, :now)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "case": case_id,
+                "candidate": candidate_id,
+                "now": NOW,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO product_candidate_price_refs "
+                "(tenant_id, product_id, minimum_quantity, unit_amount, currency, unit, artifact_id) "
+                "VALUES (:tenant, :product, 1000, :amount, 'USD', 'piece', :artifact)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "amount": Decimal("0.123456789012"),
+                "artifact": artifact_id,
+            },
+        )
+    review = Review.create(
+        review_id=review_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        command=SourcingReviewCommand(
+            primary_option_id=option_id,
+            alternate_option_ids=(alternate_option_id,),
+            reason="主候选证据完整",
+            expected_case_version=1,
+        ),
+        submitted_by=EmployeeId("emp-reviewer"),
+        submitted_at=NOW,
+        actual_case_version=1,
+    )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.options.add(
+            tenant_id,
+            SourcingSupplyOption(
+                option_id=option_id,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.SUPPLIER_CANDIDATE,
+                product_id=product_id,
+                supplier_candidate_id=candidate_id,
+                is_qualified=True,
+                created_at=NOW,
+            ),
+        )
+        await uow.options.add(
+            tenant_id,
+            SourcingSupplyOption(
+                option_id=alternate_option_id,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.EXISTING_PRODUCT,
+                product_id=alternate_product_id,
+                supplier_candidate_id=None,
+                is_qualified=True,
+                created_at=NOW,
+            ),
+        )
+        await uow.reviews.add(tenant_id, review)
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+    confirmed = review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.reviews.update(tenant_id, confirmed)
+    async with Uow(sf, tenant_id) as uow:
+        snapshot = await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        )
+    assert snapshot is not None
+    assert snapshot.case_id == case_id
+    assert snapshot.review_id == review_id
+    assert snapshot.opportunity_id == opportunity_id
+    assert snapshot.primary_option_id == option_id
+    assert snapshot.product_id == product_id
+    assert snapshot.supplier_candidate_id == candidate_id
+    assert snapshot.quantity == 5000
+    assert snapshot.moq == 1000
+    assert len(snapshot.price_options) == 1
+    assert snapshot.price_options[0].unit_amount == Decimal("0.123456789012")
+    assert snapshot.price_options[0].unit == "piece"
+    assert snapshot.price_options[0].evidence_ref == artifact_id
+    async with Uow(sf, other_tenant) as uow:
+        assert await uow.handoffs.get_snapshot(
+            other_tenant, case_id, review_id
+        ) is None
+
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_cases SET opportunity_id = NULL "
+                "WHERE tenant_id = :tenant AND case_id = :case"
+            ),
+            {"tenant": tenant_id, "case": case_id},
+        )
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_cases SET opportunity_id = :opportunity "
+                "WHERE tenant_id = :tenant AND case_id = :case"
+            ),
+            {
+                "tenant": tenant_id,
+                "case": case_id,
+                "opportunity": opportunity_id,
+            },
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM product_candidate_price_refs "
+                "WHERE tenant_id = :tenant AND product_id = :product"
+            ),
+            {"tenant": tenant_id, "product": product_id},
+        )
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO product_candidate_price_refs "
+                "(tenant_id, product_id, minimum_quantity, unit_amount, currency, unit, artifact_id) "
+                "VALUES (:tenant, :product, 1000, :amount, 'USD', 'piece', :artifact)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "amount": Decimal("0.123456789012"),
+                "artifact": artifact_id,
+            },
+        )
+        await connection.execute(
+            text(
+                "UPDATE sourcing_candidates SET moq = NULL "
+                "WHERE tenant_id = :tenant AND candidate_id = :candidate"
+            ),
+            {"tenant": tenant_id, "candidate": candidate_id},
+        )
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_candidates SET moq = 1000 "
+                "WHERE tenant_id = :tenant AND candidate_id = :candidate"
+            ),
+            {"tenant": tenant_id, "candidate": candidate_id},
+        )
+        await connection.execute(
+            text(
+                "UPDATE sourcing_cases SET need_snapshot = need_snapshot - 'quantity' "
+                "WHERE tenant_id = :tenant AND case_id = :case"
+            ),
+            {"tenant": tenant_id, "case": case_id},
+        )
+    async with Uow(sf, tenant_id) as uow:
+        assert await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        ) is None
+
+
+async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """现有产品只有五项成本来源完整时才生成单一 indicative 价格档。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    Review = _symbol("domains.sourcing.models", "SourcingReview")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, opportunity_id = SourcingCaseId(new_id("src")), OpportunityId(
+        new_id("opp")
+    )
+    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
+        new_id("sop")
+    )
+    review_id, artifact_id = SourcingReviewId(new_id("srv")), _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_id, content_hash="e" * 64
+    )
+    await _seed_opportunity(
+        sourcing_engine, tenant_id, opportunity_id, need_id
+    )
+    case = _case(tenant_id, need_id, case_id, artifact_id)
+    case.opportunity_id = opportunity_id
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO products "
+                "(tenant_id, product_id, pool, name_zh, name_en, category, "
+                "normalized_category, moq, internal_cost_amount, internal_cost_currency, "
+                "internal_cost_basis, internal_cost_unit, internal_cost_source_ref, "
+                "sellable_markets, customizable, selling_points, known_issues, created_at) "
+                "VALUES (:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', "
+                "'hinges', 500, :amount, 'USD', 'supplier_quote', 'piece', :artifact, "
+                "'[]', false, '[]', '[]', :now)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "amount": Decimal("0.222222222222"),
+                "artifact": artifact_id,
+                "now": NOW,
+            },
+        )
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    review = Review.create(
+        review_id=review_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        command=SourcingReviewCommand(
+            primary_option_id=option_id,
+            alternate_option_ids=(),
+            reason="现货成本资料完整",
+            expected_case_version=1,
+        ),
+        submitted_by=EmployeeId("emp-reviewer"),
+        submitted_at=NOW,
+        actual_case_version=1,
+    )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(tenant_id, case)
+        await uow.options.add(
+            tenant_id,
+            SourcingSupplyOption(
+                option_id=option_id,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.EXISTING_PRODUCT,
+                product_id=product_id,
+                supplier_candidate_id=None,
+                is_qualified=True,
+                created_at=NOW,
+            ),
+        )
+        await uow.reviews.add(tenant_id, review)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.reviews.update(
+            tenant_id,
+            review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW),
+        )
+    async with Uow(sf, tenant_id) as uow:
+        snapshot = await uow.handoffs.get_snapshot(
+            tenant_id, case_id, review_id
+        )
+    assert snapshot is not None
+    assert snapshot.supplier_candidate_id is None
+    assert snapshot.quantity == 5000
+    assert snapshot.moq == 500
+    assert snapshot.price_options[0].minimum_quantity == 500
+    assert snapshot.price_options[0].unit_amount == Decimal("0.222222222222")
+    assert snapshot.price_options[0].unit == "piece"
+    assert snapshot.price_options[0].evidence_ref == artifact_id
+    assert snapshot.price_options[0].source_kind == "existing_product"
+
+
 async def test_sourcing_tenant_mismatch_fails_before_query_and_bound_lookup_isolated(
     sourcing_engine: AsyncEngine,
 ) -> None:
@@ -594,3 +1079,47 @@ async def test_sourcing_uow_commits_or_rolls_back_business_and_outbox_together(
     expected = 0 if raise_after_publish else 1
     assert business_count == expected
     assert outbox_count == expected
+
+
+async def test_sourcing_uow_commit_failure_rolls_back_business_and_outbox(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """commit 本身失败也不能留下已 flush 的业务事实或 outbox。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, artifact_id = SourcingCaseId(new_id("src")), _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    sf = async_sessionmaker(
+        sourcing_engine,
+        class_=_CommitFailingSession,
+        expire_on_commit=False,
+    )
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        async with Uow(sf, tenant_id) as uow:
+            await uow.cases.add(
+                tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+            )
+            await uow.bus.publish(
+                SourcingCandidatesReady(
+                    tenant_id=tenant_id,
+                    occurred_at=NOW,
+                    run_id=None,
+                    case_id=case_id,
+                    option_ids=(),
+                    candidate_ids=(),
+                )
+            )
+    async with sourcing_engine.connect() as connection:
+        assert await connection.scalar(
+            select(func.count()).select_from(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        ) == 0
+        assert await connection.scalar(
+            select(func.count()).select_from(OutboxEventRow).where(
+                OutboxEventRow.tenant_id == tenant_id,
+                OutboxEventRow.event_type == "SourcingCandidatesReady",
+            )
+        ) == 0

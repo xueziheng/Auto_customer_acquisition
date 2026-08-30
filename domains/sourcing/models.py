@@ -24,6 +24,7 @@ from domains.sourcing.schemas import (
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
+    OpportunityId,
     ProductId,
     SourcingCaseId,
     SourcingPlanId,
@@ -636,6 +637,7 @@ class SourcingCase:
     tenant_id: TenantId
     need_id: ValidatedNeedId
     opened_at: datetime
+    opportunity_id: OpportunityId | None = None
     state: CaseState = CaseState.OPENED
     ladder_checked_to: MatchLadderRung | None = None
     candidates: list[SupplierCandidate] = field(default_factory=list)

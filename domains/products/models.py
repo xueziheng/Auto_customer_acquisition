@@ -7,11 +7,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    ArtifactId,
     ProductId,
     ProductVariantId,
+    SourcingCaseId,
+    SupplierCandidateId,
     SupplierId,
     TenantId,
 )
@@ -38,6 +43,59 @@ class CandidateStatus(str, Enum):
     NOT_APPROVED = "not_approved"
 
 
+@dataclass(frozen=True)
+class CandidateIndicativePriceRef:
+    """候选产品的单个参考价数量档；金额与 Evidence 引用不可分离。"""
+
+    minimum_quantity: int
+    unit_amount: Decimal
+    currency: str
+    unit: str
+    evidence_ref: ArtifactId
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.minimum_quantity, bool)
+            or not isinstance(self.minimum_quantity, int)
+            or self.minimum_quantity < 1
+        ):
+            raise ValidationError("候选参考价 minimum_quantity 必须为正整数")
+        if not isinstance(self.unit_amount, Decimal) or (
+            not self.unit_amount.is_finite() or self.unit_amount <= Decimal(0)
+        ):
+            raise ValidationError("候选参考价 unit_amount 必须为有限正 Decimal")
+        if (
+            len(self.currency) != 3
+            or not self.currency.isascii()
+            or not self.currency.isalpha()
+            or not self.currency.isupper()
+        ):
+            raise ValidationError("候选参考价 currency 必须为三位大写币种")
+        if not self.unit or self.unit != self.unit.strip() or len(self.unit) > 50:
+            raise ValidationError("候选参考价 unit 必须非空且不超过 50 字符")
+        if not str(self.evidence_ref).strip():
+            raise ValidationError("候选参考价必须有 Evidence 引用")
+
+
+@dataclass(frozen=True)
+class ProductCandidateSource:
+    """候选产品卡的域内来源聚合；不依赖 sourcing 域内部类型。"""
+
+    tenant_id: TenantId
+    product_id: ProductId
+    sourcing_case_id: SourcingCaseId
+    supplier_candidate_id: SupplierCandidateId
+    created_at: datetime
+    indicative_prices: tuple[CandidateIndicativePriceRef, ...]
+
+    def __post_init__(self) -> None:
+        if not self.indicative_prices:
+            raise ValidationError("候选产品来源至少需要一个参考价档")
+        minimums = [item.minimum_quantity for item in self.indicative_prices]
+        if len(set(minimums)) != len(minimums):
+            raise ValidationError("候选产品来源不得重复数量档")
+
+
 @dataclass
 class Product:
     """产品（正式或候选，按 pool 区分）。
@@ -61,6 +119,9 @@ class Product:
     lead_time_days_max: int | None = None
     supplier_id: SupplierId | None = None
     internal_cost: Money | None = None
+    internal_cost_basis: str | None = None
+    internal_cost_unit: str | None = None
+    internal_cost_source_ref: ArtifactId | None = None
     allowed_price_min: Money | None = None
     allowed_price_max: Money | None = None
     sellable_markets: list[str] = field(default_factory=list)
@@ -68,6 +129,30 @@ class Product:
     selling_points: list[str] = field(default_factory=list)
     known_issues: list[str] = field(default_factory=list)
     source_sourcing_case: str | None = None
+
+    def __post_init__(self) -> None:
+        cost_parts = (
+            self.internal_cost,
+            self.internal_cost_basis,
+            self.internal_cost_unit,
+            self.internal_cost_source_ref,
+        )
+        if any(item is not None for item in cost_parts) and not all(
+            item is not None for item in cost_parts
+        ):
+            raise ValidationError("内部成本金额、口径、单位和来源必须全有或全无")
+        if self.internal_cost_basis is not None and (
+            not self.internal_cost_basis.strip()
+            or self.internal_cost_basis != self.internal_cost_basis.strip()
+            or len(self.internal_cost_basis) > 2_000
+        ):
+            raise ValidationError("内部成本口径必须非空且不超过 2000 字符")
+        if self.internal_cost_unit is not None and (
+            not self.internal_cost_unit.strip()
+            or self.internal_cost_unit != self.internal_cost_unit.strip()
+            or len(self.internal_cost_unit) > 50
+        ):
+            raise ValidationError("内部成本单位必须非空且不超过 50 字符")
 
 
 @dataclass

@@ -67,6 +67,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(40), nullable=False),
         sa.Column("case_id", sa.String(40), nullable=False),
         sa.Column("need_id", sa.String(40), nullable=False),
+        sa.Column("opportunity_id", sa.String(32), nullable=True),
         sa.Column("workflow_version", sa.Integer(), nullable=False),
         sa.Column("trigger_key", sa.String(200), nullable=False),
         sa.Column("need_snapshot", postgresql.JSONB(), nullable=False),
@@ -92,6 +93,12 @@ def upgrade() -> None:
             ["tenant_id", "need_id"],
             ["validated_needs.tenant_id", "validated_needs.need_id"],
             name="fk_sourcing_cases_need",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "opportunity_id"],
+            ["opportunities.tenant_id", "opportunities.opportunity_id"],
+            name="fk_sourcing_cases_opportunity",
             ondelete="RESTRICT",
         ),
         sa.CheckConstraint(

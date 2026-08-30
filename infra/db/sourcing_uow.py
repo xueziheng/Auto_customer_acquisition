@@ -13,6 +13,7 @@ from infra.db.repositories.sourcing import (
     LadderCheckRepositoryImpl,
     PublicSourcingPlanRepositoryImpl,
     SourcingCaseRepositoryImpl,
+    SourcingHandoffRepositoryImpl,
     SourcingReviewRepositoryImpl,
     SourcingSearchExecutionRepositoryImpl,
     SourcingSearchReconciliationRepositoryImpl,
@@ -40,6 +41,9 @@ class SqlAlchemySourcingUnitOfWork:
         self.candidates = CandidateRepositoryImpl(self._session, self._tenant_id)
         self.options = SupplyOptionRepositoryImpl(self._session, self._tenant_id)
         self.reviews = SourcingReviewRepositoryImpl(self._session, self._tenant_id)
+        self.handoffs = SourcingHandoffRepositoryImpl(
+            self._session, self._tenant_id
+        )
         self.search_executions = SourcingSearchExecutionRepositoryImpl(
             self._session, self._tenant_id
         )

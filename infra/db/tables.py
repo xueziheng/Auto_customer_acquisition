@@ -4617,6 +4617,12 @@ class SourcingCaseRow(Base):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
+            ["tenant_id", "opportunity_id"],
+            ["opportunities.tenant_id", "opportunities.opportunity_id"],
+            name="fk_sourcing_cases_opportunity",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ["tenant_id", "case_id", "active_search_plan_id"],
             [
                 "sourcing_public_plans.tenant_id",
@@ -4688,6 +4694,7 @@ class SourcingCaseRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(40))
     case_id: Mapped[str] = mapped_column(String(40))
     need_id: Mapped[str] = mapped_column(String(40))
+    opportunity_id: Mapped[str | None] = mapped_column(String(32))
     workflow_version: Mapped[int] = mapped_column(Integer)
     trigger_key: Mapped[str] = mapped_column(String(200))
     need_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB)
@@ -4980,7 +4987,7 @@ class ProductRow(Base):
         CheckConstraint("(pool = 'candidate' AND candidate_status IS NOT NULL AND candidate_status IN ('source_only','partial','not_approved')) OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
         CheckConstraint("moq IS NULL OR moq >= 1", name="ck_products_moq"),
         CheckConstraint("(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR (lead_time_days_min IS NOT NULL AND lead_time_days_max IS NOT NULL AND lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)", name="ck_products_lead_time"),
-        CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency IS NOT NULL AND internal_cost_currency ~ '^[A-Z]{3}$' AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),
+        CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_unit IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency IS NOT NULL AND internal_cost_currency ~ '^[A-Z]{3}$' AND internal_cost_basis IS NOT NULL AND btrim(internal_cost_basis) <> '' AND internal_cost_unit IS NOT NULL AND btrim(internal_cost_unit) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),
         CheckConstraint("(allowed_price_min_amount IS NULL AND allowed_price_min_currency IS NULL) OR (allowed_price_min_amount IS NOT NULL AND allowed_price_min_amount >= 0 AND allowed_price_min_currency IS NOT NULL AND allowed_price_min_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_min_pair"),
         CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency IS NOT NULL AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
         CheckConstraint("allowed_price_min_amount IS NULL OR allowed_price_max_amount IS NULL OR (allowed_price_min_currency = allowed_price_max_currency AND allowed_price_min_amount <= allowed_price_max_amount)", name="ck_products_allowed_range"),
@@ -5004,6 +5011,7 @@ class ProductRow(Base):
     internal_cost_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     internal_cost_currency: Mapped[str | None] = mapped_column(CHAR(3))
     internal_cost_basis: Mapped[str | None] = mapped_column(Text)
+    internal_cost_unit: Mapped[str | None] = mapped_column(String(50))
     internal_cost_source_ref: Mapped[str | None] = mapped_column(String(32))
     allowed_price_min_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
     allowed_price_min_currency: Mapped[str | None] = mapped_column(CHAR(3))

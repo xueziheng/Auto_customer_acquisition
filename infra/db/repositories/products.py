@@ -8,18 +8,33 @@ from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import CursorResult, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.products.models import (
+    CandidateIndicativePriceRef,
     CandidateStatus,
     Product,
+    ProductCandidateSource,
     ProductPool,
     SupplyCapability,
 )
 from infra.db.base import TenantScopedRepository
-from infra.db.tables import ProductCandidateSourceRow, ProductRow, SupplyCapabilityRow
+from infra.db.tables import (
+    ProductCandidatePriceRefRow,
+    ProductCandidateSourceRow,
+    ProductRow,
+    SupplyCapabilityRow,
+)
 from shared.errors import ValidationError
-from shared.schemas.identifiers import ProductId, SupplierId, TenantId
+from shared.schemas.identifiers import (
+    ArtifactId,
+    ProductId,
+    SourcingCaseId,
+    SupplierCandidateId,
+    SupplierId,
+    TenantId,
+)
 from shared.schemas.money import CurrencyCode, Money
 
 _SPACE_RE = re.compile(r"\s+")
@@ -48,8 +63,7 @@ def _money(amount: Decimal | None, currency: str | None) -> Money | None:
 
 
 def _product_to_row(product: Product) -> ProductRow:
-    if product.internal_cost is not None:
-        raise ValidationError("内部成本缺少 basis 与来源时不得持久化或补零")
+    product.__post_init__()
     return ProductRow(
         tenant_id=product.tenant_id,
         product_id=product.product_id,
@@ -66,10 +80,15 @@ def _product_to_row(product: Product) -> ProductRow:
         lead_time_days_min=product.lead_time_days_min,
         lead_time_days_max=product.lead_time_days_max,
         supplier_id=product.supplier_id,
-        internal_cost_amount=None,
-        internal_cost_currency=None,
-        internal_cost_basis=None,
-        internal_cost_source_ref=None,
+        internal_cost_amount=(
+            product.internal_cost.amount if product.internal_cost else None
+        ),
+        internal_cost_currency=(
+            product.internal_cost.currency if product.internal_cost else None
+        ),
+        internal_cost_basis=product.internal_cost_basis,
+        internal_cost_unit=product.internal_cost_unit,
+        internal_cost_source_ref=product.internal_cost_source_ref,
         allowed_price_min_amount=(
             product.allowed_price_min.amount if product.allowed_price_min else None
         ),
@@ -114,6 +133,13 @@ async def _row_to_product(session: AsyncSession, row: ProductRow) -> Product:
         lead_time_days_max=row.lead_time_days_max,
         supplier_id=SupplierId(row.supplier_id) if row.supplier_id else None,
         internal_cost=_money(row.internal_cost_amount, row.internal_cost_currency),
+        internal_cost_basis=row.internal_cost_basis,
+        internal_cost_unit=row.internal_cost_unit,
+        internal_cost_source_ref=(
+            ArtifactId(row.internal_cost_source_ref)
+            if row.internal_cost_source_ref
+            else None
+        ),
         allowed_price_min=_money(
             row.allowed_price_min_amount, row.allowed_price_min_currency
         ),
@@ -245,4 +271,120 @@ class CapabilityRepositoryImpl(_TenantBoundRepository):
         ]
 
 
-__all__ = ("CapabilityRepositoryImpl", "ProductRepositoryImpl")
+def _candidate_source_from_rows(
+    source: ProductCandidateSourceRow,
+    prices: list[ProductCandidatePriceRefRow],
+) -> ProductCandidateSource:
+    return ProductCandidateSource(
+        tenant_id=TenantId(source.tenant_id),
+        product_id=ProductId(source.product_id),
+        sourcing_case_id=SourcingCaseId(source.sourcing_case_id),
+        supplier_candidate_id=SupplierCandidateId(source.supplier_candidate_id),
+        created_at=source.created_at,
+        indicative_prices=tuple(
+            CandidateIndicativePriceRef(
+                minimum_quantity=row.minimum_quantity,
+                unit_amount=row.unit_amount,
+                currency=row.currency,
+                unit=row.unit,
+                evidence_ref=ArtifactId(row.artifact_id),
+            )
+            for row in prices
+        ),
+    )
+
+
+class ProductCandidateSourceRepositoryImpl(_TenantBoundRepository):
+    """以同租户 Case+Candidate 为幂等键保存候选产品来源聚合。"""
+
+    async def get_by_origin(
+        self,
+        tenant_id: TenantId,
+        sourcing_case_id: SourcingCaseId,
+        supplier_candidate_id: SupplierCandidateId,
+    ) -> ProductCandidateSource | None:
+        self._require_tenant(tenant_id)
+        source = (
+            await self._session.execute(
+                self.scoped_query(ProductCandidateSourceRow).where(
+                    ProductCandidateSourceRow.sourcing_case_id == sourcing_case_id,
+                    ProductCandidateSourceRow.supplier_candidate_id
+                    == supplier_candidate_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if source is None:
+            return None
+        prices = list(
+            (
+                await self._session.execute(
+                    self.scoped_query(ProductCandidatePriceRefRow)
+                    .where(
+                        ProductCandidatePriceRefRow.product_id == source.product_id
+                    )
+                    .order_by(
+                        ProductCandidatePriceRefRow.minimum_quantity,
+                        ProductCandidatePriceRefRow.artifact_id,
+                    )
+                )
+            ).scalars()
+        )
+        if not prices:
+            raise ValidationError("候选产品来源缺少逐档价格 Evidence")
+        return _candidate_source_from_rows(source, prices)
+
+    async def add(
+        self, tenant_id: TenantId, source: ProductCandidateSource
+    ) -> ProductCandidateSource:
+        self._require_tenant(tenant_id)
+        if source.tenant_id != tenant_id:
+            raise ValueError("候选产品来源租户与请求租户不一致")
+        await self._session.flush()
+        inserted_product_id = (
+            await self._session.execute(
+                pg_insert(ProductCandidateSourceRow)
+                .values(
+                    tenant_id=tenant_id,
+                    product_id=source.product_id,
+                    sourcing_case_id=source.sourcing_case_id,
+                    supplier_candidate_id=source.supplier_candidate_id,
+                    created_at=source.created_at,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_product_candidate_sources_origin"
+                )
+                .returning(ProductCandidateSourceRow.product_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_product_id is None:
+            existing = await self.get_by_origin(
+                tenant_id,
+                source.sourcing_case_id,
+                source.supplier_candidate_id,
+            )
+            if existing is None:
+                raise ValidationError("候选产品来源幂等写入未返回现有聚合")
+            return existing
+        self._session.add_all(
+            [
+                ProductCandidatePriceRefRow(
+                    tenant_id=tenant_id,
+                    product_id=source.product_id,
+                    minimum_quantity=price.minimum_quantity,
+                    unit_amount=price.unit_amount,
+                    currency=price.currency,
+                    unit=price.unit,
+                    artifact_id=price.evidence_ref,
+                )
+                for price in source.indicative_prices
+            ]
+        )
+        await self._session.flush()
+        return source
+
+
+__all__ = (
+    "CapabilityRepositoryImpl",
+    "ProductCandidateSourceRepositoryImpl",
+    "ProductRepositoryImpl",
+)

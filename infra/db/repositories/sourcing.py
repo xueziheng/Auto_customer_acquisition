@@ -36,6 +36,8 @@ from domains.sourcing.models import (
     SupplyOptionSource,
 )
 from domains.sourcing.schemas import (
+    SourcingCostPriceOption,
+    SourcingHandoffSnapshot,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -43,6 +45,9 @@ from domains.sourcing.schemas import (
 )
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    ProductCandidatePriceRefRow,
+    ProductCandidateSourceRow,
+    ProductRow,
     SourcingCandidateEvidenceRow,
     SourcingCandidateRow,
     SourcingCaseRow,
@@ -55,7 +60,9 @@ from infra.db.tables import (
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
+    OpportunityId,
     ProductId,
     SourcingCaseId,
     SourcingPlanId,
@@ -141,6 +148,7 @@ def _case_to_row(case: SourcingCase) -> SourcingCaseRow:
         tenant_id=case.tenant_id,
         case_id=case.case_id,
         need_id=case.need_id,
+        opportunity_id=case.opportunity_id,
         workflow_version=case.workflow_version,
         trigger_key=case.trigger_key,
         need_snapshot=case.need_snapshot.model_dump(mode="json"),
@@ -167,6 +175,9 @@ def _row_to_case(row: SourcingCaseRow) -> SourcingCase:
         tenant_id=TenantId(row.tenant_id),
         need_id=ValidatedNeedId(row.need_id),
         opened_at=row.opened_at,
+        opportunity_id=(
+            OpportunityId(row.opportunity_id) if row.opportunity_id else None
+        ),
         state=CaseState(row.state),
         ladder_checked_to=(
             MatchLadderRung(row.ladder_checked_to)
@@ -406,6 +417,17 @@ class PublicSourcingPlanRepositoryImpl(_TenantBoundRepository):
         self._require_tenant(tenant_id)
         if plan.tenant_id != tenant_id:
             raise ValueError("计划租户与请求租户不一致")
+        if plan.status is PublicPlanStatus.AUTHORIZED:
+            current_case_version = await self._session.scalar(
+                select(SourcingCaseRow.version)
+                .where(
+                    SourcingCaseRow.tenant_id == tenant_id,
+                    SourcingCaseRow.case_id == plan.case_id,
+                )
+                .with_for_update()
+            )
+            if current_case_version != plan.expected_case_version:
+                raise SourcingCaseConflictError("公开寻源计划绑定的案例版本已变化")
         row = _plan_to_row(plan)
         predecessor_statuses = {
             PublicPlanStatus.PENDING_CONFIRMATION: ("pending_confirmation",),
@@ -831,11 +853,217 @@ class SourcingReviewRepositoryImpl(_TenantBoundRepository):
                 SourcingReviewRow.review_id == review.review_id,
                 SourcingReviewRow.case_id == review.case_id,
                 SourcingReviewRow.expected_case_version == review.expected_case_version,
+                SourcingReviewRow.confirmed_by.is_(None),
+                SourcingReviewRow.confirmed_at.is_(None),
             )
             .values(confirmed_by=review.confirmed_by, confirmed_at=review.confirmed_at)
         )
         if cast(CursorResult[object], result).rowcount != 1:
             raise SourcingCaseConflictError("审核事实已变化")
+
+
+def _handoff_quantity(snapshot: dict[str, object]) -> int | None:
+    quantity_fact = snapshot.get("quantity")
+    if not isinstance(quantity_fact, dict):
+        return None
+    quantity = quantity_fact.get("value")
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        return None
+    return quantity
+
+
+class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
+    """只读构建已绑定 Opportunity 与已确认主选的冻结成本交接快照。"""
+
+    async def get_snapshot(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        review_id: SourcingReviewId,
+    ) -> SourcingHandoffSnapshot | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                select(
+                    SourcingCaseRow,
+                    SourcingReviewRow,
+                    SourcingSupplyOptionRow,
+                    ProductRow,
+                )
+                .join(
+                    SourcingReviewRow,
+                    (
+                        SourcingReviewRow.tenant_id == SourcingCaseRow.tenant_id
+                    )
+                    & (SourcingReviewRow.case_id == SourcingCaseRow.case_id),
+                )
+                .join(
+                    SourcingSupplyOptionRow,
+                    (
+                        SourcingSupplyOptionRow.tenant_id
+                        == SourcingReviewRow.tenant_id
+                    )
+                    & (
+                        SourcingSupplyOptionRow.case_id
+                        == SourcingReviewRow.case_id
+                    )
+                    & (
+                        SourcingSupplyOptionRow.option_id
+                        == SourcingReviewRow.primary_option_id
+                    ),
+                )
+                .join(
+                    ProductRow,
+                    (ProductRow.tenant_id == SourcingSupplyOptionRow.tenant_id)
+                    & (ProductRow.product_id == SourcingSupplyOptionRow.product_id),
+                )
+                .where(
+                    SourcingCaseRow.tenant_id == tenant_id,
+                    SourcingReviewRow.tenant_id == tenant_id,
+                    SourcingSupplyOptionRow.tenant_id == tenant_id,
+                    ProductRow.tenant_id == tenant_id,
+                    SourcingCaseRow.case_id == case_id,
+                    SourcingReviewRow.review_id == review_id,
+                    SourcingReviewRow.confirmed_by.is_not(None),
+                    SourcingReviewRow.confirmed_at.is_not(None),
+                    SourcingSupplyOptionRow.is_qualified.is_(True),
+                    SourcingCaseRow.version
+                    == SourcingReviewRow.expected_case_version,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        case, review, option, product = row
+        quantity = _handoff_quantity(case.need_snapshot)
+        if case.opportunity_id is None or quantity is None:
+            return None
+
+        price_options: tuple[SourcingCostPriceOption, ...]
+        supplier_candidate_id: SupplierCandidateId | None
+        if option.source == SupplyOptionSource.SUPPLIER_CANDIDATE.value:
+            if option.supplier_candidate_id is None:
+                return None
+            candidate = await self._session.scalar(
+                select(SourcingCandidateRow).where(
+                    SourcingCandidateRow.tenant_id == tenant_id,
+                    SourcingCandidateRow.case_id == case_id,
+                    SourcingCandidateRow.candidate_id
+                    == option.supplier_candidate_id,
+                )
+            )
+            source = await self._session.scalar(
+                select(ProductCandidateSourceRow).where(
+                    ProductCandidateSourceRow.tenant_id == tenant_id,
+                    ProductCandidateSourceRow.product_id == option.product_id,
+                    ProductCandidateSourceRow.sourcing_case_id == case_id,
+                    ProductCandidateSourceRow.supplier_candidate_id
+                    == option.supplier_candidate_id,
+                )
+            )
+            if (
+                candidate is None
+                or source is None
+                or candidate.moq is None
+                or product.moq is None
+                or candidate.moq != product.moq
+                or quantity < candidate.moq
+            ):
+                return None
+            evidence_refs = set(
+                (
+                    await self._session.execute(
+                        select(SourcingCandidateEvidenceRow.artifact_id).where(
+                            SourcingCandidateEvidenceRow.tenant_id == tenant_id,
+                            SourcingCandidateEvidenceRow.candidate_id
+                            == option.supplier_candidate_id,
+                        )
+                    )
+                ).scalars()
+            )
+            price_rows = list(
+                (
+                    await self._session.execute(
+                        select(ProductCandidatePriceRefRow)
+                        .where(
+                            ProductCandidatePriceRefRow.tenant_id == tenant_id,
+                            ProductCandidatePriceRefRow.product_id
+                            == option.product_id,
+                        )
+                        .order_by(
+                            ProductCandidatePriceRefRow.minimum_quantity,
+                            ProductCandidatePriceRefRow.artifact_id,
+                        )
+                    )
+                ).scalars()
+            )
+            if not price_rows or any(
+                item.artifact_id not in evidence_refs for item in price_rows
+            ):
+                return None
+            price_options = tuple(
+                SourcingCostPriceOption(
+                    minimum_quantity=item.minimum_quantity,
+                    unit_amount=item.unit_amount,
+                    currency=item.currency,
+                    unit=item.unit,
+                    evidence_ref=ArtifactId(item.artifact_id),
+                    source_kind="supplier_candidate",
+                )
+                for item in price_rows
+            )
+            supplier_candidate_id = SupplierCandidateId(
+                option.supplier_candidate_id
+            )
+            moq = candidate.moq
+        elif option.source == SupplyOptionSource.EXISTING_PRODUCT.value:
+            cost_parts = (
+                product.internal_cost_amount,
+                product.internal_cost_currency,
+                product.internal_cost_basis,
+                product.internal_cost_unit,
+                product.internal_cost_source_ref,
+            )
+            if (
+                not all(item is not None for item in cost_parts)
+                or product.moq is None
+                or quantity < product.moq
+                or not str(product.internal_cost_basis).strip()
+                or not str(product.internal_cost_unit).strip()
+            ):
+                return None
+            price_options = (
+                SourcingCostPriceOption(
+                    minimum_quantity=product.moq,
+                    unit_amount=cast(Decimal, product.internal_cost_amount),
+                    currency=cast(str, product.internal_cost_currency),
+                    unit=cast(str, product.internal_cost_unit),
+                    evidence_ref=ArtifactId(
+                        cast(str, product.internal_cost_source_ref)
+                    ),
+                    source_kind="existing_product",
+                ),
+            )
+            supplier_candidate_id = None
+            moq = product.moq
+        else:
+            return None
+
+        try:
+            return SourcingHandoffSnapshot(
+                case_id=SourcingCaseId(case.case_id),
+                review_id=SourcingReviewId(review.review_id),
+                need_id=ValidatedNeedId(case.need_id),
+                opportunity_id=OpportunityId(case.opportunity_id),
+                primary_option_id=SourcingSupplyOptionId(option.option_id),
+                product_id=ProductId(option.product_id),
+                supplier_candidate_id=supplier_candidate_id,
+                quantity=quantity,
+                moq=moq,
+                price_options=price_options,
+            )
+        except ValueError:
+            return None
 
 
 def _execution_from_row(row: SourcingSearchExecutionRow) -> SourcingSearchExecution:
@@ -971,6 +1199,7 @@ __all__ = (
     "LadderCheckRepositoryImpl",
     "PublicSourcingPlanRepositoryImpl",
     "SourcingCaseRepositoryImpl",
+    "SourcingHandoffRepositoryImpl",
     "SourcingReviewRepositoryImpl",
     "SourcingSearchExecutionRepositoryImpl",
     "SourcingSearchReconciliationRepositoryImpl",
