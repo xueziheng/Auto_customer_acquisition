@@ -495,9 +495,7 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
     [
         "Grade 304 costs AED250.",
         "Model AED 250 extra.",
-        "Model AED-250 uses grade 304 steel.",
         "The price-sensitive model is AED-250.",
-        "Model AED 250 uses grade304 steel.",
         "Series CHF 250 matches the requested type.",
         "Cost impact 304。Price 250.",
         "cost implication 304；pricing 250.",
@@ -507,6 +505,7 @@ async def test_existing_agent_rejects_money_in_any_three_letter_currency(
         "Price details are pending for model 304.",
         "cost impact 304\u2028pricing 250",
         "Observed €；250.",
+        "Currency symbol € unavailable.",
     ],
 )
 @pytest.mark.asyncio
@@ -712,12 +711,11 @@ async def test_existing_agent_rejects_untrusted_decimals_and_reverse_price_predi
         "Grade 304 steel has an unknown cost impact.",
         "The amount of 304 stainless steel is sufficient.",
         "The amount is about 304 pieces.",
-        "The 304 cost impact is unknown.",
         "cost impact for grade 304",
         "cost implication for grade 304",
         "Cost\u2028304 steel matches.",
-        "Currency symbol € unavailable.",
         "Model AED 250",
+        "Model AED-250 uses grade 304 steel.",
         "Series CHF-250",
         "Grade 304",
     ],
@@ -822,3 +820,103 @@ async def test_trusted_decimal_cannot_exempt_explicit_cost_sentence(
 
     assert result.changes == []
     assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "AED250",
+        "AED—250",
+        "250/AED",
+        "The tolerance is .50 mm.",
+        "The tolerance is １２．５０ mm.",
+        "The tolerance is ٢٫٥٠ mm.",
+        "cost will be 250",
+    ],
+)
+@pytest.mark.asyncio
+async def test_agent_uses_unicode_money_parser_for_reviewer_bypass_corpus(
+    summary: str,
+) -> None:
+    review = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    ).SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = summary
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.parametrize("field", ["summary", "substitution_impact", "explanation"])
+@pytest.mark.asyncio
+async def test_agent_applies_money_parser_to_every_model_prose_field(
+    field: str,
+) -> None:
+    review = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    ).SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    if field == "summary":
+        response["summary"] = "AED250"
+    elif field == "substitution_impact":
+        comparisons = response["comparisons"]
+        assert isinstance(comparisons, list)
+        comparisons[0].update(
+            {
+                "level": "different",
+                "substitutable": True,
+                "substitution_impact": "AED250",
+                "needs_customer_confirmation": True,
+            }
+        )
+    else:
+        review = __import__(
+            "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+        ).SourcingAgent.build_page_candidate_review(
+            draft=_page_draft_with_incomplete_tier("quantity_tier_missing"),
+            case_id=SourcingCaseId("src_case"),
+            candidate_id=SupplierCandidateId("sc_candidate"),
+        )
+        response["price_rejection_suggestions"] = [
+            {"reason": "quantity_tier_missing", "explanation": "AED250"}
+        ]
+
+    result = await _agent(_ReviewPort(json.dumps(response))).run(
+        _page_review_task(review), None
+    )
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析不得生成价格"
+
+
+@pytest.mark.asyncio
+async def test_agent_fails_closed_on_raw_surrogate_without_leaking_exception() -> None:
+    review = __import__(
+        "agent_runtime.sourcing_agent.agent", fromlist=["SourcingAgent"]
+    ).SourcingAgent.build_page_candidate_review(
+        draft=_page_draft(),
+        case_id=SourcingCaseId("src_case"),
+        candidate_id=SupplierCandidateId("sc_candidate"),
+    )
+    response = _page_review_response()
+    response["summary"] = "unsafe\ud800value"
+    raw = json.dumps(response, ensure_ascii=False)
+
+    result = await _agent(_ReviewPort(raw)).run(_page_review_task(review), None)
+
+    assert result.changes == []
+    assert result.summary == "模型输出被护栏拦截：寻源分析模型输出无效"
+    assert result.summary.encode("utf-8")

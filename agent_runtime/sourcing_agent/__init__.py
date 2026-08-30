@@ -15,6 +15,7 @@ from agent_runtime.sourcing_agent.extraction import (
     SourcingPageExtractor,
     parse_observed_price_literal,
 )
+from agent_runtime.sourcing_agent.money_guard import contains_untrusted_money
 
 __all__ = (
     "SafeSourcingPageSnapshot",
@@ -27,5 +28,6 @@ __all__ = (
     "SourcingPageEvidence",
     "SourcingPageExtractionModelPort",
     "SourcingPageExtractor",
+    "contains_untrusted_money",
     "parse_observed_price_literal",
 )
