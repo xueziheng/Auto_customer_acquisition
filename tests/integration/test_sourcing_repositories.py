@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -493,6 +494,75 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
     assert loaded_review == review
     assert loaded_execution == execution
     assert loaded_reconciliation == reconciliation
+
+
+async def test_legacy_candidate_duplicate_specs_round_trip_but_never_qualify(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """旧 JSONB 行即使把不兼容项放在会被覆盖的位置，也必须 fail closed。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    tenant_id = _tenant()
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    candidate_id = SupplierCandidateId(new_id("spc"))
+    artifact_id = _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64
+    )
+    evidence = EvidenceSnapshot(
+        "https://factory.example/legacy-duplicate",
+        NOW,
+        "d" * 64,
+        str(artifact_id),
+    )
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(
+            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+        )
+        await uow.candidates.add(
+            tenant_id,
+            _candidate(tenant_id, case_id, candidate_id, (evidence,)),
+        )
+
+    incompatible_duplicate = [
+        {
+            "spec_name": " MATERIAL ",
+            "required": "required",
+            "offered": "unverified-substitute",
+            "level": "different",
+            "substitutable": False,
+            "substitution_impact": None,
+            "needs_customer_confirmation": False,
+            "customer_confirmation": None,
+        }
+    ]
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_candidates "
+                "SET verified_specs = CAST(:duplicate AS jsonb) || verified_specs "
+                "WHERE tenant_id = :tenant AND candidate_id = :candidate"
+            ),
+            {
+                "duplicate": json.dumps(incompatible_duplicate),
+                "tenant": tenant_id,
+                "candidate": candidate_id,
+            },
+        )
+
+    async with Uow(sf, tenant_id) as uow:
+        loaded = await uow.candidates.get(tenant_id, candidate_id)
+
+    assert loaded is not None
+    assert len(loaded.verified_specs) == 5
+    passed, missing = loaded.passes_verification()
+    assert passed is False
+    assert "duplicate_spec:material" in missing
+    assert "incompatible_spec:material" in missing
+    assert "structured_spec:material" in missing
 
 
 async def test_case_and_review_cas_reject_stale_writes_without_overwrite(

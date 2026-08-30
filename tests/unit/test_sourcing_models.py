@@ -180,6 +180,27 @@ def test_candidate_requires_resolved_specs_and_matching_price_currency() -> None
     assert candidate("valid").passes_verification() == (True, [])
 
 
+def test_candidate_verification_rejects_normalized_duplicate_specs_without_overwrite() -> None:
+    duplicate_specs = [
+        SpecComparison(
+            " MATERIAL ",
+            "required-material",
+            "unverified-substitute",
+            SpecMatchLevel.DIFFERENT,
+            substitutable=False,
+        ),
+        *specs(),
+    ]
+    item = candidate("duplicate-spec", verified_specs=duplicate_specs)
+
+    passed, missing = item.passes_verification()
+
+    assert passed is False
+    assert "duplicate_spec:material" in missing
+    assert "incompatible_spec:material" in missing
+    assert "structured_spec:material" in missing
+
+
 def test_candidate_verification_rejects_legacy_only_unstructured_evidence() -> None:
     item = candidate("legacy-only")
     item.observed_facts = {}

@@ -107,6 +107,20 @@ Fix Round 2 继续先写测试再实现：
   tiers；两处测试 fixture 收紧为同一 evidence-bearing tier 合同后 GREEN，没有放宽
   新 schema 或数据库约束。
 
+Fix Round 3 继续严格 RED→GREEN：
+
+- Schema 测试先证明 `CandidateSubmission` 会接受 `material` 与
+  `" MATERIAL "`；领域和服务测试先证明原先的 dict comprehension 会让后项覆盖
+  前项，从而把重复项中的不兼容规格和证据错配错误判成 qualified。三个定向单测
+  初始均按预期失败，实现后 3 passed。
+- 真实 PostgreSQL 测试先保存合格 Candidate，再直接把人工构造的旧 JSONB 不兼容
+  `" MATERIAL "` 项放到现有 `material` 之前；仓储完整回读五个原始项，但旧实现
+  返回 qualified。修复后回读仍兼容，`passes_verification` 同时返回
+  `duplicate_spec:material`、`incompatible_spec:material` 和
+  `structured_spec:material`，旧行 fail closed。
+- 最小修复只在写 DTO 入口按 `strip().casefold()` 拒绝重复名称，并让领域核验保留、
+  遍历原始规格列表；没有修改 P19 封存、P20 逐字段证据或 P21 异常清洗路径。
+
 ## 最终门禁
 
 Task 6 主回归（真实 PostgreSQL 集成测试未 skip）：
@@ -167,6 +181,38 @@ git diff --check
 => exit 0
 ```
 
+Fix Round 3 定向门禁：
+
+```text
+pytest tests/unit/test_sourcing_models.py tests/unit/test_sourcing_service.py \
+       tests/integration/test_sourcing_service_persistence.py \
+       tests/integration/test_outbox_transaction.py -q
+=> 51 passed in 3.99s
+
+pytest tests/integration/test_sourcing_repositories.py \
+       tests/integration/test_sourcing_service_persistence.py -q
+=> 21 passed in 3.65s
+
+ruff check domains/sourcing/models.py domains/sourcing/schemas.py \
+     tests/unit/test_sourcing_models.py tests/unit/test_sourcing_service.py \
+     tests/integration/test_sourcing_repositories.py
+=> All checks passed!
+
+mypy domains/sourcing/models.py domains/sourcing/schemas.py \
+     tests/unit/test_sourcing_service.py
+=> Success: no issues found in 3 source files
+
+python scripts/check_boundaries.py
+=> 结构自检七项全部通过
+
+git diff --check
+=> exit 0
+```
+
+仓储/模型两份历史测试文件仍通过动态 `_symbol` 导入类型，若把整文件直接交给
+Mypy 会得到既有 `valid-type` / `attr-defined` 噪声；本轮没有以放宽配置或增加
+ignore 掩盖它，而是沿用 Task 6 的 typed-source + typed-service-test 门禁。
+
 ## 合同、兼容与额外文件
 
 Fix Round 1 受权的最小公共合同修正：
@@ -191,6 +237,9 @@ Fix Round 1 受权的最小公共合同修正：
    supplier-candidate 路径必须提供；existing-product-only 路径继续以空 Candidate
    集合兼容。旧裸 Money 候选写形状属于尚未发布的 V2 草稿，不再兼容写入，也不
    静默补造 Provenance。
+7. Fix Round 3 的正常写入口拒绝规范化重复 `spec_name`；历史 JSONB 仍可由仓储
+   原样回读，但领域资格判断遍历每个原始规格并 fail closed，不做破坏性迁移或
+   静默去重。
 
 超出原 Task 6 初始 allowlist、但由 Fix Round 1/P14–P18 明确授权的额外文件：
 
@@ -208,6 +257,9 @@ Fix Round 1 受权的最小公共合同修正：
 
 本轮没有创建新迁移头；只修正尚未发布的 0047，因此继续保持单 head。
 没有修改 Tool Gateway 核心、工作流实现、API、Connector、成本/报价域或前端。
+Fix Round 3 只额外修改既有 `models.py` / `schemas.py`、两份 unit 测试和一份
+repository 集成测试；未再修改 0047、ORM、事件或 Outbox，因为旧行兼容与资格
+fail-closed 均由既有 JSONB round-trip 和领域规则完成。
 
 ## ADR 与 carry-forward
 

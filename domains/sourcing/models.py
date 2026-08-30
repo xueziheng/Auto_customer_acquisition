@@ -583,9 +583,20 @@ class SupplierCandidate:
         返回 ``(通过, 未通过项)``。检查全部项后一次返回，不短路。
         """
         missing: list[str] = []
-        comparisons = {
-            item.spec_name.strip().casefold(): item for item in self.verified_specs
-        }
+        comparisons: dict[str, list[SpecComparison]] = {}
+        normalized_comparisons: list[tuple[str, SpecComparison]] = []
+        for item in self.verified_specs:
+            name = item.spec_name.strip().casefold()
+            normalized_comparisons.append((name, item))
+            comparisons.setdefault(name, []).append(item)
+
+        def add_missing(value: str) -> None:
+            if value not in missing:
+                missing.append(value)
+
+        for name, items in comparisons.items():
+            if len(items) > 1:
+                add_missing(f"duplicate_spec:{name}")
         trusted_refs = {
             snapshot.artifact_ref
             for snapshot in self.evidence_snapshots
@@ -608,26 +619,32 @@ class SupplierCandidate:
             )
 
         for name in ("product_type", "material", "size", "model"):
-            item = comparisons.get(name)
-            if (
-                item is None
-                or item.level is SpecMatchLevel.UNKNOWN
-                or item.offered is None
-                or not item.offered.strip()
-            ):
-                missing.append(name)
+            items = comparisons.get(name, [])
+            if not items:
+                add_missing(name)
                 continue
-            if item.level is SpecMatchLevel.DIFFERENT and item.substitutable is not True:
-                missing.append(f"incompatible_spec:{name}")
-            if item.needs_customer_confirmation and (
-                item.customer_confirmation is None
-                or item.customer_confirmation.source_type is not SourceType.CONVERSATION
-            ):
-                missing.append(f"customer_confirmation:{name}")
+            for item in items:
+                if (
+                    item.level is SpecMatchLevel.UNKNOWN
+                    or item.offered is None
+                    or not item.offered.strip()
+                ):
+                    add_missing(name)
+                if (
+                    item.level is SpecMatchLevel.DIFFERENT
+                    and item.substitutable is not True
+                ):
+                    add_missing(f"incompatible_spec:{name}")
+                if item.needs_customer_confirmation and (
+                    item.customer_confirmation is None
+                    or item.customer_confirmation.source_type
+                    is not SourceType.CONVERSATION
+                ):
+                    add_missing(f"customer_confirmation:{name}")
 
-        for name, item in comparisons.items():
+        for name, item in normalized_comparisons:
             if item.offered is not None and not has_bound_value(name, item.offered):
-                missing.append(f"structured_spec:{name}")
+                add_missing(f"structured_spec:{name}")
         if not any(
             isinstance(item, SourcingMatchInference)
             for item in self.match_inferences.values()

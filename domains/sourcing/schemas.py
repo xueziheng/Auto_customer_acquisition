@@ -359,6 +359,11 @@ class CandidateSubmission(BaseModel):
         _bounded_text(self.product_title, field_name="product_title", maximum=500)
         _bounded_text(self.evidence_url, field_name="evidence_url")
         _bounded_text(self.evidence_artifact_ref, field_name="evidence_artifact_ref", maximum=200)
+        normalized_spec_names = [
+            item.spec_name.strip().casefold() for item in self.specs
+        ]
+        if len(set(normalized_spec_names)) != len(normalized_spec_names):
+            raise ValueError("specs 规格名不得重复")
         minimums = [tier.minimum_quantity for tier in self.indicative_price_tiers]
         if len(set(minimums)) != len(minimums):
             raise ValueError("indicative_price_tiers 数量档不得重复")

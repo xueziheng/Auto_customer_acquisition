@@ -236,6 +236,19 @@ def _candidate(
     )
 
 
+def test_candidate_submission_rejects_normalized_duplicate_spec_names() -> None:
+    submission = _candidate()
+    duplicate = submission.specs[1].model_copy(update={"spec_name": " MATERIAL "})
+
+    with pytest.raises(ValueError, match="specs 规格名不得重复"):
+        CandidateSubmission.model_validate(
+            {
+                **submission.model_dump(mode="python"),
+                "specs": (*submission.specs, duplicate),
+            }
+        )
+
+
 class _MemoryRepo:
     def __init__(self, state: dict[str, Any], name: str) -> None:
         self.state = state
@@ -1003,6 +1016,39 @@ async def test_incompatible_or_unconfirmed_spec_cannot_qualify(
     assert "verification_incomplete" in {
         reason.value for reason in candidate.rejection_reasons
     }
+
+
+@pytest.mark.asyncio
+async def test_submit_candidate_fails_closed_for_validation_bypassed_duplicate_specs() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    submission = _candidate()
+    incompatible = SpecComparisonView(
+        spec_name=" MATERIAL ",
+        required="required-material",
+        offered="unverified-substitute",
+        level="different",
+        substitutable=False,
+    )
+    bypassed = submission.model_copy(
+        update={"specs": (incompatible, *submission.specs)}
+    )
+
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, bypassed, actor=SOURCING
+    )
+
+    stored = factory.state["candidates"][(TENANT, candidate_id)]
+    assert stored.rejected is True
+    passed, missing = stored.passes_verification()
+    assert passed is False
+    assert "duplicate_spec:material" in missing
+    assert "incompatible_spec:material" in missing
 
 
 @pytest.mark.asyncio
