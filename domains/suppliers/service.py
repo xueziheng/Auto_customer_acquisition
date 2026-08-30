@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import ClassVar, Protocol, runtime_checkable
 
 from domains.suppliers.models import Supplier, SupplierPriceRecord
 from shared.errors import PermissionDenied, ValidationError
-from shared.schemas.identifiers import SupplierId, TenantId
+from shared.schemas.identifiers import ArtifactId, SupplierId, TenantId
+from shared.schemas.money import Money
 
 
 class SupplierRole(str, Enum):
@@ -24,6 +26,40 @@ class SupplierAction(str, Enum):
     PRICE_RECORD = "price_record"
     CAPABILITY_SEARCH = "capability_search"
     READ = "read"
+
+
+class SupplierQuoteSourceKind(str, Enum):
+    """报价证据来源；只有直接供应商报价可支持 quoted。"""
+
+    DIRECT_SUPPLIER_QUOTE = "direct_supplier_quote"
+    PUBLIC_WEB_SNAPSHOT = "public_web_snapshot"
+    INDICATIVE_RECORD = "indicative_record"
+
+
+@dataclass(frozen=True)
+class SupplierQuoteEvidence:
+    """可信 reader 返回的直接报价证据投影，不包含原文或凭证。"""
+
+    tenant_id: TenantId
+    artifact_id: ArtifactId
+    supplier_id: SupplierId
+    product_desc: str
+    quantity_tier: int
+    price: Money
+    observed_at: datetime
+    valid_until: datetime | None
+    source_kind: SupplierQuoteSourceKind
+
+
+@runtime_checkable
+class SupplierQuoteEvidenceReader(Protocol):
+    """按 tenant+Artifact 核验不可变来源并返回安全报价事实投影。"""
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> SupplierQuoteEvidence:
+        """未知、不可读或无法核验的来源必须失败关闭。"""
+        ...
 
 
 @dataclass(frozen=True)
@@ -141,6 +177,9 @@ __all__ = (
     "SupplierActor",
     "SupplierAuthorizer",
     "SupplierPriceRecord",
+    "SupplierQuoteEvidence",
+    "SupplierQuoteEvidenceReader",
+    "SupplierQuoteSourceKind",
     "SupplierRole",
     "SupplierService",
 )

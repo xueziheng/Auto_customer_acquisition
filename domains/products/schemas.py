@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Self
+from typing import Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,6 +15,16 @@ def _bounded_text(value: str, field_name: str, maximum: int) -> str:
     if not value or value != value.strip() or len(value) > maximum:
         raise ValueError(f"{field_name} 必须非空、无首尾空白且不超过 {maximum} 字符")
     return value
+
+
+def _require_numeric_28_12(value: Decimal) -> None:
+    """拒绝数据库会舍入或溢出的值；保留调用方原始 Decimal。"""
+
+    exponent = cast(int, value.as_tuple().exponent)
+    scale = max(-exponent, 0)
+    integer_digits = max(value.adjusted() + 1, 0)
+    if scale > 12 or integer_digits > 16:
+        raise ValueError("unit_amount 必须可精确表示为 NUMERIC(28,12)")
 
 
 class CandidateIndicativePriceRef(BaseModel):
@@ -33,6 +43,7 @@ class CandidateIndicativePriceRef(BaseModel):
 
         if not self.unit_amount.is_finite() or self.unit_amount <= Decimal(0):
             raise ValueError("unit_amount 必须是有限正 Decimal")
+        _require_numeric_28_12(self.unit_amount)
         _bounded_text(self.unit, "unit", 50)
         _bounded_text(str(self.evidence_ref), "evidence_ref", 200)
         return self

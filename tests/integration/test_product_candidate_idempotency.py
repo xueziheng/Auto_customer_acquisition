@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Self
 
@@ -20,10 +20,12 @@ from shared.schemas.identifiers import (
     ProductId,
     SourcingCaseId,
     SupplierCandidateId,
+    SupplierId,
     TenantId,
     ValidatedNeedId,
     new_id,
 )
+from shared.schemas.money import CurrencyCode, Money
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 
@@ -130,7 +132,7 @@ def _command(
             "indicative_prices": (
                 {
                     "minimum_quantity": 100,
-                    "unit_amount": Decimal("0.123456789012"),
+                    "unit_amount": Decimal("9999999999999999.999999999999"),
                     "currency": "USD",
                     "unit": "piece",
                     "evidence_ref": artifact,
@@ -191,9 +193,10 @@ async def test_repeated_candidate_creation_persists_one_card_and_exact_price(
     assert internal.candidate_source is not None
     assert internal.candidate_source.sourcing_case_id == case_id
     assert internal.candidate_source.supplier_candidate_id == candidate_id
-    assert internal.candidate_source.indicative_prices[0].unit_amount == Decimal(
-        "0.123456789012"
-    )
+    boundary_amount = Decimal("9999999999999999.999999999999")
+    persisted_amount = internal.candidate_source.indicative_prices[0].unit_amount
+    assert persisted_amount == boundary_amount
+    assert persisted_amount.as_tuple() == boundary_amount.as_tuple()
     other_tenant = TenantId(new_id("tn"))
     async with factory(other_tenant) as uow:
         assert await uow.candidate_sources.get_by_product(
@@ -312,3 +315,111 @@ async def test_canonical_race_winner_rolls_back_new_orphan_product(
             ).scalars()
         )
     assert product_ids == [canonical_id]
+
+
+class _SupplierSqlFactory:
+    def __init__(self, sf: object, tenant_id: TenantId) -> None:
+        self.sf = sf
+        self.tenant_id = tenant_id
+
+    def __call__(self, tenant_id: TenantId) -> Any:
+        Uow = _symbol("infra.db.suppliers_uow", "SqlAlchemySuppliersUnitOfWork")
+        return Uow(self.sf, tenant_id)
+
+
+class _DirectQuoteReader:
+    def __init__(self, evidence: Any) -> None:
+        self.evidence = evidence
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> Any:
+        assert tenant_id == self.evidence.tenant_id
+        assert artifact_id == self.evidence.artifact_id
+        return self.evidence
+
+
+@pytest.mark.asyncio
+async def test_supplier_quote_numeric_boundary_round_trips_exactly_in_postgres(
+    candidate_engine: AsyncEngine,
+) -> None:
+    """供应商报价的 NUMERIC(28,12) 最大边界不能被数据库量化或截断。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    case_id = SourcingCaseId(new_id("src"))
+    candidate_id = SupplierCandidateId(new_id("spc"))
+    artifact = ArtifactId(new_id("art"))
+    supplier_id = SupplierId(new_id("sup"))
+    await _seed_origin(candidate_engine, tenant_id, case_id, candidate_id, (artifact,))
+    sf = async_sessionmaker(candidate_engine, expire_on_commit=False)
+    factory = _SupplierSqlFactory(sf, tenant_id)
+    Supplier = _symbol("domains.suppliers.service", "Supplier")
+    SupplierPriceRecord = _symbol(
+        "domains.suppliers.service", "SupplierPriceRecord"
+    )
+    SupplierQuoteEvidence = _symbol(
+        "domains.suppliers.service", "SupplierQuoteEvidence"
+    )
+    SupplierQuoteSourceKind = _symbol(
+        "domains.suppliers.service", "SupplierQuoteSourceKind"
+    )
+    SupplierActor = _symbol("domains.suppliers.service", "SupplierActor")
+    SupplierRole = _symbol("domains.suppliers.service", "SupplierRole")
+    Phase2SupplierAuthorizer = _symbol(
+        "domains.suppliers.service", "Phase2SupplierAuthorizer"
+    )
+    SupplierServiceImpl = _symbol(
+        "domains.suppliers.service_impl", "SupplierServiceImpl"
+    )
+    amount = Decimal("9999999999999999.999999999999")
+    valid_until = NOW + timedelta(days=1)
+    record = SupplierPriceRecord(
+        supplier_id=supplier_id,
+        tenant_id=tenant_id,
+        product_desc="304 stainless hinge",
+        quantity_tier=100,
+        price=Money(amount, CurrencyCode("USD")),
+        basis="quoted",
+        observed_at=NOW,
+        evidence_ref=artifact,
+        valid_until=valid_until,
+    )
+    evidence = SupplierQuoteEvidence(
+        tenant_id=tenant_id,
+        artifact_id=artifact,
+        supplier_id=supplier_id,
+        product_desc=record.product_desc,
+        quantity_tier=record.quantity_tier,
+        price=record.price,
+        observed_at=NOW,
+        valid_until=valid_until,
+        source_kind=SupplierQuoteSourceKind.DIRECT_SUPPLIER_QUOTE,
+    )
+    service = SupplierServiceImpl(
+        factory,
+        Phase2SupplierAuthorizer(tenant_id),
+        _DirectQuoteReader(evidence),
+        now=lambda: NOW,
+    )
+    actor = SupplierActor(
+        actor_id="system", role=SupplierRole.SYSTEM, tenant_id=tenant_id
+    )
+    await service.register(
+        tenant_id,
+        Supplier(
+            supplier_id=supplier_id,
+            tenant_id=tenant_id,
+            name="Factory A",
+            created_at=NOW,
+        ),
+        actor=actor,
+    )
+    await service.record_price(tenant_id, record, actor=actor)
+
+    async with factory(tenant_id) as uow:
+        rows = await uow.prices.list_for_supplier(
+            tenant_id, supplier_id, record.product_desc
+        )
+    assert len(rows) == 1
+    assert rows[0].price.amount == amount
+    assert rows[0].price.amount.as_tuple() == amount.as_tuple()

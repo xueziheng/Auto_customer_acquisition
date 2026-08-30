@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 from domains.suppliers.models import Supplier, SupplierPriceRecord
 from domains.suppliers.repository import SuppliersUnitOfWork
@@ -14,6 +15,9 @@ from domains.suppliers.service import (
     SupplierAction,
     SupplierActor,
     SupplierAuthorizer,
+    SupplierQuoteEvidence,
+    SupplierQuoteEvidenceReader,
+    SupplierQuoteSourceKind,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import SupplierId, TenantId
@@ -31,6 +35,16 @@ def _aware(value: datetime, field_name: str) -> None:
         raise ValidationError(f"{field_name} 必须含时区")
 
 
+def _require_numeric_28_12(value: Decimal) -> None:
+    """在事务和 Evidence IO 前拒绝数据库会舍入或溢出的金额。"""
+
+    exponent = cast(int, value.as_tuple().exponent)
+    scale = max(-exponent, 0)
+    integer_digits = max(value.adjusted() + 1, 0)
+    if scale > 12 or integer_digits > 16:
+        raise ValidationError("供应商价格必须可精确表示为 NUMERIC(28,12)")
+
+
 class SupplierServiceImpl:
     """价格只追加，不在本域产生报价或修改历史记录。"""
 
@@ -38,6 +52,7 @@ class SupplierServiceImpl:
         self,
         uow_factory: Callable[[TenantId], SuppliersUnitOfWork],
         authorizer: SupplierAuthorizer,
+        quote_evidence_reader: SupplierQuoteEvidenceReader,
         *,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -45,8 +60,11 @@ class SupplierServiceImpl:
             raise ValidationError("供应商事务依赖无效")
         if not isinstance(authorizer, SupplierAuthorizer):
             raise ValidationError("供应商授权依赖无效")
+        if not isinstance(quote_evidence_reader, SupplierQuoteEvidenceReader):
+            raise ValidationError("供应商 quoted Evidence reader 无效")
         self._uow_factory = uow_factory
         self._authorizer = authorizer
+        self._quote_evidence_reader = quote_evidence_reader
         self._now = now or (lambda: datetime.now(UTC))
 
     def _require(
@@ -98,6 +116,7 @@ class SupplierServiceImpl:
             or amount <= Decimal(0)
         ):
             raise ValidationError("供应商价格必须为有限正 Decimal")
+        _require_numeric_28_12(amount)
         if not str(record.evidence_ref).strip():
             raise ValidationError("供应商价格必须有 Artifact Evidence")
         _aware(record.observed_at, "observed_at")
@@ -109,6 +128,22 @@ class SupplierServiceImpl:
             _aware(record.valid_until, "valid_until")
             if record.valid_until <= record.observed_at or record.valid_until <= now:
                 raise ValidationError("quoted 价格在记录时必须仍然有效")
+            evidence = await self._quote_evidence_reader.read_verified(
+                tenant_id, record.evidence_ref
+            )
+            if not isinstance(evidence, SupplierQuoteEvidence) or (
+                evidence.source_kind
+                is not SupplierQuoteSourceKind.DIRECT_SUPPLIER_QUOTE
+                or evidence.tenant_id != tenant_id
+                or evidence.artifact_id != record.evidence_ref
+                or evidence.supplier_id != record.supplier_id
+                or evidence.product_desc != record.product_desc
+                or evidence.quantity_tier != record.quantity_tier
+                or evidence.price != record.price
+                or evidence.observed_at != record.observed_at
+                or evidence.valid_until != record.valid_until
+            ):
+                raise ValidationError("quoted Evidence 与价格记录商业字段不一致")
         elif record.basis == PriceBasis.INDICATIVE:
             if record.valid_until is not None:
                 raise ValidationError("indicative 价格不得伪装成带有效期的 quoted")

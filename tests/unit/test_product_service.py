@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import fields
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -38,7 +39,7 @@ def _symbol(module: str, name: str) -> Any:
 def _price_payload(**changes: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "minimum_quantity": 100,
-        "unit_amount": Decimal("0.123456789012345678901"),
+        "unit_amount": Decimal("0.123456789012"),
         "currency": "USD",
         "unit": "piece",
         "evidence_ref": ArtifactId("art_price"),
@@ -215,11 +216,11 @@ def test_candidate_command_is_strict_exact_and_evidence_bound() -> None:
     )
     command = _command()
     assert command.indicative_prices[0].unit_amount == Decimal(
-        "0.123456789012345678901"
+        "0.123456789012"
     )
     assert (
         command.model_dump(mode="json")["indicative_prices"][0]["unit_amount"]
-        == "0.123456789012345678901"
+        == "0.123456789012"
     )
 
     for change in (
@@ -252,6 +253,54 @@ def test_candidate_command_is_strict_exact_and_evidence_bound() -> None:
             '"indicative_prices":[{"minimum_quantity":1,"unit_amount":0.1,'
             '"currency":"USD","unit":"piece","evidence_ref":"art_price"}]}'
         )
+
+
+@pytest.mark.parametrize(
+    "amount",
+    (
+        Decimal("1.0000000000000"),
+        Decimal("10000000000000000.000000000000"),
+    ),
+)
+def test_candidate_price_rejects_decimal_outside_numeric_28_12(amount: Decimal) -> None:
+    """超过 NUMERIC(28,12) 的值必须在事务前拒绝，不能量化或等 commit 报错。"""
+
+    CandidateProductCreate = _symbol(
+        "domains.products.schemas", "CandidateProductCreate"
+    )
+    with pytest.raises(PydanticValidationError, match="NUMERIC"):
+        CandidateProductCreate.model_validate(
+            {
+                **_command().model_dump(mode="python"),
+                "indicative_prices": (_price_payload(unit_amount=amount),),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "amount",
+    ("1.0000000000000", "10000000000000000.000000000000"),
+)
+def test_candidate_json_price_rejects_decimal_outside_numeric_28_12(
+    amount: str,
+) -> None:
+    """JSON 十进制字符串同样必须按原始 scale/整数位门禁。"""
+
+    CandidateProductCreate = _symbol(
+        "domains.products.schemas", "CandidateProductCreate"
+    )
+    payload = _command().model_dump(mode="json")
+    payload["indicative_prices"][0]["unit_amount"] = amount
+    with pytest.raises(PydanticValidationError, match="NUMERIC"):
+        CandidateProductCreate.model_validate_json(json.dumps(payload))
+
+
+def test_candidate_price_accepts_numeric_28_12_boundary_without_rounding() -> None:
+    """16 位整数加 12 位小数是边界合法值，必须保持原 Decimal。"""
+
+    amount = Decimal("9999999999999999.999999999999")
+    command = _command(indicative_prices=(_price_payload(unit_amount=amount),))
+    assert command.indicative_prices[0].unit_amount == amount
 
 
 @pytest.mark.asyncio
