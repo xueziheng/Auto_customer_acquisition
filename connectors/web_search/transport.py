@@ -201,7 +201,10 @@ class SafePublicPageHttpTransport:
     """逐跳校验 URL/DNS/实际对端 IP；在发请求前阻断私网地址。"""
 
     def __init__(
-        self, *, timeout_seconds: float = 10.0, denied_hosts: frozenset[str] = frozenset(),
+        self,
+        *,
+        timeout_seconds: float = 10.0,
+        denied_hosts: frozenset[str] = frozenset(),
     ) -> None:
         if (
             isinstance(timeout_seconds, bool)
@@ -248,6 +251,8 @@ class SafePublicPageHttpTransport:
                     ) from None
                 continue
             status, _location, content_type, content_encoding, body = response
+            if status == 429:
+                raise WebSearchRateLimitedError()
             if (
                 status != 200
                 or content_type is None
@@ -280,6 +285,10 @@ class SafePublicPageHttpTransport:
             status, location, content_type, encoding, body = self._request_once(parsed)
             if status in {404, 410}:
                 return None
+            if status == 429:
+                raise WebSearchRateLimitedError()
+            if status >= 500:
+                raise TransientError("公开页面暂时不可用")
             if status in _REDIRECT_STATUSES and location and count < _MAX_REDIRECTS:
                 try:
                     current = _validate_public_url_sync(urljoin(current, location))
@@ -289,8 +298,10 @@ class SafePublicPageHttpTransport:
                     ) from None
                 continue
             if (
-                status != 200 or encoding not in {None, "", "identity"}
-                or body is None or content_type is None
+                status != 200
+                or encoding not in {None, "", "identity"}
+                or body is None
+                or content_type is None
                 or content_type.split(";", 1)[0].strip().casefold() != "text/plain"
                 or not robots_allows(body, urlunsplit(origin))
             ):
@@ -386,9 +397,7 @@ def _validate_public_url_sync(url: str) -> str:
         )
     except (OSError, UnicodeError):
         raise PublicPageRejectedError() from None
-    resolved = {
-        item[4][0] for item in addresses if isinstance(item[4][0], str)
-    }
+    resolved = {item[4][0] for item in addresses if isinstance(item[4][0], str)}
     if not resolved or any(not _is_public_ip(address) for address in resolved):
         raise PublicPageRejectedError()
     return urlunsplit(parsed)

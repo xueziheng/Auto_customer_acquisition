@@ -106,7 +106,9 @@ async def test_handler_binds_run_to_prepared_payload_without_mutable_current_run
         )
 
 
-async def test_free_handler_uses_explicit_sourcing_quota_key_without_changing_fingerprint() -> None:
+async def test_free_handler_uses_explicit_sourcing_quota_key_without_changing_fingerprint() -> (
+    None
+):
     key = "a" * 64
     tenant = TenantId("tn_test")
     factory = ReaderFactory()
@@ -236,3 +238,64 @@ async def test_gateway_uncertain_without_readable_run_state_stays_typed_and_nonr
     assert failure.value.reason == "request_uncertain"
     assert failure.value.is_retryable is False
     assert "sensitive" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected"),
+    [
+        ("rate", "rate_limited"),
+        ("transient", "provider_transient"),
+        ("unknown", "reconciliation_required"),
+    ],
+)
+async def test_free_reader_preserves_determinate_tavily_dispatch_failures(
+    provider_error: str, expected: str
+) -> None:
+    from connectors.search_contracts import SearchCostStatus, SearchUsage
+    from connectors.tavily.transport import TavilyRateLimitedError, TavilyTransientError
+    from tool_gateway.errors import ToolGatewayError
+    from tool_gateway.handlers.free_search import FreeSearchReader
+
+    class Quota:
+        async def check_available(self, *args, **kwargs):
+            pass
+
+        async def reserve(self, *args, **kwargs):
+            pass
+
+        async def mark_dispatched(self, *args, **kwargs):
+            pass
+
+        async def consume(self, *args, **kwargs):
+            pass
+
+        async def record_unavailable(self, *args, **kwargs):
+            pass
+
+    class Connector:
+        async def configure(self, resolver):
+            pass
+
+        async def usage(self):
+            return SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE)
+
+        async def search(self, *args, **kwargs):
+            if provider_error == "rate":
+                raise TavilyRateLimitedError(17)
+            if provider_error == "transient":
+                raise TavilyTransientError()
+            raise RuntimeError("sensitive-provider-body")
+
+    reader = FreeSearchReader(
+        TenantId("tn_test"),
+        RunId("run_test"),
+        "a" * 64,
+        "v1",
+        Quota(),
+        lambda: Connector(),
+        object(),
+    )
+    with pytest.raises(ToolGatewayError) as caught:
+        await reader.search(TenantId("tn_test"), "factory", "US", 1)
+    assert caught.value.category.value == expected
+    assert "sensitive" not in str(caught.value)

@@ -4795,7 +4795,7 @@ class SourcingPublicPlanRow(Base):
     plan_id: Mapped[str] = mapped_column(String(40))
     case_id: Mapped[str] = mapped_column(String(40))
     target_countries: Mapped[list] = mapped_column(postgresql.JSONB)
-    product_category: Mapped[str] = mapped_column(String(200))
+    product_category: Mapped[str] = mapped_column(String(100))
     queries: Mapped[list] = mapped_column(postgresql.JSONB)
     max_search_queries: Mapped[int] = mapped_column(Integer)
     max_pages_read: Mapped[int] = mapped_column(Integer)
@@ -4961,6 +4961,40 @@ class SourcingSearchExecutionRow(Base):
     provider_status: Mapped[str] = mapped_column(String(24))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingPageAttemptRow(Base):
+    """已授权 Run 的幂等页面尝试；用于重启后继续执行同一预算。"""
+
+    __tablename__ = "sourcing_page_attempts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "run_id", "plan_hash", "query_index", "result_index",
+            name="pk_sourcing_page_attempts",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id", "plan_id"],
+            ["sourcing_public_plans.tenant_id", "sourcing_public_plans.case_id", "sourcing_public_plans.plan_id"],
+            name="fk_sourcing_page_attempts_plan", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "run_id"],
+            ["workflow_runs.tenant_id", "workflow_runs.run_id"],
+            name="fk_sourcing_page_attempts_run", ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "plan_hash ~ '^[0-9a-f]{64}$' AND query_index >= 0 AND result_index >= 0",
+            name="ck_sourcing_page_attempts_binding",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    plan_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    query_index: Mapped[int] = mapped_column(Integer)
+    result_index: Mapped[int] = mapped_column(Integer)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class SourcingCandidateDraftRow(Base):

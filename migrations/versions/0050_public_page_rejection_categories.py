@@ -35,5 +35,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "UPDATE tool_calls SET error_category = 'provider_permanent' "
+        "WHERE error_category IN ('page_access_forbidden','login_or_captcha','unsafe_redirect')"
+    )
+    op.execute(
+        "ALTER TABLE tool_call_events DISABLE TRIGGER trg_tool_call_events_append_only"
+    )
+    op.execute(
+        "UPDATE tool_call_events SET category = 'provider_permanent' "
+        "WHERE category IN ('page_access_forbidden','login_or_captcha','unsafe_redirect')"
+    )
+    op.execute(
+        "ALTER TABLE tool_call_events ENABLE TRIGGER trg_tool_call_events_append_only"
+    )
     _replace("tool_call_events", "ck_tool_call_events_category", "category", _OLD)
     _replace("tool_calls", "ck_tool_calls_error_category", "error_category", _OLD)

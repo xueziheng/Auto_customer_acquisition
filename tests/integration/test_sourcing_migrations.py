@@ -28,6 +28,7 @@ SOURCING_TABLES = {
     "sourcing_supply_options",
     "sourcing_reviews",
     "sourcing_search_executions",
+    "sourcing_page_attempts",
     "sourcing_search_reconciliations",
 }
 SUPPLY_TABLES = {
@@ -245,7 +246,7 @@ async def _seed_public_search_execution(
             "max_search_queries, max_pages_read, provider, search_depth, usage_credits_remaining, "
             "worst_case_credits, version, expected_case_version, plan_hash, status, created_at) "
             "VALUES (:tenant, :plan, :case, '[\"US\"]', 'hinges', "
-            "'[{\"query_text\":\"hinge factory\",\"target_country\":\"US\"}]', "
+            '\'[{"query_text":"hinge factory","target_country":"US"}]\', '
             "1, 1, 'tavily', 'basic', 10, 1, 1, 1, :plan_hash, "
             "'pending_confirmation', now())"
         ),
@@ -349,12 +350,8 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "opportunities",
             ("tenant_id", "opportunity_id"),
         )
-        reconciliation_fks = contract["sourcing_search_reconciliations"][
-            "foreign_keys"
-        ]
-        assert reconciliation_fks[
-            "fk_sourcing_search_reconciliations_artifact"
-        ] == (
+        reconciliation_fks = contract["sourcing_search_reconciliations"]["foreign_keys"]
+        assert reconciliation_fks["fk_sourcing_search_reconciliations_artifact"] == (
             ("tenant_id", "provider_usage_artifact_ref"),
             "raw_artifacts",
             ("tenant_id", "artifact_id"),
@@ -381,15 +378,19 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "raw_artifacts",
             ("tenant_id", "artifact_id"),
         )
-        assert contract["sourcing_ladder_checks"]["columns"]["outcome"][
-            "nullable"
-        ] is False
+        assert (
+            contract["sourcing_ladder_checks"]["columns"]["outcome"]["nullable"]
+            is False
+        )
         assert contract["sourcing_supply_options"]["unique_constraints"][
             "uq_sourcing_supply_options_supplier_candidate"
         ] == ("tenant_id", "case_id", "supplier_candidate_id")
-        assert contract["sourcing_supply_options"]["indexes"][
+        assert (
+            contract["sourcing_supply_options"]["indexes"][
             "uq_sourcing_supply_options_existing_product"
-        ]["unique"] is True
+            ]["unique"]
+            is True
+        )
         cost_fks = contract["cost_sheets"]["foreign_keys"]
         assert cost_fks["fk_cost_sheets_sourcing_option"] == (
             ("tenant_id", "source_sourcing_case_id", "source_option_id"),
@@ -441,13 +442,16 @@ async def test_sourcing_case_opportunity_reference_is_nullable_and_tenant_bound(
                 need_id="need-case-opportunity",
                 case_id="case-opportunity",
             )
-            assert await connection.scalar(
+            assert (
+                await connection.scalar(
                 text(
                     "SELECT opportunity_id FROM sourcing_cases "
                     "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'"
                 ),
                 {"tenant": TENANT_A},
-            ) is None
+                )
+                is None
+            )
             await connection.execute(
                 text(
                     "INSERT INTO opportunities "
@@ -481,13 +485,16 @@ async def test_sourcing_case_opportunity_reference_is_nullable_and_tenant_bound(
                 ),
                 {"tenant": TENANT_A},
             )
-            assert await connection.scalar(
+            assert (
+                await connection.scalar(
                 text(
                     "SELECT opportunity_id FROM sourcing_cases "
                     "WHERE tenant_id = :tenant AND case_id = 'case-opportunity'"
                 ),
                 {"tenant": TENANT_A},
-            ) == "opp-same-tenant"
+                )
+                == "opp-same-tenant"
+            )
     finally:
         if engine is not None:
             await engine.dispose()
@@ -1185,7 +1192,12 @@ async def test_review_alternates_are_unique_and_bound_to_case_and_tenant(
                     "case-review-main",
                     "product-review-a",
                 ),
-                ("option-review-alt", TENANT_A, "case-review-main", "product-review-alt"),
+                (
+                    "option-review-alt",
+                    TENANT_A,
+                    "case-review-main",
+                    "product-review-alt",
+                ),
                 (
                     "option-review-other",
                     TENANT_A,
@@ -1347,6 +1359,73 @@ async def test_0049_upgrade_preserves_legacy_cost_sheet_created_at_0048(
             assert row.source_sourcing_case_id is None
             assert row.source_option_id is None
             assert row.source_candidate_id is None
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0050_downgrade_normalizes_all_new_page_categories(db_url: str) -> None:
+    engine: AsyncEngine | None = None
+    tenant = "tn_page_category_downgrade"
+    categories = ("page_access_forbidden", "login_or_captcha", "unsafe_redirect")
+    try:
+        _run_alembic(db_url, "upgrade", "head")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            for index, category in enumerate(categories):
+                call_id = f"tcl_page_category_{index}"
+                await connection.execute(
+                    text(
+                        "INSERT INTO tool_calls (tenant_id,tool_call_id,tool_id,tool_version,risk_level,cost_class,idempotency_key,request_fingerprint,fingerprint_version,status,attempt_count,user_id,error_category,created_at,updated_at,completed_at) "
+                        "VALUES (:tenant,:call,'web.page.read','v1','low','free',:key,repeat(:digit,64),'v1','failed_permanent',1,'usr_test',:category,now(),now(),now())"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "call": call_id,
+                        "key": f"page-category-{index}",
+                        "digit": str(index + 1),
+                        "category": category,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO tool_call_events (tenant_id,event_id,tool_call_id,stage,outcome,actor_id,occurred_at,duration_ms,category) "
+                        "VALUES (:tenant,:event,:call,'handler','failed','usr_test',now(),0,:category)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "event": f"tce_page_category_{index}",
+                        "call": call_id,
+                        "category": category,
+                    },
+                )
+        await engine.dispose()
+        engine = None
+        _run_alembic(db_url, "downgrade", "0049")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            call_values = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT error_category FROM tool_calls WHERE tenant_id=:tenant"
+                        ),
+                        {"tenant": tenant},
+                    )
+                ).scalars()
+            )
+            event_values = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT category FROM tool_call_events WHERE tenant_id=:tenant"
+                        ),
+                        {"tenant": tenant},
+                    )
+                ).scalars()
+            )
+        assert call_values == event_values == {"provider_permanent"}
     finally:
         if engine is not None:
             await engine.dispose()

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
+from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
@@ -29,7 +32,7 @@ from infra.db.repositories.sourcing import (
     SourcingSearchExecutionRepositoryImpl,
 )
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
-from infra.db.tables import RawArtifactRow, WorkflowRunRow
+from infra.db.tables import RawArtifactRow, SourcingPageAttemptRow, WorkflowRunRow
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     RunId,
@@ -44,6 +47,34 @@ from workflows.sourcing_case.steps import sourcing_search_request_key
 
 def _query_hash(query_text: str) -> str:
     return sha256(query_text.encode("utf-8")).hexdigest()
+
+
+def _safe_locator_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValidationError("公开寻源 locator 回执无效")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise ValidationError("公开寻源 locator 回执无效") from None
+    try:
+        address = ipaddress.ip_address(parsed.hostname) if parsed.hostname else None
+    except ValueError:
+        address = None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65_535)
+        or parsed.hostname.casefold() in {"localhost", "localhost.localdomain"}
+        or parsed.hostname.casefold().endswith(".local")
+        or address is not None
+        and not address.is_global
+    ):
+        raise ValidationError("公开寻源 locator 回执无效")
+    return value
 
 
 def sourcing_candidate_draft_source_key(
@@ -156,13 +187,20 @@ class PostgresSourcingWebPersistence:
                 plan_hash=plan_hash,
             )
             if (
-                execution.run_id != run_id
+                execution.case_id != plan.case_id
+                or execution.plan_id != plan.plan_id
+                or execution.plan_hash != plan_hash
+                or execution.run_id != run_id
                 or execution.query_index != query_index
+                or execution.request_key != request_key
                 or query_index >= len(plan.queries)
-                or execution.query_hash != _query_hash(plan.queries[query_index].query_text)
+                or execution.query_hash
+                != _query_hash(plan.queries[query_index].query_text)
             ):
                 raise ValidationError("公开寻源回执绑定无效")
             if execution.provider_status is SourcingSearchExecutionStatus.UNCERTAIN:
+                if execution.locator_results or execution.completed_at is not None:
+                    raise ValidationError("公开寻源回执状态无效")
                 return None
             if execution.provider_status not in {
                 SourcingSearchExecutionStatus.SUCCEEDED,
@@ -170,15 +208,35 @@ class PostgresSourcingWebPersistence:
             }:
                 raise ValidationError("公开寻源回执状态无效")
             locators: list[SearchResult] = []
+            if (
+                execution.provider_status is SourcingSearchExecutionStatus.NO_RESULTS
+                and execution.locator_results
+            ) or (
+                execution.provider_status is SourcingSearchExecutionStatus.SUCCEEDED
+                and not execution.locator_results
+            ):
+                raise ValidationError("公开寻源回执状态无效")
             for locator in execution.locator_results:
-                if set(locator) != {"title", "url", "description"}:
+                if not isinstance(locator, dict) or set(locator) != {
+                    "title",
+                    "url",
+                    "description",
+                }:
                     raise ValidationError("公开寻源 locator 回执无效")
+                title = locator["title"]
+                url = locator["url"]
+                description = locator["description"]
+                if not all(isinstance(item, str) for item in (title, url, description)):
+                    raise ValidationError("公开寻源 locator 回执无效")
+                assert isinstance(title, str)
+                assert isinstance(url, str)
+                assert isinstance(description, str)
                 try:
                     locators.append(
                         SearchResult(
-                            str(locator["title"]),
-                            str(locator["url"]),
-                            str(locator["description"]),
+                            title,
+                            _safe_locator_url(url),
+                            description,
                         )
                     )
                 except (TypeError, ValueError):
@@ -190,6 +248,115 @@ class PostgresSourcingWebPersistence:
                 plan.product_category,
                 tuple(locators),
             )
+
+    async def count_page_attempts(self, **values: object) -> int:
+        tenant_id = TenantId(str(values["tenant_id"]))
+        case_id = SourcingCaseId(str(values["case_id"]))
+        run_id = RunId(str(values["run_id"]))
+        plan_id = SourcingPlanId(str(values["plan_id"]))
+        plan_hash = str(values["plan_hash"])
+        async with self._factory() as session, session.begin():
+            plan = await self._load(
+                session,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                run_id=run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            )
+            count = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SourcingPageAttemptRow)
+                    .where(
+                        SourcingPageAttemptRow.tenant_id == str(tenant_id),
+                        SourcingPageAttemptRow.run_id == str(run_id),
+                        SourcingPageAttemptRow.plan_hash == plan_hash,
+                    )
+                )
+                or 0
+            )
+            if count > plan.max_pages_read:
+                raise ValidationError("公开寻源页面预算状态无效")
+            return count
+
+    async def claim_page_attempt(self, **values: object) -> bool:
+        tenant_id = TenantId(str(values["tenant_id"]))
+        case_id = SourcingCaseId(str(values["case_id"]))
+        run_id = RunId(str(values["run_id"]))
+        plan_id = SourcingPlanId(str(values["plan_id"]))
+        plan_hash = str(values["plan_hash"])
+        raw_query_index = values["query_index"]
+        raw_result_index = values["result_index"]
+        if (
+            isinstance(raw_query_index, bool)
+            or not isinstance(raw_query_index, int)
+            or raw_query_index < 0
+            or isinstance(raw_result_index, bool)
+            or not isinstance(raw_result_index, int)
+            or raw_result_index < 0
+        ):
+            raise ValidationError("公开寻源页面位置无效")
+        query_index = raw_query_index
+        result_index = raw_result_index
+        async with self._factory() as session, session.begin():
+            plan = await self._load(
+                session,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                run_id=run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            )
+            if query_index >= len(plan.queries):
+                raise ValidationError("公开寻源页面位置无效")
+            execution = await SourcingSearchExecutionRepositoryImpl(
+                session, tenant_id
+            ).get_by_request_key(
+                tenant_id, sourcing_search_request_key(plan_hash, query_index)
+            )
+            if (
+                execution is None
+                or execution.run_id != run_id
+                or execution.plan_id != plan_id
+                or execution.plan_hash != plan_hash
+                or result_index >= len(execution.locator_results)
+            ):
+                raise ValidationError("公开寻源页面位置无效")
+            if (
+                int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(SourcingPageAttemptRow)
+                        .where(
+                            SourcingPageAttemptRow.tenant_id == str(tenant_id),
+                            SourcingPageAttemptRow.run_id == str(run_id),
+                            SourcingPageAttemptRow.plan_hash == plan_hash,
+                        )
+                    )
+                    or 0
+                )
+                >= plan.max_pages_read
+            ):
+                return False
+            inserted = (
+                await session.execute(
+                    pg_insert(SourcingPageAttemptRow)
+                    .values(
+                        tenant_id=str(tenant_id),
+                        case_id=str(case_id),
+                        plan_id=str(plan_id),
+                        run_id=str(run_id),
+                        plan_hash=plan_hash,
+                        query_index=query_index,
+                        result_index=result_index,
+                        attempted_at=self._now(),
+                    )
+                    .on_conflict_do_nothing()
+                    .returning(SourcingPageAttemptRow.result_index)
+                )
+            ).scalar_one_or_none()
+            return inserted is not None
 
     async def commit_locator_receipt(self, **values: object) -> None:
         batch = values.get("batch")
@@ -313,7 +480,10 @@ class PostgresPublicCandidateDraftWriter:
     async def save(self, **values: object) -> str:
         draft = values.get("draft")
         tenant_id = values.get("tenant_id")
-        if not isinstance(draft, SourcingPageCandidateDraft) or tenant_id != self._tenant_id:
+        if (
+            not isinstance(draft, SourcingPageCandidateDraft)
+            or tenant_id != self._tenant_id
+        ):
             raise ValidationError("公开寻源候选草稿绑定无效")
         await self._require_verified_artifact(draft)
         case_id = SourcingCaseId(str(values["case_id"]))
@@ -366,7 +536,9 @@ class PostgresPublicCandidateDraftWriter:
                 PublicCandidateDraftSpec(
                     spec_name=item.spec_name,
                     required=item.required,
-                    observed=item.observed.literal if item.observed is not None else None,
+                    observed=item.observed.literal
+                    if item.observed is not None
+                    else None,
                 )
                 for item in draft.specs
             ),
@@ -392,9 +564,7 @@ class PostgresPublicCandidateDraftWriter:
             evidence_artifact_ref=draft.evidence.snapshot_artifact_ref,
             created_at=draft.evidence.observed_at,
         )
-        async with SqlAlchemySourcingUnitOfWork(
-            self._factory, self._tenant_id
-        ) as uow:
+        async with SqlAlchemySourcingUnitOfWork(self._factory, self._tenant_id) as uow:
             canonical = await uow.candidate_drafts.get_or_create_canonical(
                 self._tenant_id, safe
             )

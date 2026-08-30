@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from decimal import Decimal
 from typing import cast
 
@@ -42,6 +43,7 @@ from domains.sourcing.schemas import (
     PublicCandidateDraft,
     PublicCandidateDraftPriceTier,
     PublicCandidateDraftSpec,
+    PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingCostPriceOption,
     SourcingHandoffSnapshot,
@@ -156,7 +158,9 @@ def _stop_detail_to_json(value: SourcingStopDetail | None) -> dict[str, object] 
     }
 
 
-def _stop_detail_from_json(value: dict[str, object] | None) -> SourcingStopDetail | None:
+def _stop_detail_from_json(
+    value: dict[str, object] | None,
+) -> SourcingStopDetail | None:
     if value is None:
         return None
     return SourcingStopDetail(
@@ -273,9 +277,7 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
             return case, True
         canonical = (
             await self._session.execute(
-                self._scoped().where(
-                    SourcingCaseRow.trigger_key == case.trigger_key
-                )
+                self._scoped().where(SourcingCaseRow.trigger_key == case.trigger_key)
             )
         ).scalar_one()
         return _row_to_case(canonical), False
@@ -321,7 +323,17 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
         values = {
             column.name: getattr(row, column.name)
             for column in SourcingCaseRow.__table__.columns
-            if column.name not in {"tenant_id", "case_id", "need_id", "workflow_version", "trigger_key", "need_snapshot", "need_snapshot_hash", "opened_at"}
+            if column.name
+            not in {
+                "tenant_id",
+                "case_id",
+                "need_id",
+                "workflow_version",
+                "trigger_key",
+                "need_snapshot",
+                "need_snapshot_hash",
+                "opened_at",
+            }
         }
         result = await self._session.execute(
             update(SourcingCaseRow)
@@ -410,7 +422,9 @@ def _row_to_ladder(row: SourcingLadderCheckRow) -> LadderCheck:
         conclusion=row.conclusion,
         match_object_type=row.match_object_type,
         match_object_id=row.match_object_id,
-        spec_comparisons=tuple(_comparison_from_json(item) for item in row.spec_comparisons),
+        spec_comparisons=tuple(
+            _comparison_from_json(item) for item in row.spec_comparisons
+        ),
         evidence_refs=tuple(str(item) for item in row.evidence_refs),
         checked_by=EmployeeId(row.checked_by),
         checked_at=row.checked_at,
@@ -465,29 +479,40 @@ def _plan_to_row(plan: PublicSourcingPlan) -> SourcingPublicPlanRow:
 
 def _row_to_plan(row: SourcingPublicPlanRow) -> PublicSourcingPlan:
     try:
+        if not isinstance(row.target_countries, list) or any(
+            not isinstance(item, str) for item in row.target_countries
+        ):
+            raise ValueError
         queries = tuple(
             PublicSourcingQuery.model_validate(item, strict=True)
             for item in row.queries
         )
-    except Exception:  # noqa: BLE001 - 历史异形 JSON 只投影为固定失败。
-        raise ValidationError("公开寻源计划查询绑定无效") from None
-    return PublicSourcingPlan(
-        tenant_id=TenantId(row.tenant_id),
+        if row.provider != "tavily" or row.search_depth != "basic":
+            raise ValueError
+        command = PublicSourcingPlanCommand(
         plan_id=SourcingPlanId(row.plan_id),
         case_id=SourcingCaseId(row.case_id),
-        target_countries=tuple(str(item) for item in row.target_countries),
+            target_countries=tuple(row.target_countries),
         product_category=row.product_category,
         queries=queries,
         max_search_queries=row.max_search_queries,
         max_pages_read=row.max_pages_read,
-        provider=row.provider,
-        search_depth=row.search_depth,
+            provider="tavily",
+            search_depth="basic",
         usage_credits_remaining=row.usage_credits_remaining,
         worst_case_credits=row.worst_case_credits,
         version=row.version,
         expected_case_version=row.expected_case_version,
-        plan_hash=row.plan_hash,
-        created_at=row.created_at,
+        )
+        canonical = PublicSourcingPlan.create(
+            TenantId(row.tenant_id), command, created_at=row.created_at
+        )
+        if canonical.plan_hash != row.plan_hash:
+            raise ValueError
+    except Exception:  # noqa: BLE001 - 历史异形 JSON 只投影为固定失败。
+        raise ValidationError("公开寻源计划查询绑定无效") from None
+    return replace(
+        canonical,
         status=PublicPlanStatus(row.status),
         confirmed_by=EmployeeId(row.confirmed_by) if row.confirmed_by else None,
         confirmed_at=row.confirmed_at,
@@ -572,7 +597,8 @@ class PublicSourcingPlanRepositoryImpl(_TenantBoundRepository):
                 **{
                     column.name: getattr(row, column.name)
                     for column in SourcingPublicPlanRow.__table__.columns
-                    if column.name not in {"tenant_id", "plan_id", "case_id", "created_at"}
+                    if column.name
+                    not in {"tenant_id", "plan_id", "case_id", "created_at"}
                 }
             )
         )
@@ -682,7 +708,9 @@ async def _row_to_candidate(
             rung=MatchLadderRung(int(row.match_explanation["rung"])),
             comparisons=[
                 _comparison_from_json(item)
-                for item in cast(list[dict[str, object]], row.match_explanation["comparisons"])
+                for item in cast(
+                    list[dict[str, object]], row.match_explanation["comparisons"]
+                )
             ],
             summary=str(row.match_explanation["summary"]),
         )
@@ -719,7 +747,9 @@ async def _row_to_candidate(
         evidence_snapshots=evidence,
         match=match,
         rejected=row.rejected,
-        rejection_reasons=[PriceRejectionReason(item) for item in row.rejection_reasons],
+        rejection_reasons=[
+            PriceRejectionReason(item) for item in row.rejection_reasons
+        ],
         verified_by=EmployeeId(row.verified_by) if row.verified_by else None,
     )
 
@@ -763,9 +793,7 @@ class CandidateRepositoryImpl(_TenantBoundRepository):
         ).scalar_one_or_none()
         return await _row_to_candidate(self._session, row) if row is not None else None
 
-    async def update(
-        self, tenant_id: TenantId, candidate: SupplierCandidate
-    ) -> None:
+    async def update(self, tenant_id: TenantId, candidate: SupplierCandidate) -> None:
         self._require_tenant(tenant_id)
         if candidate.tenant_id != tenant_id:
             raise ValueError("候选租户与请求租户不一致")
@@ -780,7 +808,8 @@ class CandidateRepositoryImpl(_TenantBoundRepository):
                 **{
                     column.name: getattr(row, column.name)
                     for column in SourcingCandidateRow.__table__.columns
-                    if column.name not in {"tenant_id", "candidate_id", "case_id", "created_at"}
+                    if column.name
+                    not in {"tenant_id", "candidate_id", "case_id", "created_at"}
                 }
             )
         )
@@ -1090,21 +1119,13 @@ class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
                 )
                 .join(
                     SourcingReviewRow,
-                    (
-                        SourcingReviewRow.tenant_id == SourcingCaseRow.tenant_id
-                    )
+                    (SourcingReviewRow.tenant_id == SourcingCaseRow.tenant_id)
                     & (SourcingReviewRow.case_id == SourcingCaseRow.case_id),
                 )
                 .join(
                     SourcingSupplyOptionRow,
-                    (
-                        SourcingSupplyOptionRow.tenant_id
-                        == SourcingReviewRow.tenant_id
-                    )
-                    & (
-                        SourcingSupplyOptionRow.case_id
-                        == SourcingReviewRow.case_id
-                    )
+                    (SourcingSupplyOptionRow.tenant_id == SourcingReviewRow.tenant_id)
+                    & (SourcingSupplyOptionRow.case_id == SourcingReviewRow.case_id)
                     & (
                         SourcingSupplyOptionRow.option_id
                         == SourcingReviewRow.primary_option_id
@@ -1148,8 +1169,7 @@ class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
                 select(SourcingCandidateRow).where(
                     SourcingCandidateRow.tenant_id == tenant_id,
                     SourcingCandidateRow.case_id == case_id,
-                    SourcingCandidateRow.candidate_id
-                    == option.supplier_candidate_id,
+                    SourcingCandidateRow.candidate_id == option.supplier_candidate_id,
                 )
             )
             source = await self._session.scalar(
@@ -1187,8 +1207,7 @@ class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
                         select(ProductCandidatePriceRefRow)
                         .where(
                             ProductCandidatePriceRefRow.tenant_id == tenant_id,
-                            ProductCandidatePriceRefRow.product_id
-                            == option.product_id,
+                            ProductCandidatePriceRefRow.product_id == option.product_id,
                         )
                         .order_by(
                             ProductCandidatePriceRefRow.minimum_quantity,
@@ -1212,9 +1231,7 @@ class SourcingHandoffRepositoryImpl(_TenantBoundRepository):
                 )
                 for item in price_rows
             )
-            supplier_candidate_id = SupplierCandidateId(
-                option.supplier_candidate_id
-            )
+            supplier_candidate_id = SupplierCandidateId(option.supplier_candidate_id)
             moq = candidate.moq
         elif option.source == SupplyOptionSource.EXISTING_PRODUCT.value:
             cost_parts = (
@@ -1277,7 +1294,9 @@ def _execution_from_row(row: SourcingSearchExecutionRow) -> SourcingSearchExecut
         query_index=row.query_index,
         request_key=row.request_key,
         query_hash=row.query_hash,
-        locator_results=tuple(cast(dict[str, object], item) for item in row.locator_results),
+        locator_results=tuple(
+            cast(dict[str, object], item) for item in row.locator_results
+        ),
         provider_status=SourcingSearchExecutionStatus(row.provider_status),
         created_at=row.created_at,
         completed_at=row.completed_at,
@@ -1310,18 +1329,14 @@ class SourcingSearchExecutionRepositoryImpl(_TenantBoundRepository):
             await self._session.execute(
                 pg_insert(SourcingSearchExecutionRow)
                 .values(**values)
-                .on_conflict_do_nothing(
-                    index_elements=["tenant_id", "request_key"]
-                )
+                .on_conflict_do_nothing(index_elements=["tenant_id", "request_key"])
                 .returning(SourcingSearchExecutionRow.execution_id)
             )
         ).scalar_one_or_none()
         canonical = await self.get_by_request_key(tenant_id, execution.request_key)
         if canonical is None:
             raise ValidationError("搜索回执幂等读取失败")
-        if (
-            inserted is None
-            and (
+        if inserted is None and (
                 canonical.execution_id != execution.execution_id
                 or canonical.tenant_id != execution.tenant_id
                 or canonical.case_id != execution.case_id
@@ -1333,7 +1348,6 @@ class SourcingSearchExecutionRepositoryImpl(_TenantBoundRepository):
                 or canonical.query_hash != execution.query_hash
                 or canonical.locator_results != execution.locator_results
                 or canonical.provider_status is not execution.provider_status
-            )
         ):
             raise ValidationError("搜索回执幂等键已绑定不同内容")
         return canonical
@@ -1409,7 +1423,9 @@ def _draft_from_row(row: SourcingCandidateDraftRow) -> PublicCandidateDraft:
         source_key=row.source_key,
         supplier_name=row.supplier_name,
         product_title=row.product_title,
-        specs=tuple(PublicCandidateDraftSpec.model_validate(item) for item in row.specs),
+        specs=tuple(
+            PublicCandidateDraftSpec.model_validate(item) for item in row.specs
+        ),
         moq=row.moq,
         indicative_price_tiers=tuple(
             PublicCandidateDraftPriceTier.model_validate(
@@ -1450,9 +1466,7 @@ class PublicCandidateDraftRepositoryImpl(_TenantBoundRepository):
             await self._session.execute(
                 pg_insert(SourcingCandidateDraftRow)
                 .values(**values)
-                .on_conflict_do_nothing(
-                    index_elements=["tenant_id", "source_key"]
-                )
+                .on_conflict_do_nothing(index_elements=["tenant_id", "source_key"])
                 .returning(SourcingCandidateDraftRow.draft_id)
             )
         ).scalar_one_or_none()
@@ -1480,6 +1494,7 @@ class PublicCandidateDraftRepositoryImpl(_TenantBoundRepository):
             )
         ).scalar_one_or_none()
         return _draft_from_row(row) if row is not None else None
+
 
 def _reconciliation_from_row(
     row: SourcingSearchReconciliationRow,
@@ -1526,6 +1541,7 @@ class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
         if inserted_id is not None:
             return reconciliation
         rows = (
+            (
             await self._session.execute(
                 self.scoped_query(SourcingSearchReconciliationRow)
                 .where(
@@ -1538,7 +1554,10 @@ class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
                 )
                 .with_for_update()
             )
-        ).scalars().all()
+            )
+            .scalars()
+            .all()
+        )
         if len(rows) != 1:
             raise SourcingPlanStaleError("不确定搜索核对事实冲突")
         canonical = _reconciliation_from_row(rows[0])

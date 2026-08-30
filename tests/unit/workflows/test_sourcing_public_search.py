@@ -38,6 +38,7 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+from tool_gateway.free_search_contracts import FreeSearchError, FreeSearchStopReason
 from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.engine.runner import StepStatus, WorkflowRun
 from workflows.sourcing_case.steps import PublicSearchStep, sourcing_search_request_key
@@ -152,9 +153,7 @@ def _page(index: int) -> PageSnapshot:
         url=f"https://factory-{index}.example/products/hinge",
         observed_at=NOW,
         content_hash=f"{index + 1:x}" * 64,
-        snapshot_artifact_ref=ArtifactId(
-            f"art_0{index + 1}K39P9M5D6K4A91YEQ80EJZ0X"
-        ),
+        snapshot_artifact_ref=ArtifactId(f"art_0{index + 1}K39P9M5D6K4A91YEQ80EJZ0X"),
     )
 
 
@@ -246,6 +245,7 @@ class _Receipts:
         self.saved: list[tuple[int, tuple[dict[str, str], ...]]] = []
         self.uncertain: list[int] = []
         self.commit_error: BaseException | None = None
+        self.page_attempts: set[tuple[int, int]] = set()
 
     async def restore(self, *, tenant_id, run_id, plan_hash, query_index):
         assert (tenant_id, run_id, plan_hash) == (TENANT, RUN_ID, PLAN_HASH)
@@ -266,6 +266,16 @@ class _Receipts:
     async def record_uncertain(self, **values):
         self.uncertain.append(values["query_index"])
 
+    async def count_page_attempts(self, **values):
+        return len(self.page_attempts)
+
+    async def claim_page_attempt(self, **values):
+        key = (values["query_index"], values["result_index"])
+        if key in self.page_attempts:
+            return False
+        self.page_attempts.add(key)
+        return True
+
 
 class _Searcher:
     def __init__(self, batches: list[SearchResultBatch], timeline: list[str]) -> None:
@@ -275,6 +285,8 @@ class _Searcher:
         self.released: list[str] = []
         self.discarded = 0
         self.error: BaseException | None = None
+        self.release_error: BaseException | None = None
+        self.discard_error: BaseException | None = None
 
     async def search(
         self, tenant_id, run_id, query, country, category, limit, *, quota_request_key
@@ -286,9 +298,13 @@ class _Searcher:
         return self.batches[("US", "DE").index(country)]
 
     def release(self, batch):
+        if self.release_error is not None:
+            raise self.release_error
         self.released.append(batch.handle)
 
     def discard_all(self):
+        if self.discard_error is not None:
+            raise self.discard_error
         self.discarded += 1
 
 
@@ -379,7 +395,9 @@ def test_sourcing_request_key_binds_plan_hash_and_zero_based_query_index() -> No
 
 
 @pytest.mark.asyncio
-async def test_ordered_search_persists_locator_before_pages_and_honors_budgets() -> None:
+async def test_ordered_search_persists_locator_before_pages_and_honors_budgets() -> (
+    None
+):
     step, searcher, pages, receipts, extractor, drafts, _, timeline = _step()
 
     result = await step.execute(_run())
@@ -492,6 +510,98 @@ async def test_page_or_provider_failures_keep_exact_stop_reason_and_cleanup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ToolGatewayError(ToolErrorCategory.RATE_LIMITED),
+        ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT),
+        FreeSearchError(FreeSearchStopReason.QUOTA_EXHAUSTED),
+        FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN),
+    ],
+)
+async def test_every_dispatched_search_failure_counts_one_attempt(error) -> None:
+    step, searcher, _, _, _, _, _, _ = _step()
+    searcher.error = error
+
+    result = await step.execute(_run())
+
+    assert result[2]["sourcing_searches_used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_reservation_without_receipt_counts_once() -> None:
+    step, _, _, _, _, _, quota, _ = _step()
+    quota.reservations[(RUN_ID, sourcing_search_request_key(PLAN_HASH, 0))] = object()
+
+    result = await step.execute(_run())
+
+    assert result[2]["sourcing_searches_used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_validation_is_never_mislabeled_provider_timeout() -> None:
+    step, searcher, _, _, _, _, _, _ = _step()
+    searcher.error = ToolGatewayError(ToolErrorCategory.VALIDATION)
+
+    with pytest.raises(ValidationError, match="搜索请求无效"):
+        await step.execute(_run())
+
+
+@pytest.mark.asyncio
+async def test_restart_counts_and_skips_durable_page_attempt() -> None:
+    step, _, pages, receipts, _, drafts, _, _ = _step(plan=_plan(pages=1))
+    receipts.page_attempts.add((0, 0))
+
+    result = await step.execute(_run())
+
+    assert result[2]["sourcing_pages_used"] == 1
+    assert pages.calls == []
+    assert drafts.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["read", "extract", "save"])
+async def test_crash_after_page_claim_never_rereads_same_slot(
+    failure_stage: str,
+) -> None:
+    step, _, pages, receipts, extractor, drafts, _, _ = _step(plan=_plan(pages=1))
+    if failure_stage == "read":
+        pages.error = RuntimeError("sensitive-page")
+    elif failure_stage == "extract":
+
+        async def fail_extract(*_args):
+            raise RuntimeError("sensitive-extract")
+
+        extractor.extract = fail_extract
+    else:
+
+        async def fail_save(**_values):
+            raise RuntimeError("sensitive-save")
+
+        drafts.save = fail_save
+
+    with pytest.raises(ValidationError) as caught:
+        await step.execute(_run())
+    assert "sensitive" not in str(caught.value)
+
+    pages.error = None
+    extractor = _Extractor([_page(0)])
+    drafts = _Drafts()
+    restarted = PublicSearchStep(
+        need_reader=_NeedReader(),
+        plan_reader=_PlanReader(_plan(pages=1)),
+        quota=_Quota(),
+        searcher=_Searcher([_batch(0, (_result(0),)), _batch(1, ())], []),
+        page_reader=pages,
+        receipts=receipts,
+        extractor=extractor,
+        drafts=drafts,
+    )
+    await restarted.execute(_run())
+    assert len(pages.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_cancellation_releases_batch_and_discards_outer_slot() -> None:
     step, searcher, pages, _, _, _, _, _ = _step()
     pages.error = asyncio.CancelledError()
@@ -514,6 +624,18 @@ async def test_receipt_failure_still_releases_acquired_batch() -> None:
     assert "receipt-sensitive-payload" not in str(caught.value)
     assert len(searcher.released) == 1
     assert searcher.discarded == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failures_do_not_mask_primary_safe_result() -> None:
+    step, searcher, pages, _, _, _, _, _ = _step()
+    pages.error = ToolGatewayError(ToolErrorCategory.PAGE_ACCESS_FORBIDDEN)
+    searcher.release_error = RuntimeError("sensitive-release")
+    searcher.discard_error = RuntimeError("sensitive-discard")
+
+    result = await step.execute(_run())
+
+    assert result[2]["sourcing_stop_reason"] == "page_access_forbidden"
 
 
 @pytest.mark.asyncio
@@ -545,6 +667,7 @@ async def test_trusted_draft_writer_excludes_raw_quote_and_keeps_incomplete_cali
         "SqlAlchemySourcingUnitOfWork",
         lambda *_args, **_kwargs: _Uow(),
     )
+
     async def verified(_self, _draft):
         return None
 

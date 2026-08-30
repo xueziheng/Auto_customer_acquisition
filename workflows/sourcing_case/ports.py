@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
-from connectors.web_search.client import PageSnapshot
+from agent_runtime.sourcing_agent import (
+    SafeSourcingPageSnapshot,
+    SourcingPageCandidateDraft,
+)
 from domains.sourcing.service import PublicSourcingPlan, SourcingNeedSnapshot
 from shared.schemas.identifiers import (
     OpportunityId,
@@ -61,6 +63,10 @@ class PersistedSearchReceiptPort(Protocol):
 
     async def record_uncertain(self, **values: object) -> None: ...
 
+    async def count_page_attempts(self, **values: object) -> int: ...
+
+    async def claim_page_attempt(self, **values: object) -> bool: ...
+
 
 class PublicSourcingSearcher(Protocol):
     async def search(
@@ -87,12 +93,12 @@ class PublicPageReader(Protocol):
         run_id: RunId,
         batch: SearchResultBatch,
         result_index: int,
-    ) -> PageSnapshot: ...
+    ) -> SafeSourcingPageSnapshot: ...
 
 
 class PublicCandidateExtractor(Protocol):
     async def extract(
-        self, need: SourcingNeedSnapshot, page: PageSnapshot
+        self, need: SourcingNeedSnapshot, page: SafeSourcingPageSnapshot
     ) -> SourcingPageCandidateDraft: ...
 
 

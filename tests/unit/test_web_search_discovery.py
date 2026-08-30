@@ -13,8 +13,9 @@ from connectors.web_search.transport import (
     PublicPageRejectedError,
     PublicPageRejectedReason,
     SafePublicPageHttpTransport,
+    WebSearchRateLimitedError,
 )
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, new_id
 from tool_gateway.errors import ToolErrorCategory
 from tool_gateway.handlers.web_search import map_web_provider_error
@@ -51,19 +52,33 @@ def test_public_page_rejection_reason_survives_gateway_mapping(
     assert reason.value not in repr(error)
 
 
-@pytest.mark.parametrize("body", [
+@pytest.mark.parametrize(
+    "body",
+    [
     b"<html><title>Sign in required</title><form><input type='password'></form></html>",
     b"<html><title>Verify you are human</title><div class='g-recaptcha'></div></html>",
     b"<html><h1>Access denied</h1>Automated access is prohibited.</html>",
     b"<html><title>Account Portal</title><form><label>Username</label><input name='username'><input type='password'><button>Login</button></form></html>",
-])
+    ],
+)
 async def test_blocked_pages_never_become_public_snapshots(monkeypatch, body):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     transport = SafePublicPageHttpTransport()
-    monkeypatch.setattr(transport, "_request_once", lambda parsed: (
-        (404, None, "text/plain", None, b"") if parsed.path == "/robots.txt"
+    monkeypatch.setattr(
+        transport,
+        "_request_once",
+        lambda parsed: (
+            (404, None, "text/plain", None, b"")
+            if parsed.path == "/robots.txt"
         else (200, None, "text/html", None, body)
-    ))
+        ),
+    )
     with pytest.raises(PublicPageRejectedError):
         await transport.fetch("https://example.com/about")
 
@@ -114,14 +129,22 @@ async def test_blocked_page_kind_is_preserved_without_response_text(
 
 
 async def test_robots_disallow_prevents_target_read(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     transport = SafePublicPageHttpTransport()
     paths = []
+
     def response(parsed):
         paths.append(parsed.path)
         if parsed.path == "/robots.txt":
             return 200, None, "text/plain", None, b"User-agent: *\nDisallow: /private\n"
         return 200, None, "text/html", None, b"<html>Public company</html>"
+
     monkeypatch.setattr(transport, "_request_once", response)
     with pytest.raises(PublicPageRejectedError):
         await transport.fetch("https://example.com/private")
@@ -129,13 +152,24 @@ async def test_robots_disallow_prevents_target_read(monkeypatch):
 
 
 async def test_public_login_link_or_contact_captcha_is_not_a_login_wall(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     transport = SafePublicPageHttpTransport()
     body = b"<html><nav><a href='/login'>Login</a></nav><h1>Acme importer</h1><p>Our contact form uses CAPTCHA to prevent spam.</p><div class='g-recaptcha'></div></html>"
-    monkeypatch.setattr(transport, "_request_once", lambda parsed: (
-        (404, None, "text/plain", None, b"") if parsed.path == "/robots.txt"
+    monkeypatch.setattr(
+        transport,
+        "_request_once",
+        lambda parsed: (
+            (404, None, "text/plain", None, b"")
+            if parsed.path == "/robots.txt"
         else (200, None, "text/html", None, body)
-    ))
+        ),
+    )
     assert (await transport.fetch("https://example.com/about")).body == body
 
 
@@ -147,31 +181,96 @@ def test_public_company_prose_with_embedded_login_form_is_not_a_wall():
     )
 
 
-@pytest.mark.parametrize("status,body", [
-    (403, b""), (451, b""), (500, b""), (200, b"<html>Login required</html>"),
-])
-async def test_robots_unavailable_or_not_a_rules_document_fails_closed(monkeypatch, status, body):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (403, b""),
+        (451, b""),
+        (200, b"<html>Login required</html>"),
+    ],
+)
+async def test_robots_unavailable_or_not_a_rules_document_fails_closed(
+    monkeypatch, status, body
+):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     transport = SafePublicPageHttpTransport()
     paths = []
+
     def response(parsed):
         paths.append(parsed.path)
         return status, None, "text/plain", None, body
+
     monkeypatch.setattr(transport, "_request_once", response)
     with pytest.raises(PublicPageRejectedError):
         await transport.fetch("https://example.com/about")
     assert paths == ["/robots.txt"]
 
 
+@pytest.mark.parametrize("robots", [False, True])
+async def test_public_page_429_is_rate_limited(monkeypatch, robots: bool) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+    transport = SafePublicPageHttpTransport()
+
+    def response(parsed):
+        if parsed.path == "/robots.txt" and not robots:
+            return 404, None, "text/plain", None, b""
+        return 429, None, "text/plain", None, b""
+
+    monkeypatch.setattr(transport, "_request_once", response)
+    with pytest.raises(WebSearchRateLimitedError):
+        await transport.fetch("https://example.com/about")
+
+
+@pytest.mark.parametrize("robots", [False, True])
+async def test_public_page_5xx_is_transient(monkeypatch, robots: bool) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+    transport = SafePublicPageHttpTransport()
+
+    def response(parsed):
+        if parsed.path == "/robots.txt" and not robots:
+            return 404, None, "text/plain", None, b""
+        return 503, None, "text/plain", None, b""
+
+    monkeypatch.setattr(transport, "_request_once", response)
+    with pytest.raises(TransientError):
+        await transport.fetch("https://example.com/about")
+
+
 async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     transport = SafePublicPageHttpTransport()
     requested = []
+
     def response(parsed):
         requested.append(parsed.hostname)
         if parsed.path == "/robots.txt":
             return 404, None, "text/plain", None, b""
         return 302, "https://other.example/about", None, None, None
+
     monkeypatch.setattr(transport, "_request_once", response)
     with pytest.raises(PublicPageRejectedError) as caught:
         await transport.fetch("https://example.com/about")
@@ -179,24 +278,56 @@ async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypa
     assert set(requested) == {"example.com"}
 
 
-@pytest.mark.parametrize("rules,path,allowed", [
-    ("User-agent: *\nDisallow: /private\nAllow: /private/public", "/private/public", True),
+@pytest.mark.parametrize(
+    "rules,path,allowed",
+    [
+        (
+            "User-agent: *\nDisallow: /private\nAllow: /private/public",
+            "/private/public",
+            True,
+        ),
     ("User-agent: *\nDisallow: /*?token=*\n", "/page?token=x", False),
     ("User-agent: TradeOS-Agent\nDisallow: /\nUser-agent: *\nAllow: /", "/", False),
     ("User-agent: *\nDisallow: /shop$\n", "/shop/products", True),
     ("User-agent: *\nCrawl-delay: 5\n", "/", False),
     ("User-agent: \nAllow: /\nUser-agent: *\nDisallow: /", "/", False),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private%2Fpublic", "/private/public", False),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private%2fpublic", "/private%2Fpublic", True),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private/%70ublic", "/private/public", True),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private/%2A", "/private/secret", False),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private/public%24", "/private/public", False),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private/%FF", "/private/secret", False),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private%2Fpublic",
+            "/private/public",
+            False,
+        ),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private%2fpublic",
+            "/private%2Fpublic",
+            True,
+        ),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private/%70ublic",
+            "/private/public",
+            True,
+        ),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private/%2A",
+            "/private/secret",
+            False,
+        ),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private/public%24",
+            "/private/public",
+            False,
+        ),
+        (
+            "User-agent: *\nDisallow: /private/\nAllow: /private/%FF",
+            "/private/secret",
+            False,
+        ),
     ("User-agent: *\nDisallow: /private/\nAllow: /private/%GG", "/public", False),
     ("User-agent: *\nDisallow: /private/", "/public%", False),
-])
+    ],
+)
 def test_robots_specific_groups_and_path_restrictions(rules, path, allowed):
     from connectors.web_search.page_policy import robots_allows
+
     assert robots_allows(rules.encode(), "https://example.com" + path) is allowed
 
 
@@ -221,7 +352,9 @@ def test_robots_specific_groups_and_path_restrictions(rules, path, allowed):
     ],
 )
 def test_robots_distinguishes_rule_operators_from_literal_uri_characters(
-    pattern: str, path: str, allowed: bool,
+    pattern: str,
+    path: str,
+    allowed: bool,
 ) -> None:
     from connectors.web_search.page_policy import robots_allows
 

@@ -107,7 +107,9 @@ def _artifact() -> ArtifactId:
     return ArtifactId(new_id("art"))
 
 
-def _need_snapshot(need_id: ValidatedNeedId, artifact_id: ArtifactId) -> SourcingNeedSnapshot:
+def _need_snapshot(
+    need_id: ValidatedNeedId, artifact_id: ArtifactId
+) -> SourcingNeedSnapshot:
     provenance = ProvenanceSummary(
         source_type=SourceType.CONVERSATION,
         source_id="msg-need",
@@ -126,7 +128,9 @@ def _need_snapshot(need_id: ValidatedNeedId, artifact_id: ArtifactId) -> Sourcin
     )
 
 
-async def _seed_need(engine: AsyncEngine, tenant_id: TenantId, need_id: ValidatedNeedId) -> None:
+async def _seed_need(
+    engine: AsyncEngine, tenant_id: TenantId, need_id: ValidatedNeedId
+) -> None:
     async with engine.begin() as connection:
         await connection.execute(
             text(
@@ -283,10 +287,14 @@ def _candidate(
         for name in ("product_type", "material", "size", "model")
     ]
     fact = SourcingObservedFact(
-        value="offered", provenance=provenance, evidence_ref=ArtifactId(evidence[0].artifact_ref)
+        value="offered",
+        provenance=provenance,
+        evidence_ref=ArtifactId(evidence[0].artifact_ref),
     )
     claim = SourcingSupplierClaim(
-        value="offered", provenance=provenance, evidence_ref=ArtifactId(evidence[0].artifact_ref)
+        value="offered",
+        provenance=provenance,
+        evidence_ref=ArtifactId(evidence[0].artifact_ref),
     )
     inference = SourcingMatchInference(
         value="可按已确认规格供货",
@@ -294,9 +302,7 @@ def _candidate(
         inferred_by="extractor-v1",
         inferred_at=NOW,
     )
-    facts = {
-        name: fact for name in ("product_type", "material", "size", "model")
-    }
+    facts = {name: fact for name in ("product_type", "material", "size", "model")}
     facts.update(
         {
             "moq": SourcingObservedFact(
@@ -325,7 +331,9 @@ def _candidate(
         created_at=NOW,
         source_platform="official_site",
         observed_facts=facts,
-        supplier_claims={name: claim for name in ("product_type", "material", "size", "model")},
+        supplier_claims={
+            name: claim for name in ("product_type", "material", "size", "model")
+        },
         match_inferences={"substitution": inference},
         verified_specs=specs,
         indicative_price_tiers=(
@@ -359,9 +367,7 @@ async def _seed_reconciliation_scope(
     """为原子核对仓储建立同租户 Case/plan/Run/execution 真实 FK 图。"""
 
     Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
-    SearchExecution = _symbol(
-        "domains.sourcing.models", "SourcingSearchExecution"
-    )
+    SearchExecution = _symbol("domains.sourcing.models", "SourcingSearchExecution")
     SearchExecutionStatus = _symbol(
         "domains.sourcing.models", "SourcingSearchExecutionStatus"
     )
@@ -391,9 +397,7 @@ async def _seed_reconciliation_scope(
         )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with Uow(factory, tenant_id) as uow:
-        await uow.cases.add(
-            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
-        )
+        await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
         await uow.plans.add(tenant_id, plan)
         for index, execution_id in enumerate(execution_ids):
             await uow.search_executions.add(
@@ -455,9 +459,7 @@ async def test_reconciliation_canonical_get_or_create_is_atomic_under_barrier(
         sourcing_engine, tenant_id, execution_ids=execution_ids
     )
 
-    async def race(
-        left: Any, right: Any
-    ) -> tuple[object, object]:
+    async def race(left: Any, right: Any) -> tuple[object, object]:
         barrier = asyncio.Barrier(2)
 
         async def write(candidate: Any) -> Any:
@@ -480,14 +482,12 @@ async def test_reconciliation_canonical_get_or_create_is_atomic_under_barrier(
 
     shared_id = new_id("srr")
     operation_drift = await race(
-        _confirmed_reconciliation(
-            tenant_id, execution_ids[1], artifact_id, shared_id
-        ),
-        _confirmed_reconciliation(
-            tenant_id, execution_ids[2], artifact_id, shared_id
-        ),
+        _confirmed_reconciliation(tenant_id, execution_ids[1], artifact_id, shared_id),
+        _confirmed_reconciliation(tenant_id, execution_ids[2], artifact_id, shared_id),
     )
-    assert sum(isinstance(item, SourcingPlanStaleError) for item in operation_drift) == 1
+    assert (
+        sum(isinstance(item, SourcingPlanStaleError) for item in operation_drift) == 1
+    )
     operation_error = next(
         item for item in operation_drift if isinstance(item, SourcingPlanStaleError)
     )
@@ -507,7 +507,9 @@ async def test_reconciliation_canonical_get_or_create_is_atomic_under_barrier(
             reason="不同核对载荷",
         ),
     )
-    assert sum(isinstance(item, SourcingPlanStaleError) for item in execution_drift) == 1
+    assert (
+        sum(isinstance(item, SourcingPlanStaleError) for item in execution_drift) == 1
+    )
     execution_error = next(
         item for item in execution_drift if isinstance(item, SourcingPlanStaleError)
     )
@@ -622,15 +624,26 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         "domains.sourcing.models", "SourcingReconciliationStatus"
     )
 
-    tenant_id, need_id, case_id = _tenant(), ValidatedNeedId(new_id("need")), SourcingCaseId(new_id("src"))
+    tenant_id, need_id, case_id = (
+        _tenant(),
+        ValidatedNeedId(new_id("need")),
+        SourcingCaseId(new_id("src")),
+    )
     artifact_late, artifact_early = _artifact(), _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
-    await _seed_artifact(sourcing_engine, tenant_id, artifact_late, content_hash="b" * 64)
-    await _seed_artifact(sourcing_engine, tenant_id, artifact_early, content_hash="c" * 64)
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_late, content_hash="b" * 64
+    )
+    await _seed_artifact(
+        sourcing_engine, tenant_id, artifact_early, content_hash="c" * 64
+    )
     case = _case(tenant_id, need_id, case_id, artifact_early)
     plan = _plan(tenant_id, case_id)
     evidence_late = EvidenceSnapshot(
-        "https://factory.example/late", NOW + timedelta(minutes=1), "b" * 64, str(artifact_late)
+        "https://factory.example/late",
+        NOW + timedelta(minutes=1),
+        "b" * 64,
+        str(artifact_late),
     )
     evidence_early = EvidenceSnapshot(
         "https://factory.example/early", NOW, "c" * 64, str(artifact_early)
@@ -678,13 +691,21 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         await uow.checks.add(
             tenant_id,
             LadderCheck(
-                check_id=new_id("slc"), tenant_id=tenant_id, case_id=case_id,
-                sequence_number=1, rung=MatchLadderRung.CATALOG_EXACT,
+                check_id=new_id("slc"),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                sequence_number=1,
+                rung=MatchLadderRung.CATALOG_EXACT,
                 outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
-                input_snapshot={"category": "hinges"}, input_snapshot_hash="d" * 64,
-                conclusion="无完全匹配", match_object_type=None, match_object_id=None,
-                spec_comparisons=(), evidence_refs=(),
-                checked_by=EmployeeId("emp-checker"), checked_at=NOW,
+                input_snapshot={"category": "hinges"},
+                input_snapshot_hash="d" * 64,
+                conclusion="无完全匹配",
+                match_object_type=None,
+                match_object_id=None,
+                spec_comparisons=(),
+                evidence_refs=(),
+                checked_by=EmployeeId("emp-checker"),
+                checked_at=NOW,
             ),
         )
         await uow.plans.add(tenant_id, plan)
@@ -706,12 +727,19 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         )
         await uow.reviews.add(tenant_id, review)
         execution = SearchExecution(
-            execution_id=new_id("sex"), tenant_id=tenant_id, case_id=case_id,
-            plan_id=plan.plan_id, run_id=run_id, plan_hash=plan.plan_hash,
-            query_index=0, request_key="e" * 64, query_hash="c" * 64,
+            execution_id=new_id("sex"),
+            tenant_id=tenant_id,
+            case_id=case_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            plan_hash=plan.plan_hash,
+            query_index=0,
+            request_key="e" * 64,
+            query_hash="c" * 64,
             locator_results=({"url": "https://factory.example"},),
             provider_status=SearchExecutionStatus.SUCCEEDED,
-            created_at=NOW, completed_at=NOW,
+            created_at=NOW,
+            completed_at=NOW,
         )
         await uow.search_executions.add(tenant_id, execution)
         public_draft = PublicCandidateDraft(
@@ -783,18 +811,22 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         )
 
     assert loaded_case == case
-    assert loaded_case.stop_detail == SourcingStopDetail(stage=SourcingStopStage.PROVIDER)
+    assert loaded_case.stop_detail == SourcingStopDetail(
+        stage=SourcingStopStage.PROVIDER
+    )
     assert loaded_checks[0].conclusion == "无完全匹配"
     assert loaded_plan == plan
     assert loaded_candidate is not None
-    assert loaded_candidate.indicative_price_tiers[0].amount == Decimal("0.123456789012")
+    assert loaded_candidate.indicative_price_tiers[0].amount == Decimal(
+        "0.123456789012"
+    )
     assert (
-        loaded_candidate.indicative_price_tiers[0].provenance.source_id
-        == "page-field"
+        loaded_candidate.indicative_price_tiers[0].provenance.source_id == "page-field"
     )
     assert loaded_candidate.indicative_price_tiers[0].evidence_ref == artifact_late
     assert [item.artifact_ref for item in loaded_candidate.evidence_snapshots] == [
-        str(artifact_early), str(artifact_late)
+        str(artifact_early),
+        str(artifact_late),
     ]
     assert loaded_options == [option]
     assert loaded_review == review
@@ -827,9 +859,7 @@ async def test_legacy_candidate_duplicate_specs_round_trip_but_never_qualify(
     candidate_id = SupplierCandidateId(new_id("spc"))
     artifact_id = _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
-    await _seed_artifact(
-        sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64
-    )
+    await _seed_artifact(sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64)
     evidence = EvidenceSnapshot(
         "https://factory.example/legacy-duplicate",
         NOW,
@@ -838,9 +868,7 @@ async def test_legacy_candidate_duplicate_specs_round_trip_but_never_qualify(
     )
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
-        await uow.cases.add(
-            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
-        )
+        await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
         await uow.candidates.add(
             tenant_id,
             _candidate(tenant_id, case_id, candidate_id, (evidence,)),
@@ -896,7 +924,11 @@ async def test_case_and_review_cas_reject_stale_writes_without_overwrite(
         "domains.sourcing.errors", "SourcingCaseConflictError"
     )
     SourcingReview = _symbol("domains.sourcing.models", "SourcingReview")
-    tenant_id, need_id, case_id = _tenant(), ValidatedNeedId(new_id("need")), SourcingCaseId(new_id("src"))
+    tenant_id, need_id, case_id = (
+        _tenant(),
+        ValidatedNeedId(new_id("need")),
+        SourcingCaseId(new_id("src")),
+    )
     artifact_id = _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
     case = _case(tenant_id, need_id, case_id, artifact_id)
@@ -923,13 +955,17 @@ async def test_case_and_review_cas_reject_stale_writes_without_overwrite(
     assert current.failed_reason is None
 
     review = SourcingReview.create(
-        review_id=SourcingReviewId(new_id("srv")), tenant_id=tenant_id,
+        review_id=SourcingReviewId(new_id("srv")),
+        tenant_id=tenant_id,
         case_id=case_id,
         command=SourcingReviewCommand(
             primary_option_id=SourcingSupplyOptionId(new_id("sop")),
-            alternate_option_ids=(), reason="旧版本审核", expected_case_version=1,
+            alternate_option_ids=(),
+            reason="旧版本审核",
+            expected_case_version=1,
         ),
-        submitted_by=EmployeeId("emp-reviewer"), submitted_at=NOW,
+        submitted_by=EmployeeId("emp-reviewer"),
+        submitted_at=NOW,
         actual_case_version=1,
     )
     with pytest.raises(SourcingCaseConflictError):
@@ -937,7 +973,9 @@ async def test_case_and_review_cas_reject_stale_writes_without_overwrite(
             await uow.reviews.add(tenant_id, review)
     async with sourcing_engine.connect() as connection:
         count = await connection.scalar(
-            text("SELECT count(*) FROM sourcing_reviews WHERE tenant_id=:tenant AND case_id=:case"),
+            text(
+                "SELECT count(*) FROM sourcing_reviews WHERE tenant_id=:tenant AND case_id=:case"
+            ),
             {"tenant": tenant_id, "case": case_id},
         )
     assert count == 0
@@ -974,6 +1012,50 @@ async def test_public_plan_confirmation_cas_rejects_a_second_stale_confirmation(
             await uow.plans.update(tenant_id, stale)
 
 
+@pytest.mark.parametrize(
+    ("countries", "queries"),
+    [
+        (["US", "DE"], [{"query_text": "hinge manufacturer", "target_country": "US"}]),
+        (
+            ["US"],
+            [
+                {"query_text": "hinge manufacturer", "target_country": "US"},
+                {"query_text": "hinge manufacturer", "target_country": "US"},
+            ],
+        ),
+        (["US"], [{"query_text": "drifted query", "target_country": "US"}]),
+    ],
+)
+async def test_public_plan_direct_database_scope_corruption_fails_closed(
+    sourcing_engine: AsyncEngine, countries: list[str], queries: list[dict[str, str]]
+) -> None:
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
+    case_id, artifact_id = SourcingCaseId(new_id("src")), _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    plan = _plan(tenant_id, case_id)
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
+        await uow.plans.add(tenant_id, plan)
+    async with sourcing_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_public_plans SET target_countries=CAST(:countries AS jsonb), queries=CAST(:queries AS jsonb), max_search_queries=:maximum WHERE tenant_id=:tenant AND plan_id=:plan"
+            ),
+            {
+                "countries": json.dumps(countries),
+                "queries": json.dumps(queries),
+                "maximum": len(queries),
+                "tenant": tenant_id,
+                "plan": plan.plan_id,
+            },
+        )
+    with pytest.raises(ValidationError, match="查询绑定"):
+        async with Uow(sf, tenant_id) as uow:
+            await uow.plans.get(tenant_id, plan.plan_id)
+
+
 async def test_public_plan_confirmation_rejects_changed_case_atomically(
     sourcing_engine: AsyncEngine,
 ) -> None:
@@ -987,9 +1069,7 @@ async def test_public_plan_confirmation_rejects_changed_case_atomically(
     plan = _plan(tenant_id, case_id)
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
-        await uow.cases.add(
-            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
-        )
+        await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
         await uow.plans.add(tenant_id, plan)
     async with Uow(sf, tenant_id) as uow:
         changed_case = await uow.cases.get(tenant_id, case_id)
@@ -1023,8 +1103,9 @@ async def test_review_confirmation_cas_preserves_first_confirmer(
     Review = _symbol("domains.sourcing.models", "SourcingReview")
     tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
     case_id, artifact_id = SourcingCaseId(new_id("src")), _artifact()
-    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
-        new_id("sop")
+    product_id, option_id = (
+        ProductId(new_id("prd")),
+        SourcingSupplyOptionId(new_id("sop")),
     )
     review_id = SourcingReviewId(new_id("srv"))
     await _seed_need(sourcing_engine, tenant_id, need_id)
@@ -1056,9 +1137,7 @@ async def test_review_confirmation_cas_preserves_first_confirmer(
         actual_case_version=1,
     )
     async with Uow(sf, tenant_id) as uow:
-        await uow.cases.add(
-            tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
-        )
+        await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
         await uow.options.add(
             tenant_id,
             SourcingSupplyOption(
@@ -1099,35 +1178,29 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
     Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
     Review = _symbol("domains.sourcing.models", "SourcingReview")
     tenant_id, other_tenant = _tenant(), _tenant()
-    need_id, case_id = ValidatedNeedId(new_id("need")), SourcingCaseId(
-        new_id("src")
-    )
+    need_id, case_id = ValidatedNeedId(new_id("need")), SourcingCaseId(new_id("src"))
     opportunity_id = OpportunityId(new_id("opp"))
     candidate_id = SupplierCandidateId(new_id("spc"))
-    product_id, alternate_product_id = ProductId(new_id("prd")), ProductId(
-        new_id("prd")
+    product_id, alternate_product_id = (
+        ProductId(new_id("prd")),
+        ProductId(new_id("prd")),
     )
-    option_id, alternate_option_id = SourcingSupplyOptionId(
-        new_id("sop")
-    ), SourcingSupplyOptionId(new_id("sop"))
+    option_id, alternate_option_id = (
+        SourcingSupplyOptionId(new_id("sop")),
+        SourcingSupplyOptionId(new_id("sop")),
+    )
     review_id = SourcingReviewId(new_id("srv"))
     artifact_id = _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
-    await _seed_artifact(
-        sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64
-    )
-    await _seed_opportunity(
-        sourcing_engine, tenant_id, opportunity_id, need_id
-    )
+    await _seed_artifact(sourcing_engine, tenant_id, artifact_id, content_hash="d" * 64)
+    await _seed_opportunity(sourcing_engine, tenant_id, opportunity_id, need_id)
     evidence = EvidenceSnapshot(
         "https://factory.example/product",
         NOW,
         "d" * 64,
         str(artifact_id),
     )
-    candidate = _candidate(
-        tenant_id, case_id, candidate_id, (evidence,)
-    )
+    candidate = _candidate(tenant_id, case_id, candidate_id, (evidence,))
     case = _case(tenant_id, need_id, case_id, artifact_id)
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     async with Uow(sf, tenant_id) as uow:
@@ -1217,16 +1290,12 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
         )
         await uow.reviews.add(tenant_id, review)
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
     confirmed = review.confirm(EmployeeId("emp-boss"), confirmed_at=NOW)
     async with Uow(sf, tenant_id) as uow:
         await uow.reviews.update(tenant_id, confirmed)
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
     async with Uow(sf, tenant_id) as uow:
         current_case = await uow.cases.get(tenant_id, case_id)
         assert current_case is not None
@@ -1238,9 +1307,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
         current_case.completed_at = NOW + timedelta(seconds=4)
         await uow.cases.update(tenant_id, current_case)
     async with Uow(sf, tenant_id) as uow:
-        snapshot = await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        )
+        snapshot = await uow.handoffs.get_snapshot(tenant_id, case_id, review_id)
     assert snapshot is not None
     assert snapshot.case_id == case_id
     assert snapshot.review_id == review_id
@@ -1255,9 +1322,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
     assert snapshot.price_options[0].unit == "piece"
     assert snapshot.price_options[0].evidence_ref == artifact_id
     async with Uow(sf, other_tenant) as uow:
-        assert await uow.handoffs.get_snapshot(
-            other_tenant, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(other_tenant, case_id, review_id) is None
 
     async with sourcing_engine.begin() as connection:
         await connection.execute(
@@ -1268,9 +1333,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
             {"tenant": tenant_id, "case": case_id},
         )
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
 
     async with sourcing_engine.begin() as connection:
         await connection.execute(
@@ -1292,9 +1355,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
             {"tenant": tenant_id, "product": product_id},
         )
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
 
     async with sourcing_engine.begin() as connection:
         await connection.execute(
@@ -1318,9 +1379,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
             {"tenant": tenant_id, "candidate": candidate_id},
         )
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
 
     async with sourcing_engine.begin() as connection:
         await connection.execute(
@@ -1338,9 +1397,7 @@ async def test_handoff_snapshot_is_tenant_bound_confirmed_primary_and_complete(
             {"tenant": tenant_id, "case": case_id},
         )
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
 
 
 async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
@@ -1351,20 +1408,18 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
     Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
     Review = _symbol("domains.sourcing.models", "SourcingReview")
     tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
-    case_id, opportunity_id = SourcingCaseId(new_id("src")), OpportunityId(
-        new_id("opp")
+    case_id, opportunity_id = (
+        SourcingCaseId(new_id("src")),
+        OpportunityId(new_id("opp")),
     )
-    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
-        new_id("sop")
+    product_id, option_id = (
+        ProductId(new_id("prd")),
+        SourcingSupplyOptionId(new_id("sop")),
     )
     review_id, artifact_id = SourcingReviewId(new_id("srv")), _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
-    await _seed_artifact(
-        sourcing_engine, tenant_id, artifact_id, content_hash="e" * 64
-    )
-    await _seed_opportunity(
-        sourcing_engine, tenant_id, opportunity_id, need_id
-    )
+    await _seed_artifact(sourcing_engine, tenant_id, artifact_id, content_hash="e" * 64)
+    await _seed_opportunity(sourcing_engine, tenant_id, opportunity_id, need_id)
     case = _case(tenant_id, need_id, case_id, artifact_id)
     async with sourcing_engine.begin() as connection:
         await connection.execute(
@@ -1435,9 +1490,7 @@ async def test_existing_product_handoff_preserves_cost_unit_and_evidence(
         current_case.completed_at = NOW + timedelta(seconds=4)
         await uow.cases.update(tenant_id, current_case)
     async with Uow(sf, tenant_id) as uow:
-        snapshot = await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        )
+        snapshot = await uow.handoffs.get_snapshot(tenant_id, case_id, review_id)
     assert snapshot is not None
     assert snapshot.supplier_candidate_id is None
     assert snapshot.quantity == 5000
@@ -1468,20 +1521,18 @@ async def test_handoff_snapshot_requires_completed_transition_and_next_version(
     Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
     Review = _symbol("domains.sourcing.models", "SourcingReview")
     tenant_id, need_id = _tenant(), ValidatedNeedId(new_id("need"))
-    case_id, opportunity_id = SourcingCaseId(new_id("src")), OpportunityId(
-        new_id("opp")
+    case_id, opportunity_id = (
+        SourcingCaseId(new_id("src")),
+        OpportunityId(new_id("opp")),
     )
-    product_id, option_id = ProductId(new_id("prd")), SourcingSupplyOptionId(
-        new_id("sop")
+    product_id, option_id = (
+        ProductId(new_id("prd")),
+        SourcingSupplyOptionId(new_id("sop")),
     )
     review_id, artifact_id = SourcingReviewId(new_id("srv")), _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
-    await _seed_artifact(
-        sourcing_engine, tenant_id, artifact_id, content_hash="f" * 64
-    )
-    await _seed_opportunity(
-        sourcing_engine, tenant_id, opportunity_id, need_id
-    )
+    await _seed_artifact(sourcing_engine, tenant_id, artifact_id, content_hash="f" * 64)
+    await _seed_opportunity(sourcing_engine, tenant_id, opportunity_id, need_id)
     async with sourcing_engine.begin() as connection:
         await connection.execute(
             text(
@@ -1539,9 +1590,7 @@ async def test_handoff_snapshot_requires_completed_transition_and_next_version(
         )
         await uow.reviews.add(tenant_id, review)
     async with Uow(sf, tenant_id) as uow:
-        assert await uow.handoffs.get_snapshot(
-            tenant_id, case_id, review_id
-        ) is None
+        assert await uow.handoffs.get_snapshot(tenant_id, case_id, review_id) is None
 
 
 async def test_sourcing_tenant_mismatch_fails_before_query_and_bound_lookup_isolated(
@@ -1551,7 +1600,11 @@ async def test_sourcing_tenant_mismatch_fails_before_query_and_bound_lookup_isol
 
     Repo = _symbol("infra.db.repositories.sourcing", "SourcingCaseRepositoryImpl")
     tenant_a, tenant_b = _tenant(), _tenant()
-    need_id, case_id, artifact_id = ValidatedNeedId(new_id("need")), SourcingCaseId(new_id("src")), _artifact()
+    need_id, case_id, artifact_id = (
+        ValidatedNeedId(new_id("need")),
+        SourcingCaseId(new_id("src")),
+        _artifact(),
+    )
     await _seed_need(sourcing_engine, tenant_a, need_id)
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
     session_a = sf()
@@ -1603,18 +1656,28 @@ async def test_sourcing_uow_commits_or_rolls_back_business_and_outbox_together(
     SqlAlchemySourcingUnitOfWork = _symbol(
         "infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork"
     )
-    tenant_id, need_id, case_id = _tenant(), ValidatedNeedId(new_id("need")), SourcingCaseId(new_id("src"))
+    tenant_id, need_id, case_id = (
+        _tenant(),
+        ValidatedNeedId(new_id("need")),
+        SourcingCaseId(new_id("src")),
+    )
     artifact_id = _artifact()
     await _seed_need(sourcing_engine, tenant_id, need_id)
     sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
 
     async def execute() -> None:
         async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
-            await uow.cases.add(tenant_id, _case(tenant_id, need_id, case_id, artifact_id))
+            await uow.cases.add(
+                tenant_id, _case(tenant_id, need_id, case_id, artifact_id)
+            )
             await uow.bus.publish(
                 SourcingCandidatesReady(
-                    tenant_id=tenant_id, occurred_at=NOW, run_id=None,
-                    case_id=case_id, option_ids=(), candidate_ids=(),
+                    tenant_id=tenant_id,
+                    occurred_at=NOW,
+                    run_id=None,
+                    case_id=case_id,
+                    option_ids=(),
+                    candidate_ids=(),
                 )
             )
             if raise_after_publish:
@@ -1627,13 +1690,17 @@ async def test_sourcing_uow_commits_or_rolls_back_business_and_outbox_together(
         await execute()
     async with sourcing_engine.connect() as connection:
         business_count = await connection.scalar(
-            select(func.count()).select_from(SourcingCaseRow).where(
+            select(func.count())
+            .select_from(SourcingCaseRow)
+            .where(
                 SourcingCaseRow.tenant_id == tenant_id,
                 SourcingCaseRow.case_id == case_id,
             )
         )
         outbox_count = await connection.scalar(
-            select(func.count()).select_from(OutboxEventRow).where(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
                 OutboxEventRow.tenant_id == tenant_id,
                 OutboxEventRow.event_type == "SourcingCandidatesReady",
             )
@@ -1673,15 +1740,25 @@ async def test_sourcing_uow_commit_failure_rolls_back_business_and_outbox(
                 )
             )
     async with sourcing_engine.connect() as connection:
-        assert await connection.scalar(
-            select(func.count()).select_from(SourcingCaseRow).where(
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(SourcingCaseRow)
+                .where(
                 SourcingCaseRow.tenant_id == tenant_id,
                 SourcingCaseRow.case_id == case_id,
             )
-        ) == 0
-        assert await connection.scalar(
-            select(func.count()).select_from(OutboxEventRow).where(
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(OutboxEventRow)
+                .where(
                 OutboxEventRow.tenant_id == tenant_id,
                 OutboxEventRow.event_type == "SourcingCandidatesReady",
             )
-        ) == 0
+            )
+            == 0
+        )

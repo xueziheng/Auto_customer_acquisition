@@ -104,14 +104,16 @@ class PublicSourcingQuery(BaseModel):
     """老板确认的单条公开寻源查询及其精确国家边界。"""
 
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
-    query_text: str = Field(min_length=1, max_length=500)
+    query_text: str = Field(min_length=1, max_length=400)
     target_country: str = Field(pattern=r"^[A-Z]{2}$")
 
     @model_validator(mode="after")
     def validate_query(self) -> Self:
         """查询正文不得依赖隐式修剪或控制字符。"""
 
-        _bounded_text(self.query_text, field_name="query_text", maximum=500)
+        _bounded_text(self.query_text, field_name="query_text", maximum=400)
+        if len(self.query_text.split()) > 50:
+            raise ValueError("query_text 不得超过 50 个词")
         return self
 
 
@@ -226,7 +228,7 @@ class PublicSourcingPlanCommand(BaseModel):
     plan_id: SourcingPlanId
     case_id: SourcingCaseId
     target_countries: tuple[str, ...] = Field(min_length=1)
-    product_category: str = Field(min_length=1, max_length=200)
+    product_category: str = Field(min_length=1, max_length=100)
     queries: tuple[PublicSourcingQuery, ...] = Field(min_length=1)
     max_search_queries: int = Field(ge=1)
     max_pages_read: int = Field(ge=1)
@@ -241,15 +243,24 @@ class PublicSourcingPlanCommand(BaseModel):
     def validate_scope(self) -> Self:
         """计划边界必须确定、去重，并与查询上限一致。"""
 
-        _bounded_text(self.product_category, field_name="product_category", maximum=200)
+        _bounded_text(self.product_category, field_name="product_category", maximum=100)
         for country in self.target_countries:
             if len(country) != 2 or not country.isascii() or not country.isupper():
                 raise ValueError("target_countries 必须使用两位大写国家代码")
         if len(set(self.target_countries)) != len(self.target_countries):
             raise ValueError("target_countries 不得重复")
-        if any(query.target_country not in self.target_countries for query in self.queries):
+        if any(
+            query.target_country not in self.target_countries for query in self.queries
+        ):
             raise ValueError("queries 的 target_country 必须属于 target_countries")
-        if {query.target_country for query in self.queries} != set(self.target_countries):
+        if any(
+            len(query.query_text) > 400 or len(query.query_text.split()) > 50
+            for query in self.queries
+        ):
+            raise ValueError("queries 超出 Gateway 查询边界")
+        if {query.target_country for query in self.queries} != set(
+            self.target_countries
+        ):
             raise ValueError("每个 target_country 必须至少有一条 query")
         if len(set(self.queries)) != len(self.queries):
             raise ValueError("queries 的文本与国家组合不得重复")
@@ -301,7 +312,9 @@ class SourcingReviewCommand(BaseModel):
     def validate_selection(self) -> Self:
         """强制一个非空主选、至多两个互异且不含主选的备选。"""
 
-        _bounded_text(str(self.primary_option_id), field_name="primary_option_id", maximum=200)
+        _bounded_text(
+            str(self.primary_option_id), field_name="primary_option_id", maximum=200
+        )
         _bounded_text(self.reason, field_name="reason")
         alternate_values = tuple(str(item) for item in self.alternate_option_ids)
         if any(not item or item != item.strip() for item in alternate_values):
@@ -364,7 +377,11 @@ class SourcingHandoffSnapshot(BaseModel):
         source_kinds = {option.source_kind for option in self.price_options}
         if len(source_kinds) != 1:
             raise ValueError("price_options 不得混合 source_kind")
-        expected_source = "supplier_candidate" if self.supplier_candidate_id is not None else "existing_product"
+        expected_source = (
+            "supplier_candidate"
+            if self.supplier_candidate_id is not None
+            else "existing_product"
+        )
         if source_kinds != {expected_source}:
             raise ValueError("supplier_candidate_id 与 source_kind 不一致")
         return self
@@ -383,9 +400,7 @@ class SourcingObservedFact(BaseModel):
         """观察事实不得使用 Agent 推断来源。"""
 
         _validate_provenance_summary(self.provenance)
-        _bounded_text(
-            str(self.evidence_ref), field_name="evidence_ref", maximum=200
-        )
+        _bounded_text(str(self.evidence_ref), field_name="evidence_ref", maximum=200)
         if self.provenance.source_type is SourceType.AGENT_INFERENCE:
             raise ValueError("observed_facts 不得使用 AGENT_INFERENCE 来源")
         return self
@@ -404,9 +419,7 @@ class SourcingSupplierClaim(BaseModel):
         """供应商自述必须来自可追溯来源，不能由 Agent 代写成事实。"""
 
         _validate_provenance_summary(self.provenance)
-        _bounded_text(
-            str(self.evidence_ref), field_name="evidence_ref", maximum=200
-        )
+        _bounded_text(str(self.evidence_ref), field_name="evidence_ref", maximum=200)
         if self.provenance.source_type is SourceType.AGENT_INFERENCE:
             raise ValueError("supplier_claims 不得使用 AGENT_INFERENCE 来源")
         return self
@@ -428,9 +441,7 @@ class SourcingMatchInference(BaseModel):
         _bounded_text(self.value, field_name="match inference")
         _bounded_text(self.inferred_by, field_name="inferred_by", maximum=200)
         for evidence_ref in self.based_on:
-            _bounded_text(
-                str(evidence_ref), field_name="based_on", maximum=200
-            )
+            _bounded_text(str(evidence_ref), field_name="based_on", maximum=200)
         if len(set(self.based_on)) != len(self.based_on):
             raise ValueError("based_on 不得重复")
         return self
@@ -511,7 +522,9 @@ class CandidateSubmission(BaseModel):
         _bounded_text(self.supplier_name, field_name="supplier_name", maximum=300)
         _bounded_text(self.product_title, field_name="product_title", maximum=500)
         _bounded_text(self.evidence_url, field_name="evidence_url")
-        _bounded_text(self.evidence_artifact_ref, field_name="evidence_artifact_ref", maximum=200)
+        _bounded_text(
+            self.evidence_artifact_ref, field_name="evidence_artifact_ref", maximum=200
+        )
         normalized_spec_names = [
             item.spec_name.strip().casefold() for item in self.specs
         ]

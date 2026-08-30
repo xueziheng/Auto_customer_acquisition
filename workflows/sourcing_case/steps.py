@@ -355,17 +355,14 @@ class InternalMatchLadderStep:
                     or _normalize(comparison.required)
                     != required_by_name.get(spec_name)
                     or matched_fact is None
-                    or _normalize(comparison.offered)
-                    != _normalize(matched_fact.value)
-                    or str(comparison.evidence_ref)
-                    != str(matched_fact.evidence_ref)
+                    or _normalize(comparison.offered) != _normalize(matched_fact.value)
+                    or str(comparison.evidence_ref) != str(matched_fact.evidence_ref)
                 ):
                     raise ValidationError("内部产品匹配规格证明不完整")
                 comparison_names.append(spec_name)
-            if (
-                tuple(comparison_names) != required_names
-                or len(set(comparison_names)) != len(comparison_names)
-            ):
+            if tuple(comparison_names) != required_names or len(
+                set(comparison_names)
+            ) != len(comparison_names):
                 raise ValidationError("内部产品匹配规格证明不完整")
             pool = getattr(product.pool, "value", None)
             if pool == "formal":
@@ -396,9 +393,7 @@ class InternalMatchLadderStep:
             if matches:
                 input_snapshot["product_spec_evidence"] = {
                     str(match.product.product_id): {
-                        _normalize(comparison.spec_name): str(
-                            comparison.evidence_ref
-                        )
+                        _normalize(comparison.spec_name): str(comparison.evidence_ref)
                         for comparison in match.spec_comparisons
                     }
                     for match in matches
@@ -667,7 +662,9 @@ class PublicSearchStep:
         self._drafts = drafts
 
     @staticmethod
-    def _wait(reason: str, *, searches: int, pages: int) -> tuple[str, None, dict[str, Any]]:
+    def _wait(
+        reason: str, *, searches: int, pages: int
+    ) -> tuple[str, None, dict[str, Any]]:
         return (
             "wait",
             None,
@@ -712,14 +709,32 @@ class PublicSearchStep:
             raise ValidationError("已授权公开寻源计划绑定无效")
 
         searches_used = 0
-        pages_used = 0
+        try:
+            pages_used = await self._receipts.count_page_attempts(
+                tenant_id=run.tenant_id,
+                case_id=case_id,
+                run_id=run.run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            )
+        except Exception:  # noqa: BLE001 - 持久异常原文不得进入 Workflow。
+            raise ValidationError("公开寻源页面预算读取失败") from None
+        if (
+            not isinstance(pages_used, int)
+            or isinstance(pages_used, bool)
+            or not 0 <= pages_used <= plan.max_pages_read
+        ):
+            raise ValidationError("公开寻源页面预算状态无效")
         result_count = 0
         verifiable_count = 0
         draft_ids: list[str] = []
         rejected_page_reason: str | None = None
         try:
             for query_index, query in enumerate(plan.queries):
-                if searches_used >= plan.max_search_queries or pages_used >= plan.max_pages_read:
+                if (
+                    searches_used >= plan.max_search_queries
+                    or pages_used >= plan.max_pages_read
+                ):
                     break
                 request_key = sourcing_search_request_key(plan_hash, query_index)
                 batch = await self._receipts.restore(
@@ -731,11 +746,13 @@ class PublicSearchStep:
                 try:
                     if batch is None:
                         if await self._quota.get(run.run_id, request_key) is not None:
+                            searches_used += 1
                             return self._wait(
                                 "reconciliation_required",
                                 searches=searches_used,
                                 pages=pages_used,
                             )
+                        searches_used += 1
                         try:
                             batch = await self._searcher.search(
                                 run.tenant_id,
@@ -766,6 +783,8 @@ class PublicSearchStep:
                                 pages=pages_used,
                             )
                         except ToolGatewayError as error:
+                            if error.category is ToolErrorCategory.VALIDATION:
+                                raise ValidationError("公开寻源搜索请求无效") from None
                             return self._wait(
                                 _TOOL_STOP_REASONS.get(
                                     error.category, "provider_timeout"
@@ -773,7 +792,6 @@ class PublicSearchStep:
                                 searches=searches_used,
                                 pages=pages_used,
                             )
-                        searches_used += 1
                         try:
                             await self._receipts.commit_locator_receipt(
                                 tenant_id=run.tenant_id,
@@ -793,15 +811,45 @@ class PublicSearchStep:
                     else:
                         searches_used += 1
                     result_count += len(batch.results)
-                    for result_index in range(
-                        min(len(batch.results), plan.max_pages_read - pages_used)
-                    ):
+                    for result_index in range(len(batch.results)):
+                        if pages_used >= plan.max_pages_read:
+                            break
                         try:
+                            try:
+                                claimed = await self._receipts.claim_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                )
+                            except Exception:  # noqa: BLE001 - DB异常不得泄露。
+                                raise ValidationError(
+                                    "公开寻源页面预算保存失败"
+                                ) from None
+                            if not claimed:
+                                continue
                             pages_used += 1
-                            page = await self._page_reader.read_page(
-                                run.tenant_id, run.run_id, batch, result_index
-                            )
-                            draft = await self._extractor.extract(need, page)
+                            try:
+                                page = await self._page_reader.read_page(
+                                    run.tenant_id, run.run_id, batch, result_index
+                                )
+                            except ToolGatewayError:
+                                raise
+                            except TransientError:
+                                raise TransientError("公开寻源页面暂不可用") from None
+                            except Exception:  # noqa: BLE001 - 页面异常可能含URL或正文。
+                                raise ValidationError("公开寻源页面读取失败") from None
+                            try:
+                                draft = await self._extractor.extract(need, page)
+                            except TransientError:
+                                raise TransientError(
+                                    "公开寻源页面抽取暂不可用"
+                                ) from None
+                            except Exception:  # noqa: BLE001 - 模型异常不得进入 Workflow。
+                                raise ValidationError("公开寻源页面抽取失败") from None
                             if not isinstance(draft, SourcingPageCandidateDraft):
                                 raise ValidationError("公开寻源抽取草稿无效")
                             try:
@@ -816,7 +864,9 @@ class PublicSearchStep:
                                     draft=draft,
                                 )
                             except Exception:  # noqa: BLE001 - 存储异常不得带原文。
-                                raise ValidationError("公开寻源安全草稿保存失败") from None
+                                raise ValidationError(
+                                    "公开寻源安全草稿保存失败"
+                                ) from None
                             draft_ids.append(draft_id)
                             if draft.supplier_name is not None:
                                 verifiable_count += 1
@@ -827,14 +877,24 @@ class PublicSearchStep:
                             continue
                 finally:
                     if batch is not None:
-                        self._searcher.release(batch)
+                        try:
+                            self._searcher.release(batch)
+                        except Exception:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                            pass
         finally:
-            self._searcher.discard_all()
+            try:
+                self._searcher.discard_all()
+            except Exception:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                pass
 
         if result_count == 0:
-            return self._wait("no_search_results", searches=searches_used, pages=pages_used)
+            return self._wait(
+                "no_search_results", searches=searches_used, pages=pages_used
+            )
         if not draft_ids and rejected_page_reason is not None:
-            return self._wait(rejected_page_reason, searches=searches_used, pages=pages_used)
+            return self._wait(
+                rejected_page_reason, searches=searches_used, pages=pages_used
+            )
         if verifiable_count == 0:
             return self._wait(
                 "no_verifiable_supplier", searches=searches_used, pages=pages_used
@@ -877,9 +937,7 @@ class AwaitPublicPlanStep:
         if not isinstance(payload, dict) or set(payload) != {"plan_id", "plan_hash"}:
             raise ValidationError("公开寻源计划授权载荷无效")
         plan_id = _text(payload.get("plan_id"), "公开寻源计划 ID 无效", maximum=40)
-        plan_hash = _text(
-            payload.get("plan_hash"), "公开寻源计划哈希无效", maximum=64
-        )
+        plan_hash = _text(payload.get("plan_hash"), "公开寻源计划哈希无效", maximum=64)
         if len(plan_hash) != 64 or any(
             character not in "0123456789abcdef" for character in plan_hash
         ):

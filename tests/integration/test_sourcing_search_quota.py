@@ -22,6 +22,7 @@ from domains.sourcing.schemas import (
 from domains.sourcing.service import PublicPlanStatus, PublicSourcingPlan
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
 from infra.db.tables import SourcingSearchExecutionRow
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -165,9 +166,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         stored = await uow.cases.get(tenant_id, case_id)
         assert stored is not None
         stored.active_search_plan_id = plan_id
-        stored.transition_to(
-            CaseState.VERIFYING, changed_at=NOW + timedelta(seconds=2)
-        )
+        stored.transition_to(CaseState.VERIFYING, changed_at=NOW + timedelta(seconds=2))
         await uow.cases.update(tenant_id, stored)
 
     slot = WebSearchResultSlot(new_id, maximum_batches=4)
@@ -195,9 +194,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         plan_hash=plan.plan_hash,
         query_index=0,
         request_key=request_key,
-        query_hash=hashlib.sha256(
-            plan.queries[0].query_text.encode()
-        ).hexdigest(),
+        query_hash=hashlib.sha256(plan.queries[0].query_text.encode()).hexdigest(),
         batch=batch,
     )
     slot.discard(batch.handle)
@@ -228,3 +225,81 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
             "description": "locator only",
         }
     ]
+
+    binding = {
+        "tenant_id": tenant_id,
+        "case_id": case_id,
+        "run_id": run_id,
+        "plan_id": plan_id,
+        "plan_hash": plan.plan_hash,
+        "query_index": 0,
+        "result_index": 0,
+    }
+    assert await persistence.claim_page_attempt(**binding) is True
+    assert await persistence.claim_page_attempt(**binding) is False
+    assert (
+        await persistence.count_page_attempts(
+            **{
+                key: value
+                for key, value in binding.items()
+                if key not in {"query_index", "result_index"}
+            }
+        )
+        == 1
+    )
+
+    canonical_locators = row.locator_results
+    for assignments in (
+        {
+            "locator_results": [
+                {
+                    "title": 7,
+                    "url": "https://factory.example/products/hinge",
+                    "description": "locator only",
+                }
+            ]
+        },
+        {
+            "locator_results": [
+                {
+                    "title": "Factory A",
+                    "url": "http://127.0.0.1/private",
+                    "description": "locator only",
+                }
+            ]
+        },
+        {"locator_results": [], "provider_status": "succeeded"},
+        {"plan_hash": "f" * 64},
+        {"query_index": 1},
+    ):
+        async with factory() as session, session.begin():
+            target = (
+                await session.execute(
+                    select(SourcingSearchExecutionRow).where(
+                        SourcingSearchExecutionRow.tenant_id == str(tenant_id),
+                        SourcingSearchExecutionRow.request_key == request_key,
+                    )
+                )
+            ).scalar_one()
+            for name, value in assignments.items():
+                setattr(target, name, value)
+        with pytest.raises(ValidationError):
+            await persistence.restore(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                plan_hash=plan.plan_hash,
+                query_index=0,
+            )
+        async with factory() as session, session.begin():
+            target = (
+                await session.execute(
+                    select(SourcingSearchExecutionRow).where(
+                        SourcingSearchExecutionRow.tenant_id == str(tenant_id),
+                        SourcingSearchExecutionRow.request_key == request_key,
+                    )
+                )
+            ).scalar_one()
+            target.locator_results = canonical_locators
+            target.provider_status = "succeeded"
+            target.plan_hash = plan.plan_hash
+            target.query_index = 0

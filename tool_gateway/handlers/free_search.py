@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 from connectors.search_contracts import SearchResult
 from connectors.tavily.client import TavilySearchConnector, TavilySecretResolver
+from connectors.tavily.transport import TavilyRateLimitedError, TavilyTransientError
 from shared.errors import ValidationError
 from shared.schemas.identifiers import RunId, TenantId
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
@@ -28,7 +30,7 @@ MANIFEST = replace(
         "type": "object",
         "required": ("query", "country", "category", "limit"),
         "properties": {
-            **WEB_SEARCH_MANIFEST.input_schema["properties"],
+            **cast(dict[str, object], WEB_SEARCH_MANIFEST.input_schema["properties"]),
             "quota_request_key": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
@@ -59,7 +61,9 @@ class FreeSearchReader:
             raise ValidationError("免费搜索租户不匹配")
         try:
             await self.quota.check_available(
-                self.run_id, self.request_key, fingerprint_version=self.fingerprint_version
+                self.run_id,
+                self.request_key,
+                fingerprint_version=self.fingerprint_version,
             )
             try:
                 connector = self.connector_factory()
@@ -69,14 +73,26 @@ class FreeSearchReader:
                 await self.quota.record_unavailable(self.run_id)
                 raise FreeSearchError(FreeSearchStopReason.USAGE_UNKNOWN) from None
             await self.quota.reserve(
-                self.run_id, self.request_key, usage,
+                self.run_id,
+                self.request_key,
+                usage,
                 fingerprint_version=self.fingerprint_version,
             )
             await self.quota.mark_dispatched(self.run_id, self.request_key)
             try:
                 results = await connector.search(query, country=country, limit=limit)
-                await self.quota.consume(self.run_id, self.request_key)
+            except TavilyRateLimitedError as error:
+                raise ToolGatewayError(
+                    ToolErrorCategory.RATE_LIMITED,
+                    retry_after_seconds=error.retry_after_seconds,
+                ) from None
+            except TavilyTransientError:
+                raise ToolGatewayError(ToolErrorCategory.PROVIDER_TRANSIENT) from None
             except Exception:  # noqa: BLE001 - dispatch 后任何故障均不得释放或重试。
+                raise FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN) from None
+            try:
+                await self.quota.consume(self.run_id, self.request_key)
+            except Exception:  # noqa: BLE001 - 成功结果但记账未知必须人工对账。
                 raise FreeSearchError(FreeSearchStopReason.REQUEST_UNCERTAIN) from None
             return results
         except FreeSearchError as error:
@@ -108,8 +124,12 @@ class FreeSearchReaderFactory:
             raise ValidationError("免费搜索部署绑定无效")
 
     def for_run(
-        self, tenant_id: TenantId, run_id: RunId, request_key: str,
-        *, fingerprint_version: str,
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        request_key: str,
+        *,
+        fingerprint_version: str,
     ) -> FreeSearchReader:
         """保持现有 `.search(tenant_id, query, country, limit)` reader 形状。"""
         if tenant_id != self.tenant_id or not run_id:
@@ -157,7 +177,12 @@ class FreeSearchGatewaySearcher:
                     tenant_id, run_id, query, country, category, limit
                 )
             return await self._delegate.search(
-                tenant_id, run_id, query, country, category, limit,
+                tenant_id,
+                run_id,
+                query,
+                country,
+                category,
+                limit,
                 quota_request_key=quota_request_key,
             )
         except ToolGatewayError as error:

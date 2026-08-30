@@ -99,7 +99,9 @@ def _plan_command() -> object:
     )
 
 
-def test_public_sourcing_queries_bind_each_ordered_query_to_an_authorized_country() -> None:
+def test_public_sourcing_queries_bind_each_ordered_query_to_an_authorized_country() -> (
+    None
+):
     query_type = _type(sourcing_schemas, "PublicSourcingQuery")
     command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
     queries = (
@@ -156,6 +158,66 @@ def test_public_sourcing_queries_fail_closed_on_unbound_duplicate_or_legacy_valu
             version=1,
             expected_case_version=1,
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("query_text", "word " * 51),
+        ("query_text", "q" * 401),
+        ("product_category", "c" * 101),
+    ],
+)
+def test_public_plan_never_authorizes_values_rejected_by_gateway(
+    field: str, value: str
+) -> None:
+    query_type = _type(sourcing_schemas, "PublicSourcingQuery")
+    command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
+    payload = {
+        "plan_id": SourcingPlanId("spl-gateway-boundary"),
+        "case_id": SourcingCaseId("src-gateway-boundary"),
+        "target_countries": ("DE",),
+        "product_category": "c" * 100,
+        "queries": (query_type(query_text="q" * 400, target_country="DE"),),
+        "max_search_queries": 1,
+        "max_pages_read": 1,
+        "provider": "tavily",
+        "search_depth": "basic",
+        "usage_credits_remaining": 1,
+        "worst_case_credits": 1,
+        "version": 1,
+        "expected_case_version": 1,
+    }
+    if field == "query_text":
+        payload["queries"] = (
+            query_type.model_construct(query_text=value.strip(), target_country="DE"),
+        )
+    else:
+        payload[field] = value
+    with pytest.raises(PydanticValidationError):
+        command_type(**payload)
+
+
+def test_public_plan_accepts_exact_gateway_text_maxima() -> None:
+    query_type = _type(sourcing_schemas, "PublicSourcingQuery")
+    command_type = _type(sourcing_schemas, "PublicSourcingPlanCommand")
+    query = " ".join(["q" * 7] * 49 + ["q" * 6])
+    assert len(query) == 398
+    command = command_type(
+        plan_id=SourcingPlanId("spl-maxima"),
+        case_id=SourcingCaseId("src-maxima"),
+        target_countries=("DE",),
+        product_category="c" * 100,
+        queries=(query_type(query_text=query, target_country="DE"),),
+        max_search_queries=1,
+        max_pages_read=1,
+        provider="tavily",
+        usage_credits_remaining=1,
+        worst_case_credits=1,
+        version=1,
+        expected_case_version=1,
+    )
+    assert command.queries[0].query_text == query
 
 
 def _price_option(
@@ -336,7 +398,10 @@ def test_public_plan_factory_rejects_blank_trusted_tenant() -> None:
 def test_public_plan_confirmation_is_bound_to_exact_hash() -> None:
     plan_type = _type(sourcing_models, "PublicSourcingPlan")
     status_type = _type(sourcing_models, "PublicPlanStatus")
-    stale_error = _type(__import__("domains.sourcing.errors", fromlist=["SourcingPlanStaleError"]), "SourcingPlanStaleError")
+    stale_error = _type(
+        __import__("domains.sourcing.errors", fromlist=["SourcingPlanStaleError"]),
+        "SourcingPlanStaleError",
+    )
 
     plan = plan_type.create(TenantId("tenant-a"), _plan_command(), created_at=NOW)
     confirmed = plan.confirm(EmployeeId("boss-a"), confirmed_at=NOW)
@@ -412,18 +477,14 @@ def test_need_snapshot_keeps_field_provenance_and_rejects_inference_as_fact() ->
     )
     assert snapshot.quantity.provenance.source_id == "msg-customer-a"
 
-    inferred = PROVENANCE.model_copy(
-        update={"source_type": SourceType.AGENT_INFERENCE}
-    )
+    inferred = PROVENANCE.model_copy(update={"source_type": SourceType.AGENT_INFERENCE})
     with pytest.raises(PydanticValidationError, match="AGENT_INFERENCE"):
         fact_type(value="hinge", provenance=inferred)
 
 
 def test_supplier_claim_cannot_be_agent_inference() -> None:
     claim_type = _type(sourcing_schemas, "SourcingSupplierClaim")
-    inferred = PROVENANCE.model_copy(
-        update={"source_type": SourceType.AGENT_INFERENCE}
-    )
+    inferred = PROVENANCE.model_copy(update={"source_type": SourceType.AGENT_INFERENCE})
 
     with pytest.raises(PydanticValidationError, match="supplier_claims"):
         claim_type(
@@ -492,7 +553,9 @@ def test_cost_price_option_requires_finite_positive_decimal(amount: Decimal) -> 
         )
 
 
-def test_cost_price_option_wire_decimal_preserves_long_string_and_rejects_json_number() -> None:
+def test_cost_price_option_wire_decimal_preserves_long_string_and_rejects_json_number() -> (
+    None
+):
     option_type = _type(sourcing_schemas, "SourcingCostPriceOption")
     exact = "12345678901234567890.123456789012345678901234567890"
     string_payload = (
