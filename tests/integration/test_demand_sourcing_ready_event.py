@@ -6,13 +6,15 @@ import importlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Self
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.demand.service import DemandService
-from shared.schemas.identifiers import TenantId, new_id
+from shared.schemas.identifiers import TenantId, ValidatedNeedId, new_id
 
 NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
 
@@ -40,6 +42,61 @@ def _service(
     uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
     service_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
     return service_type(lambda requested: uow_type(factory, requested, now=clock.now), now=clock.now)
+
+
+class _ReadinessPublicationFailed(RuntimeError):
+    """测试中模拟 outbox 行已加入 session 后的发布失败。"""
+
+
+class _FailAfterReadinessPublishBus:
+    """保留真实 outbox 写入，再在 UoW 提交前注入可观察失败。"""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    async def publish(self, event: object) -> None:
+        await self._inner.publish(event)
+        if type(event).__name__ == "NeedBecameSourcingReady":
+            raise _ReadinessPublicationFailed("force readiness publish failure")
+
+
+class _FailAfterReadinessPublishUnitOfWork:
+    """使用真实 demand UoW/仓储，仅在 readiness 写入后中断提交。"""
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        tenant: TenantId,
+        clock: MutableClock,
+    ) -> None:
+        uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+        self._inner = uow_type(factory, tenant, now=clock.now)
+
+    async def __aenter__(self) -> Self:
+        inner = await self._inner.__aenter__()
+        self.needs = inner.needs
+        self.bus = _FailAfterReadinessPublishBus(inner.bus)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        await self._inner.__aexit__(exc_type, exc, tb)
+
+
+def _failing_service(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
+) -> DemandService:
+    service_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    return service_type(
+        lambda requested: _FailAfterReadinessPublishUnitOfWork(
+            factory, requested, clock
+        ),
+        now=clock.now,
+    )
 
 
 async def _promote_need(
@@ -130,3 +187,31 @@ async def test_later_first_transition_publishes_one_readiness_fact(
     event_types = await _outbox_types(factory, tenant)
     assert event_types.count("NeedValidated") == 1
     assert event_types.count("NeedBecameSourcingReady") == 1
+
+
+async def test_readiness_publication_failure_rolls_back_need_and_outbox(
+    demand_db: AsyncEngine,
+) -> None:
+    """事件加入真实 outbox 后失败时，需求跨门槛写入必须一起回滚。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    need_id = await _promote_need(
+        _service(factory, tenant, clock),
+        tenant,
+        {"product_category": "hinges", "application": "marine"},
+    )
+
+    with pytest.raises(_ReadinessPublicationFailed):
+        await _failing_service(factory, tenant, clock).update_need_fields(
+            tenant, need_id, {"quantity": 500}, "msg_quantity", None
+        )
+
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        persisted_need = await uow.needs.get(tenant, ValidatedNeedId(need_id))
+    assert persisted_need is not None
+    assert persisted_need.status.value == "validated"
+    assert persisted_need.completeness == 2
+    assert persisted_need.quantity is None
+    assert "NeedBecameSourcingReady" not in await _outbox_types(factory, tenant)
