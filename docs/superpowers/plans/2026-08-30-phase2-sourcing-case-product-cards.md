@@ -894,14 +894,15 @@ git commit -m "feat: execute bounded public sourcing"
 - Test: `tests/integration/test_sourcing_product_projection.py`
 
 **Interfaces:**
-- Consumes: `SourcingCandidatesReady`, `SourcingService.get_candidate_product_inputs`, `ProductService.create_candidate_from_sourcing`。
+- Consumes: `SourcingCandidatesVerified`, `SourcingService.get_candidate_product_inputs`, `ProductService.create_candidate_from_sourcing`。
+- Calls: `SourcingService.register_supplier_candidate_option`，全部卡与 Option 成功后调用 `mark_candidates_ready`。
 - Produces: `SourcingCandidateProductProjector`; Workflow internal event `SourcingProductCardsPrepared`。
 
 - [ ] **Step 1: 写重复投递与三卡上限失败测试**
 
 ```python
-async def test_candidates_ready_projection_is_idempotent(projector) -> None:
-    event = candidates_ready_event(candidate_count=3)
+async def test_candidates_verified_projection_is_idempotent(projector) -> None:
+    event = candidates_verified_event(candidate_count=3)
     await projector.handle(event)
     await projector.handle(event)
     assert projector.products.created_source_keys == {
@@ -920,10 +921,12 @@ Expected: FAIL，projector 不存在。
 
 - [ ] **Step 3: 实现事件投影与内部产品复用**
 
-对 `source_kind=existing_product` 仅保留原 ProductId；对无产品引用的合格
-Supplier Candidate 调强类型创建接口。全部成功后才向 Case 的活动 Run 投递
-`SourcingProductCardsPrepared`；部分失败抛出让 Outbox 重投，产品来源唯一键保证
-已成功部分不重复。
+对 `source_kind=existing_product` 仅保留原 ProductId；对
+`SourcingCandidatesVerified` 中的每个合格 Supplier Candidate 调强类型创建接口，
+再以真实 ProductId 调 sourcing 服务幂等登记 Supply Option。全部卡与 Option 成功后，
+从 sourcing 服务取得/提交完整候选与 Option 集合并调用 `mark_candidates_ready`；不得
+自行构造占位 ProductId。部分失败抛出让 Outbox 重投，产品来源与 Option 唯一键保证
+已成功部分不重复；最终 `SourcingCandidatesReady` 只表示冻结集合已就绪。
 
 - [ ] **Step 4: 实现 review command 唤醒**
 

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
 from domains.sourcing.schemas import (
+    ProvenanceSummary,
     PublicSourcingPlanCommand,
     SourcingMatchInference,
     SourcingNeedSnapshot,
@@ -35,6 +36,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import Money
+from shared.schemas.provenance import SourceType
 
 
 class MatchLadderRung(int, Enum):
@@ -51,6 +53,13 @@ class MatchLadderRung(int, Enum):
     EXISTING_SUPPLIER_CUSTOM = 5
     PUBLIC_SOURCING = 6
     NEW_FACTORY = 7
+
+
+class LadderOutcome(str, Enum):
+    """单级匹配的确定性结果；不得从自由文本结论推断。"""
+
+    NO_QUALIFIED_SUPPLY = "no_qualified_supply"
+    QUALIFIED_SUPPLY_FOUND = "qualified_supply_found"
 
 
 class SpecMatchLevel(str, Enum):
@@ -84,6 +93,7 @@ class SpecComparison:
     substitutable: bool | None = None
     substitution_impact: str | None = None
     needs_customer_confirmation: bool = False
+    customer_confirmation: ProvenanceSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -443,6 +453,7 @@ class LadderCheck:
     case_id: SourcingCaseId
     sequence_number: int
     rung: MatchLadderRung
+    outcome: LadderOutcome
     input_snapshot: dict[str, object]
     input_snapshot_hash: str
     conclusion: str
@@ -563,6 +574,14 @@ class SupplierCandidate:
                 or not item.offered.strip()
             ):
                 missing.append(name)
+                continue
+            if item.level is SpecMatchLevel.DIFFERENT and item.substitutable is not True:
+                missing.append(f"incompatible_spec:{name}")
+            if item.needs_customer_confirmation and (
+                item.customer_confirmation is None
+                or item.customer_confirmation.source_type is not SourceType.CONVERSATION
+            ):
+                missing.append(f"customer_confirmation:{name}")
 
         for name in ("product_type", "material", "size", "model"):
             observed = self.observed_facts.get(name)

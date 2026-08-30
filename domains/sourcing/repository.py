@@ -34,6 +34,12 @@ from shared.schemas.identifiers import (
 
 @runtime_checkable
 class SourcingCaseRepository(Protocol):
+    async def get_or_create(
+        self, tenant_id: TenantId, case: SourcingCase
+    ) -> tuple[SourcingCase, bool]:
+        """原子返回 trigger key 的 canonical Case 与是否由本事务创建。"""
+        ...
+
     async def add(self, tenant_id: TenantId, case: SourcingCase) -> None:
         """新增同租户案例；实现必须校验实体 tenant_id 一致。"""
         ...
@@ -121,6 +127,12 @@ class SupplyOptionRepository(Protocol):
     async def add(
         self, tenant_id: TenantId, option: SourcingSupplyOption
     ) -> None: ...
+
+    async def get_or_create_supplier_candidate(
+        self, tenant_id: TenantId, option: SourcingSupplyOption
+    ) -> tuple[SourcingSupplyOption, bool]:
+        """按 tenant+Case+Supplier Candidate 原子返回 canonical Option。"""
+        ...
 
     async def get(
         self, tenant_id: TenantId, option_id: SourcingSupplyOptionId

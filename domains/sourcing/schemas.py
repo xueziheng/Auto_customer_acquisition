@@ -294,6 +294,17 @@ class SpecComparisonView(BaseModel):
     substitutable: bool | None = None
     substitution_impact: str | None = None
     needs_customer_confirmation: bool = False
+    customer_confirmation: ProvenanceSummary | None = None
+
+    @model_validator(mode="after")
+    def validate_customer_confirmation(self) -> Self:
+        """客户确认必须来自可定位的客户会话，不能由网页或模型自证。"""
+
+        if self.customer_confirmation is not None:
+            _validate_provenance_summary(self.customer_confirmation)
+            if self.customer_confirmation.source_type is not SourceType.CONVERSATION:
+                raise ValueError("customer_confirmation 必须来自客户会话")
+        return self
 
 
 class CandidateSubmission(BaseModel):

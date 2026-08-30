@@ -64,6 +64,7 @@ from shared.events.catalog import (
     SendingIdentitySuspended,
     SendingIdentityThrottled,
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
     SourcingCaseOpened,
     SuppressionAdded,
@@ -106,6 +107,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "NeedValidated": NeedValidated,
     "NeedBecameSourcingReady": NeedBecameSourcingReady,
     "SourcingCaseOpened": SourcingCaseOpened,
+    "SourcingCandidatesVerified": SourcingCandidatesVerified,
     "SourcingCandidatesReady": SourcingCandidatesReady,
     "SourcingCaseHandedToCosting": SourcingCaseHandedToCosting,
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享

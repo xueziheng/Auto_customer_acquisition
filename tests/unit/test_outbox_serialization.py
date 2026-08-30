@@ -42,6 +42,7 @@ from shared.events.catalog import (
     SendingIdentitySuspended,
     SendingIdentityThrottled,
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
     SuppressionAdded,
 )
@@ -119,6 +120,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedValidated",
         "NeedBecameSourcingReady",
         "SourcingCaseOpened",
+        "SourcingCandidatesVerified",
         "SourcingCandidatesReady",
         "SourcingCaseHandedToCosting",
     }
@@ -153,6 +155,12 @@ def test_phase2_sourcing_events_roundtrip_as_tenant_bound_facts() -> None:
         option_ids=(SourcingSupplyOptionId(new_id("sop")),),
         candidate_ids=(SupplierCandidateId(new_id("sc")),),
     )
+    verified = SourcingCandidatesVerified(
+        tenant_id=ready.tenant_id,
+        occurred_at=_NOW,
+        case_id=candidates.case_id,
+        candidate_ids=candidates.candidate_ids,
+    )
     handed = SourcingCaseHandedToCosting(
         tenant_id=ready.tenant_id,
         occurred_at=_NOW,
@@ -162,7 +170,7 @@ def test_phase2_sourcing_events_roundtrip_as_tenant_bound_facts() -> None:
         review_id=SourcingReviewId(new_id("srv")),
     )
 
-    for event in (ready, candidates, handed):
+    for event in (ready, verified, candidates, handed):
         assert registry[type(event).__name__] is type(event)
         assert _load("deserialize")(type(event), _load("serialize")(event)) == event
 

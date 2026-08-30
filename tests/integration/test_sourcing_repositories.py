@@ -321,6 +321,7 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         "infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork"
     )
     LadderCheck = _symbol("domains.sourcing.models", "LadderCheck")
+    LadderOutcome = _symbol("domains.sourcing.models", "LadderOutcome")
     SearchExecution = _symbol("domains.sourcing.models", "SourcingSearchExecution")
     SearchExecutionStatus = _symbol(
         "domains.sourcing.models", "SourcingSearchExecutionStatus"
@@ -391,6 +392,7 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
             LadderCheck(
                 check_id=new_id("slc"), tenant_id=tenant_id, case_id=case_id,
                 sequence_number=1, rung=MatchLadderRung.CATALOG_EXACT,
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
                 input_snapshot={"category": "hinges"}, input_snapshot_hash="d" * 64,
                 conclusion="无完全匹配", match_object_type=None, match_object_id=None,
                 spec_comparisons=(), evidence_refs=(),

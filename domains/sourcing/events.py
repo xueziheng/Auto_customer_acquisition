@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from shared.events.catalog import (
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseCompleted,
     SourcingCaseHandedToCosting,
     SourcingCaseOpened,
@@ -12,6 +13,7 @@ from shared.events.catalog import (
 PUBLISHES = (
     SourcingCaseOpened,
     SourcingCaseCompleted,
+    SourcingCandidatesVerified,
     SourcingCandidatesReady,
     SourcingCaseHandedToCosting,
 )

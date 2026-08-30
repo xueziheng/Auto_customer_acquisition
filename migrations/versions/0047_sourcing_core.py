@@ -161,6 +161,7 @@ def upgrade() -> None:
         sa.Column("case_id", sa.String(40), nullable=False),
         sa.Column("sequence_number", sa.Integer(), nullable=False),
         sa.Column("rung", sa.Integer(), nullable=False),
+        sa.Column("outcome", sa.String(40), nullable=False),
         sa.Column("input_snapshot", postgresql.JSONB(), nullable=False),
         sa.Column("input_snapshot_hash", sa.String(64), nullable=False),
         sa.Column("conclusion", sa.Text(), nullable=False),
@@ -191,6 +192,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "sequence_number = rung AND rung BETWEEN 1 AND 7",
             name="ck_sourcing_ladder_checks_order",
+        ),
+        sa.CheckConstraint(
+            "outcome IN ('no_qualified_supply','qualified_supply_found')",
+            name="ck_sourcing_ladder_checks_outcome",
         ),
         sa.CheckConstraint(
             "jsonb_typeof(input_snapshot) = 'object'",
@@ -451,6 +456,12 @@ def upgrade() -> None:
             "supplier_candidate_id",
             name="uq_sourcing_supply_options_candidate_path",
         ),
+        sa.UniqueConstraint(
+            "tenant_id",
+            "case_id",
+            "supplier_candidate_id",
+            name="uq_sourcing_supply_options_supplier_candidate",
+        ),
         sa.ForeignKeyConstraint(
             ["tenant_id", "case_id"],
             ["sourcing_cases.tenant_id", "sourcing_cases.case_id"],
@@ -635,7 +646,10 @@ def upgrade() -> None:
         "CREATE FUNCTION guard_sourcing_ladder_check() RETURNS trigger AS $$ "
         "BEGIN IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'immutable sourcing ladder check' USING ERRCODE='23514'; END IF; "
         "IF NEW.rung > 1 AND NOT EXISTS (SELECT 1 FROM sourcing_ladder_checks WHERE tenant_id=NEW.tenant_id AND case_id=NEW.case_id AND rung=NEW.rung-1) "
-        "THEN RAISE EXCEPTION 'sourcing ladder rung skipped' USING ERRCODE='23514'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql"
+        "THEN RAISE EXCEPTION 'sourcing ladder rung skipped' USING ERRCODE='23514'; END IF; "
+        "IF EXISTS (SELECT 1 FROM sourcing_ladder_checks WHERE tenant_id=NEW.tenant_id AND case_id=NEW.case_id AND rung < NEW.rung AND outcome='qualified_supply_found') "
+        "THEN RAISE EXCEPTION 'qualified sourcing ladder hit is terminal' USING ERRCODE='23514'; END IF; "
+        "RETURN NEW; END; $$ LANGUAGE plpgsql"
     )
     op.execute(
         "CREATE TRIGGER trg_sourcing_ladder_check BEFORE INSERT OR UPDATE OR DELETE ON sourcing_ladder_checks "

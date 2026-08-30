@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
 from typing import Any, Self
@@ -30,12 +30,18 @@ from domains.sourcing.schemas import (
     SourcingNeedSnapshot,
     SourcingObservedFact,
     SourcingReviewCommand,
+    SourcingSupplierClaim,
     SpecComparisonView,
 )
-from domains.sourcing.service import SourcingService
+from domains.sourcing.service import (
+    CandidateEvidenceSnapshot,
+    CandidateEvidenceSnapshotReader,
+    SourcingService,
+)
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import (
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
     SourcingCaseOpened,
 )
@@ -64,6 +70,7 @@ SOURCING = SourcingActor("emp-sourcing", TENANT, SourcingScope.TENANT, "sourcing
 _models = importlib.import_module("domains.sourcing.models")
 CaseState = _models.CaseState
 LadderCheck = _models.LadderCheck
+LadderOutcome = _models.LadderOutcome
 MatchLadderRung = _models.MatchLadderRung
 SourcingSupplyOption = _models.SourcingSupplyOption
 SupplyOptionSource = _models.SupplyOptionSource
@@ -100,17 +107,23 @@ def _open_command(*, completeness: int = 3, quantity: int = 5000) -> OpenSourcin
             quantity=NeedFact(value=quantity, provenance=_provenance()),
             snapshot_hash="a" * 64,
         ),
-        trigger_key=f"sourcing-v2:{need_id}",
+        trigger_key=f"sourcing-case:v2:{TENANT}:{need_id}",
     )
 
 
-def _check(case_id: SourcingCaseId, rung: int) -> Any:
+def _check(
+    case_id: SourcingCaseId,
+    rung: int,
+    *,
+    outcome: Any = None,
+) -> Any:
     return LadderCheck(
         check_id=f"slc-{rung}",
         tenant_id=TENANT,
         case_id=case_id,
         sequence_number=rung,
         rung=MatchLadderRung(rung),
+        outcome=outcome or LadderOutcome.NO_QUALIFIED_SUPPLY,
         input_snapshot={"category": "hinges"},
         input_snapshot_hash="b" * 64,
         conclusion="无合格供给",
@@ -200,6 +213,15 @@ class _MemoryRepo:
 
 
 class _Cases(_MemoryRepo):
+    async def get_or_create(
+        self, tenant_id: TenantId, case: Any
+    ) -> tuple[Any, bool]:
+        existing = await self.get_by_trigger(tenant_id, case.trigger_key)
+        if existing is not None:
+            return existing, False
+        await self.add(tenant_id, case)
+        return copy.deepcopy(case), True
+
     async def add(self, tenant_id: TenantId, case: Any) -> None:
         self.state[self.name][(tenant_id, case.case_id)] = copy.deepcopy(case)
 
@@ -310,6 +332,19 @@ class _Candidates(_MemoryRepo):
 
 
 class _Options(_MemoryRepo):
+    async def get_or_create_supplier_candidate(
+        self, tenant_id: TenantId, option: Any
+    ) -> tuple[Any, bool]:
+        for (candidate_tenant, _), current in self.state[self.name].items():
+            if (
+                candidate_tenant == tenant_id
+                and current.case_id == option.case_id
+                and current.supplier_candidate_id == option.supplier_candidate_id
+            ):
+                return copy.deepcopy(current), False
+        await self.add(tenant_id, option)
+        return copy.deepcopy(option), True
+
     async def add(self, tenant_id: TenantId, option: Any) -> None:
         self.state[self.name][(tenant_id, option.option_id)] = copy.deepcopy(option)
 
@@ -428,8 +463,42 @@ class _Factory:
         return _MemoryUow(self.state, bus_fails=self.bus_fails)
 
 
-def _service(factory: _Factory) -> Any:
-    return _service_type()(factory, Phase2SourcingAuthorizer(TENANT), now=lambda: NOW)
+class _EvidenceReader:
+    def __init__(
+        self,
+        *,
+        projection: CandidateEvidenceSnapshot | None = None,
+        failure: BaseException | None = None,
+    ) -> None:
+        self.calls = 0
+        self.failure = failure
+        self.projection = projection or CandidateEvidenceSnapshot(
+            tenant_id=TENANT,
+            artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+            canonical_url="https://factory.example/hinge",
+            content_hash="c" * 64,
+            observed_at=NOW - timedelta(hours=2),
+        )
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> CandidateEvidenceSnapshot:
+        self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+        return self.projection
+
+
+def _service(
+    factory: _Factory,
+    evidence_reader: CandidateEvidenceSnapshotReader | None = None,
+) -> Any:
+    return _service_type()(
+        factory,
+        Phase2SourcingAuthorizer(TENANT),
+        evidence_reader or _EvidenceReader(),
+        now=lambda: NOW,
+    )
 
 
 def test_concrete_service_preserves_the_public_protocol_surface() -> None:
@@ -460,6 +529,16 @@ async def test_open_case_requires_level_three_and_is_idempotent_per_tenant() -> 
     assert first == second
     assert len(factory.state["cases"]) == 1
     assert isinstance(factory.state["events"][0], SourcingCaseOpened)
+
+
+@pytest.mark.asyncio
+async def test_open_case_requires_service_derived_exact_trigger_key() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    command = _open_command().model_copy(update={"trigger_key": "caller:key"})
+    with pytest.raises(ValidationError):
+        await service.open_case(TENANT, command, actor=SYSTEM)
+    assert factory.calls == 0
 
 
 @pytest.mark.asyncio
@@ -497,7 +576,8 @@ async def test_duplicate_open_keeps_original_snapshot_when_need_has_later_update
 @pytest.mark.asyncio
 async def test_every_public_write_is_authorizer_first() -> None:
     factory = _Factory()
-    service = _service(factory)
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
     case_id = SourcingCaseId("src-never-read")
     calls = [
         lambda: service.open_case(OTHER_TENANT, _open_command(), actor=SYSTEM),
@@ -512,6 +592,16 @@ async def test_every_public_write_is_authorizer_first() -> None:
         ),
         lambda: service.submit_candidate(
             OTHER_TENANT, case_id, _candidate(), actor=SOURCING
+        ),
+        lambda: service.mark_candidates_verified(
+            OTHER_TENANT, case_id, (SupplierCandidateId("spc-1"),), actor=SYSTEM
+        ),
+        lambda: service.register_supplier_candidate_option(
+            OTHER_TENANT,
+            case_id,
+            SupplierCandidateId("spc-1"),
+            ProductId("prd-1"),
+            actor=SYSTEM,
         ),
         lambda: service.mark_candidates_ready(
             OTHER_TENANT, case_id, (SourcingSupplyOptionId("sop-1"),), (), actor=SYSTEM
@@ -535,6 +625,7 @@ async def test_every_public_write_is_authorizer_first() -> None:
         with pytest.raises(PermissionDenied):
             await call()
     assert factory.calls == 0
+    assert reader.calls == 0
 
 
 @pytest.mark.asyncio
@@ -565,6 +656,30 @@ async def test_ladder_checks_are_contiguous_and_plan_hash_is_exact() -> None:
         TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
     )
     assert confirmed.authorized_plan_hash == plan.plan_hash
+
+
+@pytest.mark.asyncio
+async def test_qualified_ladder_outcome_stops_later_rungs_and_public_search() -> None:
+    service = _service(_Factory())
+    case_id = await _opened(service)
+    await service.record_ladder_check(
+        TENANT,
+        case_id,
+        _check(
+            case_id,
+            1,
+            outcome=LadderOutcome.QUALIFIED_SUPPLY_FOUND,
+        ),
+        actor=SYSTEM,
+    )
+    with pytest.raises(ValidationError, match="已找到合格供给"):
+        await service.record_ladder_check(
+            TENANT, case_id, _check(case_id, 2), actor=SYSTEM
+        )
+    with pytest.raises(ValidationError, match="无合格供给"):
+        await service.save_public_plan(
+            TENANT, case_id, _plan(case_id, 1), actor=BOSS
+        )
 
 
 @pytest.mark.asyncio
@@ -632,6 +747,211 @@ async def test_candidate_checks_snapshot_moq_tier_and_persists_fourth_as_rejecte
 
 
 @pytest.mark.asyncio
+async def test_candidate_evidence_is_trusted_and_all_field_refs_are_bound() -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, _candidate(), actor=SOURCING
+    )
+    stored = factory.state["candidates"][(TENANT, candidate_id)]
+    assert stored.evidence.observed_at == NOW - timedelta(hours=2)
+
+    wrong_artifact = ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y")
+    submission = _candidate()
+    wrong_fact = next(iter(submission.observed_facts.values())).model_copy(
+        update={"evidence_ref": wrong_artifact}
+    )
+    facts = dict(submission.observed_facts)
+    facts["material"] = wrong_fact
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(
+            TENANT,
+            case_id,
+            submission.model_copy(update={"observed_facts": facts}),
+            actor=SOURCING,
+        )
+    wrong_claim = SourcingSupplierClaim(
+        value="offered-material",
+        provenance=_provenance(),
+        evidence_ref=wrong_artifact,
+    )
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(
+            TENANT,
+            case_id,
+            submission.model_copy(
+                update={"supplier_claims": {"material": wrong_claim}}
+            ),
+            actor=SOURCING,
+        )
+    wrong_inference = next(iter(submission.match_inferences.values())).model_copy(
+        update={"based_on": (wrong_artifact,)}
+    )
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(
+            TENANT,
+            case_id,
+            submission.model_copy(
+                update={"match_inferences": {"fit": wrong_inference}}
+            ),
+            actor=SOURCING,
+        )
+
+
+@pytest.mark.asyncio
+async def test_candidate_evidence_reader_failure_or_mismatch_fails_closed() -> None:
+    factory = _Factory()
+    service = _service(factory, _EvidenceReader(failure=RuntimeError("secret")))
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(TENANT, case_id, _candidate(), actor=SOURCING)
+
+    mismatch = CandidateEvidenceSnapshot(
+        tenant_id=TENANT,
+        artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+        canonical_url="https://factory.example/hinge",
+        content_hash="d" * 64,
+        observed_at=NOW,
+    )
+    service = _service(factory, _EvidenceReader(projection=mismatch))
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(TENANT, case_id, _candidate(), actor=SOURCING)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("canonical_url", "observed_at"),
+    [
+        ("https://user:secret@factory.example/hinge", NOW),
+        ("https://factory.example/hinge", NOW.replace(tzinfo=None)),
+    ],
+)
+async def test_candidate_evidence_reader_rejects_unsafe_or_naive_projection(
+    canonical_url: str,
+    observed_at: datetime,
+) -> None:
+    factory = _Factory()
+    projection = CandidateEvidenceSnapshot(
+        tenant_id=TENANT,
+        artifact_id=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+        canonical_url=canonical_url,
+        content_hash="c" * 64,
+        observed_at=observed_at,
+    )
+    service = _service(factory, _EvidenceReader(projection=projection))
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    uow_calls_before_submit = factory.calls
+    with pytest.raises(MissingEvidenceSnapshotError):
+        await service.submit_candidate(
+            TENANT,
+            case_id,
+            _candidate(url=canonical_url),
+            actor=SOURCING,
+        )
+    assert factory.calls == uow_calls_before_submit
+    assert factory.state["candidates"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        SpecComparisonView(
+            spec_name="material",
+            required="required-material",
+            offered="offered-material",
+            level="different",
+            substitutable=False,
+        ),
+        SpecComparisonView(
+            spec_name="material",
+            required="required-material",
+            offered="offered-material",
+            level="different",
+            substitutable=True,
+            substitution_impact="客户需接受替代材质",
+            needs_customer_confirmation=True,
+        ),
+    ],
+)
+async def test_incompatible_or_unconfirmed_spec_cannot_qualify(
+    replacement: SpecComparisonView,
+) -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    submission = _candidate()
+    submission = submission.model_copy(
+        update={
+            "specs": tuple(
+                replacement if item.spec_name == "material" else item
+                for item in submission.specs
+            )
+        }
+    )
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, submission, actor=SOURCING
+    )
+    candidate = factory.state["candidates"][(TENANT, candidate_id)]
+    assert candidate.rejected is True
+    assert "verification_incomplete" in {
+        reason.value for reason in candidate.rejection_reasons
+    }
+
+
+@pytest.mark.asyncio
+async def test_substitution_with_customer_conversation_provenance_can_qualify() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    confirmed_material = SpecComparisonView(
+        spec_name="material",
+        required="required-material",
+        offered="offered-material",
+        level="different",
+        substitutable=True,
+        substitution_impact="客户接受替代材质",
+        needs_customer_confirmation=True,
+        customer_confirmation=_provenance(),
+    )
+    submission = _candidate()
+    submission = submission.model_copy(
+        update={
+            "specs": tuple(
+                confirmed_material if item.spec_name == "material" else item
+                for item in submission.specs
+            )
+        }
+    )
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, submission, actor=SOURCING
+    )
+    assert factory.state["candidates"][(TENANT, candidate_id)].rejected is False
+
+
+@pytest.mark.asyncio
 async def test_mark_ready_publishes_exact_ids_and_rejects_empty_options() -> None:
     factory = _Factory()
     service = _service(factory)
@@ -662,6 +982,77 @@ async def test_mark_ready_publishes_exact_ids_and_rejects_empty_options() -> Non
     assert isinstance(event, SourcingCandidatesReady)
     assert event.option_ids == (option.option_id,)
     assert event.candidate_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, _candidate(), actor=SOURCING
+    )
+    with pytest.raises(ValidationError):
+        await service.mark_candidates_ready(
+            TENANT, case_id, (), (candidate_id,), actor=SYSTEM
+        )
+    await service.mark_candidates_verified(
+        TENANT, case_id, (candidate_id,), actor=SYSTEM
+    )
+    verified = factory.state["events"][-1]
+    assert isinstance(verified, SourcingCandidatesVerified)
+    assert verified.candidate_ids == (candidate_id,)
+    assert factory.state["cases"][(TENANT, case_id)].state is CaseState.VERIFYING
+
+    product_id = ProductId("prd-card")
+    option_id = await service.register_supplier_candidate_option(
+        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+    )
+    repeated = await service.register_supplier_candidate_option(
+        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+    )
+    assert repeated == option_id
+    extra_option = SourcingSupplyOption(
+        option_id=SourcingSupplyOptionId("sop-extra"),
+        tenant_id=TENANT,
+        case_id=case_id,
+        source=SupplyOptionSource.EXISTING_PRODUCT,
+        product_id=ProductId("prd-existing"),
+        supplier_candidate_id=None,
+        is_qualified=True,
+        created_at=NOW,
+    )
+    factory.state["options"][(TENANT, extra_option.option_id)] = extra_option
+    with pytest.raises(ValidationError):
+        await service.mark_candidates_ready(
+            TENANT, case_id, (option_id,), (candidate_id,), actor=SYSTEM
+        )
+    with pytest.raises(ValidationError):
+        await service.mark_candidates_ready(
+            TENANT,
+            case_id,
+            (option_id, extra_option.option_id),
+            (),
+            actor=SYSTEM,
+        )
+    await service.mark_candidates_ready(
+        TENANT,
+        case_id,
+        (option_id, extra_option.option_id),
+        (candidate_id,),
+        actor=SYSTEM,
+    )
+    ready = factory.state["events"][-1]
+    assert isinstance(ready, SourcingCandidatesReady)
+    assert set(ready.option_ids) == {option_id, extra_option.option_id}
+    assert ready.candidate_ids == (candidate_id,)
+    assert await service.register_supplier_candidate_option(
+        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+    ) == option_id
 
 
 @pytest.mark.asyncio

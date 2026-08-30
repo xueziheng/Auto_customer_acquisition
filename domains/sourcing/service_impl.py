@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from domains.sourcing.errors import (
     MissingEvidenceSnapshotError,
@@ -17,6 +18,7 @@ from domains.sourcing.models import (
     CaseState,
     EvidenceSnapshot,
     LadderCheck,
+    LadderOutcome,
     MatchExplanation,
     MatchLadderRung,
     PriceRejectionReason,
@@ -24,9 +26,11 @@ from domains.sourcing.models import (
     SourcingCase,
     SourcingReview,
     SourcingStopCode,
+    SourcingSupplyOption,
     SpecComparison,
     SpecMatchLevel,
     SupplierCandidate,
+    SupplyOptionSource,
 )
 from domains.sourcing.permissions import (
     SourcingAction,
@@ -45,15 +49,22 @@ from domains.sourcing.schemas import (
     SourcingReviewCommand,
     SpecComparisonView,
 )
+from domains.sourcing.service import (
+    CandidateEvidenceSnapshot,
+    CandidateEvidenceSnapshotReader,
+)
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
     SourcingCaseOpened,
 )
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
     OpportunityId,
+    ProductId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -68,6 +79,35 @@ def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValidationError("寻源服务时间必须含时区")
     return value
+
+
+def _valid_candidate_evidence_projection(
+    projection: CandidateEvidenceSnapshot,
+) -> bool:
+    """在打开事务前核对可信 reader 投影的确定性安全字段。"""
+
+    try:
+        parsed = urlsplit(projection.canonical_url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        projection.canonical_url == projection.canonical_url.strip()
+        and parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and (port is None or 1 <= port <= 65_535)
+        and projection.observed_at.tzinfo is not None
+        and projection.observed_at.utcoffset() is not None
+        and len(projection.content_hash) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in projection.content_hash
+        )
+        and str(projection.artifact_id).startswith("art_")
+        and str(projection.artifact_id) == str(projection.artifact_id).strip()
+    )
 
 
 def _employee(actor: SourcingActor) -> EmployeeId:
@@ -96,6 +136,7 @@ def _candidate_from_submission(
     *,
     actor: SourcingActor,
     now: datetime,
+    evidence: EvidenceSnapshot,
 ) -> SupplierCandidate:
     try:
         comparisons = [
@@ -107,17 +148,12 @@ def _candidate_from_submission(
                 substitutable=item.substitutable,
                 substitution_impact=item.substitution_impact,
                 needs_customer_confirmation=item.needs_customer_confirmation,
+                customer_confirmation=item.customer_confirmation,
             )
             for item in submission.specs
         ]
     except ValueError as exc:
         raise ValidationError("候选规格匹配等级无效") from exc
-    evidence = EvidenceSnapshot(
-        url=submission.evidence_url,
-        observed_at=now,
-        content_hash=submission.evidence_hash,
-        artifact_ref=submission.evidence_artifact_ref,
-    )
     summary = "；".join(f"{item.spec_name}:{item.level.value}" for item in comparisons)
     return SupplierCandidate(
         candidate_id=SupplierCandidateId(new_id("spc")),
@@ -161,6 +197,7 @@ def _candidate_view(candidate: SupplierCandidate) -> CandidateView:
                 substitutable=item.substitutable,
                 substitution_impact=item.substitution_impact,
                 needs_customer_confirmation=item.needs_customer_confirmation,
+                customer_confirmation=item.customer_confirmation,
             )
             for item in candidate.verified_specs
         ],
@@ -202,6 +239,7 @@ class SourcingServiceImpl:
         self,
         uow_factory: Callable[[TenantId], SourcingUnitOfWork],
         authorizer: SourcingAuthorizer,
+        evidence_reader: CandidateEvidenceSnapshotReader,
         *,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -209,8 +247,11 @@ class SourcingServiceImpl:
             raise ValidationError("寻源事务依赖无效")
         if not isinstance(authorizer, SourcingAuthorizer):
             raise ValidationError("寻源授权依赖无效")
+        if not isinstance(evidence_reader, CandidateEvidenceSnapshotReader):
+            raise ValidationError("候选 Evidence reader 无效")
         self._uow_factory = uow_factory
         self._authorizer = authorizer
+        self._evidence_reader = evidence_reader
         self._now = now or (lambda: datetime.now(UTC))
 
     def _require(
@@ -234,16 +275,13 @@ class SourcingServiceImpl:
             raise ValidationError("寻源开案命令无效")
         if command.need.completeness < 3:
             raise SourcingThresholdNotMetError("已验证需求完整度不足 3")
+        expected_trigger = (
+            f"sourcing-case:v2:{tenant_id}:{command.need.need_id}"
+        )
+        if command.trigger_key != expected_trigger:
+            raise ValidationError("寻源开案 trigger_key 与可信业务键不一致")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
-            existing = await uow.cases.get_by_trigger(tenant_id, command.trigger_key)
-            if existing is not None:
-                if (
-                    existing.need_id != command.need.need_id
-                    or existing.workflow_version != command.workflow_version
-                ):
-                    raise ValidationError("开案幂等键已绑定不同需求或工作流版本")
-                return existing.case_id
             case = SourcingCase(
                 case_id=SourcingCaseId(new_id("src")),
                 tenant_id=tenant_id,
@@ -255,16 +293,22 @@ class SourcingServiceImpl:
                 need_snapshot_hash=command.need.snapshot_hash,
                 state_changed_at=now,
             )
-            await uow.cases.add(tenant_id, case)
-            await uow.bus.publish(
-                SourcingCaseOpened(
-                    tenant_id=tenant_id,
-                    occurred_at=now,
-                    case_id=case.case_id,
-                    need_id=case.need_id,
+            canonical, created = await uow.cases.get_or_create(tenant_id, case)
+            if (
+                canonical.need_id != command.need.need_id
+                or canonical.workflow_version != command.workflow_version
+            ):
+                raise ValidationError("开案幂等键已绑定不同需求或工作流版本")
+            if created:
+                await uow.bus.publish(
+                    SourcingCaseOpened(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        case_id=canonical.case_id,
+                        need_id=canonical.need_id,
+                    )
                 )
-            )
-            return case.case_id
+            return canonical.case_id
 
     async def record_ladder_check(
         self,
@@ -282,6 +326,8 @@ class SourcingServiceImpl:
         )
         if not isinstance(check, LadderCheck):
             raise ValidationError("匹配梯子检查命令无效")
+        if not isinstance(check.outcome, LadderOutcome):
+            raise ValidationError("匹配梯子结果必须使用类型化 outcome")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
@@ -292,6 +338,11 @@ class SourcingServiceImpl:
             if check.tenant_id != tenant_id or check.case_id != case_id:
                 raise ValidationError("匹配梯子检查租户或案例不匹配")
             checks = await uow.checks.list_for_case(tenant_id, case_id)
+            if any(
+                item.outcome is LadderOutcome.QUALIFIED_SUPPLY_FOUND
+                for item in checks
+            ):
+                raise ValidationError("较早梯级已找到合格供给，禁止继续向后检查")
             expected = len(checks) + 1
             if (
                 expected > 5
@@ -340,6 +391,11 @@ class SourcingServiceImpl:
             if command.case_id != case_id:
                 raise ValidationError("公开寻源计划案例不匹配")
             checks = await uow.checks.list_for_case(tenant_id, case_id)
+            if any(
+                item.outcome is not LadderOutcome.NO_QUALIFIED_SUPPLY
+                for item in checks
+            ):
+                raise ValidationError("公开寻源前五级必须全部确认无合格供给")
             if [item.rung.value for item in checks] != [1, 2, 3, 4, 5]:
                 raise ValidationError("公开寻源前必须连续完成匹配梯子 1–5")
             if command.expected_case_version != case.version:
@@ -400,6 +456,7 @@ class SourcingServiceImpl:
                 )
             confirmed = plan.confirm(_employee(actor), confirmed_at=now)
             await uow.plans.update(tenant_id, confirmed)
+            case.active_search_plan_id = plan.plan_id
             case.transition_to(CaseState.VERIFYING, changed_at=now)
             await uow.cases.update(tenant_id, case)
             return confirmed
@@ -420,6 +477,51 @@ class SourcingServiceImpl:
         self._require(tenant_id, actor, action, actor.scope)
         if not isinstance(submission, CandidateSubmission):
             raise ValidationError("候选提交命令无效")
+        artifact_id = ArtifactId(submission.evidence_artifact_ref)
+        try:
+            projection = await self._evidence_reader.read_verified(
+                tenant_id, artifact_id
+            )
+        except Exception as exc:
+            raise MissingEvidenceSnapshotError("无法读取可信候选证据快照") from exc
+        if not isinstance(
+            projection, CandidateEvidenceSnapshot
+        ) or not _valid_candidate_evidence_projection(projection):
+            raise MissingEvidenceSnapshotError("可信候选证据快照形状无效")
+        evidence = EvidenceSnapshot(
+            url=projection.canonical_url,
+            observed_at=projection.observed_at,
+            content_hash=projection.content_hash,
+            artifact_ref=str(projection.artifact_id),
+        )
+        if (
+            projection.tenant_id != tenant_id
+            or projection.artifact_id != artifact_id
+            or projection.canonical_url != submission.evidence_url
+            or projection.content_hash != submission.evidence_hash
+            or not evidence.url
+            or not evidence.content_hash
+        ):
+            raise MissingEvidenceSnapshotError("候选证据快照与提交字段不一致")
+        evidence_refs = {projection.artifact_id}
+        observed_fact_refs = {
+            item.evidence_ref
+            for item in submission.observed_facts.values()
+        }
+        supplier_claim_refs = {
+            item.evidence_ref
+            for item in submission.supplier_claims.values()
+        }
+        field_refs = observed_fact_refs | supplier_claim_refs
+        inference_refs = {
+            ref
+            for item in submission.match_inferences.values()
+            for ref in item.based_on
+        }
+        if not field_refs <= evidence_refs or not inference_refs <= evidence_refs:
+            raise MissingEvidenceSnapshotError(
+                "候选字段 Provenance 未绑定可信证据快照"
+            )
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
@@ -428,7 +530,12 @@ class SourcingServiceImpl:
                     f"寻源案例处于 {case.state.value}，不能提交候选"
                 )
             candidate = _candidate_from_submission(
-                tenant_id, case, submission, actor=actor, now=now
+                tenant_id,
+                case,
+                submission,
+                actor=actor,
+                now=now,
+                evidence=evidence,
             )
             passed, missing = candidate.passes_verification()
             if "evidence_snapshot" in missing:
@@ -574,8 +681,6 @@ class SourcingServiceImpl:
             SourcingAction.FACT_PUBLISH,
             SourcingScope.SYSTEM,
         )
-        if not option_ids:
-            raise ValidationError("候选就绪事件必须至少包含一个供给选项")
         if len(set(option_ids)) != len(option_ids) or len(set(candidate_ids)) != len(
             candidate_ids
         ):
@@ -583,27 +688,39 @@ class SourcingServiceImpl:
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
-            if case.state is not CaseState.VERIFYING:
+            if case.state not in {CaseState.VERIFYING, CaseState.CANDIDATES_READY}:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能标记候选就绪"
                 )
-            for option_id in option_ids:
-                option = await uow.options.get(tenant_id, option_id)
-                if (
-                    option is None
-                    or option.case_id != case_id
-                    or not option.is_qualified
-                ):
-                    raise ValidationError("供给选项不存在、不属于本 Case 或未合格")
-            for candidate_id in candidate_ids:
-                candidate = await uow.candidates.get(tenant_id, candidate_id)
-                if (
-                    candidate is None
-                    or candidate.case_id != case_id
-                    or candidate.rejected
-                    or not candidate.passes_verification()[0]
-                ):
-                    raise ValidationError("候选不存在、不属于本 Case 或未合格")
+            candidates = await uow.candidates.list_for_case(tenant_id, case_id, False)
+            qualified_candidates = tuple(
+                item
+                for item in candidates
+                if not item.rejected and item.passes_verification()[0]
+            )
+            options = await uow.options.list_for_case(tenant_id, case_id)
+            qualified_options = tuple(item for item in options if item.is_qualified)
+            canonical_candidate_ids = tuple(
+                item.candidate_id for item in qualified_candidates
+            )
+            canonical_option_ids = tuple(item.option_id for item in qualified_options)
+            if (
+                not canonical_option_ids
+                or set(candidate_ids) != set(canonical_candidate_ids)
+                or len(candidate_ids) != len(canonical_candidate_ids)
+                or set(option_ids) != set(canonical_option_ids)
+                or len(option_ids) != len(canonical_option_ids)
+            ):
+                raise ValidationError("候选就绪必须提交仓储重建的完整合格集合")
+            supplier_candidate_ids = {
+                item.supplier_candidate_id
+                for item in qualified_options
+                if item.source is SupplyOptionSource.SUPPLIER_CANDIDATE
+            }
+            if supplier_candidate_ids != set(canonical_candidate_ids):
+                raise ValidationError("供应商候选产品卡或供给选项尚未完整登记")
+            if case.state is CaseState.CANDIDATES_READY:
+                return
             case.transition_to(CaseState.CANDIDATES_READY, changed_at=now)
             await uow.cases.update(tenant_id, case)
             await uow.bus.publish(
@@ -611,10 +728,102 @@ class SourcingServiceImpl:
                     tenant_id=tenant_id,
                     occurred_at=now,
                     case_id=case_id,
-                    option_ids=option_ids,
-                    candidate_ids=candidate_ids,
+                    option_ids=canonical_option_ids,
+                    candidate_ids=canonical_candidate_ids,
                 )
             )
+
+    async def mark_candidates_verified(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_ids: tuple[SupplierCandidateId, ...],
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.FACT_PUBLISH,
+            SourcingScope.SYSTEM,
+        )
+        if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
+            raise ValidationError("候选核验事件必须包含非空且不重复的候选集合")
+        now = _aware(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            if case.state is not CaseState.VERIFYING:
+                raise InvalidStateTransition(
+                    f"寻源案例处于 {case.state.value}，不能发布候选核验事实"
+                )
+            candidates = await uow.candidates.list_for_case(tenant_id, case_id, False)
+            canonical_ids = tuple(
+                item.candidate_id
+                for item in candidates
+                if not item.rejected and item.passes_verification()[0]
+            )
+            if (
+                set(candidate_ids) != set(canonical_ids)
+                or len(candidate_ids) != len(canonical_ids)
+            ):
+                raise ValidationError("候选核验事件必须是精确的合格候选全集")
+            await uow.bus.publish(
+                SourcingCandidatesVerified(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    case_id=case_id,
+                    candidate_ids=canonical_ids,
+                )
+            )
+
+    async def register_supplier_candidate_option(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_id: SupplierCandidateId,
+        product_id: ProductId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSupplyOptionId:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.WORKFLOW_PROGRESS,
+            SourcingScope.SYSTEM,
+        )
+        if not str(product_id).strip():
+            raise ValidationError("候选产品卡 ProductId 不能为空")
+        now = _aware(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            if case.state not in {CaseState.VERIFYING, CaseState.CANDIDATES_READY}:
+                raise InvalidStateTransition(
+                    f"寻源案例处于 {case.state.value}，不能登记候选供给选项"
+                )
+            candidate = await uow.candidates.get(tenant_id, candidate_id)
+            if (
+                candidate is None
+                or candidate.case_id != case_id
+                or candidate.rejected
+                or not candidate.passes_verification()[0]
+            ):
+                raise ValidationError("只能为本 Case 的合格供应商候选登记产品卡")
+            option = SourcingSupplyOption(
+                option_id=SourcingSupplyOptionId(new_id("sop")),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                source=SupplyOptionSource.SUPPLIER_CANDIDATE,
+                product_id=product_id,
+                supplier_candidate_id=candidate_id,
+                is_qualified=True,
+                created_at=now,
+            )
+            canonical, _ = await uow.options.get_or_create_supplier_candidate(
+                tenant_id, option
+            )
+            if canonical.product_id != product_id:
+                raise ValidationError("候选已绑定不同的 canonical 产品卡")
+            return canonical.option_id
 
     async def review(
         self,

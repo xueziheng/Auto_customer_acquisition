@@ -114,6 +114,10 @@ def _sync_contract(connection: Connection) -> dict[str, dict[str, object]]:
             "indexes": {
                 str(item["name"]): item for item in inspector.get_indexes(table)
             },
+            "unique_constraints": {
+                str(item["name"]): tuple(item["column_names"])
+                for item in inspector.get_unique_constraints(table)
+            },
         }
     return result
 
@@ -343,6 +347,12 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             ("tenant_id", "opportunity_id"),
         )
         assert "internal_cost_unit" in contract["products"]["columns"]
+        assert contract["sourcing_ladder_checks"]["columns"]["outcome"][
+            "nullable"
+        ] is False
+        assert contract["sourcing_supply_options"]["unique_constraints"][
+            "uq_sourcing_supply_options_supplier_candidate"
+        ] == ("tenant_id", "case_id", "supplier_candidate_id")
         cost_fks = contract["cost_sheets"]["foreign_keys"]
         assert cost_fks["fk_cost_sheets_sourcing_option"] == (
             ("tenant_id", "source_sourcing_case_id", "source_option_id"),
@@ -918,8 +928,8 @@ async def test_ladder_checks_reject_jumps_updates_and_deletes(db_url: str) -> No
     insert_ladder_check = (
         "INSERT INTO sourcing_ladder_checks "
         "(tenant_id, check_id, case_id, sequence_number, rung, input_snapshot, "
-        "input_snapshot_hash, conclusion, spec_comparisons, evidence_refs, checked_by, checked_at) "
-        "VALUES (:tenant, :check, :case, :rung, :rung, '{}', :hash, "
+        "input_snapshot_hash, outcome, conclusion, spec_comparisons, evidence_refs, checked_by, checked_at) "
+        "VALUES (:tenant, :check, :case, :rung, :rung, '{}', :hash, :outcome, "
         "'no match', '[]', '[]', 'employee-a', now())"
     )
     try:
@@ -939,6 +949,7 @@ async def test_ladder_checks_reject_jumps_updates_and_deletes(db_url: str) -> No
                 "check": "ladder-check-2",
                 "rung": 2,
                 "hash": "d" * 64,
+                "outcome": "no_qualified_supply",
             }
             await _expect_integrity(connection, insert_ladder_check, values)
             await connection.execute(
@@ -956,6 +967,29 @@ async def test_ladder_checks_reject_jumps_updates_and_deletes(db_url: str) -> No
                 )
             ).scalars()
             assert list(persisted_rungs) == [1, 2]
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-ladder-hit",
+                case_id="case-ladder-hit",
+            )
+            hit = values | {
+                "case": "case-ladder-hit",
+                "check": "ladder-hit-1",
+                "rung": 1,
+                "outcome": "qualified_supply_found",
+            }
+            await connection.execute(text(insert_ladder_check), hit)
+            await _expect_integrity(
+                connection,
+                insert_ladder_check,
+                hit
+                | {
+                    "check": "ladder-hit-2",
+                    "rung": 2,
+                    "outcome": "no_qualified_supply",
+                },
+            )
             await _expect_integrity(
                 connection,
                 "UPDATE sourcing_ladder_checks SET conclusion = 'changed' "

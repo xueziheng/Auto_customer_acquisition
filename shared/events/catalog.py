@@ -456,6 +456,14 @@ class SourcingCaseCompleted(DomainEvent):
 
 
 @dataclass(frozen=True)
+class SourcingCandidatesVerified(DomainEvent):
+    """供应商候选已经核验，可由产品域开始幂等生成候选产品卡。"""
+
+    case_id: SourcingCaseId = None  # type: ignore[assignment]
+    candidate_ids: tuple[SupplierCandidateId, ...] = ()
+
+
+@dataclass(frozen=True)
 class SourcingCandidatesReady(DomainEvent):
     """寻源案例的候选供应选项已完成核验。"""
 

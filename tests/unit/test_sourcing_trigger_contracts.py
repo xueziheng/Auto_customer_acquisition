@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from shared.events.catalog import (
     NeedBecameSourcingReady,
     SourcingCandidatesReady,
+    SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
 )
 from shared.schemas.identifiers import (
@@ -28,6 +29,12 @@ def test_phase2_sourcing_events_are_past_tense_tenant_bound_facts() -> None:
         need_id=ValidatedNeedId("need-a"),
         completeness=3,
     )
+    verified = SourcingCandidatesVerified(
+        tenant_id=TenantId("tenant-a"),
+        occurred_at=NOW,
+        case_id=SourcingCaseId("src-a"),
+        candidate_ids=(SupplierCandidateId("sc-a"),),
+    )
     candidates = SourcingCandidatesReady(
         tenant_id=TenantId("tenant-a"),
         occurred_at=NOW,
@@ -45,6 +52,14 @@ def test_phase2_sourcing_events_are_past_tense_tenant_bound_facts() -> None:
     )
 
     assert ready.completeness == 3
+    assert verified.candidate_ids == (SupplierCandidateId("sc-a"),)
+    assert set(vars(verified)) == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "case_id",
+        "candidate_ids",
+    }
     assert candidates.option_ids == (SourcingSupplyOptionId("sop-a"),)
     assert candidates.candidate_ids == (SupplierCandidateId("sc-a"),)
     assert handed.opportunity_id == OpportunityId("opp-a")

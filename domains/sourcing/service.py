@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -22,7 +23,9 @@ from domains.sourcing.schemas import (
     SourcingReviewCommand,
 )
 from shared.schemas.identifiers import (
+    ArtifactId,
     OpportunityId,
+    ProductId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -30,6 +33,28 @@ from shared.schemas.identifiers import (
     SupplierCandidateId,
     TenantId,
 )
+
+
+@dataclass(frozen=True)
+class CandidateEvidenceSnapshot:
+    """可信 Artifact reader 返回的候选网页快照安全投影。"""
+
+    tenant_id: TenantId
+    artifact_id: ArtifactId
+    canonical_url: str
+    content_hash: str
+    observed_at: datetime
+
+
+@runtime_checkable
+class CandidateEvidenceSnapshotReader(Protocol):
+    """按 tenant+Artifact 读取已验证的不可变候选证据元数据。"""
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> CandidateEvidenceSnapshot:
+        """未知、不可读或不安全的 Artifact 必须失败关闭。"""
+        ...
 
 
 def spec_match_level_values() -> tuple[str, ...]:
@@ -105,6 +130,29 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> None:
         """冻结全部供给选项并原子发布候选就绪事实。"""
+        ...
+
+    async def mark_candidates_verified(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_ids: tuple[SupplierCandidateId, ...],
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        """发布精确合格供应商候选集，供产品卡投影消费；不推进 Case。"""
+        ...
+
+    async def register_supplier_candidate_option(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_id: SupplierCandidateId,
+        product_id: ProductId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingSupplyOptionId:
+        """SYSTEM 幂等登记真实候选产品卡与供应商候选的供给选项绑定。"""
         ...
 
     async def review(

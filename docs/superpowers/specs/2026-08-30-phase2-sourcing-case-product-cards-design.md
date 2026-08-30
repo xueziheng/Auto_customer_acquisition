@@ -284,12 +284,18 @@ opened -> discovering -> verifying -> candidates_ready -> handed_to_costing
 
 ```text
 SourcingCaseOpened
+SourcingCandidatesVerified
 SourcingCandidatesReady
 SourcingCaseHandedToCosting
 NeedBecameSourcingReady
 ```
 
-- 产品域消费 `SourcingCandidatesReady` 并幂等生成产品卡；
+- `SourcingCandidatesVerified` 只携带 Case 与精确的合格 Supplier Candidate
+  IDs；产品域消费该事实并幂等生成 `source_only` 产品卡，再由 SYSTEM 调用
+  sourcing 域窄接口登记真实 ProductId 与 Candidate 的供给选项；
+- 产品卡和全部合格供给选项均已存在后，workflow 才以仓储重建出的完整集合
+  调用最终就绪入口。sourcing 域转为 `candidates_ready` 并发布
+  `SourcingCandidatesReady`；该事件表示完整冻结集合已就绪，不再作为建卡请求；
 - `SourcingCaseHandedToCosting` 只携带 Case、Need、Opportunity 和 Review 的
   稳定引用；成本域读取同租户、同版本的 handoff snapshot，按主
   `SourcingSupplyOption` 创建唯一 `ESTIMATED` 成本表，不假设主选项必然来自
@@ -300,7 +306,8 @@ NeedBecameSourcingReady
 - 产品与成本消费者在迁移期按事件/工作流版本路由，不把历史 Case 自动
   改成 V2，也不让一个 V2 Case 被两个事件重复处理。
 
-事件契约和依赖边界的变化必须留 ADR。
+上述事件拆分替代了旧稿中“产品域消费 `SourcingCandidatesReady` 并生成产品卡”的
+冲突文本，决策与兼容后果见 ADR 0023。事件契约和依赖边界的变化必须留 ADR。
 
 ## 九、免费搜索、额度与恢复
 

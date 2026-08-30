@@ -4724,6 +4724,7 @@ class SourcingLadderCheckRow(Base):
         UniqueConstraint("tenant_id", "case_id", "rung", name="uq_sourcing_ladder_checks_rung"),
         ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_ladder_checks_case", ondelete="RESTRICT"),
         CheckConstraint("sequence_number = rung AND rung BETWEEN 1 AND 7", name="ck_sourcing_ladder_checks_order"),
+        CheckConstraint("outcome IN ('no_qualified_supply','qualified_supply_found')", name="ck_sourcing_ladder_checks_outcome"),
         CheckConstraint("jsonb_typeof(input_snapshot) = 'object'", name="ck_sourcing_ladder_checks_input_json"),
         CheckConstraint("input_snapshot_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_ladder_checks_input_hash"),
         CheckConstraint("jsonb_typeof(spec_comparisons) = 'array'", name="ck_sourcing_ladder_checks_comparisons_json"),
@@ -4735,6 +4736,7 @@ class SourcingLadderCheckRow(Base):
     case_id: Mapped[str] = mapped_column(String(40))
     sequence_number: Mapped[int] = mapped_column(Integer)
     rung: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(40))
     input_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB)
     input_snapshot_hash: Mapped[str] = mapped_column(String(64))
     conclusion: Mapped[str] = mapped_column(Text)
@@ -4855,6 +4857,7 @@ class SourcingSupplyOptionRow(Base):
         PrimaryKeyConstraint("tenant_id", "option_id", name="pk_sourcing_supply_options"),
         UniqueConstraint("tenant_id", "case_id", "option_id", name="uq_sourcing_supply_options_case_option"),
         UniqueConstraint("tenant_id", "case_id", "option_id", "supplier_candidate_id", name="uq_sourcing_supply_options_candidate_path"),
+        UniqueConstraint("tenant_id", "case_id", "supplier_candidate_id", name="uq_sourcing_supply_options_supplier_candidate"),
         ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_supply_options_case", ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "case_id", "supplier_candidate_id"], ["sourcing_candidates.tenant_id", "sourcing_candidates.case_id", "sourcing_candidates.candidate_id"], name="fk_sourcing_supply_options_candidate", ondelete="RESTRICT"),
         ForeignKeyConstraint(["tenant_id", "product_id"], ["products.tenant_id", "products.product_id"], name="fk_sourcing_supply_options_product", ondelete="RESTRICT"),

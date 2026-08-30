@@ -8,6 +8,7 @@ from typing import cast
 
 from pydantic import BaseModel
 from sqlalchemy import CursorResult, Select, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.sourcing.errors import SourcingCaseConflictError
@@ -15,6 +16,7 @@ from domains.sourcing.models import (
     CaseState,
     EvidenceSnapshot,
     LadderCheck,
+    LadderOutcome,
     MatchExplanation,
     MatchLadderRung,
     PriceRejectionReason,
@@ -73,6 +75,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import ProvenanceSummary
 
 
 class _TenantBoundRepository(TenantScopedRepository):
@@ -96,6 +99,11 @@ def _comparison_to_json(value: SpecComparison) -> dict[str, object]:
         "substitutable": value.substitutable,
         "substitution_impact": value.substitution_impact,
         "needs_customer_confirmation": value.needs_customer_confirmation,
+        "customer_confirmation": (
+            value.customer_confirmation.model_dump(mode="json")
+            if value.customer_confirmation is not None
+            else None
+        ),
     }
 
 
@@ -109,6 +117,11 @@ def _comparison_from_json(value: dict[str, object]) -> SpecComparison:
         substitution_impact=cast(str | None, value.get("substitution_impact")),
         needs_customer_confirmation=bool(
             value.get("needs_customer_confirmation", False)
+        ),
+        customer_confirmation=(
+            ProvenanceSummary.model_validate(value["customer_confirmation"])
+            if value.get("customer_confirmation") is not None
+            else None
         ),
     )
 
@@ -211,6 +224,36 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
     def _scoped(self) -> Select[tuple[SourcingCaseRow]]:
         return self.scoped_query(SourcingCaseRow)
 
+    async def get_or_create(
+        self, tenant_id: TenantId, case: SourcingCase
+    ) -> tuple[SourcingCase, bool]:
+        self._require_tenant(tenant_id)
+        if case.tenant_id != tenant_id:
+            raise ValueError("案例租户与请求租户不一致")
+        row = _case_to_row(case)
+        values = {
+            column.name: getattr(row, column.name)
+            for column in SourcingCaseRow.__table__.columns
+        }
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingCaseRow)
+                .values(**values)
+                .on_conflict_do_nothing(constraint="uq_sourcing_cases_trigger")
+                .returning(SourcingCaseRow.case_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return case, True
+        canonical = (
+            await self._session.execute(
+                self._scoped().where(
+                    SourcingCaseRow.trigger_key == case.trigger_key
+                )
+            )
+        ).scalar_one()
+        return _row_to_case(canonical), False
+
     async def add(self, tenant_id: TenantId, case: SourcingCase) -> None:
         self._require_tenant(tenant_id)
         if case.tenant_id != tenant_id:
@@ -302,6 +345,7 @@ def _ladder_to_row(value: LadderCheck) -> SourcingLadderCheckRow:
         case_id=value.case_id,
         sequence_number=value.sequence_number,
         rung=value.rung.value,
+        outcome=value.outcome.value,
         input_snapshot=value.input_snapshot,
         input_snapshot_hash=value.input_snapshot_hash,
         conclusion=value.conclusion,
@@ -321,6 +365,7 @@ def _row_to_ladder(row: SourcingLadderCheckRow) -> LadderCheck:
         case_id=SourcingCaseId(row.case_id),
         sequence_number=row.sequence_number,
         rung=MatchLadderRung(row.rung),
+        outcome=LadderOutcome(row.outcome),
         input_snapshot=row.input_snapshot,
         input_snapshot_hash=row.input_snapshot_hash,
         conclusion=row.conclusion,
@@ -728,6 +773,49 @@ def _option_from_row(row: SourcingSupplyOptionRow) -> SourcingSupplyOption:
 
 
 class SupplyOptionRepositoryImpl(_TenantBoundRepository):
+    async def get_or_create_supplier_candidate(
+        self, tenant_id: TenantId, option: SourcingSupplyOption
+    ) -> tuple[SourcingSupplyOption, bool]:
+        self._require_tenant(tenant_id)
+        if (
+            option.tenant_id != tenant_id
+            or option.source is not SupplyOptionSource.SUPPLIER_CANDIDATE
+            or option.supplier_candidate_id is None
+        ):
+            raise ValueError("供应商候选 Option 绑定无效")
+        values = {
+            "tenant_id": tenant_id,
+            "option_id": option.option_id,
+            "case_id": option.case_id,
+            "source": option.source.value,
+            "product_id": option.product_id,
+            "supplier_candidate_id": option.supplier_candidate_id,
+            "is_qualified": option.is_qualified,
+            "created_at": option.created_at,
+        }
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingSupplyOptionRow)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    constraint="uq_sourcing_supply_options_supplier_candidate"
+                )
+                .returning(SourcingSupplyOptionRow.option_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            return option, True
+        canonical = (
+            await self._session.execute(
+                self.scoped_query(SourcingSupplyOptionRow).where(
+                    SourcingSupplyOptionRow.case_id == option.case_id,
+                    SourcingSupplyOptionRow.supplier_candidate_id
+                    == option.supplier_candidate_id,
+                )
+            )
+        ).scalar_one()
+        return _option_from_row(canonical), False
+
     async def add(self, tenant_id: TenantId, option: SourcingSupplyOption) -> None:
         self._require_tenant(tenant_id)
         if option.tenant_id != tenant_id:

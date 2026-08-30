@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import func, select, text
@@ -42,6 +43,7 @@ NOW = datetime(2026, 8, 30, 11, tzinfo=UTC)
 _models = importlib.import_module("domains.sourcing.models")
 CaseState = _models.CaseState
 LadderCheck = _models.LadderCheck
+LadderOutcome = _models.LadderOutcome
 MatchLadderRung = _models.MatchLadderRung
 SourcingSupplyOption = _models.SourcingSupplyOption
 SupplyOptionSource = _models.SupplyOptionSource
@@ -130,7 +132,7 @@ async def _seed_handoff_dependencies(
         )
 
 
-def _command(need_id: ValidatedNeedId) -> OpenSourcingCase:
+def _command(tenant_id: TenantId, need_id: ValidatedNeedId) -> OpenSourcingCase:
     provenance = ProvenanceSummary(
         source_type=SourceType.CONVERSATION,
         source_id="message-service",
@@ -148,8 +150,56 @@ def _command(need_id: ValidatedNeedId) -> OpenSourcingCase:
             quantity=NeedFact(value=5000, provenance=provenance),
             snapshot_hash="a" * 64,
         ),
-        trigger_key=f"sourcing-v2:{need_id}",
+        trigger_key=f"sourcing-case:v2:{tenant_id}:{need_id}",
     )
+
+
+class _UnusedEvidenceReader:
+    async def read_verified(self, tenant_id: TenantId, artifact_id: Any) -> Any:
+        raise AssertionError("开案路径不得读取候选 Evidence")
+
+
+class _TwoPartyBarrier:
+    def __init__(self) -> None:
+        self._arrived = 0
+        self._event = asyncio.Event()
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        async with self._lock:
+            self._arrived += 1
+            if self._arrived == 2:
+                self._event.set()
+        await self._event.wait()
+
+
+class _BarrierCases:
+    def __init__(self, inner: Any, barrier: _TwoPartyBarrier) -> None:
+        self._inner = inner
+        self._barrier = barrier
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_by_trigger(self, tenant_id: TenantId, trigger_key: str) -> Any:
+        result = await self._inner.get_by_trigger(tenant_id, trigger_key)
+        await self._barrier.wait()
+        return result
+
+    async def get_or_create(self, tenant_id: TenantId, case: Any) -> Any:
+        await self._barrier.wait()
+        return await self._inner.get_or_create(tenant_id, case)
+
+
+class _BarrierUow(SqlAlchemySourcingUnitOfWork):
+    def __init__(self, *args: Any, barrier: _TwoPartyBarrier, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._barrier = barrier
+
+    async def __aenter__(self) -> Any:
+        entered = await super().__aenter__()
+        self.cases = cast(Any, _BarrierCases(self.cases, self._barrier))
+        return entered
 
 
 @pytest.mark.asyncio
@@ -164,11 +214,12 @@ async def test_open_case_is_idempotent_and_event_is_atomic_in_postgres(
     service = _service_type()(
         lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
         Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
         now=lambda: NOW,
     )
 
-    first = await service.open_case(tenant_id, _command(need_id), actor=actor)
-    second = await service.open_case(tenant_id, _command(need_id), actor=actor)
+    first = await service.open_case(tenant_id, _command(tenant_id, need_id), actor=actor)
+    second = await service.open_case(tenant_id, _command(tenant_id, need_id), actor=actor)
 
     async with sf() as session:
         case_count = await session.scalar(
@@ -193,6 +244,50 @@ async def test_open_case_is_idempotent_and_event_is_atomic_in_postgres(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_open_returns_one_canonical_case_and_event(
+    integration_engine: AsyncEngine,
+) -> None:
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    barrier = _TwoPartyBarrier()
+    actor = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+
+    def make_service() -> Any:
+        return _service_type()(
+            lambda bound_tenant: _BarrierUow(
+                sf, bound_tenant, barrier=barrier
+            ),
+            Phase2SourcingAuthorizer(tenant_id),
+            _UnusedEvidenceReader(),
+            now=lambda: NOW,
+        )
+
+    first, second = await asyncio.gather(
+        make_service().open_case(tenant_id, _command(tenant_id, need_id), actor=actor),
+        make_service().open_case(tenant_id, _command(tenant_id, need_id), actor=actor),
+    )
+    async with sf() as session:
+        cases = await session.scalar(
+            select(func.count())
+            .select_from(SourcingCaseRow)
+            .where(SourcingCaseRow.tenant_id == tenant_id)
+        )
+        events = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
+                OutboxEventRow.tenant_id == tenant_id,
+                OutboxEventRow.event_type == "SourcingCaseOpened",
+            )
+        )
+    assert first == second
+    assert cases == 1
+    assert events == 1
+
+
+@pytest.mark.asyncio
 async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
     integration_engine: AsyncEngine,
 ) -> None:
@@ -205,9 +300,10 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
     service = _service_type()(
         lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
         Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
         now=lambda: NOW,
     )
-    case_id = await service.open_case(tenant_id, _command(need_id), actor=system)
+    case_id = await service.open_case(tenant_id, _command(tenant_id, need_id), actor=system)
     for rung in range(1, 6):
         await service.record_ladder_check(
             tenant_id,
@@ -218,6 +314,7 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
                 case_id=case_id,
                 sequence_number=rung,
                 rung=MatchLadderRung(rung),
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
                 input_snapshot={"category": "hinges"},
                 input_snapshot_hash="b" * 64,
                 conclusion="无合格供给",
@@ -257,6 +354,8 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
         case = await uow.cases.get(tenant_id, SourcingCaseId(case_id))
         stored = await uow.plans.get(tenant_id, plan.plan_id)
     assert case is not None and case.state is CaseState.VERIFYING
+    assert case.active_search_plan_id == plan.plan_id
+    assert case.version == 7
     assert stored is not None and stored.authorized_plan_hash == plan.plan_hash
 
 
@@ -281,9 +380,10 @@ async def test_review_handoff_is_one_case_cas_and_terminal_snapshot_in_postgres(
     service = _service_type()(
         lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
         Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
         now=lambda: NOW,
     )
-    case_id = await service.open_case(tenant_id, _command(need_id), actor=system)
+    case_id = await service.open_case(tenant_id, _command(tenant_id, need_id), actor=system)
     for rung in range(1, 6):
         await service.record_ladder_check(
             tenant_id,
@@ -294,6 +394,7 @@ async def test_review_handoff_is_one_case_cas_and_terminal_snapshot_in_postgres(
                 case_id=case_id,
                 sequence_number=rung,
                 rung=MatchLadderRung(rung),
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
                 input_snapshot={"category": "hinges"},
                 input_snapshot_hash="b" * 64,
                 conclusion="无合格供给",
