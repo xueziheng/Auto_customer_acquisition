@@ -307,6 +307,31 @@ class SpecComparisonView(BaseModel):
         return self
 
 
+class IndicativePriceTier(BaseModel):
+    """带逐档来源的参考价；每一项都必须可回到可信 Artifact。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    minimum_quantity: int = Field(ge=1)
+    amount: WireDecimal
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    unit: str = Field(min_length=1, max_length=50)
+    provenance: ProvenanceSummary
+    evidence_ref: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_tier(self) -> Self:
+        """参考价必须为正且来源不得伪装成 Agent 事实。"""
+
+        if self.amount <= Decimal(0):
+            raise ValueError("amount 必须是有限正 Decimal")
+        _bounded_text(self.unit, field_name="unit", maximum=50)
+        _validate_provenance_summary(self.provenance)
+        if self.provenance.source_type is SourceType.AGENT_INFERENCE:
+            raise ValueError("参考价不得使用 AGENT_INFERENCE 来源")
+        _bounded_text(str(self.evidence_ref), field_name="evidence_ref", maximum=200)
+        return self
+
+
 class CandidateSubmission(BaseModel):
     """V2 候选写命令；价格只接受 ``indicative_price_tiers``。"""
 
@@ -318,7 +343,7 @@ class CandidateSubmission(BaseModel):
     observed_facts: dict[str, SourcingObservedFact] = Field(default_factory=dict)
     supplier_claims: dict[str, SourcingSupplierClaim] = Field(default_factory=dict)
     match_inferences: dict[str, SourcingMatchInference] = Field(default_factory=dict)
-    indicative_price_tiers: dict[int, Money]
+    indicative_price_tiers: tuple[IndicativePriceTier, ...] = Field(min_length=1)
     moq: int | None
     price_unit: str | None
     currency: str | None
@@ -334,13 +359,16 @@ class CandidateSubmission(BaseModel):
         _bounded_text(self.product_title, field_name="product_title", maximum=500)
         _bounded_text(self.evidence_url, field_name="evidence_url")
         _bounded_text(self.evidence_artifact_ref, field_name="evidence_artifact_ref", maximum=200)
-        if not self.indicative_price_tiers:
-            raise ValueError("indicative_price_tiers 不得为空")
-        if any(isinstance(quantity, bool) or quantity < 1 for quantity in self.indicative_price_tiers):
-            raise ValueError("indicative_price_tiers 数量档必须为正整数")
-        currencies = {str(price.currency) for price in self.indicative_price_tiers.values()}
+        minimums = [tier.minimum_quantity for tier in self.indicative_price_tiers]
+        if len(set(minimums)) != len(minimums):
+            raise ValueError("indicative_price_tiers 数量档不得重复")
+        currencies = {tier.currency for tier in self.indicative_price_tiers}
         if self.currency is None or currencies != {self.currency}:
             raise ValueError("indicative_price_tiers 与 currency 必须一致")
+        if self.price_unit is None or {
+            tier.unit for tier in self.indicative_price_tiers
+        } != {self.price_unit}:
+            raise ValueError("indicative_price_tiers 与 price_unit 必须一致")
         return self
 
 

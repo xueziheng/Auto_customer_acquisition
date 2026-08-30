@@ -34,6 +34,8 @@ def test_phase2_sourcing_events_are_past_tense_tenant_bound_facts() -> None:
         occurred_at=NOW,
         case_id=SourcingCaseId("src-a"),
         candidate_ids=(SupplierCandidateId("sc-a"),),
+        case_version=8,
+        candidate_set_hash="a" * 64,
     )
     candidates = SourcingCandidatesReady(
         tenant_id=TenantId("tenant-a"),
@@ -59,6 +61,8 @@ def test_phase2_sourcing_events_are_past_tense_tenant_bound_facts() -> None:
         "run_id",
         "case_id",
         "candidate_ids",
+        "case_version",
+        "candidate_set_hash",
     }
     assert candidates.option_ids == (SourcingSupplyOptionId("sop-a"),)
     assert candidates.candidate_ids == (SupplierCandidateId("sc-a"),)

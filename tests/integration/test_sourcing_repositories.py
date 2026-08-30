@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.sourcing.schemas import (
+    IndicativePriceTier,
     NeedFact,
     PublicSourcingPlanCommand,
     SourcingMatchInference,
@@ -41,7 +43,6 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
     new_id,
 )
-from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 NOW = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
@@ -282,6 +283,28 @@ def _candidate(
         inferred_by="extractor-v1",
         inferred_at=NOW,
     )
+    facts = {
+        name: fact for name in ("product_type", "material", "size", "model")
+    }
+    facts.update(
+        {
+            "moq": SourcingObservedFact(
+                value=1000,
+                provenance=provenance,
+                evidence_ref=ArtifactId(evidence[0].artifact_ref),
+            ),
+            "price_unit": SourcingObservedFact(
+                value="piece",
+                provenance=provenance,
+                evidence_ref=ArtifactId(evidence[0].artifact_ref),
+            ),
+            "currency": SourcingObservedFact(
+                value="USD",
+                provenance=provenance,
+                evidence_ref=ArtifactId(evidence[0].artifact_ref),
+            ),
+        }
+    )
     return SupplierCandidate(
         candidate_id=candidate_id,
         tenant_id=tenant_id,
@@ -290,13 +313,20 @@ def _candidate(
         product_title="Stainless hinge",
         created_at=NOW,
         source_platform="official_site",
-        observed_facts={name: fact for name in ("product_type", "material", "size", "model")},
+        observed_facts=facts,
         supplier_claims={name: claim for name in ("product_type", "material", "size", "model")},
         match_inferences={"substitution": inference},
         verified_specs=specs,
-        indicative_price_tiers={
-            1000: Money(Decimal("0.123456789012"), CurrencyCode("USD"))
-        },
+        indicative_price_tiers=(
+            IndicativePriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("0.123456789012"),
+                currency="USD",
+                unit="piece",
+                provenance=provenance,
+                evidence_ref=ArtifactId(evidence[0].artifact_ref),
+            ),
+        ),
         moq=1000,
         price_unit="piece",
         currency="USD",
@@ -307,9 +337,6 @@ def _candidate(
         rejection_reasons=[],
         verified_by=EmployeeId("emp-verifier"),
     )
-
-
-from decimal import Decimal
 
 
 async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
@@ -453,7 +480,12 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
     assert loaded_checks[0].conclusion == "无完全匹配"
     assert loaded_plan == plan
     assert loaded_candidate is not None
-    assert loaded_candidate.indicative_price_tiers[1000].amount == Decimal("0.123456789012")
+    assert loaded_candidate.indicative_price_tiers[0].amount == Decimal("0.123456789012")
+    assert (
+        loaded_candidate.indicative_price_tiers[0].provenance.source_id
+        == "page-field"
+    )
+    assert loaded_candidate.indicative_price_tiers[0].evidence_ref == artifact_late
     assert [item.artifact_ref for item in loaded_candidate.evidence_snapshots] == [
         str(artifact_early), str(artifact_late)
     ]

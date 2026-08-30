@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import traceback
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
@@ -23,6 +24,7 @@ from domains.sourcing.permissions import (
 )
 from domains.sourcing.schemas import (
     CandidateSubmission,
+    IndicativePriceTier,
     NeedFact,
     OpenSourcingCase,
     PublicSourcingPlanCommand,
@@ -57,7 +59,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 NOW = datetime(2026, 8, 30, 10, tzinfo=UTC)
@@ -72,6 +73,7 @@ CaseState = _models.CaseState
 LadderCheck = _models.LadderCheck
 LadderOutcome = _models.LadderOutcome
 MatchLadderRung = _models.MatchLadderRung
+PriceRejectionReason = _models.PriceRejectionReason
 SourcingSupplyOption = _models.SourcingSupplyOption
 SupplyOptionSource = _models.SupplyOptionSource
 
@@ -182,6 +184,25 @@ def _candidate(
         )
         for name in ("product_type", "material", "size", "model")
     }
+    facts.update(
+        {
+            "moq": SourcingObservedFact(
+                value=moq,
+                provenance=_provenance(),
+                evidence_ref=artifact,
+            ),
+            "price_unit": SourcingObservedFact(
+                value="piece",
+                provenance=_provenance(),
+                evidence_ref=artifact,
+            ),
+            "currency": SourcingObservedFact(
+                value="USD",
+                provenance=_provenance(),
+                evidence_ref=artifact,
+            ),
+        }
+    )
     return CandidateSubmission(
         supplier_name="Factory A",
         product_title="Stainless hinge",
@@ -196,7 +217,16 @@ def _candidate(
                 inferred_at=NOW,
             )
         },
-        indicative_price_tiers={1000: Money(Decimal("1.25"), CurrencyCode("USD"))},
+        indicative_price_tiers=(
+            IndicativePriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+                provenance=_provenance(),
+                evidence_ref=artifact,
+            ),
+        ),
         moq=moq,
         price_unit="piece",
         currency="USD",
@@ -813,8 +843,12 @@ async def test_candidate_evidence_reader_failure_or_mismatch_fails_closed() -> N
         TENANT, case_id, _plan(case_id, 1), actor=BOSS
     )
     await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
-    with pytest.raises(MissingEvidenceSnapshotError):
+    with pytest.raises(MissingEvidenceSnapshotError) as captured:
         await service.submit_candidate(TENANT, case_id, _candidate(), actor=SOURCING)
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert "secret" not in rendered
 
     mismatch = CandidateEvidenceSnapshot(
         tenant_id=TENANT,
@@ -826,6 +860,60 @@ async def test_candidate_evidence_reader_failure_or_mismatch_fails_closed() -> N
     service = _service(factory, _EvidenceReader(projection=mismatch))
     with pytest.raises(MissingEvidenceSnapshotError):
         await service.submit_candidate(TENANT, case_id, _candidate(), actor=SOURCING)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["spec_value_mismatch", "missing_moq_evidence", "wrong_tier_ref"],
+)
+async def test_candidate_decision_fields_must_match_trusted_evidence(
+    mutation: str,
+) -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    submission = _candidate()
+    if mutation == "spec_value_mismatch":
+        submission = submission.model_copy(
+            update={
+                "specs": tuple(
+                    item.model_copy(update={"offered": "malicious-material"})
+                    if item.spec_name == "material"
+                    else item
+                    for item in submission.specs
+                )
+            }
+        )
+    elif mutation == "missing_moq_evidence":
+        facts = dict(submission.observed_facts)
+        facts.pop("moq")
+        submission = submission.model_copy(update={"observed_facts": facts})
+    else:
+        wrong_ref = ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y")
+        tier = submission.indicative_price_tiers[0].model_copy(
+            update={"evidence_ref": wrong_ref}
+        )
+        submission = submission.model_copy(
+            update={"indicative_price_tiers": (tier,)}
+        )
+
+    if mutation == "wrong_tier_ref":
+        with pytest.raises(MissingEvidenceSnapshotError):
+            await service.submit_candidate(
+                TENANT, case_id, submission, actor=SOURCING
+            )
+        return
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, submission, actor=SOURCING
+    )
+    stored = factory.state["candidates"][(TENANT, candidate_id)]
+    assert stored.rejected is True
+    assert PriceRejectionReason.VERIFICATION_INCOMPLETE in stored.rejection_reasons
 
 
 @pytest.mark.asyncio
@@ -1000,20 +1088,43 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
         await service.mark_candidates_ready(
             TENANT, case_id, (), (candidate_id,), actor=SYSTEM
         )
-    await service.mark_candidates_verified(
+    verified = await service.mark_candidates_verified(
         TENANT, case_id, (candidate_id,), actor=SYSTEM
     )
-    verified = factory.state["events"][-1]
     assert isinstance(verified, SourcingCandidatesVerified)
     assert verified.candidate_ids == (candidate_id,)
+    assert verified.case_version == factory.state["cases"][(TENANT, case_id)].version
+    assert len(verified.candidate_set_hash) == 64
     assert factory.state["cases"][(TENANT, case_id)].state is CaseState.VERIFYING
+    event_count = len(factory.state["events"])
+    repeated_generation = await service.mark_candidates_verified(
+        TENANT, case_id, (candidate_id,), actor=SYSTEM
+    )
+    assert repeated_generation == verified
+    assert len(factory.state["events"]) == event_count
+    with pytest.raises(InvalidStateTransition):
+        await service.submit_candidate(
+            TENANT, case_id, _candidate(), actor=SOURCING
+        )
 
     product_id = ProductId("prd-card")
     option_id = await service.register_supplier_candidate_option(
-        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+        TENANT,
+        case_id,
+        candidate_id,
+        product_id,
+        expected_case_version=verified.case_version,
+        expected_candidate_set_hash=verified.candidate_set_hash,
+        actor=SYSTEM,
     )
     repeated = await service.register_supplier_candidate_option(
-        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+        TENANT,
+        case_id,
+        candidate_id,
+        product_id,
+        expected_case_version=verified.case_version,
+        expected_candidate_set_hash=verified.candidate_set_hash,
+        actor=SYSTEM,
     )
     assert repeated == option_id
     extra_option = SourcingSupplyOption(
@@ -1044,6 +1155,8 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
         case_id,
         (option_id, extra_option.option_id),
         (candidate_id,),
+        expected_case_version=verified.case_version,
+        expected_candidate_set_hash=verified.candidate_set_hash,
         actor=SYSTEM,
     )
     ready = factory.state["events"][-1]
@@ -1051,8 +1164,41 @@ async def test_verified_candidates_require_cards_and_complete_frozen_ready_sets(
     assert set(ready.option_ids) == {option_id, extra_option.option_id}
     assert ready.candidate_ids == (candidate_id,)
     assert await service.register_supplier_candidate_option(
-        TENANT, case_id, candidate_id, product_id, actor=SYSTEM
+        TENANT,
+        case_id,
+        candidate_id,
+        product_id,
+        expected_case_version=verified.case_version,
+        expected_candidate_set_hash=verified.candidate_set_hash,
+        actor=SYSTEM,
     ) == option_id
+
+
+@pytest.mark.asyncio
+async def test_candidate_projection_rejects_stale_generation() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, _candidate(), actor=SOURCING
+    )
+    verified = await service.mark_candidates_verified(
+        TENANT, case_id, (candidate_id,), actor=SYSTEM
+    )
+    with pytest.raises(ValidationError):
+        await service.register_supplier_candidate_option(
+            TENANT,
+            case_id,
+            candidate_id,
+            ProductId("prd-stale"),
+            expected_case_version=verified.case_version - 1,
+            expected_candidate_set_hash="0" * 64,
+            actor=SYSTEM,
+        )
 
 
 @pytest.mark.asyncio

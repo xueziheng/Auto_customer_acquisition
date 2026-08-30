@@ -5,27 +5,36 @@ from __future__ import annotations
 import asyncio
 import importlib
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, cast
 
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from domains.sourcing.errors import SourcingCaseConflictError
 from domains.sourcing.permissions import (
     Phase2SourcingAuthorizer,
     SourcingActor,
     SourcingScope,
 )
 from domains.sourcing.schemas import (
+    CandidateSubmission,
+    IndicativePriceTier,
     NeedFact,
     OpenSourcingCase,
     PublicSourcingPlanCommand,
+    SourcingMatchInference,
     SourcingNeedSnapshot,
+    SourcingObservedFact,
     SourcingReviewCommand,
+    SpecComparisonView,
 )
+from domains.sourcing.service import CandidateEvidenceSnapshot
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
 from infra.db.tables import OutboxEventRow, SourcingCaseRow
 from shared.schemas.identifiers import (
+    ArtifactId,
     EmployeeId,
     OpportunityId,
     ProductId,
@@ -154,9 +163,110 @@ def _command(tenant_id: TenantId, need_id: ValidatedNeedId) -> OpenSourcingCase:
     )
 
 
+async def _seed_candidate_artifact(
+    engine: AsyncEngine, tenant_id: TenantId, artifact_id: ArtifactId
+) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO raw_artifacts "
+                "(tenant_id, artifact_id, kind, content_hash, size_bytes, mime_type, object_key, uploaded_at) "
+                "VALUES (:tenant, :artifact, 'web_snapshot', :hash, 1, 'text/html', :key, :created_at)"
+            ),
+            {
+                "tenant": tenant_id,
+                "artifact": artifact_id,
+                "hash": "c" * 64,
+                "key": f"raw/{tenant_id}/{artifact_id}",
+                "created_at": NOW,
+            },
+        )
+
+
+def _candidate_submission(artifact_id: ArtifactId) -> CandidateSubmission:
+    provenance = ProvenanceSummary(
+        source_type=SourceType.WEB_PAGE,
+        source_id="candidate-page",
+        extracted_by="human",
+        extracted_at=NOW,
+        confirmed_by=None,
+        confirmed_at=None,
+    )
+    facts = {
+        name: SourcingObservedFact(
+            value=f"offered-{name}",
+            provenance=provenance,
+            evidence_ref=artifact_id,
+        )
+        for name in ("product_type", "material", "size", "model")
+    }
+    facts.update(
+        {
+            "moq": SourcingObservedFact(
+                value=1000, provenance=provenance, evidence_ref=artifact_id
+            ),
+            "price_unit": SourcingObservedFact(
+                value="piece", provenance=provenance, evidence_ref=artifact_id
+            ),
+            "currency": SourcingObservedFact(
+                value="USD", provenance=provenance, evidence_ref=artifact_id
+            ),
+        }
+    )
+    return CandidateSubmission(
+        supplier_name="Factory A",
+        product_title="Stainless hinge",
+        source_platform="official_site",
+        specs=tuple(
+            SpecComparisonView(
+                spec_name=name,
+                required=f"required-{name}",
+                offered=f"offered-{name}",
+                level="exact",
+            )
+            for name in ("product_type", "material", "size", "model")
+        ),
+        observed_facts=facts,
+        match_inferences={
+            "fit": SourcingMatchInference(
+                value="四项均匹配",
+                based_on=(artifact_id,),
+                inferred_by="human",
+                inferred_at=NOW,
+            )
+        },
+        indicative_price_tiers=(
+            IndicativePriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+                provenance=provenance,
+                evidence_ref=artifact_id,
+            ),
+        ),
+        moq=1000,
+        price_unit="piece",
+        currency="USD",
+        evidence_url="https://factory.example/hinge",
+        evidence_hash="c" * 64,
+        evidence_artifact_ref=str(artifact_id),
+    )
 class _UnusedEvidenceReader:
     async def read_verified(self, tenant_id: TenantId, artifact_id: Any) -> Any:
         raise AssertionError("开案路径不得读取候选 Evidence")
+
+
+class _FixedEvidenceReader:
+    def __init__(self, projection: CandidateEvidenceSnapshot) -> None:
+        self._projection = projection
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: ArtifactId
+    ) -> CandidateEvidenceSnapshot:
+        assert tenant_id == self._projection.tenant_id
+        assert artifact_id == self._projection.artifact_id
+        return self._projection
 
 
 class _TwoPartyBarrier:
@@ -199,6 +309,47 @@ class _BarrierUow(SqlAlchemySourcingUnitOfWork):
     async def __aenter__(self) -> Any:
         entered = await super().__aenter__()
         self.cases = cast(Any, _BarrierCases(self.cases, self._barrier))
+        return entered
+
+
+class _SealReadCandidates:
+    def __init__(
+        self, inner: Any, read_complete: asyncio.Event, resume: asyncio.Event
+    ) -> None:
+        self._inner = inner
+        self._read_complete = read_complete
+        self._resume = resume
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def list_for_case(self, *args: Any, **kwargs: Any) -> Any:
+        result = await self._inner.list_for_case(*args, **kwargs)
+        self._read_complete.set()
+        await self._resume.wait()
+        return result
+
+
+class _SealReadUow(SqlAlchemySourcingUnitOfWork):
+    def __init__(
+        self,
+        *args: Any,
+        read_complete: asyncio.Event,
+        resume: asyncio.Event,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._read_complete = read_complete
+        self._resume = resume
+
+    async def __aenter__(self) -> Any:
+        entered = await super().__aenter__()
+        self.candidates = cast(
+            Any,
+            _SealReadCandidates(
+                self.candidates, self._read_complete, self._resume
+            ),
+        )
         return entered
 
 
@@ -285,6 +436,149 @@ async def test_concurrent_open_returns_one_canonical_case_and_event(
     assert first == second
     assert cases == 1
     assert events == 1
+
+
+@pytest.mark.asyncio
+async def test_candidate_seal_cas_cannot_publish_a_stale_subset(
+    integration_engine: AsyncEngine,
+) -> None:
+    """T1 读到 A 后 T2 提交 B；T1 必须 CAS 失败，重试只能封存 A+B。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    artifact_id = ArtifactId(new_id("art"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    await _seed_candidate_artifact(integration_engine, tenant_id, artifact_id)
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    boss = SourcingActor("emp-boss", tenant_id, SourcingScope.TENANT, "boss")
+    sourcing = SourcingActor(
+        "emp-sourcing", tenant_id, SourcingScope.TENANT, "sourcing"
+    )
+    projection = CandidateEvidenceSnapshot(
+        tenant_id=tenant_id,
+        artifact_id=artifact_id,
+        canonical_url="https://factory.example/hinge",
+        content_hash="c" * 64,
+        observed_at=NOW,
+    )
+
+    def service_with(factory: Any) -> Any:
+        return _service_type()(
+            factory,
+            Phase2SourcingAuthorizer(tenant_id),
+            _FixedEvidenceReader(projection),
+            now=lambda: NOW,
+        )
+
+    normal = service_with(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant)
+    )
+    case_id = await normal.open_case(
+        tenant_id, _command(tenant_id, need_id), actor=system
+    )
+    for rung in range(1, 6):
+        await normal.record_ladder_check(
+            tenant_id,
+            case_id,
+            LadderCheck(
+                check_id=new_id("slc"),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                sequence_number=rung,
+                rung=MatchLadderRung(rung),
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
+                input_snapshot={"category": "hinges"},
+                input_snapshot_hash="b" * 64,
+                conclusion="无合格供给",
+                match_object_type=None,
+                match_object_id=None,
+                spec_comparisons=(),
+                evidence_refs=(),
+                checked_by=EmployeeId("untrusted"),
+                checked_at=NOW,
+            ),
+            actor=system,
+        )
+    plan = await normal.save_public_plan(
+        tenant_id,
+        case_id,
+        PublicSourcingPlanCommand(
+            plan_id=SourcingPlanId(new_id("spl")),
+            case_id=case_id,
+            target_countries=("US",),
+            product_category="hinges",
+            queries=("hinge factory",),
+            max_search_queries=1,
+            max_pages_read=3,
+            provider="tavily",
+            search_depth="basic",
+            usage_credits_remaining=100,
+            worst_case_credits=1,
+            version=1,
+            expected_case_version=6,
+        ),
+        actor=boss,
+    )
+    await normal.confirm_public_plan(
+        tenant_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    candidate_a = await normal.submit_candidate(
+        tenant_id, case_id, _candidate_submission(artifact_id), actor=sourcing
+    )
+
+    read_complete = asyncio.Event()
+    resume = asyncio.Event()
+    sealing = service_with(
+        lambda bound_tenant: _SealReadUow(
+            sf,
+            bound_tenant,
+            read_complete=read_complete,
+            resume=resume,
+        )
+    )
+    seal_task = asyncio.create_task(
+        sealing.mark_candidates_verified(
+            tenant_id, case_id, (candidate_a,), actor=system
+        )
+    )
+    await asyncio.wait_for(read_complete.wait(), timeout=5)
+    candidate_b = await normal.submit_candidate(
+        tenant_id, case_id, _candidate_submission(artifact_id), actor=sourcing
+    )
+    resume.set()
+    with pytest.raises(SourcingCaseConflictError):
+        await asyncio.wait_for(seal_task, timeout=5)
+
+    expected_ids = tuple(sorted((candidate_a, candidate_b), key=str))
+    verified = await normal.mark_candidates_verified(
+        tenant_id, case_id, expected_ids, actor=system
+    )
+    async with sf() as session:
+        row = await session.scalar(
+            select(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+        events = list(
+            (
+                await session.execute(
+                    select(OutboxEventRow).where(
+                        OutboxEventRow.tenant_id == tenant_id,
+                        OutboxEventRow.event_type
+                        == "SourcingCandidatesVerified",
+                    )
+                )
+            ).scalars()
+        )
+    assert row is not None
+    assert tuple(row.sealed_candidate_ids) == tuple(map(str, expected_ids))
+    assert row.candidate_set_hash == verified.candidate_set_hash
+    assert len(events) == 1
+    assert tuple(events[0].event_payload["candidate_ids"]) == tuple(
+        map(str, expected_ids)
+    )
 
 
 @pytest.mark.asyncio

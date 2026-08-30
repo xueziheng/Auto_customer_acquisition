@@ -461,6 +461,23 @@ class SourcingCandidatesVerified(DomainEvent):
 
     case_id: SourcingCaseId = None  # type: ignore[assignment]
     candidate_ids: tuple[SupplierCandidateId, ...] = ()
+    case_version: int = 0
+    candidate_set_hash: str = ""
+
+    def __post_init__(self) -> None:
+        if (
+            not self.candidate_ids
+            or tuple(sorted(self.candidate_ids, key=str)) != self.candidate_ids
+            or len(set(self.candidate_ids)) != len(self.candidate_ids)
+            or isinstance(self.case_version, bool)
+            or self.case_version < 1
+            or len(self.candidate_set_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.candidate_set_hash
+            )
+        ):
+            raise ValidationError("SourcingCandidatesVerified generation 无效")
 
 
 @dataclass(frozen=True)

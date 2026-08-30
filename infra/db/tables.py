@@ -4638,6 +4638,15 @@ class SourcingCaseRow(Base):
         ),
         CheckConstraint("workflow_version >= 1 AND version >= 1", name="ck_sourcing_cases_versions"),
         CheckConstraint("jsonb_typeof(need_snapshot) = 'object'", name="ck_sourcing_cases_snapshot_json"),
+        CheckConstraint(
+            "jsonb_typeof(sealed_candidate_ids) = 'array' AND "
+            "NOT jsonb_path_exists(sealed_candidate_ids, '$[*] ? (@.type() != \"string\")') AND "
+            "((jsonb_array_length(sealed_candidate_ids) = 0 AND candidate_set_hash IS NULL "
+            "AND candidates_verified_at IS NULL) OR "
+            "(jsonb_array_length(sealed_candidate_ids) > 0 AND candidate_set_hash ~ '^[0-9a-f]{64}$' "
+            "AND candidates_verified_at IS NOT NULL))",
+            name="ck_sourcing_cases_candidate_seal",
+        ),
         CheckConstraint("need_snapshot_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_cases_snapshot_hash"),
         CheckConstraint("ladder_checked_to IS NULL OR ladder_checked_to BETWEEN 1 AND 7", name="ck_sourcing_cases_ladder"),
         CheckConstraint(
@@ -4702,6 +4711,13 @@ class SourcingCaseRow(Base):
     state: Mapped[str] = mapped_column(String(32), server_default=text("'opened'"))
     ladder_checked_to: Mapped[int | None] = mapped_column(Integer)
     active_search_plan_id: Mapped[str | None] = mapped_column(String(40))
+    sealed_candidate_ids: Mapped[list] = mapped_column(
+        postgresql.JSONB, server_default=text("'[]'::jsonb")
+    )
+    candidate_set_hash: Mapped[str | None] = mapped_column(String(64))
+    candidates_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     stop_code: Mapped[str | None] = mapped_column(String(40))
     stop_detail: Mapped[dict[str, object] | None] = mapped_column(
         postgresql.JSONB(none_as_null=True)
@@ -4801,7 +4817,7 @@ class SourcingCandidateRow(Base):
         CheckConstraint("jsonb_typeof(supplier_claims) = 'object'", name="ck_sourcing_candidates_claims_json"),
         CheckConstraint("jsonb_typeof(match_inferences) = 'object'", name="ck_sourcing_candidates_inferences_json"),
         CheckConstraint("jsonb_typeof(verified_specs) = 'array'", name="ck_sourcing_candidates_specs_json"),
-        CheckConstraint("jsonb_typeof(indicative_price_tiers) = 'array' AND NOT jsonb_path_exists(indicative_price_tiers, '$[*] ? (@.type() != \"object\" || @.minimum_quantity.type() != \"number\" || @.amount.type() != \"string\" || @.currency.type() != \"string\" || @.unit.type() != \"string\")')", name="ck_sourcing_candidates_price_tiers_json"),
+        CheckConstraint("jsonb_typeof(indicative_price_tiers) = 'array' AND jsonb_array_length(indicative_price_tiers) > 0 AND NOT jsonb_path_exists(indicative_price_tiers, '$[*] ? (@.type() != \"object\" || !exists(@.minimum_quantity) || @.minimum_quantity.type() != \"number\" || !exists(@.amount) || @.amount.type() != \"string\" || !exists(@.currency) || @.currency.type() != \"string\" || !exists(@.unit) || @.unit.type() != \"string\" || !exists(@.provenance) || @.provenance.type() != \"object\" || !exists(@.evidence_ref) || @.evidence_ref.type() != \"string\")')", name="ck_sourcing_candidates_price_tiers_json"),
         CheckConstraint("jsonb_typeof(rejection_reasons) = 'array'", name="ck_sourcing_candidates_rejections_json"),
         CheckConstraint("match_explanation IS NULL OR jsonb_typeof(match_explanation) = 'object'", name="ck_sourcing_candidates_match_json"),
         CheckConstraint("moq IS NULL OR moq >= 1", name="ck_sourcing_candidates_moq"),

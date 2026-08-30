@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -115,6 +116,7 @@ async def _seed_sourcing_candidate(
     tenant_id: TenantId,
     case_id: SourcingCaseId,
     candidate_id: SupplierCandidateId,
+    artifact_id: ArtifactId,
 ) -> None:
     need_id = ValidatedNeedId(new_id("need"))
     async with engine.begin() as connection:
@@ -152,12 +154,31 @@ async def _seed_sourcing_candidate(
                 "observed_facts, supplier_claims, match_inferences, verified_specs, "
                 "indicative_price_tiers, rejection_reasons, rejected, created_at) VALUES "
                 "(:tenant, :candidate, :case, 'Factory A', 'Hinge', '{}', '{}', '{}', "
-                "'[]', '[]', '[]', false, :now)"
+                "'[]', CAST(:tiers AS jsonb), '[]', false, :now)"
             ),
             {
                 "tenant": tenant_id,
                 "candidate": candidate_id,
                 "case": case_id,
+                "tiers": json.dumps(
+                    [
+                        {
+                            "minimum_quantity": 1000,
+                            "amount": "1.25",
+                            "currency": "USD",
+                            "unit": "piece",
+                            "provenance": {
+                                "source_type": "web_page",
+                                "source_id": "page-a",
+                                "extracted_by": "human",
+                                "extracted_at": NOW.isoformat(),
+                                "confirmed_by": None,
+                                "confirmed_at": None,
+                            },
+                            "evidence_ref": str(artifact_id),
+                        }
+                    ]
+                ),
                 "now": NOW,
             },
         )
@@ -248,7 +269,7 @@ async def test_candidate_source_is_idempotent_exact_and_rolls_back_as_one_aggreg
     artifact_id = ArtifactId(new_id("art"))
     await _seed_artifact(supply_engine, tenant_id, artifact_id)
     await _seed_sourcing_candidate(
-        supply_engine, tenant_id, case_id, candidate_id
+        supply_engine, tenant_id, case_id, candidate_id, artifact_id
     )
     source = CandidateSource(
         tenant_id=tenant_id,
@@ -319,6 +340,7 @@ async def test_candidate_source_is_idempotent_exact_and_rolls_back_as_one_aggreg
         tenant_id,
         rollback_source.sourcing_case_id,
         rollback_source.supplier_candidate_id,
+        artifact_id,
     )
     with pytest.raises(RuntimeError, match="rollback aggregate"):
         async with Uow(sf, tenant_id) as uow:

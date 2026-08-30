@@ -26,7 +26,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 NOW = datetime(2026, 8, 30, 9, tzinfo=UTC)
@@ -127,14 +126,22 @@ def _handoff(*, supplier_candidate: bool, price_options: tuple[object, ...]) -> 
 
 
 def _candidate_submission_payload() -> dict[str, object]:
+    tier_type = _type(sourcing_schemas, "IndicativePriceTier")
     return {
         "supplier_name": "Supplier A",
         "product_title": "Hinge",
         "source_platform": "supplier.example",
         "specs": (),
-        "indicative_price_tiers": {
-            1000: Money(Decimal("1.25"), CurrencyCode("USD"))
-        },
+        "indicative_price_tiers": (
+            tier_type(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+                provenance=PROVENANCE,
+                evidence_ref=ArtifactId("art-a"),
+            ),
+        ),
         "moq": 500,
         "price_unit": "piece",
         "currency": "USD",
@@ -513,7 +520,7 @@ def test_v2_candidate_write_uses_only_indicative_price_tiers() -> None:
     submission_type = _type(sourcing_schemas, "CandidateSubmission")
     valid = _candidate_submission_payload()
     submission = submission_type.model_validate(valid)
-    assert 1000 in submission.indicative_price_tiers
+    assert submission.indicative_price_tiers[0].minimum_quantity == 1000
     with pytest.raises(PydanticValidationError):
         submission_type.model_validate(
             {**valid, "quoted_prices": valid["indicative_price_tiers"]}

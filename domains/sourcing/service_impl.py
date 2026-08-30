@@ -31,6 +31,7 @@ from domains.sourcing.models import (
     SpecMatchLevel,
     SupplierCandidate,
     SupplyOptionSource,
+    candidate_set_hash,
 )
 from domains.sourcing.permissions import (
     SourcingAction,
@@ -73,6 +74,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from shared.schemas.money import CurrencyCode, Money
 
 
 def _aware(value: datetime) -> datetime:
@@ -108,6 +110,19 @@ def _valid_candidate_evidence_projection(
         and str(projection.artifact_id).startswith("art_")
         and str(projection.artifact_id) == str(projection.artifact_id).strip()
     )
+
+
+async def _read_candidate_evidence(
+    reader: CandidateEvidenceSnapshotReader,
+    tenant_id: TenantId,
+    artifact_id: ArtifactId,
+) -> CandidateEvidenceSnapshot | None:
+    """把不可信 reader 异常限制在本调用帧内，禁止泄露异常链。"""
+
+    try:
+        return await reader.read_verified(tenant_id, artifact_id)
+    except Exception:  # noqa: BLE001 -- reader 边界必须吞掉全部不可信异常类型
+        return None
 
 
 def _employee(actor: SourcingActor) -> EmployeeId:
@@ -167,7 +182,7 @@ def _candidate_from_submission(
         supplier_claims=dict(submission.supplier_claims),
         match_inferences=dict(submission.match_inferences),
         verified_specs=comparisons,
-        indicative_price_tiers=dict(submission.indicative_price_tiers),
+        indicative_price_tiers=tuple(submission.indicative_price_tiers),
         moq=submission.moq,
         price_unit=submission.price_unit,
         currency=submission.currency,
@@ -201,7 +216,12 @@ def _candidate_view(candidate: SupplierCandidate) -> CandidateView:
             )
             for item in candidate.verified_specs
         ],
-        quoted_prices=dict(candidate.indicative_price_tiers),
+        quoted_prices={
+            tier.minimum_quantity: Money(
+                tier.amount, CurrencyCode(tier.currency)
+            )
+            for tier in candidate.indicative_price_tiers
+        },
         match_summary=candidate.match.summary if candidate.match is not None else None,
         moq=candidate.moq,
         price_unit=candidate.price_unit,
@@ -478,12 +498,11 @@ class SourcingServiceImpl:
         if not isinstance(submission, CandidateSubmission):
             raise ValidationError("候选提交命令无效")
         artifact_id = ArtifactId(submission.evidence_artifact_ref)
-        try:
-            projection = await self._evidence_reader.read_verified(
-                tenant_id, artifact_id
-            )
-        except Exception as exc:
-            raise MissingEvidenceSnapshotError("无法读取可信候选证据快照") from exc
+        projection = await _read_candidate_evidence(
+            self._evidence_reader, tenant_id, artifact_id
+        )
+        if projection is None:
+            raise MissingEvidenceSnapshotError("无法读取可信候选证据快照")
         if not isinstance(
             projection, CandidateEvidenceSnapshot
         ) or not _valid_candidate_evidence_projection(projection):
@@ -518,7 +537,12 @@ class SourcingServiceImpl:
             for item in submission.match_inferences.values()
             for ref in item.based_on
         }
-        if not field_refs <= evidence_refs or not inference_refs <= evidence_refs:
+        tier_refs = {item.evidence_ref for item in submission.indicative_price_tiers}
+        if (
+            not field_refs <= evidence_refs
+            or not inference_refs <= evidence_refs
+            or not tier_refs <= evidence_refs
+        ):
             raise MissingEvidenceSnapshotError(
                 "候选字段 Provenance 未绑定可信证据快照"
             )
@@ -529,6 +553,8 @@ class SourcingServiceImpl:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能提交候选"
                 )
+            if case.candidates_verified_at is not None:
+                raise InvalidStateTransition("候选集合已封存，不能继续提交候选")
             candidate = _candidate_from_submission(
                 tenant_id,
                 case,
@@ -546,7 +572,10 @@ class SourcingServiceImpl:
                 reasons.append(PriceRejectionReason.VERIFICATION_INCOMPLETE)
             if candidate.moq is None or quantity < candidate.moq:
                 reasons.append(PriceRejectionReason.MOQ_NOT_MET)
-            if not any(tier <= quantity for tier in candidate.indicative_price_tiers):
+            if not any(
+                tier.minimum_quantity <= quantity
+                for tier in candidate.indicative_price_tiers
+            ):
                 reasons.append(PriceRejectionReason.QUANTITY_TIER_MISSING)
             if (
                 not reasons
@@ -666,6 +695,33 @@ class SourcingServiceImpl:
                 views.append(_case_view(case, candidates))
             return views
 
+    @staticmethod
+    def _require_candidate_generation(
+        case: SourcingCase,
+        *,
+        expected_case_version: int | None,
+        expected_candidate_set_hash: str | None,
+        allow_ready: bool,
+    ) -> None:
+        """核对产品卡投影绑定的精确候选 generation。"""
+
+        if (
+            not case.sealed_candidate_ids
+            or case.candidate_set_hash is None
+            or case.candidates_verified_at is None
+            or expected_case_version is None
+            or expected_candidate_set_hash is None
+        ):
+            raise ValidationError("供应商候选路径缺少已封存 generation")
+        expected_current_version = expected_case_version
+        if allow_ready and case.state is CaseState.CANDIDATES_READY:
+            expected_current_version += 1
+        if (
+            case.version != expected_current_version
+            or case.candidate_set_hash != expected_candidate_set_hash
+        ):
+            raise ValidationError("供应商候选投影 generation 已过期")
+
     async def mark_candidates_ready(
         self,
         tenant_id: TenantId,
@@ -673,6 +729,8 @@ class SourcingServiceImpl:
         option_ids: tuple[SourcingSupplyOptionId, ...],
         candidate_ids: tuple[SupplierCandidateId, ...],
         *,
+        expected_case_version: int | None = None,
+        expected_candidate_set_hash: str | None = None,
         actor: SourcingActor,
     ) -> None:
         self._require(
@@ -701,7 +759,10 @@ class SourcingServiceImpl:
             options = await uow.options.list_for_case(tenant_id, case_id)
             qualified_options = tuple(item for item in options if item.is_qualified)
             canonical_candidate_ids = tuple(
-                item.candidate_id for item in qualified_candidates
+                sorted(
+                    (item.candidate_id for item in qualified_candidates),
+                    key=str,
+                )
             )
             canonical_option_ids = tuple(item.option_id for item in qualified_options)
             if (
@@ -712,6 +773,21 @@ class SourcingServiceImpl:
                 or len(option_ids) != len(canonical_option_ids)
             ):
                 raise ValidationError("候选就绪必须提交仓储重建的完整合格集合")
+            if canonical_candidate_ids:
+                self._require_candidate_generation(
+                    case,
+                    expected_case_version=expected_case_version,
+                    expected_candidate_set_hash=expected_candidate_set_hash,
+                    allow_ready=True,
+                )
+                if canonical_candidate_ids != case.sealed_candidate_ids:
+                    raise ValidationError("候选就绪集合与已封存 generation 不一致")
+            elif (
+                case.sealed_candidate_ids
+                or expected_case_version is not None
+                or expected_candidate_set_hash is not None
+            ):
+                raise ValidationError("仅现有产品路径不得携带候选 generation")
             supplier_candidate_ids = {
                 item.supplier_candidate_id
                 for item in qualified_options
@@ -740,7 +816,7 @@ class SourcingServiceImpl:
         candidate_ids: tuple[SupplierCandidateId, ...],
         *,
         actor: SourcingActor,
-    ) -> None:
+    ) -> SourcingCandidatesVerified:
         self._require(
             tenant_id,
             actor,
@@ -758,23 +834,51 @@ class SourcingServiceImpl:
                 )
             candidates = await uow.candidates.list_for_case(tenant_id, case_id, False)
             canonical_ids = tuple(
-                item.candidate_id
-                for item in candidates
-                if not item.rejected and item.passes_verification()[0]
+                sorted(
+                    (
+                        item.candidate_id
+                        for item in candidates
+                        if not item.rejected and item.passes_verification()[0]
+                    ),
+                    key=str,
+                )
             )
             if (
                 set(candidate_ids) != set(canonical_ids)
                 or len(candidate_ids) != len(canonical_ids)
             ):
                 raise ValidationError("候选核验事件必须是精确的合格候选全集")
-            await uow.bus.publish(
-                SourcingCandidatesVerified(
+            generation_hash = candidate_set_hash(canonical_ids)
+            if case.sealed_candidate_ids:
+                if (
+                    case.sealed_candidate_ids != canonical_ids
+                    or case.candidate_set_hash != generation_hash
+                    or case.candidates_verified_at is None
+                ):
+                    raise ValidationError("候选集合已由不同 generation 封存")
+                return SourcingCandidatesVerified(
                     tenant_id=tenant_id,
-                    occurred_at=now,
+                    occurred_at=case.candidates_verified_at,
                     case_id=case_id,
                     candidate_ids=canonical_ids,
+                    case_version=case.version,
+                    candidate_set_hash=generation_hash,
                 )
+            case.sealed_candidate_ids = canonical_ids
+            case.candidate_set_hash = generation_hash
+            case.candidates_verified_at = now
+            case.version += 1
+            await uow.cases.update(tenant_id, case)
+            event = SourcingCandidatesVerified(
+                tenant_id=tenant_id,
+                occurred_at=now,
+                case_id=case_id,
+                candidate_ids=canonical_ids,
+                case_version=case.version,
+                candidate_set_hash=generation_hash,
             )
+            await uow.bus.publish(event)
+            return event
 
     async def register_supplier_candidate_option(
         self,
@@ -783,6 +887,8 @@ class SourcingServiceImpl:
         candidate_id: SupplierCandidateId,
         product_id: ProductId,
         *,
+        expected_case_version: int | None = None,
+        expected_candidate_set_hash: str | None = None,
         actor: SourcingActor,
     ) -> SourcingSupplyOptionId:
         self._require(
@@ -800,6 +906,14 @@ class SourcingServiceImpl:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能登记候选供给选项"
                 )
+            self._require_candidate_generation(
+                case,
+                expected_case_version=expected_case_version,
+                expected_candidate_set_hash=expected_candidate_set_hash,
+                allow_ready=True,
+            )
+            if candidate_id not in case.sealed_candidate_ids:
+                raise ValidationError("候选不属于已封存 generation")
             candidate = await uow.candidates.get(tenant_id, candidate_id)
             if (
                 candidate is None

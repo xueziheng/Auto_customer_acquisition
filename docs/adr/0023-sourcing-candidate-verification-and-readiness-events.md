@@ -16,10 +16,13 @@ Supplier Candidate 尚未绑定产品卡时把 Case 提前推进。此时人工�
 
 ## 决策
 
-增加过去式事实 `SourcingCandidatesVerified`。它只携带 Case ID 和 sourcing 仓储重建出的
-精确合格 Supplier Candidate IDs，不改变 Case 状态。Task 11 产品投影消费该事件，幂等
+增加过去式事实 `SourcingCandidatesVerified`。它携带 Case ID、sourcing 仓储重建出的
+精确排序合格 Supplier Candidate IDs、封存后的 Case 版本与确定性集合哈希，不改变 Case
+状态。候选全集、集合哈希、核验时间、Case CAS 与 Outbox 在同一事务提交；封存后不再接受
+新候选。相同 generation 重试返回相同事实且不重复 Outbox，集合不同则拒绝。Task 11 产品投影消费该事件，幂等
 创建 `source_only` 产品卡，并通过 SYSTEM-only sourcing 服务接口登记真实 ProductId 与
-Supplier Candidate 的 Supply Option。
+Supplier Candidate 的 Supply Option；登记与最终 readiness 都必须回传并核对事件的版本和
+集合哈希，过期投影失败关闭。
 
 只有产品卡和全部合格 Option 已存在后，workflow 才调用最终就绪入口。该入口重新读取
 同租户 Case 的全部合格 Candidate 与 Option，要求调用集合无遗漏、无额外项，并验证每个
@@ -38,6 +41,7 @@ Supplier Candidate 的 Supply Option。
   现有复合外键继续证明租户与来源关联。
 - 最终入口以仓储真相重建全集，调用方提供的 IDs 只用于精确一致性核对，不能缩小审核范围。
 - 投影和 Option 注册都有稳定来源唯一键，Outbox 重投不会重复创建产品卡或 Option。
+- Case CAS 封存消除了“发布者读到 A、并发提交 B、仓储成为 A+B 但事件只含 A”的时序窗口。
 
 ## 放弃的选项
 
@@ -54,7 +58,7 @@ Supplier Candidate 的 Supply Option。
 
 - 公共事件目录、Outbox 白名单和 Task 11 投影路由增加一个事件。
 - Task 11 必须消费 `SourcingCandidatesVerified`，逐卡登记 Option，并在全部成功后显式完成
-  readiness；不能再订阅 Ready 作为建卡请求。
+  readiness；每次调用必须携带事件 generation，不能再订阅 Ready 作为建卡请求。
 - 最终 readiness 需要额外一次仓储全集读取，但换来可验证的完整审核范围。
 - 旧 V2 草稿尚未发布，无需历史事件迁移；若外部消费者已基于旧草稿开发，必须改用新事件。
 

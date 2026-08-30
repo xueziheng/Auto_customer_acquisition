@@ -2,8 +2,25 @@
 
 ## 结果
 
-Task 6 服务已实现，并在 Fix Round 1 按 Ruling P14–P18 关闭了全部
-1 Critical + 5 Important 审查项：
+Task 6 服务已实现，并在 Fix Round 1 的 P14–P18 之后继续按 Fix Round 2
+Ruling P19–P21 关闭候选封存、逐字段证据与异常脱敏三项 Important：
+
+- P19 将合格 Candidate 的精确排序 ID、确定性集合哈希和 `verified_at` 封存在
+  `SourcingCase`。`mark_candidates_verified` 在同一 Case CAS 中封存并发布，事件
+  携 resulting `case_version` / `candidate_set_hash`；封存后拒绝新 Candidate，
+  相同 generation 重试返回同一事实且不重复 Outbox。Option 登记和最终 Ready
+  均核对 generation；existing-product-only 仍可直接 finalise。
+- P20 用 frozen/strict/extra-forbid 的 `IndicativePriceTier` 替换裸 `dict[int,
+  Money]`。每档包含最小数量、Decimal 金额、币种、单位、Provenance 与
+  `evidence_ref`，完整 JSONB 往返。每项规格 `offered`、MOQ、计价单位和币种
+  必须与同名 fact/claim 规范化同值，全部 Artifact 引用属于可信快照集；未发布
+  0047 的数据库约束拒绝空档、缺来源或错类型 JSON。没有保留会补造来源的历史
+  JSON 兼容路径，旧形状在 schema/DB 两层失败关闭。
+- P21 将 reader 调用隔离在窄 helper 中，helper 捕获并丢弃不可信异常对象；调用层
+  在 `except` 上下文外抛固定 `MissingEvidenceSnapshotError`。测试核对 `__cause__`、
+  `__context__` 和显示 traceback 均不含 secret。
+
+Fix Round 1 的 1 Critical + 5 Important 仍保持关闭：
 
 - `open_case` 精确派生并核对
   `sourcing-case:v2:{tenant_id}:{need_id}`，通过 PostgreSQL
@@ -71,6 +88,25 @@ Fix Round 1 的每项行为都先有有效 RED：
 - P18：集成测试先观察到 `active_search_plan_id is None`，实现同一 CAS
   绑定后定向测试 GREEN。
 
+Fix Round 2 继续先写测试再实现：
+
+- 第一轮新增证据型价格 DTO 测试先在收集期因 `IndicativePriceTier` 不存在 RED；
+  建立严格 DTO 后，Task 6 unit 出现 11 failed：旧服务仍把 tuple 转 dict、P21
+  仍保留 `RuntimeError("secret")` cause、候选封存 API 尚无 generation。最小实现后
+  `tests/unit/test_sourcing_service.py` 为 26 passed，包含恶意规格值、缺 MOQ 证据、
+  错 tier Artifact、过期 generation、封存后提交和相同重试单 Outbox。
+- P20 repository 真实 PostgreSQL round-trip 核对 Decimal 精度、Provenance、
+  `evidence_ref` 与快照排序；迁移负例核对缺 tier Provenance/evidence_ref 和不完整
+  Case seal 均触发 DB integrity failure。
+- P19 真实 PostgreSQL 竞态使用两个独立 session 与显式 barrier：T1 的
+  `list_for_case` 已返回 A 后暂停，T2 提交 B 并 commit，T1 恢复后的 Case CAS
+  必须 conflict 且该事务 Outbox 回滚；随后重试从仓储读到并封存排序 A+B。
+  最终断言 Case 只有 A+B seal、只有一条 Verified outbox，payload 精确 A+B，
+  不存在仓储 A+B 而事件只有 A。
+- 联合回归首次揭示 Task 2 仍用旧裸 Money payload、Task 4 FK seed 仍写空 price
+  tiers；两处测试 fixture 收紧为同一 evidence-bearing tier 合同后 GREEN，没有放宽
+  新 schema 或数据库约束。
+
 ## 最终门禁
 
 Task 6 主回归（真实 PostgreSQL 集成测试未 skip）：
@@ -79,15 +115,16 @@ Task 6 主回归（真实 PostgreSQL 集成测试未 skip）：
 pytest tests/unit/test_sourcing_models.py tests/unit/test_sourcing_service.py \
        tests/integration/test_sourcing_service_persistence.py \
        tests/integration/test_outbox_transaction.py -q
-=> 43 passed in 3.95s
+=> 48 passed in 3.79s
 ```
 
 真实 PostgreSQL 服务并发和迁移/trigger 定向组合：
 
 ```text
 pytest tests/integration/test_sourcing_service_persistence.py \
+       tests/integration/test_sourcing_repositories.py \
        tests/integration/test_sourcing_migrations.py -q
-=> 18 passed in 16.22s
+=> 34 passed in 16.95s
 ```
 
 Task 1–4 联合回归，含迁移 head/round-trip 和 single-head：
@@ -105,7 +142,7 @@ pytest tests/integration/test_demand_sourcing_ready_event.py \
        tests/integration/test_sourcing_migrations.py \
        tests/integration/test_migrations.py \
        tests/unit/test_work_intake_migration_head.py -q
-=> 259 passed in 53.57s
+=> 259 passed in 53.37s
 ```
 
 静态、结构与 diff 门禁：
@@ -114,8 +151,8 @@ pytest tests/integration/test_demand_sourcing_ready_event.py \
 ruff check <17 个 touched Python 源码/测试文件>
 => All checks passed!
 
-mypy <10 个 touched source files>
-=> Success: no issues found in 10 source files
+mypy <8 个 touched source files>
+=> Success: no issues found in 8 source files
 
 mypy tests/unit/test_sourcing_service.py \
      tests/unit/test_sourcing_trigger_contracts.py \
@@ -149,6 +186,11 @@ Fix Round 1 受权的最小公共合同修正：
 5. 最终 Ready 事件的语义从“触发产品卡”收紧为“产品卡和 Option 已完整”。
    新增中间过去式 `SourcingCandidatesVerified` 作为 Task 11 投影输入；旧
    `SourcingCandidatesReady` 类名保留，但不得按旧冲突文本消费。
+6. Fix Round 2 为 `SourcingCandidatesVerified` 增加 `case_version` 与
+   `candidate_set_hash`，并为 Option/Ready 公共 API 增加对应 generation 参数。
+   supplier-candidate 路径必须提供；existing-product-only 路径继续以空 Candidate
+   集合兼容。旧裸 Money 候选写形状属于尚未发布的 V2 草稿，不再兼容写入，也不
+   静默补造 Provenance。
 
 超出原 Task 6 初始 allowlist、但由 Fix Round 1/P14–P18 明确授权的额外文件：
 
@@ -158,6 +200,8 @@ Fix Round 1 受权的最小公共合同修正：
 - `migrations/versions/0047_sourcing_core.py`
 - `tests/unit/test_sourcing_trigger_contracts.py`、`test_outbox_serialization.py`
 - `tests/integration/test_sourcing_repositories.py`、`test_sourcing_migrations.py`
+- `tests/unit/test_sourcing_v2_contracts.py`、
+  `tests/integration/test_supply_pool_repositories.py`（只同步 evidence-bearing tier fixture）
 - `docs/superpowers/specs/2026-08-30-phase2-sourcing-case-product-cards-design.md`
 - `docs/superpowers/plans/2026-08-30-phase2-sourcing-case-product-cards.md`
 - `docs/adr/0023-sourcing-candidate-verification-and-readiness-events.md`
@@ -170,8 +214,9 @@ Fix Round 1 受权的最小公共合同修正：
 - 新增中文 ADR 0023，说明 Verified 事件→产品卡投影→Option 登记→最终 Ready
   的时序，并明确替代设计/计划里“产品域消费 Ready”的冲突旧文本。
 - Task 11 必须消费 `SourcingCandidatesVerified`，幂等生成产品卡，调用
-  `register_supplier_candidate_option`，待全部绑定完整后才调用
-  `mark_candidates_ready`。
+  `register_supplier_candidate_option`，并在每次 Option/Ready 调用原样传递事件中的
+  `case_version` / `candidate_set_hash`；待全部绑定完整后才调用
+  `mark_candidates_ready`。过期 generation 不得通过重新读取当前 Case 猜测替换。
 - Task 13 必须注入读取 Artifact 不可变元数据的
   `CandidateEvidenceSnapshotReader`，不得从搜索摘要或请求字段重建可信投影。
 

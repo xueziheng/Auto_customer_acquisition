@@ -22,6 +22,7 @@ from domains.sourcing.schemas import (
     SourcingHandoffSnapshot,
     SourcingReviewCommand,
 )
+from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
     OpportunityId,
@@ -127,6 +128,8 @@ class SourcingService(Protocol):
         option_ids: tuple[SourcingSupplyOptionId, ...],
         candidate_ids: tuple[SupplierCandidateId, ...],
         *,
+        expected_case_version: int | None = None,
+        expected_candidate_set_hash: str | None = None,
         actor: SourcingActor,
     ) -> None:
         """冻结全部供给选项并原子发布候选就绪事实。"""
@@ -139,8 +142,8 @@ class SourcingService(Protocol):
         candidate_ids: tuple[SupplierCandidateId, ...],
         *,
         actor: SourcingActor,
-    ) -> None:
-        """发布精确合格供应商候选集，供产品卡投影消费；不推进 Case。"""
+    ) -> SourcingCandidatesVerified:
+        """原子封存精确候选集并返回产品卡投影 generation。"""
         ...
 
     async def register_supplier_candidate_option(
@@ -150,6 +153,8 @@ class SourcingService(Protocol):
         candidate_id: SupplierCandidateId,
         product_id: ProductId,
         *,
+        expected_case_version: int | None = None,
+        expected_candidate_set_hash: str | None = None,
         actor: SourcingActor,
     ) -> SourcingSupplyOptionId:
         """SYSTEM 幂等登记真实候选产品卡与供应商候选的供给选项绑定。"""

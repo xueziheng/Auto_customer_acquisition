@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
 from domains.sourcing.schemas import (
+    IndicativePriceTier,
     ProvenanceSummary,
     PublicSourcingPlanCommand,
     SourcingMatchInference,
@@ -35,7 +36,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.money import Money
 from shared.schemas.provenance import SourceType
 
 
@@ -261,6 +261,25 @@ def _plan_hash(scope: dict[str, object]) -> str:
         ensure_ascii=False,
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def candidate_set_hash(candidate_ids: tuple[SupplierCandidateId, ...]) -> str:
+    """对已排序候选 ID 集合生成稳定哈希，作为投影 generation。"""
+
+    encoded = json.dumps(
+        [str(item) for item in candidate_ids],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _normalized_evidence_value(value: str | int | object) -> str:
+    """只消除大小写与空白差异，不做可能改变商业语义的模糊匹配。"""
+
+    if isinstance(value, str):
+        return " ".join(value.split()).casefold()
+    return str(value)
 
 
 @dataclass(frozen=True)
@@ -546,7 +565,7 @@ class SupplierCandidate:
     supplier_claims: dict[str, SourcingSupplierClaim] = field(default_factory=dict)
     match_inferences: dict[str, SourcingMatchInference] = field(default_factory=dict)
     verified_specs: list[SpecComparison] = field(default_factory=list)
-    indicative_price_tiers: dict[int, Money] = field(default_factory=dict)
+    indicative_price_tiers: tuple[IndicativePriceTier, ...] = ()
     moq: int | None = None
     price_unit: str | None = None
     currency: str | None = None
@@ -564,7 +583,30 @@ class SupplierCandidate:
         返回 ``(通过, 未通过项)``。检查全部项后一次返回，不短路。
         """
         missing: list[str] = []
-        comparisons = {item.spec_name.strip().casefold(): item for item in self.verified_specs}
+        comparisons = {
+            item.spec_name.strip().casefold(): item for item in self.verified_specs
+        }
+        trusted_refs = {
+            snapshot.artifact_ref
+            for snapshot in self.evidence_snapshots
+            if _valid_evidence_snapshot(snapshot)
+        }
+        facts = {
+            key.strip().casefold(): value for key, value in self.observed_facts.items()
+        }
+        claims = {
+            key.strip().casefold(): value for key, value in self.supplier_claims.items()
+        }
+
+        def has_bound_value(name: str, expected: str | int) -> bool:
+            expected_value = _normalized_evidence_value(expected)
+            return any(
+                isinstance(item, (SourcingObservedFact, SourcingSupplierClaim))
+                and str(item.evidence_ref) in trusted_refs
+                and _normalized_evidence_value(item.value) == expected_value
+                for item in (facts.get(name), claims.get(name))
+            )
+
         for name in ("product_type", "material", "size", "model"):
             item = comparisons.get(name)
             if (
@@ -583,12 +625,8 @@ class SupplierCandidate:
             ):
                 missing.append(f"customer_confirmation:{name}")
 
-        for name in ("product_type", "material", "size", "model"):
-            observed = self.observed_facts.get(name)
-            claimed = self.supplier_claims.get(name)
-            if not isinstance(observed, SourcingObservedFact) and not isinstance(
-                claimed, SourcingSupplierClaim
-            ):
+        for name, item in comparisons.items():
+            if item.offered is not None and not has_bound_value(name, item.offered):
                 missing.append(f"structured_spec:{name}")
         if not any(
             isinstance(item, SourcingMatchInference)
@@ -597,21 +635,27 @@ class SupplierCandidate:
             missing.append("match_inference")
 
         tiers_valid = bool(self.indicative_price_tiers) and all(
-            not isinstance(quantity, bool)
-            and isinstance(quantity, int)
-            and quantity > 0
-            and price.amount > 0
-            for quantity, price in self.indicative_price_tiers.items()
-        )
+            tier.minimum_quantity > 0
+            and tier.amount > 0
+            and str(tier.evidence_ref) in trusted_refs
+            for tier in self.indicative_price_tiers
+        ) and len(
+            {tier.minimum_quantity for tier in self.indicative_price_tiers}
+        ) == len(self.indicative_price_tiers)
         if not tiers_valid:
             missing.append("quantity_tier")
         if isinstance(self.moq, bool) or not isinstance(self.moq, int) or self.moq < 1:
             missing.append("moq")
-        if self.price_unit is None or not self.price_unit.strip():
+        elif not has_bound_value("moq", self.moq):
+            missing.append("structured_moq")
+        if self.price_unit is None or not self.price_unit.strip() or (
+            {tier.unit for tier in self.indicative_price_tiers}
+            != {self.price_unit}
+        ):
             missing.append("price_unit")
-        currencies = {
-            str(price.currency) for price in self.indicative_price_tiers.values()
-        }
+        elif not has_bound_value("price_unit", self.price_unit):
+            missing.append("structured_price_unit")
+        currencies = {tier.currency for tier in self.indicative_price_tiers}
         if (
             self.currency is None
             or len(self.currency) != 3
@@ -621,6 +665,8 @@ class SupplierCandidate:
             or currencies != {self.currency}
         ):
             missing.append("currency")
+        elif not has_bound_value("currency", self.currency):
+            missing.append("structured_currency")
         if not _valid_evidence_snapshot(self.evidence):
             missing.append("evidence_snapshot")
         if self.match is None or self.match.has_unknowns:
@@ -669,6 +715,9 @@ class SourcingCase:
     need_snapshot: SourcingNeedSnapshot | None = None
     need_snapshot_hash: str | None = None
     active_search_plan_id: SourcingPlanId | None = None
+    sealed_candidate_ids: tuple[SupplierCandidateId, ...] = ()
+    candidate_set_hash: str | None = None
+    candidates_verified_at: datetime | None = None
     stop_code: SourcingStopCode | None = None
     stop_detail: SourcingStopDetail | None = None
     version: int = 1
@@ -679,6 +728,30 @@ class SourcingCase:
             self.stop_detail, SourcingStopDetail
         ):
             raise ValidationError("stop_detail 必须是安全结构化对象")
+        sealed = bool(self.sealed_candidate_ids)
+        seal_metadata = (
+            self.candidate_set_hash is not None
+            or self.candidates_verified_at is not None
+        )
+        if sealed != seal_metadata or sealed and (
+            self.candidate_set_hash is None
+            or self.candidates_verified_at is None
+        ):
+            raise ValidationError("候选封存字段必须成组存在")
+        if sealed:
+            verified_at = self.candidates_verified_at
+            if verified_at is None:
+                raise ValidationError("候选封存缺少核验时间")
+            if (
+                tuple(sorted(self.sealed_candidate_ids, key=str))
+                != self.sealed_candidate_ids
+            ):
+                raise ValidationError("封存候选 ID 必须精确排序")
+            if len(set(self.sealed_candidate_ids)) != len(self.sealed_candidate_ids):
+                raise ValidationError("封存候选 ID 不得重复")
+            if self.candidate_set_hash != candidate_set_hash(self.sealed_candidate_ids):
+                raise ValidationError("封存候选集合哈希不匹配")
+            _require_aware_time(verified_at, "candidates_verified_at")
 
     def transition_to(self, target: CaseState, *, changed_at: datetime) -> None:
         """按显式转换表推进案例并递增乐观并发版本。"""

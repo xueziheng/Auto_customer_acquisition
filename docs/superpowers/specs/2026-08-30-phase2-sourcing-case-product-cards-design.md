@@ -239,8 +239,10 @@ Case 可以保持 `discovering`，等待授权等细分状态由计划表达，�
 - `supplier_claims`：供应商或目录自述；
 - `match_inferences`：Agent 或员工对可替代性等做出的推断；
 - `spec_comparisons`：产品类型、材质、尺寸、型号的逐项比较；
-- `indicative_price_tiers`：数量档对应的 `Money/Decimal`；
-- MOQ、计价单位和币种；
+- `indicative_price_tiers`：每档数量、`Decimal` 金额、币种、计价单位、
+  Provenance 与可信 Artifact 引用组成的不可变严格对象；
+- MOQ、计价单位和币种；三项必须分别与同名观察事实或供应商自述规范化同值，
+  每项规格的 `offered` 也必须与同名证据字段同值；
 - 一个或多个网页快照引用；
 - 核验状态、拒绝原因和核验者。
 
@@ -290,11 +292,14 @@ SourcingCaseHandedToCosting
 NeedBecameSourcingReady
 ```
 
-- `SourcingCandidatesVerified` 只携带 Case 与精确的合格 Supplier Candidate
-  IDs；产品域消费该事实并幂等生成 `source_only` 产品卡，再由 SYSTEM 调用
+- `SourcingCandidatesVerified` 携带 Case、精确排序的合格 Supplier Candidate
+  IDs、封存后的 Case 版本与候选集合哈希。封存、Case CAS 和 Outbox 在同一事务
+  完成；封存后禁止再写候选，相同 generation 重试只返回原事实而不重复 Outbox。
+  产品域消费该事实并幂等生成 `source_only` 产品卡，再由 SYSTEM 调用
   sourcing 域窄接口登记真实 ProductId 与 Candidate 的供给选项；
 - 产品卡和全部合格供给选项均已存在后，workflow 才以仓储重建出的完整集合
-  调用最终就绪入口。sourcing 域转为 `candidates_ready` 并发布
+  以及事件中的 Case 版本/集合哈希调用登记与最终就绪入口；两个入口都拒绝过期
+  generation。sourcing 域转为 `candidates_ready` 并发布
   `SourcingCandidatesReady`；该事件表示完整冻结集合已就绪，不再作为建卡请求；
 - `SourcingCaseHandedToCosting` 只携带 Case、Need、Opportunity 和 Review 的
   稳定引用；成本域读取同租户、同版本的 handoff snapshot，按主

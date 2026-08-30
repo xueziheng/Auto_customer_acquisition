@@ -4,7 +4,11 @@ import importlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from domains.sourcing.schemas import SourcingMatchInference, SourcingObservedFact
+from domains.sourcing.schemas import (
+    IndicativePriceTier,
+    SourcingMatchInference,
+    SourcingObservedFact,
+)
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -13,7 +17,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
 _models = importlib.import_module("domains.sourcing.models")
@@ -56,6 +59,34 @@ def candidate(
     currency: str = "USD",
     rejected: bool = False,
 ) -> SupplierCandidate:
+    artifact = ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X")
+    evidence = EvidenceSnapshot(
+        "https://supplier.example/catalog/hinge",
+        NOW,
+        "a" * 64,
+        str(artifact),
+    )
+    observed_facts = {
+        name: SourcingObservedFact(
+            value=f"offered-{name}",
+            provenance=PROVENANCE,
+            evidence_ref=artifact,
+        )
+        for name in ("product_type", "material", "size", "model")
+    }
+    observed_facts.update(
+        {
+            "moq": SourcingObservedFact(
+                value=500, provenance=PROVENANCE, evidence_ref=artifact
+            ),
+            "price_unit": SourcingObservedFact(
+                value="piece", provenance=PROVENANCE, evidence_ref=artifact
+            ),
+            "currency": SourcingObservedFact(
+                value="USD", provenance=PROVENANCE, evidence_ref=artifact
+            ),
+        }
+    )
     return SupplierCandidate(
         candidate_id=SupplierCandidateId(f"cand-{suffix}"),
         tenant_id=TenantId("tenant-one"),
@@ -63,38 +94,31 @@ def candidate(
         supplier_name=f"Supplier {suffix}",
         product_title="Stainless steel hinge",
         created_at=created_at,
-        observed_facts={
-            name: SourcingObservedFact(
-                value=f"offered-{name}",
-                provenance=PROVENANCE,
-                evidence_ref=ArtifactId(f"art-{name}"),
-            )
-            for name in ("product_type", "material", "size", "model")
-        },
+        observed_facts=observed_facts,
         match_inferences={
             "fit": SourcingMatchInference(
                 value="四项规格已核对",
-                based_on=tuple(
-                    ArtifactId(f"art-{name}")
-                    for name in ("product_type", "material", "size", "model")
-                ),
+                based_on=(artifact,),
                 inferred_by="human",
                 inferred_at=NOW,
             )
         },
         verified_specs=specs() if verified_specs is None else verified_specs,
-        indicative_price_tiers={
-            1000: Money(Decimal("1.25"), CurrencyCode("USD"))
-        },
+        indicative_price_tiers=(
+            IndicativePriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+                provenance=PROVENANCE,
+                evidence_ref=artifact,
+            ),
+        ),
         moq=500,
         price_unit="piece",
         currency=currency,
-        evidence=EvidenceSnapshot(
-            "https://supplier.example/catalog/hinge",
-            NOW,
-            "a" * 64,
-            "art_01K39P9M5D6K4A91YEQ80EJZ0X",
-        ),
+        evidence=evidence,
+        evidence_snapshots=(evidence,),
         match=MatchExplanation(MatchLadderRung.PUBLIC_SOURCING, specs(), "四项规格已核对"),
         rejected=rejected,
         verified_by=EmployeeId("employee-one"),
@@ -125,7 +149,7 @@ def test_match_explanation_reports_unknowns_and_customer_confirmation() -> None:
 
 def test_candidate_verification_collects_every_missing_item_without_short_circuit() -> None:
     item = candidate("missing", verified_specs=[])
-    item.indicative_price_tiers = {}
+    item.indicative_price_tiers = ()
     item.moq = None
     item.price_unit = None
     item.currency = None
@@ -170,6 +194,9 @@ def test_candidate_verification_rejects_legacy_only_unstructured_evidence() -> N
             "structured_spec:size",
             "structured_spec:model",
             "match_inference",
+            "structured_moq",
+            "structured_price_unit",
+            "structured_currency",
         ],
     )
 

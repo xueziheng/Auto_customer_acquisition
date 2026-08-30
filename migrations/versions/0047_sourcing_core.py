@@ -77,6 +77,14 @@ def upgrade() -> None:
         ),
         sa.Column("ladder_checked_to", sa.Integer(), nullable=True),
         sa.Column("active_search_plan_id", sa.String(40), nullable=True),
+        sa.Column(
+            "sealed_candidate_ids",
+            postgresql.JSONB(),
+            nullable=False,
+            server_default=sa.text("'[]'::jsonb"),
+        ),
+        sa.Column("candidate_set_hash", sa.String(64), nullable=True),
+        sa.Column("candidates_verified_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("stop_code", sa.String(40), nullable=True),
         sa.Column("stop_detail", postgresql.JSONB(), nullable=True),
         sa.Column("assigned_to", sa.String(40), nullable=True),
@@ -110,6 +118,17 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "jsonb_typeof(need_snapshot) = 'object'",
             name="ck_sourcing_cases_snapshot_json",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(sealed_candidate_ids) = 'array' AND "
+            "NOT jsonb_path_exists(sealed_candidate_ids, "
+            "'$[*] ? (@.type() != \"string\")') AND "
+            "((jsonb_array_length(sealed_candidate_ids) = 0 "
+            "AND candidate_set_hash IS NULL AND candidates_verified_at IS NULL) OR "
+            "(jsonb_array_length(sealed_candidate_ids) > 0 "
+            "AND candidate_set_hash ~ '^[0-9a-f]{64}$' "
+            "AND candidates_verified_at IS NOT NULL))",
+            name="ck_sourcing_cases_candidate_seal",
         ),
         sa.CheckConstraint(
             "need_snapshot_hash ~ '^[0-9a-f]{64}$'",
@@ -360,11 +379,16 @@ def upgrade() -> None:
             name="ck_sourcing_candidates_specs_json",
         ),
         sa.CheckConstraint(
-            "jsonb_typeof(indicative_price_tiers) = 'array' AND "
+            "jsonb_typeof(indicative_price_tiers) = 'array' "
+            "AND jsonb_array_length(indicative_price_tiers) > 0 AND "
             "NOT jsonb_path_exists(indicative_price_tiers, "
-            '\'$[*] ? (@.type() != "object" || @.minimum_quantity.type() != "number" '
-            '|| @.amount.type() != "string" || @.currency.type() != "string" '
-            '|| @.unit.type() != "string")\')',
+            '\'$[*] ? (@.type() != "object" || !exists(@.minimum_quantity) '
+            '|| @.minimum_quantity.type() != "number" || !exists(@.amount) '
+            '|| @.amount.type() != "string" || !exists(@.currency) '
+            '|| @.currency.type() != "string" || !exists(@.unit) '
+            '|| @.unit.type() != "string" || !exists(@.provenance) '
+            '|| @.provenance.type() != "object" || !exists(@.evidence_ref) '
+            '|| @.evidence_ref.type() != "string")\')',
             name="ck_sourcing_candidates_price_tiers_json",
         ),
         sa.CheckConstraint(

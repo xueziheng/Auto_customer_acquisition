@@ -780,6 +780,15 @@ async def test_database_rejects_cross_tenant_evidence_and_malformed_json(
                                 "amount": "1.250000",
                                 "currency": "USD",
                                 "unit": "piece",
+                                "provenance": {
+                                    "source_type": "web_page",
+                                    "source_id": "page-a",
+                                    "extracted_by": "human",
+                                    "extracted_at": "2026-08-30T10:00:00Z",
+                                    "confirmed_by": None,
+                                    "confirmed_at": None,
+                                },
+                                "evidence_ref": ARTIFACT_A,
                             }
                         ]
                     ),
@@ -791,6 +800,13 @@ async def test_database_rejects_cross_tenant_evidence_and_malformed_json(
                 "(tenant_id, candidate_id, artifact_id, url, observed_at, content_hash) "
                 "VALUES (:tenant, 'candidate-a', :artifact, 'https://example.test/a', now(), :hash)",
                 {"tenant": TENANT_A, "artifact": ARTIFACT_B, "hash": "e" * 64},
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_cases SET sealed_candidate_ids = "
+                "'[\"candidate-a\"]'::jsonb WHERE tenant_id = :tenant "
+                "AND case_id = 'case-a'",
+                {"tenant": TENANT_A},
             )
             await _expect_integrity(
                 connection,
@@ -817,6 +833,28 @@ async def test_database_rejects_cross_tenant_evidence_and_malformed_json(
                             {
                                 "minimum_quantity": 1,
                                 "amount": 1.25,
+                                "currency": "USD",
+                                "unit": "piece",
+                            }
+                        ]
+                    ),
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "INSERT INTO sourcing_candidates "
+                "(tenant_id, candidate_id, case_id, supplier_name, product_title, observed_facts, "
+                "supplier_claims, match_inferences, verified_specs, indicative_price_tiers, "
+                "rejection_reasons, rejected, created_at) "
+                "VALUES (:tenant, 'candidate-d', 'case-a', 'Supplier', 'Hinge', '{}', '{}', '{}', "
+                "'[]', CAST(:tiers AS jsonb), '[]', false, now())",
+                {
+                    "tenant": TENANT_A,
+                    "tiers": json.dumps(
+                        [
+                            {
+                                "minimum_quantity": 1,
+                                "amount": "1.25",
                                 "currency": "USD",
                                 "unit": "piece",
                             }

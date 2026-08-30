@@ -515,7 +515,7 @@ git commit -m "feat: implement supply pool services"
 
 **Interfaces:**
 - Consumes: Task 2 contracts/permissions、Task 4 sourcing UoW。
-- Produces: `SourcingServiceImpl.open_case`, `record_ladder_check`, `save_public_plan`, `confirm_public_plan`, `submit_candidate`, `mark_candidates_ready`, `review`, `hand_to_costing`。
+- Produces: `SourcingServiceImpl.open_case`, `record_ladder_check`, `save_public_plan`, `confirm_public_plan`, `submit_candidate`, `mark_candidates_verified`, `register_supplier_candidate_option`, `mark_candidates_ready`, `review`, `hand_to_costing`。
 
 - [ ] **Step 1: 写开案、梯子、候选和审核失败测试**
 
@@ -556,12 +556,18 @@ _TRANSITIONS = {
 
 计划确认保存精确 `plan_hash`；变更范围创建新版本。候选提交验证八项、证据
 快照、适用数量档和 `need.quantity >= moq`；合格数达到三时拒绝第四个，被拒
-候选仍保存。
+候选仍保存。规格 `offered`、MOQ、计价单位和币种必须分别与可信快照中的同名
+事实/自述规范化同值；每个参考价数量档本身保存金额、币种、单位、最小数量、
+Provenance 和 Artifact 引用，历史缺来源 JSON 读取时失败关闭。
 
 - [ ] **Step 4: 实现事件原子性和回归**
 
-`open_case` 同事务发布 `SourcingCaseOpened`；`mark_candidates_ready` 同事务发布
-带全部 `option_ids` 及需要建卡的 `candidate_ids` 的 `SourcingCandidatesReady`；
+`open_case` 同事务发布 `SourcingCaseOpened`；`mark_candidates_verified` 以 Case CAS
+封存精确排序 Candidate IDs、稳定集合哈希与时间，并发布携带 resulting Case version/hash
+的 `SourcingCandidatesVerified`。封存后拒绝新候选；同 generation 重试不重复 Outbox。
+产品卡投影的 Option 登记及最终 ready 必须提交并核对该 version/hash。
+`mark_candidates_ready` 同事务发布带全部 `option_ids` 及已封存 `candidate_ids` 的
+`SourcingCandidatesReady`；
 内部产品已满足需求时允许 `candidate_ids=()`，但 `option_ids` 不得为空；
 `hand_to_costing` 必须已有 review 和真实
 Opportunity 引用，并发布 `SourcingCaseHandedToCosting`。事件失败时业务状态回滚。
@@ -923,9 +929,10 @@ Expected: FAIL，projector 不存在。
 
 对 `source_kind=existing_product` 仅保留原 ProductId；对
 `SourcingCandidatesVerified` 中的每个合格 Supplier Candidate 调强类型创建接口，
+并把事件携带的 `case_version` 与 `candidate_set_hash` 原样传给每次 Option 登记；
 再以真实 ProductId 调 sourcing 服务幂等登记 Supply Option。全部卡与 Option 成功后，
 从 sourcing 服务取得/提交完整候选与 Option 集合并调用 `mark_candidates_ready`；不得
-自行构造占位 ProductId。部分失败抛出让 Outbox 重投，产品来源与 Option 唯一键保证
+同时提交同一 generation 的 version/hash，不得自行构造占位 ProductId。部分失败抛出让 Outbox 重投，产品来源与 Option 唯一键保证
 已成功部分不重复；最终 `SourcingCandidatesReady` 只表示冻结集合已就绪。
 
 - [ ] **Step 4: 实现 review command 唤醒**

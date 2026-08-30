@@ -38,6 +38,7 @@ from domains.sourcing.models import (
     SupplyOptionSource,
 )
 from domains.sourcing.schemas import (
+    IndicativePriceTier,
     SourcingCostPriceOption,
     SourcingHandoffSnapshot,
     SourcingMatchInference,
@@ -74,7 +75,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.money import CurrencyCode, Money
 from shared.schemas.provenance import ProvenanceSummary
 
 
@@ -171,6 +171,9 @@ def _case_to_row(case: SourcingCase) -> SourcingCaseRow:
             case.ladder_checked_to.value if case.ladder_checked_to is not None else None
         ),
         active_search_plan_id=case.active_search_plan_id,
+        sealed_candidate_ids=list(case.sealed_candidate_ids),
+        candidate_set_hash=case.candidate_set_hash,
+        candidates_verified_at=case.candidates_verified_at,
         stop_code=case.stop_code.value if case.stop_code is not None else None,
         stop_detail=_stop_detail_to_json(case.stop_detail),
         assigned_to=case.assigned_to,
@@ -211,6 +214,11 @@ def _row_to_case(row: SourcingCaseRow) -> SourcingCase:
             if row.active_search_plan_id is not None
             else None
         ),
+        sealed_candidate_ids=tuple(
+            SupplierCandidateId(item) for item in row.sealed_candidate_ids
+        ),
+        candidate_set_hash=row.candidate_set_hash,
+        candidates_verified_at=row.candidates_verified_at,
         stop_code=SourcingStopCode(row.stop_code) if row.stop_code else None,
         stop_detail=_stop_detail_from_json(row.stop_detail),
         version=row.version,
@@ -548,13 +556,11 @@ def _candidate_to_row(candidate: SupplierCandidate) -> SourcingCandidateRow:
     if candidate.indicative_price_tiers and not candidate.price_unit:
         raise ValidationError("参考价数量档必须有计价单位")
     tiers = [
-        {
-            "minimum_quantity": quantity,
-            "amount": str(money.amount),
-            "currency": str(money.currency),
-            "unit": candidate.price_unit,
-        }
-        for quantity, money in sorted(candidate.indicative_price_tiers.items())
+        tier.model_dump(mode="json")
+        for tier in sorted(
+            candidate.indicative_price_tiers,
+            key=lambda item: item.minimum_quantity,
+        )
     ]
     match = None
     if candidate.match is not None:
@@ -629,12 +635,10 @@ async def _row_to_candidate(
             ],
             summary=str(row.match_explanation["summary"]),
         )
-    prices = {
-        int(item["minimum_quantity"]): Money(
-            Decimal(str(item["amount"])), CurrencyCode(str(item["currency"]))
-        )
+    prices = tuple(
+        IndicativePriceTier.model_validate_json(json.dumps(item))
         for item in row.indicative_price_tiers
-    }
+    )
     return SupplierCandidate(
         candidate_id=SupplierCandidateId(row.candidate_id),
         tenant_id=TenantId(row.tenant_id),

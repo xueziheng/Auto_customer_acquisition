@@ -160,6 +160,8 @@ def test_phase2_sourcing_events_roundtrip_as_tenant_bound_facts() -> None:
         occurred_at=_NOW,
         case_id=candidates.case_id,
         candidate_ids=candidates.candidate_ids,
+        case_version=8,
+        candidate_set_hash="a" * 64,
     )
     handed = SourcingCaseHandedToCosting(
         tenant_id=ready.tenant_id,
