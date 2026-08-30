@@ -118,6 +118,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedHypothesisRejected",
         "NeedValidated",
         "NeedBecameSourcingReady",
+        "SourcingCaseOpened",
         "SourcingCandidatesReady",
         "SourcingCaseHandedToCosting",
     }

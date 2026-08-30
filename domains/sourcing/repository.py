@@ -52,6 +52,12 @@ class SourcingCaseRepository(Protocol):
         """查该需求的活跃案例（幂等入口）。"""
         ...
 
+    async def get_by_trigger(
+        self, tenant_id: TenantId, trigger_key: str
+    ) -> SourcingCase | None:
+        """按稳定业务触发键读取任意状态案例，保证终态后仍然幂等。"""
+        ...
+
     async def list_by_state(
         self, tenant_id: TenantId, state: CaseState, limit: int
     ) -> list[SourcingCase]: ...

@@ -65,6 +65,7 @@ from shared.events.catalog import (
     SendingIdentityThrottled,
     SourcingCandidatesReady,
     SourcingCaseHandedToCosting,
+    SourcingCaseOpened,
     SuppressionAdded,
 )
 from shared.schemas.identifiers import TenantId, new_id
@@ -104,6 +105,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "NeedHypothesisRejected": NeedHypothesisRejected,
     "NeedValidated": NeedValidated,
     "NeedBecameSourcingReady": NeedBecameSourcingReady,
+    "SourcingCaseOpened": SourcingCaseOpened,
     "SourcingCandidatesReady": SourcingCandidatesReady,
     "SourcingCaseHandedToCosting": SourcingCaseHandedToCosting,
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享

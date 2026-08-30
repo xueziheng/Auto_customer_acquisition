@@ -269,6 +269,17 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
         ).scalar_one_or_none()
         return _row_to_case(row) if row is not None else None
 
+    async def get_by_trigger(
+        self, tenant_id: TenantId, trigger_key: str
+    ) -> SourcingCase | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self._scoped().where(SourcingCaseRow.trigger_key == trigger_key)
+            )
+        ).scalar_one_or_none()
+        return _row_to_case(row) if row is not None else None
+
     async def list_by_state(
         self, tenant_id: TenantId, state: CaseState, limit: int
     ) -> list[SourcingCase]:

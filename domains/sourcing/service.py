@@ -6,11 +6,11 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from domains.sourcing.models import (
+    LadderCheck,
     PriceRejectionReason,
     PublicSourcingPlan,
     SourcingReview,
     SpecMatchLevel,
-    SupplierCandidate,
 )
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
@@ -22,9 +22,12 @@ from domains.sourcing.schemas import (
     SourcingReviewCommand,
 )
 from shared.schemas.identifiers import (
+    OpportunityId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
 )
 
@@ -50,8 +53,9 @@ class SourcingService(Protocol):
     async def open_case(
         self,
         tenant_id: TenantId,
-        actor: SourcingActor,
         command: OpenSourcingCase,
+        *,
+        actor: SourcingActor,
     ) -> SourcingCaseId:
         """开寻源案例。
 
@@ -67,10 +71,10 @@ class SourcingService(Protocol):
     async def record_ladder_check(
         self,
         tenant_id: TenantId,
-        actor: SourcingActor,
         case_id: SourcingCaseId,
-        checked_to_rung: int,
-        findings: str,
+        check: LadderCheck,
+        *,
+        actor: SourcingActor,
     ) -> None:
         """记录匹配梯子的检查进度。
 
@@ -80,13 +84,59 @@ class SourcingService(Protocol):
         """
         ...
 
+    async def save_public_plan(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: PublicSourcingPlanCommand,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingPlan:
+        """连续完成梯子 1–5 后保存精确、待确认的版本化范围。"""
+        ...
+
+    async def mark_candidates_ready(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        option_ids: tuple[SourcingSupplyOptionId, ...],
+        candidate_ids: tuple[SupplierCandidateId, ...],
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        """冻结全部供给选项并原子发布候选就绪事实。"""
+        ...
+
+    async def review(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: SourcingReviewCommand,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingReview:
+        """保存一个主选和至多两个备选的人工审核事实。"""
+        ...
+
+    async def hand_to_costing(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingHandoffSnapshot:
+        """把可信 Opportunity 与审核绑定并以单次 CAS 推进至终态。"""
+        ...
+
     async def submit_candidate(
         self,
         tenant_id: TenantId,
-        actor: SourcingActor,
         case_id: SourcingCaseId,
         submission: CandidateSubmission,
-    ) -> str:
+        *,
+        actor: SourcingActor,
+    ) -> SupplierCandidateId:
         """提交候选供应商。
 
         实现要求：
@@ -95,7 +145,7 @@ class SourcingService(Protocol):
           扔掉就没法评估规则是否太严或太松
         - 证据快照缺失直接拒绝提交（不是标记，是拒绝）：
           没有证据的候选事后无法对质
-        - 合格候选数已达上限时拒绝新增，提示先淘汰一个
+        - 合格候选数已达上限时仍保存新候选，但以结构化原因标记 rejected
         - ``verified_by`` 必须从可信 ``actor`` 派生，命令体不得自证核验人
         """
         ...
@@ -106,10 +156,10 @@ class SourcingService(Protocol):
         actor: SourcingActor,
         case_id: SourcingCaseId,
     ) -> None:
-        """完成案例。
+        """旧完成入口仅为接口兼容保留。
 
-        至少一个合格候选才能完成；发布 ``SourcingCaseCompleted``
-        （costing 域订阅后起 ESTIMATED 成本表）。
+        V2 必须走候选就绪、审核确认与 ``hand_to_costing``；实现应 fail closed，
+        不得通过本入口绕过 P10 版本门禁。
         """
         ...
 
@@ -120,10 +170,10 @@ class SourcingService(Protocol):
         case_id: SourcingCaseId,
         reason: str,
     ) -> None:
-        """案例失败。
+        """以既定公共停止码结束允许失败的早期案例。
 
-        ``reason`` 必填。上层据此把机会标为 ``NO_SUPPLY_FOUND``——
-        这是「哪些品类找不到供应」这个反馈信号的来源。
+        ``reason`` 只接受 P1 精确代码；不得把 Provider 自由文本、原始错误或敏感内容
+        写入公共失败事实。终态和 ``candidates_ready`` 不允许经此入口失败。
         """
         ...
 
@@ -159,9 +209,10 @@ class SourcingService(Protocol):
     async def confirm_public_plan(
         self,
         tenant_id: TenantId,
-        actor: SourcingActor,
         plan_id: SourcingPlanId,
         expected_plan_hash: str,
+        *,
+        actor: SourcingActor,
     ) -> PublicSourcingPlan:
         """老板确认精确哈希；计划已变化时拒绝，不做“确认最新版”补全。"""
         ...
@@ -179,8 +230,9 @@ class SourcingService(Protocol):
     async def confirm_review(
         self,
         tenant_id: TenantId,
-        actor: SourcingActor,
         review_id: SourcingReviewId,
+        *,
+        actor: SourcingActor,
     ) -> SourcingReview:
         """老板逐次确认审核；不接受请求体自证确认人。"""
         ...

@@ -4703,7 +4703,9 @@ class SourcingCaseRow(Base):
     ladder_checked_to: Mapped[int | None] = mapped_column(Integer)
     active_search_plan_id: Mapped[str | None] = mapped_column(String(40))
     stop_code: Mapped[str | None] = mapped_column(String(40))
-    stop_detail: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB)
+    stop_detail: Mapped[dict[str, object] | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
     assigned_to: Mapped[str | None] = mapped_column(String(40))
     version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

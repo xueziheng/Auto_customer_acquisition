@@ -126,9 +126,7 @@ CASE_STATE_TRANSITIONS: dict[CaseState, frozenset[CaseState]] = {
     CaseState.OPENED: frozenset({CaseState.DISCOVERING, CaseState.FAILED}),
     CaseState.DISCOVERING: frozenset({CaseState.VERIFYING, CaseState.FAILED}),
     CaseState.VERIFYING: frozenset({CaseState.CANDIDATES_READY, CaseState.FAILED}),
-    CaseState.CANDIDATES_READY: frozenset(
-        {CaseState.HANDED_TO_COSTING, CaseState.FAILED}
-    ),
+    CaseState.CANDIDATES_READY: frozenset({CaseState.HANDED_TO_COSTING}),
     CaseState.HANDED_TO_COSTING: frozenset(),
     CaseState.FAILED: frozenset(),
 }
@@ -412,6 +410,9 @@ class PriceRejectionReason(str, Enum):
     """没说这个价对应什么起订量。"""
 
     CURRENCY_UNCLEAR = "currency_unclear"
+    VERIFICATION_INCOMPLETE = "verification_incomplete"
+    MOQ_NOT_MET = "moq_not_met"
+    QUALIFIED_LIMIT_REACHED = "qualified_limit_reached"
 
 
 @dataclass(frozen=True)
