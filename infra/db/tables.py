@@ -3562,6 +3562,38 @@ class CostSheetRow(Base):
             ondelete="RESTRICT",
             name="fk_cost_sheets_opportunity",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_sourcing_case_id"],
+            ["sourcing_cases.tenant_id", "sourcing_cases.case_id"],
+            ondelete="RESTRICT",
+            name="fk_cost_sheets_sourcing_case",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_sourcing_case_id", "source_option_id"],
+            [
+                "sourcing_supply_options.tenant_id",
+                "sourcing_supply_options.case_id",
+                "sourcing_supply_options.option_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_cost_sheets_sourcing_option",
+        ),
+        ForeignKeyConstraint(
+            [
+                "tenant_id",
+                "source_sourcing_case_id",
+                "source_option_id",
+                "source_candidate_id",
+            ],
+            [
+                "sourcing_supply_options.tenant_id",
+                "sourcing_supply_options.case_id",
+                "sourcing_supply_options.option_id",
+                "sourcing_supply_options.supplier_candidate_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_cost_sheets_sourcing_candidate_path",
+        ),
         CheckConstraint(
             "version_type IN ('estimated','quoted','actual')",
             name="ck_cost_sheets_version_type",
@@ -3597,12 +3629,25 @@ class CostSheetRow(Base):
             "btrim(risk_accepted_by) <> '' AND btrim(risk_justification) <> '')",
             name="ck_cost_sheets_risk_acceptance",
         ),
+        CheckConstraint(
+            "(source_sourcing_case_id IS NULL AND source_option_id IS NULL "
+            "AND source_candidate_id IS NULL) OR "
+            "(source_sourcing_case_id IS NOT NULL AND source_option_id IS NOT NULL)",
+            name="ck_cost_sheets_sourcing_origin",
+        ),
         Index(
             "ix_cost_sheets_tenant_opportunity_version",
             "tenant_id",
             "opportunity_id",
             "version_type",
             "version_number",
+        ),
+        Index(
+            "uq_cost_sheets_sourcing_case",
+            "tenant_id",
+            "source_sourcing_case_id",
+            unique=True,
+            postgresql_where=text("source_sourcing_case_id IS NOT NULL"),
         ),
     )
 
@@ -3621,6 +3666,9 @@ class CostSheetRow(Base):
     risk_accepted_by: Mapped[str | None] = mapped_column(String(40))
     risk_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     risk_justification: Mapped[str | None] = mapped_column(Text)
+    source_sourcing_case_id: Mapped[str | None] = mapped_column(String(40))
+    source_option_id: Mapped[str | None] = mapped_column(String(40))
+    source_candidate_id: Mapped[str | None] = mapped_column(String(40))
 
 
 class CostItemRow(Base):
@@ -4553,3 +4601,485 @@ class QuotationSendReceiptRow(Base):
     quote_id: Mapped[str] = mapped_column(String(40))
     content_hash: Mapped[str] = mapped_column(String(64))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingCaseRow(Base):
+    """V2 寻源案例；活跃唯一索引防同需求重复开案。"""
+
+    __tablename__ = "sourcing_cases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "case_id", name="pk_sourcing_cases"),
+        UniqueConstraint("tenant_id", "trigger_key", name="uq_sourcing_cases_trigger"),
+        ForeignKeyConstraint(
+            ["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_sourcing_cases_need",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id", "active_search_plan_id"],
+            [
+                "sourcing_public_plans.tenant_id",
+                "sourcing_public_plans.case_id",
+                "sourcing_public_plans.plan_id",
+            ],
+            name="fk_sourcing_cases_active_plan",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "state IN ('opened','discovering','verifying','candidates_ready','handed_to_costing','failed')",
+            name="ck_sourcing_cases_state",
+        ),
+        CheckConstraint("workflow_version >= 1 AND version >= 1", name="ck_sourcing_cases_versions"),
+        CheckConstraint("jsonb_typeof(need_snapshot) = 'object'", name="ck_sourcing_cases_snapshot_json"),
+        CheckConstraint("need_snapshot_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_cases_snapshot_hash"),
+        CheckConstraint("ladder_checked_to IS NULL OR ladder_checked_to BETWEEN 1 AND 7", name="ck_sourcing_cases_ladder"),
+        CheckConstraint(
+            "stop_code IS NULL OR stop_code IN ('usage_unknown','paid_enabled','quota_exhausted','request_uncertain','reconciliation_required','no_results','page_access_forbidden','login_or_captcha','no_qualified_candidate','no_qualified_supply','opportunity_required','manual_stop')",
+            name="ck_sourcing_cases_stop_code",
+        ),
+        CheckConstraint("stop_detail IS NULL OR jsonb_typeof(stop_detail) = 'object'", name="ck_sourcing_cases_stop_detail_json"),
+        CheckConstraint("btrim(tenant_id) <> '' AND btrim(case_id) <> '' AND btrim(need_id) <> '' AND btrim(trigger_key) <> ''", name="ck_sourcing_cases_core_nonblank"),
+        CheckConstraint("(state = 'failed') = (failed_reason IS NOT NULL AND btrim(failed_reason) <> '')", name="ck_sourcing_cases_failure"),
+        CheckConstraint("(state = 'handed_to_costing') = (completed_at IS NOT NULL)", name="ck_sourcing_cases_completed_at"),
+        Index(
+            "uq_sourcing_cases_active_need",
+            "tenant_id",
+            "need_id",
+            "workflow_version",
+            unique=True,
+            postgresql_where=text("state IN ('opened','discovering','verifying','candidates_ready')"),
+        ),
+        Index("ix_sourcing_cases_queue", "tenant_id", "state", "opened_at", "case_id"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    workflow_version: Mapped[int] = mapped_column(Integer)
+    trigger_key: Mapped[str] = mapped_column(String(200))
+    need_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB)
+    need_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32), server_default=text("'opened'"))
+    ladder_checked_to: Mapped[int | None] = mapped_column(Integer)
+    active_search_plan_id: Mapped[str | None] = mapped_column(String(40))
+    stop_code: Mapped[str | None] = mapped_column(String(40))
+    stop_detail: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    assigned_to: Mapped[str | None] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class SourcingLadderCheckRow(Base):
+    """逐级且不可变的供给匹配检查事实。"""
+
+    __tablename__ = "sourcing_ladder_checks"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "check_id", name="pk_sourcing_ladder_checks"),
+        UniqueConstraint("tenant_id", "case_id", "sequence_number", name="uq_sourcing_ladder_checks_sequence"),
+        UniqueConstraint("tenant_id", "case_id", "rung", name="uq_sourcing_ladder_checks_rung"),
+        ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_ladder_checks_case", ondelete="RESTRICT"),
+        CheckConstraint("sequence_number = rung AND rung BETWEEN 1 AND 7", name="ck_sourcing_ladder_checks_order"),
+        CheckConstraint("jsonb_typeof(input_snapshot) = 'object'", name="ck_sourcing_ladder_checks_input_json"),
+        CheckConstraint("input_snapshot_hash ~ '^[0-9a-f]{64}$'", name="ck_sourcing_ladder_checks_input_hash"),
+        CheckConstraint("jsonb_typeof(spec_comparisons) = 'array'", name="ck_sourcing_ladder_checks_comparisons_json"),
+        CheckConstraint("jsonb_typeof(evidence_refs) = 'array'", name="ck_sourcing_ladder_checks_evidence_json"),
+        CheckConstraint("(match_object_type IS NULL) = (match_object_id IS NULL) AND btrim(conclusion) <> '' AND btrim(checked_by) <> ''", name="ck_sourcing_ladder_checks_core"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    check_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    rung: Mapped[int] = mapped_column(Integer)
+    input_snapshot: Mapped[dict] = mapped_column(postgresql.JSONB)
+    input_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    conclusion: Mapped[str] = mapped_column(Text)
+    match_object_type: Mapped[str | None] = mapped_column(String(40))
+    match_object_id: Mapped[str | None] = mapped_column(String(40))
+    spec_comparisons: Mapped[list] = mapped_column(postgresql.JSONB)
+    evidence_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+    checked_by: Mapped[str] = mapped_column(String(40))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingPublicPlanRow(Base):
+    """老板确认的精确公开寻源范围。"""
+
+    __tablename__ = "sourcing_public_plans"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "plan_id", name="pk_sourcing_public_plans"),
+        UniqueConstraint("tenant_id", "case_id", "plan_id", name="uq_sourcing_public_plans_case_plan"),
+        UniqueConstraint("tenant_id", "case_id", "version", name="uq_sourcing_public_plans_version"),
+        ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_public_plans_case", ondelete="RESTRICT"),
+        CheckConstraint("jsonb_typeof(target_countries) = 'array' AND jsonb_array_length(target_countries) > 0", name="ck_sourcing_public_plans_countries_json"),
+        CheckConstraint("jsonb_typeof(queries) = 'array' AND jsonb_array_length(queries) > 0", name="ck_sourcing_public_plans_queries_json"),
+        CheckConstraint("max_search_queries >= jsonb_array_length(queries) AND max_pages_read >= 1", name="ck_sourcing_public_plans_limits"),
+        CheckConstraint("usage_credits_remaining >= 0 AND worst_case_credits >= 1", name="ck_sourcing_public_plans_credits"),
+        CheckConstraint("provider = 'tavily' AND search_depth = 'basic'", name="ck_sourcing_public_plans_provider"),
+        CheckConstraint("status IN ('pending_confirmation','authorized','running','exhausted','blocked','completed')", name="ck_sourcing_public_plans_status"),
+        CheckConstraint("version >= 1 AND expected_case_version >= 1", name="ck_sourcing_public_plans_versions"),
+        CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$' AND (authorized_plan_hash IS NULL OR authorized_plan_hash ~ '^[0-9a-f]{64}$')", name="ck_sourcing_public_plans_hashes"),
+        CheckConstraint("(confirmed_by IS NULL AND confirmed_at IS NULL AND authorized_plan_hash IS NULL AND status = 'pending_confirmation') OR (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL AND authorized_plan_hash = plan_hash AND status <> 'pending_confirmation')", name="ck_sourcing_public_plans_confirmation"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    plan_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    target_countries: Mapped[list] = mapped_column(postgresql.JSONB)
+    product_category: Mapped[str] = mapped_column(String(200))
+    queries: Mapped[list] = mapped_column(postgresql.JSONB)
+    max_search_queries: Mapped[int] = mapped_column(Integer)
+    max_pages_read: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(32))
+    search_depth: Mapped[str] = mapped_column(String(16))
+    usage_credits_remaining: Mapped[int] = mapped_column(BigInteger)
+    worst_case_credits: Mapped[int] = mapped_column(BigInteger)
+    version: Mapped[int] = mapped_column(Integer)
+    expected_case_version: Mapped[int] = mapped_column(Integer)
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+    confirmed_by: Mapped[str | None] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    authorized_plan_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingCandidateRow(Base):
+    """观察事实、供应商声明、推断与参考价结构分离的候选行。"""
+
+    __tablename__ = "sourcing_candidates"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "candidate_id", name="pk_sourcing_candidates"),
+        UniqueConstraint("tenant_id", "case_id", "candidate_id", name="uq_sourcing_candidates_case_candidate"),
+        ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_candidates_case", ondelete="RESTRICT"),
+        CheckConstraint("jsonb_typeof(observed_facts) = 'object'", name="ck_sourcing_candidates_observed_json"),
+        CheckConstraint("jsonb_typeof(supplier_claims) = 'object'", name="ck_sourcing_candidates_claims_json"),
+        CheckConstraint("jsonb_typeof(match_inferences) = 'object'", name="ck_sourcing_candidates_inferences_json"),
+        CheckConstraint("jsonb_typeof(verified_specs) = 'array'", name="ck_sourcing_candidates_specs_json"),
+        CheckConstraint("jsonb_typeof(indicative_price_tiers) = 'array' AND NOT jsonb_path_exists(indicative_price_tiers, '$[*] ? (@.type() != \"object\" || @.minimum_quantity.type() != \"number\" || @.amount.type() != \"string\" || @.currency.type() != \"string\" || @.unit.type() != \"string\")')", name="ck_sourcing_candidates_price_tiers_json"),
+        CheckConstraint("jsonb_typeof(rejection_reasons) = 'array'", name="ck_sourcing_candidates_rejections_json"),
+        CheckConstraint("match_explanation IS NULL OR jsonb_typeof(match_explanation) = 'object'", name="ck_sourcing_candidates_match_json"),
+        CheckConstraint("moq IS NULL OR moq >= 1", name="ck_sourcing_candidates_moq"),
+        CheckConstraint("currency IS NULL OR currency ~ '^[A-Z]{3}$'", name="ck_sourcing_candidates_currency"),
+        CheckConstraint("btrim(supplier_name) <> '' AND btrim(product_title) <> ''", name="ck_sourcing_candidates_core_nonblank"),
+        Index("ix_sourcing_candidates_case_created", "tenant_id", "case_id", "created_at", "candidate_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    candidate_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    supplier_name: Mapped[str] = mapped_column(String(300))
+    source_platform: Mapped[str | None] = mapped_column(String(100))
+    product_title: Mapped[str] = mapped_column(String(500))
+    observed_facts: Mapped[dict] = mapped_column(postgresql.JSONB)
+    supplier_claims: Mapped[dict] = mapped_column(postgresql.JSONB)
+    match_inferences: Mapped[dict] = mapped_column(postgresql.JSONB)
+    verified_specs: Mapped[list] = mapped_column(postgresql.JSONB)
+    indicative_price_tiers: Mapped[list] = mapped_column(postgresql.JSONB)
+    moq: Mapped[int | None] = mapped_column(Integer)
+    price_unit: Mapped[str | None] = mapped_column(String(50))
+    currency: Mapped[str | None] = mapped_column(CHAR(3))
+    match_explanation: Mapped[dict | None] = mapped_column(postgresql.JSONB)
+    rejected: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    rejection_reasons: Mapped[list] = mapped_column(postgresql.JSONB)
+    verified_by: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingCandidateEvidenceRow(Base):
+    """候选与同租户原始网页 Artifact 的不可替换关系。"""
+
+    __tablename__ = "sourcing_candidate_evidence"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "candidate_id", "artifact_id", name="pk_sourcing_candidate_evidence"),
+        ForeignKeyConstraint(["tenant_id", "candidate_id"], ["sourcing_candidates.tenant_id", "sourcing_candidates.candidate_id"], name="fk_sourcing_candidate_evidence_candidate", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_sourcing_candidate_evidence_artifact", ondelete="RESTRICT"),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$' AND url ~ '^https?://'", name="ck_sourcing_candidate_evidence_locator"),
+        Index("ix_sourcing_candidate_evidence_order", "tenant_id", "candidate_id", "observed_at", "artifact_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    candidate_id: Mapped[str] = mapped_column(String(40))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    url: Mapped[str] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+
+class SourcingSupplyOptionRow(Base):
+    """现有产品与候选产品统一供人工选择的供给选项。"""
+
+    __tablename__ = "sourcing_supply_options"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "option_id", name="pk_sourcing_supply_options"),
+        UniqueConstraint("tenant_id", "case_id", "option_id", name="uq_sourcing_supply_options_case_option"),
+        UniqueConstraint("tenant_id", "case_id", "option_id", "supplier_candidate_id", name="uq_sourcing_supply_options_candidate_path"),
+        ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_supply_options_case", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "case_id", "supplier_candidate_id"], ["sourcing_candidates.tenant_id", "sourcing_candidates.case_id", "sourcing_candidates.candidate_id"], name="fk_sourcing_supply_options_candidate", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "product_id"], ["products.tenant_id", "products.product_id"], name="fk_sourcing_supply_options_product", ondelete="RESTRICT"),
+        CheckConstraint("(source = 'existing_product' AND supplier_candidate_id IS NULL) OR (source = 'supplier_candidate' AND supplier_candidate_id IS NOT NULL)", name="ck_sourcing_supply_options_source"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    option_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(32))
+    product_id: Mapped[str] = mapped_column(String(40))
+    supplier_candidate_id: Mapped[str | None] = mapped_column(String(40))
+    is_qualified: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingReviewRow(Base):
+    """人工主选、备选及逐次确认事实。"""
+
+    __tablename__ = "sourcing_reviews"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "review_id", name="pk_sourcing_reviews"),
+        UniqueConstraint("tenant_id", "case_id", name="uq_sourcing_reviews_case"),
+        ForeignKeyConstraint(["tenant_id", "case_id", "primary_option_id"], ["sourcing_supply_options.tenant_id", "sourcing_supply_options.case_id", "sourcing_supply_options.option_id"], name="fk_sourcing_reviews_primary_option", ondelete="RESTRICT"),
+        CheckConstraint("jsonb_typeof(primary_selection) = 'object'", name="ck_sourcing_reviews_primary_json"),
+        CheckConstraint("jsonb_typeof(alternate_option_ids) = 'array' AND jsonb_array_length(alternate_option_ids) <= 2 AND NOT jsonb_path_exists(alternate_option_ids, '$[*] ? (@.type() != \"string\")')", name="ck_sourcing_reviews_alternates_json"),
+        CheckConstraint("expected_case_version >= 1 AND btrim(reason) <> '' AND btrim(submitted_by) <> ''", name="ck_sourcing_reviews_core"),
+        CheckConstraint("(confirmed_by IS NULL) = (confirmed_at IS NULL)", name="ck_sourcing_reviews_confirmation"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    review_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    primary_option_id: Mapped[str] = mapped_column(String(40))
+    primary_selection: Mapped[dict] = mapped_column(postgresql.JSONB)
+    alternate_option_ids: Mapped[list] = mapped_column(postgresql.JSONB)
+    reason: Mapped[str] = mapped_column(Text)
+    expected_case_version: Mapped[int] = mapped_column(Integer)
+    submitted_by: Mapped[str] = mapped_column(String(40))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[str | None] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingSearchExecutionRow(Base):
+    """搜索定位结果回执；不把摘要提升成证据。"""
+
+    __tablename__ = "sourcing_search_executions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "execution_id", name="pk_sourcing_search_executions"),
+        UniqueConstraint("tenant_id", "run_id", "plan_hash", "query_index", name="uq_sourcing_search_executions_query"),
+        UniqueConstraint("tenant_id", "request_key", name="uq_sourcing_search_executions_request"),
+        ForeignKeyConstraint(["tenant_id", "case_id", "plan_id"], ["sourcing_public_plans.tenant_id", "sourcing_public_plans.case_id", "sourcing_public_plans.plan_id"], name="fk_sourcing_search_executions_plan", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "run_id"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_sourcing_search_executions_run", ondelete="RESTRICT"),
+        CheckConstraint("plan_hash ~ '^[0-9a-f]{64}$' AND request_key ~ '^[0-9a-f]{64}$'", name="ck_sourcing_search_executions_hashes"),
+        CheckConstraint("query_index >= 0 AND btrim(query_text) <> ''", name="ck_sourcing_search_executions_query"),
+        CheckConstraint("jsonb_typeof(locator_results) = 'array'", name="ck_sourcing_search_executions_locators_json"),
+        CheckConstraint("provider_status IN ('succeeded','no_results','uncertain','failed')", name="ck_sourcing_search_executions_status"),
+        CheckConstraint("(provider_status IN ('succeeded','no_results')) = (completed_at IS NOT NULL)", name="ck_sourcing_search_executions_completed"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    execution_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    plan_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    plan_hash: Mapped[str] = mapped_column(String(64))
+    query_index: Mapped[int] = mapped_column(Integer)
+    request_key: Mapped[str] = mapped_column(String(64))
+    query_text: Mapped[str] = mapped_column(Text)
+    locator_results: Mapped[list] = mapped_column(postgresql.JSONB)
+    provider_status: Mapped[str] = mapped_column(String(24))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingSearchReconciliationRow(Base):
+    """不确定 Provider 结果的只增人工核对事实。"""
+
+    __tablename__ = "sourcing_search_reconciliations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "reconciliation_id", name="pk_sourcing_search_reconciliations"),
+        UniqueConstraint("tenant_id", "execution_id", name="uq_sourcing_search_reconciliations_execution"),
+        ForeignKeyConstraint(["tenant_id", "execution_id"], ["sourcing_search_executions.tenant_id", "sourcing_search_executions.execution_id"], name="fk_sourcing_search_reconciliations_execution", ondelete="RESTRICT"),
+        CheckConstraint("status IN ('required','confirmed_consumed','confirmed_not_consumed')", name="ck_sourcing_search_reconciliations_status"),
+        CheckConstraint("jsonb_typeof(provider_receipt) = 'object'", name="ck_sourcing_search_reconciliations_receipt_json"),
+        CheckConstraint("btrim(reason) <> ''", name="ck_sourcing_search_reconciliations_reason"),
+        CheckConstraint("(status = 'required' AND reconciled_by IS NULL AND reconciled_at IS NULL) OR (status <> 'required' AND reconciled_by IS NOT NULL AND reconciled_at IS NOT NULL)", name="ck_sourcing_search_reconciliations_resolution"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    reconciliation_id: Mapped[str] = mapped_column(String(40))
+    execution_id: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    provider_receipt: Mapped[dict] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reconciled_by: Mapped[str | None] = mapped_column(String(40))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SupplierRow(Base):
+    """租户内供应商能力索引。"""
+
+    __tablename__ = "suppliers"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "supplier_id", name="pk_suppliers"),
+        UniqueConstraint("tenant_id", "normalized_name", name="uq_suppliers_normalized_name"),
+        CheckConstraint("jsonb_typeof(platform_refs) = 'array'", name="ck_suppliers_platform_refs_json"),
+        CheckConstraint("jsonb_typeof(capability_tags) = 'array'", name="ck_suppliers_capability_tags_json"),
+        CheckConstraint("verification IN ('unverified','basic_checked','transacted')", name="ck_suppliers_verification"),
+        CheckConstraint("btrim(name) <> '' AND btrim(normalized_name) <> ''", name="ck_suppliers_core_nonblank"),
+        Index("ix_suppliers_capability_tags", "tenant_id", "verification"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    supplier_id: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300))
+    region: Mapped[str | None] = mapped_column(String(100))
+    platform_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+    capability_tags: Mapped[list] = mapped_column(postgresql.JSONB)
+    verification: Mapped[str] = mapped_column(String(24))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductRow(Base):
+    """三个产品池共享行；成本来源字段必须成组存在。"""
+
+    __tablename__ = "products"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "product_id", name="pk_products"),
+        ForeignKeyConstraint(["tenant_id", "supplier_id"], ["suppliers.tenant_id", "suppliers.supplier_id"], name="fk_products_supplier", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "internal_cost_source_ref"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_products_internal_cost_artifact", ondelete="RESTRICT"),
+        CheckConstraint("pool IN ('formal','candidate','capability')", name="ck_products_pool"),
+        CheckConstraint("(pool = 'candidate' AND candidate_status IN ('source_only','partial','not_approved')) OR (pool <> 'candidate' AND candidate_status IS NULL)", name="ck_products_candidate_status"),
+        CheckConstraint("moq IS NULL OR moq >= 1", name="ck_products_moq"),
+        CheckConstraint("(lead_time_days_min IS NULL AND lead_time_days_max IS NULL) OR (lead_time_days_min >= 0 AND lead_time_days_max >= lead_time_days_min)", name="ck_products_lead_time"),
+        CheckConstraint("(internal_cost_amount IS NULL AND internal_cost_currency IS NULL AND internal_cost_basis IS NULL AND internal_cost_source_ref IS NULL) OR (internal_cost_amount IS NOT NULL AND internal_cost_amount >= 0 AND internal_cost_currency ~ '^[A-Z]{3}$' AND btrim(internal_cost_basis) <> '' AND internal_cost_source_ref IS NOT NULL)", name="ck_products_internal_cost_complete"),
+        CheckConstraint("(allowed_price_min_amount IS NULL AND allowed_price_min_currency IS NULL) OR (allowed_price_min_amount IS NOT NULL AND allowed_price_min_amount >= 0 AND allowed_price_min_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_min_pair"),
+        CheckConstraint("(allowed_price_max_amount IS NULL AND allowed_price_max_currency IS NULL) OR (allowed_price_max_amount IS NOT NULL AND allowed_price_max_amount >= 0 AND allowed_price_max_currency ~ '^[A-Z]{3}$')", name="ck_products_allowed_max_pair"),
+        CheckConstraint("allowed_price_min_amount IS NULL OR allowed_price_max_amount IS NULL OR (allowed_price_min_currency = allowed_price_max_currency AND allowed_price_min_amount <= allowed_price_max_amount)", name="ck_products_allowed_range"),
+        CheckConstraint("jsonb_typeof(sellable_markets) = 'array' AND jsonb_typeof(selling_points) = 'array' AND jsonb_typeof(known_issues) = 'array'", name="ck_products_lists_json"),
+        CheckConstraint("btrim(name_zh) <> '' AND btrim(name_en) <> '' AND btrim(category) <> '' AND btrim(normalized_category) <> ''", name="ck_products_core_nonblank"),
+        Index("ix_products_pool_category", "tenant_id", "pool", "normalized_category", "product_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[str] = mapped_column(String(40))
+    pool: Mapped[str] = mapped_column(String(24))
+    candidate_status: Mapped[str | None] = mapped_column(String(24))
+    name_zh: Mapped[str] = mapped_column(String(300))
+    name_en: Mapped[str] = mapped_column(String(300))
+    category: Mapped[str] = mapped_column(String(100))
+    normalized_category: Mapped[str] = mapped_column(String(100))
+    spec_summary: Mapped[str | None] = mapped_column(Text)
+    moq: Mapped[int | None] = mapped_column(Integer)
+    lead_time_days_min: Mapped[int | None] = mapped_column(Integer)
+    lead_time_days_max: Mapped[int | None] = mapped_column(Integer)
+    supplier_id: Mapped[str | None] = mapped_column(String(40))
+    internal_cost_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    internal_cost_currency: Mapped[str | None] = mapped_column(CHAR(3))
+    internal_cost_basis: Mapped[str | None] = mapped_column(Text)
+    internal_cost_source_ref: Mapped[str | None] = mapped_column(String(32))
+    allowed_price_min_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    allowed_price_min_currency: Mapped[str | None] = mapped_column(CHAR(3))
+    allowed_price_max_amount: Mapped[Decimal | None] = mapped_column(Numeric(28, 12))
+    allowed_price_max_currency: Mapped[str | None] = mapped_column(CHAR(3))
+    sellable_markets: Mapped[list] = mapped_column(postgresql.JSONB)
+    customizable: Mapped[bool] = mapped_column(Boolean)
+    selling_points: Mapped[list] = mapped_column(postgresql.JSONB)
+    known_issues: Mapped[list] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductVariantRow(Base):
+    """产品 SKU 与规格属性。"""
+
+    __tablename__ = "product_variants"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "variant_id", name="pk_product_variants"),
+        UniqueConstraint("tenant_id", "sku", name="uq_product_variants_sku"),
+        ForeignKeyConstraint(["tenant_id", "product_id"], ["products.tenant_id", "products.product_id"], name="fk_product_variants_product", ondelete="RESTRICT"),
+        CheckConstraint("btrim(sku) <> '' AND jsonb_typeof(attributes) = 'object'", name="ck_product_variants_core"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    variant_id: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[str] = mapped_column(String(40))
+    sku: Mapped[str] = mapped_column(String(100))
+    attributes: Mapped[dict] = mapped_column(postgresql.JSONB)
+
+
+class SupplyCapabilityRow(Base):
+    """无固定 SKU 的供给能力池。"""
+
+    __tablename__ = "supply_capabilities"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "capability_id", name="pk_supply_capabilities"),
+        UniqueConstraint("tenant_id", "normalized_kind", "capability_id", name="uq_supply_capabilities_kind_id"),
+        CheckConstraint("jsonb_typeof(proof_refs) = 'array'", name="ck_supply_capabilities_proof_json"),
+        CheckConstraint("btrim(kind) <> '' AND btrim(normalized_kind) <> '' AND btrim(description) <> ''", name="ck_supply_capabilities_core"),
+        Index("ix_supply_capabilities_kind", "tenant_id", "normalized_kind", "capability_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    capability_id: Mapped[str] = mapped_column(String(40))
+    kind: Mapped[str] = mapped_column(String(100))
+    normalized_kind: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text)
+    proof_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+
+
+class ProductCandidateSourceRow(Base):
+    """候选产品卡的 tenant-bound Sourcing 来源幂等键。"""
+
+    __tablename__ = "product_candidate_sources"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "product_id", name="pk_product_candidate_sources"),
+        UniqueConstraint("tenant_id", "sourcing_case_id", "supplier_candidate_id", name="uq_product_candidate_sources_origin"),
+        ForeignKeyConstraint(["tenant_id", "product_id"], ["products.tenant_id", "products.product_id"], name="fk_product_candidate_sources_product", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "sourcing_case_id", "supplier_candidate_id"], ["sourcing_candidates.tenant_id", "sourcing_candidates.case_id", "sourcing_candidates.candidate_id"], name="fk_product_candidate_sources_candidate", ondelete="RESTRICT"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[str] = mapped_column(String(40))
+    sourcing_case_id: Mapped[str] = mapped_column(String(40))
+    supplier_candidate_id: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ProductCandidatePriceRefRow(Base):
+    """候选产品卡的精确 Decimal 数量档与证据引用。"""
+
+    __tablename__ = "product_candidate_price_refs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "product_id", "minimum_quantity", name="pk_product_candidate_price_refs"),
+        ForeignKeyConstraint(["tenant_id", "product_id"], ["product_candidate_sources.tenant_id", "product_candidate_sources.product_id"], name="fk_product_candidate_price_refs_source", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_product_candidate_price_refs_artifact", ondelete="RESTRICT"),
+        CheckConstraint("minimum_quantity >= 1 AND unit_amount > 0", name="ck_product_candidate_price_refs_positive"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$' AND btrim(unit) <> ''", name="ck_product_candidate_price_refs_unit"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    product_id: Mapped[str] = mapped_column(String(40))
+    minimum_quantity: Mapped[int] = mapped_column(Integer)
+    unit_amount: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    currency: Mapped[str] = mapped_column(CHAR(3))
+    unit: Mapped[str] = mapped_column(String(50))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+
+
+class SupplierPriceRecordRow(Base):
+    """只增供应商参考价或带有效期的报价依据。"""
+
+    __tablename__ = "supplier_price_records"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "price_record_id", name="pk_supplier_price_records"),
+        UniqueConstraint("tenant_id", "supplier_id", "product_desc", "quantity_tier", "observed_at", "artifact_id", name="uq_supplier_price_records_observation"),
+        ForeignKeyConstraint(["tenant_id", "supplier_id"], ["suppliers.tenant_id", "suppliers.supplier_id"], name="fk_supplier_price_records_supplier", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_supplier_price_records_artifact", ondelete="RESTRICT"),
+        CheckConstraint("quantity_tier >= 1 AND unit_amount > 0", name="ck_supplier_price_records_positive"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$' AND basis IN ('indicative','quoted')", name="ck_supplier_price_records_price"),
+        CheckConstraint("btrim(product_desc) <> ''", name="ck_supplier_price_records_description"),
+        CheckConstraint("(basis = 'quoted' AND valid_until IS NOT NULL AND valid_until > observed_at) OR (basis = 'indicative' AND valid_until IS NULL)", name="ck_supplier_price_records_validity"),
+        Index("ix_supplier_price_records_lookup", "tenant_id", "supplier_id", "observed_at", "price_record_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    price_record_id: Mapped[str] = mapped_column(String(40))
+    supplier_id: Mapped[str] = mapped_column(String(40))
+    product_desc: Mapped[str] = mapped_column(Text)
+    quantity_tier: Mapped[int] = mapped_column(Integer)
+    unit_amount: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    currency: Mapped[str] = mapped_column(CHAR(3))
+    basis: Mapped[str] = mapped_column(String(16))
+    artifact_id: Mapped[str] = mapped_column(String(32))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
