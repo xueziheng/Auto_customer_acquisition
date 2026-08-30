@@ -349,6 +349,7 @@ def upgrade() -> None:
         ),
         sa.Column("rejection_reasons", postgresql.JSONB(), nullable=False),
         sa.Column("verified_by", sa.String(40), nullable=True),
+        sa.Column("public_draft_source_key", sa.String(64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint(
             "tenant_id", "candidate_id", name="pk_sourcing_candidates"
@@ -418,6 +419,13 @@ def upgrade() -> None:
         "ix_sourcing_candidates_case_created",
         "sourcing_candidates",
         ["tenant_id", "case_id", "created_at", "candidate_id"],
+    )
+    op.create_index(
+        "uq_sourcing_candidates_public_draft_source",
+        "sourcing_candidates",
+        ["tenant_id", "public_draft_source_key"],
+        unique=True,
+        postgresql_where=sa.text("public_draft_source_key IS NOT NULL"),
     )
 
     op.create_table(
@@ -772,6 +780,14 @@ def upgrade() -> None:
         ["tenant_id", "draft_id"],
         ondelete="RESTRICT",
     )
+    op.create_foreign_key(
+        "fk_sourcing_candidates_public_draft",
+        "sourcing_candidates",
+        "sourcing_candidate_drafts",
+        ["tenant_id", "public_draft_source_key"],
+        ["tenant_id", "source_key"],
+        ondelete="RESTRICT",
+    )
 
     op.create_table(
         "sourcing_search_reconciliations",
@@ -874,6 +890,11 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION guard_sourcing_ladder_check()")
     op.drop_table("sourcing_search_reconciliations")
     op.drop_table("sourcing_page_attempts")
+    op.drop_constraint(
+        "fk_sourcing_candidates_public_draft",
+        "sourcing_candidates",
+        type_="foreignkey",
+    )
     op.drop_table("sourcing_candidate_drafts")
     op.drop_table("sourcing_search_executions")
     op.drop_table("sourcing_reviews")
@@ -883,6 +904,10 @@ def downgrade() -> None:
     )
     op.drop_table("sourcing_supply_options")
     op.drop_table("sourcing_candidate_evidence")
+    op.drop_index(
+        "uq_sourcing_candidates_public_draft_source",
+        table_name="sourcing_candidates",
+    )
     op.drop_table("sourcing_candidates")
     op.drop_constraint(
         "fk_sourcing_cases_active_plan", "sourcing_cases", type_="foreignkey"

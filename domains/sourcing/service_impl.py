@@ -50,12 +50,18 @@ from domains.sourcing.schemas import (
     CandidateSubmission,
     CandidateView,
     CaseView,
+    IndicativePriceTier,
     OpenSourcingCase,
+    PublicCandidateDraft,
     PublicSourcingPlanCommand,
     SourcingHandoffSnapshot,
+    SourcingMatchInference,
+    SourcingObservedFact,
     SourcingReviewCommand,
     SourcingUncertainReconciliationCommand,
     SpecComparisonView,
+    VerifyPublicCandidateDraftsCommand,
+    VerifyPublicCandidateDraftsResult,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
@@ -86,6 +92,9 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
+from shared.schemas.provenance import ProvenanceSummary, SourceType
+
+_PUBLIC_DRAFT_VERIFIER = "public-draft-verifier-v1"
 
 
 def _aware(value: datetime) -> datetime:
@@ -328,6 +337,172 @@ def _candidate_from_submission(
         ),
         verified_by=_employee(actor),
     )
+
+
+def _public_draft_expected_specs(case: SourcingCase) -> tuple[tuple[str, str], ...]:
+    """从冻结 Need 重建四个 canonical 规格及可选 application。"""
+
+    if case.need_snapshot is None:
+        raise ValidationError("寻源案例缺少强类型需求快照")
+    raw = (
+        ("product_type", case.need_snapshot.product_category),
+        ("material", case.need_snapshot.material),
+        ("size", case.need_snapshot.size_spec),
+        ("model", case.need_snapshot.model),
+        ("application", case.need_snapshot.application),
+    )
+    values: list[tuple[str, str]] = []
+    for name, fact in raw:
+        if fact is None:
+            continue
+        if not isinstance(fact.value, str) or not fact.value.strip():
+            raise ValidationError("冻结需求规格必须是非空文本")
+        values.append((name, fact.value))
+    return tuple(values)
+
+
+def _public_draft_can_convert(draft: PublicCandidateDraft) -> bool:
+    """身份/价格维度不完整的草稿只保留作校准，不创建候选。"""
+
+    tiers = draft.indicative_price_tiers
+    return (
+        draft.is_verification_complete
+        and len({tier.minimum_quantity for tier in tiers}) == len(tiers)
+        and len({tier.currency for tier in tiers}) == 1
+        and len({tier.unit for tier in tiers}) == 1
+    )
+
+
+def _candidate_from_public_draft(
+    tenant_id: TenantId,
+    case: SourcingCase,
+    draft: PublicCandidateDraft,
+    projection: CandidateEvidenceSnapshot,
+) -> SupplierCandidate:
+    """只从安全草稿和同一可信 Artifact 投影构造确定性候选。"""
+
+    expected = _public_draft_expected_specs(case)
+    expected_by_name = dict(expected)
+    offered_by_name: dict[str, str | None] = {}
+    for item in draft.specs:
+        name = _normalize(item.spec_name)
+        if name not in expected_by_name or item.required != expected_by_name[name]:
+            raise ValidationError("公开候选草稿规格与冻结需求不一致")
+        offered_by_name[name] = item.observed
+    artifact_id = projection.artifact_id
+    provenance = ProvenanceSummary(
+        source_type=SourceType.WEB_PAGE,
+        source_id=str(artifact_id),
+        extracted_by=_PUBLIC_DRAFT_VERIFIER,
+        extracted_at=projection.observed_at,
+        confirmed_by=None,
+        confirmed_at=None,
+    )
+    comparisons: list[SpecComparison] = []
+    observed_facts: dict[str, SourcingObservedFact] = {}
+    for name, required in expected:
+        offered = offered_by_name.get(name)
+        level = (
+            SpecMatchLevel.UNKNOWN
+            if offered is None
+            else SpecMatchLevel.EXACT
+            if _normalize(offered) == _normalize(required)
+            else SpecMatchLevel.DIFFERENT
+        )
+        comparisons.append(
+            SpecComparison(
+                spec_name=name,
+                required=required,
+                offered=offered,
+                level=level,
+                substitutable=None,
+                substitution_impact=None,
+                needs_customer_confirmation=False,
+                customer_confirmation=None,
+                evidence_ref=artifact_id if offered is not None else None,
+            )
+        )
+        if offered is not None:
+            observed_facts[name] = SourcingObservedFact(
+                value=offered,
+                provenance=provenance,
+                evidence_ref=artifact_id,
+            )
+    tiers = tuple(
+        IndicativePriceTier(
+            minimum_quantity=tier.minimum_quantity,
+            amount=tier.amount,
+            currency=tier.currency,
+            unit=tier.unit,
+            provenance=provenance,
+            evidence_ref=artifact_id,
+        )
+        for tier in draft.indicative_price_tiers
+    )
+    if draft.moq is not None:
+        observed_facts["moq"] = SourcingObservedFact(
+            value=draft.moq, provenance=provenance, evidence_ref=artifact_id
+        )
+    price_unit = tiers[0].unit
+    currency = tiers[0].currency
+    observed_facts["price_unit"] = SourcingObservedFact(
+        value=price_unit, provenance=provenance, evidence_ref=artifact_id
+    )
+    observed_facts["currency"] = SourcingObservedFact(
+        value=currency, provenance=provenance, evidence_ref=artifact_id
+    )
+    evidence = EvidenceSnapshot(
+        url=projection.canonical_url,
+        observed_at=projection.observed_at,
+        content_hash=projection.content_hash,
+        artifact_ref=str(artifact_id),
+    )
+    summary = "；".join(
+        f"{item.spec_name}:{item.level.value}" for item in comparisons
+    )
+    return SupplierCandidate(
+        candidate_id=SupplierCandidateId(new_id("spc")),
+        tenant_id=tenant_id,
+        case_id=case.case_id,
+        supplier_name=draft.supplier_name or "",
+        product_title=draft.product_title or "",
+        created_at=draft.created_at,
+        source_platform="public_web",
+        observed_facts=observed_facts,
+        supplier_claims={},
+        match_inferences={
+            "public_draft_match": SourcingMatchInference(
+                value=_PUBLIC_DRAFT_VERIFIER,
+                based_on=(artifact_id,),
+                inferred_by=_PUBLIC_DRAFT_VERIFIER,
+                inferred_at=projection.observed_at,
+            )
+        },
+        verified_specs=comparisons,
+        indicative_price_tiers=tiers,
+        moq=draft.moq,
+        price_unit=price_unit,
+        currency=currency,
+        evidence=evidence,
+        evidence_snapshots=(evidence,),
+        match=MatchExplanation(
+            rung=MatchLadderRung.PUBLIC_SOURCING,
+            comparisons=comparisons,
+            summary=summary,
+        ),
+        rejected=False,
+        rejection_reasons=[],
+        verified_by=None,
+        public_draft_source_key=draft.source_key,
+    )
+
+
+def _same_public_candidate(
+    canonical: SupplierCandidate, proposed: SupplierCandidate
+) -> bool:
+    """冲突只允许 candidate_id 不同，其余不可变内容和绑定必须精确一致。"""
+
+    return canonical == replace(proposed, candidate_id=canonical.candidate_id)
 
 
 def _candidate_view(candidate: SupplierCandidate) -> CandidateView:
@@ -1294,6 +1469,207 @@ class SourcingServiceImpl:
             )
             await uow.bus.publish(event)
             return event
+
+    async def verify_public_candidate_drafts(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: VerifyPublicCandidateDraftsCommand,
+        *,
+        actor: SourcingActor,
+    ) -> VerifyPublicCandidateDraftsResult:
+        """在一个 Case 锁和 UoW 内转换草稿、重建全集并封存一次。"""
+
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.FACT_PUBLISH,
+            SourcingScope.SYSTEM,
+        )
+        if not isinstance(command, VerifyPublicCandidateDraftsCommand):
+            raise ValidationError("公开候选草稿核验命令无效")
+        now = _aware(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            plan = await uow.plans.get(tenant_id, command.plan_id)
+            if (
+                case.workflow_version != 2
+                or case.state is not CaseState.VERIFYING
+                or case.active_search_plan_id != command.plan_id
+                or plan is None
+                or plan.case_id != case_id
+                or plan.plan_hash != command.plan_hash
+                or plan.authorized_plan_hash != command.plan_hash
+                or plan.status is not PublicPlanStatus.RUNNING
+            ):
+                raise SourcingPlanStaleError("公开候选草稿未绑定当前运行计划")
+            drafts = await uow.candidate_drafts.list_exact_for_verification(
+                tenant_id,
+                case_id,
+                command.run_id,
+                command.plan_id,
+                command.plan_hash,
+            )
+            if tuple(draft.draft_id for draft in drafts) != command.draft_ids:
+                raise ValidationError("公开候选草稿集合或顺序不一致")
+            if any(
+                draft.tenant_id != tenant_id
+                or draft.case_id != case_id
+                or draft.run_id != command.run_id
+                or draft.plan_id != command.plan_id
+                or draft.plan_hash != command.plan_hash
+                for draft in drafts
+            ):
+                raise ValidationError("公开候选草稿绑定漂移")
+
+            calibration_ids = tuple(
+                draft.draft_id for draft in drafts if not _public_draft_can_convert(draft)
+            )
+            convertible = tuple(
+                draft for draft in drafts if _public_draft_can_convert(draft)
+            )
+            if case.sealed_candidate_ids:
+                converted: list[SupplierCandidateId] = []
+                rejected: list[SupplierCandidateId] = []
+                for draft in convertible:
+                    canonical = await uow.candidates.get_by_public_draft_source_key(
+                        tenant_id, draft.source_key
+                    )
+                    if canonical is None or canonical.case_id != case_id:
+                        raise ValidationError("已封存公开候选缺少 canonical 绑定")
+                    converted.append(canonical.candidate_id)
+                    if canonical.rejected:
+                        rejected.append(canonical.candidate_id)
+                qualified = tuple(
+                    sorted(
+                        (
+                            candidate.candidate_id
+                            for candidate in await uow.candidates.list_for_case(
+                                tenant_id, case_id, False
+                            )
+                            if candidate.passes_verification()[0]
+                        ),
+                        key=str,
+                    )
+                )
+                if qualified != case.sealed_candidate_ids:
+                    raise ValidationError("已封存公开候选 generation 已漂移")
+                verified_at = case.candidates_verified_at
+                if verified_at is None:
+                    raise ValidationError("已封存公开候选缺少核验时间")
+                replay_event = SourcingCandidatesVerified(
+                    tenant_id=tenant_id,
+                    occurred_at=verified_at,
+                    case_id=case_id,
+                    candidate_ids=qualified,
+                    case_version=case.version,
+                    candidate_set_hash=case.candidate_set_hash or "",
+                )
+                return VerifyPublicCandidateDraftsResult(
+                    calibration_draft_ids=calibration_ids,
+                    converted_candidate_ids=tuple(converted),
+                    rejected_candidate_ids=tuple(rejected),
+                    qualified_candidate_ids=qualified,
+                    verified_event=replay_event,
+                )
+
+            command_sources = {draft.source_key for draft in convertible}
+            existing = await uow.candidates.list_for_case(tenant_id, case_id, True)
+            qualified_count = sum(
+                not candidate.rejected and candidate.passes_verification()[0]
+                for candidate in existing
+                if candidate.public_draft_source_key not in command_sources
+            )
+            converted_ids: list[SupplierCandidateId] = []
+            rejected_ids: list[SupplierCandidateId] = []
+            quantity = _quantity(case)
+            for draft in convertible:
+                projection = await _read_candidate_evidence(
+                    self._evidence_reader, tenant_id, draft.evidence_artifact_ref
+                )
+                if (
+                    projection is None
+                    or not isinstance(projection, CandidateEvidenceSnapshot)
+                    or not _valid_candidate_evidence_projection(projection)
+                    or projection.tenant_id != tenant_id
+                    or projection.artifact_id != draft.evidence_artifact_ref
+                    or projection.canonical_url != draft.evidence_url
+                    or projection.content_hash != draft.evidence_hash
+                    or projection.observed_at != draft.evidence_observed_at
+                ):
+                    raise MissingEvidenceSnapshotError(
+                        "公开候选草稿 Artifact 元数据不一致"
+                    )
+                candidate = _candidate_from_public_draft(
+                    tenant_id, case, draft, projection
+                )
+                passed, _missing = candidate.passes_verification()
+                reasons: list[PriceRejectionReason] = []
+                if not passed:
+                    reasons.append(PriceRejectionReason.VERIFICATION_INCOMPLETE)
+                if candidate.moq is None or quantity < candidate.moq:
+                    reasons.append(PriceRejectionReason.MOQ_NOT_MET)
+                if not any(
+                    tier.minimum_quantity <= quantity
+                    for tier in candidate.indicative_price_tiers
+                ):
+                    reasons.append(PriceRejectionReason.QUANTITY_TIER_MISSING)
+                if (
+                    not reasons
+                    and qualified_count >= MAX_QUALIFIED_CANDIDATES
+                ):
+                    reasons.append(PriceRejectionReason.QUALIFIED_LIMIT_REACHED)
+                candidate.rejection_reasons = list(dict.fromkeys(reasons))
+                candidate.rejected = bool(candidate.rejection_reasons)
+                canonical, _created = await uow.candidates.get_or_create_public_draft(
+                    tenant_id, candidate
+                )
+                if not _same_public_candidate(canonical, candidate):
+                    raise ValidationError("公开草稿 source key 已绑定不同候选内容")
+                converted_ids.append(canonical.candidate_id)
+                if canonical.rejected:
+                    rejected_ids.append(canonical.candidate_id)
+                elif canonical.passes_verification()[0]:
+                    qualified_count += 1
+
+            qualified_ids = tuple(
+                sorted(
+                    (
+                        candidate.candidate_id
+                        for candidate in await uow.candidates.list_for_case(
+                            tenant_id, case_id, False
+                        )
+                        if candidate.passes_verification()[0]
+                    ),
+                    key=str,
+                )
+            )
+            if len(qualified_ids) > MAX_QUALIFIED_CANDIDATES:
+                raise ValidationError("合格候选全集超过固定上限")
+            verified_event: SourcingCandidatesVerified | None = None
+            if qualified_ids:
+                generation_hash = candidate_set_hash(qualified_ids)
+                case.sealed_candidate_ids = qualified_ids
+                case.candidate_set_hash = generation_hash
+                case.candidates_verified_at = now
+                case.version += 1
+                await uow.cases.update(tenant_id, case)
+                verified_event = SourcingCandidatesVerified(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    case_id=case_id,
+                    candidate_ids=qualified_ids,
+                    case_version=case.version,
+                    candidate_set_hash=generation_hash,
+                )
+                await uow.bus.publish(verified_event)
+            return VerifyPublicCandidateDraftsResult(
+                calibration_draft_ids=calibration_ids,
+                converted_candidate_ids=tuple(converted_ids),
+                rejected_candidate_ids=tuple(rejected_ids),
+                qualified_candidate_ids=qualified_ids,
+                verified_event=verified_event,
+            )
 
     async def register_supplier_candidate_option(
         self,

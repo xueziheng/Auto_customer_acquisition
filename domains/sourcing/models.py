@@ -582,6 +582,7 @@ class SupplierCandidate:
     rejected: bool = False
     rejection_reasons: list[PriceRejectionReason] = field(default_factory=list)
     verified_by: EmployeeId | None = None
+    public_draft_source_key: str | None = None
 
     def passes_verification(self) -> tuple[bool, list[str]]:
         """核验清单：产品类型、材质、尺寸、型号、数量档、MOQ、

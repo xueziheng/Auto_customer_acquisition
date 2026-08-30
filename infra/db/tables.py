@@ -4821,6 +4821,7 @@ class SourcingCandidateRow(Base):
         PrimaryKeyConstraint("tenant_id", "candidate_id", name="pk_sourcing_candidates"),
         UniqueConstraint("tenant_id", "case_id", "candidate_id", name="uq_sourcing_candidates_case_candidate"),
         ForeignKeyConstraint(["tenant_id", "case_id"], ["sourcing_cases.tenant_id", "sourcing_cases.case_id"], name="fk_sourcing_candidates_case", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "public_draft_source_key"], ["sourcing_candidate_drafts.tenant_id", "sourcing_candidate_drafts.source_key"], name="fk_sourcing_candidates_public_draft", ondelete="RESTRICT"),
         CheckConstraint("jsonb_typeof(observed_facts) = 'object'", name="ck_sourcing_candidates_observed_json"),
         CheckConstraint("jsonb_typeof(supplier_claims) = 'object'", name="ck_sourcing_candidates_claims_json"),
         CheckConstraint("jsonb_typeof(match_inferences) = 'object'", name="ck_sourcing_candidates_inferences_json"),
@@ -4832,6 +4833,7 @@ class SourcingCandidateRow(Base):
         CheckConstraint("currency IS NULL OR currency ~ '^[A-Z]{3}$'", name="ck_sourcing_candidates_currency"),
         CheckConstraint("btrim(supplier_name) <> '' AND btrim(product_title) <> ''", name="ck_sourcing_candidates_core_nonblank"),
         Index("ix_sourcing_candidates_case_created", "tenant_id", "case_id", "created_at", "candidate_id"),
+        Index("uq_sourcing_candidates_public_draft_source", "tenant_id", "public_draft_source_key", unique=True, postgresql_where=text("public_draft_source_key IS NOT NULL")),
     )
     tenant_id: Mapped[str] = mapped_column(String(40))
     candidate_id: Mapped[str] = mapped_column(String(40))
@@ -4851,6 +4853,7 @@ class SourcingCandidateRow(Base):
     rejected: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     rejection_reasons: Mapped[list] = mapped_column(postgresql.JSONB)
     verified_by: Mapped[str | None] = mapped_column(String(40))
+    public_draft_source_key: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

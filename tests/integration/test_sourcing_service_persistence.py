@@ -24,6 +24,9 @@ from domains.sourcing.schemas import (
     IndicativePriceTier,
     NeedFact,
     OpenSourcingCase,
+    PublicCandidateDraft,
+    PublicCandidateDraftPriceTier,
+    PublicCandidateDraftSpec,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingMatchInference,
@@ -31,6 +34,7 @@ from domains.sourcing.schemas import (
     SourcingObservedFact,
     SourcingReviewCommand,
     SpecComparisonView,
+    VerifyPublicCandidateDraftsCommand,
 )
 from domains.sourcing.service import CandidateEvidenceSnapshot
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
@@ -43,6 +47,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     TenantId,
@@ -775,6 +780,209 @@ async def test_concurrent_open_returns_one_canonical_case_and_event(
     assert first == second
     assert cases == 1
     assert events == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_public_draft_verification_seals_one_generation_in_postgres(
+    integration_engine: AsyncEngine,
+) -> None:
+    """相同公开草稿并发核验只生成一个 Candidate 与一个封存事件。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    artifact_id = ArtifactId(new_id("art"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    await _seed_candidate_artifact(integration_engine, tenant_id, artifact_id)
+    sf = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    boss = SourcingActor("emp-boss", tenant_id, SourcingScope.TENANT, "boss")
+    projection = CandidateEvidenceSnapshot(
+        tenant_id=tenant_id,
+        artifact_id=artifact_id,
+        canonical_url="https://factory.example/public-hinge",
+        content_hash="c" * 64,
+        observed_at=NOW,
+    )
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sf, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _FixedEvidenceReader(projection),
+        now=lambda: NOW,
+    )
+    open_command = _command(tenant_id, need_id)
+    provenance = open_command.need.product_category.provenance
+    need = open_command.need.model_copy(
+        update={
+            "material": NeedFact(value="steel", provenance=provenance),
+            "size_spec": NeedFact(value="4 inch", provenance=provenance),
+            "model": NeedFact(value="HX-4", provenance=provenance),
+        }
+    )
+    case_id = await service.open_case(
+        tenant_id,
+        open_command.model_copy(update={"need": need}),
+        actor=system,
+    )
+    for rung in range(1, 6):
+        await service.record_ladder_check(
+            tenant_id,
+            case_id,
+            LadderCheck(
+                check_id=new_id("slc"),
+                tenant_id=tenant_id,
+                case_id=case_id,
+                sequence_number=rung,
+                rung=MatchLadderRung(rung),
+                outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
+                input_snapshot={"category": "hinges"},
+                input_snapshot_hash="b" * 64,
+                conclusion="无合格供给",
+                match_object_type=None,
+                match_object_id=None,
+                spec_comparisons=(),
+                evidence_refs=(),
+                checked_by=EmployeeId("untrusted"),
+                checked_at=NOW,
+            ),
+            actor=system,
+        )
+    plan = await service.save_public_plan(
+        tenant_id,
+        case_id,
+        PublicSourcingPlanCommand(
+            plan_id=SourcingPlanId(new_id("spl")),
+            case_id=case_id,
+            target_countries=("US",),
+            product_category="hinges",
+            queries=(
+                PublicSourcingQuery(
+                    query_text="hinge factory", target_country="US"
+                ),
+            ),
+            max_search_queries=1,
+            max_pages_read=3,
+            provider="tavily",
+            search_depth="basic",
+            usage_credits_remaining=100,
+            worst_case_credits=1,
+            version=1,
+            expected_case_version=6,
+        ),
+        actor=boss,
+    )
+    await service.confirm_public_plan(
+        tenant_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    await service.authorize_public_plan_run(
+        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    run_id = RunId(new_id("run"))
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO workflow_runs "
+                "(run_id, tenant_id, workflow_type, workflow_version, subject_ref, "
+                "current_step, status, context, idempotency_key) VALUES "
+                "(:run, :tenant, 'sourcing_case', 2, :case, 'verify_candidates', "
+                "'running', '{}', :key)"
+            ),
+            {
+                "run": run_id,
+                "tenant": tenant_id,
+                "case": case_id,
+                "key": f"verify:{run_id}",
+            },
+        )
+    draft = PublicCandidateDraft(
+        draft_id=new_id("scd"),
+        tenant_id=tenant_id,
+        case_id=case_id,
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        query_index=0,
+        result_index=0,
+        source_key="f" * 64,
+        supplier_name="Factory A",
+        product_title="Stainless hinge HX-4",
+        specs=tuple(
+            PublicCandidateDraftSpec(
+                spec_name=name,
+                required=required,
+                observed=required,
+            )
+            for name, required in (
+                ("product_type", "hinges"),
+                ("material", "steel"),
+                ("size", "4 inch"),
+                ("model", "HX-4"),
+            )
+        ),
+        moq=500,
+        indicative_price_tiers=(
+            PublicCandidateDraftPriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+            ),
+        ),
+        rejection_codes=(),
+        evidence_url=projection.canonical_url,
+        evidence_observed_at=projection.observed_at,
+        evidence_hash=projection.content_hash,
+        evidence_artifact_ref=artifact_id,
+        created_at=NOW,
+    )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        await uow.candidate_drafts.get_or_create_canonical(tenant_id, draft)
+    command = VerifyPublicCandidateDraftsCommand(
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        draft_ids=(draft.draft_id,),
+    )
+
+    first, second = await asyncio.gather(
+        service.verify_public_candidate_drafts(
+            tenant_id, case_id, command, actor=system
+        ),
+        service.verify_public_candidate_drafts(
+            tenant_id, case_id, command, actor=system
+        ),
+    )
+
+    assert first == second
+    assert first.verified_event is not None
+    async with sf() as session:
+        candidate_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_candidates "
+                "WHERE tenant_id=:tenant AND public_draft_source_key=:source"
+            ),
+            {"tenant": str(tenant_id), "source": draft.source_key},
+        )
+        event_count = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
+                OutboxEventRow.tenant_id == tenant_id,
+                OutboxEventRow.event_type == "SourcingCandidatesVerified",
+            )
+        )
+        case_row = await session.scalar(
+            select(SourcingCaseRow).where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+            )
+        )
+    assert candidate_count == 1
+    assert event_count == 1
+    assert case_row is not None
+    assert case_row.version == first.verified_event.case_version
+    assert tuple(case_row.sealed_candidate_ids) == tuple(
+        map(str, first.qualified_candidate_ids)
+    )
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,9 @@ from domains.sourcing.schemas import (
     IndicativePriceTier,
     NeedFact,
     OpenSourcingCase,
+    PublicCandidateDraft,
+    PublicCandidateDraftPriceTier,
+    PublicCandidateDraftSpec,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingMatchInference,
@@ -37,6 +40,7 @@ from domains.sourcing.schemas import (
     SourcingSupplierClaim,
     SourcingUncertainReconciliationCommand,
     SpecComparisonView,
+    VerifyPublicCandidateDraftsCommand,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
@@ -532,6 +536,30 @@ class _Candidates(_MemoryRepo):
             candidate
         )
 
+    async def get_or_create_public_draft(
+        self, tenant_id: TenantId, candidate: Any
+    ) -> tuple[Any, bool]:
+        for (candidate_tenant, _), current in self.state[self.name].items():
+            if (
+                candidate_tenant == tenant_id
+                and current.public_draft_source_key
+                == candidate.public_draft_source_key
+            ):
+                return copy.deepcopy(current), False
+        await self.add(tenant_id, candidate)
+        return copy.deepcopy(candidate), True
+
+    async def get_by_public_draft_source_key(
+        self, tenant_id: TenantId, source_key: str
+    ) -> Any | None:
+        for (candidate_tenant, _), candidate in self.state[self.name].items():
+            if (
+                candidate_tenant == tenant_id
+                and candidate.public_draft_source_key == source_key
+            ):
+                return copy.deepcopy(candidate)
+        return None
+
     async def get(
         self, tenant_id: TenantId, candidate_id: SupplierCandidateId
     ) -> Any | None:
@@ -672,6 +700,36 @@ class _Reconciliations(_MemoryRepo):
         return copy.deepcopy(canonical)
 
 
+class _Drafts(_MemoryRepo):
+    async def list_exact_for_verification(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        plan_id: SourcingPlanId,
+        plan_hash: str,
+    ) -> list[PublicCandidateDraft]:
+        values = [
+            draft
+            for (candidate_tenant, _), draft in self.state[self.name].items()
+            if candidate_tenant == tenant_id
+            and draft.case_id == case_id
+            and draft.run_id == run_id
+            and draft.plan_id == plan_id
+            and draft.plan_hash == plan_hash
+        ]
+        return copy.deepcopy(
+            sorted(
+                values,
+                key=lambda item: (
+                    item.query_index,
+                    item.result_index,
+                    item.source_key,
+                ),
+            )
+        )
+
+
 class _Handoffs:
     def __init__(self, uow: _MemoryUow) -> None:
         self.uow = uow
@@ -717,6 +775,7 @@ class _MemoryUow:
         self.options = _Options(state, "options")
         self.reviews = _Reviews(state, "reviews")
         self.search_executions = _SearchExecutions(state, "search_executions")
+        self.candidate_drafts = _Drafts(state, "candidate_drafts")
         self.reconciliations = _Reconciliations(state, "reconciliations")
         self.handoffs = _Handoffs(self)
         self.bus = _Bus(state, fail=bus_fails)
@@ -748,6 +807,7 @@ class _Factory:
             "options": {},
             "reviews": {},
             "search_executions": {},
+            "candidate_drafts": {},
             "reconciliations": {},
             "events": [],
         }
@@ -837,6 +897,409 @@ async def _discovering(service: Any) -> SourcingCaseId:
             TENANT, case_id, _check(case_id, rung), actor=SYSTEM
         )
     return case_id
+
+
+async def _running_public_case(
+    service: Any, factory: _Factory
+) -> tuple[SourcingCaseId, Any, RunId]:
+    command = _open_command()
+    need = command.need.model_copy(
+        update={
+            "material": NeedFact(value="steel", provenance=_provenance()),
+            "size_spec": NeedFact(value="4 inch", provenance=_provenance()),
+            "model": NeedFact(value="HX-4", provenance=_provenance()),
+        }
+    )
+    case_id = await service.open_case(
+        TENANT, command.model_copy(update={"need": need}), actor=SYSTEM
+    )
+    for rung in range(1, 6):
+        await service.record_ladder_check(
+            TENANT, case_id, _check(case_id, rung), actor=SYSTEM
+        )
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    await service.authorize_public_plan_run(
+        TENANT, case_id, plan.plan_id, plan.plan_hash, actor=BOSS
+    )
+    run_id = RunId("run-public-verification")
+    draft = PublicCandidateDraft(
+        draft_id="scd-public-qualified",
+        tenant_id=TENANT,
+        case_id=case_id,
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        query_index=0,
+        result_index=0,
+        source_key="d" * 64,
+        supplier_name="Factory A",
+        product_title="Stainless hinge HX-4",
+        specs=(
+            PublicCandidateDraftSpec(
+                spec_name="product_type", required="hinges", observed="hinges"
+            ),
+            PublicCandidateDraftSpec(
+                spec_name="material", required="steel", observed="steel"
+            ),
+            PublicCandidateDraftSpec(
+                spec_name="size", required="4 inch", observed="4 inch"
+            ),
+            PublicCandidateDraftSpec(
+                spec_name="model", required="HX-4", observed="HX-4"
+            ),
+        ),
+        moq=500,
+        indicative_price_tiers=(
+            PublicCandidateDraftPriceTier(
+                minimum_quantity=1000,
+                amount=Decimal("1.25"),
+                currency="USD",
+                unit="piece",
+            ),
+        ),
+        rejection_codes=(),
+        evidence_url="https://factory.example/hinge",
+        evidence_observed_at=NOW - timedelta(hours=2),
+        evidence_hash="c" * 64,
+        evidence_artifact_ref=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+        created_at=NOW - timedelta(hours=2),
+    )
+    factory.state["candidate_drafts"][(TENANT, draft.draft_id)] = draft
+    return case_id, plan, run_id
+
+
+@pytest.mark.asyncio
+async def test_public_draft_verification_converts_four_specs_and_seals_once() -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+
+    result = await service.verify_public_candidate_drafts(
+        TENANT,
+        case_id,
+        VerifyPublicCandidateDraftsCommand(
+            run_id=run_id,
+            plan_id=plan.plan_id,
+            plan_hash=plan.plan_hash,
+            draft_ids=("scd-public-qualified",),
+        ),
+        actor=SYSTEM,
+    )
+
+    assert result.calibration_draft_ids == ()
+    assert result.rejected_candidate_ids == ()
+    assert result.converted_candidate_ids == result.qualified_candidate_ids
+    assert result.verified_event is not None
+    assert result.verified_event.candidate_ids == result.qualified_candidate_ids
+    candidate = factory.state["candidates"][(TENANT, result.qualified_candidate_ids[0])]
+    assert [item.spec_name for item in candidate.verified_specs] == [
+        "product_type",
+        "material",
+        "size",
+        "model",
+    ]
+    assert candidate.public_draft_source_key == "d" * 64
+    assert candidate.supplier_claims == {}
+    assert set(candidate.observed_facts) == {
+        "product_type",
+        "material",
+        "size",
+        "model",
+        "moq",
+        "price_unit",
+        "currency",
+    }
+    assert all(
+        fact.evidence_ref == ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X")
+        and fact.provenance.source_type is SourceType.WEB_PAGE
+        and fact.provenance.confirmed_by is None
+        for fact in candidate.observed_facts.values()
+    )
+    assert reader.calls == 1
+
+
+def _stored_public_draft(factory: _Factory) -> PublicCandidateDraft:
+    return next(iter(factory.state["candidate_drafts"].values()))
+
+
+def _replace_public_drafts(
+    factory: _Factory, *drafts: PublicCandidateDraft
+) -> None:
+    factory.state["candidate_drafts"] = {
+        (TENANT, draft.draft_id): draft for draft in drafts
+    }
+
+
+def _verification_command(plan: Any, run_id: RunId, *draft_ids: str) -> Any:
+    return VerifyPublicCandidateDraftsCommand(
+        run_id=run_id,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        draft_ids=tuple(draft_ids),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_model", "unequal_material", "moq"])
+async def test_complete_public_draft_failures_persist_rejected_without_seal(
+    failure: str,
+) -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    if failure == "missing_model":
+        specs = tuple(
+            item.model_copy(update={"observed": None})
+            if item.spec_name == "model"
+            else item
+            for item in draft.specs
+        )
+        draft = draft.model_copy(update={"specs": specs})
+    elif failure == "unequal_material":
+        specs = tuple(
+            item.model_copy(update={"observed": "aluminium"})
+            if item.spec_name == "material"
+            else item
+            for item in draft.specs
+        )
+        draft = draft.model_copy(update={"specs": specs})
+    else:
+        draft = draft.model_copy(update={"moq": 6000})
+    _replace_public_drafts(factory, draft)
+
+    result = await service.verify_public_candidate_drafts(
+        TENANT,
+        case_id,
+        _verification_command(plan, run_id, draft.draft_id),
+        actor=SYSTEM,
+    )
+
+    assert result.verified_event is None
+    assert result.qualified_candidate_ids == ()
+    assert result.rejected_candidate_ids == result.converted_candidate_ids
+    candidate = next(iter(factory.state["candidates"].values()))
+    assert candidate.rejected is True
+    assert candidate.supplier_claims == {}
+    if failure == "missing_model":
+        assert "model" not in candidate.observed_facts
+    if failure == "unequal_material":
+        material = next(
+            item for item in candidate.verified_specs if item.spec_name == "material"
+        )
+        assert material.level is SpecMatchLevel.DIFFERENT
+        assert material.substitutable is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "draft_only",
+    ["identity", "price", "mixed_currency", "mixed_unit", "duplicate_tier"],
+)
+async def test_incomplete_or_ambiguous_public_price_stays_draft_only(
+    draft_only: str,
+) -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    if draft_only == "identity":
+        draft = draft.model_copy(
+            update={
+                "supplier_name": None,
+                "rejection_codes": ("supplier_identity_missing",),
+            }
+        )
+    elif draft_only == "price":
+        draft = draft.model_copy(
+            update={
+                "indicative_price_tiers": (),
+                "rejection_codes": ("quantity_tier_missing",),
+            }
+        )
+    else:
+        first = draft.indicative_price_tiers[0]
+        second = first.model_copy(
+            update={
+                "minimum_quantity": 2000
+                if draft_only != "duplicate_tier"
+                else first.minimum_quantity,
+                "currency": "EUR" if draft_only == "mixed_currency" else "USD",
+                "unit": "set" if draft_only == "mixed_unit" else "piece",
+            }
+        )
+        draft = draft.model_copy(
+            update={"indicative_price_tiers": (first, second)}
+        )
+    _replace_public_drafts(factory, draft)
+
+    result = await service.verify_public_candidate_drafts(
+        TENANT,
+        case_id,
+        _verification_command(plan, run_id, draft.draft_id),
+        actor=SYSTEM,
+    )
+
+    assert result.calibration_draft_ids == (draft.draft_id,)
+    assert result.converted_candidate_ids == ()
+    assert result.verified_event is None
+    assert factory.state["candidates"] == {}
+    assert reader.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fourth_complete_candidate_is_persisted_rejected_and_not_sealed() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    first = _stored_public_draft(factory)
+    drafts = tuple(
+        first.model_copy(
+            update={
+                "draft_id": f"scd-public-{index}",
+                "result_index": index,
+                "source_key": f"{index + 1:064x}",
+                "supplier_name": f"Factory {index}",
+            }
+        )
+        for index in range(4)
+    )
+    _replace_public_drafts(factory, *drafts)
+
+    result = await service.verify_public_candidate_drafts(
+        TENANT,
+        case_id,
+        _verification_command(plan, run_id, *(draft.draft_id for draft in drafts)),
+        actor=SYSTEM,
+    )
+
+    assert len(result.converted_candidate_ids) == 4
+    assert len(result.qualified_candidate_ids) == 3
+    assert len(result.rejected_candidate_ids) == 1
+    rejected = factory.state["candidates"][(TENANT, result.rejected_candidate_ids[0])]
+    assert rejected.rejection_reasons == [
+        PriceRejectionReason.QUALIFIED_LIMIT_REACHED
+    ]
+
+
+@pytest.mark.asyncio
+async def test_verification_requires_exact_canonical_draft_order_before_artifact_reads() -> None:
+    factory = _Factory()
+    reader = _EvidenceReader()
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    first = _stored_public_draft(factory)
+    second = first.model_copy(
+        update={
+            "draft_id": "scd-public-second",
+            "result_index": 1,
+            "source_key": "e" * 64,
+        }
+    )
+    _replace_public_drafts(factory, first, second)
+
+    with pytest.raises(ValidationError, match="集合或顺序"):
+        await service.verify_public_candidate_drafts(
+            TENANT,
+            case_id,
+            _verification_command(plan, run_id, second.draft_id, first.draft_id),
+            actor=SYSTEM,
+        )
+
+    assert factory.state["candidates"] == {}
+    assert reader.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("artifact_failure", ["time", "reader"])
+async def test_artifact_drift_or_reader_error_rolls_back_without_error_leak(
+    artifact_failure: str,
+) -> None:
+    factory = _Factory()
+    reader = (
+        _EvidenceReader(failure=RuntimeError("provider secret raw error"))
+        if artifact_failure == "reader"
+        else _EvidenceReader(
+            projection=replace(
+                _EvidenceReader().projection, observed_at=NOW - timedelta(hours=1)
+            )
+        )
+    )
+    service = _service(factory, reader)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+
+    with pytest.raises(
+        MissingEvidenceSnapshotError,
+        match="^公开候选草稿 Artifact 元数据不一致$",
+    ) as caught:
+        await service.verify_public_candidate_drafts(
+            TENANT,
+            case_id,
+            _verification_command(plan, run_id, draft.draft_id),
+            actor=SYSTEM,
+        )
+
+    assert caught.value.__cause__ is None
+    assert "secret" not in str(caught.value)
+    assert factory.state["candidates"] == {}
+
+
+@pytest.mark.asyncio
+async def test_exact_public_draft_replay_returns_original_generation_without_duplicate() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory)
+    command = _verification_command(plan, run_id, draft.draft_id)
+
+    first = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+    second = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+
+    assert second == first
+    assert len(factory.state["candidates"]) == 1
+    assert len(
+        [event for event in factory.state["events"] if isinstance(event, SourcingCandidatesVerified)]
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_public_draft_source_collision_with_changed_content_fails_closed() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id, plan, run_id = await _running_public_case(service, factory)
+    draft = _stored_public_draft(factory).model_copy(update={"moq": 6000})
+    _replace_public_drafts(factory, draft)
+    command = _verification_command(plan, run_id, draft.draft_id)
+    first = await service.verify_public_candidate_drafts(
+        TENANT, case_id, command, actor=SYSTEM
+    )
+    assert first.verified_event is None
+    assert len(factory.state["candidates"]) == 1
+    _replace_public_drafts(
+        factory,
+        draft.model_copy(update={"product_title": "Changed hinge identity"}),
+    )
+
+    with pytest.raises(ValidationError, match="source key 已绑定不同候选内容"):
+        await service.verify_public_candidate_drafts(
+            TENANT, case_id, command, actor=SYSTEM
+        )
+
+    assert len(factory.state["candidates"]) == 1
+    assert not any(
+        isinstance(event, SourcingCandidatesVerified)
+        for event in factory.state["events"]
+    )
 
 
 async def _internal_option(

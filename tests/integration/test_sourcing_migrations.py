@@ -338,6 +338,23 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "raw_artifacts",
             ("tenant_id", "artifact_id"),
         )
+        public_candidate_fks = contract["sourcing_candidates"]["foreign_keys"]
+        assert public_candidate_fks["fk_sourcing_candidates_public_draft"] == (
+            ("tenant_id", "public_draft_source_key"),
+            "sourcing_candidate_drafts",
+            ("tenant_id", "source_key"),
+        )
+        public_source_index = contract["sourcing_candidates"]["indexes"][
+            "uq_sourcing_candidates_public_draft_source"
+        ]
+        assert public_source_index["unique"] is True
+        assert tuple(public_source_index["column_names"]) == (
+            "tenant_id",
+            "public_draft_source_key",
+        )
+        assert contract["sourcing_candidates"]["columns"][
+            "public_draft_source_key"
+        ]["nullable"] is True
         source_fks = contract["product_candidate_sources"]["foreign_keys"]
         assert source_fks["fk_product_candidate_sources_candidate"] == (
             ("tenant_id", "sourcing_case_id", "supplier_candidate_id"),

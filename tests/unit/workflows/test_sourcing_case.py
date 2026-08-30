@@ -23,17 +23,24 @@ from domains.products.service import (
     QualifiedProductMatch,
 )
 from domains.sourcing.permissions import SourcingActor, SourcingScope
-from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
+from domains.sourcing.schemas import (
+    NeedFact,
+    SourcingNeedSnapshot,
+    VerifyPublicCandidateDraftsResult,
+)
 from domains.sourcing.service import LadderOutcome
 from domains.suppliers.service import Supplier, SupplierActor, SupplierRole
 from shared.errors import TransientError, ValidationError
+from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
     ProductId,
     RunId,
     SourcingCaseId,
+    SourcingPlanId,
     SourcingSupplyOptionId,
+    SupplierCandidateId,
     SupplierId,
     TenantId,
     ValidatedNeedId,
@@ -215,6 +222,15 @@ class _Sourcing:
         ] = []
         self.record_error: Exception | None = None
         self.option_error: Exception | None = None
+        self.verification_error: Exception | None = None
+        self.verification_result = VerifyPublicCandidateDraftsResult(
+            calibration_draft_ids=("scd-calibration",),
+            converted_candidate_ids=(),
+            rejected_candidate_ids=(),
+            qualified_candidate_ids=(),
+            verified_event=None,
+        )
+        self.verification_calls: list[tuple[Any, ...]] = []
 
     async def record_ladder_check(self, tenant_id, case_id, check, *, actor):
         assert (tenant_id, case_id, actor) == (TENANT, CASE_ID, SOURCING_ACTOR)
@@ -245,6 +261,14 @@ class _Sourcing:
     ):
         assert (tenant_id, case_id, actor) == (TENANT, CASE_ID, SOURCING_ACTOR)
         self.ready_calls.append((option_ids, candidate_ids))
+
+    async def verify_public_candidate_drafts(
+        self, tenant_id, case_id, command, *, actor
+    ):
+        self.verification_calls.append((tenant_id, case_id, command, actor))
+        if self.verification_error is not None:
+            raise self.verification_error
+        return self.verification_result
 
 
 def _handlers(products: _Products, suppliers: _Suppliers, sourcing: _Sourcing):
@@ -316,6 +340,95 @@ def test_definition_has_exact_v2_steps_transitions_and_wait_contracts() -> None:
     ) == (
         "SourcingHandoffRetryRequested",
         True,
+    )
+
+
+def _verification_run() -> WorkflowRun:
+    return _run(
+        {
+            **_run().context,
+            "sourcing_plan_id": "spl-flow",
+            "sourcing_plan_hash": "b" * 64,
+            "supplier_candidate_draft_ids": ["scd-first", "scd-second"],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_candidates_step_advances_with_exact_sealed_generation() -> None:
+    sourcing = _Sourcing()
+    candidate_ids = tuple(
+        sorted(
+            (
+                SupplierCandidateId("spc-second"),
+                SupplierCandidateId("spc-first"),
+            ),
+            key=str,
+        )
+    )
+    event = SourcingCandidatesVerified(
+        tenant_id=TENANT,
+        occurred_at=NOW,
+        case_id=CASE_ID,
+        candidate_ids=candidate_ids,
+        case_version=8,
+        candidate_set_hash="c" * 64,
+    )
+    sourcing.verification_result = VerifyPublicCandidateDraftsResult(
+        calibration_draft_ids=(),
+        converted_candidate_ids=candidate_ids,
+        rejected_candidate_ids=(),
+        qualified_candidate_ids=candidate_ids,
+        verified_event=event,
+    )
+    step = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
+    )["sourcing_case.v2.verify_candidates"]
+
+    result = await step.execute(_verification_run())
+
+    assert result == (
+        "advance",
+        "prepare_candidates",
+        {
+            "internal_product_ids": [],
+            "supplier_candidate_ids": list(map(str, candidate_ids)),
+            "candidate_case_version": 8,
+            "candidate_set_hash": "c" * 64,
+        },
+    )
+    command = sourcing.verification_calls[0][2]
+    assert command.run_id == RunId("run-flow")
+    assert command.plan_id == SourcingPlanId("spl-flow")
+    assert command.draft_ids == ("scd-first", "scd-second")
+
+
+@pytest.mark.asyncio
+async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies() -> None:
+    sourcing = _Sourcing()
+    sourcing.verification_result = VerifyPublicCandidateDraftsResult(
+        calibration_draft_ids=("scd-calibration",),
+        converted_candidate_ids=(SupplierCandidateId("spc-rejected"),),
+        rejected_candidate_ids=(SupplierCandidateId("spc-rejected"),),
+        qualified_candidate_ids=(),
+        verified_event=None,
+    )
+    step = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
+    )["sourcing_case.v2.verify_candidates"]
+
+    result = await step.execute(_verification_run())
+
+    assert result == (
+        "wait",
+        None,
+        {
+            "sourcing_stop_reason": "no_qualified_candidate",
+            "calibration_draft_ids": ["scd-calibration"],
+            "converted_supplier_candidate_ids": ["spc-rejected"],
+            "rejected_supplier_candidate_ids": ["spc-rejected"],
+            "qualified_supplier_candidate_count": 0,
+        },
     )
 
 

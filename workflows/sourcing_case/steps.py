@@ -24,6 +24,8 @@ from domains.sourcing.schemas import (
     PublicPageAttemptClaim,
     PublicPageAttemptOutcome,
     PublicPageAttemptStatus,
+    VerifyPublicCandidateDraftsCommand,
+    VerifyPublicCandidateDraftsResult,
 )
 from domains.sourcing.service import (
     LadderCheck,
@@ -40,6 +42,7 @@ from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     ValidatedNeedId,
@@ -1122,6 +1125,86 @@ class FixedWaitStep:
         return ("wait", None, {"sourcing_wait_status": self._status})
 
 
+class VerifyCandidatesStep:
+    """把 PublicSearch 的精确草稿 generation 一次交给寻源域核验。"""
+
+    def __init__(self, *, sourcing: SourcingService, actor: SourcingActor) -> None:
+        self._sourcing = sourcing
+        self._actor = actor
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _snapshot_hash = _base(run)
+        plan_id = SourcingPlanId(
+            _text(run.context.get("sourcing_plan_id"), "候选核验缺少计划 ID", maximum=40)
+        )
+        plan_hash = _text(
+            run.context.get("sourcing_plan_hash"),
+            "候选核验缺少计划哈希",
+            maximum=64,
+        )
+        if len(plan_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in plan_hash
+        ):
+            raise ValidationError("候选核验计划哈希无效")
+        raw_draft_ids = run.context.get("supplier_candidate_draft_ids")
+        if not isinstance(raw_draft_ids, list) or not raw_draft_ids:
+            raise ValidationError("候选核验缺少有序草稿集合")
+        draft_ids = tuple(
+            _text(value, "候选核验草稿 ID 无效", maximum=40)
+            for value in raw_draft_ids
+        )
+        if len(set(draft_ids)) != len(draft_ids):
+            raise ValidationError("候选核验草稿 ID 不得重复")
+        result = await _await_dependency(
+            self._sourcing.verify_public_candidate_drafts(
+                run.tenant_id,
+                case_id,
+                VerifyPublicCandidateDraftsCommand(
+                    run_id=RunId(str(run.run_id)),
+                    plan_id=plan_id,
+                    plan_hash=plan_hash,
+                    draft_ids=draft_ids,
+                ),
+                actor=self._actor,
+            ),
+            transient_message="公开候选草稿核验暂不可用",
+            permanent_message="公开候选草稿核验失败",
+        )
+        if not isinstance(result, VerifyPublicCandidateDraftsResult):
+            raise ValidationError("公开候选草稿核验结果无效")
+        event = result.verified_event
+        if event is None:
+            return (
+                "wait",
+                None,
+                {
+                    "sourcing_stop_reason": "no_qualified_candidate",
+                    "calibration_draft_ids": list(result.calibration_draft_ids),
+                    "converted_supplier_candidate_ids": list(
+                        map(str, result.converted_candidate_ids)
+                    ),
+                    "rejected_supplier_candidate_ids": list(
+                        map(str, result.rejected_candidate_ids)
+                    ),
+                    "qualified_supplier_candidate_count": 0,
+                },
+            )
+        if event.tenant_id != run.tenant_id or event.case_id != case_id:
+            raise ValidationError("公开候选封存事件与 Workflow 不一致")
+        return (
+            "advance",
+            "prepare_candidates",
+            {
+                "internal_product_ids": [],
+                "supplier_candidate_ids": list(
+                    map(str, result.qualified_candidate_ids)
+                ),
+                "candidate_case_version": event.case_version,
+                "candidate_set_hash": event.candidate_set_hash,
+            },
+        )
+
+
 class AwaitPublicPlanStep:
     """入口只等待；收到精确授权事件后携带安全计划绑定推进公开搜索。"""
 
@@ -1160,5 +1243,6 @@ __all__ = (
     "InternalMatchLadderStep",
     "PrepareCandidatesStep",
     "PublicSearchStep",
+    "VerifyCandidatesStep",
     "sourcing_search_request_key",
 )

@@ -13,6 +13,7 @@ from workflows.sourcing_case.steps import (
     FixedWaitStep,
     InternalMatchLadderStep,
     PrepareCandidatesStep,
+    VerifyCandidatesStep,
 )
 
 WORKFLOW_TYPE = "sourcing_case"
@@ -99,8 +100,9 @@ def build_sourcing_case_handlers(
         "sourcing_case.v2.await_public_plan": AwaitPublicPlanStep(),
         "sourcing_case.v2.public_search": public_search_handler
         or FixedWaitStep("public_search_dependencies_not_composed"),
-        "sourcing_case.v2.verify_candidates": FixedWaitStep(
-            "candidate_verification_pending_implementation"
+        "sourcing_case.v2.verify_candidates": VerifyCandidatesStep(
+            sourcing=sourcing,
+            actor=sourcing_actor,
         ),
         "sourcing_case.v2.prepare_candidates": PrepareCandidatesStep(
             sourcing=sourcing,

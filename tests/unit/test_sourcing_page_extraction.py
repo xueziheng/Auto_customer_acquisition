@@ -80,6 +80,7 @@ def _need() -> SourcingNeedSnapshot:
         application=None,
         material=_fact("304 stainless steel"),
         size_spec=_fact("4 inch"),
+        model=_fact("HX-4"),
         quantity=_fact(500),
         unit=_fact("piece"),
         destination=None,
@@ -94,6 +95,7 @@ def _page_text() -> str:
         "Product: Stainless outdoor hinge.\n"
         "Material 304 stainless steel.\n"
         "Size 4 inch.\n"
+        "Model HX-4.\n"
         "MOQ 100 pieces.\n"
         "Price USD 2.50 per piece for minimum quantity 100."
     )
@@ -121,9 +123,14 @@ def _valid_output() -> dict[str, object]:
                 "source_quote": "Material 304 stainless steel.",
             },
             {
-                "spec_name": "size_spec",
+                "spec_name": "size",
                 "literal": "4 inch",
                 "source_quote": "Size 4 inch.",
+            },
+            {
+                "spec_name": "model",
+                "literal": "HX-4",
+                "source_quote": "Model HX-4.",
             },
         ],
         "moq": {"literal": "100", "source_quote": "MOQ 100 pieces."},
@@ -160,7 +167,8 @@ async def test_valid_literals_preserve_exact_quotes_and_snapshot_metadata() -> N
         "required_specs": [
             {"spec_name": "product_type", "required": "outdoor hinge"},
             {"spec_name": "material", "required": "304 stainless steel"},
-            {"spec_name": "size_spec", "required": "4 inch"},
+            {"spec_name": "size", "required": "4 inch"},
+            {"spec_name": "model", "required": "HX-4"},
         ],
         "quantity": 500,
         "unit": "piece",

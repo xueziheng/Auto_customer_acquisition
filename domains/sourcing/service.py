@@ -31,6 +31,8 @@ from domains.sourcing.schemas import (
     SourcingNeedSnapshot,
     SourcingReviewCommand,
     SourcingUncertainReconciliationCommand,
+    VerifyPublicCandidateDraftsCommand,
+    VerifyPublicCandidateDraftsResult,
 )
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
@@ -189,6 +191,17 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> SourcingCandidatesVerified:
         """原子封存精确候选集并返回产品卡投影 generation。"""
+        ...
+
+    async def verify_public_candidate_drafts(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: VerifyPublicCandidateDraftsCommand,
+        *,
+        actor: SourcingActor,
+    ) -> VerifyPublicCandidateDraftsResult:
+        """确定性转换精确公开草稿集合，并在有合格候选时原子封存。"""
         ...
 
     async def register_supplier_candidate_option(

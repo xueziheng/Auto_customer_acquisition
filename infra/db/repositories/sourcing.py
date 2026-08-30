@@ -673,6 +673,7 @@ def _candidate_to_row(candidate: SupplierCandidate) -> SourcingCandidateRow:
         rejected=candidate.rejected,
         rejection_reasons=[item.value for item in candidate.rejection_reasons],
         verified_by=candidate.verified_by,
+        public_draft_source_key=candidate.public_draft_source_key,
         created_at=candidate.created_at,
     )
 
@@ -751,6 +752,7 @@ async def _row_to_candidate(
             PriceRejectionReason(item) for item in row.rejection_reasons
         ],
         verified_by=EmployeeId(row.verified_by) if row.verified_by else None,
+        public_draft_source_key=row.public_draft_source_key,
     )
 
 
@@ -788,6 +790,67 @@ class CandidateRepositoryImpl(_TenantBoundRepository):
             await self._session.execute(
                 self.scoped_query(SourcingCandidateRow).where(
                     SourcingCandidateRow.candidate_id == candidate_id
+                )
+            )
+        ).scalar_one_or_none()
+        return await _row_to_candidate(self._session, row) if row is not None else None
+
+    async def get_or_create_public_draft(
+        self, tenant_id: TenantId, candidate: SupplierCandidate
+    ) -> tuple[SupplierCandidate, bool]:
+        self._require_tenant(tenant_id)
+        if (
+            candidate.tenant_id != tenant_id
+            or candidate.public_draft_source_key is None
+        ):
+            raise ValueError("公开草稿候选绑定无效")
+        row = _candidate_to_row(candidate)
+        values = {
+            column.name: getattr(row, column.name)
+            for column in SourcingCandidateRow.__table__.columns
+        }
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingCandidateRow)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=("tenant_id", "public_draft_source_key"),
+                    index_where=text("public_draft_source_key IS NOT NULL"),
+                )
+                .returning(SourcingCandidateRow.candidate_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            for snapshot in candidate.evidence_snapshots or (
+                (candidate.evidence,) if candidate.evidence is not None else ()
+            ):
+                self._session.add(
+                    SourcingCandidateEvidenceRow(
+                        tenant_id=tenant_id,
+                        candidate_id=candidate.candidate_id,
+                        artifact_id=snapshot.artifact_ref,
+                        url=snapshot.url,
+                        observed_at=snapshot.observed_at,
+                        content_hash=snapshot.content_hash,
+                    )
+                )
+            await self._session.flush()
+            return candidate, True
+        canonical = await self.get_by_public_draft_source_key(
+            tenant_id, candidate.public_draft_source_key
+        )
+        if canonical is None:
+            raise ValidationError("公开草稿候选 canonical 冲突不可解析")
+        return canonical, False
+
+    async def get_by_public_draft_source_key(
+        self, tenant_id: TenantId, source_key: str
+    ) -> SupplierCandidate | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self.scoped_query(SourcingCandidateRow).where(
+                    SourcingCandidateRow.public_draft_source_key == source_key
                 )
             )
         ).scalar_one_or_none()
@@ -1494,6 +1557,33 @@ class PublicCandidateDraftRepositoryImpl(_TenantBoundRepository):
             )
         ).scalar_one_or_none()
         return _draft_from_row(row) if row is not None else None
+
+    async def list_exact_for_verification(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        plan_id: SourcingPlanId,
+        plan_hash: str,
+    ) -> list[PublicCandidateDraft]:
+        self._require_tenant(tenant_id)
+        rows = (
+            await self._session.execute(
+                self.scoped_query(SourcingCandidateDraftRow)
+                .where(
+                    SourcingCandidateDraftRow.case_id == case_id,
+                    SourcingCandidateDraftRow.run_id == run_id,
+                    SourcingCandidateDraftRow.plan_id == plan_id,
+                    SourcingCandidateDraftRow.plan_hash == plan_hash,
+                )
+                .order_by(
+                    SourcingCandidateDraftRow.query_index,
+                    SourcingCandidateDraftRow.result_index,
+                    SourcingCandidateDraftRow.source_key,
+                )
+            )
+        ).scalars()
+        return [_draft_from_row(row) for row in rows]
 
 
 def _reconciliation_from_row(

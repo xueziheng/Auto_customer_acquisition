@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
     OpportunityId,
@@ -78,6 +79,7 @@ class SourcingNeedSnapshot(BaseModel):
     application: NeedFact | None = None
     material: NeedFact | None = None
     size_spec: NeedFact | None = None
+    model: NeedFact | None = None
     quantity: NeedFact
     unit: NeedFact | None = None
     destination: NeedFact | None = None
@@ -220,6 +222,59 @@ class PublicCandidateDraft(BaseModel):
             and bool(self.indicative_price_tiers)
             and not self.rejection_codes
         )
+
+
+class VerifyPublicCandidateDraftsCommand(BaseModel):
+    """把公开搜索输出的精确有序草稿 generation 绑定到一次核验。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    run_id: RunId
+    plan_id: SourcingPlanId
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_ids: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_draft_ids(self) -> Self:
+        """草稿顺序属于命令内容，重复或不可定位 ID 一律拒绝。"""
+
+        for draft_id in self.draft_ids:
+            _bounded_text(draft_id, field_name="draft_id", maximum=40)
+        if len(set(self.draft_ids)) != len(self.draft_ids):
+            raise ValueError("draft_ids 不得重复")
+        return self
+
+
+class VerifyPublicCandidateDraftsResult(BaseModel):
+    """公开草稿核验结果；校准草稿、候选与封存 generation 分栏。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    calibration_draft_ids: tuple[str, ...]
+    converted_candidate_ids: tuple[SupplierCandidateId, ...]
+    rejected_candidate_ids: tuple[SupplierCandidateId, ...]
+    qualified_candidate_ids: tuple[SupplierCandidateId, ...]
+    verified_event: SourcingCandidatesVerified | None
+
+    @model_validator(mode="after")
+    def validate_sets(self) -> Self:
+        """结果集合必须去重；拒绝分类只引用本次 canonical 转换结果。"""
+
+        collections = (
+            self.calibration_draft_ids,
+            self.converted_candidate_ids,
+            self.rejected_candidate_ids,
+            self.qualified_candidate_ids,
+        )
+        if any(len(values) != len(set(values)) for values in collections):
+            raise ValueError("公开草稿核验结果 ID 不得重复")
+        converted = set(self.converted_candidate_ids)
+        if not set(self.rejected_candidate_ids) <= converted:
+            raise ValueError("rejected_candidate_ids 必须属于转换候选")
+        if self.verified_event is None:
+            if self.qualified_candidate_ids:
+                raise ValueError("合格候选必须携带封存事件")
+        elif self.verified_event.candidate_ids != self.qualified_candidate_ids:
+            raise ValueError("封存事件与合格候选集合不一致")
+        return self
 
 
 class PublicPageAttemptStatus(StrEnum):

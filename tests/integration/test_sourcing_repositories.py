@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -793,6 +794,26 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         )
         await uow.reconciliations.add(tenant_id, reconciliation)
 
+    public_candidate = replace(
+        candidate,
+        candidate_id=SupplierCandidateId(new_id("spc")),
+        evidence=evidence_early,
+        evidence_snapshots=(evidence_early,),
+        public_draft_source_key=public_draft.source_key,
+    )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        canonical_public, created = await uow.candidates.get_or_create_public_draft(
+            tenant_id, public_candidate
+        )
+    async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
+        replay_public, replay_created = await uow.candidates.get_or_create_public_draft(
+            tenant_id,
+            replace(public_candidate, candidate_id=SupplierCandidateId(new_id("spc"))),
+        )
+    assert created is True
+    assert replay_created is False
+    assert replay_public == canonical_public
+
     async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:
         loaded_case = await uow.cases.get(tenant_id, case_id)
         loaded_checks = await uow.checks.list_for_case(tenant_id, case_id)
@@ -808,6 +829,18 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
         )
         loaded_draft = await uow.candidate_drafts.get_by_source_key(
             tenant_id, public_draft.source_key
+        )
+        exact_drafts = await uow.candidate_drafts.list_exact_for_verification(
+            tenant_id,
+            case_id,
+            run_id,
+            plan.plan_id,
+            plan.plan_hash,
+        )
+        loaded_public_candidate = (
+            await uow.candidates.get_by_public_draft_source_key(
+                tenant_id, public_draft.source_key
+            )
         )
 
     assert loaded_case == case
@@ -833,6 +866,9 @@ async def test_sourcing_aggregate_round_trips_with_stable_evidence_order(
     assert loaded_execution == execution
     assert loaded_reconciliation == reconciliation
     assert loaded_draft == public_draft
+    assert exact_drafts == [public_draft]
+    assert loaded_public_candidate == canonical_public
+    assert loaded_candidate.public_draft_source_key is None
     assert "source_quote" not in json.dumps(public_draft.model_dump(mode="json"))
     with pytest.raises(ValueError, match="租户"):
         async with SqlAlchemySourcingUnitOfWork(sf, tenant_id) as uow:

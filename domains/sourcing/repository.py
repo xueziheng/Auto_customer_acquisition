@@ -22,6 +22,7 @@ from domains.sourcing.models import (
 from domains.sourcing.schemas import PublicCandidateDraft, SourcingHandoffSnapshot
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -86,6 +87,16 @@ class CandidateRepository(Protocol):
 
     async def get(
         self, tenant_id: TenantId, candidate_id: SupplierCandidateId
+    ) -> SupplierCandidate | None: ...
+
+    async def get_or_create_public_draft(
+        self, tenant_id: TenantId, candidate: SupplierCandidate
+    ) -> tuple[SupplierCandidate, bool]:
+        """按完整公开草稿 source key 原子返回 canonical 候选。"""
+        ...
+
+    async def get_by_public_draft_source_key(
+        self, tenant_id: TenantId, source_key: str
     ) -> SupplierCandidate | None: ...
 
     async def update(
@@ -235,6 +246,17 @@ class PublicCandidateDraftRepository(Protocol):
     async def get_by_source_key(
         self, tenant_id: TenantId, source_key: str
     ) -> PublicCandidateDraft | None: ...
+
+    async def list_exact_for_verification(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        plan_id: SourcingPlanId,
+        plan_hash: str,
+    ) -> list[PublicCandidateDraft]:
+        """按 query/result/source key 返回一次精确公开搜索的 canonical 草稿。"""
+        ...
 
 @runtime_checkable
 class SourcingSearchReconciliationRepository(Protocol):

@@ -717,9 +717,10 @@ def _need_projection(
         raise ValidationError("公开寻源需求快照无效")
     raw_specs = (
         ("product_type", need.product_category),
-        ("application", need.application),
         ("material", need.material),
-        ("size_spec", need.size_spec),
+        ("size", need.size_spec),
+        ("model", need.model),
+        ("application", need.application),
     )
     specs: list[tuple[str, str]] = []
     for name, fact in raw_specs:
