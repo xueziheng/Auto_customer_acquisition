@@ -65,10 +65,14 @@ from tests.integration.test_sourcing_service_persistence import (
 )
 from workflows.engine.runner import (
     StepDefinition,
+    StepStatus,
     WorkflowDefinition,
     WorkflowRun,
 )
-from workflows.sourcing_case.application import SourcingCaseApplication
+from workflows.sourcing_case.application import (
+    SourcingCaseApplication,
+    SourcingPlanDeliveryError,
+)
 from workflows.sourcing_case.steps import (
     AwaitProductCardsStep,
     PrepareCandidatesStep,
@@ -117,23 +121,6 @@ class _VerifiedBridge:
         assert tenant_id == self.result.verified_event.tenant_id
         assert case_id == self.result.verified_event.case_id
         return self.result
-
-
-class _FailFirstEventEvidence:
-    """模拟 Ready 已提交后，独立 Engine 事务首次读取失败。"""
-
-    def __init__(self, engine: PostgresWorkflowEngine) -> None:
-        self.engine = engine
-        self.failed = False
-
-    def __getattr__(self, name: str):
-        return getattr(self.engine, name)
-
-    async def has_delivered_event(self, *args: object, **kwargs: object) -> bool:
-        if not self.failed:
-            self.failed = True
-            raise RuntimeError("raw workflow storage failure")
-        return await self.engine.has_delivered_event(*args, **kwargs)
 
 
 def _ladder_check(
@@ -289,6 +276,7 @@ async def test_verified_projection_replay_persists_one_complete_generation(
                     "await_review",
                     "sourcing.review_wait",
                     wait_event_type="SourcingReviewSubmitted",
+                    run_on_entry=True,
                 ),
                 StepDefinition(
                     "handoff_costing",
@@ -323,29 +311,54 @@ async def test_verified_projection_replay_persists_one_complete_generation(
     )
     assert await engine.poll_due(tenant_id, 1) == 1
     assert await engine.poll_due(tenant_id, 1) == 1
-    assert await engine.poll_due(tenant_id, 1) == 1
-    waiting = await engine.get_run(tenant_id, RunId(run_id))
-    assert waiting is not None and waiting.current_step == "await_product_cards"
-    assert waiting.context["supplier_candidate_ids"] == [str(candidate_id)]
-    assert waiting.context["candidate_case_version"] == verified.case_version
-    assert waiting.context["candidate_set_hash"] == verified.candidate_set_hash
+    pending_cards = await engine.get_run(tenant_id, RunId(run_id))
+    assert (
+        pending_cards is not None
+        and pending_cards.current_step == "await_product_cards"
+        and pending_cards.status is StepStatus.RUNNING
+    )
+    assert pending_cards.context["supplier_candidate_ids"] == [str(candidate_id)]
+    assert pending_cards.context["candidate_case_version"] == verified.case_version
+    assert pending_cards.context["candidate_set_hash"] == verified.candidate_set_hash
     assert bridge.calls == 1
     projector = SourcingCandidateProductProjector(
         sourcing=sourcing,
         products=products,
-        engine=_FailFirstEventEvidence(engine),
+        engine=engine,
         tenant_id=tenant_id,
         sourcing_actor=sourcing_actor,
         product_actor=product_actor,
     )
 
-    with pytest.raises(TransientError, match="工作流事件证据暂不可用"):
+    with pytest.raises(TransientError, match="尚未进入产品卡等待边界") as caught:
         await projector.handle(verified)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OutboxEventRow)
+                .where(
+                    OutboxEventRow.tenant_id == tenant_id,
+                    OutboxEventRow.event_type == "SourcingCandidatesReady",
+                )
+            )
+            == 1
+        )
+
+    assert await engine.poll_due(tenant_id, 1) == 1
     await projector.handle(verified)
     await projector.handle(verified)
 
-    run = await engine.get_run(tenant_id, RunId(run_id))
-    assert run is not None and run.current_step == "await_review"
+    pending_review = await engine.get_run(tenant_id, RunId(run_id))
+    assert (
+        pending_review is not None
+        and pending_review.current_step == "await_review"
+        and pending_review.status is StepStatus.RUNNING
+    )
+    assert len(pending_review.context["__wf_delivered_events"]) == 1
     async with factory() as session:
         product_ids = tuple(
             await session.scalars(
@@ -415,6 +428,29 @@ async def test_verified_projection_replay_persists_one_complete_generation(
         reason="证据最完整",
         expected_case_version=case_version,
     )
+    with pytest.raises(
+        SourcingPlanDeliveryError, match="寻源审核工作流尚未进入等待边界"
+    ) as caught:
+        await application.review(
+            tenant_id,
+            case_id,
+            review_command,
+            request_id="review-request-1",
+            actor=reviewer,
+        )
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SourcingReviewRow)
+                .where(SourcingReviewRow.tenant_id == tenant_id)
+            )
+            == 1
+        )
+
+    assert await engine.poll_due(tenant_id, 1) == 1
     review = await application.review(
         tenant_id,
         case_id,
@@ -442,6 +478,8 @@ async def test_verified_projection_replay_persists_one_complete_generation(
     assert run is not None
     assert run.current_step == "handoff_costing"
     assert run.context["sourcing_stop_reason"] == "opportunity_required"
+    delivered_fingerprints = run.context["__wf_delivered_events"]
+    assert len(delivered_fingerprints) == len(set(delivered_fingerprints)) == 3
     async with factory() as session:
         assert (
             await session.scalar(

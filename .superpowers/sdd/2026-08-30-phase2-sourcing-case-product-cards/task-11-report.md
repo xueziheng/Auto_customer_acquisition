@@ -121,3 +121,53 @@ Task 11 的功能、聚焦测试、真实 PostgreSQL 集成测试、全量单元
 1. 仓库 Makefile 的 mypy 命令仍先被 `apps/composition_support/quotations.py` 双模块名基线阻断。
 2. 仓库级 sensitive scan 仍命中 8 个既有测试文件；本轮变更文件为 0 命中。
 3. 共享 Git pack 的 AppleDouble `non-monotonic index` 警告仍存在，但不影响工作树读取与提交。
+
+---
+
+## Fix round 2/5（P50 `run_on_entry` pending window）
+
+### 状态
+
+`DONE_WITH_CONCERNS`
+
+本轮关闭 re-review 的 1 个 Critical 与 1 个 Important。P49/P50/P51、owning Run / V2 / generation 精确绑定、review 幂等和 opportunity-only handoff retry 均保持不变；未编辑 `progress.md`，未使用子代理。
+
+### 修复内容
+
+1. **Ready 后的 `await_product_cards` pending 窗口**
+   - `SourcingProductCardsPrepared` 首次投递返回 false 且精确事件证据仍不存在时，projector 重新读取原 owning `run_id`。
+   - fresh Run 仍为相同 tenant/type/V2/Case/generation 且位于 `await_product_cards` 时，返回固定、无异常链 `TransientError`，让已提交 Ready 的 Outbox 继续重试。
+   - terminal、foreign、generation drift 或已离开目标 step 且无精确证据仍永久拒绝；fresh Engine 读取失败保持 transient。
+
+2. **Review 后的 `await_review` pending 窗口**
+   - Review 事实先持久化；false delivery 且精确证据不存在时，应用层 fresh-read 同一 `run_id` 并重新校验 owning Run 与完整 supplier generation。
+   - fresh Run 仍位于 `await_review`，或位于带 `opportunity_required` durable stop reason 的合法 `handoff_costing` retry boundary 时，返回固定 `SourcingPlanDeliveryError`；同请求重试复用唯一 Review 并最终只投递一次。
+   - terminal、foreign、generation drift 和非法 step 继续永久拒绝。
+   - Engine 的 find/get/history-query/deliver 任意原始异常全部转换为固定、脱敏、无异常链 transient，不再把独立 Engine 存储故障永久化。
+
+3. **真实顺序与幂等证据**
+   - PostgreSQLWorkflowEngine 闭环现在按生产定义启用 `await_product_cards` 与 `await_review` 的 `run_on_entry=True`。
+   - 测试分别在 entry poll 前调用 projector/review，确认 Ready Outbox 与 Review 已提交但收到 transient；随后 poll 到等待态并用完全相同输入重试。
+   - 最终只有一个 Product、一个 candidate source、一个 Option、一个 Ready Outbox、一个 Review；三个不同内部事件指纹各出现一次，重放不增加账本条目。
+
+### RED → GREEN 证据
+
+- 真实 projector pending-first 测试先以 `候选产品卡工作流未接受就绪事件` 的永久 `ValidationError` RED；fresh exact target-step 分类后 GREEN。
+- 同一真实流程继续在 Review pending-first 处以 `寻源审核工作流未接受唤醒事件` 的永久 `ValidationError` RED；durable Review + fresh Run transient recovery 后 GREEN。
+- generic Engine find/get/query/deliver 参数化测试先在 find 阶段得到永久 `ValidationError` RED；四个失败点统一为 detached `SourcingPlanDeliveryError` 后 5 个新场景全部 GREEN。
+
+### 最终验证
+
+- 聚焦投影 / review / plan：`48 passed in 3.92s`
+- Task 11 相关单元、真实 PostgreSQL projection/concurrency 与 Workflow Engine：`198 passed in 8.79s`
+- 全量 unit：`6276 passed in 96.89s`
+- Ruff 全库：`All checks passed!`
+- Python 3.12 结构边界：全部通过
+- 本轮变更文件敏感信息扫描：0 命中
+- `git diff --check`：通过
+- 仓库 Makefile mypy 仍被 `apps/composition_support/quotations.py` 双模块名基线阻断；对本轮 2 个生产文件使用 `--explicit-package-bases` 后只报告 `shared/schemas/quote_creation.py` 的 13 个既有 Decimal exponent 错误，本轮文件无新增错误。
+
+### 剩余关注事项
+
+1. 仓库级 sensitive scan 仍报告 8 个既有测试夹具命中；本轮显式变更文件扫描为 0。
+2. 共享 Git pack 的 AppleDouble `non-monotonic index` 警告仍存在，但未影响测试、diff 或提交读取。

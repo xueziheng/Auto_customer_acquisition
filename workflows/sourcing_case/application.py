@@ -156,7 +156,6 @@ class SourcingCaseApplication:
         payload: dict[str, str],
     ) -> bool:
         transient = False
-        failed = False
         delivered: object = False
         try:
             delivered = await self._engine.has_delivered_event(
@@ -172,11 +171,9 @@ class SourcingCaseApplication:
         except TransientError:
             transient = True
         except Exception:  # noqa: BLE001 -- 丢弃 Engine 存储中的自由错误
-            failed = True
+            transient = True
         if transient:
-            raise SourcingPlanDeliveryError("寻源审核工作流证据暂不可用")
-        if failed:
-            raise ValidationError("寻源审核工作流证据查询失败")
+            raise SourcingPlanDeliveryError("寻源审核工作流证据暂不可用") from None
         if not isinstance(delivered, bool):
             raise ValidationError("寻源审核工作流证据无效")
         return delivered
@@ -185,7 +182,6 @@ class SourcingCaseApplication:
         self, tenant_id: TenantId, case_id: SourcingCaseId
     ) -> WorkflowRun:
         transient = False
-        failed = False
         run_id = None
         try:
             run_id = await self._engine.find_active_run(
@@ -194,26 +190,21 @@ class SourcingCaseApplication:
         except TransientError:
             transient = True
         except Exception:  # noqa: BLE001 -- 丢弃 Engine 自由错误
-            failed = True
+            transient = True
         if transient:
-            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用")
-        if failed:
-            raise ValidationError("寻源审核工作流查询失败")
+            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用") from None
         if run_id is None:
             raise ValidationError("寻源审核 Workflow Run 绑定无效")
         run: WorkflowRun | None = None
         transient = False
-        failed = False
         try:
             run = await self._engine.get_run(tenant_id, run_id)
         except TransientError:
             transient = True
         except Exception:  # noqa: BLE001 -- 丢弃 Engine 自由错误
-            failed = True
+            transient = True
         if transient:
-            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用")
-        if failed:
-            raise ValidationError("寻源审核工作流读取失败")
+            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用") from None
         if not _run_is_bound(run, tenant_id, case_id):
             raise ValidationError("寻源审核 Workflow Run 绑定无效")
         assert run is not None
@@ -328,7 +319,6 @@ class SourcingCaseApplication:
         ):
             return review
         transient = False
-        failed = False
         accepted: object = False
         try:
             accepted = await self._engine.deliver_event(
@@ -337,11 +327,9 @@ class SourcingCaseApplication:
         except TransientError:
             transient = True
         except Exception:  # noqa: BLE001 -- 不传播 Engine 自由错误
-            failed = True
+            transient = True
         if transient:
-            raise SourcingPlanDeliveryError("寻源审核工作流唤醒暂不可用")
-        if failed:
-            raise ValidationError("寻源审核工作流唤醒失败")
+            raise SourcingPlanDeliveryError("寻源审核工作流唤醒暂不可用") from None
         if not isinstance(accepted, bool):
             raise ValidationError("寻源审核工作流唤醒结果无效")
         if not accepted and not await self._review_event_delivered(
@@ -352,6 +340,34 @@ class SourcingCaseApplication:
             event_type,
             payload,
         ):
+            transient = False
+            fresh_run: WorkflowRun | None = None
+            try:
+                fresh_run = await self._engine.get_run(tenant_id, run.run_id)
+            except Exception:  # noqa: BLE001 -- Engine 自由错误必须固定脱敏并可重试
+                transient = True
+            if transient:
+                raise SourcingPlanDeliveryError("寻源审核工作流暂不可用") from None
+            if (
+                not _run_is_bound(fresh_run, tenant_id, case_id)
+                or fresh_run is None
+                or fresh_run.run_id != run.run_id
+                or self._review_required_context(fresh_run) != required_context
+            ):
+                raise ValidationError("寻源审核 Workflow Run 绑定无效")
+            target_is_fresh = (
+                event_type == "SourcingReviewSubmitted"
+                and fresh_run.current_step == "await_review"
+            ) or (
+                event_type == "SourcingHandoffRetryRequested"
+                and fresh_run.current_step == "handoff_costing"
+                and fresh_run.context.get("sourcing_stop_reason")
+                == "opportunity_required"
+            )
+            if target_is_fresh:
+                raise SourcingPlanDeliveryError(
+                    "寻源审核工作流尚未进入等待边界"
+                ) from None
             raise ValidationError("寻源审核工作流未接受唤醒事件")
         return review
 

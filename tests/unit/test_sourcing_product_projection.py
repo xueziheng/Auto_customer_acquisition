@@ -38,7 +38,10 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from workflows.engine.runner import StepStatus, WorkflowRun
-from workflows.sourcing_case.application import SourcingCaseApplication
+from workflows.sourcing_case.application import (
+    SourcingCaseApplication,
+    SourcingPlanDeliveryError,
+)
 
 TENANT = TenantId("tenant-projection")
 CASE_ID = SourcingCaseId("src-projection")
@@ -659,11 +662,20 @@ class _ReviewEngine:
         self.ledger: list[tuple[str, dict[str, Any]]] = []
         self.historical_delivered = False
         self.queries: list[tuple[Any, ...]] = []
+        self.find_error: Exception | None = None
+        self.get_error: Exception | None = None
+        self.query_error: Exception | None = None
+        self.deliver_error: Exception | None = None
+        self.accept_delivery = True
 
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
+        if self.find_error is not None:
+            raise self.find_error
         return self.run.run_id
 
     async def get_run(self, tenant_id, run_id):
+        if self.get_error is not None:
+            raise self.get_error
         return self.run
 
     async def has_delivered_event(
@@ -678,6 +690,8 @@ class _ReviewEngine:
         required_context=None,
         run_id=None,
     ):
+        if self.query_error is not None:
+            raise self.query_error
         self.queries.append(
             (
                 tenant_id,
@@ -695,8 +709,12 @@ class _ReviewEngine:
         return (event_type, dict(payload)) in self.ledger
 
     async def deliver_event(self, tenant_id, run_id, event_type, payload):
+        if self.deliver_error is not None:
+            raise self.deliver_error
         item = (event_type, dict(payload))
         self.delivered.append(item)
+        if not self.accept_delivery:
+            return False
         self.ledger.append(item)
         if event_type == "SourcingReviewSubmitted":
             self.run = replace(
@@ -824,6 +842,73 @@ async def test_review_ignores_identical_event_from_prior_run_and_binds_generatio
         )
     ]
     assert all(query[7] == RunId("run-review") for query in engine.queries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_point", "message"),
+    (
+        ("find_error", "寻源审核工作流暂不可用"),
+        ("get_error", "寻源审核工作流暂不可用"),
+        ("query_error", "寻源审核工作流证据暂不可用"),
+        ("deliver_error", "寻源审核工作流唤醒暂不可用"),
+    ),
+)
+async def test_review_maps_every_raw_engine_failure_to_detached_transient(
+    failure_point: str, message: str
+) -> None:
+    """Engine 任一原始失败若被永久化，会使已持久化 Review 无法恢复投递。"""
+
+    sourcing = _ReviewSourcing()
+    engine = _ReviewEngine()
+    setattr(
+        engine,
+        failure_point,
+        RuntimeError("postgres://user:secret@db/private token=raw-secret"),
+    )
+    application = SourcingCaseApplication(
+        sourcing=sourcing, quota=_UnusedQuota(), engine=engine
+    )
+
+    with pytest.raises(SourcingPlanDeliveryError, match=message) as caught:
+        await application.review(
+            TENANT,
+            CASE_ID,
+            REVIEW_COMMAND,
+            request_id=f"review-{failure_point}",
+            actor=SOURCING_ACTOR,
+        )
+
+    assert sourcing.calls
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_review_false_delivery_at_exact_target_is_detached_transient() -> None:
+    """目标 step 的 entry 尚未完成时，false delivery 必须等待精确重试。"""
+
+    sourcing = _ReviewSourcing()
+    engine = _ReviewEngine(status=StepStatus.RUNNING)
+    engine.accept_delivery = False
+    application = SourcingCaseApplication(
+        sourcing=sourcing, quota=_UnusedQuota(), engine=engine
+    )
+
+    with pytest.raises(
+        SourcingPlanDeliveryError, match="寻源审核工作流尚未进入等待边界"
+    ) as caught:
+        await application.review(
+            TENANT,
+            CASE_ID,
+            REVIEW_COMMAND,
+            request_id="review-pending-entry",
+            actor=SOURCING_ACTOR,
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 @pytest.mark.asyncio

@@ -207,6 +207,22 @@ class SourcingCandidateProductProjector:
         if not accepted and not await self._prepared(
             case_id, bound_run_id, payload, required_context
         ):
+            fresh_run = await _engine_dependency(
+                self._engine.get_run(self._tenant_id, bound_run_id),
+                message="候选产品卡所属工作流暂不可用",
+            )
+            if not _bound_run(
+                fresh_run,
+                self._tenant_id,
+                case_id,
+                candidate_ids,
+                case_version,
+                candidate_set_hash,
+            ):
+                raise ValidationError("候选产品卡所属 V2 Run generation 绑定无效")
+            assert fresh_run is not None
+            if fresh_run.current_step == _WAIT_STEP:
+                raise TransientError("候选产品卡所属 V2 Run 尚未进入产品卡等待边界")
             raise ValidationError("候选产品卡工作流未接受就绪事件")
 
     @staticmethod
