@@ -66,14 +66,19 @@ const router = createRouter({
     {
       path: "/products",
       name: "products",
-      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      component: () => import("./views/products/ProductSupplyCenter.vue"),
       meta: { phase: "phase1-manual", operation: "products" },
     },
     {
       path: "/sourcing",
       name: "sourcing",
-      component: () => import("./views/manual-phase1/ManualOperations.vue"),
+      component: () => import("./views/sourcing/SourcingCenter.vue"),
       meta: { phase: "phase1-manual", operation: "sourcing" },
+    },
+    {
+      path: "/sourcing/:caseId",
+      name: "sourcing-case-detail",
+      component: () => import("./views/sourcing/SourcingCaseDetail.vue"),
     },
     {
       path: "/costing-quotes",

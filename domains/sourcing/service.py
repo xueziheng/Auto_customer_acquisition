@@ -31,6 +31,11 @@ from domains.sourcing.schemas import (
     SourcingCandidateProductInputs,
     SourcingNeedSnapshot,
     SourcingReviewCommand,
+    SourcingCaseReadView,
+    SourcingCandidateReadView,
+    SourcingLadderCheckReadView,
+    SourcingReviewReadView,
+    PublicSourcingPlanReadView,
     SourcingUncertainReconciliationCommand,
     VerifyPublicCandidateDraftsCommand,
     VerifyPublicCandidateDraftsResult,
@@ -330,6 +335,66 @@ class SourcingService(Protocol):
         需求簇规模排序——八个客户等同一种产品时，那个案例应该排最前。
         排序策略做成可替换的接口参数，不硬编码。
         """
+        ...
+
+    async def list_case_read_views(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: SourcingActor,
+        limit: int = 50,
+    ) -> tuple[SourcingCaseReadView, ...]:
+        """读取有界、稳定排序的案例安全列表，不返回旧兼容价格字段。"""
+        ...
+
+    async def get_case_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCaseReadView | None:
+        """读取单个案例的安全投影；先判权且不泄漏其他租户。"""
+        ...
+
+    async def get_ladder_check_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> tuple[SourcingLadderCheckReadView, ...] | None:
+        """读取已持久化的解释性梯子检查，不返回内部输入快照。"""
+        ...
+
+    async def get_candidate_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> tuple[SourcingCandidateReadView, ...] | None:
+        """读取候选的事实/自述/推断分栏与 INDICATIVE 价格证据。"""
+        ...
+
+    async def get_public_plan_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingPlanReadView | None:
+        """读取当前计划的无密钥范围投影；无计划时返回 None。"""
+        ...
+
+    async def get_review_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingReviewReadView | None:
+        """读取本 Case 已保存的人工选择；不读取成本或机会聚合。"""
         ...
 
     async def create_public_plan(

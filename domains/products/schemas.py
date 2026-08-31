@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Self, cast
+from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from shared.schemas.identifiers import ArtifactId, SourcingCaseId, SupplierCandidateId
+from shared.schemas.identifiers import (
+    ArtifactId,
+    ProductId,
+    SourcingCaseId,
+    SupplierCandidateId,
+)
 from shared.schemas.money import WireDecimal
 
 
@@ -92,4 +97,54 @@ class CandidateProductCreate(BaseModel):
         return self
 
 
-__all__ = ("CandidateIndicativePriceRef", "CandidateProductCreate")
+class ProductSupplySourceView(BaseModel):
+    """source_only 产品卡的寻源来源链；没有供应商联系人、成本或客户报价。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    sourcing_case_id: SourcingCaseId
+    supplier_candidate_id: SupplierCandidateId
+    evidence_refs: tuple[ArtifactId, ...] = Field(min_length=1)
+    indicative_prices: tuple[CandidateIndicativePriceRef, ...] = Field(min_length=1)
+    price_basis: Literal["indicative"] = "indicative"
+
+
+class ProductSupplyCardView(BaseModel):
+    """供应中心安全卡片；没有 supplier、成本、客户报价或联系入口。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    product_id: ProductId
+    pool: str = Field(min_length=1, max_length=40)
+    candidate_status: str | None = Field(default=None, max_length=40)
+    name_zh: str = Field(min_length=1, max_length=300)
+    name_en: str = Field(min_length=1, max_length=300)
+    category: str = Field(min_length=1, max_length=100)
+    spec_summary: str | None = Field(default=None, max_length=4_000)
+    moq: int | None = Field(default=None, ge=1)
+    lead_time_display: str | None = Field(default=None, max_length=50)
+    source_only: bool
+    quote_warning: Literal["不可用于客户报价"] | None = None
+    source: ProductSupplySourceView | None = None
+
+    @model_validator(mode="after")
+    def validate_source_only(self) -> Self:
+        """source_only 必须有完整来源链并永远携带不可报价提示。"""
+
+        if self.source_only != (self.candidate_status == "source_only"):
+            raise ValueError("source_only 与 candidate_status 不一致")
+        if self.source_only and (
+            self.source is None or self.quote_warning != "不可用于客户报价"
+        ):
+            raise ValueError("source_only 产品卡必须有来源链和不可报价提示")
+        if not self.source_only and (self.source is not None or self.quote_warning):
+            raise ValueError("非 source_only 产品卡不得伪装为寻源候选")
+        return self
+
+
+__all__ = (
+    "CandidateIndicativePriceRef",
+    "CandidateProductCreate",
+    "ProductSupplyCardView",
+    "ProductSupplySourceView",
+)

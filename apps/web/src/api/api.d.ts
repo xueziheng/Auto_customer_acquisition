@@ -1339,15 +1339,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/products/status": {
+    "/products": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["products_phase1_status"];
+        /** List Supply Cards */
+        get: operations["list_supply_cards_products_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{product_id}/customer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Customer View */
+        get: operations["get_customer_view_products__product_id__customer_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{product_id}/internal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Internal View */
+        get: operations["get_internal_view_products__product_id__internal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{product_id}/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sales View */
+        get: operations["get_sales_view_products__product_id__sales_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1580,17 +1631,154 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/sourcing/status": {
+    "/sourcing-cases": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Status */
-        get: operations["sourcing_phase1_status"];
+        /** List Cases */
+        get: operations["list_cases_sourcing_cases_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Case */
+        get: operations["get_case_sourcing_cases__case_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Candidates */
+        get: operations["get_candidates_sourcing_cases__case_id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/ladder-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ladder Checks */
+        get: operations["get_ladder_checks_sourcing_cases__case_id__ladder_checks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/public-search-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Public Search Plan */
+        get: operations["get_public_search_plan_sourcing_cases__case_id__public_search_plan_get"];
+        put?: never;
+        /** Create Public Search Plan */
+        post: operations["create_public_search_plan_sourcing_cases__case_id__public_search_plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/public-search-plan/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Public Search Plan */
+        post: operations["confirm_public_search_plan_sourcing_cases__case_id__public_search_plan_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/reconcile-uncertain-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile Uncertain Request */
+        post: operations["reconcile_uncertain_request_sourcing_cases__case_id__reconcile_uncertain_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Review */
+        post: operations["submit_review_sourcing_cases__case_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Public Search Plan */
+        post: operations["run_public_search_plan_sourcing_cases__case_id__run_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2554,6 +2742,18 @@ export interface components {
             quote_currency: string;
             /** Risk Accepted By */
             risk_accepted_by?: string | null;
+            /** Source Candidate Id */
+            source_candidate_id?: string | null;
+            /** Source Option Id */
+            source_option_id?: string | null;
+            /** Source Product Id */
+            source_product_id?: string | null;
+            /** Source Sourcing Case Id */
+            source_sourcing_case_id?: string | null;
+            /** Source Tier Minimum Quantity */
+            source_tier_minimum_quantity?: number | null;
+            /** Source Unit */
+            source_unit?: string | null;
             unit_full_cost?: components["schemas"]["Money"] | null;
             /** Version Number */
             version_number: number;
@@ -3581,6 +3781,23 @@ export interface components {
             sent_at: string;
         };
         /**
+         * IndicativePriceTier
+         * @description 带逐档来源的参考价；每一项都必须可回到可信 Artifact。
+         */
+        IndicativePriceTier: {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Minimum Quantity */
+            minimum_quantity: number;
+            provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            /** Unit */
+            unit: string;
+        };
+        /**
          * LegalBasisType
          * @enum {string}
          */
@@ -3738,6 +3955,15 @@ export interface components {
             suggests_catalog_product: boolean;
             /** Total Potential Quantity */
             total_potential_quantity?: number | null;
+        };
+        /**
+         * NeedFact
+         * @description 客户已确认需求中的单项事实；推断不得伪装成事实。
+         */
+        NeedFact: {
+            provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            /** Value */
+            value: string | number;
         };
         /**
          * NeedFieldView
@@ -4086,31 +4312,14 @@ export interface components {
             target_price?: components["schemas"]["Money"] | null;
         };
         /**
-         * Phase1ModuleStatus
-         * @description 只描述可用性，不用空列表或假成功冒充已实现接口。
+         * PlanReferenceBody
+         * @description 确认/运行只接受已保存计划的不可变标识和精确哈希。
          */
-        Phase1ModuleStatus: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "manual" | "audit" | "configuration";
-            /** Module */
-            module: string;
-            /**
-             * Phase
-             * @default phase1
-             * @constant
-             */
-            phase: "phase1";
-            /** Reason Code */
-            reason_code: string;
-            /**
-             * State
-             * @default contract_only
-             * @constant
-             */
-            state: "contract_only";
+        PlanReferenceBody: {
+            /** Expected Plan Hash */
+            expected_plan_hash: string;
+            /** Plan Id */
+            plan_id: string;
         };
         /** PlaybookActivationView */
         PlaybookActivationView: {
@@ -4332,6 +4541,168 @@ export interface components {
             source_type: "upload" | "conversation" | "web_page" | "employee_input" | "external_api";
         };
         /**
+         * ProductCandidateSource
+         * @description 候选产品卡的域内来源聚合；不依赖 sourcing 域内部类型。
+         */
+        ProductCandidateSource: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Indicative Prices */
+            indicative_prices: components["schemas"]["domains__products__models__CandidateIndicativePriceRef"][];
+            /** Product Id */
+            product_id: string;
+            /** Sourcing Case Id */
+            sourcing_case_id: string;
+            /** Supplier Candidate Id */
+            supplier_candidate_id: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
+         * ProductCustomerView
+         * @description 客户视图。更少：无价格范围（价格走报价流程），无 MOQ 细节。
+         */
+        ProductCustomerView: {
+            /** Category */
+            category: string;
+            /** Description En */
+            description_en?: string | null;
+            /** Image Refs */
+            image_refs?: string[];
+            /**
+             * Inquiry Enabled
+             * @default true
+             */
+            inquiry_enabled: boolean;
+            /** Name En */
+            name_en: string;
+            /** Product Id */
+            product_id: string;
+            /**
+             * Sample Request Enabled
+             * @default true
+             */
+            sample_request_enabled: boolean;
+            /** Spec Display */
+            spec_display: string | null;
+            /** Variant Options */
+            variant_options?: string[];
+        };
+        /**
+         * ProductInternalView
+         * @description 内部视图：boss / product / sourcing / finance。
+         */
+        ProductInternalView: {
+            candidate_source?: components["schemas"]["ProductCandidateSource"] | null;
+            /** Candidate Status */
+            candidate_status?: string | null;
+            /** Category */
+            category: string;
+            internal_cost: components["schemas"]["Money"] | null;
+            /** Internal Cost Basis */
+            internal_cost_basis: string | null;
+            /** Internal Cost Source Ref */
+            internal_cost_source_ref: string | null;
+            /** Internal Cost Unit */
+            internal_cost_unit: string | null;
+            /** Known Issues */
+            known_issues: string[];
+            /** Lead Time Display */
+            lead_time_display: string | null;
+            /** Margin Note */
+            margin_note: string | null;
+            /** Moq */
+            moq: number | null;
+            /** Name En */
+            name_en: string;
+            /** Name Zh */
+            name_zh: string;
+            /** Pool */
+            pool: string;
+            /** Product Id */
+            product_id: string;
+            /** Supplier Id */
+            supplier_id: string | null;
+        };
+        /**
+         * ProductSalesView
+         * @description 销售视图。没有供应商、没有成本字段——不是隐藏，是不存在。
+         */
+        ProductSalesView: {
+            allowed_price_max: components["schemas"]["Money"] | null;
+            allowed_price_min: components["schemas"]["Money"] | null;
+            /** Category */
+            category: string;
+            /** Faq */
+            faq?: string[];
+            /** Lead Time Display */
+            lead_time_display: string | null;
+            /** Moq */
+            moq: number | null;
+            /** Name En */
+            name_en: string;
+            /** Name Zh */
+            name_zh: string;
+            /** Product Id */
+            product_id: string;
+            /** Selling Points */
+            selling_points: string[];
+            /** Sendable Image Refs */
+            sendable_image_refs?: string[];
+        };
+        /**
+         * ProductSupplyCardView
+         * @description 供应中心安全卡片；没有 supplier、成本、客户报价或联系入口。
+         */
+        ProductSupplyCardView: {
+            /** Candidate Status */
+            candidate_status?: string | null;
+            /** Category */
+            category: string;
+            /** Lead Time Display */
+            lead_time_display?: string | null;
+            /** Moq */
+            moq?: number | null;
+            /** Name En */
+            name_en: string;
+            /** Name Zh */
+            name_zh: string;
+            /** Pool */
+            pool: string;
+            /** Product Id */
+            product_id: string;
+            /** Quote Warning */
+            quote_warning?: "不可用于客户报价" | null;
+            source?: components["schemas"]["ProductSupplySourceView"] | null;
+            /** Source Only */
+            source_only: boolean;
+            /** Spec Summary */
+            spec_summary?: string | null;
+        };
+        /**
+         * ProductSupplySourceView
+         * @description source_only 产品卡的寻源来源链；没有供应商联系人、成本或客户报价。
+         */
+        ProductSupplySourceView: {
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Indicative Prices */
+            indicative_prices: components["schemas"]["domains__products__schemas__CandidateIndicativePriceRef"][];
+            /**
+             * Price Basis
+             * @default indicative
+             * @constant
+             */
+            price_basis: "indicative";
+            /** Sourcing Case Id */
+            sourcing_case_id: string;
+            /** Supplier Candidate Id */
+            supplier_candidate_id: string;
+        };
+        /**
          * ProfitMetrics
          * @description 指定客户单价下的确定性利润指标。
          */
@@ -4448,6 +4819,118 @@ export interface components {
              * @default null
              */
             source_url: string | null;
+        };
+        /**
+         * PublicSourcingPlanCommand
+         * @description 待老板确认的公开寻源精确范围，不包含请求身份或凭证。
+         */
+        PublicSourcingPlanCommand: {
+            /** Case Id */
+            case_id: string;
+            /** Expected Case Version */
+            expected_case_version: number;
+            /** Max Pages Read */
+            max_pages_read: number;
+            /** Max Search Queries */
+            max_search_queries: number;
+            /** Plan Id */
+            plan_id: string;
+            /** Product Category */
+            product_category: string;
+            /**
+             * Provider
+             * @constant
+             */
+            provider: "tavily";
+            /** Queries */
+            queries: components["schemas"]["PublicSourcingQuery"][];
+            /**
+             * Search Depth
+             * @default basic
+             * @constant
+             */
+            search_depth: "basic";
+            /** Target Countries */
+            target_countries: string[];
+            /** Usage Credits Remaining */
+            usage_credits_remaining: number;
+            /** Version */
+            version: number;
+            /** Worst Case Credits */
+            worst_case_credits: number;
+        };
+        /**
+         * PublicSourcingPlanReadView
+         * @description 公开寻源计划的无密钥、可确认范围投影。
+         */
+        PublicSourcingPlanReadView: {
+            /** Case Id */
+            case_id: string;
+            /** Confirmed At */
+            confirmed_at?: string | null;
+            /** Confirmed By */
+            confirmed_by?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expected Case Version */
+            expected_case_version: number;
+            /** Max Pages Read */
+            max_pages_read: number;
+            /** Max Search Queries */
+            max_search_queries: number;
+            /** Plan Hash */
+            plan_hash: string;
+            /** Plan Id */
+            plan_id: string;
+            /** Product Category */
+            product_category: string;
+            /**
+             * Provider
+             * @constant
+             */
+            provider: "tavily";
+            /** Queries */
+            queries: components["schemas"]["PublicSourcingQueryReadView"][];
+            /**
+             * Search Depth
+             * @constant
+             */
+            search_depth: "basic";
+            /** Status */
+            status: string;
+            /** Target Countries */
+            target_countries: string[];
+            /** Usage Credits Remaining */
+            usage_credits_remaining: number;
+            /** Version */
+            version: number;
+            /** Worst Case Credits */
+            worst_case_credits: number;
+        };
+        /**
+         * PublicSourcingQuery
+         * @description 老板确认的单条公开寻源查询及其精确国家边界。
+         */
+        PublicSourcingQuery: {
+            /** Query Text */
+            query_text: string;
+            /** Target Country */
+            target_country: string;
+        };
+        /**
+         * PublicSourcingQueryReadView
+         * @description 公开计划中已持久化的一条查询；现有契约未记录 lane 时显式返回未知。
+         */
+        PublicSourcingQueryReadView: {
+            /** Lane */
+            lane?: string | null;
+            /** Query Text */
+            query_text: string;
+            /** Target Country */
+            target_country: string;
         };
         /**
          * QuoteApprovalStartResult
@@ -5389,6 +5872,93 @@ export interface components {
             validated_need_count: number;
         };
         /**
+         * RunSourcingLadderView
+         * @description 寻源匹配梯级的安全结果；不包含结论正文或证据定位。
+         */
+        RunSourcingLadderView: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "no_qualified_supply" | "qualified_supply_found";
+            /** Rung */
+            rung: number;
+        };
+        /**
+         * RunSourcingStopView
+         * @description 公开寻源停止原因的结构化白名单，不携带 provider 原文。
+         */
+        RunSourcingStopView: {
+            /** Code */
+            code: string;
+            /** Configured Limit */
+            configured_limit?: number | null;
+            /** Observed Count */
+            observed_count?: number | null;
+            /** Provider Http Status */
+            provider_http_status?: number | null;
+            /** Query Index */
+            query_index?: number | null;
+            /** Stage */
+            stage?: string | null;
+        };
+        /**
+         * RunSourcingView
+         * @description Sourcing Case V2 的租户绑定安全摘要。
+         */
+        RunSourcingView: {
+            /**
+             * Alternate Count
+             * @default 0
+             */
+            alternate_count: number;
+            /**
+             * Candidate Count
+             * @default 0
+             */
+            candidate_count: number;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Consumed Credits
+             * @default 0
+             */
+            consumed_credits: number;
+            /**
+             * Ladder
+             * @default []
+             */
+            ladder: components["schemas"]["RunSourcingLadderView"][];
+            /**
+             * Page Attempt Count
+             * @default 0
+             */
+            page_attempt_count: number;
+            /** Plan Status */
+            plan_status?: string | null;
+            /**
+             * Primary Count
+             * @default 0
+             */
+            primary_count: number;
+            /**
+             * Reserved Credits
+             * @default 0
+             */
+            reserved_credits: number;
+            /**
+             * Search Attempt Count
+             * @default 0
+             */
+            search_attempt_count: number;
+            stop_reason?: components["schemas"]["RunSourcingStopView"] | null;
+            /**
+             * Uncertain Credits
+             * @default 0
+             */
+            uncertain_credits: number;
+        };
+        /**
          * RunStepView
          * @description 步骤状态投影；明确排除可能包含业务正文的 ``data``。
          */
@@ -5445,6 +6015,7 @@ export interface components {
             retry_count: number;
             /** Run Id */
             run_id: string;
+            sourcing?: components["schemas"]["RunSourcingView"] | null;
             /** Status */
             status: string;
             /** Subject Ref */
@@ -5553,6 +6124,345 @@ export interface components {
          * @enum {string}
          */
         SourceType: "conversation" | "web_page" | "upload" | "employee_input" | "agent_inference" | "external_api";
+        /**
+         * SourcingArtifactSummaryView
+         * @description 候选网页快照的安全索引；不包含页面正文、对象键或联系人。
+         */
+        SourcingArtifactSummaryView: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Canonical Url */
+            canonical_url: string;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+        };
+        /**
+         * SourcingCandidateReadView
+         * @description 候选事实、自述、推断和未知项分栏的安全 API 投影。
+         *
+         *     ``indicative_price_tiers`` 仅代表公开页面参考价，不能成为 Quote 或客户报价。
+         */
+        SourcingCandidateReadView: {
+            /** Candidate Id */
+            candidate_id: string;
+            /** Currency */
+            currency?: string | null;
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: components["schemas"]["SourcingArtifactSummaryView"][];
+            /**
+             * Indicative Price Tiers
+             * @default []
+             */
+            indicative_price_tiers: components["schemas"]["IndicativePriceTier"][];
+            /** Match Inferences */
+            match_inferences?: {
+                [key: string]: components["schemas"]["SourcingMatchInference"];
+            };
+            /** Moq */
+            moq?: number | null;
+            /** Observed Facts */
+            observed_facts?: {
+                [key: string]: components["schemas"]["SourcingObservedFact"];
+            };
+            /**
+             * Price Basis
+             * @default indicative
+             * @constant
+             */
+            price_basis: "indicative";
+            /** Price Unit */
+            price_unit?: string | null;
+            /** Product Title */
+            product_title: string;
+            /**
+             * Rejection Reasons
+             * @default []
+             */
+            rejection_reasons: string[];
+            /** Source Platform */
+            source_platform?: string | null;
+            /**
+             * Spec Comparisons
+             * @default []
+             */
+            spec_comparisons: components["schemas"]["SpecComparisonView"][];
+            /** Supplier Claims */
+            supplier_claims?: {
+                [key: string]: components["schemas"]["SourcingSupplierClaim"];
+            };
+            /** Supplier Name */
+            supplier_name: string;
+            supply_option?: components["schemas"]["SourcingSupplyOptionReadView"] | null;
+            /**
+             * Verification Missing
+             * @default []
+             */
+            verification_missing: string[];
+            /**
+             * Verification Status
+             * @enum {string}
+             */
+            verification_status: "qualified" | "rejected" | "incomplete";
+        };
+        /**
+         * SourcingCaseReadView
+         * @description API 读取案例的最小安全投影，保留 Need Provenance 而不暴露内部聚合。
+         */
+        SourcingCaseReadView: {
+            /** Active Search Plan Id */
+            active_search_plan_id?: string | null;
+            /** Case Id */
+            case_id: string;
+            /** Ladder Checked To */
+            ladder_checked_to?: number | null;
+            /** Need Id */
+            need_id: string;
+            need_snapshot?: components["schemas"]["SourcingNeedSnapshot"] | null;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /** State */
+            state: string;
+            /** State Changed At */
+            state_changed_at?: string | null;
+            stop?: components["schemas"]["SourcingStopPublicView"] | null;
+            /** Version */
+            version: number;
+            /** Workflow Version */
+            workflow_version: number;
+        };
+        /**
+         * SourcingLadderCheckReadView
+         * @description 单级梯子检查的解释性投影；不使用相似度或综合分。
+         */
+        SourcingLadderCheckReadView: {
+            /** Check Id */
+            check_id: string;
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Checked By */
+            checked_by: string;
+            /**
+             * Evidence Refs
+             * @default []
+             */
+            evidence_refs: string[];
+            /** Match Object Id */
+            match_object_id?: string | null;
+            /** Match Object Type */
+            match_object_type?: string | null;
+            /** Outcome */
+            outcome: string;
+            /** Rung */
+            rung: number;
+            /** Sequence Number */
+            sequence_number: number;
+            /**
+             * Spec Comparisons
+             * @default []
+             */
+            spec_comparisons: components["schemas"]["SpecComparisonView"][];
+        };
+        /**
+         * SourcingMatchInference
+         * @description 员工或 Agent 的匹配推断；必须列出所依据的 Artifact。
+         */
+        SourcingMatchInference: {
+            /** Based On */
+            based_on: string[];
+            /**
+             * Inferred At
+             * Format: date-time
+             */
+            inferred_at: string;
+            /** Inferred By */
+            inferred_by: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * SourcingNeedSnapshot
+         * @description 开案时冻结的已验证需求快照；关键字段逐项保留 Provenance。
+         */
+        SourcingNeedSnapshot: {
+            application?: components["schemas"]["NeedFact"] | null;
+            /** Completeness */
+            completeness: number;
+            /**
+             * Derivation Version
+             * @constant
+             */
+            derivation_version: "need-completeness-v1";
+            destination?: components["schemas"]["NeedFact"] | null;
+            material?: components["schemas"]["NeedFact"] | null;
+            model?: components["schemas"]["NeedFact"] | null;
+            /** Need Id */
+            need_id: string;
+            product_category: components["schemas"]["NeedFact"];
+            quantity: components["schemas"]["NeedFact"];
+            required_by?: components["schemas"]["NeedFact"] | null;
+            size_spec?: components["schemas"]["NeedFact"] | null;
+            /** Snapshot Hash */
+            snapshot_hash: string;
+            unit?: components["schemas"]["NeedFact"] | null;
+        };
+        /**
+         * SourcingObservedFact
+         * @description 页面明确出现的字段事实；每项都绑定证据摘要与 Artifact。
+         */
+        SourcingObservedFact: {
+            /** Evidence Ref */
+            evidence_ref: string;
+            provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            /** Value */
+            value: string | number;
+        };
+        /**
+         * SourcingReviewCommand
+         * @description 人工审核提交；仅保存选择，不接受机会或成本字段自证。
+         */
+        SourcingReviewCommand: {
+            /** Alternate Option Ids */
+            alternate_option_ids: string[];
+            /** Expected Case Version */
+            expected_case_version: number;
+            /** Primary Option Id */
+            primary_option_id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * SourcingReviewReadView
+         * @description 人工审核的安全选择事实；不包含 Opportunity、成本或报价。
+         */
+        SourcingReviewReadView: {
+            /** Alternate Option Ids */
+            alternate_option_ids: string[];
+            /** Case Id */
+            case_id: string;
+            /** Confirmed At */
+            confirmed_at?: string | null;
+            /** Confirmed By */
+            confirmed_by?: string | null;
+            /** Expected Case Version */
+            expected_case_version: number;
+            /** Primary Option Id */
+            primary_option_id: string;
+            /** Reason */
+            reason: string;
+            /** Review Id */
+            review_id: string;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+            /** Submitted By */
+            submitted_by: string;
+        };
+        /**
+         * SourcingStopPublicView
+         * @description 可展示的结构化停止原因；禁止透传 Provider 自由错误文本。
+         */
+        SourcingStopPublicView: {
+            /** Code */
+            code: string;
+            /** Configured Limit */
+            configured_limit?: number | null;
+            /** Observed Count */
+            observed_count?: number | null;
+            /** Provider Http Status */
+            provider_http_status?: number | null;
+            /** Query Index */
+            query_index?: number | null;
+            /** Stage */
+            stage?: string | null;
+        };
+        /**
+         * SourcingSupplierClaim
+         * @description 供应商或目录自述；与观察事实分开保存。
+         */
+        SourcingSupplierClaim: {
+            /** Evidence Ref */
+            evidence_ref: string;
+            provenance: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"];
+            /** Value */
+            value: string | number;
+        };
+        /**
+         * SourcingSupplyOptionReadView
+         * @description 人工审核可选的供给选项索引，不含成本或供应商报价。
+         */
+        SourcingSupplyOptionReadView: {
+            /** Is Qualified */
+            is_qualified: boolean;
+            /** Option Id */
+            option_id: string;
+            /** Product Id */
+            product_id: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Supplier Candidate Id */
+            supplier_candidate_id?: string | null;
+        };
+        /**
+         * SourcingUncertainReconciliationCommand
+         * @description 人工确认一次不确定搜索已经消耗额度；不接受 Provider 原始响应。
+         */
+        SourcingUncertainReconciliationCommand: {
+            /** Provider Usage Artifact Ref */
+            provider_usage_artifact_ref: string;
+            /** Reason */
+            reason: string;
+            /** Reconciliation Id */
+            reconciliation_id: string;
+            /** Request Key */
+            request_key: string;
+            /**
+             * Resolution
+             * @constant
+             */
+            resolution: "count_as_consumed";
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * SpecComparisonView
+         * @description 逐项匹配结果的公共严格形状。
+         */
+        SpecComparisonView: {
+            customer_confirmation?: components["schemas"]["shared__schemas__provenance__ProvenanceSummary"] | null;
+            /** Level */
+            level: string;
+            /**
+             * Needs Customer Confirmation
+             * @default false
+             */
+            needs_customer_confirmation: boolean;
+            /** Offered */
+            offered: string | null;
+            /** Required */
+            required: string;
+            /** Spec Name */
+            spec_name: string;
+            /** Substitutable */
+            substitutable?: boolean | null;
+            /** Substitution Impact */
+            substitution_impact?: string | null;
+        };
         /**
          * StepIntent
          * @enum {string}
@@ -5889,6 +6799,38 @@ export interface components {
             source_type: string;
             /** Source Url */
             source_url: string | null;
+        };
+        /**
+         * CandidateIndicativePriceRef
+         * @description 候选产品的单个参考价数量档；金额与 Evidence 引用不可分离。
+         */
+        domains__products__models__CandidateIndicativePriceRef: {
+            /** Currency */
+            currency: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Minimum Quantity */
+            minimum_quantity: number;
+            /** Unit */
+            unit: string;
+            /** Unit Amount */
+            unit_amount: string;
+        };
+        /**
+         * CandidateIndicativePriceRef
+         * @description 候选产品的公开参考价；Artifact 是原页证据而不是搜索摘要。
+         */
+        domains__products__schemas__CandidateIndicativePriceRef: {
+            /** Currency */
+            currency: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Minimum Quantity */
+            minimum_quantity: number;
+            /** Unit */
+            unit: string;
+            /** Unit Amount */
+            unit_amount: string;
         };
         /**
          * ProvenanceSummary
@@ -10378,9 +11320,12 @@ export interface operations {
             };
         };
     };
-    products_phase1_status: {
+    list_supply_cards_products_get: {
         parameters: {
-            query?: never;
+            query?: {
+                source_only?: boolean | null;
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10393,7 +11338,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["ProductSupplyCardView"][];
                 };
             };
             /** @description 请求参数无效 */
@@ -10407,6 +11352,198 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_customer_view_products__product_id__customer_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductCustomerView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_internal_view_products__product_id__internal_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductInternalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_sales_view_products__product_id__sales_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductSalesView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10862,9 +11999,11 @@ export interface operations {
             };
         };
     };
-    sourcing_phase1_status: {
+    list_cases_sourcing_cases_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10877,7 +12016,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Phase1ModuleStatus"];
+                    "application/json": components["schemas"]["SourcingCaseReadView"][];
                 };
             };
             /** @description 请求参数无效 */
@@ -10891,6 +12030,574 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_case_sourcing_cases__case_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingCaseReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_candidates_sourcing_cases__case_id__candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingCandidateReadView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_ladder_checks_sourcing_cases__case_id__ladder_checks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingLadderCheckReadView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_public_search_plan_sourcing_cases__case_id__public_search_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSourcingPlanReadView"] | null;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_public_search_plan_sourcing_cases__case_id__public_search_plan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicSourcingPlanCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSourcingPlanReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_public_search_plan_sourcing_cases__case_id__public_search_plan_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanReferenceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSourcingPlanReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    reconcile_uncertain_request_sourcing_cases__case_id__reconcile_uncertain_request_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcingUncertainReconciliationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    submit_review_sourcing_cases__case_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcingReviewCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingReviewReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    run_public_search_plan_sourcing_cases__case_id__run_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanReferenceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSourcingPlanReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

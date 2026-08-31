@@ -19,7 +19,7 @@ from domains.products.models import (
     QualifiedProductMatch,
 )
 from domains.products.permissions import ProductActor
-from domains.products.schemas import CandidateProductCreate
+from domains.products.schemas import CandidateProductCreate, ProductSupplyCardView
 from shared.schemas.identifiers import ProductId, TenantId
 
 
@@ -64,6 +64,17 @@ class ProductService(Protocol):
         """以 Case+Candidate 幂等生成 source_only 产品卡。"""
         ...
 
+    async def list_supply_cards(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        source_only: bool | None,
+        limit: int,
+    ) -> tuple[ProductSupplyCardView, ...]:
+        """读取稳定有界的内部供应卡；source_only 价格始终只是 indicative。"""
+        ...
+
 
 __all__ = (
     "CandidateStatus",
@@ -79,5 +90,6 @@ __all__ = (
     "ProductSpecFact",
     "ProductSpecMatchLevel",
     "ProductSpecRequirement",
+    "ProductSupplyCardView",
     "QualifiedProductMatch",
 )

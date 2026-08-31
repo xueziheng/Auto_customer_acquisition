@@ -6,6 +6,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Literal
 
 from domains.sourcing.errors import (
     MissingEvidenceSnapshotError,
@@ -53,13 +54,22 @@ from domains.sourcing.schemas import (
     OpenSourcingCase,
     PublicCandidateDraft,
     PublicSourcingPlanCommand,
+    PublicSourcingPlanReadView,
+    PublicSourcingQueryReadView,
+    SourcingArtifactSummaryView,
     SourcingCandidateProductInput,
     SourcingCandidateProductInputs,
     SourcingCandidateProductPriceInput,
+    SourcingCandidateReadView,
+    SourcingCaseReadView,
     SourcingHandoffSnapshot,
+    SourcingLadderCheckReadView,
     SourcingMatchInference,
     SourcingObservedFact,
     SourcingReviewCommand,
+    SourcingReviewReadView,
+    SourcingStopPublicView,
+    SourcingSupplyOptionReadView,
     SourcingUncertainReconciliationCommand,
     SpecComparisonView,
     VerifyPublicCandidateDraftsCommand,
@@ -610,6 +620,176 @@ def _case_view(case: SourcingCase, candidates: list[SupplierCandidate]) -> CaseV
         ),
         failed_reason=case.failed_reason,
         completed_at=case.completed_at,
+    )
+
+
+def _spec_comparison_read_view(item: SpecComparison) -> SpecComparisonView:
+    """把领域逐项比较映射为不含内部对象 ID 的公共说明。"""
+
+    return SpecComparisonView(
+        spec_name=item.spec_name,
+        required=item.required,
+        offered=item.offered,
+        level=item.level.value,
+        substitutable=item.substitutable,
+        substitution_impact=item.substitution_impact,
+        needs_customer_confirmation=item.needs_customer_confirmation,
+        customer_confirmation=item.customer_confirmation,
+    )
+
+
+def _artifact_summary(snapshot: EvidenceSnapshot) -> SourcingArtifactSummaryView:
+    """仅投影不可变证据索引，绝不返回网页正文、对象键或联系人。"""
+
+    return SourcingArtifactSummaryView(
+        artifact_id=ArtifactId(snapshot.artifact_ref),
+        canonical_url=snapshot.url,
+        observed_at=snapshot.observed_at,
+        content_hash=snapshot.content_hash,
+    )
+
+
+def _case_read_view(case: SourcingCase) -> SourcingCaseReadView:
+    stop = None
+    if case.stop_code is not None:
+        detail = case.stop_detail
+        stop = SourcingStopPublicView(
+            code=case.stop_code.value,
+            stage=detail.stage.value if detail is not None else None,
+            query_index=detail.query_index if detail is not None else None,
+            provider_http_status=(
+                detail.provider_http_status if detail is not None else None
+            ),
+            observed_count=detail.observed_count if detail is not None else None,
+            configured_limit=(detail.configured_limit if detail is not None else None),
+        )
+    return SourcingCaseReadView(
+        case_id=case.case_id,
+        need_id=case.need_id,
+        state=case.state.value,
+        workflow_version=case.workflow_version,
+        version=case.version,
+        opened_at=case.opened_at,
+        state_changed_at=case.state_changed_at,
+        ladder_checked_to=(
+            case.ladder_checked_to.value if case.ladder_checked_to is not None else None
+        ),
+        active_search_plan_id=case.active_search_plan_id,
+        need_snapshot=case.need_snapshot,
+        stop=stop,
+    )
+
+
+def _ladder_check_read_view(check: LadderCheck) -> SourcingLadderCheckReadView:
+    return SourcingLadderCheckReadView(
+        check_id=check.check_id,
+        rung=check.rung.value,
+        sequence_number=check.sequence_number,
+        outcome=check.outcome.value,
+        match_object_type=check.match_object_type,
+        match_object_id=check.match_object_id,
+        spec_comparisons=tuple(
+            _spec_comparison_read_view(item) for item in check.spec_comparisons
+        ),
+        evidence_refs=tuple(ArtifactId(item) for item in check.evidence_refs),
+        checked_by=str(check.checked_by),
+        checked_at=check.checked_at,
+    )
+
+
+def _candidate_read_view(
+    candidate: SupplierCandidate,
+    option: SourcingSupplyOption | None,
+) -> SourcingCandidateReadView:
+    """保留事实、自述、推断和未知缺口，参考价始终标为 indicative。"""
+
+    passed, missing = candidate.passes_verification()
+    verification_status: Literal["qualified", "rejected", "incomplete"] = (
+        "rejected" if candidate.rejected else "qualified" if passed else "incomplete"
+    )
+    snapshots = candidate.evidence_snapshots
+    if not snapshots and candidate.evidence is not None:
+        snapshots = (candidate.evidence,)
+    return SourcingCandidateReadView(
+        candidate_id=candidate.candidate_id,
+        supplier_name=candidate.supplier_name,
+        product_title=candidate.product_title,
+        source_platform=candidate.source_platform,
+        observed_facts=candidate.observed_facts,
+        supplier_claims=candidate.supplier_claims,
+        match_inferences=candidate.match_inferences,
+        spec_comparisons=tuple(
+            _spec_comparison_read_view(item) for item in candidate.verified_specs
+        ),
+        indicative_price_tiers=candidate.indicative_price_tiers,
+        moq=candidate.moq,
+        price_unit=candidate.price_unit,
+        currency=candidate.currency,
+        verification_status=verification_status,
+        verification_missing=tuple(missing),
+        rejection_reasons=tuple(item.value for item in candidate.rejection_reasons),
+        evidence=tuple(_artifact_summary(item) for item in snapshots),
+        supply_option=(
+            SourcingSupplyOptionReadView(
+                option_id=option.option_id,
+                product_id=option.product_id,
+                supplier_candidate_id=option.supplier_candidate_id,
+                source_kind=option.source.value,
+                is_qualified=option.is_qualified,
+            )
+            if option is not None
+            else None
+        ),
+    )
+
+
+def _public_plan_read_view(plan: PublicSourcingPlan) -> PublicSourcingPlanReadView:
+    """公开计划只显示已确认的精确范围，且没有凭证、余额原文或 Provider 载荷。"""
+
+    return PublicSourcingPlanReadView(
+        plan_id=plan.plan_id,
+        case_id=plan.case_id,
+        target_countries=plan.target_countries,
+        product_category=plan.product_category,
+        queries=tuple(
+            PublicSourcingQueryReadView(
+                query_text=query.query_text,
+                target_country=query.target_country,
+                # 当前持久化契约没有 lane；null 是未知，不可臆造为某个业务通道。
+                lane=None,
+            )
+            for query in plan.queries
+        ),
+        max_search_queries=plan.max_search_queries,
+        max_pages_read=plan.max_pages_read,
+        provider="tavily",
+        search_depth="basic",
+        usage_credits_remaining=plan.usage_credits_remaining,
+        worst_case_credits=plan.worst_case_credits,
+        version=plan.version,
+        expected_case_version=plan.expected_case_version,
+        plan_hash=plan.plan_hash,
+        status=plan.status.value,
+        confirmed_by=str(plan.confirmed_by) if plan.confirmed_by is not None else None,
+        confirmed_at=plan.confirmed_at,
+        created_at=plan.created_at,
+    )
+
+
+def _review_read_view(review: SourcingReview) -> SourcingReviewReadView:
+    return SourcingReviewReadView(
+        review_id=review.review_id,
+        case_id=review.case_id,
+        primary_option_id=review.primary_option_id,
+        alternate_option_ids=review.alternate_option_ids,
+        reason=review.reason,
+        expected_case_version=review.expected_case_version,
+        submitted_by=str(review.submitted_by),
+        submitted_at=review.submitted_at,
+        confirmed_by=(
+            str(review.confirmed_by) if review.confirmed_by is not None else None
+        ),
+        confirmed_at=review.confirmed_at,
     )
 
 
@@ -1324,6 +1504,113 @@ class SourcingServiceImpl:
                 )
                 views.append(_case_view(case, candidates))
             return views
+
+    async def list_case_read_views(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: SourcingActor,
+        limit: int = 50,
+    ) -> tuple[SourcingCaseReadView, ...]:
+        """读取可渲染的有界案例队列；授权必须早于任何存储访问。"""
+
+        self._require(tenant_id, actor, SourcingAction.CASE_LIST, SourcingScope.TENANT)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+        ):
+            raise ValidationError("寻源案例列表 limit 必须在 1–50")
+        cases: list[SourcingCase] = []
+        async with self._uow_factory(tenant_id) as uow:
+            for state in (
+                CaseState.OPENED,
+                CaseState.DISCOVERING,
+                CaseState.VERIFYING,
+                CaseState.CANDIDATES_READY,
+            ):
+                cases.extend(await uow.cases.list_by_state(tenant_id, state, limit))
+        cases.sort(key=lambda item: (item.opened_at, str(item.case_id)))
+        return tuple(_case_read_view(item) for item in cases[:limit])
+
+    async def get_case_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCaseReadView | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            case = await uow.cases.get(tenant_id, case_id)
+            return _case_read_view(case) if case is not None else None
+
+    async def get_ladder_check_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> tuple[SourcingLadderCheckReadView, ...] | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.cases.get(tenant_id, case_id) is None:
+                return None
+            checks = await uow.checks.list_for_case(tenant_id, case_id)
+        checks.sort(key=lambda item: (item.sequence_number, item.check_id))
+        return tuple(_ladder_check_read_view(item) for item in checks)
+
+    async def get_candidate_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> tuple[SourcingCandidateReadView, ...] | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.cases.get(tenant_id, case_id) is None:
+                return None
+            candidates = await uow.candidates.list_for_case(tenant_id, case_id, True)
+            options = await uow.options.list_for_case(tenant_id, case_id)
+        options_by_candidate = {
+            item.supplier_candidate_id: item
+            for item in options
+            if item.supplier_candidate_id is not None
+        }
+        candidates.sort(key=lambda item: (item.created_at, str(item.candidate_id)))
+        return tuple(
+            _candidate_read_view(item, options_by_candidate.get(item.candidate_id))
+            for item in candidates
+        )
+
+    async def get_public_plan_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> PublicSourcingPlanReadView | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.cases.get(tenant_id, case_id) is None:
+                return None
+            plan = await uow.plans.get_active_for_case(tenant_id, case_id)
+        return _public_plan_read_view(plan) if plan is not None else None
+
+    async def get_review_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingReviewReadView | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.cases.get(tenant_id, case_id) is None:
+                return None
+            review = await uow.reviews.get_for_case(tenant_id, case_id)
+        return _review_read_view(review) if review is not None else None
 
     @staticmethod
     def _require_candidate_generation(

@@ -50,6 +50,7 @@ from domains.outreach.permissions import (
     ScopeLevel as OutreachScopeLevel,
 )
 from domains.outreach.service import OutreachService
+from domains.products.service import ProductService
 from domains.prospecting.service import ProspectingService
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
@@ -63,6 +64,7 @@ from domains.sending_identity.permissions import (
     SendingIdentityScope,
 )
 from domains.sending_identity.service import SendingIdentityService
+from domains.sourcing.service import SourcingService
 from notification_gateway.dedup import NotificationDedupStore
 from notification_gateway.inbox import InAppNotificationService, InboxActor
 from notification_gateway.router import NotificationRouter
@@ -96,6 +98,7 @@ from workflows.employee_work_intake.schemas import (
 )
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
+from workflows.sourcing_case.application import SourcingCaseApplication
 
 from .composition.quotations import QuotationHttpComposition
 from .composition.research_accounts import ResearchEvidenceReader
@@ -279,21 +282,25 @@ class ConfiguredApiDependencies:
     research_execution: DiscoveryExecutionReader | None = None
     research_evidence: ResearchEvidenceReader | None = None
     quotation: QuotationHttpComposition | None = None
+    sourcing: SourcingService | None = None
+    sourcing_application: SourcingCaseApplication | None = None
+    products: ProductService | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:
         readiness_actor = self.provider_readiness_actor
-        if (
-            not callable(getattr(self.provider_readiness, "get_snapshot", None))
-            or not isinstance(readiness_actor, ProviderReadinessActor)
-        ):
+        if not callable(
+            getattr(self.provider_readiness, "get_snapshot", None)
+        ) or not isinstance(readiness_actor, ProviderReadinessActor):
             raise TypeError("provider readiness 读取依赖未完整配置")
-        if (
-            not readiness_actor.actor_id.startswith("system:")
-            or readiness_actor.permissions
-            != frozenset({ProviderReadinessPermission.READ})
+        if not readiness_actor.actor_id.startswith(
+            "system:"
+        ) or readiness_actor.permissions != frozenset(
+            {ProviderReadinessPermission.READ}
         ):
-            raise ValueError("provider readiness actor 必须是 tenant-bound system READ actor")
+            raise ValueError(
+                "provider readiness actor 必须是 tenant-bound system READ actor"
+            )
         if (
             not isinstance(self.tool_gateway, ToolGatewayInvoker)
             or not isinstance(self.delivery_materials, DeliveryMaterialProvider)

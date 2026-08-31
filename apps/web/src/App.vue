@@ -39,7 +39,10 @@ function closeMore(): void {
           CRM
         </RouterLink>
         <RouterLink to="/products">
-          人工运营
+          供应能力
+        </RouterLink>
+        <RouterLink to="/sourcing">
+          寻源中心
         </RouterLink>
       </nav>
       <span class="spacer" />

@@ -172,7 +172,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(inbox_router)
     app.include_router(products_router, prefix="/products")
-    app.include_router(sourcing_router, prefix="/sourcing")
+    app.include_router(sourcing_router)
     app.include_router(costing_quotes_router, prefix="/costing-quotes")
     app.include_router(quotation_actions_router, prefix="/costing-quotes")
     app.include_router(team_router, prefix="/team")

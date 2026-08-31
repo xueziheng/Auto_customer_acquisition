@@ -703,12 +703,14 @@ class SourcingCandidateProductInputs(BaseModel):
     def validate_generation(self) -> Self:
         """严格保证命令集与封存候选集一一对应且顺序一致。"""
 
-        if (
-            tuple(sorted(self.candidate_ids, key=str)) != self.candidate_ids
-            or len(set(self.candidate_ids)) != len(self.candidate_ids)
-        ):
+        if tuple(sorted(self.candidate_ids, key=str)) != self.candidate_ids or len(
+            set(self.candidate_ids)
+        ) != len(self.candidate_ids):
             raise ValueError("candidate_ids 必须精确排序且不重复")
-        if tuple(item.supplier_candidate_id for item in self.commands) != self.candidate_ids:
+        if (
+            tuple(item.supplier_candidate_id for item in self.commands)
+            != self.candidate_ids
+        ):
             raise ValueError("产品卡命令必须精确覆盖封存候选集")
         if any(item.sourcing_case_id != self.case_id for item in self.commands):
             raise ValueError("产品卡命令必须属于同一封存 Case")
@@ -780,6 +782,150 @@ class CandidateView:
     rejection_reasons: list[str] = field(default_factory=list)
     evidence_url: str | None = None
     price_basis: str = "indicative"
+
+
+class SourcingArtifactSummaryView(BaseModel):
+    """候选网页快照的安全索引；不包含页面正文、对象键或联系人。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    artifact_id: ArtifactId
+    canonical_url: str = Field(min_length=1, max_length=2_000)
+    observed_at: AwareDatetime
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SourcingStopPublicView(BaseModel):
+    """可展示的结构化停止原因；禁止透传 Provider 自由错误文本。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    code: str = Field(min_length=1, max_length=40)
+    stage: str | None = Field(default=None, min_length=1, max_length=40)
+    query_index: int | None = Field(default=None, ge=0)
+    provider_http_status: int | None = Field(default=None, ge=100, le=599)
+    observed_count: int | None = Field(default=None, ge=0)
+    configured_limit: int | None = Field(default=None, ge=0)
+
+
+class SourcingCaseReadView(BaseModel):
+    """API 读取案例的最小安全投影，保留 Need Provenance 而不暴露内部聚合。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    case_id: SourcingCaseId
+    need_id: ValidatedNeedId
+    state: str = Field(min_length=1, max_length=40)
+    workflow_version: int = Field(ge=1)
+    version: int = Field(ge=1)
+    opened_at: AwareDatetime
+    state_changed_at: AwareDatetime | None = None
+    ladder_checked_to: int | None = Field(default=None, ge=1, le=7)
+    active_search_plan_id: SourcingPlanId | None = None
+    need_snapshot: SourcingNeedSnapshot | None = None
+    stop: SourcingStopPublicView | None = None
+
+
+class SourcingLadderCheckReadView(BaseModel):
+    """单级梯子检查的解释性投影；不使用相似度或综合分。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    check_id: str = Field(min_length=1, max_length=200)
+    rung: int = Field(ge=1, le=7)
+    sequence_number: int = Field(ge=1)
+    outcome: str = Field(min_length=1, max_length=80)
+    match_object_type: str | None = Field(default=None, max_length=100)
+    match_object_id: str | None = Field(default=None, max_length=200)
+    spec_comparisons: tuple[SpecComparisonView, ...] = ()
+    evidence_refs: tuple[ArtifactId, ...] = ()
+    checked_by: str = Field(min_length=1, max_length=200)
+    checked_at: AwareDatetime
+
+
+class SourcingSupplyOptionReadView(BaseModel):
+    """人工审核可选的供给选项索引，不含成本或供应商报价。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    option_id: SourcingSupplyOptionId
+    product_id: ProductId
+    supplier_candidate_id: SupplierCandidateId | None = None
+    source_kind: str = Field(min_length=1, max_length=40)
+    is_qualified: bool
+
+
+class SourcingCandidateReadView(BaseModel):
+    """候选事实、自述、推断和未知项分栏的安全 API 投影。
+
+    ``indicative_price_tiers`` 仅代表公开页面参考价，不能成为 Quote 或客户报价。
+    """
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    candidate_id: SupplierCandidateId
+    supplier_name: str = Field(min_length=1, max_length=300)
+    product_title: str = Field(min_length=1, max_length=500)
+    source_platform: str | None = Field(default=None, max_length=200)
+    observed_facts: dict[str, SourcingObservedFact] = Field(default_factory=dict)
+    supplier_claims: dict[str, SourcingSupplierClaim] = Field(default_factory=dict)
+    match_inferences: dict[str, SourcingMatchInference] = Field(default_factory=dict)
+    spec_comparisons: tuple[SpecComparisonView, ...] = ()
+    # 被拒或未完成的候选仍是核验校准事实；没有参考价时明确为空，而不是伪造价格。
+    indicative_price_tiers: tuple[IndicativePriceTier, ...] = ()
+    price_basis: Literal["indicative"] = "indicative"
+    moq: int | None = Field(default=None, ge=1)
+    price_unit: str | None = Field(default=None, max_length=50)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    verification_status: Literal["qualified", "rejected", "incomplete"]
+    verification_missing: tuple[str, ...] = ()
+    rejection_reasons: tuple[str, ...] = ()
+    # 未完成候选可明确暴露“无可用证据”这个未知状态，不能为了响应形状伪造 Artifact。
+    evidence: tuple[SourcingArtifactSummaryView, ...] = ()
+    supply_option: SourcingSupplyOptionReadView | None = None
+
+
+class PublicSourcingQueryReadView(BaseModel):
+    """公开计划中已持久化的一条查询；现有契约未记录 lane 时显式返回未知。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    query_text: str = Field(min_length=1, max_length=400)
+    target_country: str = Field(pattern=r"^[A-Z]{2}$")
+    lane: str | None = None
+
+
+class PublicSourcingPlanReadView(BaseModel):
+    """公开寻源计划的无密钥、可确认范围投影。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    plan_id: SourcingPlanId
+    case_id: SourcingCaseId
+    target_countries: tuple[str, ...] = Field(min_length=1)
+    product_category: str = Field(min_length=1, max_length=100)
+    queries: tuple[PublicSourcingQueryReadView, ...] = Field(min_length=1)
+    max_search_queries: int = Field(ge=1)
+    max_pages_read: int = Field(ge=1)
+    provider: Literal["tavily"]
+    search_depth: Literal["basic"]
+    usage_credits_remaining: int = Field(ge=0)
+    worst_case_credits: int = Field(ge=1)
+    version: int = Field(ge=1)
+    expected_case_version: int = Field(ge=1)
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: str = Field(min_length=1, max_length=40)
+    confirmed_by: str | None = Field(default=None, max_length=200)
+    confirmed_at: AwareDatetime | None = None
+    created_at: AwareDatetime
+
+
+class SourcingReviewReadView(BaseModel):
+    """人工审核的安全选择事实；不包含 Opportunity、成本或报价。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    review_id: SourcingReviewId
+    case_id: SourcingCaseId
+    primary_option_id: SourcingSupplyOptionId
+    alternate_option_ids: tuple[SourcingSupplyOptionId, ...] = Field(max_length=2)
+    reason: str = Field(min_length=1, max_length=2_000)
+    expected_case_version: int = Field(ge=1)
+    submitted_by: str = Field(min_length=1, max_length=200)
+    submitted_at: AwareDatetime
+    confirmed_by: str | None = Field(default=None, max_length=200)
+    confirmed_at: AwareDatetime | None = None
 
 
 @dataclass(frozen=True)

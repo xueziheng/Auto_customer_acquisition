@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -102,6 +102,8 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
+from domains.products.permissions import Phase2ProductAuthorizer
+from domains.products.service_impl import ProductServiceImpl
 from domains.prospecting.service import ContactValueHasher
 from domains.prospecting.service_impl import ProspectingServiceImpl
 from domains.sending_identity.permissions import (
@@ -122,6 +124,9 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
+from domains.sourcing.permissions import Phase2SourcingAuthorizer
+from domains.sourcing.service import CandidateEvidenceSnapshot
+from domains.sourcing.service_impl import SourcingServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
@@ -141,6 +146,7 @@ from infra.db.email_feedback_uow import (
 from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
+from infra.db.products_uow import SqlAlchemyProductsUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
@@ -153,6 +159,7 @@ from infra.db.repositories.in_app_notifications import PostgresInAppNotification
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
+from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
 from infra.db.tables import OutreachCampaignRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
@@ -250,6 +257,7 @@ from workflows.quote_approval.flow import (
 )
 from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
 from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
+from workflows.sourcing_case.application import SourcingCaseApplication
 
 from ..dependencies import (
     CampaignScopeResolver,
@@ -446,6 +454,20 @@ class _UnavailableManualSendSources:
     async def build(self, *args: object) -> UnsubscribeLink:
         del args
         raise TransientError("退订链接未配置")
+
+
+class _UnavailableCandidateEvidenceReader:
+    """API 未暴露候选写入口时的失败关闭 Evidence 边界。
+
+    公开计划、运行和审核不会调用它；若未来有人错误地把候选写入口挂到 API，
+    领域服务会把这里的固定不可用结果收敛为结构化校验失败，而不会伪造证据。
+    """
+
+    async def read_verified(
+        self, tenant_id: TenantId, artifact_id: object
+    ) -> CandidateEvidenceSnapshot:
+        del tenant_id, artifact_id
+        raise ValidationError("候选证据读取未配置")
 
 
 class _ServiceBackedCampaignApprovalProvider:
@@ -1372,6 +1394,32 @@ def build_phase1_dependencies(
         configured=bool(settings.tavily_api_key_ref)
         and settings.tavily_exclusive_account_confirmed,
     )
+    sourcing = SourcingServiceImpl(
+        cast(
+            Any,
+            lambda requested_tenant: SqlAlchemySourcingUnitOfWork(
+                factory, requested_tenant
+            ),
+        ),
+        Phase2SourcingAuthorizer(tenant),
+        _UnavailableCandidateEvidenceReader(),
+        now=now,
+    )
+    products = ProductServiceImpl(
+        cast(
+            Any,
+            lambda requested_tenant: SqlAlchemyProductsUnitOfWork(
+                factory, requested_tenant
+            ),
+        ),
+        Phase2ProductAuthorizer(tenant),
+        now=now,
+    )
+    sourcing_application = SourcingCaseApplication(
+        sourcing=sourcing,
+        quota=PostgresSearchQuotaRepository(factory, tenant, now=now),
+        engine=workflow,
+    )
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -1410,4 +1458,7 @@ def build_phase1_dependencies(
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
         quotation=quotation,
+        sourcing=sourcing,
+        sourcing_application=sourcing_application,
+        products=products,
     )

@@ -29,7 +29,12 @@ from domains.products.models import (
 )
 from domains.products.permissions import ProductAction, ProductActor, ProductAuthorizer
 from domains.products.repository import ProductsUnitOfWork
-from domains.products.schemas import CandidateProductCreate
+from domains.products.schemas import (
+    CandidateIndicativePriceRef,
+    CandidateProductCreate,
+    ProductSupplyCardView,
+    ProductSupplySourceView,
+)
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import ProductId, TenantId, new_id
 
@@ -56,6 +61,51 @@ def _lead_time(product: Product) -> str | None:
     if product.lead_time_days_min == product.lead_time_days_max:
         return f"{product.lead_time_days_min} days"
     return f"{product.lead_time_days_min}-{product.lead_time_days_max} days"
+
+
+def _supply_card_view(
+    product: Product, source: ProductCandidateSource | None
+) -> ProductSupplyCardView:
+    """投影供应中心卡片，明确排除供应商、内部成本与任何客户报价字段。"""
+
+    source_only = product.candidate_status is CandidateStatus.SOURCE_ONLY
+    if source_only and source is None:
+        raise ValidationError("source_only 产品缺少不可变寻源来源")
+    source_view = None
+    if source is not None:
+        source_view = ProductSupplySourceView(
+            sourcing_case_id=source.sourcing_case_id,
+            supplier_candidate_id=source.supplier_candidate_id,
+            evidence_refs=tuple(item.evidence_ref for item in source.indicative_prices),
+            indicative_prices=tuple(
+                CandidateIndicativePriceRef(
+                    minimum_quantity=item.minimum_quantity,
+                    unit_amount=item.unit_amount,
+                    currency=item.currency,
+                    unit=item.unit,
+                    evidence_ref=item.evidence_ref,
+                )
+                for item in source.indicative_prices
+            ),
+        )
+    return ProductSupplyCardView(
+        product_id=product.product_id,
+        pool=product.pool.value,
+        candidate_status=(
+            product.candidate_status.value
+            if product.candidate_status is not None
+            else None
+        ),
+        name_zh=product.name_zh,
+        name_en=product.name_en,
+        category=product.category,
+        spec_summary=product.spec_summary,
+        moq=product.moq,
+        lead_time_display=_lead_time(product),
+        source_only=source_only,
+        quote_warning="不可用于客户报价" if source_only else None,
+        source=source_view if source_only else None,
+    )
 
 
 def _missing_cost_fields(product: Product) -> tuple[str, ...]:
@@ -353,6 +403,46 @@ class ProductServiceImpl:
             else:
                 qualified.append(QualifiedProductMatch(product, comparisons))
         return ProductMatchResult(tuple(qualified), tuple(findings))
+
+    async def list_supply_cards(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        source_only: bool | None,
+        limit: int,
+    ) -> tuple[ProductSupplyCardView, ...]:
+        """按稳定产品 ID 返回内部卡，任何缺失 source_only 来源都失败关闭。"""
+
+        self._require(tenant_id, actor, ProductAction.SUPPLY_LIST)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+            or source_only is not None
+            and not isinstance(source_only, bool)
+        ):
+            raise ValidationError("供应卡列表参数无效")
+        async with self._uow_factory(tenant_id) as uow:
+            products = await uow.products.search(
+                tenant_id,
+                [ProductPool.FORMAL, ProductPool.CANDIDATE],
+                None,
+                [],
+                50,
+            )
+            cards: list[ProductSupplyCardView] = []
+            for product in sorted(products, key=lambda item: str(item.product_id)):
+                is_source_only = product.candidate_status is CandidateStatus.SOURCE_ONLY
+                if source_only is not None and is_source_only != source_only:
+                    continue
+                source = await uow.candidate_sources.get_by_product(
+                    tenant_id, product.product_id
+                )
+                cards.append(_supply_card_view(product, source))
+                if len(cards) == limit:
+                    break
+        return tuple(cards)
 
     async def _get(self, tenant_id: TenantId, product_id: ProductId) -> Product:
         async with self._uow_factory(tenant_id) as uow:

@@ -26,6 +26,7 @@ class ProductAction(str, Enum):
     INTERNAL_VIEW = "internal_view"
     SALES_VIEW = "sales_view"
     CUSTOMER_VIEW = "customer_view"
+    SUPPLY_LIST = "supply_list"
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,14 @@ class Phase2ProductAuthorizer:
                 ProductRole.SOURCING,
                 ProductRole.SALES,
                 ProductRole.CUSTOMER,
+            }
+        ),
+        ProductAction.SUPPLY_LIST: frozenset(
+            {
+                ProductRole.BOSS,
+                ProductRole.PRODUCT,
+                ProductRole.SOURCING,
+                ProductRole.FINANCE,
             }
         ),
     }

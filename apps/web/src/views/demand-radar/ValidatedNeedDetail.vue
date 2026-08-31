@@ -7,6 +7,7 @@ import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 
 type ApiClient = ReturnType<typeof createApiClient>;
+type SourcingCase = components["schemas"]["SourcingCaseReadView"];
 type ValidatedNeed = components["schemas"]["ValidatedNeedView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
@@ -14,6 +15,7 @@ const route = useRoute();
 const need = ref<ValidatedNeed | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
+const sourcingCase = ref<SourcingCase | null>(null);
 
 function fieldLabel(value: string): string {
   return (
@@ -61,6 +63,17 @@ async function loadNeed(): Promise<void> {
     });
     if (result.response.status === 200 && result.data) {
       need.value = result.data;
+      try {
+        const sourcing = await client.GET("/sourcing-cases", {
+          params: { query: { limit: 50 } },
+        });
+        sourcingCase.value = sourcing.data?.find(
+          (item) => item.need_id === result.data!.need_id,
+        ) ?? null;
+      } catch {
+        // Need 详情仍可读；寻源链仅在当前身份拥有内部寻源读取权时显示。
+        sourcingCase.value = null;
+      }
     } else {
       error.value = safeError(result.response.status);
     }
@@ -129,6 +142,14 @@ onMounted(() => void loadNeed());
           <span>确定性完整度</span>
         </div>
       </header>
+
+      <RouterLink
+        v-if="sourcingCase"
+        class="sourcing-link"
+        :to="`/sourcing/${sourcingCase.case_id}`"
+      >
+        查看关联寻源 Case（{{ sourcingCase.state }}）
+      </RouterLink>
 
       <section
         class="summary-grid"
@@ -210,6 +231,7 @@ onMounted(() => void loadNeed());
 .need-packet > header { display: flex; justify-content: space-between; gap: var(--space4); border-bottom: 1px solid var(--border); padding-bottom: var(--space4); }
 .need-packet > header h2 { margin-top: 6px; }
 .need-packet > header p { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.sourcing-link { color: var(--fact); font-weight: 700; text-decoration: none; }
 .validated-badge { display: inline-flex; color: var(--action); background: #edf4ff; border: 1px solid #b2ccff; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 800; }
 .completeness { display: grid; text-align: right; }
 .completeness strong { color: var(--action); font-size: 24px; }
