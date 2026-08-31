@@ -900,12 +900,14 @@ def test_orm_metadata_parity_with_head() -> None:
                 "tenant_id", "confirmation_id", "extraction_id", "revision",
                 "payload", "confirmed_by", "confirmed_at",
             },
-            "cost_sheets": {
-                "tenant_id", "cost_sheet_id", "opportunity_id", "version_type",
-                "version_number", "quantity", "base_currency", "quote_currency",
-                "fx_snapshot_id", "created_by", "created_at", "locked_at",
-                "risk_accepted_by", "risk_accepted_at", "risk_justification",
-            },
+                "cost_sheets": {
+                    "tenant_id", "cost_sheet_id", "opportunity_id", "version_type",
+                    "version_number", "quantity", "base_currency", "quote_currency",
+                    "fx_snapshot_id", "created_by", "created_at", "locked_at",
+                    "risk_accepted_by", "risk_accepted_at", "risk_justification",
+                    "source_sourcing_case_id", "source_option_id", "source_product_id",
+                    "source_candidate_id", "source_tier_minimum_quantity", "source_unit",
+                },
             "cost_items": {
                 "tenant_id", "cost_sheet_id", "item_sequence", "item_type",
                 "amount", "currency", "price_basis", "is_per_unit", "note",
@@ -1075,6 +1077,37 @@ def test_orm_metadata_parity_with_head() -> None:
             ),
             "ix_cost_sheets_tenant_opportunity_version": (
                 "tenant_id", "opportunity_id", "version_type", "version_number",
+            ),
+            "uq_cost_sheets_sourcing_case": (
+                "tenant_id", "source_sourcing_case_id",
+            ),
+            "ix_sourcing_cases_queue": (
+                "tenant_id", "state", "opened_at", "case_id",
+            ),
+            "uq_sourcing_cases_active_need": (
+                "tenant_id", "need_id", "workflow_version",
+            ),
+            "uq_sourcing_candidates_public_draft_source": (
+                "tenant_id", "public_draft_source_key",
+            ),
+            "ix_sourcing_candidates_case_created": (
+                "tenant_id", "case_id", "created_at", "candidate_id",
+            ),
+            "ix_sourcing_candidate_evidence_order": (
+                "tenant_id", "candidate_id", "observed_at", "artifact_id",
+            ),
+            "uq_sourcing_supply_options_existing_product": (
+                "tenant_id", "case_id", "product_id",
+            ),
+            "ix_suppliers_capability_tags": ("tenant_id", "verification"),
+            "ix_products_pool_category": (
+                "tenant_id", "pool", "normalized_category", "product_id",
+            ),
+            "ix_supply_capabilities_kind": (
+                "tenant_id", "normalized_kind", "capability_id",
+            ),
+            "ix_supplier_price_records_lookup": (
+                "tenant_id", "supplier_id", "observed_at", "price_record_id",
             ),
             "ix_margin_rules_tenant_category_effective": (
                 "tenant_id", "category", "effective_from", "margin_rule_id",
