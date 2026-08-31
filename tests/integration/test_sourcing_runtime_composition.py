@@ -27,6 +27,7 @@ from domains.costing.service_impl import CostingServiceImpl
 from domains.products.permissions import ProductRole
 from domains.products.service_impl import ProductServiceImpl
 from domains.sourcing.permissions import SourcingScope
+from domains.sourcing.schemas import SourcingObservedFact, SpecComparisonView
 from domains.sourcing.service_impl import SourcingServiceImpl
 from domains.suppliers.service import SupplierRole
 from domains.suppliers.service_impl import SupplierServiceImpl
@@ -77,6 +78,38 @@ from tool_gateway.handlers.web_search import ToolGatewayWebSearcher
 from tool_gateway.handlers.web_slots import WebPageSnapshotSlot, WebSearchResultSlot
 
 NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+
+def _candidate_submission_for_runtime_need(artifact_id: ArtifactId):
+    """使生产装配验收候选逐项复述该测试实际冻结的 application。"""
+
+    from tests.integration.test_sourcing_service_persistence import (
+        _candidate_submission,
+    )
+
+    submission = _candidate_submission(artifact_id)
+    provenance = submission.observed_facts["product_type"].provenance
+    return submission.model_copy(
+        update={
+            "specs": (
+                *submission.specs,
+                SpecComparisonView(
+                    spec_name="application",
+                    required="marine doors",
+                    offered="marine doors",
+                    level="exact",
+                ),
+            ),
+            "observed_facts": {
+                **submission.observed_facts,
+                "application": SourcingObservedFact(
+                    value="marine doors",
+                    provenance=provenance,
+                    evidence_ref=artifact_id,
+                ),
+            },
+        }
+    )
 
 
 class _NoNetworkGateway:
@@ -713,7 +746,6 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
     )
     from tests.integration.test_sourcing_product_projection import _ladder_check
     from tests.integration.test_sourcing_service_persistence import (
-        _candidate_submission,
         _FixedEvidenceReader,
         _seed_candidate_artifact,
         _seed_handoff_dependencies,
@@ -929,7 +961,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         candidate_id = await sourcing.submit_candidate(
             tenant,
             case_id,
-            _candidate_submission(evidence_artifact_id),
+            _candidate_submission_for_runtime_need(evidence_artifact_id),
             actor=reviewer,
         )
         verified = await sourcing.mark_candidates_verified(
