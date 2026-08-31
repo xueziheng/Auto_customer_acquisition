@@ -19,7 +19,6 @@ from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
 from domains.sourcing.schemas import (
     PublicSourcingPlanReadView,
-    PublicSourcingQuery,
     PublicSourcingQueryReadView,
 )
 from shared.errors import InvalidStateTransition
