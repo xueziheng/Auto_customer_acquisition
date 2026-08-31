@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -13,9 +13,18 @@ from pydantic import ValidationError as PydanticValidationError
 from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
 from domains.opportunities.schemas import OpportunityView
 from domains.sourcing.permissions import SourcingActor, SourcingScope
-from domains.sourcing.schemas import SourcingCostPriceOption, SourcingHandoffSnapshot
+from domains.sourcing.schemas import (
+    CaseView,
+    SourcingCostPriceOption,
+    SourcingHandoffSnapshot,
+)
 from domains.sourcing.service import SourcingReview
-from shared.errors import PermissionDenied, TransientError, ValidationError
+from shared.errors import (
+    InvalidStateTransition,
+    PermissionDenied,
+    TransientError,
+    ValidationError,
+)
 from shared.events.catalog import SourcingCaseHandedToCosting
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -104,11 +113,18 @@ class _Opportunities:
 
 
 class _HandoffSourcing:
-    def __init__(self) -> None:
+    def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.error = error
 
-    async def hand_to_costing(self, tenant_id, case_id, opportunity_id, *, actor):
-        self.calls.append((tenant_id, case_id, opportunity_id, actor))
+    async def hand_to_costing(
+        self, tenant_id, case_id, opportunity_id, *, expected_need_id, actor
+    ):
+        self.calls.append(
+            (tenant_id, case_id, opportunity_id, expected_need_id, actor)
+        )
+        if self.error is not None:
+            raise self.error
         return _snapshot()
 
 
@@ -166,8 +182,74 @@ async def test_handoff_step_rejects_wrong_need_projection_and_hands_off_exact_ma
         },
     )
     assert sourcing.calls == [
-        (TENANT, CASE_ID, OPPORTUNITY_ID, SYSTEM_SOURCING_ACTOR)
+        (TENANT, CASE_ID, OPPORTUNITY_ID, NEED_ID, SYSTEM_SOURCING_ACTOR)
     ]
+
+
+class _FailingOpportunities:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def get_by_need(self, tenant_id, need_id, *, actor):
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dependency", ["opportunity", "sourcing"])
+async def test_handoff_unknown_dependency_errors_are_detached_transient(
+    dependency: str,
+) -> None:
+    """未知数据库/adapter 错误若变成永久失败，会把已确认审核永久搁浅。"""
+
+    step_type = _symbol("workflows.sourcing_case.steps", "HandoffCostingStep")
+    raw = RuntimeError("postgres://user:secret@db/private token=raw-secret")
+    opportunities: Any = (
+        _FailingOpportunities(raw)
+        if dependency == "opportunity"
+        else _Opportunities(_opportunity())
+    )
+    sourcing = _HandoffSourcing(raw if dependency == "sourcing" else None)
+    step = step_type(
+        opportunities=opportunities,
+        sourcing=sourcing,
+        opportunity_actor=SYSTEM_OPPORTUNITY_ACTOR,
+        sourcing_actor=SYSTEM_SOURCING_ACTOR,
+    )
+
+    with pytest.raises(TransientError, match="暂不可用") as caught:
+        await step.execute(_run())
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValidationError("raw validation"),
+        PermissionDenied("raw permission"),
+        InvalidStateTransition("raw state"),
+    ],
+)
+async def test_handoff_known_business_dependency_errors_are_permanent(
+    error: Exception,
+) -> None:
+    """明确业务拒绝必须固定脱敏且不可重试，避免无意义重放。"""
+
+    step_type = _symbol("workflows.sourcing_case.steps", "HandoffCostingStep")
+    step = step_type(
+        opportunities=_FailingOpportunities(error),
+        sourcing=_HandoffSourcing(),
+        opportunity_actor=SYSTEM_OPPORTUNITY_ACTOR,
+        sourcing_actor=SYSTEM_SOURCING_ACTOR,
+    )
+
+    with pytest.raises(ValidationError, match="Opportunity 读取失败") as caught:
+        await step.execute(_run())
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "raw" not in str(caught.value)
 
 
 def _snapshot(
@@ -288,8 +370,10 @@ async def test_handler_uses_highest_applicable_primary_tier_with_decimal_precisi
     assert command.product_id == PRODUCT_ID
     assert command.supplier_candidate_id == CANDIDATE_ID
     assert command.quantity == 500
+    assert command.minimum_quantity == 500
     assert command.unit_amount == Decimal("1.100000000001")
     assert command.currency == "USD"
+    assert command.unit == "piece"
     assert command.evidence_ref == ArtifactId("art_primary_price_500")
     assert len(costing.calls) == 2
 
@@ -392,6 +476,22 @@ class _PendingReviewSourcing:
         return self.review_fact
 
 
+class _TerminalReviewSourcing(_PendingReviewSourcing):
+    def __init__(self, review: SourcingReview) -> None:
+        super().__init__(review)
+        self.case_reads: list[tuple[Any, ...]] = []
+
+    async def get_case(self, tenant_id, actor, case_id):
+        self.case_reads.append((tenant_id, actor, case_id))
+        return CaseView(
+            case_id=str(case_id),
+            need_id=str(NEED_ID),
+            state="handed_to_costing",
+            opened_at=NOW,
+            completed_at=NOW,
+        )
+
+
 class _EngineMustNotWake:
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"pending review 不得访问 Workflow Engine: {name}")
@@ -424,7 +524,7 @@ async def test_product_review_stays_pending_and_never_wakes_workflow() -> None:
         submitted_at=NOW,
     )
     application = SourcingCaseApplication(
-        sourcing=_PendingReviewSourcing(pending),
+        sourcing=cast(Any, _PendingReviewSourcing(pending)),
         quota=_UnusedQuota(),
         engine=_EngineMustNotWake(),
     )
@@ -440,6 +540,52 @@ async def test_product_review_stays_pending_and_never_wakes_workflow() -> None:
     )
 
     assert result == pending
+
+
+@pytest.mark.asyncio
+async def test_exact_confirmed_review_replay_returns_after_terminal_handoff_without_run() -> None:
+    """已真实交接的精确重放不能依赖已不可见的 active Run。"""
+
+    command_type = _symbol("domains.sourcing.schemas", "SourcingReviewCommand")
+    command = command_type(
+        primary_option_id=PRIMARY_OPTION_ID,
+        alternate_option_ids=(ALTERNATE_OPTION_ID,),
+        reason="证据最完整",
+        expected_case_version=8,
+    )
+    confirmed = SourcingReview(
+        review_id=REVIEW_ID,
+        tenant_id=TENANT,
+        case_id=CASE_ID,
+        primary_option_id=PRIMARY_OPTION_ID,
+        alternate_option_ids=(ALTERNATE_OPTION_ID,),
+        reason="证据最完整",
+        expected_case_version=8,
+        submitted_by=EmployeeId("employee-product"),
+        submitted_at=NOW,
+        confirmed_by=EmployeeId("employee-boss"),
+        confirmed_at=NOW,
+    )
+    sourcing = _TerminalReviewSourcing(confirmed)
+    application = SourcingCaseApplication(
+        sourcing=cast(Any, sourcing),
+        quota=_UnusedQuota(),
+        engine=_EngineMustNotWake(),
+    )
+    actor = SourcingActor(
+        "employee-boss", TENANT, SourcingScope.TENANT, "boss"
+    )
+
+    result = await application.review(
+        TENANT,
+        CASE_ID,
+        command,
+        request_id="terminal-review-replay",
+        actor=actor,
+    )
+
+    assert result == confirmed
+    assert sourcing.case_reads == [(TENANT, actor, CASE_ID)]
 
 
 def test_costing_system_action_is_tenant_bound_and_http_roles_are_denied() -> None:
@@ -476,8 +622,10 @@ def test_sourcing_estimate_command_rejects_currency_and_numeric_precision_drift(
         "product_id": PRODUCT_ID,
         "opportunity_id": OPPORTUNITY_ID,
         "quantity": 500,
+        "minimum_quantity": 500,
         "unit_amount": Decimal("1.100000000001"),
         "currency": "USD",
+        "unit": "piece",
         "evidence_ref": EVIDENCE_ID,
     }
     with pytest.raises(PydanticValidationError):
@@ -486,3 +634,25 @@ def test_sourcing_estimate_command_rejects_currency_and_numeric_precision_drift(
         command_type(
             **{**values, "unit_amount": Decimal("1.1000000000001")}
         )
+
+
+def test_sourcing_estimate_normalizes_selected_tier_unit() -> None:
+    """不规范计价单位若进入 canonical 来源，同一档位会产生伪冲突。"""
+
+    command_type = _symbol("domains.costing.schemas", "SourcingEstimateCreate")
+    command = command_type(
+        sourcing_case_id=CASE_ID,
+        primary_option_id=PRIMARY_OPTION_ID,
+        supplier_candidate_id=CANDIDATE_ID,
+        product_id=PRODUCT_ID,
+        opportunity_id=OPPORTUNITY_ID,
+        quantity=500,
+        minimum_quantity=100,
+        unit_amount=Decimal("1.100000000001"),
+        currency="USD",
+        unit="  PiEcE  ",
+        evidence_ref=EVIDENCE_ID,
+    )
+
+    assert command.minimum_quantity == 100
+    assert command.unit == "piece"

@@ -101,6 +101,7 @@ def _service_type() -> type[Any]:
         ).SourcingServiceImpl
     except (ModuleNotFoundError, AttributeError) as exc:
         pytest.fail(f"RED：SourcingServiceImpl 尚未实现（{exc}）")
+    raise AssertionError("pytest.fail 必须终止执行")
 
 
 def _provenance() -> ProvenanceSummary:
@@ -1732,7 +1733,11 @@ async def test_every_public_write_is_authorizer_first() -> None:
             actor=SOURCING,
         ),
         lambda: service.hand_to_costing(
-            OTHER_TENANT, case_id, OpportunityId("opp-1"), actor=SYSTEM
+            OTHER_TENANT,
+            case_id,
+            OpportunityId("opp-1"),
+            expected_need_id=ValidatedNeedId("need-service-1"),
+            actor=SYSTEM,
         ),
     ]
     for call in calls:
@@ -2505,11 +2510,19 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
     )
     with pytest.raises(ValidationError):
         await service.hand_to_costing(
-            TENANT, case_id, OpportunityId("opp-real"), actor=SYSTEM
+            TENANT,
+            case_id,
+            OpportunityId("opp-real"),
+            expected_need_id=ValidatedNeedId("need-service-1"),
+            actor=SYSTEM,
         )
     await service.confirm_review(TENANT, review.review_id, actor=BOSS)
     snapshot = await service.hand_to_costing(
-        TENANT, case_id, OpportunityId("opp-real"), actor=SYSTEM
+        TENANT,
+        case_id,
+        OpportunityId("opp-real"),
+        expected_need_id=ValidatedNeedId("need-service-1"),
+        actor=SYSTEM,
     )
     handed = next(iter(factory.state["cases"].values()))
     assert handed.state is CaseState.HANDED_TO_COSTING
@@ -2518,7 +2531,11 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
     assert isinstance(factory.state["events"][-1], SourcingCaseHandedToCosting)
     with pytest.raises(InvalidStateTransition):
         await service.hand_to_costing(
-            TENANT, case_id, OpportunityId("opp-real"), actor=SYSTEM
+            TENANT,
+            case_id,
+            OpportunityId("opp-real"),
+            expected_need_id=ValidatedNeedId("need-service-1"),
+            actor=SYSTEM,
         )
 
 

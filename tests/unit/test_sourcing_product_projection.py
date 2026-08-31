@@ -15,6 +15,7 @@ from domains.products.permissions import ProductActor, ProductRole
 from domains.products.schemas import CandidateProductCreate
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import (
+    CaseView,
     SourcingCandidateProductInput,
     SourcingCandidateProductInputs,
     SourcingCandidateProductPriceInput,
@@ -631,6 +632,14 @@ class _ReviewSourcing:
         if self.error is not None:
             raise self.error
         return self.review_fact
+
+    async def get_case(self, tenant_id, actor, case_id):
+        return CaseView(
+            case_id=str(case_id),
+            need_id="need-projection",
+            state="candidates_ready",
+            opened_at=NOW,
+        )
 
 
 class _ReviewEngine:

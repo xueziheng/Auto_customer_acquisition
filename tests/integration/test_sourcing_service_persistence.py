@@ -77,6 +77,7 @@ def _service_type() -> type[Any]:
         ).SourcingServiceImpl
     except (ModuleNotFoundError, AttributeError) as exc:
         pytest.fail(f"RED：SourcingServiceImpl 尚未实现（{exc}）")
+    raise AssertionError("pytest.fail 必须终止执行")
 
 
 async def _seed_need(
@@ -505,7 +506,8 @@ class _BarrierUow(SqlAlchemySourcingUnitOfWork):
 
     async def __aenter__(self) -> Any:
         entered = await super().__aenter__()
-        self.cases = cast(Any, _BarrierCases(self.cases, self._barrier))
+        cases = cast(Any, self.__dict__["cases"])
+        self.cases = cast(Any, _BarrierCases(cases, self._barrier))
         return entered
 
 
@@ -541,9 +543,10 @@ class _SealReadUow(SqlAlchemySourcingUnitOfWork):
 
     async def __aenter__(self) -> Any:
         entered = await super().__aenter__()
+        candidates = cast(Any, self.__dict__["candidates"])
         self.candidates = cast(
             Any,
-            _SealReadCandidates(self.candidates, self._read_complete, self._resume),
+            _SealReadCandidates(candidates, self._read_complete, self._resume),
         )
         return entered
 
@@ -1646,7 +1649,11 @@ async def test_review_handoff_is_one_case_cas_and_terminal_snapshot_in_postgres(
     )
     await service.confirm_review(tenant_id, review.review_id, actor=boss)
     snapshot = await service.hand_to_costing(
-        tenant_id, case_id, opportunity_id, actor=system
+        tenant_id,
+        case_id,
+        opportunity_id,
+        expected_need_id=need_id,
+        actor=system,
     )
     async with sf() as session:
         row = await session.scalar(

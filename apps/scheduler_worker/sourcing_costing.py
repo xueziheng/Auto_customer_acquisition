@@ -93,8 +93,10 @@ class SourcingCostHandoffHandler:
             product_id=snapshot.product_id,
             opportunity_id=snapshot.opportunity_id,
             quantity=snapshot.quantity,
+            minimum_quantity=tier.minimum_quantity,
             unit_amount=tier.unit_amount,
             currency=tier.currency,
+            unit=tier.unit,
             evidence_ref=tier.evidence_ref,
         )
 

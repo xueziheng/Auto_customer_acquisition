@@ -101,6 +101,8 @@ def _sheet_values(sheet: CostSheet) -> dict[str, object]:
             if sheet.source_candidate_id is not None
             else None
         ),
+        "source_tier_minimum_quantity": sheet.source_tier_minimum_quantity,
+        "source_unit": sheet.source_unit,
     }
 
 
@@ -215,6 +217,8 @@ def _to_sheet(
             if row.source_candidate_id is not None
             else None
         ),
+        source_tier_minimum_quantity=row.source_tier_minimum_quantity,
+        source_unit=row.source_unit,
     )
 
 

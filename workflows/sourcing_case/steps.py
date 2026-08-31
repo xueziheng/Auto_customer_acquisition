@@ -42,7 +42,7 @@ from domains.sourcing.service import (
     SpecMatchLevel,
 )
 from domains.suppliers.service import SupplierActor, SupplierService
-from shared.errors import TransientError, ValidationError
+from shared.errors import TradeOSError, TransientError, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -103,8 +103,10 @@ async def _await_dependency(
         raise
     except TransientError:
         transient = True
-    except Exception:  # noqa: BLE001 - 下层原文和异常对象都不得越界。
+    except TradeOSError:
         failed = True
+    except Exception:  # noqa: BLE001 - 未分类基础设施异常必须安全重试。
+        transient = True
     _raise_dependency_error(
         transient=transient,
         failed=failed,
@@ -1265,6 +1267,7 @@ class HandoffCostingStep:
                 run.tenant_id,
                 case_id,
                 OpportunityId(opportunity.opportunity_id),
+                expected_need_id=need_id,
                 actor=self._sourcing_actor,
             ),
             transient_message="寻源成本交接暂不可用",

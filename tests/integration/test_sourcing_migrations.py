@@ -419,6 +419,8 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             "source_option_id",
             "source_product_id",
             "source_candidate_id",
+            "source_tier_minimum_quantity",
+            "source_unit",
         } <= set(Base.metadata.tables["cost_sheets"].columns.keys())
 
         candidate_fks = contract["sourcing_candidate_evidence"]["foreign_keys"]
@@ -500,6 +502,9 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
         assert contract["sourcing_supply_options"]["unique_constraints"][
             "uq_sourcing_supply_options_supplier_candidate"
         ] == ("tenant_id", "case_id", "supplier_candidate_id")
+        assert contract["sourcing_supply_options"]["unique_constraints"][
+            "uq_sourcing_supply_options_case_option_product"
+        ] == ("tenant_id", "case_id", "option_id", "product_id")
         assert (
             contract["sourcing_supply_options"]["indexes"][
             "uq_sourcing_supply_options_existing_product"
@@ -507,15 +512,15 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             is True
         )
         cost_fks = contract["cost_sheets"]["foreign_keys"]
-        assert cost_fks["fk_cost_sheets_sourcing_product"] == (
-            ("tenant_id", "source_product_id"),
-            "products",
-            ("tenant_id", "product_id"),
-        )
-        assert cost_fks["fk_cost_sheets_sourcing_option"] == (
-            ("tenant_id", "source_sourcing_case_id", "source_option_id"),
+        assert cost_fks["fk_cost_sheets_sourcing_option_product"] == (
+            (
+                "tenant_id",
+                "source_sourcing_case_id",
+                "source_option_id",
+                "source_product_id",
+            ),
             "sourcing_supply_options",
-            ("tenant_id", "case_id", "option_id"),
+            ("tenant_id", "case_id", "option_id", "product_id"),
         )
         assert cost_fks["fk_cost_sheets_sourcing_candidate_path"] == (
             (
@@ -1065,13 +1070,31 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
             )
             await connection.execute(
                 text(
+                    "INSERT INTO raw_artifacts "
+                    "(tenant_id, artifact_id, kind, content_hash, size_bytes, "
+                    "mime_type, object_key, uploaded_at) VALUES "
+                    "(:tenant, :artifact, 'web_snapshot', :hash, 1, 'text/html', "
+                    ":object_key, now()) ON CONFLICT (tenant_id, artifact_id) DO NOTHING"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "artifact": ARTIFACT_A,
+                    "hash": "e" * 64,
+                    "object_key": f"raw/{TENANT_A}/{ARTIFACT_A}",
+                },
+            )
+            await connection.execute(
+                text(
                     "INSERT INTO products "
                     "(tenant_id, product_id, pool, name_zh, name_en, category, normalized_category, "
-                    "sellable_markets, selling_points, known_issues, customizable, created_at) "
+                    "sellable_markets, selling_points, known_issues, customizable, "
+                    "internal_cost_amount, internal_cost_currency, internal_cost_basis, "
+                    "internal_cost_unit, internal_cost_source_ref, moq, created_at) "
                     "VALUES (:tenant, 'product-a', 'formal', '铰链', 'Hinge', 'hinges', 'hinges', "
-                    "'[]', '[]', '[]', false, now())"
+                    "'[]', '[]', '[]', false, 1.25, 'USD', 'supplier basis', "
+                    "'piece', :artifact, 100, now())"
                 ),
-                {"tenant": TENANT_A},
+                {"tenant": TENANT_A, "artifact": ARTIFACT_A},
             )
             await connection.execute(
                 text(
@@ -1118,8 +1141,9 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
                     "INSERT INTO cost_sheets "
                     "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
                     "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id, "
-                    "source_product_id) VALUES (:tenant, 'cost-a', 'opp-a', 'estimated', 1, 100, 'USD', "
-                    "'USD', now(), :case, :option, :product)"
+                    "source_product_id, source_tier_minimum_quantity, source_unit) "
+                    "VALUES (:tenant, 'cost-a', 'opp-a', 'estimated', 1, 100, 'USD', "
+                    "'USD', now(), :case, :option, :product, 100, 'piece')"
                 ),
                 cost_values,
             )
@@ -1127,9 +1151,10 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
                 connection,
                 "INSERT INTO cost_sheets "
                 "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
-                "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id, "
-                "source_product_id) VALUES (:tenant, 'cost-b', 'opp-a', 'estimated', 2, 100, 'USD', "
-                "'USD', now(), :case, :option, :product)",
+                    "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id, "
+                    "source_product_id, source_tier_minimum_quantity, source_unit) "
+                    "VALUES (:tenant, 'cost-b', 'opp-a', 'estimated', 2, 100, 'USD', "
+                    "'USD', now(), :case, :option, :product, 100, 'piece')",
                 cost_values,
             )
     finally:
@@ -1521,13 +1546,36 @@ async def test_0051_backfills_product_origin_and_roundtrips(db_url: str) -> None
             )
             await connection.execute(
                 text(
+                    "INSERT INTO raw_artifacts "
+                    "(tenant_id, artifact_id, kind, content_hash, size_bytes, "
+                    "mime_type, object_key, uploaded_at) VALUES "
+                    "(:tenant, :artifact, 'web_snapshot', :hash, 1, "
+                    "'text/html', :object_key, now()) "
+                    "ON CONFLICT (tenant_id, artifact_id) DO NOTHING"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "artifact": ARTIFACT_A,
+                    "hash": "f" * 64,
+                    "object_key": f"raw/{TENANT_A}/{ARTIFACT_A}",
+                },
+            )
+            await connection.execute(
+                text(
                     "INSERT INTO products "
                     "(tenant_id, product_id, pool, name_zh, name_en, category, normalized_category, "
-                    "sellable_markets, selling_points, known_issues, customizable, created_at) "
+                    "sellable_markets, selling_points, known_issues, customizable, "
+                    "internal_cost_amount, internal_cost_currency, internal_cost_basis, "
+                    "internal_cost_unit, internal_cost_source_ref, moq, created_at) "
                     "VALUES (:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', 'hinges', "
-                    "'[]', '[]', '[]', false, now())"
+                    "'[]', '[]', '[]', false, 1.25, 'USD', 'supplier basis', "
+                    "' Piece ', :artifact, 100, now())"
                 ),
-                {"tenant": TENANT_A, "product": product_id},
+                {
+                    "tenant": TENANT_A,
+                    "product": product_id,
+                    "artifact": ARTIFACT_A,
+                },
             )
             await connection.execute(
                 text(
@@ -1577,14 +1625,17 @@ async def test_0051_backfills_product_origin_and_roundtrips(db_url: str) -> None
         _run_alembic(db_url, "upgrade", "0051")
         engine = create_engine_from(db_url)
         async with engine.connect() as connection:
-            source_product = await connection.scalar(
+            source = (
+                await connection.execute(
                 text(
-                    "SELECT source_product_id FROM cost_sheets "
+                    "SELECT source_product_id, source_tier_minimum_quantity, source_unit "
+                    "FROM cost_sheets "
                     "WHERE tenant_id = :tenant AND cost_sheet_id = :cost"
                 ),
                 {"tenant": TENANT_A, "cost": cost_sheet_id},
-            )
-            assert source_product == product_id
+                )
+            ).one()
+            assert source == (product_id, 100, "piece")
         await engine.dispose()
         engine = None
 

@@ -260,9 +260,10 @@ class SourcingService(Protocol):
         case_id: SourcingCaseId,
         opportunity_id: OpportunityId,
         *,
+        expected_need_id: ValidatedNeedId,
         actor: SourcingActor,
     ) -> SourcingHandoffSnapshot:
-        """把可信 Opportunity 与审核绑定并以单次 CAS 推进至终态。"""
+        """先锁内核对 owning Run 的 Need，再原子绑定 Opportunity 并推进终态。"""
         ...
 
     async def submit_candidate(

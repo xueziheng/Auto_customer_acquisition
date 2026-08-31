@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     WithJsonSchema,
+    field_validator,
     model_validator,
 )
 
@@ -120,9 +122,21 @@ class SourcingEstimateCreate(BaseModel):
     product_id: ProductId
     opportunity_id: OpportunityId
     quantity: int = Field(ge=1)
+    minimum_quantity: int = Field(ge=1)
     unit_amount: CostingDecimalInput
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+    unit: str = Field(min_length=1, max_length=50)
     evidence_ref: ArtifactId
+
+    @field_validator("unit")
+    @classmethod
+    def normalize_unit(cls, value: str) -> str:
+        """计价单位进入来源身份前统一 Unicode、空白与大小写。"""
+
+        normalized = " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+        if not normalized:
+            raise ValueError("寻源估算计价单位不能为空")
+        return normalized
 
     @model_validator(mode="after")
     def validate_estimate(self) -> SourcingEstimateCreate:
@@ -131,6 +145,8 @@ class SourcingEstimateCreate(BaseModel):
         _stored_decimal(self.unit_amount)
         if self.unit_amount <= Decimal(0):
             raise ValueError("寻源估算单价必须为正")
+        if self.minimum_quantity > self.quantity:
+            raise ValueError("寻源估算所选数量档不得高于需求数量")
         return self
 
 
@@ -394,6 +410,8 @@ class CostSheetView:
     source_option_id: str | None = None
     source_product_id: str | None = None
     source_candidate_id: str | None = None
+    source_tier_minimum_quantity: int | None = None
+    source_unit: str | None = None
     content_hash: str = ""
 
 

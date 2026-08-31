@@ -3571,20 +3571,20 @@ class CostSheetRow(Base):
             name="fk_cost_sheets_sourcing_case",
         ),
         ForeignKeyConstraint(
-            ["tenant_id", "source_sourcing_case_id", "source_option_id"],
+            [
+                "tenant_id",
+                "source_sourcing_case_id",
+                "source_option_id",
+                "source_product_id",
+            ],
             [
                 "sourcing_supply_options.tenant_id",
                 "sourcing_supply_options.case_id",
                 "sourcing_supply_options.option_id",
+                "sourcing_supply_options.product_id",
             ],
             ondelete="RESTRICT",
-            name="fk_cost_sheets_sourcing_option",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "source_product_id"],
-            ["products.tenant_id", "products.product_id"],
-            ondelete="RESTRICT",
-            name="fk_cost_sheets_sourcing_product",
+            name="fk_cost_sheets_sourcing_option_product",
         ),
         ForeignKeyConstraint(
             [
@@ -3639,9 +3639,14 @@ class CostSheetRow(Base):
         ),
         CheckConstraint(
             "(source_sourcing_case_id IS NULL AND source_option_id IS NULL "
-            "AND source_product_id IS NULL AND source_candidate_id IS NULL) OR "
+            "AND source_product_id IS NULL AND source_candidate_id IS NULL "
+            "AND source_tier_minimum_quantity IS NULL AND source_unit IS NULL) OR "
             "(source_sourcing_case_id IS NOT NULL AND source_option_id IS NOT NULL "
-            "AND source_product_id IS NOT NULL)",
+            "AND source_product_id IS NOT NULL "
+            "AND source_tier_minimum_quantity IS NOT NULL "
+            "AND source_tier_minimum_quantity >= 1 "
+            "AND source_tier_minimum_quantity <= quantity "
+            "AND source_unit IS NOT NULL AND btrim(source_unit) <> '')",
             name="ck_cost_sheets_sourcing_origin",
         ),
         Index(
@@ -3679,6 +3684,8 @@ class CostSheetRow(Base):
     source_option_id: Mapped[str | None] = mapped_column(String(40))
     source_product_id: Mapped[str | None] = mapped_column(String(40))
     source_candidate_id: Mapped[str | None] = mapped_column(String(40))
+    source_tier_minimum_quantity: Mapped[int | None] = mapped_column(Integer)
+    source_unit: Mapped[str | None] = mapped_column(String(50))
 
 
 class CostItemRow(Base):
@@ -4891,6 +4898,7 @@ class SourcingSupplyOptionRow(Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "option_id", name="pk_sourcing_supply_options"),
         UniqueConstraint("tenant_id", "case_id", "option_id", name="uq_sourcing_supply_options_case_option"),
+        UniqueConstraint("tenant_id", "case_id", "option_id", "product_id", name="uq_sourcing_supply_options_case_option_product"),
         UniqueConstraint("tenant_id", "case_id", "option_id", "supplier_candidate_id", name="uq_sourcing_supply_options_candidate_path"),
         UniqueConstraint("tenant_id", "case_id", "supplier_candidate_id", name="uq_sourcing_supply_options_supplier_candidate"),
         Index(

@@ -7,6 +7,7 @@ from typing import Any
 from connectors.search_contracts import SearchCostStatus
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
+    CaseView,
     PublicSourcingPlanCommand,
     SourcingReviewCommand,
     SourcingUncertainReconciliationCommand,
@@ -286,6 +287,28 @@ class SourcingCaseApplication:
         ):
             raise ValidationError("寻源审核事实绑定无效")
         if review.confirmed_by is None or review.confirmed_at is None:
+            return review
+        case_view: CaseView | None = None
+        transient = False
+        failed = False
+        try:
+            case_view = await self._sourcing.get_case(tenant_id, actor, case_id)
+        except ValidationError:
+            failed = True
+        except Exception:  # noqa: BLE001 -- Sourcing/存储自由错误必须固定脱敏。
+            transient = True
+        if transient:
+            raise SourcingPlanDeliveryError("寻源审核 Case 状态暂不可用") from None
+        if failed:
+            raise ValidationError("寻源审核 Case 状态无效") from None
+        if (
+            not isinstance(case_view, CaseView)
+            or case_view.case_id != str(case_id)
+            or not isinstance(case_view.need_id, str)
+            or not case_view.need_id.strip()
+        ):
+            raise ValidationError("寻源审核 Case 绑定无效")
+        if case_view.state == "handed_to_costing":
             return review
         payload = {
             "review_id": str(SourcingReviewId(review.review_id)),

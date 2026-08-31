@@ -651,7 +651,7 @@ async def test_crash_windows_leave_claimed_slot_for_exact_restart_reconciliation
     else:
         receipts.page_completion_error = RuntimeError("sensitive-completion")
 
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(TransientError) as caught:
         await step.execute(_run())
     assert "sensitive" not in str(caught.value)
     assert caught.value.__cause__ is None
@@ -842,7 +842,7 @@ async def test_receipt_failure_still_releases_acquired_batch() -> None:
     step, searcher, _, receipts, _, _, _, _ = _step()
     receipts.commit_error = RuntimeError("receipt-sensitive-payload")
 
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(TransientError) as caught:
         await step.execute(_run())
 
     assert "receipt-sensitive-payload" not in str(caught.value)
@@ -890,10 +890,10 @@ async def test_cleanup_cancelled_error_never_masks_prior_safe_failure(
     else:
         searcher.discard_error = cleanup_error
 
-    with pytest.raises(ValidationError) as caught:
+    with pytest.raises(TransientError) as caught:
         await step.execute(_run())
 
-    assert str(caught.value) == "公开寻源页面读取失败"
+    assert str(caught.value) == "公开寻源页面暂不可用"
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
 

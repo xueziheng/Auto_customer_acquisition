@@ -578,8 +578,8 @@ async def test_await_product_cards_advances_only_on_exact_generation_payload() -
         ),
         (
             RuntimeError("provider token=raw-secret"),
-            ValidationError,
-            "公开候选草稿核验失败",
+            TransientError,
+            "公开候选草稿核验暂不可用",
         ),
     ],
 )

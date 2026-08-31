@@ -194,6 +194,8 @@ class CostSheet:
     source_option_id: SourcingSupplyOptionId | None = None
     source_product_id: ProductId | None = None
     source_candidate_id: SupplierCandidateId | None = None
+    source_tier_minimum_quantity: int | None = None
+    source_unit: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.version_type, CostSheetVersion):
@@ -256,15 +258,40 @@ class CostSheet:
             self.risk_acceptance, RiskAcceptance
         ):
             raise ValidationError("参考价风险接受记录无效")
-        source_values = (
+        source_references = (
             self.source_sourcing_case_id,
             self.source_option_id,
             self.source_product_id,
         )
+        source_values = (
+            *source_references,
+            self.source_tier_minimum_quantity,
+            self.source_unit,
+        )
         if any(value is not None for value in source_values) and any(
-            not isinstance(value, str) or not value.strip() for value in source_values
+            value is None for value in source_values
         ):
-            raise ValidationError("寻源成本来源必须完整绑定 Case、Option 与 Product")
+            raise ValidationError("寻源成本来源必须完整绑定 Case、Option、Product 与数量档")
+        if any(value is not None for value in source_references) and any(
+            not isinstance(value, str) or not value.strip()
+            for value in source_references
+        ):
+            raise ValidationError("寻源成本来源引用无效")
+        if self.source_tier_minimum_quantity is not None and (
+            isinstance(self.source_tier_minimum_quantity, bool)
+            or not isinstance(self.source_tier_minimum_quantity, int)
+            or self.source_tier_minimum_quantity < 1
+            or self.source_tier_minimum_quantity > self.quantity
+        ):
+            raise ValidationError("寻源成本来源数量档无效")
+        if self.source_unit is not None and (
+            not isinstance(self.source_unit, str)
+            or not self.source_unit.strip()
+            or self.source_unit != self.source_unit.strip()
+            or self.source_unit != self.source_unit.casefold()
+            or len(self.source_unit) > 50
+        ):
+            raise ValidationError("寻源成本来源计价单位无效")
         if self.source_candidate_id is not None and (
             self.source_sourcing_case_id is None
             or not isinstance(self.source_candidate_id, str)

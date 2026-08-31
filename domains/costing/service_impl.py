@@ -150,6 +150,8 @@ def _view(sheet: CostSheet) -> CostSheetView:
             if sheet.source_candidate_id is not None
             else None
         ),
+        source_tier_minimum_quantity=sheet.source_tier_minimum_quantity,
+        source_unit=sheet.source_unit,
     )
 
 
@@ -169,6 +171,8 @@ def _matches_sourcing_estimate(
         and sheet.source_option_id == command.primary_option_id
         and sheet.source_product_id == command.product_id
         and sheet.source_candidate_id == command.supplier_candidate_id
+        and sheet.source_tier_minimum_quantity == command.minimum_quantity
+        and sheet.source_unit == command.unit
         and sheet.quantity == command.quantity
         and sheet.base_currency == command.currency
         and sheet.quote_currency == command.currency
@@ -297,6 +301,8 @@ class CostingServiceImpl:
                     if command.supplier_candidate_id is not None
                     else None
                 ),
+                source_tier_minimum_quantity=command.minimum_quantity,
+                source_unit=command.unit,
                 items=[
                     CostItem(
                         item_type=CostItemType.PRODUCT_PURCHASE,

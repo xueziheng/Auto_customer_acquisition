@@ -92,6 +92,7 @@ from shared.schemas.identifiers import (
     SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
+    ValidatedNeedId,
     new_id,
 )
 from shared.schemas.money import CurrencyCode, Money
@@ -1979,7 +1980,7 @@ class SourcingServiceImpl:
             raise ValidationError("寻源审核命令无效")
         submitted_by = _employee(actor)
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
             existing = await uow.reviews.get_for_case(tenant_id, case_id)
             if existing is not None:
                 if (
@@ -2064,9 +2065,15 @@ class SourcingServiceImpl:
             review = await uow.reviews.get(tenant_id, review_id)
             if review is None:
                 raise ValidationError("寻源审核不存在或租户不匹配")
+            case = _case_required(
+                await uow.cases.get_for_update(tenant_id, review.case_id)
+            )
+            canonical = await uow.reviews.get_for_case(tenant_id, review.case_id)
+            if canonical is None or canonical.review_id != review_id:
+                raise ValidationError("寻源审核 canonical 绑定无效")
+            review = canonical
             if review.confirmed_by is not None:
                 return review
-            case = _case_required(await uow.cases.get(tenant_id, review.case_id))
             if (
                 case.state is not CaseState.CANDIDATES_READY
                 or case.version != review.expected_case_version
@@ -2082,6 +2089,7 @@ class SourcingServiceImpl:
         case_id: SourcingCaseId,
         opportunity_id: OpportunityId,
         *,
+        expected_need_id: ValidatedNeedId,
         actor: SourcingActor,
     ) -> SourcingHandoffSnapshot:
         self._require(
@@ -2090,11 +2098,13 @@ class SourcingServiceImpl:
             SourcingAction.WORKFLOW_PROGRESS,
             SourcingScope.SYSTEM,
         )
-        if not str(opportunity_id).strip():
+        if not str(opportunity_id).strip() or not str(expected_need_id).strip():
             raise ValidationError("成本交接必须绑定可信 Opportunity 引用")
         now = _aware(self._now())
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            if case.need_id != expected_need_id:
+                raise ValidationError("成本交接 Case 与 owning Run Need 不一致")
             review = await uow.reviews.get_for_case(tenant_id, case_id)
             if review is None or review.confirmed_by is None:
                 raise ValidationError("成本交接前必须有已确认的人工审核")
