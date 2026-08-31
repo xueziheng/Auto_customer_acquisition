@@ -7,18 +7,23 @@ type CurrentQuota = components["schemas"]["SourcingCurrentQuotaReadView"];
 type PublicPlan = components["schemas"]["PublicSourcingPlanReadView"];
 type PublicPlanCommand = components["schemas"]["PublicSourcingPlanCommand"];
 type PlanReference = components["schemas"]["PlanReferenceBody"];
+type RunAvailability = "available" | "forbidden" | "unavailable" | "paid" | "unknown" | "exhausted";
 
 const props = defineProps<{
+  canConfirm: boolean;
+  canDraft: boolean;
+  canRun: boolean;
   caseId: string;
   caseVersion: number;
   currentQuota: CurrentQuota | null;
-  disabled: boolean;
   plan: PublicPlan | null;
+  runAvailability: RunAvailability;
 }>();
 
 const emit = defineEmits<{
   draft: [command: PublicPlanCommand];
   confirm: [reference: PlanReference];
+  retryQuota: [];
   run: [reference: PlanReference];
 }>();
 
@@ -87,7 +92,7 @@ const hasCompleteScope = computed(() => (
 ));
 
 function draft(): void {
-  if (!hasCompleteScope.value) return;
+  if (!props.canDraft || !hasCompleteScope.value) return;
   emit("draft", {
     case_id: props.caseId,
     expected_case_version: props.caseVersion,
@@ -112,12 +117,12 @@ function reference(): PlanReference | null {
 
 function confirm(): void {
   const value = reference();
-  if (value) emit("confirm", value);
+  if (props.canConfirm && value) emit("confirm", value);
 }
 
 function run(): void {
   const value = reference();
-  if (value) emit("run", value);
+  if (props.canRun && value) emit("run", value);
 }
 </script>
 
@@ -218,7 +223,7 @@ function run(): void {
       <button
         class="btn-primary"
         type="submit"
-        :disabled="disabled || !hasCompleteScope"
+        :disabled="!canDraft || !hasCompleteScope"
       >
         {{ plan ? "创建新的计划版本" : "保存计划草稿" }}
       </button>
@@ -242,19 +247,54 @@ function run(): void {
       <div class="action-row">
         <button
           type="button"
-          :disabled="disabled || plan.status !== 'pending_confirmation'"
+          :disabled="!canConfirm || plan.status !== 'pending_confirmation'"
           @click="confirm"
         >
           确认精确范围
         </button><button
+          v-if="plan.status === 'authorized' && runAvailability !== 'forbidden' && runAvailability !== 'unavailable'"
           class="btn-primary"
           type="button"
-          :disabled="disabled || plan.status !== 'authorized'"
+          :disabled="!canRun"
           @click="run"
         >
           运行公开寻源
         </button>
       </div>
+      <section
+        v-if="plan.status === 'authorized' && runAvailability === 'unavailable'"
+        class="run-state"
+        role="alert"
+      >
+        <p>运行公开寻源暂不可用；请重试读取当前额度。</p>
+        <button
+          type="button"
+          @click="emit('retryQuota')"
+        >
+          重试读取当前额度
+        </button>
+      </section>
+      <p
+        v-if="plan.status === 'authorized' && runAvailability === 'paid'"
+        class="run-state"
+        role="alert"
+      >
+        运行公开寻源已阻止：当前额度状态为 paid 或已启用付费，不会走付费回退。
+      </p>
+      <p
+        v-if="plan.status === 'authorized' && runAvailability === 'unknown'"
+        class="run-state"
+        role="alert"
+      >
+        运行公开寻源已阻止：当前额度状态未知，不能推断为免费。
+      </p>
+      <p
+        v-if="plan.status === 'authorized' && runAvailability === 'exhausted'"
+        class="run-state"
+        role="alert"
+      >
+        运行公开寻源已阻止：当前免费额度不足以覆盖最坏消耗。
+      </p>
       <p class="muted">
         确认不执行搜索；运行会重新核对计划哈希与免费额度，绝不走付费回退。
       </p>
@@ -269,5 +309,5 @@ function run(): void {
 .inline-form label { display: grid; gap: 4px; color: var(--text-secondary); }.full-width { grid-column: 1 / -1; }
 .inline-form input, .inline-form textarea { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px; color: var(--text-primary); background: var(--surface); }
 .quota-state { display: flex; flex-wrap: wrap; gap: var(--space2); padding: var(--space3); background: var(--canvas); border-radius: var(--radius-sm); }.quota-state strong { width: 100%; }.quota-state span { color: var(--text-secondary); font-size: 12px; }
-.action-row { display: flex; gap: var(--space2); flex-wrap: wrap; }.meta, .muted { color: var(--text-secondary); font-size: 12px; }
+.action-row { display: flex; gap: var(--space2); flex-wrap: wrap; }.meta, .muted { color: var(--text-secondary); font-size: 12px; }.run-state { color: var(--danger); margin: 0; }
 </style>

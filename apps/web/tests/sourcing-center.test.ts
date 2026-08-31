@@ -49,6 +49,7 @@ async function mount(path: string, fetch: typeof globalThis.fetch): Promise<HTML
 
 type SecondaryProjection = "candidates" | "plan" | "review" | "quota" | "uncertain";
 type FailureMode = "forbidden" | "unavailable" | "network";
+type QuotaScenario = "forbidden" | "unavailable" | "network" | "paid" | "unknown" | "exhausted";
 
 const projectionExpectation: Record<SecondaryProjection, {
   forbidden: string;
@@ -198,6 +199,108 @@ function partialFailureFetch(
   });
 }
 
+const quotaScenarioExpectation: Record<QuotaScenario, {
+  blockedRun: string;
+  quotaMessage: string;
+  runVisible: boolean;
+}> = {
+  forbidden: {
+    blockedRun: "",
+    quotaMessage: "当前身份无权读取当前额度",
+    runVisible: false,
+  },
+  unavailable: {
+    blockedRun: "运行公开寻源暂不可用；请重试读取当前额度。",
+    quotaMessage: "当前额度暂不可用",
+    runVisible: false,
+  },
+  network: {
+    blockedRun: "运行公开寻源暂不可用；请重试读取当前额度。",
+    quotaMessage: "当前额度暂不可用",
+    runVisible: false,
+  },
+  paid: {
+    blockedRun: "运行公开寻源已阻止：当前额度状态为 paid 或已启用付费，不会走付费回退。",
+    quotaMessage: "",
+    runVisible: true,
+  },
+  unknown: {
+    blockedRun: "运行公开寻源已阻止：当前额度状态未知，不能推断为免费。",
+    quotaMessage: "",
+    runVisible: true,
+  },
+  exhausted: {
+    blockedRun: "运行公开寻源已阻止：当前免费额度不足以覆盖最坏消耗。",
+    quotaMessage: "",
+    runVisible: true,
+  },
+};
+
+function quotaScenarioFetch(scenario: QuotaScenario): {
+  fetch: typeof globalThis.fetch;
+  postPaths: string[];
+  quotaReads: { value: number };
+} {
+  const fallback = partialFailureFetch(null, "unavailable");
+  const postPaths: string[] = [];
+  const quotaReads = { value: 0 };
+  let plan = {
+    case_id: caseId,
+    confirmed_at: null,
+    confirmed_by: null,
+    created_at: "2026-08-30T09:00:00Z",
+    expected_case_version: 5,
+    max_pages_read: 1,
+    max_search_queries: 1,
+    plan_hash: "c".repeat(64),
+    plan_id: "spl_01K39P9M5D6K4A91YEQ80EJZ0X",
+    product_category: "hinges",
+    provider: "tavily",
+    queries: [{ lane: null, query_text: "stainless hinge", target_country: "CN" }],
+    search_depth: "basic",
+    status: "pending_confirmation",
+    target_countries: ["CN"],
+    usage_credits_remaining: 2,
+    version: 1,
+    worst_case_credits: 1,
+  };
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const request = input as Request;
+    const path = new URL(request.url).pathname;
+    if (request.method === "POST") {
+      postPaths.push(path);
+      if (path.endsWith("/public-search-plan/confirm")) {
+        plan = { ...plan, status: "authorized" };
+      }
+      return jsonResponse(plan);
+    }
+    if (path.endsWith("/public-search-plan")) return jsonResponse(plan);
+    if (path.endsWith("/current-quota")) {
+      quotaReads.value += 1;
+      if (scenario === "forbidden") return jsonResponse({ code: "forbidden" }, 403);
+      if (scenario === "unavailable") return jsonResponse({ code: "unavailable" }, 503);
+      if (scenario === "network") throw new TypeError("network unavailable");
+      if (scenario === "paid") return jsonResponse({
+        checked_at: "2026-08-30T09:00:00Z", cost_status: "paid", paygo_enabled: true, remaining: 2, reservations: 0,
+      });
+      if (scenario === "unknown") return jsonResponse({
+        checked_at: null, cost_status: "unknown", paygo_enabled: null, remaining: null, reservations: null,
+      });
+      return jsonResponse({
+        checked_at: "2026-08-30T09:00:00Z", cost_status: "free", paygo_enabled: false, remaining: 0, reservations: 0,
+      });
+    }
+    return fallback(input);
+  });
+  return { fetch, postPaths, quotaReads };
+}
+
+function planButton(root: HTMLElement, name: string): HTMLButtonElement | undefined {
+  return [...root.querySelectorAll<HTMLButtonElement>(".plan-panel button")].find(
+    (button) => button.textContent?.includes(name),
+  );
+}
+
 describe("Sourcing and Product centers", () => {
   it.each([
     ["candidates", "forbidden"], ["candidates", "unavailable"], ["candidates", "network"],
@@ -228,9 +331,9 @@ describe("Sourcing and Product centers", () => {
       expect(root.querySelector(".plan-panel form")).toBeNull();
     }
     if (projection === "quota") {
-      const planButtons = [...root.querySelectorAll<HTMLButtonElement>(".plan-panel button")];
-      expect(planButtons.length).toBeGreaterThan(0);
-      expect(planButtons.every((button) => button.disabled)).toBe(true);
+      expect(planButton(root, "创建新的计划版本")?.disabled).toBe(false);
+      expect(planButton(root, "确认精确范围")?.disabled).toBe(false);
+      expect(planButton(root, "运行公开寻源")).toBeUndefined();
     }
     if (projection === "uncertain") {
       expect(root.textContent).not.toContain("没有可展示的不确定搜索请求。");
@@ -275,6 +378,42 @@ describe("Sourcing and Product centers", () => {
       expect(root.textContent).toContain("当前计划 v1");
     });
   });
+
+  it.each(["forbidden", "unavailable", "network", "paid", "unknown", "exhausted"] as const)(
+    "keeps draft and confirm quota-independent while %s blocks run",
+    async (scenario) => {
+      const { fetch, postPaths, quotaReads } = quotaScenarioFetch(scenario);
+      const root = await mount(`/sourcing/${caseId}`, fetch);
+      const expected = quotaScenarioExpectation[scenario];
+
+      await eventually(() => {
+        if (expected.quotaMessage) expect(root.textContent).toContain(expected.quotaMessage);
+        expect(planButton(root, "创建新的计划版本")?.disabled).toBe(false);
+        expect(planButton(root, "确认精确范围")?.disabled).toBe(false);
+      });
+      const initialQuotaReads = quotaReads.value;
+      root.querySelector<HTMLFormElement>(".plan-panel form")!.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+      await eventually(() => expect(postPaths).toContain(`/sourcing-cases/${caseId}/public-search-plan`));
+      planButton(root, "确认精确范围")!.click();
+      await eventually(() => expect(root.textContent).toContain("authorized"));
+
+      expect(quotaReads.value).toBe(initialQuotaReads);
+      expect(postPaths).not.toContain(`/sourcing-cases/${caseId}/run`);
+      if (expected.runVisible) {
+        const run = planButton(root, "运行公开寻源");
+        expect(run?.disabled).toBe(true);
+        expect(root.textContent).toContain(expected.blockedRun);
+        run?.click();
+      } else {
+        expect(planButton(root, "运行公开寻源")).toBeUndefined();
+        expect(root.textContent).toContain(expected.blockedRun);
+      }
+      await nextTick();
+      expect(postPaths).not.toContain(`/sourcing-cases/${caseId}/run`);
+    },
+  );
 
   it("renders source_only supply as indicative-only without a customer quote or contact action", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
@@ -440,7 +579,7 @@ describe("Sourcing and Product centers", () => {
       if (path.endsWith("/ladder-checks")) return jsonResponse([]);
       if (path.endsWith("/public-search-plan")) return jsonResponse(plan);
       if (path.endsWith("/review")) return jsonResponse(review);
-      if (path.endsWith("/current-quota")) return jsonResponse({ checked_at: "2026-08-30T09:00:00Z", cost_status: "unknown", paygo_enabled: null, remaining: null, reservations: null });
+      if (path.endsWith("/current-quota")) return jsonResponse({ checked_at: "2026-08-30T09:00:00Z", cost_status: "free", paygo_enabled: false, remaining: 2, reservations: 0 });
       if (path.endsWith("/uncertain-reconciliations")) return jsonResponse(uncertain);
       return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
     });

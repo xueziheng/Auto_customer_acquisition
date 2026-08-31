@@ -22,6 +22,7 @@ type PlanReference = components["schemas"]["PlanReferenceBody"];
 type ReviewCommand = components["schemas"]["SourcingReviewCommand"];
 type SecondaryProjection = "candidates" | "plan" | "quota" | "review" | "uncertain";
 type ProjectionState = "forbidden" | "loading" | "success" | "unavailable";
+type RunAvailability = "available" | "forbidden" | "unavailable" | "paid" | "unknown" | "exhausted";
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route = useRoute();
@@ -37,6 +38,7 @@ const loading = ref(true);
 const mutating = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+const hasLoadedCase = ref(false);
 const projectionState = ref<Record<SecondaryProjection, ProjectionState>>({
   candidates: "loading",
   plan: "loading",
@@ -44,15 +46,44 @@ const projectionState = ref<Record<SecondaryProjection, ProjectionState>>({
   review: "loading",
   uncertain: "loading",
 });
-const canManagePlan = computed(() => (
-  projectionState.value.plan === "success"
-  && projectionState.value.quota === "success"
+const canDraftPlan = computed(() => (
+  hasLoadedCase.value
+  && projectionState.value.plan === "success"
+  && !mutating.value
+));
+const canConfirmPlan = computed(() => (
+  canDraftPlan.value
+  && plan.value?.status === "pending_confirmation"
 ));
 const canReview = computed(() => (
   projectionState.value.candidates === "success"
   && projectionState.value.review === "success"
 ));
 const canReconcile = computed(() => projectionState.value.uncertain === "success");
+const runAvailability = computed<RunAvailability>(() => {
+  if (projectionState.value.quota === "forbidden") return "forbidden";
+  if (projectionState.value.quota !== "success") return "unavailable";
+  const quota = currentQuota.value;
+  const currentPlan = plan.value;
+  if (!quota || !currentPlan) return "unknown";
+  if (quota.cost_status === "paid" || quota.paygo_enabled === true) return "paid";
+  if (
+    quota.cost_status !== "free"
+    || quota.paygo_enabled !== false
+    || !quota.checked_at
+    || !Number.isInteger(quota.remaining)
+    || !Number.isInteger(currentPlan.worst_case_credits)
+  ) return "unknown";
+  if ((quota.remaining ?? 0) < currentPlan.worst_case_credits) return "exhausted";
+  return "available";
+});
+const canRunPlan = computed(() => (
+  hasLoadedCase.value
+  && projectionState.value.plan === "success"
+  && plan.value?.status === "authorized"
+  && runAvailability.value === "available"
+  && !mutating.value
+));
 
 const projectionMessage: Record<SecondaryProjection, {
   forbidden: string;
@@ -234,8 +265,9 @@ async function retryProjection(projection: SecondaryProjection): Promise<void> {
   if (projection === "uncertain") await loadUncertainExecutions();
 }
 
-async function loadCase(preserveStatus = false): Promise<boolean> {
+async function loadCase(preserveStatus = false, includeQuota = true): Promise<boolean> {
   loading.value = true;
+  hasLoadedCase.value = false;
   error.value = null;
   if (!preserveStatus) notice.value = null;
   try {
@@ -247,17 +279,19 @@ async function loadCase(preserveStatus = false): Promise<boolean> {
       return false;
     }
     sourcingCase.value = caseResult.data;
+    hasLoadedCase.value = true;
     loading.value = false;
-    const results = await Promise.all([
+    const [candidatesLoaded, , planLoaded, reviewLoaded, quotaLoaded, uncertainLoaded] = await Promise.all([
       loadCandidates(),
       loadLadderChecks(),
       loadPlan(),
       loadReview(),
-      loadQuota(),
+      includeQuota ? loadQuota() : Promise.resolve(true),
       loadUncertainExecutions(),
     ]);
-    return results[0] && results[2] && results[3] && results[4] && results[5];
+    return candidatesLoaded && planLoaded && reviewLoaded && quotaLoaded && uncertainLoaded;
   } catch {
+    hasLoadedCase.value = false;
     error.value = "无法连接寻源服务";
     return false;
   } finally {
@@ -266,26 +300,26 @@ async function loadCase(preserveStatus = false): Promise<boolean> {
 }
 
 async function draftPlan(command: PublicPlanCommand): Promise<void> {
-  if (!canManagePlan.value) return;
+  if (!canDraftPlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/public-search-plan", {
     body: command,
     params: { path: { case_id: caseId.value } },
-  }), "计划草稿已保存；尚未确认、未预留额度、未执行搜索。");
+  }), "计划草稿已保存；尚未确认、未预留额度、未执行搜索。", false);
 }
 
 async function confirmPlan(reference: PlanReference): Promise<void> {
-  if (!canManagePlan.value) return;
+  if (!canConfirmPlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/public-search-plan/confirm", {
     body: reference,
     params: {
       header: { "Idempotency-Key": idempotencyKey("sourcing-confirm") },
       path: { case_id: caseId.value },
     },
-  }), "计划已确认；仍未执行公开搜索。");
+  }), "计划已确认；仍未执行公开搜索。", false);
 }
 
 async function runPlan(reference: PlanReference): Promise<void> {
-  if (!canManagePlan.value) return;
+  if (!canRunPlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/run", {
     body: reference,
     params: {
@@ -320,6 +354,7 @@ async function reconcileUncertain(command: ReconciliationCommand): Promise<void>
 async function mutate(
   operation: () => ReturnType<ApiClient["POST"]>,
   success: string,
+  includeQuota = true,
 ): Promise<void> {
   mutating.value = true;
   error.value = null;
@@ -330,7 +365,7 @@ async function mutate(
       error.value = safeError(result.response.status);
       return;
     }
-    const refreshed = await loadCase(true);
+    const refreshed = await loadCase(true, includeQuota);
     if (!refreshed) {
       error.value = "操作已被服务器接受，但最新安全投影暂不可用；请重试受影响区块。";
       return;
@@ -562,13 +597,17 @@ onMounted(() => void loadCase());
 
       <SourcingPlanForm
         v-if="projectionState.plan === 'success'"
+        :can-confirm="canConfirmPlan"
+        :can-draft="canDraftPlan"
+        :can-run="canRunPlan"
         :case-id="caseId"
         :case-version="sourcingCase.version"
         :current-quota="currentQuota"
-        :disabled="mutating || !canManagePlan"
         :plan="plan"
+        :run-availability="runAvailability"
         @draft="draftPlan"
         @confirm="confirmPlan"
+        @retry-quota="retryProjection('quota')"
         @run="runPlan"
       />
       <section
