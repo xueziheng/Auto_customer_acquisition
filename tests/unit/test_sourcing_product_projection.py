@@ -311,11 +311,22 @@ class _Engine:
             current_step="await_product_cards",
             status=StepStatus.RUNNING,
             created_at=NOW,
-            context={"case_id": str(CASE_ID)},
+            context={
+                "case_id": str(CASE_ID),
+                "supplier_candidate_ids": [
+                    "spc-candidate-1",
+                    "spc-candidate-2",
+                    "spc-candidate-3",
+                ],
+                "candidate_case_version": VERSION,
+                "candidate_set_hash": GENERATION_HASH,
+            },
         )
         self.product_cards_prepared_events = 0
         self.payloads: list[dict[str, Any]] = []
-        self.prepared = False
+        self.prepared_run_ids: set[RunId] = set()
+        self.historical_prepared = False
+        self.query_error_once: Exception | None = None
         self.queries: list[tuple[Any, ...]] = []
 
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
@@ -343,7 +354,11 @@ class _Engine:
         *,
         workflow_version=None,
         required_context=None,
+        run_id=None,
     ):
+        if self.query_error_once is not None:
+            error, self.query_error_once = self.query_error_once, None
+            raise error
         self.queries.append(
             (
                 tenant_id,
@@ -353,16 +368,21 @@ class _Engine:
                 payload,
                 workflow_version,
                 required_context,
+                run_id,
             )
         )
-        return self.prepared and event_type == "SourcingProductCardsPrepared"
+        if event_type != "SourcingProductCardsPrepared":
+            return False
+        if run_id is None and self.historical_prepared:
+            return True
+        return run_id in self.prepared_run_ids
 
     async def deliver_event(self, tenant_id, run_id, event_type, payload):
         assert tenant_id == TENANT and run_id == self.run.run_id
         assert event_type == "SourcingProductCardsPrepared"
         self.product_cards_prepared_events += 1
         self.payloads.append(dict(payload))
-        self.prepared = True
+        self.prepared_run_ids.add(run_id)
         self.run = replace(self.run, current_step="await_review")
         return True
 
@@ -441,7 +461,18 @@ async def test_candidates_verified_projection_is_idempotent_and_generation_exact
             "SourcingProductCardsPrepared",
         )
         and query[5] == 2
-        and query[6] == {"case_id": str(CASE_ID)}
+        and query[6]
+        == {
+            "case_id": str(CASE_ID),
+            "supplier_candidate_ids": [
+                "spc-candidate-1",
+                "spc-candidate-2",
+                "spc-candidate-3",
+            ],
+            "candidate_case_version": VERSION,
+            "candidate_set_hash": GENERATION_HASH,
+        }
+        and query[7] == RunId("run-product-projection")
         for query in engine.queries
     )
 
@@ -469,6 +500,68 @@ async def test_projection_recovers_after_partial_product_failure_without_raw_err
         (str(CASE_ID), "spc-candidate-3"),
     }
     assert engine.product_cards_prepared_events == 1
+
+
+@pytest.mark.asyncio
+async def test_ready_then_engine_failure_is_detached_transient_and_retry_delivers_once() -> None:
+    """Ready 已提交后 Engine 原始失败若被永久化，会不可恢复地丢失工作流唤醒。"""
+
+    projector, sourcing, _products, engine = _projector()
+    engine.query_error_once = RuntimeError(
+        "postgres://user:secret@db/private token=raw-secret"
+    )
+
+    with pytest.raises(TransientError, match="工作流事件证据暂不可用") as caught:
+        await projector.handle(_event())
+
+    assert len(sourcing.ready_calls) == 1
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+
+    await projector.handle(_event())
+
+    assert len(sourcing.ready_calls) == 2
+    assert engine.product_cards_prepared_events == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_ordering_race_is_transient_and_exact_retry_wakes_same_run() -> None:
+    """投影先于 prepare bridge 提交是合法排序竞争，不能永久死信。"""
+
+    projector, sourcing, _products, engine = _projector()
+    engine.run = replace(engine.run, current_step="prepare_candidates")
+
+    with pytest.raises(TransientError, match="尚未进入产品卡等待边界") as caught:
+        await projector.handle(_event())
+
+    assert len(sourcing.ready_calls) == 1
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    engine.run = replace(engine.run, current_step="await_product_cards")
+
+    await projector.handle(_event())
+
+    assert engine.product_cards_prepared_events == 1
+
+
+@pytest.mark.asyncio
+async def test_prior_run_delivery_cannot_satisfy_active_run_or_mismatched_generation() -> None:
+    """历史 Run 的相同指纹和错误 generation 都不得证明当前 Run 已被唤醒。"""
+
+    projector, _sourcing, _products, engine = _projector()
+    engine.historical_prepared = True
+
+    await projector.handle(_event())
+
+    assert engine.product_cards_prepared_events == 1
+    assert all(query[7] == engine.run.run_id for query in engine.queries)
+
+    mismatch_projector, _sourcing, _products, mismatch = _projector()
+    mismatch.run.context["candidate_set_hash"] = "b" * 64
+    with pytest.raises(ValidationError, match="generation"):
+        await mismatch_projector.handle(_event())
+    assert mismatch.product_cards_prepared_events == 0
 
 
 @pytest.mark.asyncio
@@ -543,7 +636,12 @@ class _ReviewEngine:
         status: StepStatus = StepStatus.WAITING_EVENT,
         stop_reason: str | None = None,
     ) -> None:
-        context: dict[str, Any] = {"case_id": str(CASE_ID)}
+        context: dict[str, Any] = {
+            "case_id": str(CASE_ID),
+            "supplier_candidate_ids": ["spc-candidate-1"],
+            "candidate_case_version": VERSION,
+            "candidate_set_hash": GENERATION_HASH,
+        }
         if stop_reason is not None:
             context["sourcing_stop_reason"] = stop_reason
         self.run = WorkflowRun(
@@ -559,6 +657,7 @@ class _ReviewEngine:
         )
         self.delivered: list[tuple[str, dict[str, Any]]] = []
         self.ledger: list[tuple[str, dict[str, Any]]] = []
+        self.historical_delivered = False
         self.queries: list[tuple[Any, ...]] = []
 
     async def find_active_run(self, tenant_id, workflow_type, subject_ref):
@@ -577,6 +676,7 @@ class _ReviewEngine:
         *,
         workflow_version=None,
         required_context=None,
+        run_id=None,
     ):
         self.queries.append(
             (
@@ -587,8 +687,11 @@ class _ReviewEngine:
                 dict(payload),
                 workflow_version,
                 dict(required_context or {}),
+                run_id,
             )
         )
+        if run_id is None and self.historical_delivered:
+            return True
         return (event_type, dict(payload)) in self.ledger
 
     async def deliver_event(self, tenant_id, run_id, event_type, payload):
@@ -648,7 +751,17 @@ async def test_review_saves_then_wakes_await_review_and_exact_request_replays() 
     assert all(
         query[0:4]
         == (TENANT, "sourcing_case", str(CASE_ID), "SourcingReviewSubmitted")
-        and query[5:] == (2, {"case_id": str(CASE_ID)})
+        and query[5:]
+        == (
+            2,
+            {
+                "case_id": str(CASE_ID),
+                "supplier_candidate_ids": ["spc-candidate-1"],
+                "candidate_case_version": VERSION,
+                "candidate_set_hash": GENERATION_HASH,
+            },
+            RunId("run-review"),
+        )
         for query in engine.queries
         if query[3] == "SourcingReviewSubmitted"
     )
@@ -683,6 +796,34 @@ async def test_new_review_request_retries_only_opportunity_required_handoff() ->
             {"review_id": "srv-review", "request_id": "retry-request-2"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_review_ignores_identical_event_from_prior_run_and_binds_generation() -> None:
+    """相同 Case 的历史 Run 指纹不得吞掉当前 owning Run 的审核唤醒。"""
+
+    sourcing = _ReviewSourcing()
+    engine = _ReviewEngine()
+    engine.historical_delivered = True
+    application = SourcingCaseApplication(
+        sourcing=sourcing, quota=_UnusedQuota(), engine=engine
+    )
+
+    await application.review(
+        TENANT,
+        CASE_ID,
+        REVIEW_COMMAND,
+        request_id="review-current-run",
+        actor=SOURCING_ACTOR,
+    )
+
+    assert engine.delivered == [
+        (
+            "SourcingReviewSubmitted",
+            {"review_id": "srv-review", "request_id": "review-current-run"},
+        )
+    ]
+    assert all(query[7] == RunId("run-review") for query in engine.queries)
 
 
 @pytest.mark.asyncio

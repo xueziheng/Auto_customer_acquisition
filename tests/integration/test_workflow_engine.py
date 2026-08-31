@@ -1159,11 +1159,17 @@ async def test_delivered_event_history_filters_owning_version_and_immutable_cont
         engine.register(replace(_advance_flow(), version=2))
         tenant = TenantId("tBoundDurableEventHistory")
         payload = {"plan_id": "spl_exact", "plan_hash": "a" * 64}
+        generation_context = {
+            "case_id": "case-subject",
+            "supplier_candidate_ids": ["spc-first", "spc-second"],
+            "candidate_case_version": 8,
+            "candidate_set_hash": "c" * 64,
+        }
         run_id = await engine.start(
             tenant,
             "wf",
             "case-subject",
-            {"case_id": "case-subject"},
+            generation_context,
             "bound-durable-event",
         )
         assert await engine.poll_due(tenant, 1) == 1
@@ -1198,11 +1204,11 @@ async def test_delivered_event_history_filters_owning_version_and_immutable_cont
         )
 
         assert await engine.poll_due(tenant, 1) == 1
-        await engine.start(
+        next_run_id = await engine.start(
             tenant,
             "wf",
             "case-subject",
-            {"case_id": "case-subject"},
+            generation_context,
             "bound-durable-event-next-generation",
         )
         assert not await engine.has_delivered_event(
@@ -1216,6 +1222,26 @@ async def test_delivered_event_history_filters_owning_version_and_immutable_cont
             payload,
             workflow_version=2,
             required_context={"case_id": "case-subject"},
+        )
+        assert await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context=generation_context,
+            run_id=run_id,
+        )
+        assert not await engine.has_delivered_event(
+            tenant,
+            "wf",
+            "case-subject",
+            "approval",
+            payload,
+            workflow_version=2,
+            required_context=generation_context,
+            run_id=next_run_id,
         )
     finally:
         await handle.dispose()

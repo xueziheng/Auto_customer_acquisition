@@ -417,6 +417,68 @@ async def test_verify_candidates_step_advances_with_exact_sealed_generation() ->
 
 
 @pytest.mark.asyncio
+async def test_supplier_generation_runs_verify_prepare_and_wait_without_domain_writes() -> None:
+    """供应商路径的 prepare 若误走内部产品分支，真实步骤序列会在建卡前失败。"""
+
+    sourcing = _Sourcing()
+    candidate_ids = (
+        SupplierCandidateId("spc-first"),
+        SupplierCandidateId("spc-second"),
+    )
+    sourcing.verification_result = VerifyPublicCandidateDraftsResult(
+        calibration_draft_ids=(),
+        converted_candidate_ids=candidate_ids,
+        rejected_candidate_ids=(),
+        qualified_candidate_ids=candidate_ids,
+        verified_event=SourcingCandidatesVerified(
+            tenant_id=TENANT,
+            occurred_at=NOW,
+            case_id=CASE_ID,
+            candidate_ids=candidate_ids,
+            case_version=8,
+            candidate_set_hash="c" * 64,
+        ),
+    )
+    handlers = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
+    )
+
+    verify_result = await handlers["sourcing_case.v2.verify_candidates"].execute(
+        _verification_run()
+    )
+    assert verify_result[0:2] == ("advance", "prepare_candidates")
+    prepare_run = replace(
+        _verification_run(),
+        current_step="prepare_candidates",
+        context={**_verification_run().context, **verify_result[2]},
+    )
+    prepare_result = await handlers["sourcing_case.v2.prepare_candidates"].execute(
+        prepare_run
+    )
+
+    assert prepare_result == (
+        "advance",
+        "await_product_cards",
+        {
+            "option_ids": [],
+            "supplier_candidate_ids": ["spc-first", "spc-second"],
+            "candidate_case_version": 8,
+            "candidate_set_hash": "c" * 64,
+        },
+    )
+    waiting_run = replace(
+        prepare_run,
+        current_step="await_product_cards",
+        context={**prepare_run.context, **prepare_result[2]},
+    )
+    assert await handlers["sourcing_case.v2.await_product_cards"].execute(
+        waiting_run
+    ) == ("wait", None, {})
+    assert sourcing.options == {}
+    assert sourcing.ready_calls == []
+
+
+@pytest.mark.asyncio
 async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies() -> None:
     sourcing = _Sourcing()
     sourcing.verification_result = VerifyPublicCandidateDraftsResult(

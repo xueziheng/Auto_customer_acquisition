@@ -39,7 +39,11 @@
 ## 事件
 
 发布：无
-订阅：`SourcingCaseCompleted`（合格候选 → 生成候选产品卡）
+订阅：`SourcingCandidatesVerified`（精确封存 generation → 幂等投影候选产品卡）
+
+投影必须以同一 `case_version` + `candidate_set_hash` 绑定全部 Product、Supplier
+Option 与最终 ready 迁移；`SourcingCandidatesReady` 是完整卡集冻结后的最终事实，
+不是建卡请求。重复或并发投影按 Case+Supplier Candidate canonical source 收敛。
 
 ## Phase 1 范围
 

@@ -21,6 +21,7 @@ from shared.errors import TransientError, ValidationError
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ProductId,
+    RunId,
     SourcingCaseId,
     SourcingSupplyOptionId,
     TenantId,
@@ -66,8 +67,26 @@ async def _dependency[T](
     raise AssertionError("依赖错误必须终止投影")
 
 
+async def _engine_dependency[T](awaitable: Awaitable[T], *, message: str) -> T:
+    """Engine 位于 Ready 事务之外，任何存储失败都只能安全重试。"""
+
+    failed = False
+    try:
+        return await awaitable
+    except Exception:  # noqa: BLE001 -- Engine 自由错误不可跨边界且必须可重试
+        failed = True
+    if failed:
+        raise TransientError(message)
+    raise AssertionError("Engine 依赖错误必须终止投影")
+
+
 def _bound_run(
-    run: WorkflowRun | None, tenant_id: TenantId, case_id: SourcingCaseId
+    run: WorkflowRun | None,
+    tenant_id: TenantId,
+    case_id: SourcingCaseId,
+    candidate_ids: list[str],
+    case_version: int,
+    candidate_set_hash: str,
 ) -> bool:
     return (
         isinstance(run, WorkflowRun)
@@ -78,6 +97,9 @@ def _bound_run(
         and run.status in {StepStatus.RUNNING, StepStatus.WAITING_EVENT}
         and isinstance(run.context, dict)
         and run.context.get("case_id") == str(case_id)
+        and run.context.get("supplier_candidate_ids") == candidate_ids
+        and run.context.get("candidate_case_version") == case_version
+        and run.context.get("candidate_set_hash") == candidate_set_hash
     )
 
 
@@ -102,9 +124,13 @@ class SourcingCandidateProductProjector:
         self._product_actor = product_actor
 
     async def _prepared(
-        self, case_id: SourcingCaseId, payload: dict[str, Any]
+        self,
+        case_id: SourcingCaseId,
+        run_id: RunId,
+        payload: dict[str, Any],
+        required_context: dict[str, Any],
     ) -> bool:
-        delivered = await _dependency(
+        delivered = await _engine_dependency(
             self._engine.has_delivered_event(
                 self._tenant_id,
                 _WORKFLOW_TYPE,
@@ -112,10 +138,10 @@ class SourcingCandidateProductProjector:
                 "SourcingProductCardsPrepared",
                 payload,
                 workflow_version=_WORKFLOW_VERSION,
-                required_context={"case_id": str(case_id)},
+                required_context=required_context,
+                run_id=run_id,
             ),
-            transient_message="候选产品卡工作流事件证据暂不可用",
-            permanent_message="候选产品卡工作流事件证据无效",
+            message="候选产品卡工作流事件证据暂不可用",
         )
         if not isinstance(delivered, bool):
             raise ValidationError("候选产品卡工作流事件证据无效")
@@ -124,40 +150,63 @@ class SourcingCandidateProductProjector:
     async def _deliver_prepared(
         self, case_id: SourcingCaseId, payload: dict[str, Any]
     ) -> None:
-        if await self._prepared(case_id, payload):
-            return
-        run_id = await _dependency(
+        run_id = await _engine_dependency(
             self._engine.find_active_run(
                 self._tenant_id, _WORKFLOW_TYPE, str(case_id)
             ),
-            transient_message="候选产品卡所属工作流暂不可用",
-            permanent_message="候选产品卡所属工作流查询失败",
+            message="候选产品卡所属工作流暂不可用",
         )
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValidationError("候选产品卡缺少唯一活动 V2 Run")
-        run = await _dependency(
-            self._engine.get_run(self._tenant_id, run_id),
-            transient_message="候选产品卡所属工作流暂不可用",
-            permanent_message="候选产品卡所属工作流读取失败",
+        bound_run_id = RunId(run_id)
+        run = await _engine_dependency(
+            self._engine.get_run(self._tenant_id, bound_run_id),
+            message="候选产品卡所属工作流暂不可用",
         )
-        if not _bound_run(run, self._tenant_id, case_id):
-            raise ValidationError("候选产品卡所属 V2 Run 绑定无效")
+        candidate_ids = payload.get("candidate_ids")
+        case_version = payload.get("case_version")
+        candidate_set_hash = payload.get("candidate_set_hash")
+        if (
+            not isinstance(candidate_ids, list)
+            or not isinstance(case_version, int)
+            or isinstance(case_version, bool)
+            or not isinstance(candidate_set_hash, str)
+            or not _bound_run(
+                run,
+                self._tenant_id,
+                case_id,
+                candidate_ids,
+                case_version,
+                candidate_set_hash,
+            )
+        ):
+            raise ValidationError("候选产品卡所属 V2 Run generation 绑定无效")
         assert run is not None
+        if run.current_step == "prepare_candidates":
+            raise TransientError("候选产品卡所属 V2 Run 尚未进入产品卡等待边界")
+        required_context = {
+            "case_id": str(case_id),
+            "supplier_candidate_ids": candidate_ids,
+            "candidate_case_version": case_version,
+            "candidate_set_hash": candidate_set_hash,
+        }
+        if await self._prepared(case_id, bound_run_id, payload, required_context):
+            return
         if run.current_step != _WAIT_STEP:
             raise ValidationError("候选产品卡所属 V2 Run 不在等待边界")
-        accepted = await _dependency(
+        accepted = await _engine_dependency(
             self._engine.deliver_event(
-                self._tenant_id,
-                run.run_id,
+                self._tenant_id, run.run_id,
                 "SourcingProductCardsPrepared",
                 payload,
             ),
-            transient_message="候选产品卡工作流唤醒暂不可用",
-            permanent_message="候选产品卡工作流唤醒失败",
+            message="候选产品卡工作流唤醒暂不可用",
         )
         if not isinstance(accepted, bool):
             raise ValidationError("候选产品卡工作流唤醒结果无效")
-        if not accepted and not await self._prepared(case_id, payload):
+        if not accepted and not await self._prepared(
+            case_id, bound_run_id, payload, required_context
+        ):
             raise ValidationError("候选产品卡工作流未接受就绪事件")
 
     @staticmethod

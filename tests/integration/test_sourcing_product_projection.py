@@ -24,6 +24,7 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingReviewCommand,
+    VerifyPublicCandidateDraftsResult,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
@@ -43,6 +44,7 @@ from infra.db.tables import (
     SourcingSupplyOptionRow,
 )
 from infra.db.workflow_engine import PostgresWorkflowEngine
+from shared.errors import TransientError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -67,7 +69,11 @@ from workflows.engine.runner import (
     WorkflowRun,
 )
 from workflows.sourcing_case.application import SourcingCaseApplication
-from workflows.sourcing_case.steps import AwaitProductCardsStep
+from workflows.sourcing_case.steps import (
+    AwaitProductCardsStep,
+    PrepareCandidatesStep,
+    VerifyCandidatesStep,
+)
 
 
 class _AwaitReview:
@@ -95,6 +101,39 @@ class _HandoffRetry:
 
 class _UnusedQuota:
     pass
+
+
+class _VerifiedBridge:
+    """只给真实 Verify/Prepare handler 提供已封存域结果；不执行投影副作用。"""
+
+    def __init__(self, result: VerifyPublicCandidateDraftsResult) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def verify_public_candidate_drafts(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, command: object, *, actor: object
+    ) -> VerifyPublicCandidateDraftsResult:
+        self.calls += 1
+        assert tenant_id == self.result.verified_event.tenant_id
+        assert case_id == self.result.verified_event.case_id
+        return self.result
+
+
+class _FailFirstEventEvidence:
+    """模拟 Ready 已提交后，独立 Engine 事务首次读取失败。"""
+
+    def __init__(self, engine: PostgresWorkflowEngine) -> None:
+        self.engine = engine
+        self.failed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self.engine, name)
+
+    async def has_delivered_event(self, *args: object, **kwargs: object) -> bool:
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("raw workflow storage failure")
+        return await self.engine.has_delivered_event(*args, **kwargs)
 
 
 def _ladder_check(
@@ -208,10 +247,25 @@ async def test_verified_projection_replay_persists_one_complete_generation(
     verified = await sourcing.mark_candidates_verified(
         tenant_id, case_id, (candidate_id,), actor=sourcing_actor
     )
+    bridge = _VerifiedBridge(
+        VerifyPublicCandidateDraftsResult(
+            calibration_draft_ids=(),
+            converted_candidate_ids=(candidate_id,),
+            rejected_candidate_ids=(),
+            qualified_candidate_ids=(candidate_id,),
+            verified_event=verified,
+        )
+    )
 
     engine = PostgresWorkflowEngine(
         factory,
         {
+            "sourcing.verify": VerifyCandidatesStep(
+                sourcing=bridge, actor=sourcing_actor
+            ),
+            "sourcing.prepare": PrepareCandidatesStep(
+                sourcing=bridge, sourcing_actor=sourcing_actor
+            ),
             "sourcing.projected": AwaitProductCardsStep(),
             "sourcing.review_wait": _AwaitReview(),
             "sourcing.handoff_retry": _HandoffRetry(),
@@ -223,10 +277,13 @@ async def test_verified_projection_replay_persists_one_complete_generation(
             workflow_type="sourcing_case",
             version=2,
             steps=(
+                StepDefinition("verify_candidates", "sourcing.verify"),
+                StepDefinition("prepare_candidates", "sourcing.prepare"),
                 StepDefinition(
-                    "await_product_cards",
-                    "sourcing.projected",
-                    wait_event_type="SourcingProductCardsPrepared",
+                        "await_product_cards",
+                        "sourcing.projected",
+                        wait_event_type="SourcingProductCardsPrepared",
+                        run_on_entry=True,
                 ),
                 StepDefinition(
                     "await_review",
@@ -240,6 +297,8 @@ async def test_verified_projection_replay_persists_one_complete_generation(
                 ),
             ),
             transitions={
+                "verify_candidates": ("prepare_candidates",),
+                "prepare_candidates": ("await_product_cards",),
                 "await_product_cards": ("await_review",),
                 "await_review": ("handoff_costing",),
                 "handoff_costing": (),
@@ -255,21 +314,33 @@ async def test_verified_projection_replay_persists_one_complete_generation(
             "need_id": str(need_id),
             "need_snapshot_hash": "a" * 64,
             "internal_product_ids": [],
-            "supplier_candidate_ids": [str(candidate_id)],
-            "candidate_case_version": verified.case_version,
-            "candidate_set_hash": verified.candidate_set_hash,
+            "supplier_candidate_ids": [],
+            "sourcing_plan_id": str(plan.plan_id),
+            "sourcing_plan_hash": plan.plan_hash,
+            "supplier_candidate_draft_ids": ["scd-projection"],
         },
         f"projection:{case_id}",
     )
+    assert await engine.poll_due(tenant_id, 1) == 1
+    assert await engine.poll_due(tenant_id, 1) == 1
+    assert await engine.poll_due(tenant_id, 1) == 1
+    waiting = await engine.get_run(tenant_id, RunId(run_id))
+    assert waiting is not None and waiting.current_step == "await_product_cards"
+    assert waiting.context["supplier_candidate_ids"] == [str(candidate_id)]
+    assert waiting.context["candidate_case_version"] == verified.case_version
+    assert waiting.context["candidate_set_hash"] == verified.candidate_set_hash
+    assert bridge.calls == 1
     projector = SourcingCandidateProductProjector(
         sourcing=sourcing,
         products=products,
-        engine=engine,
+        engine=_FailFirstEventEvidence(engine),
         tenant_id=tenant_id,
         sourcing_actor=sourcing_actor,
         product_actor=product_actor,
     )
 
+    with pytest.raises(TransientError, match="工作流事件证据暂不可用"):
+        await projector.handle(verified)
     await projector.handle(verified)
     await projector.handle(verified)
 

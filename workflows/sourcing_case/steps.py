@@ -569,6 +569,38 @@ class PrepareCandidatesStep:
         case_id, _need_id, _hash = _base(run)
         raw_ids = run.context.get("internal_product_ids")
         candidate_ids = run.context.get("supplier_candidate_ids")
+        candidate_case_version = run.context.get("candidate_case_version")
+        candidate_set_hash = run.context.get("candidate_set_hash")
+        if raw_ids == [] and isinstance(candidate_ids, list) and candidate_ids:
+            if (
+                candidate_ids != sorted(set(candidate_ids))
+                or any(
+                    not isinstance(item, str)
+                    or not item.strip()
+                    or len(item) > 200
+                    for item in candidate_ids
+                )
+                or isinstance(candidate_case_version, bool)
+                or not isinstance(candidate_case_version, int)
+                or candidate_case_version < 1
+                or not isinstance(candidate_set_hash, str)
+                or len(candidate_set_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in candidate_set_hash
+                )
+            ):
+                raise ValidationError("供应商候选准备 generation 无效")
+            return (
+                "advance",
+                "await_product_cards",
+                {
+                    "option_ids": [],
+                    "supplier_candidate_ids": candidate_ids,
+                    "candidate_case_version": candidate_case_version,
+                    "candidate_set_hash": candidate_set_hash,
+                },
+            )
         if (
             not isinstance(raw_ids, list)
             or not raw_ids

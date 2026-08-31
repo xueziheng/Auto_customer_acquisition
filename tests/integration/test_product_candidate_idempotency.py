@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -14,7 +16,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from infra.db.tables import ProductCandidateSourceRow, ProductRow
-from shared.errors import ValidationError
+from shared.errors import TransientError
 from shared.schemas.identifiers import (
     ArtifactId,
     ProductId,
@@ -104,12 +106,24 @@ async def _seed_origin(
                 "observed_facts, supplier_claims, match_inferences, verified_specs, "
                 "indicative_price_tiers, rejection_reasons, rejected, created_at) VALUES "
                 "(:tenant, :candidate, :case, 'Factory A', 'Hinge', '{}', '{}', '{}', "
-                "'[]', '[]', '[]', false, :now)"
+                "'[]', CAST(:tiers AS jsonb), '[]', false, :now)"
             ),
             {
                 "tenant": tenant_id,
                 "candidate": candidate_id,
                 "case": case_id,
+                "tiers": json.dumps(
+                    [
+                        {
+                            "minimum_quantity": 100,
+                            "amount": "1.25",
+                            "currency": "USD",
+                            "unit": "piece",
+                            "provenance": {},
+                            "evidence_ref": str(artifact_ids[0]),
+                        }
+                    ]
+                ),
                 "now": NOW,
             },
         )
@@ -221,8 +235,6 @@ async def test_repeated_candidate_creation_persists_one_card_and_exact_price(
             )
             == 1
         )
-
-
 class _RaceSourceRepository:
     def __init__(self, real: Any, canonical: Any) -> None:
         self.real = real
@@ -269,9 +281,91 @@ class _RaceFactory(_SqlFactory):
     def __init__(self, sf: object, tenant_id: TenantId, canonical: Any) -> None:
         super().__init__(sf, tenant_id)
         self.canonical = canonical
+        self.calls = 0
+
+    def __call__(self, tenant_id: TenantId) -> Any:
+        self.calls += 1
+        real = super().__call__(tenant_id)
+        if self.calls == 1:
+            return _RaceUow(real, self.canonical)
+        return real
+
+
+class _InvisibleRaceFactory(_SqlFactory):
+    def __init__(self, sf: object, tenant_id: TenantId, canonical: Any) -> None:
+        super().__init__(sf, tenant_id)
+        self.canonical = canonical
 
     def __call__(self, tenant_id: TenantId) -> Any:
         return _RaceUow(super().__call__(tenant_id), self.canonical)
+
+
+class _TwoLookupBarrier:
+    def __init__(self) -> None:
+        self.arrivals = 0
+        self.lock = asyncio.Lock()
+        self.released = asyncio.Event()
+
+    async def wait(self) -> None:
+        async with self.lock:
+            self.arrivals += 1
+            if self.arrivals == 2:
+                self.released.set()
+        await self.released.wait()
+
+
+class _BarrierSourceRepository:
+    def __init__(self, real: Any, barrier: _TwoLookupBarrier) -> None:
+        self.real = real
+        self.barrier = barrier
+        self.first_lookup = True
+
+    async def get_by_origin(
+        self, tenant_id: TenantId, case_id: object, candidate_id: object
+    ) -> Any | None:
+        result = await self.real.get_by_origin(tenant_id, case_id, candidate_id)
+        if self.first_lookup and result is None:
+            self.first_lookup = False
+            await self.barrier.wait()
+        return result
+
+    async def get_by_product(
+        self, tenant_id: TenantId, product_id: ProductId
+    ) -> Any | None:
+        return await self.real.get_by_product(tenant_id, product_id)
+
+    async def add(self, tenant_id: TenantId, source: Any) -> Any:
+        return await self.real.add(tenant_id, source)
+
+
+class _BarrierUow:
+    def __init__(self, real: Any, barrier: _TwoLookupBarrier) -> None:
+        self.real = real
+        self.barrier = barrier
+
+    async def __aenter__(self) -> Self:
+        entered = await self.real.__aenter__()
+        self.products = entered.products
+        self.capabilities = entered.capabilities
+        self.bus = entered.bus
+        self.candidate_sources = _BarrierSourceRepository(
+            entered.candidate_sources, self.barrier
+        )
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.real.__aexit__(exc_type, exc, tb)
+
+
+class _BarrierFactory(_SqlFactory):
+    def __init__(
+        self, sf: object, tenant_id: TenantId, barrier: _TwoLookupBarrier
+    ) -> None:
+        super().__init__(sf, tenant_id)
+        self.barrier = barrier
+
+    def __call__(self, tenant_id: TenantId) -> Any:
+        return _BarrierUow(super().__call__(tenant_id), self.barrier)
 
 
 @pytest.mark.asyncio
@@ -298,12 +392,12 @@ async def test_canonical_race_winner_rolls_back_new_orphan_product(
     assert canonical is not None and canonical.product_id == canonical_id
 
     racing = _service(_RaceFactory(sf, tenant_id, canonical))
-    with pytest.raises(ValidationError, match="canonical"):
-        await racing.create_candidate_from_sourcing(
-            tenant_id,
-            _command(case_id, candidate_id, artifact),
-            actor=_actor(tenant_id),
-        )
+    converged_id = await racing.create_candidate_from_sourcing(
+        tenant_id,
+        _command(case_id, candidate_id, artifact),
+        actor=_actor(tenant_id),
+    )
+    assert converged_id == canonical_id
     async with candidate_engine.connect() as connection:
         product_ids = list(
             (
@@ -315,6 +409,105 @@ async def test_canonical_race_winner_rolls_back_new_orphan_product(
             ).scalars()
         )
     assert product_ids == [canonical_id]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_candidate_creates_converge_after_real_unique_race(
+    candidate_engine: AsyncEngine,
+) -> None:
+    """两个真实事务先同时读空后，只能提交一个 Product/source 并返回同一 ID。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    case_id = SourcingCaseId(new_id("src"))
+    candidate_id = SupplierCandidateId(new_id("spc"))
+    artifact = ArtifactId(new_id("art"))
+    await _seed_origin(candidate_engine, tenant_id, case_id, candidate_id, (artifact,))
+    sf = async_sessionmaker(candidate_engine, expire_on_commit=False)
+    factory = _BarrierFactory(sf, tenant_id, _TwoLookupBarrier())
+    command = _command(case_id, candidate_id, artifact)
+
+    first, second = await asyncio.gather(
+        _service(factory).create_candidate_from_sourcing(
+            tenant_id, command, actor=_actor(tenant_id)
+        ),
+        _service(factory).create_candidate_from_sourcing(
+            tenant_id, command, actor=_actor(tenant_id)
+        ),
+    )
+
+    assert first == second
+    async with candidate_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(ProductRow)
+                .where(ProductRow.tenant_id == tenant_id)
+            )
+            == 1
+        )
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(ProductCandidateSourceRow)
+                .where(ProductCandidateSourceRow.tenant_id == tenant_id)
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_canonical_race_without_visible_winner_is_fixed_detached_transient(
+    candidate_engine: AsyncEngine,
+) -> None:
+    """回滚后的 fresh read 尚不可见时只能安全重试，不能永久失败或泄漏下层。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    case_id = SourcingCaseId(new_id("src"))
+    candidate_id = SupplierCandidateId(new_id("spc"))
+    artifact = ArtifactId(new_id("art"))
+    await _seed_origin(candidate_engine, tenant_id, case_id, candidate_id, (artifact,))
+    sf = async_sessionmaker(candidate_engine, expire_on_commit=False)
+    normal_factory = _SqlFactory(sf, tenant_id)
+    canonical_id = await _service(normal_factory).create_candidate_from_sourcing(
+        tenant_id,
+        _command(case_id, candidate_id, artifact),
+        actor=_actor(tenant_id),
+    )
+    async with normal_factory(tenant_id) as uow:
+        canonical = await uow.candidate_sources.get_by_origin(
+            tenant_id, case_id, candidate_id
+        )
+    assert canonical is not None
+
+    with pytest.raises(TransientError, match="canonical 来源暂不可见") as caught:
+        await _service(
+            _InvisibleRaceFactory(sf, tenant_id, canonical)
+        ).create_candidate_from_sourcing(
+            tenant_id,
+            _command(case_id, candidate_id, artifact),
+            actor=_actor(tenant_id),
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    async with candidate_engine.connect() as connection:
+        assert list(
+            (
+                await connection.execute(
+                    select(ProductRow.product_id).where(
+                        ProductRow.tenant_id == tenant_id
+                    )
+                )
+            ).scalars()
+        ) == [canonical_id]
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(ProductCandidateSourceRow)
+                .where(ProductCandidateSourceRow.tenant_id == tenant_id)
+            )
+            == 1
+        )
 
 
 class _SupplierSqlFactory:

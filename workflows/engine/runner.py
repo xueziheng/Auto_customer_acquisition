@@ -203,9 +203,10 @@ class WorkflowEngine(Protocol):
         payload: dict[str, Any],
         *,
         workflow_version: int | None = None,
-        required_context: Mapping[str, str] | None = None,
+        required_context: Mapping[str, Any] | None = None,
+        run_id: RunId | None = None,
     ) -> bool:
-        """默认查询当前 generation；完整 owning Run 约束显式查询历史。"""
+        """默认查询当前 generation；可按 owning Run 与上下文精确过滤历史。"""
         ...
 
     async def cancel(self, tenant_id: TenantId, run_id: RunId, reason: str) -> None: ...

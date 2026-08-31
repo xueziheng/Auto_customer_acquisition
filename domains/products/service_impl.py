@@ -30,10 +30,14 @@ from domains.products.models import (
 from domains.products.permissions import ProductAction, ProductActor, ProductAuthorizer
 from domains.products.repository import ProductsUnitOfWork
 from domains.products.schemas import CandidateProductCreate
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import ProductId, TenantId, new_id
 
 _SPACE_RE = re.compile(r"\s+")
+
+
+class _CanonicalCandidateSourceRace(Exception):
+    """触发当前 UoW 回滚后再读取 canonical winner 的内部控制信号。"""
 
 
 def _normalize(value: str) -> str:
@@ -210,53 +214,65 @@ class ProductServiceImpl:
         self._require(tenant_id, actor, ProductAction.CANDIDATE_CREATE)
         if not isinstance(command, CandidateProductCreate):
             raise ValidationError("候选产品创建命令无效")
-        async with self._uow_factory(tenant_id) as uow:
-            existing = await uow.candidate_sources.get_by_origin(
-                tenant_id, command.sourcing_case_id, command.supplier_candidate_id
-            )
-            if existing is not None:
-                return existing.product_id
-            product_id = ProductId(new_id("prd"))
-            product = Product(
-                product_id=product_id,
-                tenant_id=tenant_id,
-                pool=ProductPool.CANDIDATE,
-                candidate_status=CandidateStatus.SOURCE_ONLY,
-                name_zh=command.name_zh,
-                name_en=command.name_en,
-                category=command.category,
-                spec_summary=command.spec_summary,
-                moq=command.moq,
-                created_at=_clock(self._now()),
-            )
-            source = ProductCandidateSource(
-                tenant_id=tenant_id,
-                product_id=product_id,
-                sourcing_case_id=command.sourcing_case_id,
-                supplier_candidate_id=command.supplier_candidate_id,
-                created_at=product.created_at,
-                indicative_prices=tuple(
-                    StoredPriceRef(
-                        minimum_quantity=item.minimum_quantity,
-                        unit_amount=item.unit_amount,
-                        currency=item.currency,
-                        unit=item.unit,
-                        evidence_ref=item.evidence_ref,
-                    )
-                    for item in command.indicative_prices
-                ),
-            )
-            await uow.products.add(tenant_id, product)
-            canonical = await uow.candidate_sources.add(tenant_id, source)
-            if canonical.product_id != product_id:
-                raise ValidationError(
-                    "candidate source canonical product 冲突；新产品事务必须回滚",
-                    context={
-                        "tenant_id": str(tenant_id),
-                        "canonical_product_id": str(canonical.product_id),
-                    },
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                existing = await uow.candidate_sources.get_by_origin(
+                    tenant_id, command.sourcing_case_id, command.supplier_candidate_id
                 )
-            return product_id
+                if existing is not None:
+                    return existing.product_id
+                product_id = ProductId(new_id("prd"))
+                product = Product(
+                    product_id=product_id,
+                    tenant_id=tenant_id,
+                    pool=ProductPool.CANDIDATE,
+                    candidate_status=CandidateStatus.SOURCE_ONLY,
+                    name_zh=command.name_zh,
+                    name_en=command.name_en,
+                    category=command.category,
+                    spec_summary=command.spec_summary,
+                    moq=command.moq,
+                    created_at=_clock(self._now()),
+                )
+                source = ProductCandidateSource(
+                    tenant_id=tenant_id,
+                    product_id=product_id,
+                    sourcing_case_id=command.sourcing_case_id,
+                    supplier_candidate_id=command.supplier_candidate_id,
+                    created_at=product.created_at,
+                    indicative_prices=tuple(
+                        StoredPriceRef(
+                            minimum_quantity=item.minimum_quantity,
+                            unit_amount=item.unit_amount,
+                            currency=item.currency,
+                            unit=item.unit,
+                            evidence_ref=item.evidence_ref,
+                        )
+                        for item in command.indicative_prices
+                    ),
+                )
+                await uow.products.add(tenant_id, product)
+                inserted = await uow.candidate_sources.add(tenant_id, source)
+                if inserted.product_id != product_id:
+                    raise _CanonicalCandidateSourceRace
+                return product_id
+        except _CanonicalCandidateSourceRace:
+            pass
+
+        winner = None
+        failed = False
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                winner = await uow.candidate_sources.get_by_origin(
+                    tenant_id,
+                    command.sourcing_case_id,
+                    command.supplier_candidate_id,
+                )
+        except Exception:  # noqa: BLE001 -- fresh read 自由错误不得跨域
+            failed = True
+        if failed or winner is None:
+            raise TransientError("候选产品 canonical 来源暂不可见")
+        return winner.product_id
 
     async def search_for_matching(
         self,

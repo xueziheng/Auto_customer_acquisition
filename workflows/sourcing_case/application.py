@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from connectors.search_contracts import SearchCostStatus
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
@@ -18,6 +20,7 @@ from domains.sourcing.service import (
 )
 from shared.errors import PolicyViolation, TransientError, ValidationError
 from shared.schemas.identifiers import (
+    RunId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -147,6 +150,8 @@ class SourcingCaseApplication:
         self,
         tenant_id: TenantId,
         case_id: SourcingCaseId,
+        run_id: RunId,
+        required_context: dict[str, Any],
         event_type: str,
         payload: dict[str, str],
     ) -> bool:
@@ -161,7 +166,8 @@ class SourcingCaseApplication:
                 event_type,
                 payload,
                 workflow_version=_WORKFLOW_VERSION,
-                required_context={"case_id": str(case_id)},
+                required_context=required_context,
+                run_id=run_id,
             )
         except TransientError:
             transient = True
@@ -211,7 +217,47 @@ class SourcingCaseApplication:
         if not _run_is_bound(run, tenant_id, case_id):
             raise ValidationError("寻源审核 Workflow Run 绑定无效")
         assert run is not None
+        if run.run_id != run_id:
+            raise ValidationError("寻源审核 Workflow Run 绑定无效")
         return run
+
+    @staticmethod
+    def _review_required_context(run: WorkflowRun) -> dict[str, Any]:
+        """供应商路径把封存 generation 一并绑定到 owning Run 查询。"""
+
+        required: dict[str, Any] = {"case_id": run.context["case_id"]}
+        candidate_ids = run.context.get("supplier_candidate_ids")
+        if candidate_ids in (None, []):
+            return required
+        case_version = run.context.get("candidate_case_version")
+        candidate_set_hash = run.context.get("candidate_set_hash")
+        if (
+            not isinstance(candidate_ids, list)
+            or not candidate_ids
+            or candidate_ids != sorted(set(candidate_ids))
+            or any(
+                not isinstance(item, str) or not item.strip() or len(item) > 200
+                for item in candidate_ids
+            )
+            or isinstance(case_version, bool)
+            or not isinstance(case_version, int)
+            or case_version < 1
+            or not isinstance(candidate_set_hash, str)
+            or len(candidate_set_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in candidate_set_hash
+            )
+        ):
+            raise ValidationError("寻源审核 Workflow Run generation 绑定无效")
+        required.update(
+            {
+                "supplier_candidate_ids": candidate_ids,
+                "candidate_case_version": case_version,
+                "candidate_set_hash": candidate_set_hash,
+            }
+        )
+        return required
 
     async def review(
         self,
@@ -252,11 +298,17 @@ class SourcingCaseApplication:
             "review_id": str(SourcingReviewId(review.review_id)),
             "request_id": bounded_request_id,
         }
+        run = await self._review_run(tenant_id, case_id)
+        required_context = self._review_required_context(run)
         if await self._review_event_delivered(
-            tenant_id, case_id, "SourcingReviewSubmitted", payload
+            tenant_id,
+            case_id,
+            run.run_id,
+            required_context,
+            "SourcingReviewSubmitted",
+            payload,
         ):
             return review
-        run = await self._review_run(tenant_id, case_id)
         if run.current_step == "await_review":
             event_type = "SourcingReviewSubmitted"
         elif (
@@ -267,7 +319,12 @@ class SourcingCaseApplication:
         else:
             raise ValidationError("寻源审核 Run 不在可唤醒等待边界")
         if await self._review_event_delivered(
-            tenant_id, case_id, event_type, payload
+            tenant_id,
+            case_id,
+            run.run_id,
+            required_context,
+            event_type,
+            payload,
         ):
             return review
         transient = False
@@ -288,7 +345,12 @@ class SourcingCaseApplication:
         if not isinstance(accepted, bool):
             raise ValidationError("寻源审核工作流唤醒结果无效")
         if not accepted and not await self._review_event_delivered(
-            tenant_id, case_id, event_type, payload
+            tenant_id,
+            case_id,
+            run.run_id,
+            required_context,
+            event_type,
+            payload,
         ):
             raise ValidationError("寻源审核工作流未接受唤醒事件")
         return review

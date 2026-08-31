@@ -68,6 +68,24 @@ _POLLABLE_STEP_STATUSES = ("pending", "running")
 # 固定脱敏错误文本：不依赖具体异常包装类型、不含异常消息/payload（防凭证落库）。
 _COMMIT_FAILURE_ERROR = "step commit failure"
 _CORRUPTED_CONTEXT_ERROR = "corrupted workflow context"
+
+
+def _valid_history_context_value(value: object) -> bool:
+    """历史查询只接受有界、可确定比较的稳定 JSON 标量或字符串列表。"""
+
+    if isinstance(value, str):
+        return bool(value) and len(value) <= 200
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value >= 0
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and len(value) <= 100
+        and all(
+            isinstance(item, str) and bool(item) and len(item) <= 200
+            for item in value
+        )
+    )
 _HANDLER_FAILED_REASON = "handler declared failure"
 _CANCEL_REASON = "cancelled by operator"
 
@@ -358,12 +376,18 @@ class PostgresWorkflowEngine:
         payload: dict[str, Any],
         *,
         workflow_version: int | None = None,
-        required_context: Mapping[str, str] | None = None,
+        required_context: Mapping[str, Any] | None = None,
+        run_id: RunId | None = None,
     ) -> bool:
         """查询当前 generation；完整 owning Run 过滤显式开启历史查询。"""
-        history_query = workflow_version is not None or required_context is not None
-        if history_query and (
-            workflow_version is None or required_context is None
+        history_query = (
+            workflow_version is not None
+            or required_context is not None
+            or run_id is not None
+        )
+        if (workflow_version is None) != (required_context is None) or (
+            run_id is not None
+            and (workflow_version is None or required_context is None)
         ):
             raise ValidationError("workflow event history 过滤条件无效")
         if workflow_version is not None and (
@@ -372,7 +396,11 @@ class PostgresWorkflowEngine:
             or workflow_version < 1
         ):
             raise ValidationError("workflow_version 过滤条件无效")
-        context_filter: dict[str, str] | None = None
+        if run_id is not None and (
+            not isinstance(run_id, str) or not run_id or len(run_id) > 200
+        ):
+            raise ValidationError("workflow run 过滤条件无效")
+        context_filter: dict[str, Any] | None = None
         if required_context is not None:
             if (
                 not isinstance(required_context, Mapping)
@@ -382,9 +410,7 @@ class PostgresWorkflowEngine:
                     not isinstance(key, str)
                     or not key
                     or len(key) > 100
-                    or not isinstance(value, str)
-                    or not value
-                    or len(value) > 200
+                    or not _valid_history_context_value(value)
                     for key, value in required_context.items()
                 )
             ):
@@ -402,6 +428,8 @@ class PostgresWorkflowEngine:
                 conditions.append(
                     WorkflowRunRow.workflow_version == workflow_version
                 )
+            if run_id is not None:
+                conditions.append(WorkflowRunRow.run_id == run_id)
             if context_filter is not None:
                 conditions.append(WorkflowRunRow.context.contains(context_filter))
             rows = (
