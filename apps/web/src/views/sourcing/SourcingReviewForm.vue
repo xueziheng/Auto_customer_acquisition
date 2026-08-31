@@ -9,6 +9,7 @@ type ReviewCommand = components["schemas"]["SourcingReviewCommand"];
 
 const props = defineProps<{
   candidates: SourcingCandidate[];
+  canRetryCostHandoff: boolean;
   caseVersion: number;
   disabled: boolean;
   review: SourcingReview | null;
@@ -54,6 +55,16 @@ function confirmSavedReview(): void {
     reason: props.review.reason,
   });
 }
+
+function retryCostHandoff(): void {
+  if (!props.review || !props.canRetryCostHandoff) return;
+  emit("submit", {
+    alternate_option_ids: props.review.alternate_option_ids,
+    expected_case_version: props.review.expected_case_version,
+    primary_option_id: props.review.primary_option_id,
+    reason: props.review.reason,
+  });
+}
 </script>
 
 <template>
@@ -79,6 +90,21 @@ function confirmSavedReview(): void {
       >
         按保存事实确认审核
       </button>
+      <div
+        v-if="canRetryCostHandoff"
+        class="cost-handoff-retry"
+        role="alert"
+      >
+        <p>Opportunity 缺失，需先补齐后再尝试成本交接。</p>
+        <button
+          class="btn-primary"
+          type="button"
+          :disabled="disabled"
+          @click="retryCostHandoff"
+        >
+          在补齐 Opportunity 后重试成本交接
+        </button>
+      </div>
     </template>
     <form
       v-else

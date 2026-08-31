@@ -59,6 +59,12 @@ const canReview = computed(() => (
   projectionState.value.candidates === "success"
   && projectionState.value.review === "success"
 ));
+const canRetryCostHandoff = computed(() => (
+  canReview.value
+  && review.value?.confirmed_by != null
+  && sourcingCase.value?.stop?.code === "opportunity_required"
+  && !mutating.value
+));
 const canReconcile = computed(() => projectionState.value.uncertain === "success");
 const runAvailability = computed<RunAvailability>(() => {
   if (projectionState.value.quota === "forbidden") return "forbidden";
@@ -632,6 +638,7 @@ onMounted(() => void loadCase());
       <SourcingReviewForm
         v-if="projectionState.candidates === 'success' && projectionState.review === 'success'"
         :candidates="candidates"
+        :can-retry-cost-handoff="canRetryCostHandoff"
         :case-version="sourcingCase.version"
         :disabled="mutating || !canReview"
         :review="review"

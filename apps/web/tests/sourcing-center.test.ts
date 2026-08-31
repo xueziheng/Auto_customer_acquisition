@@ -379,6 +379,72 @@ describe("Sourcing and Product centers", () => {
     });
   });
 
+  it("replays only the saved review after Opportunity is supplied for a cost-handoff stop", async () => {
+    const fallback = partialFailureFetch(null, "unavailable");
+    const retryBodies: Record<string, unknown>[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/notifications") return jsonResponse([]);
+      if (request.method === "POST" && path === `/sourcing-cases/${caseId}/review`) {
+        retryBodies.push(await request.json() as Record<string, unknown>);
+        return jsonResponse({
+          alternate_option_ids: [],
+          can_current_user_confirm: false,
+          case_id: caseId,
+          confirmed_at: "2026-08-30T10:00:00Z",
+          confirmed_by: "emp_boss",
+          expected_case_version: 5,
+          primary_option_id: "sop_01K39P9M5D6K4A91YEQ80EJZ0X",
+          reason: "已核验公开证据，只做内部估算。",
+          review_id: "srv_01K39P9M5D6K4A91YEQ80EJZ0X",
+          submitted_at: "2026-08-30T09:00:00Z",
+          submitted_by: "emp_01K39P9M5D6K4A91YEQ80EJZ0X",
+        });
+      }
+      if (path === `/sourcing-cases/${caseId}`) return jsonResponse({
+        active_search_plan_id: "spl_01K39P9M5D6K4A91YEQ80EJZ0X",
+        case_id: caseId,
+        ladder_checked_to: 5,
+        need_id: "need_01K39P9M5D6K4A91YEQ80EJZ0X",
+        need_snapshot: null,
+        opened_at: "2026-08-30T09:00:00Z",
+        state: "candidates_ready",
+        state_changed_at: null,
+        stop: { code: "opportunity_required", stage: "cost_handoff" },
+        version: 5,
+        workflow_version: 2,
+      });
+      if (path === `/sourcing-cases/${caseId}/review`) return jsonResponse({
+        alternate_option_ids: [],
+        can_current_user_confirm: false,
+        case_id: caseId,
+        confirmed_at: "2026-08-30T10:00:00Z",
+        confirmed_by: "emp_boss",
+        expected_case_version: 5,
+        primary_option_id: "sop_01K39P9M5D6K4A91YEQ80EJZ0X",
+        reason: "已核验公开证据，只做内部估算。",
+        review_id: "srv_01K39P9M5D6K4A91YEQ80EJZ0X",
+        submitted_at: "2026-08-30T09:00:00Z",
+        submitted_by: "emp_01K39P9M5D6K4A91YEQ80EJZ0X",
+      });
+      return fallback(input);
+    });
+
+    const root = await mount(`/sourcing/${caseId}`, fetch);
+    await eventually(() => expect(root.textContent).toContain("Opportunity 缺失，需先补齐后再尝试成本交接。"));
+    [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("在补齐 Opportunity 后重试成本交接"),
+    )!.click();
+
+    await eventually(() => expect(retryBodies).toEqual([{
+      alternate_option_ids: [],
+      expected_case_version: 5,
+      primary_option_id: "sop_01K39P9M5D6K4A91YEQ80EJZ0X",
+      reason: "已核验公开证据，只做内部估算。",
+    }]));
+  });
+
   it.each(["forbidden", "unavailable", "network", "paid", "unknown", "exhausted"] as const)(
     "keeps draft and confirm quota-independent while %s blocks run",
     async (scenario) => {
