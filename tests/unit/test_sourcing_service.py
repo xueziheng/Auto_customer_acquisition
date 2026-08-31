@@ -345,7 +345,7 @@ def _candidate(
     specs = tuple(
         SpecComparisonView(
             spec_name=name,
-            required=f"required-{name}",
+            required="hinges" if name == "product_type" else f"required-{name}",
             offered=f"offered-{name}",
             level="exact",
         )
@@ -922,6 +922,131 @@ async def _discovering(service: Any) -> SourcingCaseId:
             TENANT, case_id, _check(case_id, rung), actor=SYSTEM
         )
     return case_id
+
+
+async def _verifying_case_with_frozen_specs(
+    service: Any, *, model: str | None
+) -> SourcingCaseId:
+    """为直提候选核验冻结明确的客户规格，而非相信候选自报 required。"""
+
+    need = _open_command().need.model_copy(
+        update={
+            "material": NeedFact(value="steel", provenance=_provenance()),
+            "size_spec": NeedFact(value="4 inch", provenance=_provenance()),
+            "model": (
+                None
+                if model is None
+                else NeedFact(value=model, provenance=_provenance())
+            ),
+        }
+    )
+    case_id = await service.open_case(
+        TENANT,
+        _open_command().model_copy(update={"need": need}),
+        actor=SYSTEM,
+    )
+    for rung in range(1, 6):
+        await service.record_ladder_check(
+            TENANT, case_id, _check(case_id, rung), actor=SYSTEM
+        )
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(
+        TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
+    )
+    return case_id
+
+
+def _candidate_with_frozen_required_values() -> CandidateSubmission:
+    expected = {
+        "product_type": "hinges",
+        "material": "steel",
+        "size": "4 inch",
+        "model": "HX-4",
+    }
+    submission = _candidate()
+    return submission.model_copy(
+        update={
+            "specs": tuple(
+                item.model_copy(update={"required": expected[item.spec_name]})
+                for item in submission.specs
+            )
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_candidate_rejects_model_omitted_from_frozen_need() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _verifying_case_with_frozen_specs(service, model="HX-4")
+    valid = _candidate_with_frozen_required_values()
+    submission = valid.model_copy(
+        update={
+            "specs": tuple(
+                item for item in valid.specs if item.spec_name != "model"
+            )
+        }
+    )
+
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, submission, actor=SYSTEM
+    )
+
+    stored = factory.state["candidates"][(TENANT, candidate_id)]
+    assert stored.rejected is True
+    assert "verification_incomplete" in {
+        item.value for item in stored.rejection_reasons
+    }
+    assert stored.passes_verification()[0] is False
+    assert "model" in stored.passes_verification()[1]
+
+
+@pytest.mark.asyncio
+async def test_submit_candidate_rejects_required_value_drift_from_frozen_need() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _verifying_case_with_frozen_specs(service, model="HX-4")
+    valid = _candidate_with_frozen_required_values()
+    drifted = valid.model_copy(
+        update={
+            "specs": tuple(
+                item.model_copy(update={"required": "HX-5"})
+                if item.spec_name == "model"
+                else item
+                for item in valid.specs
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError, match="冻结需求"):
+        await service.submit_candidate(TENANT, case_id, drifted, actor=SYSTEM)
+
+    assert factory.state["candidates"] == {}
+
+
+@pytest.mark.asyncio
+async def test_submit_candidate_does_not_require_model_absent_from_frozen_need() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _verifying_case_with_frozen_specs(service, model=None)
+    valid = _candidate_with_frozen_required_values()
+    no_model = valid.model_copy(
+        update={
+            "specs": tuple(
+                item for item in valid.specs if item.spec_name != "model"
+            )
+        }
+    )
+
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, no_model, actor=SYSTEM
+    )
+
+    stored = factory.state["candidates"][(TENANT, candidate_id)]
+    assert stored.rejected is False
+    assert stored.passes_verification() == (True, [])
 
 
 async def _running_public_case(

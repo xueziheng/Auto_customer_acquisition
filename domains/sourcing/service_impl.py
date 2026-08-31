@@ -300,6 +300,15 @@ def _candidate_from_submission(
     now: datetime,
     evidence: EvidenceSnapshot,
 ) -> SupplierCandidate:
+    required_specs = dict(_frozen_need_required_specs(case))
+    submitted_names = {
+        _normalize(item.spec_name) for item in submission.specs
+    }
+    for item in submission.specs:
+        name = _normalize(item.spec_name)
+        required = required_specs.get(name)
+        if required is not None and item.required != required:
+            raise ValidationError("候选规格要求与冻结需求不一致")
     try:
         comparisons = [
             SpecComparison(
@@ -316,6 +325,18 @@ def _candidate_from_submission(
         ]
     except ValueError as exc:
         raise ValidationError("候选规格匹配等级无效") from exc
+    # 不能让候选省略客户实际声明的规格后，借由通用核验清单的可选项
+    # 漏检。补入 canonical UNKNOWN 会保留候选并把它明确标为 rejected。
+    comparisons.extend(
+        SpecComparison(
+            spec_name=name,
+            required=required,
+            offered=None,
+            level=SpecMatchLevel.UNKNOWN,
+        )
+        for name, required in required_specs.items()
+        if name not in submitted_names
+    )
     summary = "；".join(f"{item.spec_name}:{item.level.value}" for item in comparisons)
     return SupplierCandidate(
         candidate_id=SupplierCandidateId(new_id("spc")),
@@ -344,8 +365,8 @@ def _candidate_from_submission(
     )
 
 
-def _public_draft_expected_specs(case: SourcingCase) -> tuple[tuple[str, str], ...]:
-    """从冻结 Need 重建四个 canonical 规格及可选 application。"""
+def _frozen_need_required_specs(case: SourcingCase) -> tuple[tuple[str, str], ...]:
+    """只从 immutable Need snapshot 重建候选必须复述的 canonical 规格。"""
 
     if case.need_snapshot is None:
         raise ValidationError("寻源案例缺少强类型需求快照")
@@ -388,7 +409,7 @@ def _candidate_from_public_draft(
 
     if draft.supplier_name is None or draft.product_title is None:
         raise ValidationError("公开候选草稿身份不完整")
-    expected = _public_draft_expected_specs(case)
+    expected = _frozen_need_required_specs(case)
     expected_by_name = dict(expected)
     offered_by_name: dict[str, str | None] = {}
     for item in draft.specs:

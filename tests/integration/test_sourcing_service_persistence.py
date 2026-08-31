@@ -373,7 +373,7 @@ def _candidate_submission(artifact_id: ArtifactId) -> CandidateSubmission:
         specs=tuple(
             SpecComparisonView(
                 spec_name=name,
-                required=f"required-{name}",
+                required="hinges" if name == "product_type" else f"required-{name}",
                 offered=f"offered-{name}",
                 level="exact",
             )
