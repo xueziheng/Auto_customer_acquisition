@@ -124,7 +124,11 @@ from domains.sending_identity.service import (
     SendingIdentityUnitOfWorkFactory,
 )
 from domains.sending_identity.service_impl import SendingIdentityServiceImpl
-from domains.sourcing.permissions import Phase2SourcingAuthorizer
+from domains.sourcing.permissions import (
+    Phase2SourcingAuthorizer,
+    SourcingActor,
+    SourcingScope,
+)
 from domains.sourcing.service import CandidateEvidenceSnapshot
 from domains.sourcing.service_impl import SourcingServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
@@ -258,6 +262,13 @@ from workflows.quote_approval.flow import (
 from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
 from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
 from workflows.sourcing_case.application import SourcingCaseApplication
+from workflows.sourcing_case.flow import build_sourcing_case_definition
+from workflows.sourcing_case.steps import (
+    AwaitPublicPlanStep,
+    AwaitReviewStep,
+    FixedWaitStep,
+    HandoffCostingStep,
+)
 
 from ..dependencies import (
     CampaignScopeResolver,
@@ -1282,6 +1293,24 @@ def build_phase1_dependencies(
         OpportunityScope(level=ScopeLevel.SYSTEM),
         "system",
     )
+    sourcing = SourcingServiceImpl(
+        cast(
+            Any,
+            lambda requested_tenant: SqlAlchemySourcingUnitOfWork(
+                factory, requested_tenant
+            ),
+        ),
+        Phase2SourcingAuthorizer(tenant),
+        _UnavailableCandidateEvidenceReader(),
+        now=now,
+    )
+    sourcing_system_actor = SourcingActor(
+        "system:api-sourcing-handoff",
+        tenant,
+        SourcingScope.SYSTEM,
+        "system",
+    )
+    sourcing_definition = build_sourcing_case_definition()
     handlers = dict(
         build_human_handoff_step_handlers(
             opportunity_service=opportunities,
@@ -1293,6 +1322,24 @@ def build_phase1_dependencies(
             t2=settings.t2,
             now=now,
         )
+    )
+    scheduler_owned_wait = FixedWaitStep("scheduler_owned")
+    handlers.update(
+        {
+            "sourcing_case.v2.check_ladder": scheduler_owned_wait,
+            "sourcing_case.v2.await_public_plan": AwaitPublicPlanStep(),
+            "sourcing_case.v2.public_search": scheduler_owned_wait,
+            "sourcing_case.v2.verify_candidates": scheduler_owned_wait,
+            "sourcing_case.v2.prepare_candidates": scheduler_owned_wait,
+            "sourcing_case.v2.await_product_cards": scheduler_owned_wait,
+            "sourcing_case.v2.await_review": AwaitReviewStep(),
+            "sourcing_case.v2.handoff_costing": HandoffCostingStep(
+                opportunities=opportunities,
+                sourcing=sourcing,
+                opportunity_actor=opportunity_system_actor,
+                sourcing_actor=sourcing_system_actor,
+            ),
+        }
     )
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
@@ -1370,6 +1417,7 @@ def build_phase1_dependencies(
     workflow.register(research_definition)
     workflow.register(playbook_definition)
     workflow.register(country_policy_definition)
+    workflow.register(sourcing_definition)
     provider_readiness_actor = ProviderReadinessActor(
         actor_id="system:api-provider-readiness",
         tenant_id=tenant,
@@ -1393,17 +1441,6 @@ def build_phase1_dependencies(
         PostgresSearchQuotaRepository(factory, tenant, now=now),
         configured=bool(settings.tavily_api_key_ref)
         and settings.tavily_exclusive_account_confirmed,
-    )
-    sourcing = SourcingServiceImpl(
-        cast(
-            Any,
-            lambda requested_tenant: SqlAlchemySourcingUnitOfWork(
-                factory, requested_tenant
-            ),
-        ),
-        Phase2SourcingAuthorizer(tenant),
-        _UnavailableCandidateEvidenceReader(),
-        now=now,
     )
     products = ProductServiceImpl(
         cast(

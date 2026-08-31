@@ -51,6 +51,7 @@ from shared.schemas.identifiers import (
     RunId,
     SourcingCaseId,
     SourcingPlanId,
+    SourcingReviewId,
     ValidatedNeedId,
 )
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
@@ -1348,9 +1349,36 @@ class AwaitPublicPlanStep:
         )
 
 
+class AwaitReviewStep:
+    """入口等待人工确认；只接受精确 review 事件后交给成本交接步骤。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _base(run)
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {"sourcing_wait_status": "review_required"})
+        if not isinstance(event, dict) or set(event) != {"event_type", "payload"}:
+            raise ValidationError("寻源审核事件无效")
+        if event.get("event_type") != "SourcingReviewSubmitted":
+            raise ValidationError("寻源审核事件类型无效")
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or set(payload) != {"review_id", "request_id"}:
+            raise ValidationError("寻源审核事件载荷无效")
+        SourcingReviewId(
+            _text(payload.get("review_id"), "寻源审核 ID 无效", maximum=40)
+        )
+        _text(payload.get("request_id"), "寻源审核请求 ID 无效", maximum=200)
+        return (
+            "advance",
+            "handoff_costing",
+            {"sourcing_stop_reason": "opportunity_required"},
+        )
+
+
 __all__ = (
     "AwaitProductCardsStep",
     "AwaitPublicPlanStep",
+    "AwaitReviewStep",
     "FixedWaitStep",
     "HandoffCostingStep",
     "InternalMatchLadderStep",

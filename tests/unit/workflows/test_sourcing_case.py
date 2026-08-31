@@ -1024,6 +1024,40 @@ def test_handler_map_covers_every_definition_handler_ref() -> None:
     assert set(handlers) == {step.handler_ref for step in definition.steps}
 
 
+@pytest.mark.asyncio
+async def test_await_review_advances_only_after_exact_review_event() -> None:
+    """人工审核事实已由 application 保存；workflow 只接收其精确唤醒事件。"""
+
+    handler = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), _Sourcing()
+    )["sourcing_case.v2.await_review"]
+    initial = _run()
+
+    assert await handler.execute(initial) == (
+        "wait",
+        None,
+        {"sourcing_wait_status": "review_required"},
+    )
+    assert await handler.execute(
+        _run(
+            {
+                **initial.context,
+                "event": {
+                    "event_type": "SourcingReviewSubmitted",
+                    "payload": {
+                        "review_id": "srv-flow-review",
+                        "request_id": "review-request-1",
+                    },
+                },
+            }
+        )
+    ) == (
+        "advance",
+        "handoff_costing",
+        {"sourcing_stop_reason": "opportunity_required"},
+    )
+
+
 def test_handler_builder_uses_public_product_actor_type() -> None:
     from domains.products.service import ProductActor as PublicProductActor
 

@@ -25,6 +25,7 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessServiceImpl,
 )
 from workflows.engine.runner import StepStatus, WorkflowRun
+from workflows.sourcing_case.flow import build_sourcing_case_definition
 
 
 class _ManualFacts:
@@ -210,6 +211,19 @@ def test_explicit_manual_send_composition_registers_real_gateway() -> None:
         == "_StartOnlyWorkflowHandler"
         for step in country_policy_definition.steps
     )
+    sourcing_definition = dependencies.workflow_engine._definitions[
+        ("sourcing_case", 2)
+    ]
+    assert sourcing_definition == build_sourcing_case_definition()
+    assert type(
+        dependencies.workflow_engine._handlers["sourcing_case.v2.await_public_plan"]
+    ).__name__ == "AwaitPublicPlanStep"
+    assert type(
+        dependencies.workflow_engine._handlers["sourcing_case.v2.await_review"]
+    ).__name__ == "AwaitReviewStep"
+    assert type(
+        dependencies.workflow_engine._handlers["sourcing_case.v2.handoff_costing"]
+    ).__name__ == "HandoffCostingStep"
     approval_provider = vars(dependencies.outreach)["_approvals"]
     assert type(approval_provider).__name__ == "_ServiceBackedCampaignApprovalProvider"
     assert vars(approval_provider)["_fallback"] is facts

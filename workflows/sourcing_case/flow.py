@@ -12,6 +12,7 @@ from workflows.sourcing_case.ports import SourcingNeedReader
 from workflows.sourcing_case.steps import (
     AwaitProductCardsStep,
     AwaitPublicPlanStep,
+    AwaitReviewStep,
     FixedWaitStep,
     HandoffCostingStep,
     InternalMatchLadderStep,
@@ -114,7 +115,7 @@ def build_sourcing_case_handlers(
             sourcing_actor=sourcing_actor,
         ),
         "sourcing_case.v2.await_product_cards": AwaitProductCardsStep(),
-        "sourcing_case.v2.await_review": FixedWaitStep("review_required"),
+        "sourcing_case.v2.await_review": AwaitReviewStep(),
         "sourcing_case.v2.handoff_costing": HandoffCostingStep(
             opportunities=opportunities,
             sourcing=sourcing,
