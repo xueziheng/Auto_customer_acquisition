@@ -38,7 +38,7 @@ ACTUAL      实际发生。事后核算用
 ## 发布 / 订阅
 
 发布：无（成本表变化通过 quotations 域的事件间接可见）
-订阅：`SourcingCaseCompleted`（用候选供应商价格起 ESTIMATED 版本）
+订阅：`SourcingCaseHandedToCosting`（用已确认 primary Option 的候选价格起 ESTIMATED 版本）；旧 `SourcingCaseCompleted` 只作兼容读取。
 
 ## 禁止事项
 
@@ -46,6 +46,12 @@ ACTUAL      实际发生。事后核算用
 - 不允许覆盖已关联报价的 QUOTED 版本
 - 不允许 INDICATIVE 基准的成本表直接进报价（无人工风险接受记录时）
 - 不允许模型写入金额——金额字段的 Provenance `extracted_by` 若是模型，该值只能作为「建议」进入待确认区，不能直接参与计算
+
+## V2 sourcing handoff
+
+仅在 Case 已有 boss 确认的 review 和 Opportunity 时消费 handoff。每个 Case 只产生一个
+`ESTIMATED` CostSheet 与一个适用的 primary `product_purchase` 项，金额以 `Decimal` 保存、wire 为
+字符串，price basis 始终 `indicative`；Opportunity 缺失必须保持 `opportunity_required`，不创建半成品成本表。
 
 ## Phase 2 计算约束
 

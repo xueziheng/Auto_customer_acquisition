@@ -86,11 +86,20 @@ AI 参考图         必须明确标注
 
 ## 发布 / 订阅
 
-发布：`SourcingCaseOpened`、`SourcingCaseCompleted`
-订阅：无（启动由工作流驱动）
+发布：`SourcingCaseOpened`、`SourcingCandidatesVerified`、`SourcingCandidatesReady`、`SourcingCaseHandedToCosting`；旧 `SourcingCaseCompleted` 只作兼容读取。
+订阅：无（启动由 Workflow/Outbox 驱动）
 
 ## Phase 1 范围
 
 状态机、核验清单、证据快照结构、匹配梯子接口、三候选上限。人工录入走同一套结构。
 
 不做：自动寻源执行（Phase 2）、按需求簇排序寻源队列（Phase 2 挂载点）、1688/以图搜款集成（Phase 2）。
+
+## V2 公开寻源边界
+
+V2 先记录 rung 1–5 的精确证据，再允许 boss 草拟、确认并运行带 hash 的 Tavily basic 公开计划。
+额度 unknown、paid、不足或请求 uncertain 必须停止；uncertain 仅能由人工保守核对后恢复。公开
+Candidate 使用 `product_type`/`size`，内部 Product 使用 `product_category`/`size_spec`；两套词表不得
+互推。模型输出是 immutable calibration draft，完整但不合格的候选必须保留为 rejected Candidate。
+所有公开价格保持 `INDICATIVE`，本域禁止写入新的 quoted 价格。审核先 submit，再由 boss 对同一
+primary（最多两个 alternate）确认；Opportunity 缺失时停止 `opportunity_required`，不得交接成本。

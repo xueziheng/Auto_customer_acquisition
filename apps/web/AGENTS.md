@@ -39,3 +39,7 @@ src/
 ## Phase 1 范围
 
 目录骨架 + 路由表。组件实现随 API 就绪逐页补。
+
+## Sourcing V2 页面
+
+只消费生成的 OpenAPI 类型。计划替换后必须让旧确认失效；展示事实、自述、推断、未知与 `INDICATIVE`/`QUOTED` 的差别。primary 至多一个、alternate 至多两个只是 UX guard，后端仍为最终裁决。`source_only` Product 必须显示来源链和“不可用于客户报价”；Run 页面只能显示安全 counters、quota、stop/reconciliation，不能显示 workflow context、网页原文、联系人或凭证。

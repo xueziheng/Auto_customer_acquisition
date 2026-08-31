@@ -561,6 +561,41 @@ artifact引用和线路保留在专用Run，原始HTML留在Artifact Store，不
 4. 通过独立客户文件授权生成/下载PDF，深链核对quote ID。未知结果保留原键/调用ID，先查账，再按原绑定恢复，禁止重生成或自动换键。
 5. 执行结构/静态、后端非E2E和E2E、前端test/typecheck/lint/build及API生成无漂移门。隔离PG/受控transport、Browser、真实供应商和真实发送分栏，不以测试替运营。
 
+## 十一、Phase2 Sourcing Case V2 子项目
+
+本子项目把完整度为 3 的已验证 Need 推进为受控公开寻源、候选产品卡、人工审核和单一
+`ESTIMATED` 成本交接；它不等于整个 Phase2 完成。配置只保存
+`TRADEOS_SOURCING_SETTINGS_JSON` 中的 Tavily secret ref、model identifier、查询/页面硬上限和
+系统 actor，绝不写入密钥值。构造 scheduler 不解析 Tavily ref、不联网；运行时一律经 Tool Gateway。
+
+操作顺序是：记录内部 rung 1–5 → boss 草拟计划 → 以当前 plan hash 确认 → 检查免费额度后 run。
+替换计划令旧确认失效。额度 unknown、paid、exhausted 或 external request uncertain 一律停止；
+unknown/paid 不得“先试一次”，uncertain 保留预留并由 boss 人工核对后按原 Run/请求键恢复。页面禁止、
+验证码、不安全重定向和无结果都保留不同 stop reason，不能归并成无供应。
+
+公开页面只生成带 URL/时间/hash/Artifact 的 immutable calibration draft。Candidate 的公开
+`product_type`/`size` 与内部 Product `product_category`/`size_spec` 是不同词表；Need `model` 可选，
+未知不得补造。完整却不合格的结果保留为 rejected Candidate，不能删除改写草稿。公开价格均为
+`INDICATIVE`，不得新写 quoted price、发供应商询价或客户 Quote。
+
+候选封存后由 `SourcingCandidatesVerified` 投影为 `source_only` Product/Supply Option；完整卡集才发布
+Ready。sourcing 人员先提交 primary（可选最多两个 alternate），boss 再确认同一事实。仅当有 Opportunity
+才发布 handoff；缺失时停在 `opportunity_required`，补齐后以同一 Run 只创建一个 ESTIMATED CostSheet，
+其中 `product_purchase` 使用 Decimal 与 indicative basis。没有任何一项授权联系人发现、邮箱验证、发信、
+采购或真实 direct supplier quote。
+
+受控验收使用真实 PostgreSQL migrations、领域服务、V2 Workflow、Tool Gateway、Outbox 和 API；可替换的
+仅是 Tavily、public-page 和 extraction-model 外部端口。真实 Tavily 需要用户给出明确国家、品类和搜索/页面
+预算的额外授权。本轮未给出时固定记录为：
+
+```yaml
+real_tavily_supplier_pages: not_run
+reason: explicit_market_category_and_research_budget_not_provided
+```
+
+不要读取、打印或复制密钥值；“环境已配置”不构成真实联网授权。完整门禁和 Browser 数据态证据以
+`docs/acceptance/2026-08-30-phase2-sourcing-case-product-cards.md` 的实际结果为准。
+
 ## 附：常用命令
 
 ```bash

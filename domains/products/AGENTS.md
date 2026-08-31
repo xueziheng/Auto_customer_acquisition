@@ -45,6 +45,10 @@
 Option 与最终 ready 迁移；`SourcingCandidatesReady` 是完整卡集冻结后的最终事实，
 不是建卡请求。重复或并发投影按 Case+Supplier Candidate canonical source 收敛。
 
+V2 投影的 Product 固定为 `source_only`，保留 canonical public evidence chain；它不可用于客户
+报价或伪装成正式产品。公开 Candidate 的 `product_type`/`size` 仅在确定映射处转为本域
+`product_category`/`size_spec`，未知必须继续未知。
+
 ## Phase 1 范围
 
 三池模型、三视图 DTO、匹配查询接口（供匹配梯子前五级查询）。不做：淘宝式卡片 UI 细节（那在 apps/web）、多语言产品文案生成（agent_runtime）、自动铺货（明确永不做）。

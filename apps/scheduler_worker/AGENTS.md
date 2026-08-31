@@ -69,3 +69,7 @@ Signal/Hypothesis 或业务研究完成。只接受仍在职的确认老板和�
 Web预算检查用独立命名空间的 tenant+run PostgreSQL advisory transaction lock，
 不在独立连接重取engine已持有的Run行锁。已commit的received/未决/成功ledger继续
 保守计数，rejected/duplicate排除；禁止以去锁或增加预算修复等待。
+
+## Sourcing V2 组合
+
+仅当 `TRADEOS_SOURCING_SETTINGS_JSON` 严格显式 enabled 且全部研究端口已注入时，root 才装配 V2。Tavily ref 只保存引用、构造期不得解析或联网；真实运行只能经 Tool Gateway 的 tenant、permission、playbook、country policy 与 rate-limit checks。受控验收可替换 Tavily、public-page、extraction model 端口，不能替换 PostgreSQL、domain service、Workflow、Outbox 或 API。不得接触联系人、发信、采购、客户 Quote 端口。

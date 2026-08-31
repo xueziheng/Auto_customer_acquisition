@@ -18,3 +18,7 @@ open_case（sourcing 域，校验完整度门槛）
 ## 关键约束
 
 Phase 1 人工执行时**走同一批域服务接口**——数据结构与门禁一致，Phase 2 只是换掉推进者。队列排序 Phase 1 按 opened_at，Phase 2 按需求簇规模（挂载点见 ROADMAP）。
+
+## V2 受控公开寻源
+
+V2 固定八步：`check_ladder → await_public_plan → public_search → verify_candidates → prepare_candidates → await_product_cards → await_review → handoff_costing`。`public_search` 不允许引擎自动重试；它只恢复持久 search receipt/page attempt，遇到额度 unknown/paid/exhausted、unsafe page 或 uncertain 都必须进入带 stop reason 的等待。Verified 只唤醒产品卡投影，Ready 只说明卡集完成；review submit 与 boss confirm 是两个事实，Opportunity 缺失时只能等待精确 retry 事件。

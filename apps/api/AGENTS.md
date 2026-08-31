@@ -54,3 +54,7 @@ QuoteFileApiError技术ID，Retry-After只取其合法显式值，不能用全�
 lifespan先schema、同parser受信probe、再yield；退出/取消/before-yield故障先aclose再dispose，
 保留primary。普通parser能力降级仅关闭真实parse，不禁用metadata、审批或独立PDF。
 API报价结果仅经原structured_log通知出口，不宣称站内已投递，也不启动expiry后台任务。
+
+## Sourcing V2 HTTP
+
+`/sourcing-cases` 只提供 Case/ladder/candidate/public-plan/quota/review/reconciliation 的安全投影和 plan/confirm/run/review/reconcile 命令。所有命令要求相应角色与精确 ID；confirm/run/review/reconcile 还要求原始 `Idempotency-Key`。API 不构造搜索、页面或模型依赖。`lane` 未持久化时必须为 null/unknown，页面公开事实不得显示为 verified contact 或 quoted price；5xx/无权限必须保留局部错误状态，不能伪装为空列表。

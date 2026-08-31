@@ -27,3 +27,8 @@
 ## Phase 1 范围
 
 档案、能力标签、验证状态、价格历史（带 basis）。不做：供应商评分、自动比价、1688 集成（Phase 2）。
+
+## V2 禁止放宽
+
+公开网页 Candidate 不会创建供应商 direct quote，也不会写 `QUOTED`。真实 direct supplier quote 需要
+针对规格和数量的受信证据、人工审批与独立后续验收；本子项目不发联系、不询价、不采购。

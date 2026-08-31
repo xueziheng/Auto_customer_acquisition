@@ -87,7 +87,7 @@ validated ──→ sourcing_ready ──→ handed_to_sourcing
 
 ## 发布的事件
 
-`DemandSignalCaptured`、`NeedHypothesisCreated`、`NeedHypothesisRejected`、`NeedValidated`、`NeedClusterFormed`
+`DemandSignalCaptured`、`NeedHypothesisCreated`、`NeedHypothesisRejected`、`NeedValidated`、`NeedBecameSourcingReady`、`NeedClusterFormed`
 
 ## 订阅的事件
 
@@ -142,3 +142,10 @@ T3B将`NeedQuoteFacts`纯DTO迁至shared并保持原公开名称同class重导�
 HTTP仅输出白名单值及ProvenanceSummary，receipt原文/locator仍须独立来源ACL。
 NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交集授权在上层组合，
 其Employee→Opportunity SHARE不能提前锁Need，不要求owner、issuer或unit已存在。
+
+## Sourcing V2 就绪事件
+
+完整度是代码从事实字段推导的 0–5，不可人工抬高；`3` 是唯一的寻源门槛。首次晋升仍发布
+`NeedValidated`；已验证 Need 在后续补全中第一次跨过该门槛时发布一次
+`NeedBecameSourcingReady`。两个事件仅表达事实变化，不能按 NeedCluster 排序或暗示已经开始询价。
+`model` 为可选 Need 事实，缺失不得由产品或网页补造。

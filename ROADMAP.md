@@ -72,6 +72,17 @@ Demand Signal → Need Hypothesis → 触达 → 回复识别 → Validated Need
 本批交付成本证据/22项适用性、Decimal确定性计算、冻结basis、报价版本/独立审批及客户PDF交付；
 最新实际验收和未运行边界见[批次验收](docs/acceptance/2026-08-28-phase2-costing-quotation.md)。
 主流程止于approved，未发送、未部署，不把模拟历史可达性/回执当作真实业务成果。
+
+### Sourcing Case V2：免费公开寻源→候选产品卡→人工审核→ESTIMATED 成本交接（子项目完成）
+
+本子项目已经实现并以受控外部端口验收：完整度 3 的 Need 通过 V2 Case/Workflow 经过 rung 1–5、
+明确计划/免费额度门禁、公开证据草稿、Candidate 核验、`source_only` Product/Supply Option、双阶段
+review 和 Opportunity gate，最终创建唯一 ESTIMATED 成本表。公开价格仍是 indicative，不能报价；真实
+Tavily、真实模型、真实供应商报价和任何联系/发送均不是该结论的一部分。
+
+这不代表整个 Phase 2 完成。后续仍需独立规格、实现与验收：NeedCluster 寻源排序、联系人多源瀑布、
+70/30 自适应分配、接管队列自动背压、真实 direct supplier quote、商业来源。它们分别需要足够的
+真实样本/第二联系人 provider、已校准策略数据、成熟额度契约以及逐次人工授权；不得由本子项目自动启用。
 利润阈值、精度、汇率与条款由用户明确配置；不修改Phase1运营状态或勾完整个Phase2。
 
 ### 后续交付：剩余自动化范围继续保留
