@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient, Response
@@ -16,8 +17,13 @@ from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
+from domains.sourcing.schemas import (
+    PublicSourcingPlanReadView,
+    PublicSourcingQuery,
+    PublicSourcingQueryReadView,
+)
 from shared.errors import InvalidStateTransition
-from shared.schemas.identifiers import EmployeeId, TenantId
+from shared.schemas.identifiers import EmployeeId, SourcingPlanId, TenantId
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
 CASE_ID = "src_01K39P9M5D6K4A91YEQ80EJZ0X"
@@ -45,6 +51,43 @@ class _SourcingApplication:
 class _ConflictingSourcingApplication:
     async def confirm_plan(self, *args, **kwargs):
         raise InvalidStateTransition("当前状态不允许此操作")
+
+
+class _PlanSourcing(_Sourcing):
+    async def get_public_plan_read_view(self, tenant_id, case_id, *, actor):
+        del tenant_id, case_id, actor
+        return PublicSourcingPlanReadView(
+            plan_id=SourcingPlanId("spl-source"),
+            case_id=CASE_ID,
+            target_countries=("US",),
+            product_category="hinges",
+            queries=(
+                PublicSourcingQueryReadView(
+                    query_text="marine hinge supplier", target_country="US"
+                ),
+            ),
+            max_search_queries=1,
+            max_pages_read=1,
+            provider="tavily",
+            search_depth="basic",
+            usage_credits_remaining=10,
+            worst_case_credits=1,
+            version=1,
+            expected_case_version=6,
+            plan_hash="a" * 64,
+            status="draft",
+            confirmed_by=None,
+            confirmed_at=None,
+            created_at=datetime.now(UTC),
+        )
+
+
+class _PlanApplication:
+    def __init__(self) -> None:
+        self.command = None
+
+    async def create_plan(self, tenant_id, case_id, command, *, actor) -> None:
+        self.command = (tenant_id, case_id, command, actor)
 
 
 def _identity(role: str) -> RequestIdentity:
@@ -172,6 +215,43 @@ def test_review_rejects_forged_actor_opportunity_and_cost_fields() -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_plan_draft_accepts_json_arrays_but_passes_immutable_domain_tuples() -> None:
+    app, _ = _app("boss")
+    application = _PlanApplication()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_PlanSourcing(), sourcing_application=application
+    )
+
+    response = _request(
+        app,
+        "POST",
+        f"/sourcing-cases/{CASE_ID}/public-search-plan",
+        json={
+            "plan_id": "spl-source",
+            "case_id": CASE_ID,
+            "target_countries": ["US"],
+            "product_category": "hinges",
+            "queries": [
+                {"query_text": "marine hinge supplier", "target_country": "US"}
+            ],
+            "max_search_queries": 1,
+            "max_pages_read": 1,
+            "provider": "tavily",
+            "search_depth": "basic",
+            "usage_credits_remaining": 10,
+            "worst_case_credits": 1,
+            "version": 1,
+            "expected_case_version": 6,
+        },
+    )
+
+    assert application.command is not None
+    assert response.status_code == 200
+    command = application.command[2]
+    assert command.target_countries == ("US",)
+    assert isinstance(command.queries, tuple)
 
 
 def test_candidate_read_limit_is_forwarded_and_openapi_documents_command_truth() -> (

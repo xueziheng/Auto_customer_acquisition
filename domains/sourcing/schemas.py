@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
@@ -361,6 +362,13 @@ class PublicSourcingPlanCommand(BaseModel):
     version: int = Field(ge=1)
     expected_case_version: int = Field(ge=1)
 
+    @field_validator("target_countries", "queries", mode="before")
+    @classmethod
+    def normalize_json_arrays_to_immutable_tuples(cls, value: object) -> object:
+        """API JSON arrays 进入严格 DTO 前冻结；元素仍按严格子契约校验。"""
+
+        return tuple(value) if isinstance(value, list) else value
+
     @model_validator(mode="after")
     def validate_scope(self) -> Self:
         """计划边界必须确定、去重，并与查询上限一致。"""
@@ -429,6 +437,13 @@ class SourcingReviewCommand(BaseModel):
     alternate_option_ids: tuple[SourcingSupplyOptionId, ...] = Field(max_length=2)
     reason: str = Field(min_length=1, max_length=2_000)
     expected_case_version: int = Field(ge=1)
+
+    @field_validator("alternate_option_ids", mode="before")
+    @classmethod
+    def normalize_json_arrays_to_immutable_tuples(cls, value: object) -> object:
+        """HTTP JSON 的备选列表只在边界冻结，审核选择内部始终不可变。"""
+
+        return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def validate_selection(self) -> Self:
