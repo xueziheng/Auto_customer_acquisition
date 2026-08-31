@@ -47,7 +47,235 @@ async function mount(path: string, fetch: typeof globalThis.fetch): Promise<HTML
   return root;
 }
 
+type SecondaryProjection = "candidates" | "plan" | "review" | "quota" | "uncertain";
+type FailureMode = "forbidden" | "unavailable" | "network";
+
+const projectionExpectation: Record<SecondaryProjection, {
+  forbidden: string;
+  retry: string;
+  unavailable: string;
+  unaffected: string;
+}> = {
+  candidates: {
+    forbidden: "当前身份无权读取候选",
+    retry: "重试读取候选",
+    unavailable: "候选数据暂不可用",
+    unaffected: "当前计划 v1",
+  },
+  plan: {
+    forbidden: "当前身份无权读取寻源计划",
+    retry: "重试读取寻源计划",
+    unavailable: "寻源计划暂不可用",
+    unaffected: "Example supplier",
+  },
+  quota: {
+    forbidden: "当前身份无权读取当前额度",
+    retry: "重试读取当前额度",
+    unavailable: "当前额度暂不可用",
+    unaffected: "Example supplier",
+  },
+  review: {
+    forbidden: "当前身份无权读取审核",
+    retry: "重试读取审核",
+    unavailable: "审核数据暂不可用",
+    unaffected: "Example supplier",
+  },
+  uncertain: {
+    forbidden: "当前身份无权读取不确定请求",
+    retry: "重试读取不确定请求",
+    unavailable: "不确定请求暂不可用",
+    unaffected: "Example supplier",
+  },
+};
+
+function secondaryFailureResponse(mode: FailureMode): Response | Error {
+  if (mode === "forbidden") return jsonResponse({ code: "forbidden" }, 403);
+  if (mode === "unavailable") return jsonResponse({ code: "unavailable" }, 503);
+  return new TypeError("network unavailable");
+}
+
+function partialFailureFetch(
+  failedProjection: SecondaryProjection | null,
+  mode: FailureMode,
+  emptyProjection?: SecondaryProjection,
+): typeof globalThis.fetch {
+  return vi.fn<typeof globalThis.fetch>(async (input) => {
+    const path = new URL((input as Request).url).pathname;
+    if (path === "/notifications") return jsonResponse([]);
+    if (path === `/sourcing-cases/${caseId}`) return jsonResponse({
+      active_search_plan_id: "spl_01K39P9M5D6K4A91YEQ80EJZ0X",
+      case_id: caseId,
+      ladder_checked_to: 5,
+      need_id: "need_01K39P9M5D6K4A91YEQ80EJZ0X",
+      need_snapshot: null,
+      opened_at: "2026-08-30T09:00:00Z",
+      state: "candidates_ready",
+      state_changed_at: null,
+      stop: null,
+      version: 5,
+      workflow_version: 2,
+    });
+    const endpoint: Record<SecondaryProjection, string> = {
+      candidates: `/sourcing-cases/${caseId}/candidates`,
+      plan: `/sourcing-cases/${caseId}/public-search-plan`,
+      quota: `/sourcing-cases/${caseId}/current-quota`,
+      review: `/sourcing-cases/${caseId}/review`,
+      uncertain: `/sourcing-cases/${caseId}/uncertain-reconciliations`,
+    };
+    const projection = (Object.keys(endpoint) as SecondaryProjection[]).find(
+      (key) => endpoint[key] === path,
+    );
+    if (projection !== undefined && projection === failedProjection) {
+      const failure = secondaryFailureResponse(mode);
+      if (failure instanceof Error) throw failure;
+      return failure;
+    }
+    if (path === endpoint.candidates) return jsonResponse(emptyProjection === "candidates" ? [] : [{
+      candidate_id: "sup_01K39P9M5D6K4A91YEQ80EJZ0X",
+      currency: "USD",
+      evidence: [],
+      indicative_price_tiers: [],
+      match_inferences: {},
+      moq: 500,
+      observed_facts: {},
+      price_basis: "indicative",
+      price_unit: "piece",
+      product_title: "Stainless hinge",
+      rejection_reasons: [],
+      source_platform: "web",
+      spec_comparisons: [],
+      supplier_claims: {},
+      supplier_name: "Example supplier",
+      supply_option: {
+        is_qualified: true,
+        option_id: "sop_01K39P9M5D6K4A91YEQ80EJZ0X",
+        product_id: "prd_01K39P9M5D6K4A91YEQ80EJZ0X",
+        source_kind: "supplier_candidate",
+        supplier_candidate_id: "sup_01K39P9M5D6K4A91YEQ80EJZ0X",
+      },
+      verification_missing: [],
+      verification_status: "qualified",
+    }]);
+    if (path === "/sourcing-cases/" + caseId + "/ladder-checks") return jsonResponse([]);
+    if (path === endpoint.plan) return jsonResponse(emptyProjection === "plan" ? null : {
+      case_id: caseId,
+      confirmed_at: null,
+      confirmed_by: null,
+      created_at: "2026-08-30T09:00:00Z",
+      expected_case_version: 5,
+      max_pages_read: 1,
+      max_search_queries: 1,
+      plan_hash: "c".repeat(64),
+      plan_id: "spl_01K39P9M5D6K4A91YEQ80EJZ0X",
+      product_category: "hinges",
+      provider: "tavily",
+      queries: [{ lane: null, query_text: "stainless hinge", target_country: "CN" }],
+      search_depth: "basic",
+      status: "pending_confirmation",
+      target_countries: ["CN"],
+      usage_credits_remaining: 2,
+      version: 1,
+      worst_case_credits: 1,
+    });
+    if (path === endpoint.quota) return jsonResponse({
+      checked_at: "2026-08-30T09:00:00Z",
+      cost_status: "free",
+      paygo_enabled: false,
+      remaining: 2,
+      reservations: 0,
+    });
+    if (path === endpoint.review) return jsonResponse(null);
+    if (path === endpoint.uncertain) return jsonResponse(emptyProjection === "uncertain" ? [] : [{
+      can_current_user_reconcile: true,
+      created_at: "2026-08-30T09:00:00Z",
+      execution_id: "sxe_01K39P9M5D6K4A91YEQ80EJZ0X",
+      reconciliation: null,
+      request_key: "b".repeat(64),
+      run_id: "run_01K39P9M5D6K4A91YEQ80EJZ0X",
+      status: "uncertain",
+    }]);
+    return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
+  });
+}
+
 describe("Sourcing and Product centers", () => {
+  it.each([
+    ["candidates", "forbidden"], ["candidates", "unavailable"], ["candidates", "network"],
+    ["plan", "forbidden"], ["plan", "unavailable"], ["plan", "network"],
+    ["review", "forbidden"], ["review", "unavailable"], ["review", "network"],
+    ["quota", "forbidden"], ["quota", "unavailable"], ["quota", "network"],
+    ["uncertain", "forbidden"], ["uncertain", "unavailable"], ["uncertain", "network"],
+  ] as const)("does not convert %s %s into a business-empty Case detail state", async (projection, mode) => {
+    const root = await mount(`/sourcing/${caseId}`, partialFailureFetch(projection, mode));
+    const expected = projectionExpectation[projection];
+
+    await eventually(() => {
+      expect(root.textContent).toContain(
+        mode === "forbidden" ? expected.forbidden : expected.unavailable,
+      );
+      expect(root.textContent).toContain(expected.unaffected);
+    });
+    if (mode !== "forbidden") expect(root.textContent).toContain(expected.retry);
+
+    if (projection === "review") {
+      expect(root.textContent).not.toContain("提交人工选择");
+    }
+    if (projection === "candidates") {
+      expect(root.textContent).not.toContain("提交人工选择");
+      expect(root.textContent).not.toContain("没有候选；未知不是“合格”。");
+    }
+    if (projection === "plan") {
+      expect(root.querySelector(".plan-panel form")).toBeNull();
+    }
+    if (projection === "quota") {
+      const planButtons = [...root.querySelectorAll<HTMLButtonElement>(".plan-panel button")];
+      expect(planButtons.length).toBeGreaterThan(0);
+      expect(planButtons.every((button) => button.disabled)).toBe(true);
+    }
+    if (projection === "uncertain") {
+      expect(root.textContent).not.toContain("没有可展示的不确定搜索请求。");
+    }
+  });
+
+  it("renders an empty candidate list only after its 200 projection succeeds", async () => {
+    const root = await mount(
+      `/sourcing/${caseId}`,
+      partialFailureFetch(null, "unavailable", "candidates"),
+    );
+
+    await eventually(() => {
+      expect(root.textContent).toContain("没有候选；未知不是“合格”。");
+      expect(root.textContent).toContain("当前计划 v1");
+    });
+    expect(root.textContent).not.toContain("候选数据暂不可用");
+  });
+
+  it("retries only an unavailable projection without erasing a successful plan", async () => {
+    const successfulFetch = partialFailureFetch(null, "unavailable");
+    let candidateRequests = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === `/sourcing-cases/${caseId}/candidates` && candidateRequests++ === 0) {
+        return jsonResponse({ code: "unavailable" }, 503);
+      }
+      return successfulFetch(input);
+    });
+    const root = await mount(`/sourcing/${caseId}`, fetch);
+
+    await eventually(() => {
+      expect(root.textContent).toContain("候选数据暂不可用");
+      expect(root.textContent).toContain("当前计划 v1");
+    });
+    [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("重试读取候选"),
+    )!.click();
+
+    await eventually(() => {
+      expect(root.textContent).toContain("Example supplier");
+      expect(root.textContent).toContain("当前计划 v1");
+    });
+  });
+
   it("renders source_only supply as indicative-only without a customer quote or contact action", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const path = new URL((input as Request).url).pathname;

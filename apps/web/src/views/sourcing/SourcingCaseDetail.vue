@@ -20,6 +20,8 @@ type ReconciliationCommand = components["schemas"]["SourcingUncertainReconciliat
 type UncertainExecution = components["schemas"]["SourcingUncertainExecutionReadView"];
 type PlanReference = components["schemas"]["PlanReferenceBody"];
 type ReviewCommand = components["schemas"]["SourcingReviewCommand"];
+type SecondaryProjection = "candidates" | "plan" | "quota" | "review" | "uncertain";
+type ProjectionState = "forbidden" | "loading" | "success" | "unavailable";
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route = useRoute();
@@ -35,6 +37,61 @@ const loading = ref(true);
 const mutating = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+const projectionState = ref<Record<SecondaryProjection, ProjectionState>>({
+  candidates: "loading",
+  plan: "loading",
+  quota: "loading",
+  review: "loading",
+  uncertain: "loading",
+});
+const canManagePlan = computed(() => (
+  projectionState.value.plan === "success"
+  && projectionState.value.quota === "success"
+));
+const canReview = computed(() => (
+  projectionState.value.candidates === "success"
+  && projectionState.value.review === "success"
+));
+const canReconcile = computed(() => projectionState.value.uncertain === "success");
+
+const projectionMessage: Record<SecondaryProjection, {
+  forbidden: string;
+  loading: string;
+  retry: string;
+  unavailable: string;
+}> = {
+  candidates: {
+    forbidden: "当前身份无权读取候选",
+    loading: "正在读取候选…",
+    retry: "重试读取候选",
+    unavailable: "候选数据暂不可用",
+  },
+  plan: {
+    forbidden: "当前身份无权读取寻源计划",
+    loading: "正在读取寻源计划…",
+    retry: "重试读取寻源计划",
+    unavailable: "寻源计划暂不可用",
+  },
+  quota: {
+    forbidden: "当前身份无权读取当前额度",
+    loading: "正在读取当前额度…",
+    retry: "重试读取当前额度",
+    unavailable: "当前额度暂不可用",
+  },
+  review: {
+    forbidden: "当前身份无权读取审核",
+    loading: "正在读取审核…",
+    retry: "重试读取审核",
+    unavailable: "审核数据暂不可用",
+  },
+  uncertain: {
+    forbidden: "当前身份无权读取不确定请求",
+    loading: "正在读取不确定请求…",
+    retry: "重试读取不确定请求",
+    unavailable: "不确定请求暂不可用",
+  },
+};
+
 function idempotencyKey(prefix: string): string {
   return `${prefix}-${globalThis.crypto.randomUUID()}`;
 }
@@ -46,39 +103,170 @@ function safeError(status: number): string {
   return "寻源操作未完成，请核对范围与版本后重试";
 }
 
-async function loadCase(preserveStatus = false): Promise<void> {
+function setProjectionState(
+  projection: SecondaryProjection,
+  status: number | null,
+): void {
+  projectionState.value[projection] = status === 403 ? "forbidden" : "unavailable";
+}
+
+function beginProjection(projection: SecondaryProjection): void {
+  projectionState.value[projection] = "loading";
+}
+
+async function loadCandidates(): Promise<boolean> {
+  beginProjection("candidates");
+  candidates.value = [];
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/candidates", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status !== 200) {
+      setProjectionState("candidates", result.response.status);
+      return false;
+    }
+    candidates.value = result.data ?? [];
+    projectionState.value.candidates = "success";
+    return true;
+  } catch {
+    setProjectionState("candidates", null);
+    return false;
+  }
+}
+
+async function loadPlan(): Promise<boolean> {
+  beginProjection("plan");
+  plan.value = null;
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/public-search-plan", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status !== 200) {
+      setProjectionState("plan", result.response.status);
+      return false;
+    }
+    plan.value = result.data ?? null;
+    projectionState.value.plan = "success";
+    return true;
+  } catch {
+    setProjectionState("plan", null);
+    return false;
+  }
+}
+
+async function loadReview(): Promise<boolean> {
+  beginProjection("review");
+  review.value = null;
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/review", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status !== 200) {
+      setProjectionState("review", result.response.status);
+      return false;
+    }
+    review.value = result.data ?? null;
+    projectionState.value.review = "success";
+    return true;
+  } catch {
+    setProjectionState("review", null);
+    return false;
+  }
+}
+
+async function loadQuota(): Promise<boolean> {
+  beginProjection("quota");
+  currentQuota.value = null;
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/current-quota", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status !== 200) {
+      setProjectionState("quota", result.response.status);
+      return false;
+    }
+    currentQuota.value = result.data ?? null;
+    projectionState.value.quota = "success";
+    return true;
+  } catch {
+    setProjectionState("quota", null);
+    return false;
+  }
+}
+
+async function loadUncertainExecutions(): Promise<boolean> {
+  beginProjection("uncertain");
+  uncertainExecutions.value = [];
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/uncertain-reconciliations", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status !== 200) {
+      setProjectionState("uncertain", result.response.status);
+      return false;
+    }
+    uncertainExecutions.value = result.data ?? [];
+    projectionState.value.uncertain = "success";
+    return true;
+  } catch {
+    setProjectionState("uncertain", null);
+    return false;
+  }
+}
+
+async function loadLadderChecks(): Promise<void> {
+  checks.value = [];
+  try {
+    const result = await client.GET("/sourcing-cases/{case_id}/ladder-checks", {
+      params: { path: { case_id: caseId.value } },
+    });
+    if (result.response.status === 200) checks.value = result.data ?? [];
+  } catch {
+    checks.value = [];
+  }
+}
+
+async function retryProjection(projection: SecondaryProjection): Promise<void> {
+  if (projection === "candidates") await loadCandidates();
+  if (projection === "plan") await loadPlan();
+  if (projection === "quota") await loadQuota();
+  if (projection === "review") await loadReview();
+  if (projection === "uncertain") await loadUncertainExecutions();
+}
+
+async function loadCase(preserveStatus = false): Promise<boolean> {
   loading.value = true;
   error.value = null;
   if (!preserveStatus) notice.value = null;
   try {
-    const [caseResult, candidatesResult, checksResult, planResult, reviewResult, quotaResult, uncertainResult] = await Promise.all([
-      client.GET("/sourcing-cases/{case_id}", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/candidates", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/ladder-checks", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/public-search-plan", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/review", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/current-quota", { params: { path: { case_id: caseId.value } } }),
-      client.GET("/sourcing-cases/{case_id}/uncertain-reconciliations", { params: { path: { case_id: caseId.value } } }),
-    ]);
+    const caseResult = await client.GET("/sourcing-cases/{case_id}", {
+      params: { path: { case_id: caseId.value } },
+    });
     if (caseResult.response.status !== 200 || !caseResult.data) {
       error.value = safeError(caseResult.response.status);
-      return;
+      return false;
     }
     sourcingCase.value = caseResult.data;
-    candidates.value = candidatesResult.data ?? [];
-    checks.value = checksResult.data ?? [];
-    plan.value = planResult.data ?? null;
-    review.value = reviewResult.data ?? null;
-    currentQuota.value = quotaResult.data ?? null;
-    uncertainExecutions.value = uncertainResult.data ?? [];
+    loading.value = false;
+    const results = await Promise.all([
+      loadCandidates(),
+      loadLadderChecks(),
+      loadPlan(),
+      loadReview(),
+      loadQuota(),
+      loadUncertainExecutions(),
+    ]);
+    return results[0] && results[2] && results[3] && results[4] && results[5];
   } catch {
     error.value = "无法连接寻源服务";
+    return false;
   } finally {
     loading.value = false;
   }
 }
 
 async function draftPlan(command: PublicPlanCommand): Promise<void> {
+  if (!canManagePlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/public-search-plan", {
     body: command,
     params: { path: { case_id: caseId.value } },
@@ -86,6 +274,7 @@ async function draftPlan(command: PublicPlanCommand): Promise<void> {
 }
 
 async function confirmPlan(reference: PlanReference): Promise<void> {
+  if (!canManagePlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/public-search-plan/confirm", {
     body: reference,
     params: {
@@ -96,6 +285,7 @@ async function confirmPlan(reference: PlanReference): Promise<void> {
 }
 
 async function runPlan(reference: PlanReference): Promise<void> {
+  if (!canManagePlan.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/run", {
     body: reference,
     params: {
@@ -106,6 +296,7 @@ async function runPlan(reference: PlanReference): Promise<void> {
 }
 
 async function submitReview(command: ReviewCommand): Promise<void> {
+  if (!canReview.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/review", {
     body: command,
     params: {
@@ -116,6 +307,7 @@ async function submitReview(command: ReviewCommand): Promise<void> {
 }
 
 async function reconcileUncertain(command: ReconciliationCommand): Promise<void> {
+  if (!canReconcile.value) return;
   await mutate(async () => client.POST("/sourcing-cases/{case_id}/reconcile-uncertain-request", {
     body: command,
     params: {
@@ -138,7 +330,11 @@ async function mutate(
       error.value = safeError(result.response.status);
       return;
     }
-    await loadCase(true);
+    const refreshed = await loadCase(true);
+    if (!refreshed) {
+      error.value = "操作已被服务器接受，但最新安全投影暂不可用；请重试受影响区块。";
+      return;
+    }
     notice.value = success;
   } catch {
     error.value = "无法连接寻源服务";
@@ -233,7 +429,10 @@ onMounted(() => void loadCase());
         </ol>
       </section>
 
-      <section class="detail-panel">
+      <section
+        v-if="projectionState.candidates === 'success'"
+        class="detail-panel"
+      >
         <header>
           <div>
             <p class="card-kicker">
@@ -323,28 +522,125 @@ onMounted(() => void loadCase());
         </article>
       </section>
 
+      <section
+        v-else
+        class="detail-panel projection-state"
+        role="alert"
+      >
+        <h2>候选与证据</h2>
+        <p>
+          {{ projectionState.candidates === "loading" ? projectionMessage.candidates.loading : projectionState.candidates === "forbidden" ? projectionMessage.candidates.forbidden : projectionMessage.candidates.unavailable }}
+        </p>
+        <button
+          v-if="projectionState.candidates === 'unavailable'"
+          type="button"
+          :disabled="mutating"
+          @click="retryProjection('candidates')"
+        >
+          {{ projectionMessage.candidates.retry }}
+        </button>
+      </section>
+
+      <section
+        v-if="projectionState.quota !== 'success'"
+        class="detail-panel projection-state"
+        role="alert"
+      >
+        <h2>当前安全额度</h2>
+        <p>
+          {{ projectionState.quota === "loading" ? projectionMessage.quota.loading : projectionState.quota === "forbidden" ? projectionMessage.quota.forbidden : projectionMessage.quota.unavailable }}
+        </p>
+        <button
+          v-if="projectionState.quota === 'unavailable'"
+          type="button"
+          :disabled="mutating"
+          @click="retryProjection('quota')"
+        >
+          {{ projectionMessage.quota.retry }}
+        </button>
+      </section>
+
       <SourcingPlanForm
+        v-if="projectionState.plan === 'success'"
         :case-id="caseId"
         :case-version="sourcingCase.version"
         :current-quota="currentQuota"
-        :disabled="mutating"
+        :disabled="mutating || !canManagePlan"
         :plan="plan"
         @draft="draftPlan"
         @confirm="confirmPlan"
         @run="runPlan"
       />
+      <section
+        v-else
+        class="detail-panel projection-state"
+        role="alert"
+      >
+        <h2>公开寻源计划</h2>
+        <p>
+          {{ projectionState.plan === "loading" ? projectionMessage.plan.loading : projectionState.plan === "forbidden" ? projectionMessage.plan.forbidden : projectionMessage.plan.unavailable }}
+        </p>
+        <button
+          v-if="projectionState.plan === 'unavailable'"
+          type="button"
+          :disabled="mutating"
+          @click="retryProjection('plan')"
+        >
+          {{ projectionMessage.plan.retry }}
+        </button>
+      </section>
+
       <SourcingReviewForm
+        v-if="projectionState.candidates === 'success' && projectionState.review === 'success'"
         :candidates="candidates"
         :case-version="sourcingCase.version"
-        :disabled="mutating"
+        :disabled="mutating || !canReview"
         :review="review"
         @submit="submitReview"
       />
+      <section
+        v-else-if="projectionState.review !== 'success'"
+        class="detail-panel projection-state"
+        role="alert"
+      >
+        <h2>人工审核</h2>
+        <p>
+          {{ projectionState.review === "loading" ? projectionMessage.review.loading : projectionState.review === "forbidden" ? projectionMessage.review.forbidden : projectionMessage.review.unavailable }}
+        </p>
+        <button
+          v-if="projectionState.review === 'unavailable'"
+          type="button"
+          :disabled="mutating"
+          @click="retryProjection('review')"
+        >
+          {{ projectionMessage.review.retry }}
+        </button>
+      </section>
+
       <SourcingRecoveryForm
-        :disabled="mutating"
+        v-if="projectionState.uncertain === 'success'"
+        :disabled="mutating || !canReconcile"
         :executions="uncertainExecutions"
         @reconcile="reconcileUncertain"
       />
+      <section
+        v-else
+        class="detail-panel projection-state"
+        role="alert"
+      >
+        <h2>不确定请求核对</h2>
+        <p>
+          {{ projectionState.uncertain === "loading" ? projectionMessage.uncertain.loading : projectionState.uncertain === "forbidden" ? projectionMessage.uncertain.forbidden : projectionMessage.uncertain.unavailable }}
+        </p>
+        <button
+          v-if="projectionState.uncertain === 'unavailable'"
+          type="button"
+          :disabled="mutating"
+          @click="retryProjection('uncertain')"
+        >
+          {{ projectionMessage.uncertain.retry }}
+        </button>
+      </section>
     </template>
   </div>
 </template>
