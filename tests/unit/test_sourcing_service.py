@@ -257,7 +257,9 @@ async def test_qualified_product_evidence_mapping_is_exact(
 
 
 @pytest.mark.asyncio
-async def test_qualified_product_evidence_mapping_rejects_spec_omitted_from_one_product() -> None:
+async def test_qualified_product_evidence_mapping_rejects_spec_omitted_from_one_product() -> (
+    None
+):
     """同一必需规格从某个 Product 的 comparison 与 mapping 一起删除也不能绕过闭包。"""
 
     service = _service(_Factory())
@@ -306,9 +308,7 @@ async def test_no_qualified_ladder_cannot_carry_product_evidence_mapping() -> No
             **check.__dict__,
             "input_snapshot": {
                 **check.input_snapshot,
-                "product_spec_evidence": {
-                    "prd-forged": {"material": "art-forged"}
-                },
+                "product_spec_evidence": {"prd-forged": {"material": "art-forged"}},
             },
         }
     )
@@ -545,8 +545,7 @@ class _Candidates(_MemoryRepo):
         for (candidate_tenant, _), current in self.state[self.name].items():
             if (
                 candidate_tenant == tenant_id
-                and current.public_draft_source_key
-                == candidate.public_draft_source_key
+                and current.public_draft_source_key == candidate.public_draft_source_key
             ):
                 return copy.deepcopy(current), False
         await self.add(tenant_id, candidate)
@@ -571,18 +570,23 @@ class _Candidates(_MemoryRepo):
         return copy.deepcopy(self.state[self.name].get((tenant_id, candidate_id)))
 
     async def list_for_case(
-        self, tenant_id: TenantId, case_id: SourcingCaseId, include_rejected: bool
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        include_rejected: bool,
+        limit: int | None = None,
     ) -> list[Any]:
         values = [
             item
             for (candidate_tenant, _), item in self.state[self.name].items()
             if candidate_tenant == tenant_id and item.case_id == case_id
         ]
-        return [
+        values = [
             copy.deepcopy(item)
             for item in values
             if include_rejected or not item.rejected
         ]
+        return values[:limit] if limit is not None else values
 
     async def count_qualified(
         self, tenant_id: TenantId, case_id: SourcingCaseId
@@ -662,6 +666,20 @@ class _SearchExecutions(_MemoryRepo):
     async def get_by_request_key(self, tenant_id: TenantId, request_key: str) -> Any:
         return copy.deepcopy(self.state[self.name].get((tenant_id, request_key)))
 
+    async def list_uncertain_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, limit: int
+    ) -> list[Any]:
+        return [
+            copy.deepcopy(item)
+            for (_, _), item in sorted(
+                self.state[self.name].items(),
+                key=lambda pair: (pair[1].created_at, pair[1].execution_id),
+            )
+            if item.tenant_id == tenant_id
+            and item.case_id == case_id
+            and item.provider_status is SourcingSearchExecutionStatus.UNCERTAIN
+        ][:limit]
+
 
 class _Reconciliations(_MemoryRepo):
     async def add(self, tenant_id: TenantId, reconciliation: Any) -> None:
@@ -685,8 +703,8 @@ class _Reconciliations(_MemoryRepo):
             )
         ]
         if not matches:
-            self.state[self.name][(tenant_id, reconciliation.execution_id)] = copy.deepcopy(
-                reconciliation
+            self.state[self.name][(tenant_id, reconciliation.execution_id)] = (
+                copy.deepcopy(reconciliation)
             )
             return copy.deepcopy(reconciliation)
         if len(matches) != 1:
@@ -1025,16 +1043,12 @@ async def test_public_draft_verification_converts_four_specs_and_seals_once() ->
     assert all(
         fact.evidence_ref == ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X")
         and fact.provenance.source_type is SourceType.WEB_PAGE
-        and fact.provenance.source_id
-        == "art_01K39P9M5D6K4A91YEQ80EJZ0X"
+        and fact.provenance.source_id == "art_01K39P9M5D6K4A91YEQ80EJZ0X"
         and fact.provenance.confirmed_by is None
         for fact in candidate.observed_facts.values()
     )
     assert candidate.observed_facts["supplier_name"].value == "Factory A"
-    assert (
-        candidate.observed_facts["product_title"].value
-        == "Stainless hinge HX-4"
-    )
+    assert candidate.observed_facts["product_title"].value == "Stainless hinge HX-4"
     assert reader.calls == 1
 
 
@@ -1042,9 +1056,7 @@ def _stored_public_draft(factory: _Factory) -> PublicCandidateDraft:
     return next(iter(factory.state["candidate_drafts"].values()))
 
 
-def _replace_public_drafts(
-    factory: _Factory, *drafts: PublicCandidateDraft
-) -> None:
+def _replace_public_drafts(factory: _Factory, *drafts: PublicCandidateDraft) -> None:
     factory.state["candidate_drafts"] = {
         (TENANT, draft.draft_id): draft for draft in drafts
     }
@@ -1149,9 +1161,7 @@ async def test_incomplete_or_ambiguous_public_price_stays_draft_only(
                 "unit": "set" if draft_only == "mixed_unit" else "piece",
             }
         )
-        draft = draft.model_copy(
-            update={"indicative_price_tiers": (first, second)}
-        )
+        draft = draft.model_copy(update={"indicative_price_tiers": (first, second)})
     _replace_public_drafts(factory, draft)
 
     result = await service.verify_public_candidate_drafts(
@@ -1198,13 +1208,13 @@ async def test_fourth_complete_candidate_is_persisted_rejected_and_not_sealed() 
     assert len(result.qualified_candidate_ids) == 3
     assert len(result.rejected_candidate_ids) == 1
     rejected = factory.state["candidates"][(TENANT, result.rejected_candidate_ids[0])]
-    assert rejected.rejection_reasons == [
-        PriceRejectionReason.QUALIFIED_LIMIT_REACHED
-    ]
+    assert rejected.rejection_reasons == [PriceRejectionReason.QUALIFIED_LIMIT_REACHED]
 
 
 @pytest.mark.asyncio
-async def test_verification_requires_exact_canonical_draft_order_before_artifact_reads() -> None:
+async def test_verification_requires_exact_canonical_draft_order_before_artifact_reads() -> (
+    None
+):
     factory = _Factory()
     reader = _EvidenceReader()
     service = _service(factory, reader)
@@ -1345,7 +1355,9 @@ async def test_artifact_drift_or_reader_error_rolls_back_without_error_leak(
 
 
 @pytest.mark.asyncio
-async def test_exact_public_draft_replay_returns_original_generation_without_duplicate() -> None:
+async def test_exact_public_draft_replay_returns_original_generation_without_duplicate() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id, plan, run_id = await _running_public_case(service, factory)
@@ -1361,9 +1373,16 @@ async def test_exact_public_draft_replay_returns_original_generation_without_dup
 
     assert second == first
     assert len(factory.state["candidates"]) == 1
-    assert len(
-        [event for event in factory.state["events"] if isinstance(event, SourcingCandidatesVerified)]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in factory.state["events"]
+                if isinstance(event, SourcingCandidatesVerified)
+            ]
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -1453,29 +1472,36 @@ async def test_sealed_public_draft_replay_revalidates_full_proposal_and_artifact
         changed = draft.model_copy(
             update={
                 "indicative_price_tiers": (
-                    draft.indicative_price_tiers[0].model_copy(
-                        update=tier_updates
-                    ),
+                    draft.indicative_price_tiers[0].model_copy(update=tier_updates),
                 )
             }
         )
     elif drift == "evidence_url":
-        changed = draft.model_copy(update={"evidence_url": "https://other.example/hinge"})
+        changed = draft.model_copy(
+            update={"evidence_url": "https://other.example/hinge"}
+        )
     elif drift == "evidence_hash":
         changed = draft.model_copy(update={"evidence_hash": "e" * 64})
     elif drift == "evidence_time":
         changed = draft.model_copy(
-            update={"evidence_observed_at": draft.evidence_observed_at + timedelta(seconds=1)}
+            update={
+                "evidence_observed_at": draft.evidence_observed_at
+                + timedelta(seconds=1)
+            }
         )
     elif drift == "evidence_artifact":
         changed = draft.model_copy(
-            update={"evidence_artifact_ref": ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y")}
+            update={
+                "evidence_artifact_ref": ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Y")
+            }
         )
     elif drift == "reader_failure":
         reader.failure = RuntimeError("provider secret raw error")
         changed = draft
     elif drift == "created_at":
-        changed = draft.model_copy(update={"created_at": draft.created_at + timedelta(seconds=1)})
+        changed = draft.model_copy(
+            update={"created_at": draft.created_at + timedelta(seconds=1)}
+        )
     else:
         changed = draft.model_copy(
             update={
@@ -1541,7 +1567,9 @@ async def test_descending_public_price_tiers_are_canonical_before_persistence_an
 
 
 @pytest.mark.asyncio
-async def test_public_draft_source_collision_with_changed_content_fails_closed() -> None:
+async def test_public_draft_source_collision_with_changed_content_fails_closed() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id, plan, run_id = await _running_public_case(service, factory)
@@ -2471,9 +2499,7 @@ async def test_candidate_product_inputs_rebuild_exact_sealed_generation() -> Non
     assert command.name_en == "Stainless hinge"
     assert command.category == "hinges"
     assert command.moq == 500
-    assert command.evidence_refs == (
-        ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
-    )
+    assert command.evidence_refs == (ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),)
     assert command.indicative_prices[0].unit_amount == Decimal("1.25")
 
     with pytest.raises(ValidationError, match="generation"):
@@ -2540,7 +2566,9 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
 
 
 @pytest.mark.asyncio
-async def test_review_exact_replay_returns_original_fact_but_changed_command_conflicts() -> None:
+async def test_review_exact_replay_returns_original_fact_but_changed_command_conflicts() -> (
+    None
+):
     """同 Case 的重试请求不得重写人工选择事实。"""
 
     factory = _Factory()
@@ -2595,7 +2623,9 @@ async def test_outbox_failure_rolls_back_case_creation_and_ready_transition() ->
 
 
 @pytest.mark.asyncio
-async def test_confirmed_plan_can_be_replaced_before_run_but_running_plan_cannot() -> None:
+async def test_confirmed_plan_can_be_replaced_before_run_but_running_plan_cannot() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id = await _discovering(service)
@@ -2656,21 +2686,32 @@ async def test_confirmation_rejects_wrong_expected_case_before_mutation() -> Non
             expected_case_id=SourcingCaseId("src-other"),
         )
 
-    assert factory.state["plans"][(TENANT, pending.plan_id)].status is PublicPlanStatus.PENDING_CONFIRMATION
+    assert (
+        factory.state["plans"][(TENANT, pending.plan_id)].status
+        is PublicPlanStatus.PENDING_CONFIRMATION
+    )
     assert factory.state["cases"][(TENANT, case_id)] == case_before
 
 
 @pytest.mark.asyncio
-async def test_plan_run_and_reconciliation_are_boss_only_before_repository_read() -> None:
+async def test_plan_run_and_reconciliation_are_boss_only_before_repository_read() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory, provider_usage_reader=_ProviderUsageReader())
     calls = [
         lambda: service.get_public_plan_run_view(
-            TENANT, SourcingCaseId("src-never"), SourcingPlanId("spl-never"), "a" * 64,
+            TENANT,
+            SourcingCaseId("src-never"),
+            SourcingPlanId("spl-never"),
+            "a" * 64,
             actor=SOURCING,
         ),
         lambda: service.authorize_public_plan_run(
-            TENANT, SourcingCaseId("src-never"), SourcingPlanId("spl-never"), "a" * 64,
+            TENANT,
+            SourcingCaseId("src-never"),
+            SourcingPlanId("spl-never"),
+            "a" * 64,
             actor=SOURCING,
         ),
         lambda: service.get_uncertain_search_execution(
@@ -2688,7 +2729,9 @@ async def test_plan_run_and_reconciliation_are_boss_only_before_repository_read(
 
 
 @pytest.mark.asyncio
-async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_replay() -> None:
+async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_replay() -> (
+    None
+):
     factory = _Factory()
     usage_reader = _ProviderUsageReader()
     service = _service(factory, provider_usage_reader=usage_reader)
@@ -2766,7 +2809,9 @@ async def test_confirmed_consumed_reconciliation_is_evidence_bound_and_exact_rep
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_rejects_untrusted_or_cross_tenant_usage_evidence() -> None:
+async def test_reconciliation_rejects_untrusted_or_cross_tenant_usage_evidence() -> (
+    None
+):
     for reader in (
         _ProviderUsageReader(failure=RuntimeError("secret-provider-payload")),
         _ProviderUsageReader(
@@ -2812,9 +2857,7 @@ async def test_reconciliation_rejects_untrusted_or_cross_tenant_usage_evidence()
             request_key=execution.request_key,
             resolution="count_as_consumed",
             reason="已在提供商用量页人工核对",
-            provider_usage_artifact_ref=ArtifactId(
-                "art_01K39P9M5D6K4A91YEQ80EJZ0Z"
-            ),
+            provider_usage_artifact_ref=ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0Z"),
         )
         with pytest.raises(ValidationError) as failure:
             await service.record_confirmed_consumed_reconciliation(

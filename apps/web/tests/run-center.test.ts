@@ -150,6 +150,44 @@ async function settle(): Promise<void> {
 }
 
 describe("RunCenter", () => {
+  it("renders only the safe sourcing Run summary without query, page or quote payloads", async () => {
+    const sourcingDetail: RunDetail = {
+      ...firstDetail,
+      summary: {
+        ...firstRun,
+        sourcing: {
+          alternate_count: 1,
+          candidate_count: 2,
+          case_id: "src_01K39P9M5D6K4A91YEQ80EJZ0X",
+          consumed_credits: 1,
+          ladder: [{ outcome: "no_qualified_supply", rung: 1 }],
+          page_attempt_count: 3,
+          plan_status: "running",
+          primary_count: 1,
+          reserved_credits: 1,
+          search_attempt_count: 2,
+          stop_reason: null,
+          uncertain_credits: 0,
+        },
+      },
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/runs") return jsonResponse([firstRun]);
+      if (path === `/runs/${firstRun.run_id}`) return jsonResponse(sourcingDetail);
+      return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
+    });
+
+    const { root } = await mountRuns(fetch, `/runs?run=${firstRun.run_id}`);
+
+    await eventually(() => {
+      expect(root.textContent).toContain("寻源运行摘要");
+      expect(root.textContent).toContain("已预留 1 / 已消耗 1 / 不确定 0");
+      expect(root.textContent).toContain("第 1 级：no_qualified_supply");
+    });
+    expect(root.textContent).not.toContain("stainless hinge query");
+  });
+
   it.each([0, 50])("精确读取不在最近 %s 条列表中的深链 Run，刷新仍保留目标", async (count) => {
     const requested: string[] = [];
     const olderRun = { ...secondRun, run_id: "run_older", subject_ref: "dpr_older" };

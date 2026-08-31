@@ -67,13 +67,13 @@ const router = createRouter({
       path: "/products",
       name: "products",
       component: () => import("./views/products/ProductSupplyCenter.vue"),
-      meta: { phase: "phase1-manual", operation: "products" },
+      meta: { phase: "phase2-sourcing-automation", operation: "products" },
     },
     {
       path: "/sourcing",
       name: "sourcing",
       component: () => import("./views/sourcing/SourcingCenter.vue"),
-      meta: { phase: "phase1-manual", operation: "sourcing" },
+      meta: { phase: "phase2-sourcing-automation", operation: "sourcing" },
     },
     {
       path: "/sourcing/:caseId",

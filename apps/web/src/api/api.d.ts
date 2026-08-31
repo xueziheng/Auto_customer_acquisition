@@ -1682,6 +1682,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sourcing-cases/{case_id}/current-quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Current Quota */
+        get: operations["get_current_quota_sourcing_cases__case_id__current_quota_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sourcing-cases/{case_id}/ladder-checks": {
         parameters: {
             query?: never;
@@ -1758,7 +1775,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get Review */
+        get: operations["get_review_sourcing_cases__case_id__review_get"];
         put?: never;
         /** Submit Review */
         post: operations["submit_review_sourcing_cases__case_id__review_post"];
@@ -1779,6 +1797,23 @@ export interface paths {
         put?: never;
         /** Run Public Search Plan */
         post: operations["run_public_search_plan_sourcing_cases__case_id__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-cases/{case_id}/uncertain-reconciliations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Uncertain Reconciliations */
+        get: operations["list_uncertain_reconciliations_sourcing_cases__case_id__uncertain_reconciliations_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6242,6 +6277,25 @@ export interface components {
             workflow_version: number;
         };
         /**
+         * SourcingCurrentQuotaReadView
+         * @description 当前安全额度摘要；未知保持 null/unknown，不能由计划快照推断。
+         */
+        SourcingCurrentQuotaReadView: {
+            /** Checked At */
+            checked_at?: string | null;
+            /**
+             * Cost Status
+             * @enum {string}
+             */
+            cost_status: "free" | "paid" | "unknown";
+            /** Paygo Enabled */
+            paygo_enabled?: boolean | null;
+            /** Remaining */
+            remaining?: number | null;
+            /** Reservations */
+            reservations?: number | null;
+        };
+        /**
          * SourcingLadderCheckReadView
          * @description 单级梯子检查的解释性投影；不使用相似度或综合分。
          */
@@ -6331,6 +6385,29 @@ export interface components {
             value: string | number;
         };
         /**
+         * SourcingReconciliationReadView
+         * @description 已保存人工核对的可审计摘要；不含 Provider 原文或搜索输入。
+         */
+        SourcingReconciliationReadView: {
+            /** Execution Id */
+            execution_id: string;
+            /** Provider Usage Artifact Ref */
+            provider_usage_artifact_ref: string;
+            /** Reason */
+            reason: string;
+            /** Reconciled At */
+            reconciled_at?: string | null;
+            /** Reconciled By */
+            reconciled_by?: string | null;
+            /** Reconciliation Id */
+            reconciliation_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "confirmed_consumed" | "confirmed_not_consumed" | "required";
+        };
+        /**
          * SourcingReviewCommand
          * @description 人工审核提交；仅保存选择，不接受机会或成本字段自证。
          */
@@ -6351,6 +6428,8 @@ export interface components {
         SourcingReviewReadView: {
             /** Alternate Option Ids */
             alternate_option_ids: string[];
+            /** Can Current User Confirm */
+            can_current_user_confirm: boolean;
             /** Case Id */
             case_id: string;
             /** Confirmed At */
@@ -6417,6 +6496,31 @@ export interface components {
             source_kind: string;
             /** Supplier Candidate Id */
             supplier_candidate_id?: string | null;
+        };
+        /**
+         * SourcingUncertainExecutionReadView
+         * @description 可恢复不确定执行的最小操作标识，不输出查询、页面或 Provider 载荷。
+         */
+        SourcingUncertainExecutionReadView: {
+            /** Can Current User Reconcile */
+            can_current_user_reconcile: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Execution Id */
+            execution_id: string;
+            reconciliation?: components["schemas"]["SourcingReconciliationReadView"] | null;
+            /** Request Key */
+            request_key: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "uncertain";
         };
         /**
          * SourcingUncertainReconciliationCommand
@@ -12046,6 +12150,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12104,6 +12217,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12117,7 +12239,9 @@ export interface operations {
     };
     get_candidates_sourcing_cases__case_id__candidates_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 case_id: string;
@@ -12155,6 +12279,82 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_current_quota_sourcing_cases__case_id__current_quota_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingCurrentQuotaReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12220,6 +12420,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12271,6 +12480,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12340,6 +12558,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12354,8 +12581,8 @@ export interface operations {
     confirm_public_search_plan_sourcing_cases__case_id__public_search_plan_confirm_post: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
+            header: {
+                "Idempotency-Key": string;
             };
             path: {
                 case_id: string;
@@ -12404,6 +12631,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12418,8 +12654,8 @@ export interface operations {
     reconcile_uncertain_request_sourcing_cases__case_id__reconcile_uncertain_request_post: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
+            header: {
+                "Idempotency-Key": string;
             };
             path: {
                 case_id: string;
@@ -12468,6 +12704,82 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_review_sourcing_cases__case_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingReviewReadView"] | null;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12482,8 +12794,8 @@ export interface operations {
     submit_review_sourcing_cases__case_id__review_post: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
+            header: {
+                "Idempotency-Key": string;
             };
             path: {
                 case_id: string;
@@ -12532,6 +12844,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -12546,8 +12867,8 @@ export interface operations {
     run_public_search_plan_sourcing_cases__case_id__run_post: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
+            header: {
+                "Idempotency-Key": string;
             };
             path: {
                 case_id: string;
@@ -12589,6 +12910,84 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_uncertain_reconciliations_sourcing_cases__case_id__uncertain_reconciliations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingUncertainExecutionReadView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

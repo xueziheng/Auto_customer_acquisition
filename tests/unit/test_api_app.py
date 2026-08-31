@@ -137,7 +137,10 @@ _EXPECTED_API_PATHS = {
     "/inbox/messages/{message_id}/correct-classification",
     "/notifications",
     "/notifications/{notification_id}/read",
-    "/products/status",
+    "/products",
+    "/products/{product_id}/customer",
+    "/products/{product_id}/internal",
+    "/products/{product_id}/sales",
     "/prospects/accounts",
     "/prospects/accounts/{account_id}",
     "/prospects/accounts/{account_id}/contacts",
@@ -151,7 +154,17 @@ _EXPECTED_API_PATHS = {
     "/settings/country-policies",
     "/settings/country-policies/versions",
     "/settings/country-policies/proposals",
-    "/sourcing/status",
+    "/sourcing-cases",
+    "/sourcing-cases/{case_id}",
+    "/sourcing-cases/{case_id}/candidates",
+    "/sourcing-cases/{case_id}/current-quota",
+    "/sourcing-cases/{case_id}/ladder-checks",
+    "/sourcing-cases/{case_id}/public-search-plan",
+    "/sourcing-cases/{case_id}/public-search-plan/confirm",
+    "/sourcing-cases/{case_id}/reconcile-uncertain-request",
+    "/sourcing-cases/{case_id}/review",
+    "/sourcing-cases/{case_id}/run",
+    "/sourcing-cases/{case_id}/uncertain-reconciliations",
     "/team/employees",
     "/team/territory",
     "/work-uploads",
@@ -456,9 +469,7 @@ def test_api_settings_and_error_contracts_are_strict_frozen_pydantic_models() ->
     from apps.api.main import ApiSettings
     from apps.api.middleware import ApiErrorResponse
 
-    settings = ApiSettings(
-        tenant_id="tenant-a", dev_mode=True, retry_after_seconds=9
-    )
+    settings = ApiSettings(tenant_id="tenant-a", dev_mode=True, retry_after_seconds=9)
     error = ApiErrorResponse(code="forbidden", message="没有权限")
 
     with pytest.raises(PydanticValidationError):
@@ -468,9 +479,7 @@ def test_api_settings_and_error_contracts_are_strict_frozen_pydantic_models() ->
 
     for invalid in ("", "   "):
         with pytest.raises(PydanticValidationError):
-            ApiSettings(
-                tenant_id=invalid, dev_mode=True, retry_after_seconds=9
-            )
+            ApiSettings(tenant_id=invalid, dev_mode=True, retry_after_seconds=9)
     with pytest.raises(PydanticValidationError):
         ApiSettings(tenant_id="tenant-a", dev_mode=1, retry_after_seconds=9)  # type: ignore[arg-type]
     with pytest.raises(PydanticValidationError):
@@ -548,11 +557,9 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
     assert "201" in create_responses
     assert "204" in create_responses
-    assert schema["paths"]["/crm/opportunities"]["post"]["requestBody"][
-        "content"
-    ]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/OpportunityIntakeBody"
-    }
+    assert schema["paths"]["/crm/opportunities"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/OpportunityIntakeBody"}
     assert "OpportunityCreateRequest" in schema["components"]["schemas"]
     assert "ValidatedNeedEvidence" in schema["components"]["schemas"]
     assert "HandoffQueueItemView" in schema["components"]["schemas"]
@@ -564,20 +571,21 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     assert queue_schema["content"]["application/json"]["schema"]["items"] == {
         "$ref": "#/components/schemas/HandoffQueueItemView"
     }
-    packet_schema = schema["paths"]["/crm/handoffs/{handoff_id}"]["get"][
-        "responses"
-    ]["200"]
+    packet_schema = schema["paths"]["/crm/handoffs/{handoff_id}"]["get"]["responses"][
+        "200"
+    ]
     assert packet_schema["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/HandoffPacketView"
     }
-    accept_responses = schema["paths"]["/crm/handoffs/{handoff_id}/accept"][
-        "post"
-    ]["responses"]
+    accept_responses = schema["paths"]["/crm/handoffs/{handoff_id}/accept"]["post"][
+        "responses"
+    ]
     assert "204" in accept_responses
     assert "content" not in accept_responses["204"]
-    assert "requestBody" not in schema["paths"][
-        "/crm/handoffs/{handoff_id}/accept"
-    ]["post"]
+    assert (
+        "requestBody"
+        not in schema["paths"]["/crm/handoffs/{handoff_id}/accept"]["post"]
+    )
     assert accept_responses["409"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ApiErrorResponse"
     }
@@ -589,18 +597,14 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "additionalProperties": {"type": "integer"},
         "type": "object",
     }
-    send_operation = schema["paths"]["/crm/message-attempts/{attempt_id}/send"][
-        "post"
-    ]
-    assert send_operation["requestBody"]["content"]["application/json"][
-        "schema"
-    ] == {"$ref": "#/components/schemas/ManualEmailSendBody"}
+    send_operation = schema["paths"]["/crm/message-attempts/{attempt_id}/send"]["post"]
+    assert send_operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ManualEmailSendBody"
+    }
     assert send_operation["responses"]["200"]["content"]["application/json"][
         "schema"
     ] == {"$ref": "#/components/schemas/ManualEmailSendResponse"}
-    assert {"400", "403", "409", "429", "503"} <= set(
-        send_operation["responses"]
-    )
+    assert {"400", "403", "409", "429", "503"} <= set(send_operation["responses"])
     assert "ManualEmailSendBody" in schema["components"]["schemas"]
     assert "ManualEmailSendResponse" in schema["components"]["schemas"]
     for path, path_item in schema["paths"].items():
@@ -609,11 +613,9 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
                 "/settings/country-policies/proposals",
                 "post",
             ):
-                assert operation["responses"]["422"]["content"][
-                    "application/json"
-                ]["schema"] == {
-                    "$ref": "#/components/schemas/ApiErrorResponse"
-                }
+                assert operation["responses"]["422"]["content"]["application/json"][
+                    "schema"
+                ] == {"$ref": "#/components/schemas/ApiErrorResponse"}
             else:
                 assert "422" not in operation["responses"]
             assert operation["responses"]["400"]["content"]["application/json"][
@@ -650,24 +652,14 @@ def test_dependency_container_is_complete_frozen_and_preserves_injections() -> N
     assert dependencies.workflow_engine is markers["workflow_engine"]
     assert dependencies.outbox_deliverer is markers["outbox_deliverer"]
     assert dependencies.notification_router is markers["notification_router"]
-    assert (
-        dependencies.notification_dedup_store
-        is markers["notification_dedup_store"]
-    )
-    assert (
-        dependencies.outreach_authorizer is markers["outreach_authorizer"]
-    )
+    assert dependencies.notification_dedup_store is markers["notification_dedup_store"]
+    assert dependencies.outreach_authorizer is markers["outreach_authorizer"]
     assert (
         dependencies.sending_identity_authorizer
         is markers["sending_identity_authorizer"]
     )
-    assert (
-        dependencies.campaign_scope_resolver
-        is markers["campaign_scope_resolver"]
-    )
-    assert (
-        dependencies.in_app_notifications is markers["in_app_notifications"]
-    )
+    assert dependencies.campaign_scope_resolver is markers["campaign_scope_resolver"]
+    assert dependencies.in_app_notifications is markers["in_app_notifications"]
     assert dependencies.employee_lookup_actor.scope is EmployeeScope.SYSTEM
     with pytest.raises(FrozenInstanceError):
         dependencies.opportunities = object()  # type: ignore[misc]
@@ -813,9 +805,7 @@ def test_real_not_found_and_method_not_allowed_use_flat_safe_contract() -> None:
     client = _ApiClient(app)
     headers = {"X-Tenant-Id": "tenant-a"}
     not_found = client.get("/_test/missing", headers=headers)
-    method_not_allowed = client.request(
-        "POST", "/_test/get-only", headers=headers
-    )
+    method_not_allowed = client.request("POST", "/_test/get-only", headers=headers)
 
     assert not_found.status_code == 404
     assert not_found.json() == {"code": "not_found", "message": "资源不存在"}
@@ -996,7 +986,9 @@ def test_dev_identity_requires_employee_header_and_non_dev_fails_closed() -> Non
     assert scope.entered == scope.exited == 0
 
 
-def test_domain_errors_have_fixed_flat_body_and_retry_header_only_when_retryable() -> None:
+def test_domain_errors_have_fixed_flat_body_and_retry_header_only_when_retryable() -> (
+    None
+):
     app, *_ = _app(retry_after_seconds=23)
 
     @app.get("/_test/validation", include_in_schema=False)
@@ -1186,9 +1178,7 @@ def test_safe_unhandled_middleware_unwinds_stream_on_first_wire_failure(
     produced = 0
     wire_calls = 0
 
-    async def streaming_application(
-        scope: object, receive: object, send: Any
-    ) -> None:
+    async def streaming_application(scope: object, receive: object, send: Any) -> None:
         nonlocal produced
         del scope, receive
         for index in range(5):
@@ -1234,9 +1224,7 @@ def test_zero_arg_dependencies_fail_closed_but_openapi_remains_pure() -> None:
 
     @app.get("/_test/configured", include_in_schema=False)
     async def configured(
-        dependencies: Annotated[
-            ConfiguredApiDependencies, _CONFIGURED_DEPENDENCY
-        ],
+        dependencies: Annotated[ConfiguredApiDependencies, _CONFIGURED_DEPENDENCY],
     ) -> dict[str, bool]:
         return {"ok": dependencies is not None}
 

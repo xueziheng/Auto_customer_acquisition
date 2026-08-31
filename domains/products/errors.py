@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from shared.errors import PolicyViolation
+from shared.errors import PolicyViolation, ValidationError
+
+
+class ProductNotFoundError(ValidationError):
+    """同租户缺失与跨租户隐藏统一的安全产品缺失结果。"""
 
 
 class ViewLeakError(PolicyViolation):

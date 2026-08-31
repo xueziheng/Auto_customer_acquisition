@@ -490,19 +490,19 @@ def _row_to_plan(row: SourcingPublicPlanRow) -> PublicSourcingPlan:
         if row.provider != "tavily" or row.search_depth != "basic":
             raise ValueError
         command = PublicSourcingPlanCommand(
-        plan_id=SourcingPlanId(row.plan_id),
-        case_id=SourcingCaseId(row.case_id),
+            plan_id=SourcingPlanId(row.plan_id),
+            case_id=SourcingCaseId(row.case_id),
             target_countries=tuple(row.target_countries),
-        product_category=row.product_category,
-        queries=queries,
-        max_search_queries=row.max_search_queries,
-        max_pages_read=row.max_pages_read,
+            product_category=row.product_category,
+            queries=queries,
+            max_search_queries=row.max_search_queries,
+            max_pages_read=row.max_pages_read,
             provider="tavily",
             search_depth="basic",
-        usage_credits_remaining=row.usage_credits_remaining,
-        worst_case_credits=row.worst_case_credits,
-        version=row.version,
-        expected_case_version=row.expected_case_version,
+            usage_credits_remaining=row.usage_credits_remaining,
+            worst_case_credits=row.worst_case_credits,
+            version=row.version,
+            expected_case_version=row.expected_case_version,
         )
         canonical = PublicSourcingPlan.create(
             TenantId(row.tenant_id), command, created_at=row.created_at
@@ -878,7 +878,11 @@ class CandidateRepositoryImpl(_TenantBoundRepository):
         )
 
     async def list_for_case(
-        self, tenant_id: TenantId, case_id: SourcingCaseId, include_rejected: bool
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        include_rejected: bool,
+        limit: int | None = None,
     ) -> list[SupplierCandidate]:
         self._require_tenant(tenant_id)
         query = self.scoped_query(SourcingCandidateRow).where(
@@ -886,13 +890,12 @@ class CandidateRepositoryImpl(_TenantBoundRepository):
         )
         if not include_rejected:
             query = query.where(SourcingCandidateRow.rejected.is_(False))
-        rows = (
-            await self._session.execute(
-                query.order_by(
-                    SourcingCandidateRow.created_at, SourcingCandidateRow.candidate_id
-                )
-            )
-        ).scalars()
+        query = query.order_by(
+            SourcingCandidateRow.created_at, SourcingCandidateRow.candidate_id
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        rows = (await self._session.execute(query)).scalars()
         return [await _row_to_candidate(self._session, row) for row in rows]
 
     async def count_qualified(
@@ -1400,17 +1403,17 @@ class SourcingSearchExecutionRepositoryImpl(_TenantBoundRepository):
         if canonical is None:
             raise ValidationError("搜索回执幂等读取失败")
         if inserted is None and (
-                canonical.execution_id != execution.execution_id
-                or canonical.tenant_id != execution.tenant_id
-                or canonical.case_id != execution.case_id
-                or canonical.plan_id != execution.plan_id
-                or canonical.run_id != execution.run_id
-                or canonical.plan_hash != execution.plan_hash
-                or canonical.query_index != execution.query_index
-                or canonical.request_key != execution.request_key
-                or canonical.query_hash != execution.query_hash
-                or canonical.locator_results != execution.locator_results
-                or canonical.provider_status is not execution.provider_status
+            canonical.execution_id != execution.execution_id
+            or canonical.tenant_id != execution.tenant_id
+            or canonical.case_id != execution.case_id
+            or canonical.plan_id != execution.plan_id
+            or canonical.run_id != execution.run_id
+            or canonical.plan_hash != execution.plan_hash
+            or canonical.query_index != execution.query_index
+            or canonical.request_key != execution.request_key
+            or canonical.query_hash != execution.query_hash
+            or canonical.locator_results != execution.locator_results
+            or canonical.provider_status is not execution.provider_status
         ):
             raise ValidationError("搜索回执幂等键已绑定不同内容")
         return canonical
@@ -1451,6 +1454,27 @@ class SourcingSearchExecutionRepositoryImpl(_TenantBoundRepository):
             )
         ).scalar_one_or_none()
         return _execution_from_row(row) if row is not None else None
+
+    async def list_uncertain_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, limit: int
+    ) -> list[SourcingSearchExecution]:
+        self._require_tenant(tenant_id)
+        rows = (
+            await self._session.execute(
+                self.scoped_query(SourcingSearchExecutionRow)
+                .where(
+                    SourcingSearchExecutionRow.case_id == case_id,
+                    SourcingSearchExecutionRow.provider_status
+                    == SourcingSearchExecutionStatus.UNCERTAIN.value,
+                )
+                .order_by(
+                    SourcingSearchExecutionRow.created_at,
+                    SourcingSearchExecutionRow.execution_id,
+                )
+                .limit(limit)
+            )
+        ).scalars()
+        return [_execution_from_row(row) for row in rows]
 
     async def update(
         self, tenant_id: TenantId, execution: SourcingSearchExecution
@@ -1632,18 +1656,18 @@ class SourcingSearchReconciliationRepositoryImpl(_TenantBoundRepository):
             return reconciliation
         rows = (
             (
-            await self._session.execute(
-                self.scoped_query(SourcingSearchReconciliationRow)
-                .where(
-                    or_(
-                        SourcingSearchReconciliationRow.reconciliation_id
-                        == reconciliation.reconciliation_id,
-                        SourcingSearchReconciliationRow.execution_id
-                        == reconciliation.execution_id,
+                await self._session.execute(
+                    self.scoped_query(SourcingSearchReconciliationRow)
+                    .where(
+                        or_(
+                            SourcingSearchReconciliationRow.reconciliation_id
+                            == reconciliation.reconciliation_id,
+                            SourcingSearchReconciliationRow.execution_id
+                            == reconciliation.execution_id,
+                        )
                     )
+                    .with_for_update()
                 )
-                .with_for_update()
-            )
             )
             .scalars()
             .all()

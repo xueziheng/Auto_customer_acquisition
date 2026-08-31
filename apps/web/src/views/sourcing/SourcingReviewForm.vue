@@ -44,18 +44,87 @@ function submit(): void {
     reason: reviewReason.value.trim(),
   });
 }
+
+function confirmSavedReview(): void {
+  if (!props.review || !props.review.can_current_user_confirm) return;
+  emit("submit", {
+    alternate_option_ids: props.review.alternate_option_ids,
+    expected_case_version: props.review.expected_case_version,
+    primary_option_id: props.review.primary_option_id,
+    reason: props.review.reason,
+  });
+}
 </script>
 
 <template>
   <section class="detail-panel review-panel">
-    <header><div><p class="card-kicker">HUMAN REVIEW</p><h2>人工审核</h2></div><span v-if="review">{{ review.review_id }}</span></header>
-    <p v-if="review">主选 {{ review.primary_option_id }} · {{ review.reason }}。这仅是内部供给选择，未创建报价。</p>
-    <form v-else class="inline-form" @submit.prevent="submit">
-      <label>主供给选项<select v-model="primaryOptionId" required><option value="" disabled>请选择</option><option v-for="option in selectableOptions" :key="option.optionId" :value="option.optionId">{{ option.label }}</option></select></label>
-      <fieldset class="alternates"><legend>备选（最多两个，且不能与主选重复）</legend><label v-for="option in selectableOptions" :key="option.optionId"><input v-model="alternateOptionIds" type="checkbox" :value="option.optionId" :disabled="option.optionId === primaryOptionId || (alternateOptionIds.length >= 2 && !alternateOptionIds.includes(option.optionId))">{{ option.label }}</label></fieldset>
-      <label>选择理由<textarea v-model="reviewReason" required maxlength="2000" /></label>
-      <p v-if="!canSubmit" class="muted">请选择恰好一个主选，并保留最多两个互异备选。</p>
-      <button class="btn-primary" type="submit" :disabled="disabled || !canSubmit || !selectableOptions.length">提交人工选择</button>
+    <header>
+      <div>
+        <p class="card-kicker">
+          HUMAN REVIEW
+        </p><h2>人工审核</h2>
+      </div><span v-if="review">{{ review.review_id }}</span>
+    </header>
+    <template v-if="review">
+      <p>主选 {{ review.primary_option_id }} · 备选 {{ review.alternate_option_ids.join("、") || "无" }} · {{ review.reason }}。这仅是内部供给选择，未创建报价。</p>
+      <p class="muted">
+        {{ review.confirmed_by ? `已由 ${review.confirmed_by} 确认。` : "待老板按保存的精确主选、备选、理由和 Case 版本确认。" }}
+      </p>
+      <button
+        v-if="review.can_current_user_confirm"
+        class="btn-primary"
+        type="button"
+        :disabled="disabled"
+        @click="confirmSavedReview"
+      >
+        按保存事实确认审核
+      </button>
+    </template>
+    <form
+      v-else
+      class="inline-form"
+      @submit.prevent="submit"
+    >
+      <label>主供给选项<select
+        v-model="primaryOptionId"
+        required
+      ><option
+        value=""
+        disabled
+      >请选择</option><option
+        v-for="option in selectableOptions"
+        :key="option.optionId"
+        :value="option.optionId"
+      >{{ option.label }}</option></select></label>
+      <fieldset class="alternates">
+        <legend>备选（最多两个，且不能与主选重复）</legend><label
+          v-for="option in selectableOptions"
+          :key="option.optionId"
+        ><input
+          v-model="alternateOptionIds"
+          type="checkbox"
+          :value="option.optionId"
+          :disabled="option.optionId === primaryOptionId || (alternateOptionIds.length >= 2 && !alternateOptionIds.includes(option.optionId))"
+        >{{ option.label }}</label>
+      </fieldset>
+      <label>选择理由<textarea
+        v-model="reviewReason"
+        required
+        maxlength="2000"
+      /></label>
+      <p
+        v-if="!canSubmit"
+        class="muted"
+      >
+        请选择恰好一个主选，并保留最多两个互异备选。
+      </p>
+      <button
+        class="btn-primary"
+        type="submit"
+        :disabled="disabled || !canSubmit || !selectableOptions.length"
+      >
+        提交人工选择
+      </button>
     </form>
   </section>
 </template>

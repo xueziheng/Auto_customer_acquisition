@@ -16,6 +16,7 @@ from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
+from domains.products.errors import ProductNotFoundError
 from shared.schemas.identifiers import EmployeeId, TenantId
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
@@ -29,6 +30,15 @@ class _Products:
     async def list_supply_cards(self, tenant_id, *, actor, source_only, limit):
         self.calls.append((tenant_id, actor, source_only, limit))
         return []
+
+    async def get_internal_view(self, tenant_id, product_id, *, actor):
+        raise ProductNotFoundError("产品不存在或租户不匹配")
+
+    async def get_sales_view(self, tenant_id, product_id, *, actor):
+        raise ProductNotFoundError("产品不存在或租户不匹配")
+
+    async def get_customer_view(self, tenant_id, product_id, *, actor):
+        raise ProductNotFoundError("产品不存在或租户不匹配")
 
 
 def _identity(role: str) -> RequestIdentity:
@@ -92,3 +102,16 @@ def test_product_supply_list_is_internal_and_preserves_source_only_filter() -> N
     assert denied.status_code == 403
     assert products.calls[0][2:] == (True, 20)
     assert denied_products.calls == []
+
+
+def test_product_views_hide_missing_or_other_tenant_product_as_not_found() -> None:
+    app, _ = _app("boss")
+    product_id = "prd_01K39P9M5D6K4A91YEQ80EJZ0X"
+
+    responses = [
+        _get(app, f"/products/{product_id}/internal"),
+        _get(app, f"/products/{product_id}/sales"),
+        _get(app, f"/products/{product_id}/customer"),
+    ]
+
+    assert [response.status_code for response in responses] == [404, 404, 404]

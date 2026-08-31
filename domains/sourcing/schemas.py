@@ -912,6 +912,17 @@ class PublicSourcingPlanReadView(BaseModel):
     created_at: AwareDatetime
 
 
+class SourcingCurrentQuotaReadView(BaseModel):
+    """当前安全额度摘要；未知保持 null/unknown，不能由计划快照推断。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    remaining: int | None = Field(default=None, ge=0)
+    reservations: int | None = Field(default=None, ge=0)
+    cost_status: Literal["free", "paid", "unknown"]
+    paygo_enabled: bool | None = None
+    checked_at: AwareDatetime | None = None
+
+
 class SourcingReviewReadView(BaseModel):
     """人工审核的安全选择事实；不包含 Opportunity、成本或报价。"""
 
@@ -926,6 +937,33 @@ class SourcingReviewReadView(BaseModel):
     submitted_at: AwareDatetime
     confirmed_by: str | None = Field(default=None, max_length=200)
     confirmed_at: AwareDatetime | None = None
+    can_current_user_confirm: bool
+
+
+class SourcingReconciliationReadView(BaseModel):
+    """已保存人工核对的可审计摘要；不含 Provider 原文或搜索输入。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    reconciliation_id: str = Field(min_length=1, max_length=40)
+    execution_id: str = Field(min_length=1, max_length=40)
+    status: Literal["confirmed_consumed", "confirmed_not_consumed", "required"]
+    reason: str = Field(min_length=1, max_length=2_000)
+    provider_usage_artifact_ref: ArtifactId
+    reconciled_by: str | None = Field(default=None, max_length=200)
+    reconciled_at: AwareDatetime | None = None
+
+
+class SourcingUncertainExecutionReadView(BaseModel):
+    """可恢复不确定执行的最小操作标识，不输出查询、页面或 Provider 载荷。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    execution_id: str = Field(min_length=1, max_length=40)
+    run_id: RunId
+    request_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["uncertain"]
+    created_at: AwareDatetime
+    reconciliation: SourcingReconciliationReadView | None = None
+    can_current_user_reconcile: bool
 
 
 @dataclass(frozen=True)

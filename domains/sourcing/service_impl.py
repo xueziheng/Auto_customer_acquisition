@@ -66,10 +66,12 @@ from domains.sourcing.schemas import (
     SourcingLadderCheckReadView,
     SourcingMatchInference,
     SourcingObservedFact,
+    SourcingReconciliationReadView,
     SourcingReviewCommand,
     SourcingReviewReadView,
     SourcingStopPublicView,
     SourcingSupplyOptionReadView,
+    SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
     SpecComparisonView,
     VerifyPublicCandidateDraftsCommand,
@@ -776,7 +778,9 @@ def _public_plan_read_view(plan: PublicSourcingPlan) -> PublicSourcingPlanReadVi
     )
 
 
-def _review_read_view(review: SourcingReview) -> SourcingReviewReadView:
+def _review_read_view(
+    review: SourcingReview, *, can_current_user_confirm: bool
+) -> SourcingReviewReadView:
     return SourcingReviewReadView(
         review_id=review.review_id,
         case_id=review.case_id,
@@ -790,6 +794,44 @@ def _review_read_view(review: SourcingReview) -> SourcingReviewReadView:
             str(review.confirmed_by) if review.confirmed_by is not None else None
         ),
         confirmed_at=review.confirmed_at,
+        can_current_user_confirm=can_current_user_confirm,
+    )
+
+
+def _reconciliation_read_view(
+    reconciliation: SourcingSearchReconciliation,
+) -> SourcingReconciliationReadView:
+    return SourcingReconciliationReadView(
+        reconciliation_id=reconciliation.reconciliation_id,
+        execution_id=reconciliation.execution_id,
+        status=reconciliation.status.value,
+        reason=reconciliation.reason,
+        provider_usage_artifact_ref=reconciliation.provider_usage_artifact_ref,
+        reconciled_by=(
+            str(reconciliation.reconciled_by)
+            if reconciliation.reconciled_by is not None
+            else None
+        ),
+        reconciled_at=reconciliation.reconciled_at,
+    )
+
+
+def _uncertain_execution_read_view(
+    execution: SourcingSearchExecution,
+    reconciliation: SourcingSearchReconciliation | None,
+) -> SourcingUncertainExecutionReadView:
+    return SourcingUncertainExecutionReadView(
+        execution_id=execution.execution_id,
+        run_id=execution.run_id,
+        request_key=execution.request_key,
+        status="uncertain",
+        created_at=execution.created_at,
+        reconciliation=(
+            _reconciliation_read_view(reconciliation)
+            if reconciliation is not None
+            else None
+        ),
+        can_current_user_reconcile=False,
     )
 
 
@@ -1566,12 +1608,21 @@ class SourcingServiceImpl:
         case_id: SourcingCaseId,
         *,
         actor: SourcingActor,
+        limit: int = 50,
     ) -> tuple[SourcingCandidateReadView, ...] | None:
         self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+        ):
+            raise ValidationError("寻源候选列表 limit 必须在 1–50")
         async with self._uow_factory(tenant_id) as uow:
             if await uow.cases.get(tenant_id, case_id) is None:
                 return None
-            candidates = await uow.candidates.list_for_case(tenant_id, case_id, True)
+            candidates = await uow.candidates.list_for_case(
+                tenant_id, case_id, True, limit=limit
+            )
             options = await uow.options.list_for_case(tenant_id, case_id)
         options_by_candidate = {
             item.supplier_candidate_id: item
@@ -1581,7 +1632,7 @@ class SourcingServiceImpl:
         candidates.sort(key=lambda item: (item.created_at, str(item.candidate_id)))
         return tuple(
             _candidate_read_view(item, options_by_candidate.get(item.candidate_id))
-            for item in candidates
+            for item in candidates[:limit]
         )
 
     async def get_public_plan_read_view(
@@ -1607,10 +1658,52 @@ class SourcingServiceImpl:
     ) -> SourcingReviewReadView | None:
         self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
         async with self._uow_factory(tenant_id) as uow:
-            if await uow.cases.get(tenant_id, case_id) is None:
+            case = await uow.cases.get(tenant_id, case_id)
+            if case is None:
                 return None
             review = await uow.reviews.get_for_case(tenant_id, case_id)
-        return _review_read_view(review) if review is not None else None
+        return (
+            _review_read_view(
+                review,
+                can_current_user_confirm=(
+                    actor.role == "boss"
+                    and review.confirmed_by is None
+                    and case.state is CaseState.CANDIDATES_READY
+                    and case.version == review.expected_case_version
+                ),
+            )
+            if review is not None
+            else None
+        )
+
+    async def list_uncertain_execution_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+        limit: int = 50,
+    ) -> tuple[SourcingUncertainExecutionReadView, ...] | None:
+        self._require(tenant_id, actor, SourcingAction.CASE_READ, SourcingScope.TENANT)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+        ):
+            raise ValidationError("不确定搜索恢复列表 limit 必须在 1–50")
+        async with self._uow_factory(tenant_id) as uow:
+            if await uow.cases.get(tenant_id, case_id) is None:
+                return None
+            executions = await uow.search_executions.list_uncertain_for_case(
+                tenant_id, case_id, limit
+            )
+            views = []
+            for execution in executions:
+                reconciliation = await uow.reconciliations.get_for_execution(
+                    tenant_id, execution.execution_id
+                )
+                views.append(_uncertain_execution_read_view(execution, reconciliation))
+        return tuple(views)
 
     @staticmethod
     def _require_candidate_generation(

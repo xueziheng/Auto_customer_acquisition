@@ -16,6 +16,7 @@ const need = ref<ValidatedNeed | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const sourcingCase = ref<SourcingCase | null>(null);
+const sourcingNotice = ref<string | null>(null);
 
 function fieldLabel(value: string): string {
   return (
@@ -56,6 +57,7 @@ function toggleProvenance(event: KeyboardEvent): void {
 async function loadNeed(): Promise<void> {
   loading.value = true;
   error.value = null;
+  sourcingNotice.value = null;
   const needId = String(route.params.needId ?? "");
   try {
     const result = await client.GET("/demand/needs/{need_id}", {
@@ -67,12 +69,20 @@ async function loadNeed(): Promise<void> {
         const sourcing = await client.GET("/sourcing-cases", {
           params: { query: { limit: 50 } },
         });
-        sourcingCase.value = sourcing.data?.find(
-          (item) => item.need_id === result.data!.need_id,
-        ) ?? null;
+        if (sourcing.response.status !== 200 || !sourcing.data) {
+          sourcingCase.value = null;
+          sourcingNotice.value = sourcing.response.status === 403
+            ? "当前身份无权读取关联寻源 Case"
+            : "关联寻源 Case 暂不可读取";
+        } else {
+          sourcingCase.value = sourcing.data.find(
+            (item) => item.need_id === result.data!.need_id,
+          ) ?? null;
+          if (!sourcingCase.value) sourcingNotice.value = "尚无关联寻源 Case";
+        }
       } catch {
-        // Need 详情仍可读；寻源链仅在当前身份拥有内部寻源读取权时显示。
         sourcingCase.value = null;
+        sourcingNotice.value = "关联寻源 Case 暂不可读取";
       }
     } else {
       error.value = safeError(result.response.status);
@@ -150,6 +160,12 @@ onMounted(() => void loadNeed());
       >
         查看关联寻源 Case（{{ sourcingCase.state }}）
       </RouterLink>
+      <p
+        v-else-if="sourcingNotice"
+        class="muted"
+      >
+        {{ sourcingNotice }}
+      </p>
 
       <section
         class="summary-grid"
@@ -232,6 +248,7 @@ onMounted(() => void loadNeed());
 .need-packet > header h2 { margin-top: 6px; }
 .need-packet > header p { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .sourcing-link { color: var(--fact); font-weight: 700; text-decoration: none; }
+.muted { color: var(--text-secondary); font-size: 12px; }
 .validated-badge { display: inline-flex; color: var(--action); background: #edf4ff; border: 1px solid #b2ccff; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 800; }
 .completeness { display: grid; text-align: right; }
 .completeness strong { color: var(--action); font-size: 24px; }

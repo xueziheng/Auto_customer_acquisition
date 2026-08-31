@@ -14,6 +14,7 @@ from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
+    SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import (
@@ -64,9 +65,7 @@ def _plan_command() -> PublicSourcingPlanCommand:
         target_countries=("US",),
         product_category="hinges",
         queries=(
-            PublicSourcingQuery(
-                query_text="hinge factory US", target_country="US"
-            ),
+            PublicSourcingQuery(query_text="hinge factory US", target_country="US"),
         ),
         max_search_queries=1,
         max_pages_read=2,
@@ -89,7 +88,11 @@ def _plan(status: PublicPlanStatus = PublicPlanStatus.AUTHORIZED) -> PublicSourc
         confirmed_at=NOW,
         authorized_plan_hash=PLAN_HASH,
     )
-    return authorized if status is PublicPlanStatus.AUTHORIZED else replace(authorized, status=status)
+    return (
+        authorized
+        if status is PublicPlanStatus.AUTHORIZED
+        else replace(authorized, status=status)
+    )
 
 
 def _run(step: str = "await_public_plan") -> WorkflowRun:
@@ -165,6 +168,28 @@ class _Sourcing:
         self.calls.append("read_execution")
         assert actor == BOSS
         return self.execution
+
+    async def get_case_read_view(self, tenant_id, case_id, *, actor):
+        self.calls.append("read_case")
+        assert tenant_id == TENANT and case_id == CASE_ID
+        return object()
+
+    async def list_uncertain_execution_read_views(
+        self, tenant_id, case_id, *, actor, limit=50
+    ):
+        self.calls.append("list_uncertain")
+        assert tenant_id == TENANT and case_id == CASE_ID and limit == 50
+        return (
+            SourcingUncertainExecutionReadView(
+                execution_id=self.execution.execution_id,
+                run_id=RUN_ID,
+                request_key=REQUEST_KEY,
+                status="uncertain",
+                created_at=NOW,
+                reconciliation=None,
+                can_current_user_reconcile=False,
+            ),
+        )
 
     async def record_confirmed_consumed_reconciliation(
         self, tenant_id, case_id, command, *, actor
@@ -265,7 +290,10 @@ class _Engine:
         )
         if not self.already_delivered:
             return False
-        if workflow_version is not None and self.run.workflow_version != workflow_version:
+        if (
+            workflow_version is not None
+            and self.run.workflow_version != workflow_version
+        ):
             return False
         return required_context is None or all(
             self.run.context.get(key) == value
@@ -301,9 +329,7 @@ async def test_draft_and_confirmation_do_not_read_quota_or_wake_workflow() -> No
     application, sourcing, quota, engine = _application()
 
     await application.create_plan(TENANT, CASE_ID, _plan_command(), actor=SOURCING)
-    await application.confirm_plan(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    await application.confirm_plan(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
     assert sourcing.calls == ["save", "confirm"]
     assert quota.calls == []
@@ -311,12 +337,43 @@ async def test_draft_and_confirmation_do_not_read_quota_or_wake_workflow() -> No
 
 
 @pytest.mark.asyncio
+async def test_current_quota_and_uncertain_recovery_are_safe_application_projections() -> (
+    None
+):
+    application, sourcing, quota, _ = _application()
+
+    current = await application.get_current_quota_read_view(TENANT, CASE_ID, actor=BOSS)
+    uncertain = await application.list_uncertain_execution_read_views(
+        TENANT, CASE_ID, actor=BOSS
+    )
+
+    assert current is not None
+    assert current.model_dump() == {
+        "remaining": 10,
+        "reservations": 0,
+        "cost_status": "free",
+        "paygo_enabled": False,
+        "checked_at": NOW,
+    }
+    assert uncertain is not None
+    assert uncertain[0].can_current_user_reconcile is True
+    assert uncertain[0].model_dump(exclude={"request_key"}) == {
+        "execution_id": "sse_execution-a",
+        "run_id": "run_sourcing-a",
+        "status": "uncertain",
+        "created_at": NOW,
+        "reconciliation": None,
+        "can_current_user_reconcile": True,
+    }
+    assert sourcing.calls == ["read_case", "list_uncertain", "read_execution"]
+    assert quota.calls == ["snapshot", "get"]
+
+
+@pytest.mark.asyncio
 async def test_run_checks_free_snapshot_then_authorizes_and_wakes_exact_run() -> None:
     application, sourcing, quota, engine = _application()
 
-    result = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    result = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run", "authorize_run"]
@@ -452,7 +509,9 @@ async def test_run_returns_distinct_free_quota_stop_codes_without_delivery(
 
 
 @pytest.mark.asyncio
-async def test_run_sanitizes_quota_snapshot_failure_as_unknown_without_exception_chain() -> None:
+async def test_run_sanitizes_quota_snapshot_failure_as_unknown_without_exception_chain() -> (
+    None
+):
     class _FailingQuota(_Quota):
         async def snapshot(self):
             self.calls.append("snapshot")
@@ -474,7 +533,9 @@ async def test_run_sanitizes_quota_snapshot_failure_as_unknown_without_exception
 
 @pytest.mark.asyncio
 async def test_run_rejects_wrong_workflow_boundary_before_plan_transition() -> None:
-    application, sourcing, _, engine = _application(engine=_Engine(_run("public_search")))
+    application, sourcing, _, engine = _application(
+        engine=_Engine(_run("public_search"))
+    )
 
     with pytest.raises(ValidationError, match="授权边界"):
         await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
@@ -491,9 +552,7 @@ async def test_running_replay_accepts_existing_exact_event_without_redelivery() 
     engine.already_delivered = True
     application, _, _, _ = _application(sourcing=sourcing, engine=engine)
 
-    result = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    result = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run"]
@@ -528,9 +587,7 @@ async def test_running_replay_uses_durable_event_after_progress_or_terminal(
     engine.already_delivered = True
     application, _, _, _ = _application(sourcing=sourcing, engine=engine)
 
-    result = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    result = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run"]
@@ -562,7 +619,9 @@ async def test_running_replay_rejects_incompatible_active_run_before_event_histo
 
 
 @pytest.mark.asyncio
-async def test_running_replay_rejects_duplicate_active_runs_before_event_history() -> None:
+async def test_running_replay_rejects_duplicate_active_runs_before_event_history() -> (
+    None
+):
     sourcing = _Sourcing()
     sourcing.plan = _plan(PublicPlanStatus.RUNNING)
     engine = _Engine(_run("public_search"))
@@ -610,9 +669,7 @@ async def test_terminal_replay_requires_compatible_owning_run_history(
     application, _, _, _ = _application(sourcing=sourcing, engine=engine)
 
     if accepted:
-        result = await application.run(
-            TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-        )
+        result = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
         assert result.status is PublicPlanStatus.RUNNING
     else:
         with pytest.raises(ValidationError, match="活动 Workflow Run"):
@@ -621,7 +678,9 @@ async def test_terminal_replay_requires_compatible_owning_run_history(
 
 
 @pytest.mark.asyncio
-async def test_running_plan_without_event_evidence_fails_closed_on_progressed_run() -> None:
+async def test_running_plan_without_event_evidence_fails_closed_on_progressed_run() -> (
+    None
+):
     sourcing = _Sourcing()
     sourcing.plan = _plan(PublicPlanStatus.RUNNING)
     engine = _Engine(_run("public_search"))
@@ -635,7 +694,9 @@ async def test_running_plan_without_event_evidence_fails_closed_on_progressed_ru
 
 
 @pytest.mark.asyncio
-async def test_authorized_snapshot_race_rechecks_exact_event_and_running_domain_fact() -> None:
+async def test_authorized_snapshot_race_rechecks_exact_event_and_running_domain_fact() -> (
+    None
+):
     class _RacingSourcing(_Sourcing):
         async def get_public_plan_run_view(
             self, tenant_id, case_id, plan_id, expected_plan_hash, *, actor
@@ -656,9 +717,7 @@ async def test_authorized_snapshot_race_rechecks_exact_event_and_running_domain_
     engine.already_delivered = True
     application, _, _, _ = _application(sourcing=sourcing, engine=engine)
 
-    result = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    result = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
 
     assert result.status is PublicPlanStatus.RUNNING
     assert sourcing.calls == ["read_run", "read_run"]
@@ -667,7 +726,9 @@ async def test_authorized_snapshot_race_rechecks_exact_event_and_running_domain_
 
 
 @pytest.mark.asyncio
-async def test_running_plan_without_event_can_redeliver_only_at_exact_waiting_boundary() -> None:
+async def test_running_plan_without_event_can_redeliver_only_at_exact_waiting_boundary() -> (
+    None
+):
     sourcing = _Sourcing()
     sourcing.plan = _plan(PublicPlanStatus.RUNNING)
     wrong_context = replace(_run(), context={"case_id": "src_case-other"})
@@ -679,9 +740,7 @@ async def test_running_plan_without_event_can_redeliver_only_at_exact_waiting_bo
     assert engine.delivered == []
 
     engine.run = _run()
-    recovered = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    recovered = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
     assert recovered.status is PublicPlanStatus.RUNNING
     assert engine.delivered == [
         ("SourcingPlanConfirmed", {"plan_id": str(PLAN_ID), "plan_hash": PLAN_HASH})
@@ -730,16 +789,16 @@ async def test_transient_delivery_failure_is_fixed_and_retryable() -> None:
     assert "secret" not in str(failure.value)
     assert sourcing.plan.status is PublicPlanStatus.RUNNING
     engine.delivery_error = None
-    recovered = await application.run(
-        TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS
-    )
+    recovered = await application.run(TENANT, CASE_ID, PLAN_ID, PLAN_HASH, actor=BOSS)
     assert recovered.status is PublicPlanStatus.RUNNING
     assert engine.delivered == [
         ("SourcingPlanConfirmed", {"plan_id": str(PLAN_ID), "plan_hash": PLAN_HASH})
     ]
 
 
-def _reconciliation_command(**changes: object) -> SourcingUncertainReconciliationCommand:
+def _reconciliation_command(
+    **changes: object,
+) -> SourcingUncertainReconciliationCommand:
     values: dict[str, object] = {
         "reconciliation_id": "src_rec-a",
         "run_id": RUN_ID,
@@ -761,7 +820,9 @@ def test_reconciliation_command_forbids_provider_payload_and_credentials() -> No
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_records_fact_before_quota_ack_and_safe_retry_event() -> None:
+async def test_reconciliation_records_fact_before_quota_ack_and_safe_retry_event() -> (
+    None
+):
     application, sourcing, quota, engine = _application(
         engine=_Engine(_run("public_search"))
     )

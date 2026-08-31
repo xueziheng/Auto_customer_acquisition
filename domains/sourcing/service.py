@@ -34,6 +34,7 @@ from domains.sourcing.schemas import (
     SourcingCaseReadView,
     SourcingCandidateReadView,
     SourcingLadderCheckReadView,
+    SourcingUncertainExecutionReadView,
     SourcingReviewReadView,
     PublicSourcingPlanReadView,
     SourcingUncertainReconciliationCommand,
@@ -373,8 +374,9 @@ class SourcingService(Protocol):
         case_id: SourcingCaseId,
         *,
         actor: SourcingActor,
+        limit: int = 50,
     ) -> tuple[SourcingCandidateReadView, ...] | None:
-        """读取候选的事实/自述/推断分栏与 INDICATIVE 价格证据。"""
+        """读取稳定有界的候选事实/自述/推断与 INDICATIVE 价格证据。"""
         ...
 
     async def get_public_plan_read_view(
@@ -395,6 +397,17 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> SourcingReviewReadView | None:
         """读取本 Case 已保存的人工选择；不读取成本或机会聚合。"""
+        ...
+
+    async def list_uncertain_execution_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+        limit: int = 50,
+    ) -> tuple[SourcingUncertainExecutionReadView, ...] | None:
+        """读取不确定请求与已有核对的安全恢复投影，不含搜索或页面原文。"""
         ...
 
     async def create_public_plan(

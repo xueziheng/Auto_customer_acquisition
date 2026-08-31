@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from domains.products.errors import ProductNotFoundError
 from domains.products.models import (
     CandidateIndicativePriceRef as StoredPriceRef,
 )
@@ -448,7 +449,7 @@ class ProductServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             product = await uow.products.get(tenant_id, product_id)
         if product is None:
-            raise ValidationError("产品不存在或租户不匹配")
+            raise ProductNotFoundError("产品不存在或租户不匹配")
         return product
 
     async def get_internal_view(
@@ -458,7 +459,7 @@ class ProductServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             product = await uow.products.get(tenant_id, product_id)
             if product is None:
-                raise ValidationError("产品不存在或租户不匹配")
+                raise ProductNotFoundError("产品不存在或租户不匹配")
             source = await uow.candidate_sources.get_by_product(tenant_id, product_id)
         return ProductInternalView(
             product_id=str(product.product_id),

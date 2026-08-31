@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from domains.products.errors import ProductNotFoundError
 from domains.products.permissions import ProductActor, ProductRole
 from domains.products.schemas import ProductSupplyCardView
 from domains.products.service import (
@@ -88,11 +89,14 @@ async def get_internal_view(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> ProductInternalView:
-    return await _products(dependencies).get_internal_view(
-        identity.tenant_id,
-        _product_id(product_id),
-        actor=_actor(identity, allowed_roles=_INTERNAL_ROLES),
-    )
+    try:
+        return await _products(dependencies).get_internal_view(
+            identity.tenant_id,
+            _product_id(product_id),
+            actor=_actor(identity, allowed_roles=_INTERNAL_ROLES),
+        )
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=404) from error
 
 
 @router.get("/{product_id}/sales", response_model=ProductSalesView, responses=_ERRORS)
@@ -101,11 +105,14 @@ async def get_sales_view(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> ProductSalesView:
-    return await _products(dependencies).get_sales_view(
-        identity.tenant_id,
-        _product_id(product_id),
-        actor=_actor(identity, allowed_roles=_SALES_ROLES),
-    )
+    try:
+        return await _products(dependencies).get_sales_view(
+            identity.tenant_id,
+            _product_id(product_id),
+            actor=_actor(identity, allowed_roles=_SALES_ROLES),
+        )
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=404) from error
 
 
 @router.get(
@@ -116,11 +123,14 @@ async def get_customer_view(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> ProductCustomerView:
-    return await _products(dependencies).get_customer_view(
-        identity.tenant_id,
-        _product_id(product_id),
-        actor=_actor(identity, allowed_roles=_SALES_ROLES),
-    )
+    try:
+        return await _products(dependencies).get_customer_view(
+            identity.tenant_id,
+            _product_id(product_id),
+            actor=_actor(identity, allowed_roles=_SALES_ROLES),
+        )
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=404) from error
 
 
 __all__ = ("router",)

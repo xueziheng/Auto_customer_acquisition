@@ -14,9 +14,11 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanReadView,
     SourcingCandidateReadView,
     SourcingCaseReadView,
+    SourcingCurrentQuotaReadView,
     SourcingLadderCheckReadView,
     SourcingReviewCommand,
     SourcingReviewReadView,
+    SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import SourcingService
@@ -43,6 +45,7 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
     400: {"model": ApiErrorResponse},
     403: {"model": ApiErrorResponse},
     404: {"model": ApiErrorResponse},
+    409: {"model": ApiErrorResponse},
     503: {"model": ApiErrorResponse},
 }
 
@@ -111,7 +114,7 @@ def _raw_idempotency_key(request: Request) -> str:
 
 
 def _document_idempotency_header(
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> None:
     """仅为 OpenAPI 声明写操作所需的 header；安全校验必须读取原始 ASGI 头。"""
 
@@ -183,10 +186,11 @@ async def get_candidates(
     case_id: str,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 50,
 ) -> list[SourcingCandidateReadView]:
     actor = _actor(identity, allowed_roles=_READ_ROLES)
     result = await _sourcing(dependencies).get_candidate_read_views(
-        identity.tenant_id, _case_id(case_id), actor=actor
+        identity.tenant_id, _case_id(case_id), actor=actor, limit=limit
     )
     return list(cast(tuple[SourcingCandidateReadView, ...], _not_found(result)))
 
@@ -209,6 +213,64 @@ async def get_public_search_plan(
     _not_found(case)
     return await _sourcing(dependencies).get_public_plan_read_view(
         identity.tenant_id, normalized_case_id, actor=actor
+    )
+
+
+@router.get(
+    "/sourcing-cases/{case_id}/current-quota",
+    response_model=SourcingCurrentQuotaReadView,
+    responses=_ERRORS,
+)
+async def get_current_quota(
+    case_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> SourcingCurrentQuotaReadView:
+    actor = _actor(identity, allowed_roles=_READ_ROLES)
+    result = await _application(dependencies).get_current_quota_read_view(
+        identity.tenant_id, _case_id(case_id), actor=actor
+    )
+    return cast(SourcingCurrentQuotaReadView, _not_found(result))
+
+
+@router.get(
+    "/sourcing-cases/{case_id}/review",
+    response_model=SourcingReviewReadView | None,
+    responses=_ERRORS,
+)
+async def get_review(
+    case_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> SourcingReviewReadView | None:
+    actor = _actor(identity, allowed_roles=_REVIEW_ROLES)
+    normalized_case_id = _case_id(case_id)
+    case = await _sourcing(dependencies).get_case_read_view(
+        identity.tenant_id, normalized_case_id, actor=actor
+    )
+    _not_found(case)
+    return await _sourcing(dependencies).get_review_read_view(
+        identity.tenant_id, normalized_case_id, actor=actor
+    )
+
+
+@router.get(
+    "/sourcing-cases/{case_id}/uncertain-reconciliations",
+    response_model=list[SourcingUncertainExecutionReadView],
+    responses=_ERRORS,
+)
+async def list_uncertain_reconciliations(
+    case_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 50,
+) -> list[SourcingUncertainExecutionReadView]:
+    actor = _actor(identity, allowed_roles=_READ_ROLES)
+    result = await _application(dependencies).list_uncertain_execution_read_views(
+        identity.tenant_id, _case_id(case_id), actor=actor, limit=limit
+    )
+    return list(
+        cast(tuple[SourcingUncertainExecutionReadView, ...], _not_found(result))
     )
 
 

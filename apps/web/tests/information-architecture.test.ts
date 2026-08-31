@@ -34,7 +34,7 @@ describe("Phase 1 information architecture", () => {
   it("keeps products and sourcing manual while costing has its bounded Phase 2 entry", () => {
     for (const path of ["/products", "/sourcing"]) {
       const route = router.getRoutes().find((candidate) => candidate.path === path);
-      expect(route?.meta.phase).toBe("phase1-manual");
+      expect(route?.meta.phase).toBe("phase2-sourcing-automation");
       expect(route?.meta.operation).toBeTruthy();
     }
     expect(router.resolve("/costing-quotes").meta.phase).toBe("phase2-costing-quotation");

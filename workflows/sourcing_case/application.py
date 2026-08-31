@@ -9,7 +9,9 @@ from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
     CaseView,
     PublicSourcingPlanCommand,
+    SourcingCurrentQuotaReadView,
     SourcingReviewCommand,
+    SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import (
@@ -86,7 +88,9 @@ async def _read_free_snapshot(
     _free_snapshot(snapshot, tenant_id, needed)
 
 
-def _run_is_bound(run: WorkflowRun | None, tenant_id: TenantId, case_id: SourcingCaseId) -> bool:
+def _run_is_bound(
+    run: WorkflowRun | None, tenant_id: TenantId, case_id: SourcingCaseId
+) -> bool:
     return (
         isinstance(run, WorkflowRun)
         and run.tenant_id == tenant_id
@@ -134,6 +138,103 @@ class SourcingCaseApplication:
         return await self._sourcing.save_public_plan(
             tenant_id, case_id, command, actor=actor
         )
+
+    async def get_current_quota_read_view(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCurrentQuotaReadView | None:
+        """在已授权 Case 边界返回当前安全额度；故障只声明 unknown。"""
+
+        case = await self._sourcing.get_case_read_view(tenant_id, case_id, actor=actor)
+        if case is None:
+            return None
+        snapshot: SearchQuotaSnapshot | None = None
+        try:
+            snapshot = await self._quota.snapshot()
+        except Exception:  # noqa: BLE001 -- Provider/存储自由错误绝不进入 HTTP。
+            snapshot = None
+        if (
+            not isinstance(snapshot, SearchQuotaSnapshot)
+            or snapshot.tenant_id != tenant_id
+            or snapshot.provider != "tavily"
+            or isinstance(snapshot.remaining, bool)
+            or not isinstance(snapshot.remaining, int)
+            or snapshot.remaining < 0
+            or isinstance(snapshot.reservations, bool)
+            or not isinstance(snapshot.reservations, int)
+            or snapshot.reservations < 0
+            or not isinstance(snapshot.cost_status, SearchCostStatus)
+            or (
+                snapshot.paygo_enabled is not None
+                and not isinstance(snapshot.paygo_enabled, bool)
+            )
+            or (
+                snapshot.checked_at is not None
+                and (
+                    snapshot.checked_at.tzinfo is None
+                    or snapshot.checked_at.utcoffset() is None
+                )
+            )
+        ):
+            return SourcingCurrentQuotaReadView(
+                remaining=None,
+                reservations=None,
+                cost_status="unknown",
+                paygo_enabled=None,
+                checked_at=None,
+            )
+        return SourcingCurrentQuotaReadView(
+            remaining=snapshot.remaining,
+            reservations=snapshot.reservations,
+            cost_status=snapshot.cost_status.value,
+            paygo_enabled=snapshot.paygo_enabled,
+            checked_at=snapshot.checked_at,
+        )
+
+    async def list_uncertain_execution_read_views(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+        limit: int = 50,
+    ) -> tuple[SourcingUncertainExecutionReadView, ...] | None:
+        """补足安全恢复投影的实时额度条件，不能把不确定请求误标为可重试。"""
+
+        views = await self._sourcing.list_uncertain_execution_read_views(
+            tenant_id, case_id, actor=actor, limit=limit
+        )
+        if views is None:
+            return None
+        current: list[SourcingUncertainExecutionReadView] = []
+        for view in views:
+            can_reconcile = False
+            if actor.role == "boss" and view.reconciliation is None:
+                try:
+                    await self._sourcing.get_uncertain_search_execution(
+                        tenant_id,
+                        case_id,
+                        view.run_id,
+                        view.request_key,
+                        actor=actor,
+                    )
+                    reservation = await self._quota.get(view.run_id, view.request_key)
+                    can_reconcile = (
+                        reservation is not None
+                        and reservation.tenant_id == tenant_id
+                        and reservation.run_id == view.run_id
+                        and reservation.request_key == view.request_key
+                        and reservation.status == "uncertain"
+                    )
+                except Exception:  # noqa: BLE001 -- 不确定时保持不可恢复。
+                    can_reconcile = False
+            current.append(
+                view.model_copy(update={"can_current_user_reconcile": can_reconcile})
+            )
+        return tuple(current)
 
     @staticmethod
     def _request_id(value: str) -> str:
@@ -237,8 +338,7 @@ class SourcingCaseApplication:
             or not isinstance(candidate_set_hash, str)
             or len(candidate_set_hash) != 64
             or any(
-                character not in "0123456789abcdef"
-                for character in candidate_set_hash
+                character not in "0123456789abcdef" for character in candidate_set_hash
             )
         ):
             raise ValidationError("寻源审核 Workflow Run generation 绑定无效")
@@ -533,9 +633,7 @@ class SourcingCaseApplication:
             error = exc
         if error is not None:
             _raise_delivery_error(error)
-        if not accepted and not await self._has_plan_event(
-            tenant_id, case_id, payload
-        ):
+        if not accepted and not await self._has_plan_event(tenant_id, case_id, payload):
             raise ValidationError("寻源计划工作流未接受确认事件")
         return running
 
@@ -568,10 +666,8 @@ class SourcingCaseApplication:
         run = await self._active_run(tenant_id, case_id)
         if run.run_id != command.run_id or run.current_step != "public_search":
             raise ValidationError("不确定搜索 Run 不在公开搜索恢复边界")
-        reconciliation = (
-            await self._sourcing.record_confirmed_consumed_reconciliation(
-                tenant_id, case_id, command, actor=actor
-            )
+        reconciliation = await self._sourcing.record_confirmed_consumed_reconciliation(
+            tenant_id, case_id, command, actor=actor
         )
         try:
             await self._quota.acknowledge_uncertain_as_consumed(

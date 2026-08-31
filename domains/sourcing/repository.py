@@ -78,9 +78,7 @@ class SourcingCaseRepository(Protocol):
 
 @runtime_checkable
 class CandidateRepository(Protocol):
-    async def add(
-        self, tenant_id: TenantId, candidate: SupplierCandidate
-    ) -> None:
+    async def add(self, tenant_id: TenantId, candidate: SupplierCandidate) -> None:
         """保存候选。**被拒的候选也要存**——它们是核验规则的校准
         数据，没有被拒样本就无法评估规则是否过严或过松。"""
         ...
@@ -104,7 +102,11 @@ class CandidateRepository(Protocol):
     ) -> None: ...
 
     async def list_for_case(
-        self, tenant_id: TenantId, case_id: SourcingCaseId, include_rejected: bool
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        include_rejected: bool,
+        limit: int | None = None,
     ) -> list[SupplierCandidate]: ...
 
     async def count_qualified(
@@ -118,9 +120,7 @@ class CandidateRepository(Protocol):
 class PublicSourcingPlanRepository(Protocol):
     """版本化公开寻源计划存储接口。"""
 
-    async def add(
-        self, tenant_id: TenantId, plan: PublicSourcingPlan
-    ) -> None: ...
+    async def add(self, tenant_id: TenantId, plan: PublicSourcingPlan) -> None: ...
 
     async def get(
         self, tenant_id: TenantId, plan_id: SourcingPlanId
@@ -132,9 +132,7 @@ class PublicSourcingPlanRepository(Protocol):
         """锁定同租户计划，串行化 authorize→running 的精确重放。"""
         ...
 
-    async def update(
-        self, tenant_id: TenantId, plan: PublicSourcingPlan
-    ) -> None:
+    async def update(self, tenant_id: TenantId, plan: PublicSourcingPlan) -> None:
         """按版本与当前哈希更新；确认事实不可被范围改写覆盖。"""
         ...
 
@@ -147,9 +145,7 @@ class PublicSourcingPlanRepository(Protocol):
 class SupplyOptionRepository(Protocol):
     """现有产品与候选产品的统一供给选项存储接口。"""
 
-    async def add(
-        self, tenant_id: TenantId, option: SourcingSupplyOption
-    ) -> None: ...
+    async def add(self, tenant_id: TenantId, option: SourcingSupplyOption) -> None: ...
 
     async def get_or_create_supplier_candidate(
         self, tenant_id: TenantId, option: SourcingSupplyOption
@@ -186,9 +182,7 @@ class SourcingReviewRepository(Protocol):
         self, tenant_id: TenantId, case_id: SourcingCaseId
     ) -> SourcingReview | None: ...
 
-    async def update(
-        self, tenant_id: TenantId, review: SourcingReview
-    ) -> None: ...
+    async def update(self, tenant_id: TenantId, review: SourcingReview) -> None: ...
 
 
 @runtime_checkable
@@ -230,6 +224,12 @@ class SourcingSearchExecutionRepository(Protocol):
         self, tenant_id: TenantId, request_key: str
     ) -> SourcingSearchExecution | None: ...
 
+    async def list_uncertain_for_case(
+        self, tenant_id: TenantId, case_id: SourcingCaseId, limit: int
+    ) -> list[SourcingSearchExecution]:
+        """读取同租户 Case 的不确定回执；按稳定时间/操作标识有界排序。"""
+        ...
+
     async def update(
         self, tenant_id: TenantId, execution: SourcingSearchExecution
     ) -> None: ...
@@ -257,6 +257,7 @@ class PublicCandidateDraftRepository(Protocol):
     ) -> list[PublicCandidateDraft]:
         """按 query/result/source key 返回一次精确公开搜索的 canonical 草稿。"""
         ...
+
 
 @runtime_checkable
 class SourcingSearchReconciliationRepository(Protocol):

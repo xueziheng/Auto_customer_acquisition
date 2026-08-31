@@ -74,6 +74,19 @@ describe("ValidatedNeedDetail", () => {
       const url = new URL(input.url);
       requestedUrls.push(url.toString());
       if (url.pathname === `/demand/needs/${needId}`) return jsonResponse(need);
+      if (url.pathname === "/sourcing-cases") return jsonResponse([{
+        active_search_plan_id: null,
+        case_id: "src_01K39P9M5D6K4A91YEQ80EJZ0X",
+        ladder_checked_to: 5,
+        need_id: needId,
+        need_snapshot: null,
+        opened_at: "2026-08-30T09:00:00Z",
+        state: "verifying",
+        state_changed_at: null,
+        stop: null,
+        version: 3,
+        workflow_version: 2,
+      }]);
       if (url.pathname === "/notifications") return jsonResponse([]);
       return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
     });
@@ -94,6 +107,7 @@ describe("ValidatedNeedDetail", () => {
       expect(root.textContent).toContain("emp-reviewer");
       expect(root.textContent).toContain("artifact:reply-rotterdam");
       expect(root.textContent).toContain("寻源前仍缺：规格");
+      expect(root.textContent).toContain("查看关联寻源 Case（verifying）");
     });
     expect(root.querySelector("[v-html]")).toBeNull();
     const disclosure = root.querySelector<HTMLDetailsElement>(".field-provenance");
@@ -106,6 +120,29 @@ describe("ValidatedNeedDetail", () => {
     expect(document.activeElement).toBe(summary);
     expect(disclosure?.textContent).toContain("msg_01K39P9M5D6K4A91YEQ80EJZ0Z");
     expect(requestedUrls).toContain(`https://tradeos.test/demand/needs/${needId}`);
+    app.unmount();
+  });
+
+  it("keeps the Need evidence readable and states a safe sourcing-link failure", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === `/demand/needs/${needId}`) return jsonResponse(need);
+      if (path === "/notifications") return jsonResponse([]);
+      if (path === "/sourcing-cases") return jsonResponse({}, 503);
+      return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
+    });
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    const app = createApp(App);
+    app.provide("tradeos-api-client", createApiClient({ baseUrl: "https://tradeos.test", fetch }));
+    app.use(router);
+    app.mount(root);
+
+    await router.replace(`/demand/needs/${needId}`);
+    await eventually(() => {
+      expect(root.textContent).toContain("Northwind Hardware");
+      expect(root.textContent).toContain("关联寻源 Case 暂不可读取");
+    });
     app.unmount();
   });
 });

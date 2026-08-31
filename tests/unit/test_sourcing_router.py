@@ -16,6 +16,7 @@ from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
+from shared.errors import InvalidStateTransition
 from shared.schemas.identifiers import EmployeeId, TenantId
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
@@ -31,10 +32,19 @@ class _Sourcing:
         self.calls.append(("list", tenant_id, actor, limit))
         return []
 
+    async def get_candidate_read_views(self, tenant_id, case_id, *, actor, limit=50):
+        self.calls.append(("candidates", tenant_id, case_id, actor, limit))
+        return []
+
 
 class _SourcingApplication:
     async def confirm_plan(self, *args, **kwargs):
         raise AssertionError("authorization gates must run before confirm_plan")
+
+
+class _ConflictingSourcingApplication:
+    async def confirm_plan(self, *args, **kwargs):
+        raise InvalidStateTransition("当前状态不允许此操作")
 
 
 def _identity(role: str) -> RequestIdentity:
@@ -162,3 +172,62 @@ def test_review_rejects_forged_actor_opportunity_and_cost_fields() -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_candidate_read_limit_is_forwarded_and_openapi_documents_command_truth() -> (
+    None
+):
+    app, sourcing = _app("boss")
+
+    response = _request(app, "GET", f"/sourcing-cases/{CASE_ID}/candidates?limit=7")
+    schema = app.openapi()
+    command_paths = (
+        "/sourcing-cases/{case_id}/public-search-plan/confirm",
+        "/sourcing-cases/{case_id}/run",
+        "/sourcing-cases/{case_id}/review",
+        "/sourcing-cases/{case_id}/reconcile-uncertain-request",
+    )
+
+    assert response.status_code == 200
+    for path in command_paths:
+        operation = schema["paths"][path]["post"]
+        header = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["in"] == "header" and parameter["name"] == "Idempotency-Key"
+        )
+        assert header["required"] is True
+        assert "409" in operation["responses"]
+    assert sourcing.calls[-1][-1] == 7
+
+
+def test_confirm_invalid_state_is_documented_as_a_conflict() -> None:
+    app, _ = _app("boss")
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_ConflictingSourcingApplication(),
+    )
+
+    response = _request(
+        app,
+        "POST",
+        f"/sourcing-cases/{CASE_ID}/public-search-plan/confirm",
+        headers=[("Idempotency-Key", "confirm-conflict")],
+        json={"plan_id": "spl-source", "expected_plan_hash": "a" * 64},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "invalid_state",
+        "message": "当前状态不允许此操作",
+    }
+
+
+def test_openapi_lists_only_safe_quota_review_and_uncertain_recovery_reads() -> None:
+    app, _ = _app("boss")
+    paths = app.openapi()["paths"]
+
+    assert "/sourcing-cases/{case_id}/current-quota" in paths
+    assert "/sourcing-cases/{case_id}/review" in paths
+    assert "/sourcing-cases/{case_id}/uncertain-reconciliations" in paths
+    assert set(paths["/sourcing-cases/{case_id}/review"]) == {"get", "post"}
