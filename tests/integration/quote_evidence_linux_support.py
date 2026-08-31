@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import docker
@@ -19,25 +21,27 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 
 PYTHON_IMAGE = "python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
-TARGET_MANIFEST = (
-    "sha256:457e0286fc132c4531ea071629ae6959095aa4074f172cd271aedb6950714ae6"
+_SOURCE_MANIFEST_LABEL = "org.tradeos.source-manifest-sha256"
+_SOURCE_PLATFORM_LABEL = "org.tradeos.source-platform"
+_SOURCE_PLATFORM = "linux/arm64"
+_AUDITED_DEPENDENCY_MANIFEST_SHA256 = (
+    "40c05b6ce0e7e0dbef7ec7b4b23905c9abe40a91ea3d5b0aebb5c18fccc3f4c4"
 )
-PINNED_QUOTE_EVIDENCE_IMAGE_ID = (
-    "sha256:fa0bcb34bd4b2e3f8b546881ac6a5227026039baa7bc37bee2095e7a078cd1c7"
+_REQUIRED_DEPENDENCY_MODULES = (
+    "alembic",
+    "docker",
+    "pydantic",
+    "pytest",
+    "sqlalchemy",
+    "testcontainers",
 )
-"""当前源码白名单构建出的本地 Linux 验收镜像；完整门不依赖隐式 shell 环境。"""
 
 
-def build_parser_image(
-    base_image: str | None = None, *, chain: bool = False, quotation: bool = False,
-    costing_quote: bool = False,
-) -> str:
-    """显式构建入口，只在获准构建阶段联网获取已列依赖。"""
-    root = Path(__file__).resolve().parents[2]
-    if costing_quote and (not quotation or not chain or base_image is None):
-        raise ValueError("T10必须显式复用quotation/chain和已验收image")
-    if quotation and (not chain or base_image is None):
-        raise ValueError("报价同链必须显式复用chain和已验收image")
+def _source_paths(
+    root: Path, *, chain: bool, quotation: bool, costing_quote: bool
+) -> tuple[Path, ...]:
+    """只列出 runner 真实读取的源码；不把工作树状态或凭证带进构建上下文。"""
+
     paths = [
         root / "pyproject.toml",
         root / "connectors/__init__.py",
@@ -61,8 +65,6 @@ def build_parser_image(
         if path.exists():
             paths.append(path)
     if chain:
-        if base_image is None:
-            raise ValueError("全链构建必须显式复用已验证依赖产物")
         for package in (
             "connectors/contact_enrichment",
             "connectors/email_verification",
@@ -138,11 +140,140 @@ def build_parser_image(
         ):
             paths.append(root / name)
     paths.append(root / "tests/fixtures/quote_evidence/linux/Dockerfile")
+    return tuple(sorted(set(paths)))
+
+
+def _manifest_sha256(root: Path, paths: tuple[Path, ...]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as source:
+            digest.update(hashlib.file_digest(source, "sha256").digest())
+    return digest.hexdigest()
+
+
+def source_manifest_sha256(
+    *, chain: bool = True, quotation: bool = False, costing_quote: bool = False
+) -> str:
+    """当前白名单源码的稳定内容 manifest；不包含 mtime、镜像 ID 或环境变量。"""
+
+    root = Path(__file__).resolve().parents[2]
+    return _manifest_sha256(
+        root,
+        _source_paths(
+            root, chain=chain, quotation=quotation, costing_quote=costing_quote
+        ),
+    )
+
+
+def _dependency_manifest_sha256(client: Any, image_id: str) -> str:
+    """在 network none 的一次性容器中读取依赖清单 hash，不暴露清单文本。"""
+
+    containers = client.containers
+    output = containers.run(
+        image_id,
+        ["-m", "pip", "freeze", "--all"],
+        entrypoint=["python"],
+        network_mode="none",
+        remove=True,
+        user="65534:65534",
+        read_only=True,
+    )
+    if not isinstance(output, bytes):
+        raise TypeError("依赖镜像清单输出无效")
+    lines = sorted(
+        line.strip() for line in output.decode("utf-8", errors="strict").splitlines()
+    )
+    return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+
+
+def _dependency_runtime_is_complete(client: Any, image_id: str) -> bool:
+    """验证候选可运行本 Linux 门禁所需模块；失败候选不参与来源层重建。"""
+
+    try:
+        client.containers.run(
+            image_id,
+            ["-c", "import " + ", ".join(_REQUIRED_DEPENDENCY_MODULES)],
+            entrypoint=["python"],
+            network_mode="none",
+            remove=True,
+            user="65534:65534",
+            read_only=True,
+        )
+    except docker.errors.ContainerError:
+        return False
+    return True
+
+
+def audited_dependency_image_id() -> str:
+    """选择同一官方 Python 根层、同一依赖 manifest 的本地离线依赖镜像。"""
+
+    client = docker.from_env()
+    try:
+        base = client.images.get(PYTHON_IMAGE)
+        base_layers = base.attrs.get("RootFS", {}).get("Layers")
+        if not isinstance(base_layers, list) or not base_layers:
+            raise RuntimeError("not_run：受审计 Python 基础层无效")
+        images = sorted(
+            client.images.list(),
+            key=lambda image: (
+                len(image.attrs.get("RootFS", {}).get("Layers", [])),
+                getattr(image, "id", ""),
+            ),
+            reverse=True,
+        )
+        for image in images:
+            attrs = image.attrs
+            layers = attrs.get("RootFS", {}).get("Layers")
+            if (
+                attrs.get("Architecture") != "arm64"
+                or attrs.get("Os") != "linux"
+                or not isinstance(layers, list)
+                or layers[: len(base_layers)] != base_layers
+                or len(layers) <= len(base_layers)
+            ):
+                continue
+            image_id = getattr(image, "id", "")
+            if (
+                not isinstance(image_id, str)
+                or not image_id.startswith("sha256:")
+                or len(image_id) != 71
+            ):
+                continue
+            if not _dependency_runtime_is_complete(client, image_id):
+                continue
+            if (
+                _dependency_manifest_sha256(client, image_id)
+                == _AUDITED_DEPENDENCY_MANIFEST_SHA256
+            ):
+                return image_id
+        raise RuntimeError("not_run：缺少受审计的本地离线依赖镜像")
+    finally:
+        client.close()
+
+
+def build_parser_image(
+    base_image: str | None = None, *, chain: bool = False, quotation: bool = False,
+    costing_quote: bool = False,
+) -> str:
+    """显式构建入口，只在获准构建阶段联网获取已列依赖。"""
+    if costing_quote and (not quotation or not chain or base_image is None):
+        raise ValueError("T10必须显式复用quotation/chain和已验收image")
+    if quotation and (not chain or base_image is None):
+        raise ValueError("报价同链必须显式复用chain和已验收image")
+    root = Path(__file__).resolve().parents[2]
+    paths = _source_paths(
+        root, chain=chain, quotation=quotation, costing_quote=costing_quote
+    )
+    source_manifest = _manifest_sha256(root, paths)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for path in sorted(set(paths)):
+        for path in paths:
             entry = archive.gettarinfo(str(path), arcname=str(path.relative_to(root)))
             entry.mode = 0o644
+            entry.mtime = 0
             entry.uid = entry.gid = 0
             entry.uname = entry.gname = ""
             with path.open("rb") as source:
@@ -155,6 +286,8 @@ def build_parser_image(
             if not base_image.startswith("sha256:") or len(base_image) != 71:
                 raise ValueError("测试基础产物必须为精确image ID")
             client.images.get(base_image)
+        else:
+            client.images.get(PYTHON_IMAGE)
         phase = "docker_build"
         image, logs = client.images.build(
             fileobj=buffer,
@@ -173,8 +306,12 @@ def build_parser_image(
             else "refreshed"
             if base_image
             else "parser",
-            platform="linux/arm64",
+            platform=_SOURCE_PLATFORM,
             network_mode="none",
+            labels={
+                _SOURCE_MANIFEST_LABEL: source_manifest,
+                _SOURCE_PLATFORM_LABEL: _SOURCE_PLATFORM,
+            },
             rm=True,
         )
         # 构建日志可能包含下载环境；只返回固定image ID，不打印任意底层日志。
@@ -195,17 +332,22 @@ def build_parser_image(
 
 
 def image_id() -> str:
-    """只接受精确本地镜像；环境覆盖是显式的，默认仍是已审计 SHA。"""
+    """离线重建当前源码层，并验证其源码 manifest 与 Linux 平台。"""
 
-    configured = os.environ.get("QUOTE_EVIDENCE_IMAGE_ID")
-    value = PINNED_QUOTE_EVIDENCE_IMAGE_ID if configured is None else configured
-    if not value.startswith("sha256:") or len(value) != 71:
-        raise RuntimeError("not_run：来源测试镜像ID无效")
+    dependency_image = audited_dependency_image_id()
+    value = build_parser_image(dependency_image, chain=True)
+    manifest = source_manifest_sha256(chain=True)
     client = docker.from_env()
     try:
         image = client.images.get(value)
         if image.attrs["Architecture"] != "arm64" or image.attrs["Os"] != "linux":
             raise RuntimeError("not_run：测试镜像架构不匹配")
+        labels = image.attrs.get("Config", {}).get("Labels") or {}
+        if (
+            labels.get(_SOURCE_MANIFEST_LABEL) != manifest
+            or labels.get(_SOURCE_PLATFORM_LABEL) != _SOURCE_PLATFORM
+        ):
+            raise RuntimeError("not_run：来源测试镜像 manifest 不匹配")
     finally:
         client.close()
     return value

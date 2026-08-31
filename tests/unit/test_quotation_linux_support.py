@@ -1,6 +1,7 @@
 """构建白名单契约；不替代真实受限Linux工厂链。"""
 
 import tarfile
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,18 +11,120 @@ import pytest
 from tests.integration import quote_evidence_linux_support as support
 
 
-def test_image_id_uses_the_pinned_local_linux_artifact_when_env_is_absent(
+def test_dependency_manifest_is_sorted_and_newline_terminated(monkeypatch):
+    """依赖清单 hash 采用可复现的 Unix 文本形式，不能依赖 Docker 输出顺序。"""
+
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return b"z==1\na==1\n"
+
+    container_client = SimpleNamespace(
+        containers=SimpleNamespace(run=run)
+    )
+
+    assert support._dependency_manifest_sha256(
+        container_client, "sha256:" + "a" * 64
+    ) == sha256(b"a==1\nz==1\n").hexdigest()
+    assert calls[0][0][1] == ["-m", "pip", "freeze", "--all"]
+    assert calls[0][1]["entrypoint"] == ["python"]
+
+
+def test_image_id_rebuilds_current_source_from_an_offline_dependency_image(
     monkeypatch,
 ):
-    """完整门无需隐式环境变量，但仍只能接受固定的本地 arm64/Linux 镜像。"""
+    """完整门不用作者机 image ID，且验收前校验 source manifest 与平台。"""
 
-    monkeypatch.delenv("QUOTE_EVIDENCE_IMAGE_ID", raising=False)
-    image = SimpleNamespace(attrs={"Architecture": "arm64", "Os": "linux"})
+    dependency = "sha256:" + "d" * 64
+    source = "sha256:" + "e" * 64
+    manifest = "c" * 64
+    calls = []
+    image = SimpleNamespace(
+        attrs={
+            "Architecture": "arm64",
+            "Os": "linux",
+            "Config": {
+                "Labels": {
+                    "org.tradeos.source-manifest-sha256": manifest,
+                    "org.tradeos.source-platform": "linux/arm64",
+                }
+            },
+        }
+    )
     client = SimpleNamespace(images=SimpleNamespace(get=lambda value: image), close=Mock())
     monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(
+        support,
+        "build_parser_image",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or source,
+    )
+    monkeypatch.setattr(support, "audited_dependency_image_id", lambda: dependency)
+    monkeypatch.setattr(
+        support, "source_manifest_sha256", lambda **_kwargs: manifest
+    )
 
-    assert support.image_id() == support.PINNED_QUOTE_EVIDENCE_IMAGE_ID
-    client.images.get(support.PINNED_QUOTE_EVIDENCE_IMAGE_ID)
+    assert support.image_id() == source
+    assert calls == [((dependency,), {"chain": True})]
+    client.images.get(source)
+    client.close.assert_called_once()
+
+
+def test_audited_dependency_image_requires_python_root_platform_and_manifest(
+    monkeypatch,
+):
+    base_layers = ["sha256:base-a", "sha256:base-b"]
+    accepted = SimpleNamespace(
+        id="sha256:" + "a" * 64,
+        attrs={
+            "Architecture": "arm64",
+            "Os": "linux",
+            "RootFS": {"Layers": [*base_layers, "sha256:deps"]},
+        },
+    )
+    rejected = SimpleNamespace(
+        id="sha256:" + "b" * 64,
+        attrs={
+            "Architecture": "amd64",
+            "Os": "linux",
+            "RootFS": {"Layers": [*base_layers, "sha256:wrong"]},
+        },
+    )
+    later = SimpleNamespace(
+        id="sha256:" + "0" * 64,
+        attrs={
+            "Architecture": "arm64",
+            "Os": "linux",
+            "RootFS": {"Layers": [*base_layers, "sha256:later"]},
+        },
+    )
+    base = SimpleNamespace(attrs={"RootFS": {"Layers": base_layers}})
+    client = SimpleNamespace(
+        images=SimpleNamespace(
+            get=lambda _: base,
+            list=lambda: [rejected, accepted, later],
+        ),
+        close=Mock(),
+    )
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(
+        support,
+        "_dependency_manifest_sha256",
+        lambda _client, image_id: (
+            support._AUDITED_DEPENDENCY_MANIFEST_SHA256
+            if image_id == accepted.id
+            else "0" * 64
+        ),
+    )
+    runtime_checks = []
+    monkeypatch.setattr(
+        support,
+        "_dependency_runtime_is_complete",
+        lambda _client, image_id: runtime_checks.append(image_id) or image_id == accepted.id,
+    )
+
+    assert support.audited_dependency_image_id() == accepted.id
+    assert runtime_checks == [accepted.id]
     client.close.assert_called_once()
 
 
