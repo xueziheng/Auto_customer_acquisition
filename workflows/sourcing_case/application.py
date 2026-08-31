@@ -285,6 +285,8 @@ class SourcingCaseApplication:
             or not review.review_id.strip()
         ):
             raise ValidationError("寻源审核事实绑定无效")
+        if review.confirmed_by is None or review.confirmed_at is None:
+            return review
         payload = {
             "review_id": str(SourcingReviewId(review.review_id)),
             "request_id": bounded_request_id,

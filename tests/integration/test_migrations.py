@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0049"
+_ALEMBIC_HEAD = "0051"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -3976,9 +3976,9 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         ),
     }
     for name, expected_sql in expected_functional_checks.items():
-        expected = _canonical(expected_sql)
-        assert _canonical(db_contract["checks"][name]) == expected, name
-        assert _canonical(orm_checks[name]) == expected, name
+        expected_tokens = _canonical(expected_sql)
+        assert _canonical(db_contract["checks"][name]) == expected_tokens, name
+        assert _canonical(orm_checks[name]) == expected_tokens, name
 
 
 async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
@@ -4344,8 +4344,10 @@ async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
                 for name, entry in indexes.items()
             }
 
-        assert _without_where(orm_contract[table_name]["indexes"]) == _without_where(
-            db_contract[table_name]["indexes"]
+        assert _without_where(
+            cast(dict[str, dict[str, object]], orm_contract[table_name]["indexes"])
+        ) == _without_where(
+            cast(dict[str, dict[str, object]], db_contract[table_name]["indexes"])
         )
     assert "ck_need_hypotheses_category_nonblank" in db_contract["need_hypotheses"]["checks"]
     assert (
@@ -4361,20 +4363,26 @@ async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
             frozenset(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", where)),
         )
 
-    db_index = db_contract["need_hypotheses"]["indexes"][
+    db_indexes = cast(
+        dict[str, dict[str, object]], db_contract["need_hypotheses"]["indexes"]
+    )
+    orm_indexes = cast(
+        dict[str, dict[str, object]], orm_contract["need_hypotheses"]["indexes"]
+    )
+    db_index = db_indexes[
         "uq_need_hypotheses_active_account_category"
     ]
-    orm_index = orm_contract["need_hypotheses"]["indexes"][
+    orm_index = orm_indexes[
         "uq_need_hypotheses_active_account_category"
     ]
     for side, entry in (("db", db_index), ("orm", orm_index)):
         assert entry["unique"] is True, side
         assert entry["cols"] == ["tenant_id", "account_id", "category"], side
-        values, idents = _predicate_semantics(entry["where"] or "")
+        values, idents = _predicate_semantics(str(entry["where"] or ""))
         assert values == frozenset({"inferred", "contacting"}), side
         assert "status" in idents, side
-    db_values, _ = _predicate_semantics(db_index["where"] or "")
-    orm_values, _ = _predicate_semantics(orm_index["where"] or "")
+    db_values, _ = _predicate_semantics(str(db_index["where"] or ""))
+    orm_values, _ = _predicate_semantics(str(orm_index["where"] or ""))
     assert db_values == orm_values == frozenset({"inferred", "contacting"})
 
 

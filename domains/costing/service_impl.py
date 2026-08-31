@@ -24,6 +24,7 @@ from domains.costing.schemas import (
     CostSheetView,
     FxRateView,
     QuoteReadiness,
+    SourcingEstimateCreate,
 )
 from domains.costing.service import (
     assess_quote_readiness,
@@ -36,6 +37,10 @@ from shared.schemas.identifiers import (
     EmployeeId,
     FxSnapshotId,
     OpportunityId,
+    ProductId,
+    SourcingCaseId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
     new_id,
 )
@@ -127,6 +132,51 @@ def _view(sheet: CostSheet) -> CostSheetView:
             if sheet.risk_acceptance is not None
             else None
         ),
+        source_sourcing_case_id=(
+            str(sheet.source_sourcing_case_id)
+            if sheet.source_sourcing_case_id is not None
+            else None
+        ),
+        source_option_id=(
+            str(sheet.source_option_id) if sheet.source_option_id is not None else None
+        ),
+        source_product_id=(
+            str(sheet.source_product_id)
+            if sheet.source_product_id is not None
+            else None
+        ),
+        source_candidate_id=(
+            str(sheet.source_candidate_id)
+            if sheet.source_candidate_id is not None
+            else None
+        ),
+    )
+
+
+def _matches_sourcing_estimate(
+    sheet: CostSheet, command: SourcingEstimateCreate
+) -> bool:
+    purchases = [
+        item for item in sheet.items if item.item_type is CostItemType.PRODUCT_PURCHASE
+    ]
+    if len(purchases) != 1:
+        return False
+    item = purchases[0]
+    return (
+        sheet.version_type is CostSheetVersion.ESTIMATED
+        and sheet.opportunity_id == command.opportunity_id
+        and sheet.source_sourcing_case_id == command.sourcing_case_id
+        and sheet.source_option_id == command.primary_option_id
+        and sheet.source_product_id == command.product_id
+        and sheet.source_candidate_id == command.supplier_candidate_id
+        and sheet.quantity == command.quantity
+        and sheet.base_currency == command.currency
+        and sheet.quote_currency == command.currency
+        and item.amount.amount == command.unit_amount
+        and item.amount.currency == command.currency
+        and item.price_basis == "indicative"
+        and item.is_per_unit is True
+        and item.source_ref == str(command.evidence_ref)
     )
 
 
@@ -203,6 +253,66 @@ class CostingServiceImpl:
             )
             await uow.sheets.add(sheet)
         return sheet.cost_sheet_id
+
+    async def create_sourcing_estimate(
+        self,
+        tenant_id: TenantId,
+        command: SourcingEstimateCreate,
+        *,
+        actor: CostingActor,
+    ) -> CostSheetId:
+        self._require(tenant_id, actor, CostingAction.SOURCING_ESTIMATE_CREATE)
+        if not isinstance(command, SourcingEstimateCreate):
+            raise ValidationError("寻源估算创建参数无效")
+        now = _clock(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            existing = await uow.sheets.get_by_source_case_for_update(
+                tenant_id, command.sourcing_case_id
+            )
+            if existing is not None:
+                if not _matches_sourcing_estimate(existing, command):
+                    raise ValidationError("寻源估算来源内容不一致")
+                return existing.cost_sheet_id
+            version_number = await uow.sheets.next_version_number(
+                tenant_id,
+                OpportunityId(command.opportunity_id),
+                CostSheetVersion.ESTIMATED.value,
+            )
+            sheet = CostSheet(
+                cost_sheet_id=CostSheetId(new_id("cost")),
+                tenant_id=tenant_id,
+                opportunity_id=OpportunityId(command.opportunity_id),
+                version_type=CostSheetVersion.ESTIMATED,
+                version_number=version_number,
+                quantity=command.quantity,
+                base_currency=command.currency,
+                quote_currency=command.currency,
+                created_at=now,
+                created_by=EmployeeId(actor.actor_id),
+                source_sourcing_case_id=SourcingCaseId(command.sourcing_case_id),
+                source_option_id=SourcingSupplyOptionId(command.primary_option_id),
+                source_product_id=ProductId(command.product_id),
+                source_candidate_id=(
+                    SupplierCandidateId(command.supplier_candidate_id)
+                    if command.supplier_candidate_id is not None
+                    else None
+                ),
+                items=[
+                    CostItem(
+                        item_type=CostItemType.PRODUCT_PURCHASE,
+                        amount=Money(
+                            command.unit_amount, CurrencyCode(command.currency)
+                        ),
+                        price_basis="indicative",
+                        is_per_unit=True,
+                        source_ref=str(command.evidence_ref),
+                        entered_by=EmployeeId(actor.actor_id),
+                        item_sequence=1,
+                    )
+                ],
+            )
+            await uow.sheets.add(sheet)
+            return sheet.cost_sheet_id
 
     async def add_item(
         self,

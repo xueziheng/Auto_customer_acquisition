@@ -102,6 +102,7 @@ _BOSS_ACTIONS = _READ_ACTIONS | frozenset(
         SourcingAction.PLAN_RUN,
         SourcingAction.SEARCH_RECONCILE,
         SourcingAction.REVIEW_CONFIRM,
+        SourcingAction.REVIEW_SUBMIT,
     }
 )
 _PRODUCT_ACTIONS = _READ_ACTIONS | frozenset(

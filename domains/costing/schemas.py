@@ -16,6 +16,14 @@ from pydantic import (
     model_validator,
 )
 
+from shared.schemas.identifiers import (
+    ArtifactId,
+    OpportunityId,
+    ProductId,
+    SourcingCaseId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
+)
 from shared.schemas.money import CurrencyCode, FxRate, Money
 from shared.schemas.provenance import Provenance
 
@@ -99,6 +107,31 @@ class CostSheetCreate(BaseModel):
     quote_currency: str
     fx_snapshot_id: str | None = None
     fx_rates: list[FxRateCreate] = Field(default_factory=list)
+
+
+class SourcingEstimateCreate(BaseModel):
+    """可信交接快照形成自动 ESTIMATED 成本表的唯一强类型命令。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    sourcing_case_id: SourcingCaseId
+    primary_option_id: SourcingSupplyOptionId
+    supplier_candidate_id: SupplierCandidateId | None = None
+    product_id: ProductId
+    opportunity_id: OpportunityId
+    quantity: int = Field(ge=1)
+    unit_amount: CostingDecimalInput
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    evidence_ref: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_estimate(self) -> SourcingEstimateCreate:
+        """自动成本只接受有限正金额及可无损持久化的精确来源。"""
+
+        _stored_decimal(self.unit_amount)
+        if self.unit_amount <= Decimal(0):
+            raise ValueError("寻源估算单价必须为正")
+        return self
 
 
 class CostItemCreate(BaseModel):
@@ -357,6 +390,10 @@ class CostSheetView:
     margin_rate: Decimal | None = None
     fx_rate_display: str | None = None
     risk_accepted_by: str | None = None
+    source_sourcing_case_id: str | None = None
+    source_option_id: str | None = None
+    source_product_id: str | None = None
+    source_candidate_id: str | None = None
     content_hash: str = ""
 
 

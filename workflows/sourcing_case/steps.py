@@ -9,6 +9,9 @@ from collections.abc import Awaitable
 from typing import Any
 
 from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
+from domains.opportunities.permissions import Actor as OpportunityActor
+from domains.opportunities.schemas import OpportunityView
+from domains.opportunities.service import OpportunityService
 from domains.products.service import (
     ProductActor,
     ProductMatchResult,
@@ -24,6 +27,7 @@ from domains.sourcing.schemas import (
     PublicPageAttemptClaim,
     PublicPageAttemptOutcome,
     PublicPageAttemptStatus,
+    SourcingHandoffSnapshot,
     VerifyPublicCandidateDraftsCommand,
     VerifyPublicCandidateDraftsResult,
 )
@@ -41,6 +45,7 @@ from domains.suppliers.service import SupplierActor, SupplierService
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
+    OpportunityId,
     ProductId,
     RunId,
     SourcingCaseId,
@@ -1219,6 +1224,70 @@ class FixedWaitStep:
         return ("wait", None, {"sourcing_wait_status": self._status})
 
 
+class HandoffCostingStep:
+    """先精确读取同 Need Opportunity，再让 sourcing 原子交接并发事实事件。"""
+
+    def __init__(
+        self,
+        *,
+        opportunities: OpportunityService,
+        sourcing: SourcingService,
+        opportunity_actor: OpportunityActor,
+        sourcing_actor: SourcingActor,
+    ) -> None:
+        self._opportunities = opportunities
+        self._sourcing = sourcing
+        self._opportunity_actor = opportunity_actor
+        self._sourcing_actor = sourcing_actor
+
+    async def execute(
+        self, run: WorkflowRun
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, need_id, _snapshot_hash = _base(run)
+        opportunity = await _await_dependency(
+            self._opportunities.get_by_need(
+                run.tenant_id, need_id, actor=self._opportunity_actor
+            ),
+            transient_message="寻源成本交接 Opportunity 暂不可用",
+            permanent_message="寻源成本交接 Opportunity 读取失败",
+        )
+        if opportunity is None:
+            return ("wait", None, {"sourcing_stop_reason": "opportunity_required"})
+        if (
+            not isinstance(opportunity, OpportunityView)
+            or opportunity.need_id != str(need_id)
+            or not isinstance(opportunity.opportunity_id, str)
+            or not opportunity.opportunity_id.strip()
+        ):
+            raise ValidationError("寻源成本交接 Opportunity 绑定无效")
+        snapshot = await _await_dependency(
+            self._sourcing.hand_to_costing(
+                run.tenant_id,
+                case_id,
+                OpportunityId(opportunity.opportunity_id),
+                actor=self._sourcing_actor,
+            ),
+            transient_message="寻源成本交接暂不可用",
+            permanent_message="寻源成本交接失败",
+        )
+        if (
+            not isinstance(snapshot, SourcingHandoffSnapshot)
+            or snapshot.case_id != case_id
+            or snapshot.need_id != need_id
+            or snapshot.opportunity_id != OpportunityId(opportunity.opportunity_id)
+        ):
+            raise ValidationError("寻源成本交接结果绑定无效")
+        return (
+            "complete",
+            None,
+            {
+                "sourcing_stop_reason": None,
+                "opportunity_id": str(snapshot.opportunity_id),
+                "review_id": str(snapshot.review_id),
+            },
+        )
+
+
 class VerifyCandidatesStep:
     """把 PublicSearch 的精确草稿 generation 一次交给寻源域核验。"""
 
@@ -1334,6 +1403,7 @@ __all__ = (
     "AwaitProductCardsStep",
     "AwaitPublicPlanStep",
     "FixedWaitStep",
+    "HandoffCostingStep",
     "InternalMatchLadderStep",
     "PrepareCandidatesStep",
     "PublicSearchStep",

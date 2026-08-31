@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import inspect, text
@@ -399,7 +400,7 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
     engine: AsyncEngine | None = None
     try:
         _run_alembic(db_url, "downgrade", "0046")
-        _run_alembic(db_url, "upgrade", "0049")
+        _run_alembic(db_url, "upgrade", "0051")
         engine = create_engine_from(db_url)
         async with engine.connect() as connection:
             contract = await connection.run_sync(_sync_contract)
@@ -416,6 +417,7 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
         assert {
             "source_sourcing_case_id",
             "source_option_id",
+            "source_product_id",
             "source_candidate_id",
         } <= set(Base.metadata.tables["cost_sheets"].columns.keys())
 
@@ -505,6 +507,11 @@ async def test_sourcing_and_supply_schema_is_tenant_bound_and_uses_exact_amounts
             is True
         )
         cost_fks = contract["cost_sheets"]["foreign_keys"]
+        assert cost_fks["fk_cost_sheets_sourcing_product"] == (
+            ("tenant_id", "source_product_id"),
+            "products",
+            ("tenant_id", "product_id"),
+        )
         assert cost_fks["fk_cost_sheets_sourcing_option"] == (
             ("tenant_id", "source_sourcing_case_id", "source_option_id"),
             "sourcing_supply_options",
@@ -814,9 +821,11 @@ async def test_product_checks_enforce_null_pairs_and_candidate_lifecycle_statuse
                 "cost_source": ARTIFACT_A,
             }
             for missing in full_cost:
-                values = full_cost | {missing: None}
+                missing_values = full_cost | {missing: None}
                 rejected_values.append(
-                    _product_values(f"product-cost-missing-{missing}", **values)
+                    _product_values(
+                        f"product-cost-missing-{missing}", **missing_values
+                    )
                 )
             rejected_values.extend(
                 [
@@ -848,8 +857,8 @@ async def test_product_checks_enforce_null_pairs_and_candidate_lifecycle_statuse
                     ),
                 ]
             )
-            for values in rejected_values:
-                await _expect_integrity(connection, _INSERT_PRODUCT, values)
+            for rejected in rejected_values:
+                await _expect_integrity(connection, _INSERT_PRODUCT, rejected)
 
             for candidate_status in ("source_only", "partial", "not_approved"):
                 await connection.execute(
@@ -1029,7 +1038,7 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
     engine: AsyncEngine | None = None
     try:
         _run_alembic(db_url, "downgrade", "0046")
-        _run_alembic(db_url, "upgrade", "0049")
+        _run_alembic(db_url, "upgrade", "0051")
         engine = create_engine_from(db_url)
         async with engine.begin() as connection:
             await _seed_need_and_case(
@@ -1090,17 +1099,27 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
                 ),
                 {"tenant": TENANT_A},
             )
-            cost_values = {
+            cost_values: dict[str, object] = {
                 "tenant": TENANT_A,
                 "case": "case-a",
                 "option": "option-a",
+                "product": "product-a",
             }
+            await _expect_integrity(
+                connection,
+                "INSERT INTO cost_sheets "
+                "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
+                "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id) "
+                "VALUES (:tenant, 'cost-incomplete', 'opp-a', 'estimated', 1, 100, 'USD', 'USD', now(), :case, :option)",
+                cost_values,
+            )
             await connection.execute(
                 text(
                     "INSERT INTO cost_sheets "
                     "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
-                    "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id) "
-                    "VALUES (:tenant, 'cost-a', 'opp-a', 'estimated', 1, 100, 'USD', 'USD', now(), :case, :option)"
+                    "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id, "
+                    "source_product_id) VALUES (:tenant, 'cost-a', 'opp-a', 'estimated', 1, 100, 'USD', "
+                    "'USD', now(), :case, :option, :product)"
                 ),
                 cost_values,
             )
@@ -1108,8 +1127,9 @@ async def test_active_case_plan_review_and_cost_origin_constraints(db_url: str) 
                 connection,
                 "INSERT INTO cost_sheets "
                 "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
-                "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id) "
-                "VALUES (:tenant, 'cost-b', 'opp-a', 'estimated', 2, 100, 'USD', 'USD', now(), :case, :option)",
+                "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id, "
+                "source_product_id) VALUES (:tenant, 'cost-b', 'opp-a', 'estimated', 2, 100, 'USD', "
+                "'USD', now(), :case, :option, :product)",
                 cost_values,
             )
     finally:
@@ -1339,7 +1359,7 @@ async def test_review_alternates_are_unique_and_bound_to_case_and_tenant(
                     },
                 )
 
-            base_values = {
+            base_values: dict[str, object] = {
                 "tenant": TENANT_A,
                 "case": "case-review-main",
                 "primary": "option-review-primary",
@@ -1472,6 +1492,118 @@ async def test_0049_upgrade_preserves_legacy_cost_sheet_created_at_0048(
             assert row.source_sourcing_case_id is None
             assert row.source_option_id is None
             assert row.source_candidate_id is None
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0051_backfills_product_origin_and_roundtrips(db_url: str) -> None:
+    """已到 0050 的来源表必须补 Product，降级仍保留原 Case/Option 来源。"""
+
+    engine: AsyncEngine | None = None
+    suffix = uuid4().hex[:10]
+    need_id = f"need-0051-{suffix}"
+    case_id = f"case-0051-{suffix}"
+    product_id = f"product-0051-{suffix}"
+    option_id = f"option-0051-{suffix}"
+    opportunity_id = f"opp-0051-{suffix}"
+    cost_sheet_id = f"cost-0051-{suffix}"
+    try:
+        _run_alembic(db_url, "downgrade", "0050")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id=need_id,
+                case_id=case_id,
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO products "
+                    "(tenant_id, product_id, pool, name_zh, name_en, category, normalized_category, "
+                    "sellable_markets, selling_points, known_issues, customizable, created_at) "
+                    "VALUES (:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', 'hinges', "
+                    "'[]', '[]', '[]', false, now())"
+                ),
+                {"tenant": TENANT_A, "product": product_id},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_supply_options "
+                    "(tenant_id, option_id, case_id, source, product_id, is_qualified, created_at) "
+                    "VALUES (:tenant, :option, :case, 'existing_product', :product, true, now())"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "option": option_id,
+                    "case": case_id,
+                    "product": product_id,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO opportunities "
+                    "(opportunity_id, tenant_id, account_id, account_name, country, need_id, product_category) "
+                    "VALUES (:opportunity, :tenant, 'account-0051', 'Migration buyer', 'US', "
+                    ":need, 'hinges')"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "opportunity": opportunity_id,
+                    "need": need_id,
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO cost_sheets "
+                    "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
+                    "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id) "
+                    "VALUES (:tenant, :cost, :opportunity, 'estimated', 1, 100, 'USD', 'USD', now(), "
+                    ":case, :option)"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "cost": cost_sheet_id,
+                    "opportunity": opportunity_id,
+                    "case": case_id,
+                    "option": option_id,
+                },
+            )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0051")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            source_product = await connection.scalar(
+                text(
+                    "SELECT source_product_id FROM cost_sheets "
+                    "WHERE tenant_id = :tenant AND cost_sheet_id = :cost"
+                ),
+                {"tenant": TENANT_A, "cost": cost_sheet_id},
+            )
+            assert source_product == product_id
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "downgrade", "0050")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT source_sourcing_case_id, source_option_id "
+                        "FROM cost_sheets WHERE tenant_id = :tenant AND cost_sheet_id = :cost"
+                    ),
+                    {"tenant": TENANT_A, "cost": cost_sheet_id},
+                )
+            ).one()
+            assert (row.source_sourcing_case_id, row.source_option_id) == (
+                case_id,
+                option_id,
+            )
     finally:
         if engine is not None:
             await engine.dispose()

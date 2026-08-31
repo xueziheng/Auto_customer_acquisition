@@ -1967,6 +1967,14 @@ class SourcingServiceImpl:
             SourcingAction.REVIEW_SUBMIT,
             SourcingScope.TENANT,
         )
+        confirm_on_submit = actor.role == "boss"
+        if confirm_on_submit:
+            self._require(
+                tenant_id,
+                actor,
+                SourcingAction.REVIEW_CONFIRM,
+                SourcingScope.TENANT,
+            )
         if not isinstance(command, SourcingReviewCommand):
             raise ValidationError("寻源审核命令无效")
         submitted_by = _employee(actor)
@@ -1981,8 +1989,20 @@ class SourcingServiceImpl:
                     and existing.alternate_option_ids == command.alternate_option_ids
                     and existing.reason == command.reason
                     and existing.expected_case_version == command.expected_case_version
-                    and existing.submitted_by == submitted_by
                 ):
+                    if confirm_on_submit and existing.confirmed_by is None:
+                        if (
+                            case.state is not CaseState.CANDIDATES_READY
+                            or case.version != existing.expected_case_version
+                        ):
+                            raise InvalidStateTransition(
+                                "寻源审核绑定的 Case 状态或版本已变化"
+                            )
+                        confirmed = existing.confirm(
+                            submitted_by, confirmed_at=_aware(self._now())
+                        )
+                        await uow.reviews.update(tenant_id, confirmed)
+                        return confirmed
                     return existing
                 raise ValidationError("该寻源案例已有审核事实")
             if case.state is not CaseState.CANDIDATES_READY:
@@ -2008,6 +2028,10 @@ class SourcingServiceImpl:
                 submitted_at=now,
                 actual_case_version=case.version,
             )
+            if confirm_on_submit:
+                review = review.confirm(
+                    submitted_by, confirmed_at=now
+                )
             await uow.reviews.add(tenant_id, review)
             return review
 
@@ -2040,6 +2064,8 @@ class SourcingServiceImpl:
             review = await uow.reviews.get(tenant_id, review_id)
             if review is None:
                 raise ValidationError("寻源审核不存在或租户不匹配")
+            if review.confirmed_by is not None:
+                return review
             case = _case_required(await uow.cases.get(tenant_id, review.case_id))
             if (
                 case.state is not CaseState.CANDIDATES_READY

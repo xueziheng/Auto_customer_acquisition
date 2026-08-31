@@ -15,7 +15,12 @@ from domains.costing.quote_repository import (
     PricingPolicyRepository,
     QuoteFxRepository,
 )
-from shared.schemas.identifiers import CostSheetId, OpportunityId, TenantId
+from shared.schemas.identifiers import (
+    CostSheetId,
+    OpportunityId,
+    SourcingCaseId,
+    TenantId,
+)
 
 
 @runtime_checkable
@@ -30,6 +35,12 @@ class CostSheetRepository(Protocol):
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId
     ) -> CostSheet | None:
         """锁行后读取，供追加成本项等读改写操作避免并发丢更新。"""
+        ...
+
+    async def get_by_source_case_for_update(
+        self, tenant_id: TenantId, sourcing_case_id: SourcingCaseId
+    ) -> CostSheet | None:
+        """按来源键加事务锁读取；并发自动交接必须收敛为同一张表。"""
         ...
 
     async def update(self, sheet: CostSheet) -> None:

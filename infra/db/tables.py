@@ -3581,6 +3581,12 @@ class CostSheetRow(Base):
             name="fk_cost_sheets_sourcing_option",
         ),
         ForeignKeyConstraint(
+            ["tenant_id", "source_product_id"],
+            ["products.tenant_id", "products.product_id"],
+            ondelete="RESTRICT",
+            name="fk_cost_sheets_sourcing_product",
+        ),
+        ForeignKeyConstraint(
             [
                 "tenant_id",
                 "source_sourcing_case_id",
@@ -3633,8 +3639,9 @@ class CostSheetRow(Base):
         ),
         CheckConstraint(
             "(source_sourcing_case_id IS NULL AND source_option_id IS NULL "
-            "AND source_candidate_id IS NULL) OR "
-            "(source_sourcing_case_id IS NOT NULL AND source_option_id IS NOT NULL)",
+            "AND source_product_id IS NULL AND source_candidate_id IS NULL) OR "
+            "(source_sourcing_case_id IS NOT NULL AND source_option_id IS NOT NULL "
+            "AND source_product_id IS NOT NULL)",
             name="ck_cost_sheets_sourcing_origin",
         ),
         Index(
@@ -3670,6 +3677,7 @@ class CostSheetRow(Base):
     risk_justification: Mapped[str | None] = mapped_column(Text)
     source_sourcing_case_id: Mapped[str | None] = mapped_column(String(40))
     source_option_id: Mapped[str | None] = mapped_column(String(40))
+    source_product_id: Mapped[str | None] = mapped_column(String(40))
     source_candidate_id: Mapped[str | None] = mapped_column(String(40))
 
 

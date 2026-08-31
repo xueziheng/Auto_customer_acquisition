@@ -86,6 +86,10 @@ async def test_costing_tables_persist_every_business_row_with_tenant_scope(
         "risk_accepted_by",
         "risk_accepted_at",
         "risk_justification",
+        "source_sourcing_case_id",
+        "source_option_id",
+        "source_product_id",
+        "source_candidate_id",
     }
     assert set(schema["cost_items"]) == {
         "tenant_id",

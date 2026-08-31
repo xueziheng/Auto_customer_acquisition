@@ -71,7 +71,6 @@ from workflows.engine.runner import (
 )
 from workflows.sourcing_case.application import (
     SourcingCaseApplication,
-    SourcingPlanDeliveryError,
 )
 from workflows.sourcing_case.steps import (
     AwaitProductCardsStep,
@@ -428,18 +427,14 @@ async def test_verified_projection_replay_persists_one_complete_generation(
         reason="证据最完整",
         expected_case_version=case_version,
     )
-    with pytest.raises(
-        SourcingPlanDeliveryError, match="寻源审核工作流尚未进入等待边界"
-    ) as caught:
-        await application.review(
-            tenant_id,
-            case_id,
-            review_command,
-            request_id="review-request-1",
-            actor=reviewer,
-        )
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    pending_review_fact = await application.review(
+        tenant_id,
+        case_id,
+        review_command,
+        request_id="review-request-1",
+        actor=reviewer,
+    )
+    assert pending_review_fact.confirmed_by is None
     async with factory() as session:
         assert (
             await session.scalar(
@@ -456,21 +451,21 @@ async def test_verified_projection_replay_persists_one_complete_generation(
         case_id,
         review_command,
         request_id="review-request-1",
-        actor=reviewer,
+        actor=boss,
     )
     replayed = await application.review(
         tenant_id,
         case_id,
         review_command,
         request_id="review-request-1",
-        actor=reviewer,
+        actor=boss,
     )
     retried = await application.review(
         tenant_id,
         case_id,
         review_command,
         request_id="handoff-retry-2",
-        actor=reviewer,
+        actor=boss,
     )
 
     assert review == replayed == retried

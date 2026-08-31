@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Self
+from typing import Any, Self
 
 import pytest
 
@@ -23,6 +23,7 @@ from shared.schemas.identifiers import (
     CostSheetId,
     EmployeeId,
     OpportunityId,
+    SourcingCaseId,
     TenantId,
 )
 
@@ -52,6 +53,19 @@ class _Sheets:
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId
     ) -> object | None:
         return await self.get(tenant_id, cost_sheet_id)
+
+    async def get_by_source_case_for_update(
+        self, tenant_id: TenantId, sourcing_case_id: SourcingCaseId
+    ) -> object | None:
+        assert tenant_id == TENANT
+        return next(
+            (
+                sheet
+                for sheet in self.by_id.values()
+                if sheet.source_sourcing_case_id == sourcing_case_id  # type: ignore[attr-defined]
+            ),
+            None,
+        )
 
     async def update(self, sheet: object) -> None:
         self.by_id[sheet.cost_sheet_id] = sheet  # type: ignore[attr-defined]
@@ -125,9 +139,9 @@ class _Factory:
     def __init__(self, sheets: _Sheets) -> None:
         self.sheets = sheets
 
-    def __call__(self, tenant_id: TenantId) -> object:
+    def __call__(self, tenant_id: TenantId) -> Any:
         assert tenant_id == TENANT
-        return _Uow(self.sheets)  # type: ignore[return-value]
+        return _Uow(self.sheets)
 
 
 def _actor(role: str = "finance") -> CostingActor:

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from domains.opportunities.permissions import Actor, OpportunityScope, ScopeLevel
 from domains.products.permissions import ProductRole
 from domains.products.service import (
     Product,
@@ -61,6 +62,9 @@ PRODUCT_ACTOR = ProductActor("system:sourcing", ProductRole.SYSTEM, TENANT)
 SUPPLIER_ACTOR = SupplierActor("system:sourcing", SupplierRole.SYSTEM, TENANT)
 SOURCING_ACTOR = SourcingActor(
     "system:sourcing", TENANT, SourcingScope.SYSTEM, "system"
+)
+OPPORTUNITY_ACTOR = Actor(
+    "system:sourcing", OpportunityScope(level=ScopeLevel.SYSTEM), role="system"
 )
 
 
@@ -226,6 +230,11 @@ class _Suppliers:
         return self.suppliers
 
 
+class _Opportunities:
+    async def get_by_need(self, tenant_id, need_id, *, actor):
+        assert (tenant_id, need_id, actor) == (TENANT, NEED_ID, OPPORTUNITY_ACTOR)
+
+
 class _Sourcing:
     def __init__(self) -> None:
         self.checks: list[Any] = []
@@ -293,6 +302,8 @@ def _handlers(products: _Products, suppliers: _Suppliers, sourcing: _Sourcing):
         product_actor=PRODUCT_ACTOR,
         supplier_actor=SUPPLIER_ACTOR,
         sourcing_actor=SOURCING_ACTOR,
+        opportunities=_Opportunities(),
+        opportunity_actor=OPPORTUNITY_ACTOR,
     )
 
 

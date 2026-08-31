@@ -622,6 +622,8 @@ class _ReviewSourcing:
             expected_case_version=REVIEW_COMMAND.expected_case_version,
             submitted_by=EmployeeId("emp-reviewer"),
             submitted_at=NOW,
+            confirmed_by=EmployeeId("emp-boss"),
+            confirmed_at=NOW,
         )
 
     async def review(self, tenant_id, case_id, command, *, actor):

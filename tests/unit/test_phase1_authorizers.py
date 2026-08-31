@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import pytest
 
@@ -25,14 +26,21 @@ class _MissingProductionSymbol:
         pytest.fail("RED：Phase 1 concrete authorizer/audit logger 尚未实现")
 
 
-Phase1EmployeeAuthorizer = getattr(
-    employee_permissions, "Phase1EmployeeAuthorizer", _MissingProductionSymbol
+Phase1EmployeeAuthorizer = cast(
+    Any,
+    getattr(employee_permissions, "Phase1EmployeeAuthorizer", _MissingProductionSymbol),
 )
-EmployeeStandardAuditLogger = getattr(
-    employee_permissions, "StandardAuditLogger", _MissingProductionSymbol
+EmployeeStandardAuditLogger = cast(
+    Any,
+    getattr(employee_permissions, "StandardAuditLogger", _MissingProductionSymbol),
 )
-Phase1OpportunityAuthorizer = getattr(
-    opportunity_permissions, "Phase1OpportunityAuthorizer", _MissingProductionSymbol
+Phase1OpportunityAuthorizer = cast(
+    Any,
+    getattr(
+        opportunity_permissions,
+        "Phase1OpportunityAuthorizer",
+        _MissingProductionSymbol,
+    ),
 )
 
 
@@ -92,6 +100,7 @@ def _opportunity_actor_for_role(role: str) -> OpportunityActor:
         ("boss", ScopeLevel.TENANT, OpportunityAction.OPPORTUNITY_ASSIGN),
         ("boss", ScopeLevel.TENANT, OpportunityAction.HANDOFF_REQUEST),
         ("boss", ScopeLevel.TENANT, OpportunityAction.LOSS_REASON_READ),
+        ("system", ScopeLevel.SYSTEM, OpportunityAction.SOURCING_HANDOFF_READ),
         ("system", ScopeLevel.SYSTEM, OpportunityAction.HANDOFF_REQUEST),
         (
             "system",

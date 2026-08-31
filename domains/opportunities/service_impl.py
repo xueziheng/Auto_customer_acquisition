@@ -1207,7 +1207,12 @@ class OpportunityServiceImpl:
         actor: Actor,
     ) -> OpportunityView | None:
         """按 tenant + need 唯一链读取，供上层闭环组合使用。"""
-        rule = self._authorize(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id)
+        action = (
+            OpportunityAction.SOURCING_HANDOFF_READ
+            if actor.role == "system" and actor.scope.level is ScopeLevel.SYSTEM
+            else OpportunityAction.OPPORTUNITY_READ
+        )
+        rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
             opp = await uow.opportunities.find_by_need(tenant_id, need_id)
             if opp is None:
@@ -1219,10 +1224,10 @@ class OpportunityServiceImpl:
                     country=opp.country,
                     product_category=opp.product_category,
                     tenant_id=tenant_id,
-                    action=OpportunityAction.OPPORTUNITY_READ,
+                    action=action,
                 )
                 view = await self._build_view(uow, tenant_id, opp)
-        self._audit_allow(actor, OpportunityAction.OPPORTUNITY_READ, tenant_id, rule)
+        self._audit_allow(actor, action, tenant_id, rule)
         return view
 
     async def list_for_employee(

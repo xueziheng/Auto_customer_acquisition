@@ -16,6 +16,10 @@ from shared.schemas.identifiers import (
     EmployeeId,
     FxSnapshotId,
     OpportunityId,
+    ProductId,
+    SourcingCaseId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
 )
 from shared.schemas.money import FxRate, Money, PriceBasis
@@ -33,6 +37,8 @@ def _require_numeric_precision(
     del sign
     # 只移除表示层尾零，不调用受当前 Decimal context 影响的 normalize。
     if not value.is_finite():
+        raise ValidationError(f"{field}必须为有限 Decimal")
+    if not isinstance(exponent, int):
         raise ValidationError(f"{field}必须为有限 Decimal")
     if not value:
         return
@@ -184,6 +190,10 @@ class CostSheet:
     created_by: EmployeeId | None = None
     locked_at: datetime | None = None
     risk_acceptance: RiskAcceptance | None = None
+    source_sourcing_case_id: SourcingCaseId | None = None
+    source_option_id: SourcingSupplyOptionId | None = None
+    source_product_id: ProductId | None = None
+    source_candidate_id: SupplierCandidateId | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.version_type, CostSheetVersion):
@@ -246,6 +256,21 @@ class CostSheet:
             self.risk_acceptance, RiskAcceptance
         ):
             raise ValidationError("参考价风险接受记录无效")
+        source_values = (
+            self.source_sourcing_case_id,
+            self.source_option_id,
+            self.source_product_id,
+        )
+        if any(value is not None for value in source_values) and any(
+            not isinstance(value, str) or not value.strip() for value in source_values
+        ):
+            raise ValidationError("寻源成本来源必须完整绑定 Case、Option 与 Product")
+        if self.source_candidate_id is not None and (
+            self.source_sourcing_case_id is None
+            or not isinstance(self.source_candidate_id, str)
+            or not self.source_candidate_id.strip()
+        ):
+            raise ValidationError("寻源候选成本来源无效")
 
     def has_indicative_items(self) -> bool:
         """是否含参考价成本项。

@@ -26,6 +26,7 @@ class CostingAction(str, Enum):
     QUOTE_FREEZE = "quote:freeze"
     QUOTE_OPERATION_READ = "quote_operation:read"
     QUOTE_OPERATION_COMPLETE = "quote_operation:complete"
+    SOURCING_ESTIMATE_CREATE = "sourcing_estimate:create"
 
 
 class CostingScope(str, Enum):
@@ -33,6 +34,7 @@ class CostingScope(str, Enum):
 
     UNPRIVILEGED = "unprivileged"
     TENANT = "tenant"
+    SYSTEM = "system"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class CostingActor:
     actor_id: str
     role: str
     scope: CostingScope
+    tenant_id: TenantId | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.actor_id, str) or not self.actor_id.strip():
@@ -50,6 +53,12 @@ class CostingActor:
             raise ValidationError("成本操作角色无效")
         if not isinstance(self.scope, CostingScope):
             raise ValidationError("成本操作范围无效")
+        if (self.role == "system") != (self.scope is CostingScope.SYSTEM):
+            raise ValidationError("system 角色与 SYSTEM 范围必须成对")
+        if self.scope is CostingScope.SYSTEM and (
+            not isinstance(self.tenant_id, str) or not self.tenant_id.strip()
+        ):
+            raise ValidationError("SYSTEM 成本身份必须绑定租户")
 
 
 @runtime_checkable
@@ -79,9 +88,22 @@ class Phase1CostingAuthorizer:
         if (
             tenant_id != self._tenant_id
             or not isinstance(action, CostingAction)
-            or actor.scope is not CostingScope.TENANT
-            or actor.role not in self._ALLOWED_ROLES
-            or (action is CostingAction.POLICY_CONFIRM and actor.role != "boss")
+            or (
+                action is CostingAction.SOURCING_ESTIMATE_CREATE
+                and not (
+                    actor.scope is CostingScope.SYSTEM
+                    and actor.role == "system"
+                    and actor.tenant_id == tenant_id
+                )
+            )
+            or (
+                action is not CostingAction.SOURCING_ESTIMATE_CREATE
+                and (
+                    actor.scope is not CostingScope.TENANT
+                    or actor.role not in self._ALLOWED_ROLES
+                    or (action is CostingAction.POLICY_CONFIRM and actor.role != "boss")
+                )
+            )
         ):
             raise PermissionDenied("Phase 1 成本授权拒绝")
         return f"phase1:{actor.role}:{actor.scope.value}:{action.value}"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from domains.opportunities.permissions import Actor as OpportunityActor
+from domains.opportunities.service import OpportunityService
 from domains.products.service import ProductActor, ProductService
 from domains.sourcing.service import SourcingActor, SourcingService
 from domains.suppliers.service import SupplierActor, SupplierService
@@ -11,6 +13,7 @@ from workflows.sourcing_case.steps import (
     AwaitProductCardsStep,
     AwaitPublicPlanStep,
     FixedWaitStep,
+    HandoffCostingStep,
     InternalMatchLadderStep,
     PrepareCandidatesStep,
     VerifyCandidatesStep,
@@ -83,6 +86,8 @@ def build_sourcing_case_handlers(
     product_actor: ProductActor,
     supplier_actor: SupplierActor,
     sourcing_actor: SourcingActor,
+    opportunities: OpportunityService,
+    opportunity_actor: OpportunityActor,
     public_search_handler: StepHandler | None = None,
 ) -> dict[str, StepHandler]:
     """装配 Task 7 内部路径；后续步骤保持显式无副作用等待。"""
@@ -110,8 +115,11 @@ def build_sourcing_case_handlers(
         ),
         "sourcing_case.v2.await_product_cards": AwaitProductCardsStep(),
         "sourcing_case.v2.await_review": FixedWaitStep("review_required"),
-        "sourcing_case.v2.handoff_costing": FixedWaitStep(
-            "cost_handoff_pending_implementation"
+        "sourcing_case.v2.handoff_costing": HandoffCostingStep(
+            opportunities=opportunities,
+            sourcing=sourcing,
+            opportunity_actor=opportunity_actor,
+            sourcing_actor=sourcing_actor,
         ),
     }
 

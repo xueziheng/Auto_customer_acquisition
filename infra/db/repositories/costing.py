@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,10 @@ from shared.schemas.identifiers import (
     EmployeeId,
     FxSnapshotId,
     OpportunityId,
+    ProductId,
+    SourcingCaseId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
     TenantId,
     new_id,
 )
@@ -78,6 +83,24 @@ def _sheet_values(sheet: CostSheet) -> dict[str, object]:
         ),
         "risk_accepted_at": risk.accepted_at if risk is not None else None,
         "risk_justification": risk.justification if risk is not None else None,
+        "source_sourcing_case_id": (
+            str(sheet.source_sourcing_case_id)
+            if sheet.source_sourcing_case_id is not None
+            else None
+        ),
+        "source_option_id": (
+            str(sheet.source_option_id) if sheet.source_option_id is not None else None
+        ),
+        "source_product_id": (
+            str(sheet.source_product_id)
+            if sheet.source_product_id is not None
+            else None
+        ),
+        "source_candidate_id": (
+            str(sheet.source_candidate_id)
+            if sheet.source_candidate_id is not None
+            else None
+        ),
     }
 
 
@@ -172,6 +195,26 @@ def _to_sheet(
         ),
         locked_at=row.locked_at,
         risk_acceptance=risk,
+        source_sourcing_case_id=(
+            SourcingCaseId(row.source_sourcing_case_id)
+            if row.source_sourcing_case_id is not None
+            else None
+        ),
+        source_option_id=(
+            SourcingSupplyOptionId(row.source_option_id)
+            if row.source_option_id is not None
+            else None
+        ),
+        source_product_id=(
+            ProductId(row.source_product_id)
+            if row.source_product_id is not None
+            else None
+        ),
+        source_candidate_id=(
+            SupplierCandidateId(row.source_candidate_id)
+            if row.source_candidate_id is not None
+            else None
+        ),
     )
 
 
@@ -203,6 +246,29 @@ class CostSheetRepositoryImpl(_TenantBoundRepository, CostSheetRepository):
         self, tenant_id: TenantId, cost_sheet_id: CostSheetId
     ) -> CostSheet | None:
         return await self._get(tenant_id, cost_sheet_id, for_update=True)
+
+    async def get_by_source_case_for_update(
+        self, tenant_id: TenantId, sourcing_case_id: SourcingCaseId
+    ) -> CostSheet | None:
+        self._require_tenant(tenant_id, "cost_sheet_get_source_case")
+        lock_key = f"cost-sheet-source:{self._tenant_id}:{sourcing_case_id}"
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": lock_key},
+        )
+        row = (
+            await self._session.execute(
+                select(CostSheetRow)
+                .where(
+                    CostSheetRow.tenant_id == str(self._tenant_id),
+                    CostSheetRow.source_sourcing_case_id == str(sourcing_case_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return await self._hydrate(row)
 
     async def _get(
         self,
@@ -333,9 +399,11 @@ class CostSheetRepositoryImpl(_TenantBoundRepository, CostSheetRepository):
         if len({item.item_sequence for item in items}) != len(items):
             raise ValidationError("成本明细序号重复")
         sheet.items = items
+        if any(item.item_sequence is None for item in sheet.items):
+            raise ValidationError("成本明细序号不能为空")
         self._session.add_all(
             [
-                _item_row(sheet, item, item.item_sequence)
+                _item_row(sheet, item, cast(int, item.item_sequence))
                 for item in sheet.items
             ]
         )

@@ -92,6 +92,7 @@ from domains.costing.schemas import (
     QuoteFxView,
     QuoteReadiness,
     SourceEvidence,
+    SourcingEstimateCreate,
 )
 from domains.costing.source_access import require_pricing_source_access
 from shared.schemas.identifiers import (
@@ -268,6 +269,16 @@ class CostingService(Protocol):
         QUOTED 类型必须同时锁定汇率快照（调 connectors/fx 的结果
         由上层传入）。
         """
+        ...
+
+    async def create_sourcing_estimate(
+        self,
+        tenant_id: TenantId,
+        command: SourcingEstimateCreate,
+        *,
+        actor: CostingActor,
+    ) -> CostSheetId:
+        """从可信主供给快照幂等创建唯一 ESTIMATED 表和采购成本项。"""
         ...
 
     async def add_item(

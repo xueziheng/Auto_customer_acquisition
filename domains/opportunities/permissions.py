@@ -36,6 +36,7 @@ class OpportunityAction(str, Enum):
     OPPORTUNITY_MARK_LOST = "opportunity:mark_lost"
     OPPORTUNITY_MARK_WON = "opportunity:mark_won"
     OPPORTUNITY_READ = "opportunity:read"
+    SOURCING_HANDOFF_READ = "opportunity:sourcing_handoff_read"
     OPPORTUNITY_LIST = "opportunity:list"
     HANDOFF_REQUEST = "handoff:request"
     HANDOFF_ESCALATION_RECORD = "handoff:escalation_record"
@@ -225,6 +226,7 @@ class Phase1OpportunityAuthorizer:
             ("boss", ScopeLevel.TENANT): _OPPORTUNITY_BOSS_ACTIONS,
             ("system", ScopeLevel.SYSTEM): frozenset(
                 {
+                    OpportunityAction.SOURCING_HANDOFF_READ,
                     OpportunityAction.HANDOFF_REQUEST,
                     OpportunityAction.HANDOFF_ESCALATION_RECORD,
                 }

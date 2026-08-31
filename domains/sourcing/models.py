@@ -876,7 +876,9 @@ class SourcingReview:
         """记录老板确认；历史审核不可重复确认或改写。"""
 
         if self.confirmed_by is not None:
-            raise SourcingReviewStaleError("审核已经确认")
+            if self.confirmed_at is None:
+                raise SourcingReviewStaleError("审核确认事实不完整")
+            return self
         _require_aware_time(confirmed_at, "confirmed_at")
         return replace(
             self,
