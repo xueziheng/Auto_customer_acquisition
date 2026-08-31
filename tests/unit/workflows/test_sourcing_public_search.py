@@ -41,6 +41,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
+from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.free_search_contracts import FreeSearchError, FreeSearchStopReason
 from tool_gateway.handlers.web_slots import SearchResultBatch
@@ -1038,21 +1039,20 @@ async def test_trusted_draft_writer_excludes_raw_quote_and_keeps_incomplete_cali
     assert raw.price_tiers[0].price_literal.source_quote not in serialized
     assert "source_quote" not in serialized
 
-    unsafe = raw.model_copy(
-        update={
-            "evidence": raw.evidence.model_copy(
-                update={"source_url": "https://factory-0.example:444/products/hinge"}
-            )
-        }
-    )
-    with pytest.raises(ValidationError, match="草稿 URL 不安全"):
-        await writer.save(
-            tenant_id=TENANT,
-            case_id=CASE_ID,
-            run_id=RUN_ID,
-            plan_id=PLAN_ID,
-            plan_hash=PLAN_HASH,
-            query_index=0,
-            result_index=0,
-            draft=unsafe,
+    for unsafe_url in HOSTILE_PUBLIC_PAGE_URLS:
+        unsafe = raw.model_copy(
+            update={
+                "evidence": raw.evidence.model_copy(update={"source_url": unsafe_url})
+            }
         )
+        with pytest.raises(ValidationError, match="草稿 URL 不安全"):
+            await writer.save(
+                tenant_id=TENANT,
+                case_id=CASE_ID,
+                run_id=RUN_ID,
+                plan_id=PLAN_ID,
+                plan_hash=PLAN_HASH,
+                query_index=0,
+                result_index=0,
+                draft=unsafe,
+            )

@@ -9,6 +9,8 @@ from __future__ import annotations
 import ipaddress
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
+_IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
 
 def canonical_public_page_url(url: str) -> str:
     """返回公开 HTTP(S) 页面 URL 的唯一 canonical 形式。
@@ -34,6 +36,7 @@ def canonical_public_page_url(url: str) -> str:
         parsed.scheme not in {"http", "https"}
         or hostname is None
         or not hostname.isascii()
+        or "%" in parsed.netloc
         or parsed.username is not None
         or parsed.password is not None
         or parsed.fragment
@@ -42,6 +45,12 @@ def canonical_public_page_url(url: str) -> str:
     ):
         raise ValueError("invalid public page URL")
     hostname = hostname.casefold()
+    # DNS permits one terminal root label.  Persist the rootless form so it cannot
+    # disguise an IPv4 literal (``127.0.0.1.``) as an ordinary DNS hostname.
+    if hostname.endswith("."):
+        hostname = hostname[:-1]
+        if not hostname or hostname.endswith("."):
+            raise ValueError("invalid public page URL")
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(
         ".local"
     ):
@@ -50,7 +59,7 @@ def canonical_public_page_url(url: str) -> str:
         literal = ipaddress.ip_address(hostname)
     except ValueError:
         literal = None
-    if literal is not None and not literal.is_global:
+    if literal is not None and not is_public_unicast_ip(literal):
         raise ValueError("invalid public page URL")
     if literal is None and _is_legacy_ip_literal(hostname):
         raise ValueError("invalid public page URL")
@@ -63,15 +72,44 @@ def canonical_public_page_url(url: str) -> str:
 def _is_legacy_ip_literal(hostname: str) -> bool:
     """拒绝 Python ``ipaddress`` 不接受但浏览器可能解释为 IP 的旧写法。"""
 
-    folded = hostname.casefold()
-    if folded.startswith("0x") and len(folded) > 2:
-        return all(character in "0123456789abcdef" for character in folded[2:])
     labels = hostname.split(".")
-    return bool(labels) and all(label.isdecimal() for label in labels)
+    return 1 <= len(labels) <= 4 and all(
+        _is_numeric_host_label(label) for label in labels
+    )
+
+
+def _is_numeric_host_label(label: str) -> bool:
+    """识别浏览器/socket 仍可能按 IPv4 数字 component 解释的单段。"""
+
+    folded = label.casefold()
+    if folded.startswith("0x"):
+        return len(folded) > 2 and all(
+            character in "0123456789abcdef" for character in folded[2:]
+        )
+    return bool(folded) and folded.isdecimal()
+
+
+def is_public_unicast_ip(value: str | _IPAddress) -> bool:
+    """仅接受可公开路由的普通单播 IP；DNS 与实际对端复核复用此规则。"""
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return bool(
+        address.is_global
+        and not address.is_private
+        and not address.is_loopback
+        and not address.is_link_local
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
+        and not getattr(address, "is_site_local", False)
+    )
 
 
 def _has_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
-__all__ = ("canonical_public_page_url",)
+__all__ = ("canonical_public_page_url", "is_public_unicast_ip")

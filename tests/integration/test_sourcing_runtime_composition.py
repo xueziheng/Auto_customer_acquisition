@@ -6,10 +6,11 @@ import importlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from apps.scheduler_worker.config import SourcingSettings
@@ -31,6 +32,9 @@ from domains.suppliers.service import SupplierRole
 from domains.suppliers.service_impl import SupplierServiceImpl
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.tables import (
+    CostItemRow,
+    CostSheetRow,
+    ProductCandidateSourceRow,
     ProductRow,
     SearchQuotaAccountRow,
     SearchQuotaReservationRow,
@@ -42,6 +46,7 @@ from infra.db.tables import (
     SourcingSupplyOptionRow,
     ToolCallRow,
     WorkflowRunRow,
+    WorkflowStepRow,
 )
 from shared.errors import ValidationError
 from shared.events.catalog import (
@@ -58,14 +63,13 @@ from shared.schemas.identifiers import (
     RunId,
     SourcingCaseId,
     SourcingPlanId,
-    SourcingReviewId,
     SourcingSupplyOptionId,
-    SupplierCandidateId,
     TenantId,
     UserId,
     ValidatedNeedId,
     new_id,
 )
+from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_read_page import ToolGatewayWebPageReader
@@ -170,6 +174,14 @@ class _CountryPolicy:
     async def decision(self, *args: object) -> object:
         self.calls += 1
         raise AssertionError(args)
+
+
+class _Clock:
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def now(self) -> datetime:
+        return self.value
 
 
 class _PlanReader:
@@ -488,6 +500,16 @@ async def test_candidate_evidence_reader_uses_canonical_gateway_url_and_rejects_
                 ("https://other-evidence.example/items/hinge", f"{6:064x}", NOW),
             ),
         )
+        hostile_artifacts = []
+        for index, url in enumerate(HOSTILE_PUBLIC_PAGE_URLS, start=7):
+            hostile_artifacts.append(
+                await _seed_candidate_evidence_bindings(
+                    connection,
+                    tenant=tenant,
+                    index=index,
+                    bindings=((url, f"{index:064x}", NOW),),
+                )
+            )
     reader = PostgresCandidateEvidenceSnapshotReader(
         async_sessionmaker(integration_engine, expire_on_commit=False), tenant
     )
@@ -504,6 +526,7 @@ async def test_candidate_evidence_reader_uses_canonical_gateway_url_and_rejects_
         default_port,
         time_drift,
         source_drift,
+        *hostile_artifacts,
     ):
         with pytest.raises(ValidationError, match="候选网页证据不可验证"):
             await reader.read_verified(tenant, artifact_id)
@@ -664,18 +687,77 @@ async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_a
 @pytest.mark.asyncio
 async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_sourcing_events(
     db_url: str,
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P66：实际 root 只在 enabled 时装配完整五事件路径，构造期零网络/零模型调用。"""
+    """P68：root 注册的真实五个 sourcing handler 经 PG Outbox 收敛一次完整链。"""
 
+    from domains.sourcing.permissions import (
+        Phase2SourcingAuthorizer,
+        SourcingActor,
+        SourcingScope,
+    )
+    from domains.sourcing.schemas import (
+        PublicSourcingPlanCommand,
+        PublicSourcingQuery,
+        SourcingReviewCommand,
+    )
+    from domains.sourcing.service import CandidateEvidenceSnapshot
+    from infra.db.outbox import PostgresEventBus
+    from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
     from tests.integration.test_scheduler_worker import (
         _factory_dependencies,
         _factory_environ,
         _FactoryHealthServer,
         _FactoryResolver,
     )
+    from tests.integration.test_sourcing_product_projection import _ladder_check
+    from tests.integration.test_sourcing_service_persistence import (
+        _candidate_submission,
+        _FixedEvidenceReader,
+        _seed_candidate_artifact,
+        _seed_handoff_dependencies,
+    )
+    from workflows.engine.runner import StepStatus
 
     runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
     tenant = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    opportunity_id = OpportunityId(new_id("opp"))
+    evidence_artifact_id = ArtifactId(new_id("art"))
+    auxiliary_product_id = new_id("prd")
+    provenance = {
+        "source_type": "conversation",
+        "source_id": "msg-root-sourcing",
+        "extracted_by": "human",
+        "extracted_at": NOW.isoformat(),
+        "confirmed_by": None,
+        "confirmed_at": None,
+        "source_url": None,
+        "page_hash": None,
+        "source_quote": None,
+    }
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO validated_needs "
+                "(tenant_id, need_id, account_id, product_category, source_message_id, "
+                "status, application, quantity, created_at) VALUES "
+                "(:tenant, :need, 'account-root-sourcing', CAST(:category AS jsonb), "
+                "'message-root-sourcing', 'sourcing_ready', CAST(:application AS jsonb), "
+                "CAST(:quantity AS jsonb), :now)"
+            ),
+            {
+                "tenant": str(tenant),
+                "need": str(need_id),
+                "category": json.dumps({"value": "hinges", "provenance": provenance}),
+                "application": json.dumps(
+                    {"value": "marine doors", "provenance": provenance}
+                ),
+                "quantity": json.dumps({"value": 5000, "provenance": provenance}),
+                "now": NOW,
+            },
+        )
     model = _Model()
     transport = _SearchTransport()
     pages = _PageTransport()
@@ -702,12 +784,13 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
             "system_actor_id": "system:sourcing-runtime",
         }
     )
+    clock = _Clock(NOW)
     factory = runtime_module.SchedulerRuntimeFactory(
         environ,
         dependencies,
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
-        now=lambda: NOW,
+        now=clock.now,
     )
 
     async with factory() as runtime:
@@ -720,88 +803,331 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
             "SourcingCaseHandedToCosting",
         }
         assert set(runtime.outbox._handlers).issuperset(event_types)
-
-        class _DurableRecorder:
-            def __init__(self) -> None:
-                self.events: list[str] = []
-
-            async def handle(self, event: object) -> None:
-                self.events.append(type(event).__name__)
-
-        recorder = _DurableRecorder()
-        # Root 的生产注册已在上面断言；下面把业务副作用替换为受控 terminal
-        # handler，只验证五个契约经真正的 PG Outbox 反序列化、delivery 持久化与收敛。
-        runtime.outbox._handlers = {
-            name: [(f"controlled.{name}", recorder)] for name in event_types
-        }
-        evidence_level = EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING
-        case_id = SourcingCaseId(new_id("src"))
-        need_id = ValidatedNeedId(new_id("need"))
-        candidate_id = SupplierCandidateId(new_id("sc"))
-        option_id = SourcingSupplyOptionId(new_id("sop"))
-        events = (
-            NeedValidated(
-                tenant_id=tenant,
-                occurred_at=NOW,
-                need_id=need_id,
-                category="hinges",
-                evidence_level=evidence_level,
-                completeness=3,
-            ),
-            NeedBecameSourcingReady(
-                tenant_id=tenant,
-                occurred_at=NOW,
-                need_id=need_id,
-                completeness=3,
-            ),
-            SourcingCandidatesVerified(
-                tenant_id=tenant,
-                occurred_at=NOW,
-                case_id=case_id,
-                candidate_ids=(candidate_id,),
-                case_version=1,
-                candidate_set_hash="a" * 64,
-            ),
-            SourcingCandidatesReady(
-                tenant_id=tenant,
-                occurred_at=NOW,
-                case_id=case_id,
-                option_ids=(option_id,),
-                candidate_ids=(candidate_id,),
-            ),
-            SourcingCaseHandedToCosting(
-                tenant_id=tenant,
-                occurred_at=NOW,
-                case_id=case_id,
-                need_id=need_id,
-                opportunity_id=OpportunityId(new_id("opp")),
-                review_id=SourcingReviewId(new_id("srw")),
-            ),
-        )
-        from infra.db.outbox import PostgresEventBus
-
         session = runtime.outbox._factory()
         try:
             bus = PostgresEventBus(session, tenant, now=lambda: NOW)
-            for event in events:
-                await bus.publish(event)
+            await bus.publish(
+                NeedValidated(
+                    tenant_id=tenant,
+                    occurred_at=NOW,
+                    need_id=need_id,
+                    category="hinges",
+                    evidence_level=EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING,
+                    completeness=3,
+                )
+            )
+            await bus.publish(
+                NeedBecameSourcingReady(
+                    tenant_id=tenant,
+                    occurred_at=NOW,
+                    need_id=need_id,
+                    completeness=3,
+                )
+            )
             await session.commit()
         finally:
             await session.close()
 
-        assert await runtime.outbox.drain() == 5
-        assert set(recorder.events) == event_types
+        await runtime.outbox.drain()
+        session_factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+        async with runtime.outbox._factory() as session:
+            cases = list(
+                (
+                    await session.execute(
+                        select(SourcingCaseRow).where(
+                            SourcingCaseRow.tenant_id == tenant,
+                            SourcingCaseRow.need_id == need_id,
+                        )
+                    )
+                ).scalars()
+            )
+        assert len(cases) == 1
+        assert cases[0].workflow_version == 2
+        case_id = SourcingCaseId(cases[0].case_id)
+        run_id = await runtime.workflow.find_active_run(
+            tenant, "sourcing_case", str(case_id)
+        )
+        assert run_id is not None
+        async with runtime.outbox._factory() as session:
+            root_run = await session.scalar(
+                select(WorkflowRunRow).where(
+                    WorkflowRunRow.tenant_id == tenant,
+                    WorkflowRunRow.run_id == run_id,
+                )
+            )
+        assert root_run is not None
+        assert (root_run.workflow_type, root_run.workflow_version) == (
+            "sourcing_case",
+            2,
+        )
+
+        await _seed_candidate_artifact(integration_engine, tenant, evidence_artifact_id)
+        await _seed_handoff_dependencies(
+            integration_engine,
+            tenant,
+            need_id,
+            opportunity_id,
+            auxiliary_product_id,
+        )
+        system = SourcingActor(
+            "system:sourcing-runtime", tenant, SourcingScope.SYSTEM, "system"
+        )
+        reviewer = SourcingActor(
+            "employee-sourcing", tenant, SourcingScope.TENANT, "sourcing"
+        )
+        boss = SourcingActor("employee-boss", tenant, SourcingScope.TENANT, "boss")
+        sourcing = SourcingServiceImpl(
+            lambda bound_tenant: SqlAlchemySourcingUnitOfWork(
+                session_factory, bound_tenant
+            ),
+            Phase2SourcingAuthorizer(tenant),
+            _FixedEvidenceReader(
+                CandidateEvidenceSnapshot(
+                    tenant_id=tenant,
+                    artifact_id=evidence_artifact_id,
+                    canonical_url="https://factory.example/hinge",
+                    content_hash="c" * 64,
+                    observed_at=NOW,
+                )
+            ),
+            now=clock.now,
+        )
+        for rung in range(1, 6):
+            await sourcing.record_ladder_check(
+                tenant,
+                case_id,
+                _ladder_check(tenant, case_id, rung),
+                actor=system,
+            )
+        plan = await sourcing.save_public_plan(
+            tenant,
+            case_id,
+            PublicSourcingPlanCommand(
+                plan_id=SourcingPlanId(new_id("spl")),
+                case_id=case_id,
+                target_countries=("US",),
+                product_category="hinges",
+                queries=(
+                    PublicSourcingQuery(
+                        query_text="hinge factory US", target_country="US"
+                    ),
+                ),
+                max_search_queries=1,
+                max_pages_read=1,
+                provider="tavily",
+                search_depth="basic",
+                usage_credits_remaining=10,
+                worst_case_credits=1,
+                version=1,
+                expected_case_version=6,
+            ),
+            actor=boss,
+        )
+        await sourcing.confirm_public_plan(
+            tenant, plan.plan_id, plan.plan_hash, actor=boss
+        )
+        candidate_id = await sourcing.submit_candidate(
+            tenant,
+            case_id,
+            _candidate_submission(evidence_artifact_id),
+            actor=reviewer,
+        )
+        verified = await sourcing.mark_candidates_verified(
+            tenant, case_id, (candidate_id,), actor=system
+        )
+
+        async with session_factory() as session, session.begin():
+            run = await session.scalar(
+                select(WorkflowRunRow).where(
+                    WorkflowRunRow.tenant_id == tenant,
+                    WorkflowRunRow.run_id == run_id,
+                )
+            )
+            step = await session.scalar(
+                select(WorkflowStepRow).where(
+                    WorkflowStepRow.tenant_id == tenant,
+                    WorkflowStepRow.run_id == run_id,
+                )
+            )
+            assert run is not None and step is not None
+            run.current_step = "await_product_cards"
+            run.status = StepStatus.RUNNING.value
+            run.context = {
+                "case_id": str(case_id),
+                "need_id": str(need_id),
+                "need_snapshot_hash": cases[0].need_snapshot_hash,
+                "product_category": "hinges",
+                "keywords": [],
+                "supplier_candidate_ids": [str(candidate_id)],
+                "candidate_case_version": verified.case_version,
+                "candidate_set_hash": verified.candidate_set_hash,
+            }
+            step.step_name = "await_product_cards"
+            step.status = StepStatus.WAITING_EVENT.value
+            step.data = {"planned_at": NOW.isoformat()}
+            step.due_at = NOW
+
+        await runtime.outbox.drain()
+        projected_run = await runtime.workflow.get_run(tenant, run_id)
+        assert projected_run is not None
+        assert projected_run.current_step == "await_review"
+        assert projected_run.context["supplier_candidate_ids"] == [str(candidate_id)]
+
+        async with SqlAlchemySourcingUnitOfWork(session_factory, tenant) as uow:
+            ready_case = await uow.cases.get(tenant, case_id)
+        assert ready_case is not None
+        assert ready_case.state.value == "candidates_ready"
+        async with session_factory() as session:
+            option_ids = tuple(
+                await session.scalars(
+                    select(SourcingSupplyOptionRow.option_id).where(
+                        SourcingSupplyOptionRow.tenant_id == tenant,
+                        SourcingSupplyOptionRow.case_id == case_id,
+                    )
+                )
+            )
+        assert len(option_ids) == 1
+        review_command = SourcingReviewCommand(
+            primary_option_id=SourcingSupplyOptionId(option_ids[0]),
+            alternate_option_ids=(),
+            reason="root outbox exact product candidate evidence",
+            expected_case_version=ready_case.version,
+        )
+        await sourcing.review(tenant, case_id, review_command, actor=reviewer)
+        review = await sourcing.review(tenant, case_id, review_command, actor=boss)
+        handoff = await sourcing.hand_to_costing(
+            tenant,
+            case_id,
+            opportunity_id,
+            expected_need_id=need_id,
+            actor=system,
+        )
+        assert handoff.review_id == review.review_id
+
+        original_create = CostingServiceImpl.create_sourcing_estimate
+        attempts = 0
+
+        async def fail_cost_once(self, *args: object, **kwargs: object) -> object:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("untrusted root costing failure")
+            return await original_create(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            CostingServiceImpl, "create_sourcing_estimate", fail_cost_once
+        )
+        await runtime.outbox.drain()
+        async with runtime.outbox._factory() as session:
+            first = (
+                await session.execute(
+                    text(
+                        "SELECT e.status, e.last_error, d.status, d.attempts, d.last_error "
+                        "FROM outbox_events e JOIN outbox_deliveries d "
+                        "ON d.tenant_id=e.tenant_id AND d.event_id=e.event_id "
+                        "WHERE e.tenant_id=:tenant "
+                        "AND e.event_type='SourcingCaseHandedToCosting' "
+                        "AND e.event_payload->>'case_id'=:case "
+                        "AND d.handler_name='sourcing_case.costing_handoff'"
+                    ),
+                    {"tenant": str(tenant), "case": str(case_id)},
+                )
+            ).one()
+        assert first == ("pending", "TransientError", "pending", 1, "TransientError")
+        assert attempts == 1
+        assert "untrusted" not in " ".join(str(value) for value in first)
+        async with runtime.outbox._factory() as session:
+            pending_cost_sheets = list(
+                (
+                    await session.execute(
+                        select(CostSheetRow).where(
+                            CostSheetRow.tenant_id == tenant,
+                            CostSheetRow.source_sourcing_case_id == case_id,
+                        )
+                    )
+                ).scalars()
+            )
+        assert pending_cost_sheets == []
+
+        clock.value = NOW + timedelta(seconds=31)
+        await runtime.outbox.drain()
         async with runtime.outbox._factory() as session:
             states = (
                 await session.execute(
                     text(
                         "SELECT event_type, status FROM outbox_events "
-                        "WHERE tenant_id=:tenant AND event_type = ANY(:types)"
+                        "WHERE tenant_id=:tenant AND event_type = ANY(:types) "
+                        "AND (event_payload->>'need_id'=:need "
+                        "OR event_payload->>'case_id'=:case)"
                     ),
-                    {"tenant": str(tenant), "types": list(event_types)},
+                    {
+                        "tenant": str(tenant),
+                        "types": list(event_types),
+                        "need": str(need_id),
+                        "case": str(case_id),
+                    },
                 )
             ).all()
-        assert set(states) == {(name, "delivered") for name in event_types}
+            sheets = list(
+                (
+                    await session.execute(
+                        select(CostSheetRow).where(
+                            CostSheetRow.tenant_id == tenant,
+                            CostSheetRow.source_sourcing_case_id == case_id,
+                        )
+                    )
+                ).scalars()
+            )
+            options = list(
+                (
+                    await session.execute(
+                        select(SourcingSupplyOptionRow).where(
+                            SourcingSupplyOptionRow.tenant_id == tenant,
+                            SourcingSupplyOptionRow.case_id == case_id,
+                        )
+                    )
+                ).scalars()
+            )
+            sources = list(
+                (
+                    await session.execute(
+                        select(ProductCandidateSourceRow).where(
+                            ProductCandidateSourceRow.tenant_id == tenant,
+                            ProductCandidateSourceRow.sourcing_case_id == case_id,
+                        )
+                    )
+                ).scalars()
+            )
+            products = list(
+                (
+                    await session.execute(
+                        select(ProductRow).where(
+                            ProductRow.tenant_id == tenant,
+                            ProductRow.pool == "candidate",
+                        )
+                    )
+                ).scalars()
+            )
+            assert len(sheets) == 1
+            items = list(
+                (
+                    await session.execute(
+                        select(CostItemRow).where(
+                            CostItemRow.tenant_id == tenant,
+                            CostItemRow.cost_sheet_id == sheets[0].cost_sheet_id,
+                        )
+                    )
+                ).scalars()
+            )
+        assert set(states) == {(event_type, "delivered") for event_type in event_types}
+        assert len(options) == len(products) == len(sources) == len(items) == 1
+        assert products[0].product_id == sources[0].product_id == options[0].product_id
+        assert sheets[0].version_type == "estimated"
+        assert sheets[0].source_option_id == options[0].option_id
+        assert sources[0].supplier_candidate_id == candidate_id
+        assert items[0].item_type == "product_purchase"
+        assert items[0].price_basis == "indicative"
+        assert Decimal(str(items[0].amount)) == Decimal("1.25")
     assert model.calls == transport.calls == pages.calls == artifacts.calls == 0
     assert playbook.calls == 0
 

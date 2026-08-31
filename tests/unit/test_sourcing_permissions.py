@@ -40,6 +40,8 @@ def _permissions() -> object:
         ("system", "SYSTEM", "CASE_OPEN"),
         ("system", "SYSTEM", "WORKFLOW_PROGRESS"),
         ("system", "SYSTEM", "FACT_PUBLISH"),
+        # 交接事件由受信任的系统 worker 消费；它只能读取已冻结的快照。
+        ("system", "SYSTEM", "COSTING_HANDOFF_READ"),
     ],
 )
 def test_phase2_authorizer_allows_only_explicit_matrix(
@@ -51,9 +53,7 @@ def test_phase2_authorizer_allows_only_explicit_matrix(
     action = module.SourcingAction[action_name]
     actor = module.SourcingActor("actor-a", tenant, scope, role)
 
-    rule = module.Phase2SourcingAuthorizer(tenant).require(
-        actor, action, scope, tenant
-    )
+    rule = module.Phase2SourcingAuthorizer(tenant).require(actor, action, scope, tenant)
 
     assert rule == f"phase2:{role}:{scope.value}:{action.value}"
 
@@ -85,12 +85,12 @@ def test_phase2_authorizer_rejects_unlisted_role_actions(
         )
 
 
-def test_phase2_authorizer_rejects_cross_tenant_scope_mismatch_and_unknown_action() -> None:
+def test_phase2_authorizer_rejects_cross_tenant_scope_mismatch_and_unknown_action() -> (
+    None
+):
     module = _permissions()
     tenant = TenantId("tenant-a")
-    actor = module.SourcingActor(
-        "boss-a", tenant, module.SourcingScope.TENANT, "boss"
-    )
+    actor = module.SourcingActor("boss-a", tenant, module.SourcingScope.TENANT, "boss")
     authorizer = module.Phase2SourcingAuthorizer(tenant)
 
     for action, scope, requested_tenant in (
@@ -110,7 +110,9 @@ def test_phase2_authorizer_rejects_cross_tenant_scope_mismatch_and_unknown_actio
             authorizer.require(actor, action, scope, requested_tenant)
 
 
-def test_phase2_authorizer_rejects_non_actor_objects_and_invalid_actor_identity() -> None:
+def test_phase2_authorizer_rejects_non_actor_objects_and_invalid_actor_identity() -> (
+    None
+):
     module = _permissions()
     tenant = TenantId("tenant-a")
     authorizer = module.Phase2SourcingAuthorizer(tenant)

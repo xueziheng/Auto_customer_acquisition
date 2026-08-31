@@ -17,6 +17,7 @@ from connectors.web_search.transport import (
 )
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, new_id
+from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
 from tool_gateway.errors import ToolErrorCategory
 from tool_gateway.handlers.web_search import map_web_provider_error
 from tool_gateway.handlers.web_slots import WebPageSnapshotSlot, WebSearchResultSlot
@@ -55,10 +56,10 @@ def test_public_page_rejection_reason_survives_gateway_mapping(
 @pytest.mark.parametrize(
     "body",
     [
-    b"<html><title>Sign in required</title><form><input type='password'></form></html>",
-    b"<html><title>Verify you are human</title><div class='g-recaptcha'></div></html>",
-    b"<html><h1>Access denied</h1>Automated access is prohibited.</html>",
-    b"<html><title>Account Portal</title><form><label>Username</label><input name='username'><input type='password'><button>Login</button></form></html>",
+        b"<html><title>Sign in required</title><form><input type='password'></form></html>",
+        b"<html><title>Verify you are human</title><div class='g-recaptcha'></div></html>",
+        b"<html><h1>Access denied</h1>Automated access is prohibited.</html>",
+        b"<html><title>Account Portal</title><form><label>Username</label><input name='username'><input type='password'><button>Login</button></form></html>",
     ],
 )
 async def test_blocked_pages_never_become_public_snapshots(monkeypatch, body):
@@ -76,7 +77,7 @@ async def test_blocked_pages_never_become_public_snapshots(monkeypatch, body):
         lambda parsed: (
             (404, None, "text/plain", None, b"")
             if parsed.path == "/robots.txt"
-        else (200, None, "text/html", None, body)
+            else (200, None, "text/html", None, body)
         ),
     )
     with pytest.raises(PublicPageRejectedError):
@@ -167,7 +168,7 @@ async def test_public_login_link_or_contact_captcha_is_not_a_login_wall(monkeypa
         lambda parsed: (
             (404, None, "text/plain", None, b"")
             if parsed.path == "/robots.txt"
-        else (200, None, "text/html", None, body)
+            else (200, None, "text/html", None, body)
         ),
     )
     assert (await transport.fetch("https://example.com/about")).body == body
@@ -286,11 +287,11 @@ async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypa
             "/private/public",
             True,
         ),
-    ("User-agent: *\nDisallow: /*?token=*\n", "/page?token=x", False),
-    ("User-agent: TradeOS-Agent\nDisallow: /\nUser-agent: *\nAllow: /", "/", False),
-    ("User-agent: *\nDisallow: /shop$\n", "/shop/products", True),
-    ("User-agent: *\nCrawl-delay: 5\n", "/", False),
-    ("User-agent: \nAllow: /\nUser-agent: *\nDisallow: /", "/", False),
+        ("User-agent: *\nDisallow: /*?token=*\n", "/page?token=x", False),
+        ("User-agent: TradeOS-Agent\nDisallow: /\nUser-agent: *\nAllow: /", "/", False),
+        ("User-agent: *\nDisallow: /shop$\n", "/shop/products", True),
+        ("User-agent: *\nCrawl-delay: 5\n", "/", False),
+        ("User-agent: \nAllow: /\nUser-agent: *\nDisallow: /", "/", False),
         (
             "User-agent: *\nDisallow: /private/\nAllow: /private%2Fpublic",
             "/private/public",
@@ -321,8 +322,8 @@ async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypa
             "/private/secret",
             False,
         ),
-    ("User-agent: *\nDisallow: /private/\nAllow: /private/%GG", "/public", False),
-    ("User-agent: *\nDisallow: /private/", "/public%", False),
+        ("User-agent: *\nDisallow: /private/\nAllow: /private/%GG", "/public", False),
+        ("User-agent: *\nDisallow: /private/", "/public%", False),
     ],
 )
 def test_robots_specific_groups_and_path_restrictions(rules, path, allowed):
@@ -393,6 +394,47 @@ async def test_dns_resolving_to_private_ip_is_rejected(
     with pytest.raises(PublicPageRejectedError):
         await SafePublicPageHttpTransport().validate_url(
             "https://public-looking.example/path"
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    HOSTILE_PUBLIC_PAGE_URLS,
+)
+async def test_gateway_rejects_task9_legacy_and_multicast_hosts_before_dns(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """删除共享 host 形状门禁会让 Gateway 再次把特殊目标带到 DNS。"""
+
+    def unexpected_resolution(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unsafe host must not reach DNS")
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_resolution)
+    with pytest.raises(PublicPageRejectedError):
+        await SafePublicPageHttpTransport().validate_url(url)
+
+
+@pytest.mark.parametrize(
+    "address",
+    ("127.0.0.1", "169.254.169.254", "224.0.0.1", "ff02::1", "::"),
+)
+async def test_gateway_rejects_any_special_answer_in_public_dns_set(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    """若只检查首个 DNS answer，rebinding 可把 fetch 引向特殊地址。"""
+
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (family, socket.SOCK_STREAM, 6, "", (address, 443)),
+        ],
+    )
+    with pytest.raises(PublicPageRejectedError):
+        await SafePublicPageHttpTransport().validate_url(
+            "https://ordinary.example/path"
         )
 
 

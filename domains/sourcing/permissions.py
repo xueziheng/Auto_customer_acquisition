@@ -112,14 +112,13 @@ _PRODUCT_ACTIONS = _READ_ACTIONS | frozenset(
     }
 )
 _SOURCING_ACTIONS = _PRODUCT_ACTIONS | frozenset({SourcingAction.PLAN_DRAFT})
-_FINANCE_ACTIONS = _READ_ACTIONS | frozenset(
-    {SourcingAction.COSTING_HANDOFF_READ}
-)
+_FINANCE_ACTIONS = _READ_ACTIONS | frozenset({SourcingAction.COSTING_HANDOFF_READ})
 _SYSTEM_ACTIONS = frozenset(
     {
         SourcingAction.CASE_OPEN,
         SourcingAction.WORKFLOW_PROGRESS,
         SourcingAction.FACT_PUBLISH,
+        SourcingAction.COSTING_HANDOFF_READ,
     }
 )
 

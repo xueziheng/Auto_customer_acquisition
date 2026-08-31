@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import http.client
-import ipaddress
 import json
 import socket
 import ssl
@@ -17,6 +16,9 @@ from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 from shared.errors import TransientError, ValidationError
 from shared.public_page_url import (
     canonical_public_page_url as _canonical_public_page_url,
+)
+from shared.public_page_url import (
+    is_public_unicast_ip,
 )
 
 from .page_policy import restricted_page_reason, robots_allows
@@ -425,10 +427,7 @@ def canonical_public_page_url(url: str) -> str:
 
 
 def _is_public_ip(value: str) -> bool:
-    try:
-        return ipaddress.ip_address(value).is_global
-    except ValueError:
-        return False
+    return is_public_unicast_ip(value)
 
 
 def _retry_after(value: str | None) -> int | None:

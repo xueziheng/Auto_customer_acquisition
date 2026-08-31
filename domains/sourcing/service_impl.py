@@ -2131,7 +2131,7 @@ class SourcingServiceImpl:
             tenant_id,
             actor,
             SourcingAction.COSTING_HANDOFF_READ,
-            SourcingScope.TENANT,
+            actor.scope,
         )
         async with self._uow_factory(tenant_id) as uow:
             snapshot = await uow.handoffs.get_snapshot(tenant_id, case_id, review_id)
