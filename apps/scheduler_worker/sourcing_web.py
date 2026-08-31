@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import ipaddress
 from collections.abc import Callable
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
 from connectors.search_contracts import SearchResult
-from connectors.web_search.transport import (
-    PublicPageRejectedError,
-    canonical_public_page_url,
-)
 from domains.sourcing.schemas import (
     PublicCandidateDraft,
     PublicCandidateDraftPriceTier,
@@ -46,6 +40,7 @@ from infra.db.tables import (
     WorkflowRunRow,
 )
 from shared.errors import ValidationError
+from shared.public_page_url import canonical_public_page_url
 from shared.schemas.identifiers import (
     RunId,
     SourcingCaseId,
@@ -61,32 +56,18 @@ def _query_hash(query_text: str) -> str:
     return sha256(query_text.encode("utf-8")).hexdigest()
 
 
-def _safe_locator_url(value: object) -> str:
+def _safe_locator_url(value: object, *, require_canonical: bool = False) -> str:
+    """将公开 locator 收敛到全局 URL 契约，恢复时拒绝任何非 canonical 历史值。"""
+
     if not isinstance(value, str):
         raise ValidationError("公开寻源 locator 回执无效")
     try:
-        parsed = urlsplit(value)
-        port = parsed.port
+        canonical = canonical_public_page_url(value)
     except ValueError:
         raise ValidationError("公开寻源 locator 回执无效") from None
-    try:
-        address = ipaddress.ip_address(parsed.hostname) if parsed.hostname else None
-    except ValueError:
-        address = None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.fragment
-        or (port is not None and not 1 <= port <= 65_535)
-        or parsed.hostname.casefold() in {"localhost", "localhost.localdomain"}
-        or parsed.hostname.casefold().endswith(".local")
-        or address is not None
-        and not address.is_global
-    ):
+    if require_canonical and value != canonical:
         raise ValidationError("公开寻源 locator 回执无效")
-    return value
+    return canonical
 
 
 def sourcing_candidate_draft_source_key(
@@ -247,7 +228,7 @@ class PostgresSourcingWebPersistence:
                     locators.append(
                         SearchResult(
                             title,
-                            _safe_locator_url(url),
+                            _safe_locator_url(url, require_canonical=True),
                             description,
                         )
                     )
@@ -657,7 +638,7 @@ class PostgresSourcingWebPersistence:
             locators: tuple[dict[str, object], ...] = tuple(
                 {
                     "title": item.title,
-                    "url": item.url,
+                    "url": _safe_locator_url(item.url),
                     "description": item.description,
                 }
                 for item in (() if batch is None else batch.results)
@@ -733,7 +714,7 @@ class PostgresPublicCandidateDraftWriter:
             raise ValidationError("公开寻源候选草稿绑定无效")
         try:
             evidence_url = canonical_public_page_url(draft.evidence.source_url)
-        except PublicPageRejectedError:
+        except ValueError:
             raise ValidationError("公开寻源草稿 URL 不安全") from None
         await self._require_verified_artifact(draft)
         case_id = SourcingCaseId(str(values["case_id"]))

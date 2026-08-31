@@ -38,6 +38,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
+from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
 from tool_gateway.handlers.web_slots import WebSearchResultSlot
 from workflows.sourcing_case.steps import sourcing_search_request_key
 
@@ -45,6 +46,16 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 8, 31, 10, tzinfo=UTC)
 CaseState = importlib.import_module("domains.sourcing.models").CaseState
 SourcingCase = importlib.import_module("domains.sourcing.models").SourcingCase
+
+
+def _unchecked_provider_result(url: str) -> SearchResult:
+    """模拟旧版本或损坏 provider 回执，不能让 DTO 构造器掩盖持久化边界测试。"""
+
+    result = object.__new__(SearchResult)
+    object.__setattr__(result, "title", "Unsafe factory")
+    object.__setattr__(result, "url", url)
+    object.__setattr__(result, "description", "hostile locator")
+    return result
 
 
 async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_payload(
@@ -95,13 +106,19 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
                 PublicSourcingQuery(
                     query_text="US stainless hinge factory", target_country="US"
                 ),
+                PublicSourcingQuery(
+                    query_text="US stainless hinge supplier", target_country="US"
+                ),
+                PublicSourcingQuery(
+                    query_text="US stainless hinge manufacturer", target_country="US"
+                ),
             ),
-            max_search_queries=1,
+            max_search_queries=3,
             max_pages_read=1,
             provider="tavily",
             search_depth="basic",
             usage_credits_remaining=10,
-            worst_case_credits=1,
+            worst_case_credits=3,
             version=1,
             expected_case_version=case.version,
         ),
@@ -185,12 +202,12 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         (
             SearchResult(
                 "Factory A",
-                "https://factory.example/products/hinge",
+                "https://Factory.Example:443/products/hinge",
                 "locator only",
             ),
             SearchResult(
                 "Factory B",
-                "https://factory-b.example/products/hinge",
+                "http://Factory-B.Example:80/products/hinge",
                 "locator only",
             ),
         ),
@@ -217,7 +234,19 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
     )
 
     assert restored is not None
-    assert restored.results == batch.results
+    canonical_results = (
+        SearchResult(
+            "Factory A",
+            "https://factory.example/products/hinge",
+            "locator only",
+        ),
+        SearchResult(
+            "Factory B",
+            "http://factory-b.example/products/hinge",
+            "locator only",
+        ),
+    )
+    assert restored.results == canonical_results
     async with factory() as session:
         row = (
             await session.execute(
@@ -228,6 +257,10 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
             )
         ).scalar_one()
     assert not hasattr(row, "query_text")
+    assert (
+        row.query_hash
+        == hashlib.sha256(plan.queries[0].query_text.encode()).hexdigest()
+    )
     assert row.locator_results == [
         {
             "title": "Factory A",
@@ -236,7 +269,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         },
         {
             "title": "Factory B",
-            "url": "https://factory-b.example/products/hinge",
+            "url": "http://factory-b.example/products/hinge",
             "description": "locator only",
         },
     ]
@@ -269,10 +302,13 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         persistence.claim_page_attempt(**binding),
         persistence.claim_page_attempt(**competing),
     )
-    assert sum(
-        isinstance(claim, PublicPageAttemptClaim) and claim.claimed_new
-        for claim in claims
-    ) == 1
+    assert (
+        sum(
+            isinstance(claim, PublicPageAttemptClaim) and claim.claimed_new
+            for claim in claims
+        )
+        == 1
+    )
     assert sum(claim is None for claim in claims) == 1
     monkeypatch.setattr(persistence, "_load", original_load)
     winner = next(
@@ -312,7 +348,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
                 "hash": plan.plan_hash,
                 "result": winner.slot.result_index,
                 "source": "e" * 64,
-                "url": batch.results[winner.slot.result_index].url,
+                "url": canonical_results[winner.slot.result_index].url,
                 "now": NOW,
                 "evidence_hash": "b" * 64,
                 "artifact": artifact_id,
@@ -405,6 +441,7 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         {"locator_results": [], "provider_status": "succeeded"},
         {"plan_hash": "f" * 64},
         {"query_index": 1},
+        {"query_hash": "e" * 64},
     ):
         async with factory() as session, session.begin():
             target = (
@@ -437,3 +474,98 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
             target.provider_status = "succeeded"
             target.plan_hash = plan.plan_hash
             target.query_index = 0
+            target.query_hash = hashlib.sha256(
+                plan.queries[0].query_text.encode()
+            ).hexdigest()
+
+    hostile_request_keys: list[str] = []
+    for query_index, urls in enumerate(
+        (HOSTILE_PUBLIC_PAGE_URLS[:20], HOSTILE_PUBLIC_PAGE_URLS[20:]), start=1
+    ):
+        hostile_batch = slot.put(
+            tenant_id,
+            "US",
+            "hinges",
+            tuple(_unchecked_provider_result(url) for url in urls),
+        )
+        hostile_request_key = sourcing_search_request_key(plan.plan_hash, query_index)
+        hostile_request_keys.append(hostile_request_key)
+        try:
+            with pytest.raises(ValidationError, match="公开寻源 locator 回执无效"):
+                await persistence.commit_locator_receipt(
+                    tenant_id=tenant_id,
+                    case_id=case_id,
+                    run_id=run_id,
+                    plan_id=plan_id,
+                    plan_hash=plan.plan_hash,
+                    query_index=query_index,
+                    request_key=hostile_request_key,
+                    query_hash=hashlib.sha256(
+                        plan.queries[query_index].query_text.encode()
+                    ).hexdigest(),
+                    batch=hostile_batch,
+                )
+        finally:
+            slot.discard(hostile_batch.handle)
+    async with factory() as session:
+        hostile_executions = (
+            (
+                await session.execute(
+                    select(SourcingSearchExecutionRow).where(
+                        SourcingSearchExecutionRow.tenant_id == str(tenant_id),
+                        SourcingSearchExecutionRow.request_key.in_(
+                            hostile_request_keys
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert hostile_executions == []
+
+    attempts_before_refusal = await persistence.count_page_attempts(
+        **{
+            key: value
+            for key, value in binding.items()
+            if key not in {"query_index", "result_index"}
+        }
+    )
+    assert attempts_before_refusal == 1
+    for unsafe_url in (
+        "https://Factory.Example:443/products/hinge",
+        *HOSTILE_PUBLIC_PAGE_URLS,
+    ):
+        async with factory() as session, session.begin():
+            target = (
+                await session.execute(
+                    select(SourcingSearchExecutionRow).where(
+                        SourcingSearchExecutionRow.tenant_id == str(tenant_id),
+                        SourcingSearchExecutionRow.request_key == request_key,
+                    )
+                )
+            ).scalar_one()
+            target.locator_results = [
+                {
+                    "title": "Unsafe factory",
+                    "url": unsafe_url,
+                    "description": "hostile locator",
+                }
+            ]
+        with pytest.raises(ValidationError, match="公开寻源 locator 回执无效"):
+            await persistence.restore(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                plan_hash=plan.plan_hash,
+                query_index=0,
+            )
+        assert (
+            await persistence.count_page_attempts(
+                **{
+                    key: value
+                    for key, value in binding.items()
+                    if key not in {"query_index", "result_index"}
+                }
+            )
+            == attempts_before_refusal
+        )
