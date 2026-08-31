@@ -8,7 +8,7 @@ from domains.costing.service import CostingService
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import SourcingHandoffSnapshot
 from domains.sourcing.service import SourcingService
-from shared.errors import TransientError, ValidationError
+from shared.errors import TradeOSError, TransientError, ValidationError
 from shared.events.catalog import SourcingCaseHandedToCosting
 from shared.schemas.identifiers import CostSheetId, TenantId
 
@@ -17,9 +17,9 @@ def _dependency_error(
     *, transient: bool, invalid: bool, transient_message: str, invalid_message: str
 ) -> None:
     if transient:
-        raise TransientError(transient_message)
+        raise TransientError(transient_message) from None
     if invalid:
-        raise ValidationError(invalid_message)
+        raise ValidationError(invalid_message) from None
 
 
 class SourcingCostHandoffHandler:
@@ -56,10 +56,9 @@ class SourcingCostHandoffHandler:
                 event.case_id,
                 event.review_id,
             )
-        except TransientError:
-            transient = True
-        except ValidationError:
-            invalid = True
+        except TradeOSError as error:
+            transient = error.is_retryable
+            invalid = not error.is_retryable
         except Exception:  # noqa: BLE001 -- 存储自由异常可能包含连接信息
             transient = True
         _dependency_error(
@@ -107,10 +106,9 @@ class SourcingCostHandoffHandler:
             created = await self._costing.create_sourcing_estimate(
                 self._tenant_id, command, actor=self._costing_actor
             )
-        except TransientError:
-            transient = True
-        except ValidationError:
-            invalid = True
+        except TradeOSError as error:
+            transient = error.is_retryable
+            invalid = not error.is_retryable
         except Exception:  # noqa: BLE001 -- 数据库自由异常不得进入 Outbox 日志
             transient = True
         _dependency_error(

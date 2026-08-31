@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -22,6 +23,7 @@ from domains.sourcing.service import SourcingReview
 from shared.errors import (
     InvalidStateTransition,
     PermissionDenied,
+    TradeOSError,
     TransientError,
     ValidationError,
 )
@@ -312,7 +314,7 @@ class _SnapshotReader:
     def __init__(self, snapshot: SourcingHandoffSnapshot | None = None) -> None:
         self.snapshot = snapshot or _snapshot()
         self.calls: list[tuple[Any, ...]] = []
-        self.error: Exception | None = None
+        self.error: BaseException | None = None
 
     async def get_handoff_snapshot(self, tenant_id, actor, case_id, review_id):
         self.calls.append((tenant_id, actor, case_id, review_id))
@@ -325,7 +327,7 @@ class _EstimateCosting:
     def __init__(self) -> None:
         self.commands: dict[str, Any] = {}
         self.calls: list[tuple[Any, ...]] = []
-        self.error: Exception | None = None
+        self.error: BaseException | None = None
 
     async def create_sourcing_estimate(self, tenant_id, command, *, actor):
         self.calls.append((tenant_id, command, actor))
@@ -466,6 +468,102 @@ async def test_handler_detaches_raw_storage_error_as_retryable() -> None:
     assert cost_error.value.__cause__ is None
     assert cost_error.value.__context__ is None
     assert "secret" not in str(cost_error.value)
+
+
+class _ExplicitRetryableTradeOSError(TradeOSError):
+    is_retryable = True
+
+
+def _handoff_handler(
+    *,
+    reader: _SnapshotReader,
+    costing: _EstimateCosting,
+) -> Any:
+    handler_type = _symbol(
+        "apps.scheduler_worker.sourcing_costing", "SourcingCostHandoffHandler"
+    )
+    costing_permissions = importlib.import_module("domains.costing.permissions")
+    return handler_type(
+        sourcing=reader,
+        costing=costing,
+        tenant_id=TENANT,
+        sourcing_actor=SourcingActor(
+            "employee-finance", TENANT, SourcingScope.TENANT, "finance"
+        ),
+        costing_actor=costing_permissions.CostingActor(
+            "system:sourcing-cost",
+            "system",
+            costing_permissions.CostingScope.SYSTEM,
+            TENANT,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ("snapshot", "costing"))
+@pytest.mark.parametrize(
+    ("error_type", "expected_type"),
+    (
+        (ValidationError, ValidationError),
+        (PermissionDenied, ValidationError),
+        (InvalidStateTransition, ValidationError),
+        (TradeOSError, ValidationError),
+        (_ExplicitRetryableTradeOSError, TransientError),
+        (RuntimeError, TransientError),
+    ),
+)
+async def test_handler_classifies_both_dependency_boundaries_by_retryability(
+    boundary: str,
+    error_type: type[BaseException],
+    expected_type: type[BaseException],
+) -> None:
+    """已知永久 TradeOS 错误若被重试，会令确定性缺陷无限重放。"""
+
+    reader = _SnapshotReader()
+    costing = _EstimateCosting()
+    raw = error_type("postgres://user:secret@db/private token=raw-secret")
+    if boundary == "snapshot":
+        reader.error = raw
+        expected_message = "寻源成本交接快照读取失败"
+    else:
+        costing.error = raw
+        expected_message = "寻源估算成本来源内容不一致"
+    if expected_type is TransientError:
+        expected_message = (
+            "寻源成本交接快照暂不可用"
+            if boundary == "snapshot"
+            else "寻源估算成本创建暂不可用"
+        )
+
+    with pytest.raises(expected_type, match=f"^{expected_message}$") as caught:
+        await _handoff_handler(reader=reader, costing=costing).handle(
+            _handoff_event()
+        )
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ("snapshot", "costing"))
+async def test_handler_never_swallows_base_exception(boundary: str) -> None:
+    """Cancellation 等 BaseException 必须保持原对象向上传播。"""
+
+    reader = _SnapshotReader()
+    costing = _EstimateCosting()
+    cancellation = asyncio.CancelledError(f"cancel-{boundary}")
+    if boundary == "snapshot":
+        reader.error = cancellation
+    else:
+        costing.error = cancellation
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await _handoff_handler(reader=reader, costing=costing).handle(
+            _handoff_event()
+        )
+
+    assert caught.value is cancellation
 
 
 class _PendingReviewSourcing:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,10 +16,33 @@ import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
+from domains.costing.permissions import (
+    CostingActor,
+    CostingScope,
+    Phase1CostingAuthorizer,
+)
+from domains.costing.schemas import SourcingEstimateCreate
+from domains.costing.service_impl import CostingServiceImpl
+from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tables import Base
+from shared.schemas.identifiers import (
+    ArtifactId,
+    CostSheetId,
+    OpportunityId,
+    ProductId,
+    SourcingCaseId,
+    SourcingSupplyOptionId,
+    SupplierCandidateId,
+    TenantId,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,6 +98,14 @@ EXPECTED_STOP_CODES = (
 )
 
 
+class _CostingUowFactory:
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self._sessions = sessions
+
+    def __call__(self, tenant_id: TenantId) -> SqlAlchemyCostingUnitOfWork:
+        return SqlAlchemyCostingUnitOfWork(self._sessions, tenant_id)
+
+
 def _run_alembic(db_url: str, *command: str) -> None:
     env = {**os.environ, "DATABASE_URL": db_url}
     result = subprocess.run(
@@ -82,6 +116,17 @@ def _run_alembic(db_url: str, *command: str) -> None:
         check=False,
     )
     assert result.returncode == 0, f"alembic {' '.join(command)} 失败（输出已隐藏）"
+
+
+def _alembic_result(db_url: str, *command: str) -> subprocess.CompletedProcess[bytes]:
+    env = {**os.environ, "DATABASE_URL": db_url}
+    return subprocess.run(
+        [sys.executable, "scripts/run_alembic.py", *command],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
 
 
 def _sync_table_names(connection: Connection) -> set[str]:
@@ -146,7 +191,7 @@ async def _seed_tenant_evidence(
         {
             "tenant": tenant_id,
             "artifact": artifact_id,
-            "hash": "e" * 64,
+            "hash": hashlib.sha256(artifact_id.encode()).hexdigest(),
             "object_key": f"raw/{tenant_id}/{artifact_id}",
         },
     )
@@ -1523,138 +1568,362 @@ async def test_0049_upgrade_preserves_legacy_cost_sheet_created_at_0048(
         _run_alembic(db_url, "upgrade", "head")
 
 
-async def test_0051_backfills_product_origin_and_roundtrips(db_url: str) -> None:
-    """已到 0050 的来源表必须补 Product，降级仍保留原 Case/Option 来源。"""
-
-    engine: AsyncEngine | None = None
-    suffix = uuid4().hex[:10]
+async def _seed_0050_cost_origin(
+    connection: AsyncConnection,
+    *,
+    tenant_id: str,
+    suffix: str,
+    source: str,
+    raw_unit: str,
+) -> dict[str, str | None]:
     need_id = f"need-0051-{suffix}"
     case_id = f"case-0051-{suffix}"
+    candidate_id = f"candidate-0051-{suffix}" if source == "supplier_candidate" else None
     product_id = f"product-0051-{suffix}"
     option_id = f"option-0051-{suffix}"
     opportunity_id = f"opp-0051-{suffix}"
     cost_sheet_id = f"cost-0051-{suffix}"
+    artifact_id = ARTIFACT_B if candidate_id is not None else ARTIFACT_A
+    await _seed_need_and_case(
+        connection, tenant_id=tenant_id, need_id=need_id, case_id=case_id
+    )
+    await _seed_tenant_evidence(connection, tenant_id, artifact_id)
+    if candidate_id is None:
+        await connection.execute(
+            text(
+                "INSERT INTO products "
+                "(tenant_id, product_id, pool, name_zh, name_en, category, "
+                "normalized_category, sellable_markets, selling_points, known_issues, "
+                "customizable, internal_cost_amount, internal_cost_currency, "
+                "internal_cost_basis, internal_cost_unit, internal_cost_source_ref, "
+                "moq, created_at) VALUES (:tenant, :product, 'formal', '铰链', "
+                "'Hinge', 'hinges', 'hinges', '[]', '[]', '[]', false, 1.25, "
+                "'USD', 'supplier basis', :unit, :artifact, 100, now())"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "unit": raw_unit,
+                "artifact": artifact_id,
+            },
+        )
+    else:
+        tiers = json.dumps(
+            [
+                {
+                    "minimum_quantity": 100,
+                    "amount": "1.250000000000",
+                    "currency": "USD",
+                    "unit": raw_unit,
+                    "provenance": {},
+                    "evidence_ref": artifact_id,
+                }
+            ]
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO sourcing_candidates "
+                "(tenant_id, candidate_id, case_id, supplier_name, product_title, "
+                "observed_facts, supplier_claims, match_inferences, verified_specs, "
+                "indicative_price_tiers, rejection_reasons, rejected, created_at) "
+                "VALUES (:tenant, :candidate, :case, 'Supplier', 'Hinge', '{}', "
+                "'{}', '{}', '[]', CAST(:tiers AS jsonb), '[]', false, now())"
+            ),
+            {
+                "tenant": tenant_id,
+                "candidate": candidate_id,
+                "case": case_id,
+                "tiers": tiers,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO products "
+                "(tenant_id, product_id, pool, candidate_status, name_zh, name_en, "
+                "category, normalized_category, moq, sellable_markets, customizable, "
+                "selling_points, known_issues, created_at) VALUES "
+                "(:tenant, :product, 'candidate', 'source_only', '铰链', 'Hinge', "
+                "'hinges', 'hinges', 100, '[]', false, '[]', '[]', now())"
+            ),
+            {"tenant": tenant_id, "product": product_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO product_candidate_sources "
+                "(tenant_id, product_id, sourcing_case_id, supplier_candidate_id, "
+                "created_at) VALUES (:tenant, :product, :case, :candidate, now())"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "case": case_id,
+                "candidate": candidate_id,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO product_candidate_price_refs "
+                "(tenant_id, product_id, minimum_quantity, unit_amount, currency, "
+                "unit, artifact_id) VALUES (:tenant, :product, 100, 1.25, 'USD', "
+                ":unit, :artifact)"
+            ),
+            {
+                "tenant": tenant_id,
+                "product": product_id,
+                "unit": raw_unit,
+                "artifact": artifact_id,
+            },
+        )
+    await connection.execute(
+        text(
+            "INSERT INTO sourcing_supply_options "
+            "(tenant_id, option_id, case_id, source, product_id, "
+            "supplier_candidate_id, is_qualified, created_at) VALUES "
+            "(:tenant, :option, :case, :source, :product, :candidate, true, now())"
+        ),
+        {
+            "tenant": tenant_id,
+            "option": option_id,
+            "case": case_id,
+            "source": source,
+            "product": product_id,
+            "candidate": candidate_id,
+        },
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO opportunities "
+            "(opportunity_id, tenant_id, account_id, account_name, country, need_id, "
+            "product_category) VALUES (:opportunity, :tenant, 'account-0051', "
+            "'Migration buyer', 'US', :need, 'hinges')"
+        ),
+        {
+            "tenant": tenant_id,
+            "opportunity": opportunity_id,
+            "need": need_id,
+        },
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO cost_sheets "
+            "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, "
+            "quantity, base_currency, quote_currency, created_at, "
+            "source_sourcing_case_id, source_option_id, source_candidate_id) VALUES "
+            "(:tenant, :cost, :opportunity, 'estimated', 1, 100, 'USD', 'USD', "
+            "now(), :case, :option, :candidate)"
+        ),
+        {
+            "tenant": tenant_id,
+            "cost": cost_sheet_id,
+            "opportunity": opportunity_id,
+            "case": case_id,
+            "option": option_id,
+            "candidate": candidate_id,
+        },
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO cost_items "
+            "(tenant_id, cost_sheet_id, item_sequence, item_type, amount, currency, "
+            "price_basis, is_per_unit, source_ref) VALUES "
+            "(:tenant, :cost, 1, 'product_purchase', 1.25, 'USD', 'indicative', "
+            "true, :artifact)"
+        ),
+        {"tenant": tenant_id, "cost": cost_sheet_id, "artifact": artifact_id},
+    )
+    return {
+        "case_id": case_id,
+        "candidate_id": candidate_id,
+        "product_id": product_id,
+        "option_id": option_id,
+        "opportunity_id": opportunity_id,
+        "cost_sheet_id": cost_sheet_id,
+        "artifact_id": artifact_id,
+        "raw_unit": raw_unit,
+    }
+
+
+async def _delete_0050_cost_origin(
+    connection: AsyncConnection, *, tenant_id: str, origin: dict[str, str | None]
+) -> None:
+    values = {
+        "tenant": tenant_id,
+        "cost": origin["cost_sheet_id"],
+        "opportunity": origin["opportunity_id"],
+        "option": origin["option_id"],
+        "product": origin["product_id"],
+        "candidate": origin["candidate_id"],
+        "case": origin["case_id"],
+        "need": f"need-0051-{str(origin['case_id']).removeprefix('case-0051-')}",
+    }
+    for statement in (
+        "DELETE FROM cost_items WHERE tenant_id=:tenant AND cost_sheet_id=:cost",
+        "DELETE FROM cost_sheets WHERE tenant_id=:tenant AND cost_sheet_id=:cost",
+        "DELETE FROM opportunities WHERE tenant_id=:tenant AND opportunity_id=:opportunity",
+        "DELETE FROM sourcing_supply_options WHERE tenant_id=:tenant AND option_id=:option",
+        "DELETE FROM product_candidate_price_refs WHERE tenant_id=:tenant AND product_id=:product",
+        "DELETE FROM product_candidate_sources WHERE tenant_id=:tenant AND product_id=:product",
+        "DELETE FROM products WHERE tenant_id=:tenant AND product_id=:product",
+        "DELETE FROM sourcing_candidates WHERE tenant_id=:tenant AND candidate_id=:candidate",
+        "DELETE FROM sourcing_cases WHERE tenant_id=:tenant AND case_id=:case",
+        "DELETE FROM validated_needs WHERE tenant_id=:tenant AND need_id=:need",
+    ):
+        await connection.execute(text(statement), values)
+
+
+def test_0051_source_unit_canonicalizer_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    migration = importlib.import_module(
+        "migrations.versions.0051_sourcing_cost_product_origin"
+    )
+
+    for unsafe in ("\u2003", "ﬃ" * 17, None):
+        with pytest.raises(RuntimeError, match="0051 cannot canonicalize source unit"):
+            migration._canonical_source_unit(unsafe)
+
+    def _cannot_normalize(_form: str, _value: str) -> str:
+        raise UnicodeError("secret legacy value")
+
+    monkeypatch.setattr(migration, "_normalize_unicode", _cannot_normalize)
+    with pytest.raises(RuntimeError, match="0051 cannot canonicalize source unit") as exc:
+        migration._canonical_source_unit("kg")
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("source", "raw_unit"),
+    (("existing_product", "\u2003"), ("supplier_candidate", "ﬃ" * 17)),
+)
+async def test_0051_upgrade_fails_closed_on_unsafe_legacy_unit(
+    db_url: str, source: str, raw_unit: str
+) -> None:
+    engine: AsyncEngine | None = None
+    origin: dict[str, str | None] | None = None
+    suffix = f"x{uuid4().hex[:8]}"
     try:
         _run_alembic(db_url, "downgrade", "0050")
         engine = create_engine_from(db_url)
         async with engine.begin() as connection:
-            await _seed_need_and_case(
+            origin = await _seed_0050_cost_origin(
                 connection,
-                tenant_id=TENANT_A,
-                need_id=need_id,
-                case_id=case_id,
+                tenant_id=TENANT_B,
+                suffix=suffix,
+                source=source,
+                raw_unit=raw_unit,
             )
-            await connection.execute(
-                text(
-                    "INSERT INTO raw_artifacts "
-                    "(tenant_id, artifact_id, kind, content_hash, size_bytes, "
-                    "mime_type, object_key, uploaded_at) VALUES "
-                    "(:tenant, :artifact, 'web_snapshot', :hash, 1, "
-                    "'text/html', :object_key, now()) "
-                    "ON CONFLICT (tenant_id, artifact_id) DO NOTHING"
+        await engine.dispose()
+        engine = None
+
+        result = _alembic_result(db_url, "upgrade", "0051")
+        assert result.returncode != 0, "0051 必须拒绝不安全的历史 source_unit"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "downgrade", "0050")
+        if origin is not None:
+            engine = create_engine_from(db_url)
+            async with engine.begin() as connection:
+                await _delete_0050_cost_origin(
+                    connection, tenant_id=TENANT_B, origin=origin
+                )
+            await engine.dispose()
+            engine = None
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0051_backfills_unicode_units_hydrates_replays_and_roundtrips(
+    db_url: str,
+) -> None:
+    """0051 必须按新写算法迁移两类来源，且升级后可精确重放。"""
+
+    engine: AsyncEngine | None = None
+    suffix = uuid4().hex[:8]
+    try:
+        _run_alembic(db_url, "downgrade", "0050")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            origins = (
+                await _seed_0050_cost_origin(
+                    connection,
+                    tenant_id=TENANT_A,
+                    suffix=f"e{suffix}",
+                    source="existing_product",
+                    raw_unit=" ㎏ ",
                 ),
-                {
-                    "tenant": TENANT_A,
-                    "artifact": ARTIFACT_A,
-                    "hash": "f" * 64,
-                    "object_key": f"raw/{TENANT_A}/{ARTIFACT_A}",
-                },
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO products "
-                    "(tenant_id, product_id, pool, name_zh, name_en, category, normalized_category, "
-                    "sellable_markets, selling_points, known_issues, customizable, "
-                    "internal_cost_amount, internal_cost_currency, internal_cost_basis, "
-                    "internal_cost_unit, internal_cost_source_ref, moq, created_at) "
-                    "VALUES (:tenant, :product, 'formal', '铰链', 'Hinge', 'hinges', 'hinges', "
-                    "'[]', '[]', '[]', false, 1.25, 'USD', 'supplier basis', "
-                    "' Piece ', :artifact, 100, now())"
+                await _seed_0050_cost_origin(
+                    connection,
+                    tenant_id=TENANT_A,
+                    suffix=f"s{suffix}",
+                    source="supplier_candidate",
+                    raw_unit="Straße",
                 ),
-                {
-                    "tenant": TENANT_A,
-                    "product": product_id,
-                    "artifact": ARTIFACT_A,
-                },
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO sourcing_supply_options "
-                    "(tenant_id, option_id, case_id, source, product_id, is_qualified, created_at) "
-                    "VALUES (:tenant, :option, :case, 'existing_product', :product, true, now())"
-                ),
-                {
-                    "tenant": TENANT_A,
-                    "option": option_id,
-                    "case": case_id,
-                    "product": product_id,
-                },
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO opportunities "
-                    "(opportunity_id, tenant_id, account_id, account_name, country, need_id, product_category) "
-                    "VALUES (:opportunity, :tenant, 'account-0051', 'Migration buyer', 'US', "
-                    ":need, 'hinges')"
-                ),
-                {
-                    "tenant": TENANT_A,
-                    "opportunity": opportunity_id,
-                    "need": need_id,
-                },
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO cost_sheets "
-                    "(tenant_id, cost_sheet_id, opportunity_id, version_type, version_number, quantity, "
-                    "base_currency, quote_currency, created_at, source_sourcing_case_id, source_option_id) "
-                    "VALUES (:tenant, :cost, :opportunity, 'estimated', 1, 100, 'USD', 'USD', now(), "
-                    ":case, :option)"
-                ),
-                {
-                    "tenant": TENANT_A,
-                    "cost": cost_sheet_id,
-                    "opportunity": opportunity_id,
-                    "case": case_id,
-                    "option": option_id,
-                },
             )
         await engine.dispose()
         engine = None
 
         _run_alembic(db_url, "upgrade", "0051")
         engine = create_engine_from(db_url)
-        async with engine.connect() as connection:
-            source = (
-                await connection.execute(
-                text(
-                    "SELECT source_product_id, source_tier_minimum_quantity, source_unit "
-                    "FROM cost_sheets "
-                    "WHERE tenant_id = :tenant AND cost_sheet_id = :cost"
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        tenant = TenantId(TENANT_A)
+        service = CostingServiceImpl(
+            _CostingUowFactory(factory),
+            Phase1CostingAuthorizer(tenant),
+        )
+        system_actor = CostingActor(
+            "system:sourcing-cost", "system", CostingScope.SYSTEM, tenant
+        )
+        reader_actor = CostingActor(
+            "employee-finance", "finance", CostingScope.TENANT
+        )
+        for origin, expected_unit in zip(origins, ("kg", "strasse"), strict=True):
+            cost_sheet_id = CostSheetId(str(origin["cost_sheet_id"]))
+            view = await service.get_sheet(tenant, cost_sheet_id, actor=reader_actor)
+            assert view.source_unit == expected_unit
+            assert view.source_tier_minimum_quantity == 100
+            command = SourcingEstimateCreate(
+                sourcing_case_id=SourcingCaseId(str(origin["case_id"])),
+                primary_option_id=SourcingSupplyOptionId(str(origin["option_id"])),
+                supplier_candidate_id=(
+                    SupplierCandidateId(str(origin["candidate_id"]))
+                    if origin["candidate_id"] is not None
+                    else None
                 ),
-                {"tenant": TENANT_A, "cost": cost_sheet_id},
+                product_id=ProductId(str(origin["product_id"])),
+                opportunity_id=OpportunityId(str(origin["opportunity_id"])),
+                quantity=100,
+                minimum_quantity=100,
+                unit_amount=Decimal("1.250000000000"),
+                currency="USD",
+                unit=str(origin["raw_unit"]),
+                evidence_ref=ArtifactId(str(origin["artifact_id"])),
+            )
+            assert (
+                await service.create_sourcing_estimate(
+                    tenant, command, actor=system_actor
                 )
-            ).one()
-            assert source == (product_id, 100, "piece")
+                == cost_sheet_id
+            )
         await engine.dispose()
         engine = None
 
         _run_alembic(db_url, "downgrade", "0050")
         engine = create_engine_from(db_url)
         async with engine.connect() as connection:
-            row = (
-                await connection.execute(
-                    text(
-                        "SELECT source_sourcing_case_id, source_option_id "
-                        "FROM cost_sheets WHERE tenant_id = :tenant AND cost_sheet_id = :cost"
-                    ),
-                    {"tenant": TENANT_A, "cost": cost_sheet_id},
+            for origin in origins:
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT source_sourcing_case_id, source_option_id "
+                            "FROM cost_sheets WHERE tenant_id = :tenant "
+                            "AND cost_sheet_id = :cost"
+                        ),
+                        {"tenant": TENANT_A, "cost": origin["cost_sheet_id"]},
+                    )
+                ).one()
+                assert (row.source_sourcing_case_id, row.source_option_id) == (
+                    origin["case_id"],
+                    origin["option_id"],
                 )
-            ).one()
-            assert (row.source_sourcing_case_id, row.source_option_id) == (
-                case_id,
-                option_id,
-            )
     finally:
         if engine is not None:
             await engine.dispose()

@@ -1,5 +1,7 @@
 """成本来源完整绑定被选 Option/Product 与确定性数量档。"""
 
+from unicodedata import normalize as _normalize_unicode
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -7,6 +9,116 @@ revision = "0051"
 down_revision = "0050"
 branch_labels = None
 depends_on = None
+
+_BACKFILL_BATCH_SIZE = 200
+
+
+def _canonical_source_unit(value: object) -> str:
+    canonical: str | None = None
+    try:
+        if not isinstance(value, str):
+            raise TypeError
+        canonical = " ".join(_normalize_unicode("NFKC", value).split()).casefold()
+    except (TypeError, UnicodeError):
+        pass
+    if canonical is None or not canonical or len(canonical) > 50:
+        raise RuntimeError("0051 cannot canonicalize source unit") from None
+    return canonical
+
+
+def _backfill_existing_product_units(connection: sa.Connection) -> None:
+    select_rows = sa.text(
+        "SELECT sheet.tenant_id, sheet.cost_sheet_id, product.moq AS minimum_quantity, "
+        "product.internal_cost_unit AS raw_unit "
+        "FROM cost_sheets AS sheet "
+        "JOIN sourcing_supply_options AS option "
+        "ON option.tenant_id = sheet.tenant_id "
+        "AND option.case_id = sheet.source_sourcing_case_id "
+        "AND option.option_id = sheet.source_option_id "
+        "JOIN products AS product ON product.tenant_id = option.tenant_id "
+        "AND product.product_id = option.product_id "
+        "WHERE option.source = 'existing_product' "
+        "AND sheet.source_sourcing_case_id IS NOT NULL "
+        "AND sheet.source_unit IS NULL "
+        "ORDER BY sheet.tenant_id, sheet.cost_sheet_id LIMIT :batch_size"
+    )
+    update_rows = sa.text(
+        "UPDATE cost_sheets SET source_tier_minimum_quantity = :minimum_quantity, "
+        "source_unit = :source_unit WHERE tenant_id = :tenant_id "
+        "AND cost_sheet_id = :cost_sheet_id"
+    )
+    while True:
+        rows = connection.execute(
+            select_rows, {"batch_size": _BACKFILL_BATCH_SIZE}
+        ).mappings().all()
+        if not rows:
+            return
+        connection.execute(
+            update_rows,
+            [
+                {
+                    "tenant_id": row["tenant_id"],
+                    "cost_sheet_id": row["cost_sheet_id"],
+                    "minimum_quantity": row["minimum_quantity"],
+                    "source_unit": _canonical_source_unit(row["raw_unit"]),
+                }
+                for row in rows
+            ],
+        )
+
+
+def _backfill_supplier_candidate_units(connection: sa.Connection) -> None:
+    select_rows = sa.text(
+        "WITH ranked AS ("
+        "SELECT sheet.tenant_id, sheet.cost_sheet_id, price.minimum_quantity, "
+        "price.unit AS raw_unit, row_number() OVER ("
+        "PARTITION BY sheet.tenant_id, sheet.cost_sheet_id "
+        "ORDER BY price.minimum_quantity DESC, price.artifact_id) AS rank "
+        "FROM cost_sheets AS sheet "
+        "JOIN sourcing_supply_options AS option "
+        "ON option.tenant_id = sheet.tenant_id "
+        "AND option.case_id = sheet.source_sourcing_case_id "
+        "AND option.option_id = sheet.source_option_id "
+        "JOIN product_candidate_price_refs AS price "
+        "ON price.tenant_id = option.tenant_id "
+        "AND price.product_id = option.product_id "
+        "JOIN cost_items AS item ON item.tenant_id = sheet.tenant_id "
+        "AND item.cost_sheet_id = sheet.cost_sheet_id "
+        "AND item.item_type = 'product_purchase' "
+        "AND item.is_per_unit IS TRUE "
+        "AND item.source_ref = price.artifact_id "
+        "AND item.amount = price.unit_amount "
+        "AND item.currency = price.currency "
+        "WHERE option.source = 'supplier_candidate' "
+        "AND sheet.source_unit IS NULL "
+        "AND price.minimum_quantity <= sheet.quantity) "
+        "SELECT tenant_id, cost_sheet_id, minimum_quantity, raw_unit "
+        "FROM ranked WHERE rank = 1 "
+        "ORDER BY tenant_id, cost_sheet_id LIMIT :batch_size"
+    )
+    update_rows = sa.text(
+        "UPDATE cost_sheets SET source_tier_minimum_quantity = :minimum_quantity, "
+        "source_unit = :source_unit WHERE tenant_id = :tenant_id "
+        "AND cost_sheet_id = :cost_sheet_id"
+    )
+    while True:
+        rows = connection.execute(
+            select_rows, {"batch_size": _BACKFILL_BATCH_SIZE}
+        ).mappings().all()
+        if not rows:
+            return
+        connection.execute(
+            update_rows,
+            [
+                {
+                    "tenant_id": row["tenant_id"],
+                    "cost_sheet_id": row["cost_sheet_id"],
+                    "minimum_quantity": row["minimum_quantity"],
+                    "source_unit": _canonical_source_unit(row["raw_unit"]),
+                }
+                for row in rows
+            ],
+        )
 
 
 def upgrade() -> None:
@@ -36,55 +148,9 @@ def upgrade() -> None:
             "AND sheet.source_product_id IS NULL"
         )
     )
-    op.execute(
-        sa.text(
-            "UPDATE cost_sheets AS sheet "
-            "SET source_tier_minimum_quantity = product.moq, "
-            "source_unit = lower(regexp_replace(btrim(product.internal_cost_unit), "
-            "'[[:space:]]+', ' ', 'g')) "
-            "FROM sourcing_supply_options AS option "
-            "JOIN products AS product "
-            "ON product.tenant_id = option.tenant_id "
-            "AND product.product_id = option.product_id "
-            "WHERE sheet.tenant_id = option.tenant_id "
-            "AND sheet.source_sourcing_case_id = option.case_id "
-            "AND sheet.source_option_id = option.option_id "
-            "AND option.source = 'existing_product' "
-            "AND sheet.source_sourcing_case_id IS NOT NULL"
-        )
-    )
-    op.execute(
-        sa.text(
-            "WITH ranked AS ("
-            "SELECT sheet.tenant_id, sheet.cost_sheet_id, price.minimum_quantity, "
-            "lower(regexp_replace(btrim(price.unit), '[[:space:]]+', ' ', 'g')) "
-            "AS source_unit, row_number() OVER ("
-            "PARTITION BY sheet.tenant_id, sheet.cost_sheet_id "
-            "ORDER BY price.minimum_quantity DESC, price.artifact_id) AS rank "
-            "FROM cost_sheets AS sheet "
-            "JOIN sourcing_supply_options AS option "
-            "ON option.tenant_id = sheet.tenant_id "
-            "AND option.case_id = sheet.source_sourcing_case_id "
-            "AND option.option_id = sheet.source_option_id "
-            "JOIN product_candidate_price_refs AS price "
-            "ON price.tenant_id = option.tenant_id "
-            "AND price.product_id = option.product_id "
-            "JOIN cost_items AS item ON item.tenant_id = sheet.tenant_id "
-            "AND item.cost_sheet_id = sheet.cost_sheet_id "
-            "AND item.item_type = 'product_purchase' "
-            "AND item.is_per_unit IS TRUE "
-            "AND item.source_ref = price.artifact_id "
-            "AND item.amount = price.unit_amount "
-            "AND item.currency = price.currency "
-            "WHERE option.source = 'supplier_candidate' "
-            "AND price.minimum_quantity <= sheet.quantity) "
-            "UPDATE cost_sheets AS sheet "
-            "SET source_tier_minimum_quantity = ranked.minimum_quantity, "
-            "source_unit = ranked.source_unit FROM ranked "
-            "WHERE ranked.rank = 1 AND sheet.tenant_id = ranked.tenant_id "
-            "AND sheet.cost_sheet_id = ranked.cost_sheet_id"
-        )
-    )
+    connection = op.get_bind()
+    _backfill_existing_product_units(connection)
+    _backfill_supplier_candidate_units(connection)
     op.execute(
         sa.text(
             "DO $$ BEGIN IF EXISTS (SELECT 1 FROM cost_sheets "
