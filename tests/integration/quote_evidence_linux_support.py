@@ -22,6 +22,10 @@ PYTHON_IMAGE = "python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad
 TARGET_MANIFEST = (
     "sha256:457e0286fc132c4531ea071629ae6959095aa4074f172cd271aedb6950714ae6"
 )
+PINNED_QUOTE_EVIDENCE_IMAGE_ID = (
+    "sha256:fa0bcb34bd4b2e3f8b546881ac6a5227026039baa7bc37bee2095e7a078cd1c7"
+)
+"""当前源码白名单构建出的本地 Linux 验收镜像；完整门不依赖隐式 shell 环境。"""
 
 
 def build_parser_image(
@@ -170,6 +174,7 @@ def build_parser_image(
             if base_image
             else "parser",
             platform="linux/arm64",
+            network_mode="none",
             rm=True,
         )
         # 构建日志可能包含下载环境；只返回固定image ID，不打印任意底层日志。
@@ -190,9 +195,12 @@ def build_parser_image(
 
 
 def image_id() -> str:
-    value = os.environ.get("QUOTE_EVIDENCE_IMAGE_ID", "")
+    """只接受精确本地镜像；环境覆盖是显式的，默认仍是已审计 SHA。"""
+
+    configured = os.environ.get("QUOTE_EVIDENCE_IMAGE_ID")
+    value = PINNED_QUOTE_EVIDENCE_IMAGE_ID if configured is None else configured
     if not value.startswith("sha256:") or len(value) != 71:
-        raise RuntimeError("not_run：缺少显式来源测试镜像ID")
+        raise RuntimeError("not_run：来源测试镜像ID无效")
     client = docker.from_env()
     try:
         image = client.images.get(value)

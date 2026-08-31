@@ -10,6 +10,21 @@ import pytest
 from tests.integration import quote_evidence_linux_support as support
 
 
+def test_image_id_uses_the_pinned_local_linux_artifact_when_env_is_absent(
+    monkeypatch,
+):
+    """完整门无需隐式环境变量，但仍只能接受固定的本地 arm64/Linux 镜像。"""
+
+    monkeypatch.delenv("QUOTE_EVIDENCE_IMAGE_ID", raising=False)
+    image = SimpleNamespace(attrs={"Architecture": "arm64", "Os": "linux"})
+    client = SimpleNamespace(images=SimpleNamespace(get=lambda value: image), close=Mock())
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+
+    assert support.image_id() == support.PINNED_QUOTE_EVIDENCE_IMAGE_ID
+    client.images.get(support.PINNED_QUOTE_EVIDENCE_IMAGE_ID)
+    client.close.assert_called_once()
+
+
 @pytest.mark.parametrize("quotation", [True, False])
 def test_runtime_image_uses_explicit_b2_whitelist_without_changing_a_chain(
     monkeypatch, quotation
@@ -20,6 +35,7 @@ def test_runtime_image_uses_explicit_b2_whitelist_without_changing_a_chain(
         with tarfile.open(fileobj=kwargs["fileobj"]) as archive:
             seen["names"] = archive.getnames()
         seen["target"] = kwargs["target"]
+        seen["network_mode"] = kwargs["network_mode"]
         return SimpleNamespace(id="sha256:" + "a" * 64), []
 
     client = SimpleNamespace(
@@ -29,6 +45,7 @@ def test_runtime_image_uses_explicit_b2_whitelist_without_changing_a_chain(
     kwargs = {"chain": True, "quotation": True} if quotation else {"chain": True}
     support.build_parser_image("sha256:" + "b" * 64, **kwargs)
     assert seen["target"] == ("quotation" if quotation else "chain")
+    assert seen["network_mode"] == "none"
     assert ("apps/api/composition/runtime.py" in seen["names"]) is quotation
     assert ("apps/scheduler_worker/runtime.py" in seen["names"]) is quotation
     for name in ("__init__.py", "quotations.py"):
