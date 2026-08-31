@@ -15,6 +15,9 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit, urlunsplit
 
 from shared.errors import TransientError, ValidationError
+from shared.public_page_url import (
+    canonical_public_page_url as _canonical_public_page_url,
+)
 
 from .page_policy import restricted_page_reason, robots_allows
 
@@ -404,48 +407,21 @@ def _validate_public_url_sync(url: str) -> str:
 
 
 def _validated_public_split(url: str) -> SplitResult:
-    if (
-        not isinstance(url, str)
-        or not 1 <= len(url) <= 2_048
-        or url != url.strip()
-        or _has_control(url)
-    ):
-        raise PublicPageRejectedError()
+    """兼容内部调用的安全公开页面 URL 形状解析。"""
+
+    return urlsplit(canonical_public_page_url(url))
+
+
+def canonical_public_page_url(url: str) -> str:
+    """规范化不含 DNS 解析的公开页面 URL 形状。
+
+    DNS/rebinding 与实际对端检查只能在 ``_validate_public_url_sync`` 的抓取边界
+    执行；此纯函数让持久证据绑定和该边界使用同一 URL 语义。
+    """
     try:
-        parsed = urlsplit(url)
-        port = parsed.port
-    except (ValueError, UnicodeError):
-        raise PublicPageRejectedError() from None
-    hostname = parsed.hostname
-    if (
-        parsed.scheme not in {"http", "https"}
-        or hostname is None
-        or not hostname.isascii()
-        or hostname != hostname.lower()
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.fragment
-        or (parsed.scheme == "http" and port not in {None, 80})
-        or (parsed.scheme == "https" and port not in {None, 443})
-    ):
-        raise PublicPageRejectedError()
-    try:
-        literal = ipaddress.ip_address(hostname)
+        return _canonical_public_page_url(url)
     except ValueError:
-        literal = None
-    if literal is not None and not literal.is_global:
-        raise PublicPageRejectedError()
-    canonical_port = None if port in {None, 80, 443} else port
-    netloc = f"[{hostname}]" if ":" in hostname else hostname
-    if canonical_port is not None:
-        netloc = f"{netloc}:{canonical_port}"
-    return SplitResult(
-        parsed.scheme,
-        netloc,
-        parsed.path or "/",
-        parsed.query,
-        "",
-    )
+        raise PublicPageRejectedError() from None
 
 
 def _is_public_ip(value: str) -> bool:
@@ -480,4 +456,5 @@ __all__ = (
     "WebSearchAuthRequiredError",
     "WebSearchProviderError",
     "WebSearchRateLimitedError",
+    "canonical_public_page_url",
 )

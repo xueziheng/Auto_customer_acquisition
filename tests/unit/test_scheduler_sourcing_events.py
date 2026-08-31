@@ -207,9 +207,11 @@ async def test_opened_case_is_reused_when_first_workflow_start_fails() -> None:
     engine = _Engine(fail_first=True)
     handler = _handler(reader, sourcing, engine)
 
-    with pytest.raises(ValidationError, match="寻源工作流启动失败") as caught:
+    with pytest.raises(TransientError, match="寻源工作流启动暂不可用") as caught:
         await handler.handle(_validated())
     assert "postgres-dsn-secret" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
     await handler.handle(_validated())
 

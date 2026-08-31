@@ -231,3 +231,34 @@ def test_production_quote_evidence_reader_is_explicitly_fail_closed() -> None:
     import asyncio
 
     asyncio.run(read())
+
+
+@pytest.mark.parametrize(
+    ("url", "accepted"),
+    [
+        ("https://supplier.example/products/hinge", True),
+        ("https://supplier.example:443/products/hinge", True),
+        ("http://supplier.example:80/products/hinge", True),
+        ("https://supplier.example:8443/products/hinge", False),
+        ("https://user@supplier.example/products/hinge", False),
+        ("https://supplier.example/products/hinge#contact", False),
+        ("https://supplier.example/products/\x01hinge", False),
+        ("http://127.0.0.1/private", False),
+        ("http://localhost/private", False),
+        ("http://supplier.local/private", False),
+        ("http://127.1/private", False),
+        ("http://2130706433/private", False),
+        ("http://0x7f000001/private", False),
+        ("http://0177.0.0.1/private", False),
+        ("http://[::1]/private", False),
+        ("file:///etc/passwd", False),
+    ],
+)
+def test_candidate_artifact_url_shape_matches_gateway_public_boundary(
+    url: str, accepted: bool
+) -> None:
+    """Reader-local URL rules must not invert Gateway DNS and port semantics."""
+
+    from apps.scheduler_worker.sourcing_runtime import _safe_public_url
+
+    assert _safe_public_url(url) is accepted

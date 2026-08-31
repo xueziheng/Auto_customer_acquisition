@@ -31,7 +31,7 @@ from domains.sourcing.schemas import (
 )
 from domains.sourcing.service import LadderOutcome
 from domains.suppliers.service import Supplier, SupplierActor, SupplierRole
-from shared.errors import TransientError, ValidationError
+from shared.errors import TradeOSError, TransientError, ValidationError
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -176,19 +176,26 @@ def _qualified(product: Product) -> QualifiedProductMatch:
 
 
 class _NeedReader:
-    calls = 0
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls = 0
+        self.error = error
 
     async def read(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
     ) -> SourcingNeedSnapshot:
         self.calls += 1
         assert tenant_id == TENANT and need_id == NEED_ID
+        if self.error is not None:
+            raise self.error
         return _need()
 
 
 class _Products:
-    def __init__(self, result: ProductMatchResult) -> None:
+    def __init__(
+        self, result: ProductMatchResult, error: Exception | None = None
+    ) -> None:
         self.result = result
+        self.error = error
         self.calls = 0
 
     async def search_for_matching(
@@ -210,12 +217,19 @@ class _Products:
             ProductSpecRequirement("moq", "5000"),
             ProductSpecRequirement("unit", "piece"),
         )
+        if self.error is not None:
+            raise self.error
         return self.result
 
 
 class _Suppliers:
-    def __init__(self, suppliers: list[Supplier] | None = None) -> None:
+    def __init__(
+        self,
+        suppliers: list[Supplier] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.suppliers = suppliers or []
+        self.error = error
         self.calls = 0
 
     async def search_by_capability(self, tenant_id, tags, *, actor):
@@ -227,6 +241,8 @@ class _Suppliers:
             "industrial hinges",
             "stainless steel",
         ]
+        if self.error is not None:
+            raise self.error
         return self.suppliers
 
 
@@ -293,9 +309,15 @@ class _Sourcing:
         return self.verification_result
 
 
-def _handlers(products: _Products, suppliers: _Suppliers, sourcing: _Sourcing):
+def _handlers(
+    products: _Products,
+    suppliers: _Suppliers,
+    sourcing: _Sourcing,
+    *,
+    need_reader: _NeedReader | None = None,
+):
     return build_sourcing_case_handlers(
-        need_reader=_NeedReader(),
+        need_reader=need_reader or _NeedReader(),
         products=products,
         suppliers=suppliers,
         sourcing=sourcing,
@@ -405,9 +427,9 @@ async def test_verify_candidates_step_advances_with_exact_sealed_generation() ->
         qualified_candidate_ids=candidate_ids,
         verified_event=event,
     )
-    step = _handlers(
-        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
-    )["sourcing_case.v2.verify_candidates"]
+    step = _handlers(_Products(ProductMatchResult((), ())), _Suppliers(), sourcing)[
+        "sourcing_case.v2.verify_candidates"
+    ]
 
     result = await step.execute(_verification_run())
 
@@ -428,7 +450,9 @@ async def test_verify_candidates_step_advances_with_exact_sealed_generation() ->
 
 
 @pytest.mark.asyncio
-async def test_supplier_generation_runs_verify_prepare_and_wait_without_domain_writes() -> None:
+async def test_supplier_generation_runs_verify_prepare_and_wait_without_domain_writes() -> (
+    None
+):
     """供应商路径的 prepare 若误走内部产品分支，真实步骤序列会在建卡前失败。"""
 
     sourcing = _Sourcing()
@@ -450,9 +474,7 @@ async def test_supplier_generation_runs_verify_prepare_and_wait_without_domain_w
             candidate_set_hash="c" * 64,
         ),
     )
-    handlers = _handlers(
-        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
-    )
+    handlers = _handlers(_Products(ProductMatchResult((), ())), _Suppliers(), sourcing)
 
     verify_result = await handlers["sourcing_case.v2.verify_candidates"].execute(
         _verification_run()
@@ -490,7 +512,9 @@ async def test_supplier_generation_runs_verify_prepare_and_wait_without_domain_w
 
 
 @pytest.mark.asyncio
-async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies() -> None:
+async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies() -> (
+    None
+):
     sourcing = _Sourcing()
     sourcing.verification_result = VerifyPublicCandidateDraftsResult(
         calibration_draft_ids=("scd-calibration",),
@@ -499,9 +523,9 @@ async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies()
         qualified_candidate_ids=(),
         verified_event=None,
     )
-    step = _handlers(
-        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
-    )["sourcing_case.v2.verify_candidates"]
+    step = _handlers(_Products(ProductMatchResult((), ())), _Suppliers(), sourcing)[
+        "sourcing_case.v2.verify_candidates"
+    ]
 
     result = await step.execute(_verification_run())
 
@@ -533,9 +557,9 @@ async def test_await_product_cards_advances_only_on_exact_generation_payload() -
         }
     )
     waiting.current_step = "await_product_cards"
-    step = _handlers(
-        _Products(ProductMatchResult((), ())), _Suppliers(), _Sourcing()
-    )["sourcing_case.v2.await_product_cards"]
+    step = _handlers(_Products(ProductMatchResult((), ())), _Suppliers(), _Sourcing())[
+        "sourcing_case.v2.await_product_cards"
+    ]
 
     assert await step.execute(waiting) == ("wait", None, {})
 
@@ -590,9 +614,9 @@ async def test_verify_candidates_dependency_errors_are_fixed_and_fully_detached(
 ) -> None:
     sourcing = _Sourcing()
     sourcing.verification_error = raw_error
-    step = _handlers(
-        _Products(ProductMatchResult((), ())), _Suppliers(), sourcing
-    )["sourcing_case.v2.verify_candidates"]
+    step = _handlers(_Products(ProductMatchResult((), ())), _Suppliers(), sourcing)[
+        "sourcing_case.v2.verify_candidates"
+    ]
 
     with pytest.raises(error_type, match=f"^{expected}$") as caught:
         await step.execute(_verification_run())
@@ -715,9 +739,10 @@ async def test_every_qualified_product_gets_a_complete_spec_evidence_mapping() -
         for product_mapping in mapping.values()
     )
     assert len(check.spec_comparisons) == 14
-    assert {
-        str(item.product_id) for item in check.spec_comparisons
-    } == {"prd-a", "prd-b"}
+    assert {str(item.product_id) for item in check.spec_comparisons} == {
+        "prd-a",
+        "prd-b",
+    }
 
 
 @pytest.mark.asyncio
@@ -744,7 +769,9 @@ async def test_model_failure_cannot_qualify_an_early_ladder_rung(
                 if model_failure == "unknown"
                 else ProductSpecMatchLevel.DIFFERENT
             ),
-            evidence_ref=None if model_failure == "unknown" else ArtifactId("art_model"),
+            evidence_ref=None
+            if model_failure == "unknown"
+            else ArtifactId("art_model"),
         )
     sourcing = _Sourcing()
     step = _handlers(
@@ -777,14 +804,10 @@ async def test_qualified_match_cannot_rewrite_trusted_need_requirement() -> None
         evidence_ref=ArtifactId("art_material"),
     )
     products = _Products(
-        ProductMatchResult(
-            (QualifiedProductMatch(product, tuple(comparisons)),), ()
-        )
+        ProductMatchResult((QualifiedProductMatch(product, tuple(comparisons)),), ())
     )
     sourcing = _Sourcing()
-    step = _handlers(products, _Suppliers(), sourcing)[
-        "sourcing_case.v2.check_ladder"
-    ]
+    step = _handlers(products, _Suppliers(), sourcing)["sourcing_case.v2.check_ladder"]
 
     with pytest.raises(ValidationError, match="规格证明"):
         await step.execute(_run())
@@ -810,14 +833,10 @@ async def test_qualified_match_must_equal_persisted_product_fact(
         ),
     )
     products = _Products(
-        ProductMatchResult(
-            (QualifiedProductMatch(product, tuple(comparisons)),), ()
-        )
+        ProductMatchResult((QualifiedProductMatch(product, tuple(comparisons)),), ())
     )
     sourcing = _Sourcing()
-    step = _handlers(products, _Suppliers(), sourcing)[
-        "sourcing_case.v2.check_ladder"
-    ]
+    step = _handlers(products, _Suppliers(), sourcing)["sourcing_case.v2.check_ladder"]
 
     with pytest.raises(ValidationError, match="规格证明"):
         await step.execute(_run())
@@ -848,9 +867,7 @@ async def test_qualified_match_rejects_duplicate_returned_comparison() -> None:
         )
     )
     sourcing = _Sourcing()
-    step = _handlers(products, _Suppliers(), sourcing)[
-        "sourcing_case.v2.check_ladder"
-    ]
+    step = _handlers(products, _Suppliers(), sourcing)["sourcing_case.v2.check_ladder"]
 
     with pytest.raises(ValidationError, match="规格证明"):
         await step.execute(_run())
@@ -942,9 +959,11 @@ async def test_partial_ladder_retry_replays_same_fact_and_continues_without_drif
             raise RuntimeError("database packet included raw-provider-token")
 
     sourcing.record_ladder_check = fail_after_first_commit  # type: ignore[method-assign]
-    with pytest.raises(ValidationError, match="寻源内部匹配记录失败") as caught:
+    with pytest.raises(TransientError, match="寻源内部匹配记录暂不可用") as caught:
         await step.execute(_run())
     assert "raw-provider-token" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
     sourcing.record_ladder_check = original_record  # type: ignore[method-assign]
     result = await step.execute(_run())
@@ -1054,3 +1073,62 @@ async def test_committed_partial_work_stays_retryable_without_leaking_dependency
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert "raw-secret" not in str(caught.value)
+
+
+class _RetryableTradeOSError(TradeOSError):
+    is_retryable = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    ("need_reader", "product_search", "ladder_record", "supplier_search", "prepare"),
+)
+@pytest.mark.parametrize(
+    "raw_error",
+    (
+        RuntimeError("postgres://user:secret@db/private"),
+        _RetryableTradeOSError("provider token=raw-secret"),
+    ),
+)
+async def test_manual_sourcing_dependencies_share_detached_retry_taxonomy(
+    boundary: str, raw_error: Exception
+) -> None:
+    """Every manual step boundary must retry unknown and retryable TradeOS failures."""
+
+    products = _Products(ProductMatchResult((), ()))
+    suppliers = _Suppliers()
+    sourcing = _Sourcing()
+    need_reader = _NeedReader()
+    if boundary == "need_reader":
+        need_reader.error = raw_error
+    elif boundary == "product_search":
+        products.error = raw_error
+    elif boundary == "ladder_record":
+        sourcing.record_error = raw_error
+    elif boundary == "supplier_search":
+        suppliers.error = raw_error
+    else:
+        sourcing.option_error = raw_error
+    handlers = _handlers(products, suppliers, sourcing, need_reader=need_reader)
+    operation = (
+        handlers["sourcing_case.v2.prepare_candidates"].execute(
+            _run(
+                {
+                    **_run().context,
+                    "internal_product_ids": ["prd-exact"],
+                    "supplier_candidate_ids": [],
+                }
+            )
+        )
+        if boundary == "prepare"
+        else handlers["sourcing_case.v2.check_ladder"].execute(_run())
+    )
+
+    with pytest.raises(TransientError) as caught:
+        await operation
+
+    assert caught.value.context == {}
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)

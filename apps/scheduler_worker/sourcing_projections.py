@@ -17,7 +17,7 @@ from domains.sourcing.schemas import (
     SourcingCandidateProductInputs,
 )
 from domains.sourcing.service import SourcingService
-from shared.errors import TransientError, ValidationError
+from shared.errors import TransientError, ValidationError, detached_dependency_error
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ProductId,
@@ -34,14 +34,18 @@ _WAIT_STEP = "await_product_cards"
 
 
 def _raise_dependency_error(
-    *, transient: bool, failed: bool, transient_message: str, permanent_message: str
+    error: Exception,
+    *,
+    transient_message: str,
+    permanent_message: str,
 ) -> None:
     """在原异常上下文外抛固定错误，不保留下层自由文本。"""
 
-    if transient:
-        raise TransientError(transient_message)
-    if failed:
-        raise ValidationError(permanent_message)
+    raise detached_dependency_error(
+        error,
+        transient_message=transient_message,
+        permanent_message=permanent_message,
+    ) from None
 
 
 async def _dependency[T](
@@ -50,33 +54,34 @@ async def _dependency[T](
     transient_message: str,
     permanent_message: str,
 ) -> T:
-    transient = False
-    failed = False
+    captured: Exception | None = None
     try:
         return await awaitable
-    except TransientError:
-        transient = True
-    except Exception:  # noqa: BLE001 -- Product/Sourcing/Engine 自由错误不跨界
-        failed = True
-    _raise_dependency_error(
-        transient=transient,
-        failed=failed,
-        transient_message=transient_message,
-        permanent_message=permanent_message,
-    )
+    except Exception as error:  # noqa: BLE001 -- Outbox 边界只接收常规依赖错误
+        captured = error
+    if captured is not None:
+        _raise_dependency_error(
+            captured,
+            transient_message=transient_message,
+            permanent_message=permanent_message,
+        )
     raise AssertionError("依赖错误必须终止投影")
 
 
 async def _engine_dependency[T](awaitable: Awaitable[T], *, message: str) -> T:
     """Engine 位于 Ready 事务之外，任何存储失败都只能安全重试。"""
 
-    failed = False
+    captured: Exception | None = None
     try:
         return await awaitable
-    except Exception:  # noqa: BLE001 -- Engine 自由错误不可跨边界且必须可重试
-        failed = True
-    if failed:
-        raise TransientError(message)
+    except Exception as error:  # noqa: BLE001 -- Outbox 边界只接收常规依赖错误
+        captured = error
+    if captured is not None:
+        _raise_dependency_error(
+            captured,
+            transient_message=message,
+            permanent_message=message,
+        )
     raise AssertionError("Engine 依赖错误必须终止投影")
 
 
@@ -151,9 +156,7 @@ class SourcingCandidateProductProjector:
         self, case_id: SourcingCaseId, payload: dict[str, Any]
     ) -> None:
         run_id = await _engine_dependency(
-            self._engine.find_active_run(
-                self._tenant_id, _WORKFLOW_TYPE, str(case_id)
-            ),
+            self._engine.find_active_run(self._tenant_id, _WORKFLOW_TYPE, str(case_id)),
             message="候选产品卡所属工作流暂不可用",
         )
         if not isinstance(run_id, str) or not run_id.strip():
@@ -196,7 +199,8 @@ class SourcingCandidateProductProjector:
             raise ValidationError("候选产品卡所属 V2 Run 不在等待边界")
         accepted = await _engine_dependency(
             self._engine.deliver_event(
-                self._tenant_id, run.run_id,
+                self._tenant_id,
+                run.run_id,
                 "SourcingProductCardsPrepared",
                 payload,
             ),

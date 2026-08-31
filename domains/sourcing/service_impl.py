@@ -6,7 +6,6 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 
 from domains.sourcing.errors import (
     MissingEvidenceSnapshotError,
@@ -80,6 +79,7 @@ from shared.events.catalog import (
     SourcingCaseHandedToCosting,
     SourcingCaseOpened,
 )
+from shared.public_page_url import canonical_public_page_url
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -117,17 +117,11 @@ def _valid_candidate_evidence_projection(
     """在打开事务前核对可信 reader 投影的确定性安全字段。"""
 
     try:
-        parsed = urlsplit(projection.canonical_url)
-        port = parsed.port
+        canonical_url = canonical_public_page_url(projection.canonical_url)
     except ValueError:
         return False
     return (
-        projection.canonical_url == projection.canonical_url.strip()
-        and parsed.scheme in {"http", "https"}
-        and parsed.hostname is not None
-        and parsed.username is None
-        and parsed.password is None
-        and (port is None or 1 <= port <= 65_535)
+        projection.canonical_url == canonical_url
         and projection.observed_at.tzinfo is not None
         and projection.observed_at.utcoffset() is not None
         and len(projection.content_hash) == 64
@@ -178,7 +172,9 @@ def _valid_provider_usage_evidence(
         and projection.artifact_id == artifact_id
         and projection.provider == "tavily"
         and len(projection.content_hash) == 64
-        and all(character in "0123456789abcdef" for character in projection.content_hash)
+        and all(
+            character in "0123456789abcdef" for character in projection.content_hash
+        )
         and projection.observed_at.tzinfo is not None
         and projection.observed_at.utcoffset() is not None
     )
@@ -234,23 +230,17 @@ def _validate_product_evidence_mapping(check: LadderCheck) -> None:
     raw_mapping = check.input_snapshot.get("product_spec_evidence")
     if not isinstance(raw_mapping, dict) or set(raw_mapping) != set(product_ids):
         raise ValidationError("合格产品梯级证据映射与产品冻结集合不一致")
-    evidence_refs = {
-        str(item) for item in check.evidence_refs if str(item).strip()
-    }
+    evidence_refs = {str(item) for item in check.evidence_refs if str(item).strip()}
     comparisons_by_product: dict[str, dict[str, SpecComparison]] = {
         product_id: {} for product_id in product_ids
     }
     for comparison in check.spec_comparisons:
         product_id = (
-            str(comparison.product_id)
-            if comparison.product_id is not None
-            else ""
+            str(comparison.product_id) if comparison.product_id is not None else ""
         )
         spec_name = _normalize(comparison.spec_name)
         evidence_ref = (
-            str(comparison.evidence_ref)
-            if comparison.evidence_ref is not None
-            else ""
+            str(comparison.evidence_ref) if comparison.evidence_ref is not None else ""
         )
         product_comparisons = comparisons_by_product.get(product_id)
         if (
@@ -283,8 +273,7 @@ def _validate_product_evidence_mapping(check: LadderCheck) -> None:
                 or spec_name != _normalize(spec_name)
                 or not isinstance(evidence_ref, str)
                 or not evidence_ref.strip()
-                or evidence_ref
-                != str(product_comparisons[spec_name].evidence_ref)
+                or evidence_ref != str(product_comparisons[spec_name].evidence_ref)
                 or evidence_ref not in evidence_refs
             ):
                 raise ValidationError("合格产品梯级证据映射引用不一致")
@@ -476,9 +465,7 @@ def _candidate_from_public_draft(
         content_hash=projection.content_hash,
         artifact_ref=str(artifact_id),
     )
-    summary = "；".join(
-        f"{item.spec_name}:{item.level.value}" for item in comparisons
-    )
+    summary = "；".join(f"{item.spec_name}:{item.level.value}" for item in comparisons)
     return SupplierCandidate(
         candidate_id=SupplierCandidateId(new_id("spc")),
         tenant_id=tenant_id,
@@ -564,8 +551,7 @@ def _apply_public_candidate_verification(
     if candidate.moq is None or quantity < candidate.moq:
         reasons.append(PriceRejectionReason.MOQ_NOT_MET)
     if not any(
-        tier.minimum_quantity <= quantity
-        for tier in candidate.indicative_price_tiers
+        tier.minimum_quantity <= quantity for tier in candidate.indicative_price_tiers
     ):
         reasons.append(PriceRejectionReason.QUANTITY_TIER_MISSING)
     if not reasons and qualified_count >= MAX_QUALIFIED_CANDIDATES:
@@ -954,7 +940,8 @@ class SourcingServiceImpl:
             or case.active_search_plan_id != plan_id
             or plan.plan_hash != expected_plan_hash
             or plan.authorized_plan_hash != plan.plan_hash
-            or plan.status not in {PublicPlanStatus.AUTHORIZED, PublicPlanStatus.RUNNING}
+            or plan.status
+            not in {PublicPlanStatus.AUTHORIZED, PublicPlanStatus.RUNNING}
         ):
             raise SourcingPlanStaleError("公开寻源计划不是当前精确授权版本")
         if case.state is not CaseState.VERIFYING:
@@ -1592,7 +1579,9 @@ class SourcingServiceImpl:
                 raise ValidationError("公开候选草稿绑定漂移")
 
             calibration_ids = tuple(
-                draft.draft_id for draft in drafts if not _public_draft_can_convert(draft)
+                draft.draft_id
+                for draft in drafts
+                if not _public_draft_can_convert(draft)
             )
             convertible = tuple(
                 draft for draft in drafts if _public_draft_can_convert(draft)
@@ -2030,9 +2019,7 @@ class SourcingServiceImpl:
                 actual_case_version=case.version,
             )
             if confirm_on_submit:
-                review = review.confirm(
-                    submitted_by, confirmed_at=now
-                )
+                review = review.confirm(submitted_by, confirmed_at=now)
             await uow.reviews.add(tenant_id, review)
             return review
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import unicodedata
@@ -42,7 +43,7 @@ from domains.sourcing.service import (
     SpecMatchLevel,
 )
 from domains.suppliers.service import SupplierActor, SupplierService
-from shared.errors import TradeOSError, TransientError, ValidationError
+from shared.errors import ValidationError, detached_dependency_error
 from shared.schemas.identifiers import (
     EmployeeId,
     OpportunityId,
@@ -75,15 +76,20 @@ _PRODUCT_CONCLUSIONS = {
     3: ("no_qualified_candidate_product", "qualified_candidate_product"),
 }
 
+
 def _raise_dependency_error(
-    *, transient: bool, failed: bool, transient_message: str, permanent_message: str
+    error: Exception,
+    *,
+    transient_message: str,
+    permanent_message: str,
 ) -> None:
     """在 ``except`` 外按可重试性抛固定错误，避免保留下层异常链或 context。"""
 
-    if transient:
-        raise TransientError(transient_message)
-    if failed:
-        raise ValidationError(permanent_message)
+    raise detached_dependency_error(
+        error,
+        transient_message=transient_message,
+        permanent_message=permanent_message,
+    ) from None
 
 
 async def _await_dependency(
@@ -95,24 +101,19 @@ async def _await_dependency(
 ) -> Any:
     """将依赖异常转换成与原异常对象完全脱离的固定安全错误。"""
 
-    transient = False
-    failed = False
+    captured: Exception | None = None
     try:
         return await awaitable
     except passthrough:
         raise
-    except TransientError:
-        transient = True
-    except TradeOSError:
-        failed = True
-    except Exception:  # noqa: BLE001 - 未分类基础设施异常必须安全重试。
-        transient = True
-    _raise_dependency_error(
-        transient=transient,
-        failed=failed,
-        transient_message=transient_message,
-        permanent_message=permanent_message,
-    )
+    except Exception as error:  # noqa: BLE001 - Workflow 边界只接收常规依赖错误
+        captured = error
+    if captured is not None:
+        _raise_dependency_error(
+            captured,
+            transient_message=transient_message,
+            permanent_message=permanent_message,
+        )
     raise AssertionError("依赖错误分类必须终止执行")
 
 
@@ -153,18 +154,8 @@ async def _trusted_need(
     run: WorkflowRun, reader: SourcingNeedReader
 ) -> SourcingNeedSnapshot:
     _case_id, need_id, snapshot_hash = _base(run)
-    failed = False
-    transient = False
-    snapshot: SourcingNeedSnapshot | None = None
-    try:
-        snapshot = await reader.read(run.tenant_id, need_id)
-    except TransientError:
-        transient = True
-    except Exception:  # noqa: BLE001 - 丢弃 reader 自由异常，防止写入 run.last_error
-        failed = True
-    _raise_dependency_error(
-        transient=transient,
-        failed=failed,
+    snapshot = await _await_dependency(
+        reader.read(run.tenant_id, need_id),
         transient_message="可信寻源需求快照暂不可用",
         permanent_message="可信寻源需求快照读取失败",
     )
@@ -304,22 +295,13 @@ class InternalMatchLadderStep:
         self._sourcing_actor = sourcing_actor
 
     async def _record(self, run: WorkflowRun, check: LadderCheck) -> None:
-        failed = False
-        transient = False
-        try:
-            await self._sourcing.record_ladder_check(
+        await _await_dependency(
+            self._sourcing.record_ladder_check(
                 run.tenant_id,
                 SourcingCaseId(run.subject_ref),
                 check,
                 actor=self._sourcing_actor,
-            )
-        except TransientError:
-            transient = True
-        except Exception:  # noqa: BLE001 - 域/仓储异常原文不得进入 run.last_error
-            failed = True
-        _raise_dependency_error(
-            transient=transient,
-            failed=failed,
+            ),
             transient_message="寻源内部匹配记录暂不可用",
             permanent_message="寻源内部匹配记录失败",
         )
@@ -336,24 +318,14 @@ class InternalMatchLadderStep:
                 raise ValidationError("可信寻源需求规格必须规范化后唯一且非空")
             required_by_name[spec_name] = required
         required_names = tuple(sorted(required_by_name))
-        failed = False
-        transient = False
-        product_result: ProductMatchResult | None = None
-        try:
-            product_result = await self._products.search_for_matching(
+        product_result = await _await_dependency(
+            self._products.search_for_matching(
                 run.tenant_id,
                 category,
                 keywords,
                 requirements,
                 actor=self._product_actor,
-            )
-        except TransientError:
-            transient = True
-        except Exception:  # noqa: BLE001 - 下层异常可能携带内部价格或连接信息
-            failed = True
-        _raise_dependency_error(
-            transient=transient,
-            failed=failed,
+            ),
             transient_message="寻源内部产品匹配暂不可用",
             permanent_message="寻源内部产品匹配失败",
         )
@@ -513,20 +485,10 @@ class InternalMatchLadderStep:
             )
 
         tags = sorted({category, *keywords})
-        supplier_failed = False
-        supplier_transient = False
-        suppliers: list[Any] = []
-        try:
-            suppliers = await self._suppliers.search_by_capability(
+        suppliers = await _await_dependency(
+            self._suppliers.search_by_capability(
                 run.tenant_id, tags, actor=self._supplier_actor
-            )
-        except TransientError:
-            supplier_transient = True
-        except Exception:  # noqa: BLE001 - 下层异常可能携带供应商敏感内容
-            supplier_failed = True
-        _raise_dependency_error(
-            transient=supplier_transient,
-            failed=supplier_failed,
+            ),
             transient_message="寻源内部供应商能力匹配暂不可用",
             permanent_message="寻源内部供应商能力匹配失败",
         )
@@ -582,9 +544,7 @@ class PrepareCandidatesStep:
             if (
                 candidate_ids != sorted(set(candidate_ids))
                 or any(
-                    not isinstance(item, str)
-                    or not item.strip()
-                    or len(item) > 200
+                    not isinstance(item, str) or not item.strip() or len(item) > 200
                     for item in candidate_ids
                 )
                 or isinstance(candidate_case_version, bool)
@@ -617,32 +577,27 @@ class PrepareCandidatesStep:
         ):
             raise ValidationError("内部候选准备上下文无效")
         option_ids = []
-        failed = False
-        transient = False
-        try:
-            for product_id in raw_ids:
-                option_ids.append(
-                    await self._sourcing.register_existing_product_option(
+        for product_id in raw_ids:
+            option_ids.append(
+                await _await_dependency(
+                    self._sourcing.register_existing_product_option(
                         run.tenant_id,
                         case_id,
                         ProductId(product_id),
                         actor=self._sourcing_actor,
-                    )
+                    ),
+                    transient_message="寻源内部产品准备暂不可用",
+                    permanent_message="寻源内部产品准备失败",
                 )
-            await self._sourcing.mark_candidates_ready(
+            )
+        await _await_dependency(
+            self._sourcing.mark_candidates_ready(
                 run.tenant_id,
                 case_id,
                 tuple(option_ids),
                 (),
                 actor=self._sourcing_actor,
-            )
-        except TransientError:
-            transient = True
-        except Exception:  # noqa: BLE001 - 只向 workflow 暴露固定失败分类
-            failed = True
-        _raise_dependency_error(
-            transient=transient,
-            failed=failed,
+            ),
             transient_message="寻源内部产品准备暂不可用",
             permanent_message="寻源内部产品准备失败",
         )
@@ -720,7 +675,9 @@ class AwaitProductCardsStep:
             or not isinstance(prepared_option_ids, list)
             or len(product_ids) != len(candidate_ids)
             or len(prepared_option_ids) != len(candidate_ids)
-            or any(not isinstance(item, str) or not item.strip() for item in product_ids)
+            or any(
+                not isinstance(item, str) or not item.strip() for item in product_ids
+            )
             or any(
                 not isinstance(item, str) or not item.strip()
                 for item in prepared_option_ids
@@ -950,32 +907,25 @@ class PublicSearchStep:
                         searches_used += 1
                         free_error: FreeSearchError | None = None
                         tool_error: ToolGatewayError | None = None
-                        dependency_transient = False
-                        dependency_failed = False
                         try:
-                            batch = await self._searcher.search(
-                                run.tenant_id,
-                                run.run_id,
-                                query.query_text,
-                                query.target_country,
-                                plan.product_category,
-                                min(20, plan.max_pages_read - pages_used),
-                                quota_request_key=request_key,
+                            batch = await _await_dependency(
+                                self._searcher.search(
+                                    run.tenant_id,
+                                    run.run_id,
+                                    query.query_text,
+                                    query.target_country,
+                                    plan.product_category,
+                                    min(20, plan.max_pages_read - pages_used),
+                                    quota_request_key=request_key,
+                                ),
+                                transient_message="公开寻源搜索暂不可用",
+                                permanent_message="公开寻源搜索失败",
+                                passthrough=(FreeSearchError, ToolGatewayError),
                             )
                         except FreeSearchError as error:
                             free_error = error
                         except ToolGatewayError as error:
                             tool_error = error
-                        except TransientError:
-                            dependency_transient = True
-                        except Exception:  # noqa: BLE001 - 搜索异常不得越界。
-                            dependency_failed = True
-                        _raise_dependency_error(
-                            transient=dependency_transient,
-                            failed=dependency_failed,
-                            transient_message="公开寻源搜索暂不可用",
-                            permanent_message="公开寻源搜索失败",
-                        )
                         if free_error is not None:
                             if (
                                 free_error.reason
@@ -1093,10 +1043,7 @@ class PublicSearchStep:
                             ):
                                 raise ValidationError("公开寻源页面槽绑定无效")
                             if not claim.claimed_new:
-                                if (
-                                    claim.slot.status
-                                    is PublicPageAttemptStatus.CLAIMED
-                                ):
+                                if claim.slot.status is PublicPageAttemptStatus.CLAIMED:
                                     return self._wait(
                                         "reconciliation_required",
                                         searches=searches_used,
@@ -1184,12 +1131,12 @@ class PublicSearchStep:
                     if batch is not None:
                         try:
                             self._searcher.release(batch)
-                        except BaseException:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                        except (Exception, asyncio.CancelledError):  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
                             pass
         finally:
             try:
                 self._searcher.discard_all()
-            except BaseException:  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+            except (Exception, asyncio.CancelledError):  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
                 pass
 
         if result_count == 0:
@@ -1242,9 +1189,7 @@ class HandoffCostingStep:
         self._opportunity_actor = opportunity_actor
         self._sourcing_actor = sourcing_actor
 
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, Any]]:
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         case_id, need_id, _snapshot_hash = _base(run)
         opportunity = await _await_dependency(
             self._opportunities.get_by_need(
@@ -1301,7 +1246,9 @@ class VerifyCandidatesStep:
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         case_id, _need_id, _snapshot_hash = _base(run)
         plan_id = SourcingPlanId(
-            _text(run.context.get("sourcing_plan_id"), "候选核验缺少计划 ID", maximum=40)
+            _text(
+                run.context.get("sourcing_plan_id"), "候选核验缺少计划 ID", maximum=40
+            )
         )
         plan_hash = _text(
             run.context.get("sourcing_plan_hash"),
@@ -1316,8 +1263,7 @@ class VerifyCandidatesStep:
         if not isinstance(raw_draft_ids, list) or not raw_draft_ids:
             raise ValidationError("候选核验缺少有序草稿集合")
         draft_ids = tuple(
-            _text(value, "候选核验草稿 ID 无效", maximum=40)
-            for value in raw_draft_ids
+            _text(value, "候选核验草稿 ID 无效", maximum=40) for value in raw_draft_ids
         )
         if len(set(draft_ids)) != len(draft_ids):
             raise ValidationError("候选核验草稿 ID 不得重复")

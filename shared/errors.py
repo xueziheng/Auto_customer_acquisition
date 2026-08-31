@@ -30,7 +30,9 @@ class TradeOSError(Exception):
 
     is_retryable: bool = False
 
-    def __init__(self, message: str, *, context: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self, message: str, *, context: Mapping[str, str] | None = None
+    ) -> None:
         """构造：消息进 Exception；context 存为拷贝，防外部可变引用污染。"""
         super().__init__(message)
         self.context: dict[str, str] = dict(context) if context else {}
@@ -130,6 +132,24 @@ class TransientError(TradeOSError):
     """外部依赖临时失败。**可重试。**"""
 
     is_retryable = True
+
+
+def detached_dependency_error(
+    error: Exception,
+    *,
+    transient_message: str,
+    permanent_message: str,
+) -> TradeOSError:
+    """将跨边界异常归为固定、无原始链路的可操作错误。
+
+    已知 TradeOS 错误沿用其重试语义；未知基础设施错误必须保守地允许重试。
+    调用方应在 ``except`` 外 ``raise ... from None``，避免下层文本或 context
+    进入 Outbox、Workflow 或日志边界。
+    """
+
+    if isinstance(error, TradeOSError) and not error.is_retryable:
+        return ValidationError(permanent_message)
+    return TransientError(transient_message)
 
 
 class RateLimited(TransientError):

@@ -53,9 +53,7 @@ GENERATION_HASH = "a" * 64
 SOURCING_ACTOR = SourcingActor(
     "system:product-projector", TENANT, SourcingScope.SYSTEM, "system"
 )
-PRODUCT_ACTOR = ProductActor(
-    "system:product-projector", ProductRole.SYSTEM, TENANT
-)
+PRODUCT_ACTOR = ProductActor("system:product-projector", ProductRole.SYSTEM, TENANT)
 
 
 def _symbol(module_name: str, symbol_name: str):
@@ -69,9 +67,7 @@ def test_sourcing_candidate_product_projector_contract_exists() -> None:
     """缺少投影器时，封存的候选 generation 无法生成产品卡。"""
 
     try:
-        module = importlib.import_module(
-            "apps.scheduler_worker.sourcing_projections"
-        )
+        module = importlib.import_module("apps.scheduler_worker.sourcing_projections")
     except ModuleNotFoundError:
         pytest.fail("SourcingCandidateProductProjector 尚未实现")
     assert hasattr(module, "SourcingCandidateProductProjector")
@@ -91,15 +87,9 @@ def test_product_subscription_uses_verified_fact_not_final_ready_fact() -> None:
 def test_candidate_product_input_projection_is_strict_and_generation_bound() -> None:
     """对任一命令的候选或 Case 绑定放宽都必须被严格投影拦截。"""
 
-    Command = _symbol(
-        "domains.sourcing.schemas", "SourcingCandidateProductInput"
-    )
-    Price = _symbol(
-        "domains.sourcing.schemas", "SourcingCandidateProductPriceInput"
-    )
-    Projection = _symbol(
-        "domains.sourcing.schemas", "SourcingCandidateProductInputs"
-    )
+    Command = _symbol("domains.sourcing.schemas", "SourcingCandidateProductInput")
+    Price = _symbol("domains.sourcing.schemas", "SourcingCandidateProductPriceInput")
+    Projection = _symbol("domains.sourcing.schemas", "SourcingCandidateProductInputs")
     command = Command(
         sourcing_case_id=CASE_ID,
         supplier_candidate_id=CANDIDATE_ID,
@@ -249,9 +239,7 @@ class _Sourcing:
                 actor,
             )
         )
-        return SourcingSupplyOptionId(
-            f"sop-{str(candidate_id).removeprefix('spc-')}"
-        )
+        return SourcingSupplyOptionId(f"sop-{str(candidate_id).removeprefix('spc-')}")
 
     async def mark_candidates_ready(
         self,
@@ -278,8 +266,14 @@ class _Sourcing:
 
 
 class _Products:
-    def __init__(self, *, fail_once_for: SupplierCandidateId | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_once_for: SupplierCandidateId | None = None,
+        failure: Exception | None = None,
+    ) -> None:
         self.fail_once_for = fail_once_for
+        self.failure = failure
         self.failed = False
         self.created_source_keys: set[tuple[str, str]] = set()
         self.calls: list[CandidateProductCreate] = []
@@ -290,12 +284,9 @@ class _Products:
         assert tenant_id == TENANT and actor == PRODUCT_ACTOR
         assert isinstance(command, CandidateProductCreate)
         self.calls.append(command)
-        if (
-            command.supplier_candidate_id == self.fail_once_for
-            and not self.failed
-        ):
+        if command.supplier_candidate_id == self.fail_once_for and not self.failed:
             self.failed = True
-            raise TransientError("postgres://user:secret@db/private")
+            raise self.failure or TransientError("postgres://user:secret@db/private")
         self.created_source_keys.add(
             (str(command.sourcing_case_id), str(command.supplier_candidate_id))
         )
@@ -417,7 +408,9 @@ def _projector(
 
 
 @pytest.mark.asyncio
-async def test_candidates_verified_projection_is_idempotent_and_generation_exact() -> None:
+async def test_candidates_verified_projection_is_idempotent_and_generation_exact() -> (
+    None
+):
     """重投或 generation 参数丢失不得重建卡、重发唤醒或混用候选。"""
 
     projector, sourcing, products, engine = _projector()
@@ -432,7 +425,9 @@ async def test_candidates_verified_projection_is_idempotent_and_generation_exact
         (str(CASE_ID), "spc-candidate-3"),
     }
     assert engine.product_cards_prepared_events == 1
-    assert all(call[4:6] == (VERSION, GENERATION_HASH) for call in sourcing.option_calls)
+    assert all(
+        call[4:6] == (VERSION, GENERATION_HASH) for call in sourcing.option_calls
+    )
     assert all(call[4:6] == (VERSION, GENERATION_HASH) for call in sourcing.ready_calls)
     assert engine.payloads == [
         {
@@ -482,7 +477,9 @@ async def test_candidates_verified_projection_is_idempotent_and_generation_exact
 
 
 @pytest.mark.asyncio
-async def test_projection_recovers_after_partial_product_failure_without_raw_error() -> None:
+async def test_projection_recovers_after_partial_product_failure_without_raw_error() -> (
+    None
+):
     """已成功的 source key 必须可复用，且下层敏感错误不得跨编排边界。"""
 
     products = _Products(fail_once_for=SupplierCandidateId("spc-candidate-2"))
@@ -507,7 +504,33 @@ async def test_projection_recovers_after_partial_product_failure_without_raw_err
 
 
 @pytest.mark.asyncio
-async def test_ready_then_engine_failure_is_detached_transient_and_retry_delivers_once() -> None:
+async def test_unknown_product_storage_failure_is_detached_transient() -> None:
+    """Unknown adapter failures must redeliver instead of dead-lettering Verified."""
+
+    products = _Products(
+        fail_once_for=SupplierCandidateId("spc-candidate-2"),
+        failure=RuntimeError("postgres://user:secret@db/private"),
+    )
+    projector, sourcing, products, engine = _projector(products=products)
+
+    with pytest.raises(TransientError, match="^候选产品卡创建暂不可用$") as caught:
+        await projector.handle(_event())
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret" not in str(caught.value)
+    assert sourcing.ready_calls == []
+    assert engine.product_cards_prepared_events == 0
+
+    await projector.handle(_event())
+    assert len(products.created_source_keys) == 3
+    assert engine.product_cards_prepared_events == 1
+
+
+@pytest.mark.asyncio
+async def test_ready_then_engine_failure_is_detached_transient_and_retry_delivers_once() -> (
+    None
+):
     """Ready 已提交后 Engine 原始失败若被永久化，会不可恢复地丢失工作流唤醒。"""
 
     projector, sourcing, _products, engine = _projector()
@@ -530,7 +553,9 @@ async def test_ready_then_engine_failure_is_detached_transient_and_retry_deliver
 
 
 @pytest.mark.asyncio
-async def test_prepare_ordering_race_is_transient_and_exact_retry_wakes_same_run() -> None:
+async def test_prepare_ordering_race_is_transient_and_exact_retry_wakes_same_run() -> (
+    None
+):
     """投影先于 prepare bridge 提交是合法排序竞争，不能永久死信。"""
 
     projector, sourcing, _products, engine = _projector()
@@ -550,7 +575,9 @@ async def test_prepare_ordering_race_is_transient_and_exact_retry_wakes_same_run
 
 
 @pytest.mark.asyncio
-async def test_prior_run_delivery_cannot_satisfy_active_run_or_mismatched_generation() -> None:
+async def test_prior_run_delivery_cannot_satisfy_active_run_or_mismatched_generation() -> (
+    None
+):
     """历史 Run 的相同指纹和错误 generation 都不得证明当前 Run 已被唤醒。"""
 
     projector, _sourcing, _products, engine = _projector()
@@ -573,9 +600,7 @@ async def test_projection_rejects_more_than_three_or_final_ready_event() -> None
     """三卡上限与唯一触发事件如被放宽，会扩大审核成本或形成循环投影。"""
 
     projector, sourcing, products, engine = _projector()
-    four = tuple(
-        SupplierCandidateId(f"spc-{index}") for index in range(1, 5)
-    )
+    four = tuple(SupplierCandidateId(f"spc-{index}") for index in range(1, 5))
     event = SourcingCandidatesVerified(
         tenant_id=TENANT,
         occurred_at=NOW,
@@ -778,8 +803,7 @@ async def test_review_saves_then_wakes_await_review_and_exact_request_replays() 
         )
     ]
     assert all(
-        query[0:4]
-        == (TENANT, "sourcing_case", str(CASE_ID), "SourcingReviewSubmitted")
+        query[0:4] == (TENANT, "sourcing_case", str(CASE_ID), "SourcingReviewSubmitted")
         and query[5:]
         == (
             2,
@@ -828,7 +852,9 @@ async def test_new_review_request_retries_only_opportunity_required_handoff() ->
 
 
 @pytest.mark.asyncio
-async def test_review_ignores_identical_event_from_prior_run_and_binds_generation() -> None:
+async def test_review_ignores_identical_event_from_prior_run_and_binds_generation() -> (
+    None
+):
     """相同 Case 的历史 Run 指纹不得吞掉当前 owning Run 的审核唤醒。"""
 
     sourcing = _ReviewSourcing()
@@ -923,7 +949,9 @@ async def test_review_false_delivery_at_exact_target_is_detached_transient() -> 
 
 
 @pytest.mark.asyncio
-async def test_review_rejects_unbounded_request_terminal_run_and_raw_sourcing_error() -> None:
+async def test_review_rejects_unbounded_request_terminal_run_and_raw_sourcing_error() -> (
+    None
+):
     """请求 ID、终态 Run 或下层自由错误不得穿过应用边界。"""
 
     sourcing = _ReviewSourcing()

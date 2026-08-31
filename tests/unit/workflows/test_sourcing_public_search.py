@@ -639,7 +639,9 @@ async def test_restart_of_claimed_but_incomplete_page_requires_reconciliation() 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ["after_read", "after_extract", "after_draft_save"])
+@pytest.mark.parametrize(
+    "failure_stage", ["after_read", "after_extract", "after_draft_save"]
+)
 async def test_crash_windows_leave_claimed_slot_for_exact_restart_reconciliation(
     failure_stage: str,
 ) -> None:
@@ -702,7 +704,9 @@ async def test_restart_rehydrates_completed_draft_without_page_io() -> None:
 
 
 @pytest.mark.asyncio
-async def test_restart_rehydrates_completed_page_rejection_without_no_results_label() -> None:
+async def test_restart_rehydrates_completed_page_rejection_without_no_results_label() -> (
+    None
+):
     step, _, pages, receipts, _, drafts, _, _ = _step(plan=_plan(pages=1))
     receipts.page_slots[(0, 0)] = _page_slot(
         0,
@@ -721,7 +725,9 @@ async def test_restart_rehydrates_completed_page_rejection_without_no_results_la
 
 
 @pytest.mark.asyncio
-async def test_claim_conflict_aggregates_completed_qualified_draft_without_reread() -> None:
+async def test_claim_conflict_aggregates_completed_qualified_draft_without_reread() -> (
+    None
+):
     step, _, pages, receipts, extractor, drafts, _, _ = _step(
         batches=[_batch(0, (_result(0),)), _batch(1, ())],
         pages=[_page(0)],
@@ -808,7 +814,9 @@ async def test_claim_conflict_rejects_every_mismatched_canonical_slot_binding(
         0,
         status="completed",
         outcome=canonical_state,
-        draft_id="scd-sensitive-cross-slot" if canonical_state == "draft_saved" else None,
+        draft_id="scd-sensitive-cross-slot"
+        if canonical_state == "draft_saved"
+        else None,
         has_supplier_identity=True if canonical_state == "draft_saved" else None,
     )
     receipts.claim_conflicts[(0, 0)] = canonical.model_copy(update=binding_drift)
@@ -943,7 +951,7 @@ async def test_dependency_exceptions_are_fully_detached(
     else:
         receipts.commit_error = sensitive
 
-    with pytest.raises((TransientError, ValidationError)) as caught:
+    with pytest.raises(TransientError) as caught:
         await step.execute(_run())
 
     assert "sensitive" not in str(caught.value)
@@ -992,7 +1000,14 @@ async def test_trusted_draft_writer_excludes_raw_quote_and_keeps_incomplete_cali
     writer = sourcing_web.PostgresPublicCandidateDraftWriter(
         object(), TENANT, now=lambda: NOW
     )
-    raw = _draft(_page(0), 0).model_copy(update={"supplier_name": None})
+    raw = _draft(_page(0), 0).model_copy(
+        update={
+            "supplier_name": None,
+            "evidence": _draft(_page(0), 0).evidence.model_copy(
+                update={"source_url": "https://factory-0.example:443/products/hinge"}
+            ),
+        }
+    )
 
     first = await writer.save(
         tenant_id=TENANT,
@@ -1017,7 +1032,27 @@ async def test_trusted_draft_writer_excludes_raw_quote_and_keeps_incomplete_cali
 
     assert first == second
     assert saved[0].source_key == saved[1].source_key
+    assert saved[0].evidence_url == "https://factory-0.example/products/hinge"
     assert not saved[0].is_verification_complete
     serialized = json.dumps(saved[0].model_dump(mode="json"))
     assert raw.price_tiers[0].price_literal.source_quote not in serialized
     assert "source_quote" not in serialized
+
+    unsafe = raw.model_copy(
+        update={
+            "evidence": raw.evidence.model_copy(
+                update={"source_url": "https://factory-0.example:444/products/hinge"}
+            )
+        }
+    )
+    with pytest.raises(ValidationError, match="草稿 URL 不安全"):
+        await writer.save(
+            tenant_id=TENANT,
+            case_id=CASE_ID,
+            run_id=RUN_ID,
+            plan_id=PLAN_ID,
+            plan_hash=PLAN_HASH,
+            query_index=0,
+            result_index=0,
+            draft=unsafe,
+        )

@@ -39,7 +39,7 @@ from domains.sourcing.schemas import (
 from domains.sourcing.service import CandidateEvidenceSnapshot
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
 from infra.db.tables import OutboxEventRow, SourcingCaseRow, SourcingLadderCheckRow
-from shared.errors import InvalidStateTransition, TransientError, ValidationError
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import NeedValidated
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
@@ -270,14 +270,10 @@ async def test_invalid_product_evidence_mapping_rolls_back_real_postgres(
     snapshot["product_spec_evidence"] = {
         str(product_id): {"product_category": "art-forged"}
     }
-    invalid = valid.__class__(
-        **{**valid.__dict__, "input_snapshot": snapshot}
-    )
+    invalid = valid.__class__(**{**valid.__dict__, "input_snapshot": snapshot})
 
     with pytest.raises(ValidationError, match="证据映射"):
-        await service.record_ladder_check(
-            tenant_id, case_id, invalid, actor=system
-        )
+        await service.record_ladder_check(tenant_id, case_id, invalid, actor=system)
 
     async with sf() as session:
         case = await session.scalar(
@@ -287,7 +283,9 @@ async def test_invalid_product_evidence_mapping_rolls_back_real_postgres(
             )
         )
         count = await session.scalar(
-            select(func.count()).select_from(SourcingLadderCheckRow).where(
+            select(func.count())
+            .select_from(SourcingLadderCheckRow)
+            .where(
                 SourcingLadderCheckRow.tenant_id == tenant_id,
                 SourcingLadderCheckRow.case_id == case_id,
             )
@@ -432,7 +430,7 @@ class _NeverRunStep:
         raise AssertionError(f"本测试只验证 durable start，不应 poll {run.run_id}")
 
 
-class _TransientFirstStart:
+class _UnknownFailureFirstStart:
     def __init__(self, engine: Any) -> None:
         self._engine = engine
         self.calls = 0
@@ -440,10 +438,7 @@ class _TransientFirstStart:
     async def start(self, *args: Any, **kwargs: Any) -> Any:
         self.calls += 1
         if self.calls == 1:
-            raise TransientError(
-                "postgres://private-user:secret@workflow-db/internal",
-                context={"credential": "raw-token"},
-            )
+            raise RuntimeError("untrusted workflow storage failure")
         return await self._engine.start(*args, **kwargs)
 
 
@@ -626,9 +621,7 @@ async def _public_verification_scenario(
             target_countries=("US",),
             product_category="hinges",
             queries=(
-                PublicSourcingQuery(
-                    query_text="hinge factory", target_country="US"
-                ),
+                PublicSourcingQuery(query_text="hinge factory", target_country="US"),
             ),
             max_search_queries=1,
             max_pages_read=3,
@@ -817,7 +810,7 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
         now=clock.now,
     )
     real_engine.register(definition)
-    flaky_engine = _TransientFirstStart(real_engine)
+    flaky_engine = _UnknownFailureFirstStart(real_engine)
     system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
     sourcing = _service_type()(
         lambda bound_tenant: SqlAlchemySourcingUnitOfWork(factory, bound_tenant),
@@ -1264,9 +1257,7 @@ async def test_candidate_seal_cas_cannot_publish_a_stale_subset(
             target_countries=("US",),
             product_category="hinges",
             queries=(
-                PublicSourcingQuery(
-                    query_text="hinge factory", target_country="US"
-                ),
+                PublicSourcingQuery(query_text="hinge factory", target_country="US"),
             ),
             max_search_queries=1,
             max_pages_read=3,
@@ -1390,9 +1381,7 @@ async def test_ladder_and_plan_confirmation_persist_case_state_with_exact_hash(
             target_countries=("US",),
             product_category="hinges",
             queries=(
-                PublicSourcingQuery(
-                    query_text="hinge factory", target_country="US"
-                ),
+                PublicSourcingQuery(query_text="hinge factory", target_country="US"),
             ),
             max_search_queries=1,
             max_pages_read=3,

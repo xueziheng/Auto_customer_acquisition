@@ -10,7 +10,7 @@ from domains.sourcing.service import (
     SourcingNeedSnapshot,
     SourcingService,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import NeedBecameSourcingReady, NeedValidated
 from shared.schemas.identifiers import TenantId, ValidatedNeedId
 from workflows.engine.runner import WorkflowEngine
@@ -46,14 +46,18 @@ def _safe_context(snapshot: SourcingNeedSnapshot, case_id: str) -> dict[str, obj
 
 
 def _raise_dependency_error(
-    *, transient: bool, failed: bool, transient_message: str, permanent_message: str
+    error: Exception,
+    *,
+    transient_message: str,
+    permanent_message: str,
 ) -> None:
     """在 ``except`` 外按可重试性抛固定错误，彻底丢弃原异常链与 context。"""
 
-    if transient:
-        raise TransientError(transient_message)
-    if failed:
-        raise ValidationError(permanent_message)
+    raise detached_dependency_error(
+        error,
+        transient_message=transient_message,
+        permanent_message=permanent_message,
+    ) from None
 
 
 class SourcingTriggerHandler:
@@ -84,50 +88,43 @@ class SourcingTriggerHandler:
         if isinstance(event, NeedValidated) and event.completeness < 3:
             return
         need_id = ValidatedNeedId(event.need_id)
-        read_failed = False
-        read_transient = False
         snapshot: SourcingNeedSnapshot | None = None
+        snapshot_error: Exception | None = None
         try:
             snapshot = await self._need_reader.read(self._tenant_id, need_id)
-        except TransientError:
-            read_transient = True
-        except Exception:  # noqa: BLE001 - 丢弃下层自由异常，避免 outbox 日志泄漏
-            read_failed = True
-        _raise_dependency_error(
-            transient=read_transient,
-            failed=read_failed,
-            transient_message="可信寻源需求快照暂不可用",
-            permanent_message="可信寻源需求快照读取失败",
-        )
+        except Exception as error:  # noqa: BLE001 - Outbox 边界只接收常规依赖错误
+            snapshot_error = error
+        if snapshot_error is not None:
+            _raise_dependency_error(
+                snapshot_error,
+                transient_message="可信寻源需求快照暂不可用",
+                permanent_message="可信寻源需求快照读取失败",
+            )
         if (
             not isinstance(snapshot, SourcingNeedSnapshot)
             or snapshot.need_id != need_id
         ):
             raise ValidationError("可信需求快照与触发事件不匹配")
         trigger_key = f"sourcing-case:v2:{self._tenant_id}:{need_id}"
-        open_failed = False
-        open_transient = False
         case_id = None
+        open_error: Exception | None = None
         try:
             case_id = await self._sourcing.open_case(
                 self._tenant_id,
                 OpenSourcingCase(need=snapshot, trigger_key=trigger_key),
                 actor=self._sourcing_actor,
             )
-        except TransientError:
-            open_transient = True
-        except Exception:  # noqa: BLE001 - 丢弃数据库异常原文，仅暴露固定分类
-            open_failed = True
-        _raise_dependency_error(
-            transient=open_transient,
-            failed=open_failed,
-            transient_message="寻源案例开案暂不可用",
-            permanent_message="寻源案例开案失败",
-        )
-        if open_failed or case_id is None:
+        except Exception as error:  # noqa: BLE001 - Outbox 边界只接收常规依赖错误
+            open_error = error
+        if open_error is not None:
+            _raise_dependency_error(
+                open_error,
+                transient_message="寻源案例开案暂不可用",
+                permanent_message="寻源案例开案失败",
+            )
+        if case_id is None:
             raise ValidationError("寻源案例开案失败")
-        start_failed = False
-        start_transient = False
+        start_error: Exception | None = None
         try:
             await self._engine.start(
                 self._tenant_id,
@@ -136,16 +133,14 @@ class SourcingTriggerHandler:
                 _safe_context(snapshot, str(case_id)),
                 trigger_key,
             )
-        except TransientError:
-            start_transient = True
-        except Exception:  # noqa: BLE001 - 引擎异常可能含连接信息，必须清洗
-            start_failed = True
-        _raise_dependency_error(
-            transient=start_transient,
-            failed=start_failed,
-            transient_message="寻源工作流启动暂不可用",
-            permanent_message="寻源工作流启动失败",
-        )
+        except Exception as error:  # noqa: BLE001 - Outbox 边界只接收常规依赖错误
+            start_error = error
+        if start_error is not None:
+            _raise_dependency_error(
+                start_error,
+                transient_message="寻源工作流启动暂不可用",
+                permanent_message="寻源工作流启动失败",
+            )
 
 
 __all__ = ("SourcingTriggerHandler",)

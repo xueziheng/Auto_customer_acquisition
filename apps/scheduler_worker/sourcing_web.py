@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
 from connectors.search_contracts import SearchResult
+from connectors.web_search.transport import (
+    PublicPageRejectedError,
+    canonical_public_page_url,
+)
 from domains.sourcing.schemas import (
     PublicCandidateDraft,
     PublicCandidateDraftPriceTier,
@@ -258,9 +262,7 @@ class PostgresSourcingWebPersistence:
             )
 
     @staticmethod
-    def _page_lock_key(
-        tenant_id: TenantId, run_id: RunId, plan_hash: str
-    ) -> str:
+    def _page_lock_key(tenant_id: TenantId, run_id: RunId, plan_hash: str) -> str:
         return f"sourcing-page:{tenant_id}:{run_id}:{plan_hash}"
 
     @staticmethod
@@ -271,9 +273,7 @@ class PostgresSourcingWebPersistence:
     ) -> PublicPageAttempt:
         status = PublicPageAttemptStatus(row.status)
         outcome = (
-            PublicPageAttemptOutcome(row.outcome)
-            if row.outcome is not None
-            else None
+            PublicPageAttemptOutcome(row.outcome) if row.outcome is not None else None
         )
         return PublicPageAttempt(
             tenant_id=TenantId(row.tenant_id),
@@ -312,7 +312,9 @@ class PostgresSourcingWebPersistence:
             )
             rows = (
                 await session.execute(
-                    select(SourcingPageAttemptRow, SourcingCandidateDraftRow.supplier_name)
+                    select(
+                        SourcingPageAttemptRow, SourcingCandidateDraftRow.supplier_name
+                    )
                     .outerjoin(
                         SourcingCandidateDraftRow,
                         (
@@ -341,9 +343,7 @@ class PostgresSourcingWebPersistence:
             executions = SourcingSearchExecutionRepositoryImpl(session, tenant_id)
             for row, supplier_name in rows:
                 request_key = sourcing_search_request_key(plan_hash, row.query_index)
-                execution = await executions.get_by_request_key(
-                    tenant_id, request_key
-                )
+                execution = await executions.get_by_request_key(tenant_id, request_key)
                 if (
                     row.case_id != str(case_id)
                     or row.plan_id != str(plan_id)
@@ -373,9 +373,7 @@ class PostgresSourcingWebPersistence:
                     )
                     if draft is None:
                         raise ValidationError("公开寻源页面草稿绑定无效")
-                    attempt = self._page_attempt(
-                        row, supplier_name=draft.supplier_name
-                    )
+                    attempt = self._page_attempt(row, supplier_name=draft.supplier_name)
                 attempts.append(attempt)
             return tuple(attempts)
 
@@ -499,9 +497,7 @@ class PostgresSourcingWebPersistence:
                 slot=self._page_attempt(row),
             )
 
-    async def complete_page_attempt(
-        self, **values: object
-    ) -> PublicPageAttempt:
+    async def complete_page_attempt(self, **values: object) -> PublicPageAttempt:
         tenant_id = TenantId(str(values["tenant_id"]))
         case_id = SourcingCaseId(str(values["case_id"]))
         run_id = RunId(str(values["run_id"]))
@@ -529,9 +525,7 @@ class PostgresSourcingWebPersistence:
             raise ValidationError("公开寻源页面结果无效") from None
         raw_draft_id = values.get("draft_id")
         draft_id = str(raw_draft_id) if raw_draft_id is not None else None
-        if (outcome is PublicPageAttemptOutcome.DRAFT_SAVED) != (
-            draft_id is not None
-        ):
+        if (outcome is PublicPageAttemptOutcome.DRAFT_SAVED) != (draft_id is not None):
             raise ValidationError("公开寻源页面结果绑定无效")
         async with self._factory() as session, session.begin():
             await self._load(
@@ -737,6 +731,10 @@ class PostgresPublicCandidateDraftWriter:
             or tenant_id != self._tenant_id
         ):
             raise ValidationError("公开寻源候选草稿绑定无效")
+        try:
+            evidence_url = canonical_public_page_url(draft.evidence.source_url)
+        except PublicPageRejectedError:
+            raise ValidationError("公开寻源草稿 URL 不安全") from None
         await self._require_verified_artifact(draft)
         case_id = SourcingCaseId(str(values["case_id"]))
         run_id = RunId(str(values["run_id"]))
@@ -810,7 +808,7 @@ class PostgresPublicCandidateDraftWriter:
                 and not item.rejection_reasons
             ),
             rejection_codes=tuple(dict.fromkeys(rejection_codes)),
-            evidence_url=draft.evidence.source_url,
+            evidence_url=evidence_url,
             evidence_observed_at=draft.evidence.observed_at,
             evidence_hash=draft.evidence.content_hash,
             evidence_artifact_ref=draft.evidence.snapshot_artifact_ref,

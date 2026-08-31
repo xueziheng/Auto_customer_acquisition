@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Protocol, cast, runtime_checkable
-from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.sourcing_agent import (
@@ -34,7 +31,11 @@ from apps.scheduler_worker.sourcing_web import (
 from artifact_store.store import RawArtifactStore
 from connectors.tavily.transport import TavilySearchTransport
 from connectors.web_search.client import WebSearchConnector, WebSearchSecretResolver
-from connectors.web_search.transport import PublicPageTransport
+from connectors.web_search.transport import (
+    PublicPageRejectedError,
+    PublicPageTransport,
+    canonical_public_page_url,
+)
 from domains.costing.permissions import (
     CostingActor,
     CostingScope,
@@ -92,7 +93,7 @@ from infra.db.tables import (
     WorkflowRunRow,
 )
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
-from shared.errors import TransientError, ValidationError
+from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import (
     NeedBecameSourcingReady,
     NeedValidated,
@@ -200,13 +201,18 @@ class PostgresSourcingNeedReader:
     ) -> SourcingNeedSnapshot:
         if tenant_id != self._tenant_id:
             raise ValidationError("可信寻源需求租户绑定无效")
+        dependency_error: Exception | None = None
         try:
             async with SqlAlchemyDemandUnitOfWork(self._factory, tenant_id) as uow:
                 need = await uow.needs.get(tenant_id, need_id)
-        except SQLAlchemyError:
-            raise TransientError("可信寻源需求存储暂不可用") from None
-        except Exception:  # noqa: BLE001 -- 序列化异常可能含原始事实，跨边界前固定清洗
-            raise ValidationError("可信寻源需求事实不可用") from None
+        except Exception as error:  # noqa: BLE001 -- Workflow 边界只接收常规依赖错误
+            dependency_error = error
+        if dependency_error is not None:
+            raise detached_dependency_error(
+                dependency_error,
+                transient_message="可信寻源需求存储暂不可用",
+                permanent_message="可信寻源需求事实不可用",
+            ) from None
         if (
             need is None
             or need.tenant_id != tenant_id
@@ -278,33 +284,15 @@ class PostgresSourcingNeedReader:
 
 
 def _safe_public_url(value: object) -> bool:
-    if not isinstance(value, str) or not value or value != value.strip():
+    """报告 URL 是否符合 Gateway 的纯公开页面形状规则。"""
+
+    if not isinstance(value, str):
         return False
     try:
-        parsed = urlsplit(value)
-        port = parsed.port
-        address = ipaddress.ip_address(parsed.hostname) if parsed.hostname else None
-    except ValueError:
+        canonical_public_page_url(value)
+    except PublicPageRejectedError:
         return False
-    return bool(
-        parsed.scheme in {"http", "https"}
-        and value.startswith(f"{parsed.scheme}://")
-        and parsed.hostname
-        and parsed.hostname.isascii()
-        and parsed.netloc
-        == (f"{parsed.hostname}:{port}" if port is not None else parsed.hostname)
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-        and (port is None or 1 <= port <= 65_535)
-        and not (
-            (parsed.scheme == "https" and port == 443)
-            or (parsed.scheme == "http" and port == 80)
-        )
-        and parsed.hostname not in {"localhost", "localhost.localdomain"}
-        and not parsed.hostname.endswith(".local")
-        and (address is None or address.is_global)
-    )
+    return True
 
 
 class PostgresCandidateEvidenceSnapshotReader:
@@ -323,6 +311,7 @@ class PostgresCandidateEvidenceSnapshotReader:
     ) -> CandidateEvidenceSnapshot:
         if tenant_id != self._tenant_id:
             raise ValidationError("候选网页证据租户绑定无效")
+        dependency_error: Exception | None = None
         try:
             async with self._factory() as session:
                 artifact = (
@@ -358,10 +347,14 @@ class PostgresCandidateEvidenceSnapshotReader:
                         )
                     )
                 ).all()
-        except SQLAlchemyError:
-            raise TransientError("候选网页证据存储暂不可用") from None
-        except Exception:  # noqa: BLE001 -- driver 自由异常可能含 locator，跨边界前固定清洗
-            raise ValidationError("候选网页证据不可验证") from None
+        except Exception as error:  # noqa: BLE001 -- Workflow 边界只接收常规依赖错误
+            dependency_error = error
+        if dependency_error is not None:
+            raise detached_dependency_error(
+                dependency_error,
+                transient_message="候选网页证据存储暂不可用",
+                permanent_message="候选网页证据不可验证",
+            ) from None
         bindings = [*draft_bindings, *candidate_bindings]
         unique = {(row[0], row[1], row[2]) for row in bindings}
         if (
@@ -372,9 +365,14 @@ class PostgresCandidateEvidenceSnapshotReader:
         ):
             raise ValidationError("候选网页证据不可验证")
         url, content_hash, observed_at = unique.pop()
+        try:
+            canonical_url = canonical_public_page_url(url)
+        except PublicPageRejectedError:
+            canonical_url = None
         if (
             content_hash != artifact.content_hash
-            or not _safe_public_url(url)
+            or canonical_url is None
+            or url != canonical_url
             or observed_at.tzinfo is None
             or observed_at.utcoffset() is None
         ):
@@ -382,7 +380,7 @@ class PostgresCandidateEvidenceSnapshotReader:
         return CandidateEvidenceSnapshot(
             tenant_id=tenant_id,
             artifact_id=artifact_id,
-            canonical_url=url,
+            canonical_url=canonical_url,
             content_hash=content_hash,
             observed_at=observed_at,
         )
