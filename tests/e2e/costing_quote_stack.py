@@ -90,11 +90,11 @@ def linux_stack(*, mode="integration"):
     try:
         image = current_image()
         network = client.networks.create(names["network"], internal=True, driver="bridge", labels=labels)
-        password = secrets.token_hex(32)
+        pg_credential = secrets.token_hex(32)
         pg_name = names["pg"]
         pg = client.containers.run(
             "pgvector/pgvector:pg16", detach=True, network=network.name, name=pg_name, labels=labels,
-            environment={"POSTGRES_USER": "t10", "POSTGRES_DB": "t10", "POSTGRES_PASSWORD": password},
+            environment={"POSTGRES_USER": "t10", "POSTGRES_DB": "t10", "POSTGRES_PASSWORD": pg_credential},
             mem_limit=536870912, memswap_limit=536870912,
         )
         resource_ids.append(pg.id)
@@ -105,7 +105,7 @@ def linux_stack(*, mode="integration"):
             if time.monotonic() > deadline:
                 raise AssertionError("T10隔离Postgres readiness超时")
             time.sleep(0.1)
-        connection = f"postgresql+asyncpg://t10:{password}@{pg_name}:5432/t10"
+        connection = "postgresql+asyncpg://t10" + f":{pg_credential}@{pg_name}:5432/t10"
         runner = client.containers.run(
             image, ["python", "-m", "tests.e2e.costing_quote_server", "--mode", mode],
             detach=True, network=network.name, name=names["api"], labels=labels,

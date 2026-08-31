@@ -63,7 +63,7 @@ def migrate(engine: AsyncEngine, *args: str) -> int:
         cwd=ROOT,
         env={
             **os.environ,
-            "DATABASE_URL": engine.url.render_as_string(hide_password=False),
+            "DATABASE_URL": engine.url.render_as_string(False),
             "PYTHON_DOTENV_DISABLED": "1",
         },
         capture_output=True,

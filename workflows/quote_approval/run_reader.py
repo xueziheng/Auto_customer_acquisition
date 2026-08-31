@@ -31,14 +31,16 @@ class WorkflowQuoteRunReader:
         if run is None:
             return None
         try:
-            return QuoteWorkflowRunFact(
-                tenant_id=run.tenant_id,
-                run_id=run.run_id,
-                workflow_type=run.workflow_type,
-                workflow_version=run.workflow_version,
-                subject_ref=run.subject_ref,
-                quote_version=run.context.get("quote_version"),
-                content_hash=run.context.get("content_hash"),
+            return QuoteWorkflowRunFact.model_validate(
+                {
+                    "tenant_id": run.tenant_id,
+                    "run_id": run.run_id,
+                    "workflow_type": run.workflow_type,
+                    "workflow_version": run.workflow_version,
+                    "subject_ref": run.subject_ref,
+                    "quote_version": run.context.get("quote_version"),
+                    "content_hash": run.context.get("content_hash"),
+                }
             )
         except (ValidationError, ValueError, TypeError, AttributeError):
             raise QuoteApprovalError("workflow_binding_invalid") from None

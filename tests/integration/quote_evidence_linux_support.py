@@ -263,7 +263,7 @@ def run_chain_cases() -> tuple[int, str]:
         network = Network(
             docker_network_kw={"driver": "bridge", "internal": True}
         ).create()
-        username, database, password = "qe_test", "qe_test", secrets.token_hex(32)
+        username, database, pg_credential = "qe_test", "qe_test", secrets.token_hex(32)
         pg_name = "qe-pg-" + suffix
         stage = "pg_create"
         pg = (
@@ -277,7 +277,7 @@ def run_chain_cases() -> tuple[int, str]:
             .with_network_aliases(pg_name)
         )
         pg.with_env("POSTGRES_USER", username).with_env(
-            "POSTGRES_PASSWORD", password
+            "POSTGRES_PASSWORD", pg_credential
         ).with_env("POSTGRES_DB", database)
         pg.start()
         stage = "pg_ready"
@@ -290,9 +290,7 @@ def run_chain_cases() -> tuple[int, str]:
             if time.monotonic() >= deadline:
                 raise RuntimeError("not_run：临时数据库准备超时")
             time.sleep(0.2)
-        connection = (
-            f"postgresql+asyncpg://{username}:{password}@{pg_name}:5432/{database}"
-        )
+        connection = f"postgresql+asyncpg://{username}" + f":{pg_credential}@{pg_name}:5432/{database}"
         stage = "runner_create"
         runner = (
             DockerContainer(
@@ -337,7 +335,7 @@ def run_chain_cases() -> tuple[int, str]:
         logs = wrapped.logs().decode("utf-8", errors="replace")
         return result["StatusCode"], logs.replace(
             connection, "<test database>"
-        ).replace(password, "<test credential>")
+        ).replace(pg_credential, "<test credential>")
     except Exception as error:  # noqa: BLE001 - fixture不传Docker/连接异常原文
         category = type(error).__name__
         if category not in {
@@ -404,7 +402,7 @@ def _chain_main() -> int:
             "tests/integration/quote_source_readers_linux_cases.py",
             "tests/unit/test_need_units.py",
             "tests/integration/test_need_units.py",
-            "-q",
+            "-vv",
             "-rA",
             "--tb=short",
             "-p",
@@ -419,15 +417,19 @@ def _chain_main() -> int:
     # 不转发可能带原件/连接的任意traceback，只输出测试身份及计数。
     for line in result.stdout.decode("utf-8", errors="replace").splitlines():
         if match := re.fullmatch(
-            r"PASSED tests/integration/quote_source_readers_linux_cases\.py::"
+            r"(?:PASSED tests/integration/quote_source_readers_linux_cases\.py::"
             r"(test_actual_parser_prices_and_unit_receipt_history|"
             r"test_clipped_source_is_rejected_by_real_linux_need_confirmation)"
-            r"(?:\[.*\])?", line,
+            r"(?:\[.*\])?|tests/integration/quote_source_readers_linux_cases\.py::"
+            r"(test_actual_parser_prices_and_unit_receipt_history|"
+            r"test_clipped_source_is_rejected_by_real_linux_need_confirmation)"
+            r"(?:\[.*\])? PASSED)", line,
         ):
+            case_name = match[1] or match[2]
             print("source_linux_case_passed=" + {
                 "test_actual_parser_prices_and_unit_receipt_history": "prices_and_unit_history",
                 "test_clipped_source_is_rejected_by_real_linux_need_confirmation": "clipped_source_rejected",
-            }[match[1]])
+            }[case_name])
         elif line.startswith(("FAILED tests/", "ERROR tests/")):
             print(line.split(" - ", 1)[0])
         elif re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line):

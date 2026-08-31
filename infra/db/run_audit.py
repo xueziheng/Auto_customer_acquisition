@@ -14,6 +14,7 @@ from shared.schemas.identifiers import (
     ApprovalId,
     ArtifactId,
     RunId,
+    SourcingCaseId,
     StepId,
     TenantId,
     ToolCallId,
@@ -311,7 +312,7 @@ class PostgresRunAuditRepository:
         ladder = getattr(row, "sourcing_ladder", None) or []
         stop = getattr(row, "sourcing_stop_metadata", None)
         return RunSourcingView(
-            case_id=case_id,
+            case_id=SourcingCaseId(case_id),
             plan_status=getattr(row, "sourcing_plan_status", None),
             ladder=tuple(RunSourcingLadderView(**item) for item in ladder),
             search_attempt_count=getattr(row, "sourcing_search_attempt_count", 0),

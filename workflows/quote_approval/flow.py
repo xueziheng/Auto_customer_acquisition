@@ -10,7 +10,7 @@ from domains.quotations.service import QuotationVersionService
 from shared.errors import TransientError
 from shared.events.bus import EventHandler
 from shared.events.catalog import ApprovalDecided, DomainEvent
-from shared.schemas.identifiers import QuoteId, RunId, TenantId
+from shared.schemas.identifiers import ApprovalId, QuoteId, RunId, TenantId
 from workflows.engine.runner import (
     StepDefinition,
     StepHandler,
@@ -137,11 +137,12 @@ class ApprovalDecidedHandler:
 
     async def handle(self, event: ApprovalDecided) -> None:
         """旧包忽略，新包精确绑定原run，旧版本绝不唤醒新run。"""
-        raw = await self._approvals.read_fact(event.tenant_id, event.approval_id)
+        approval_id = ApprovalId(event.approval_id)
+        raw = await self._approvals.read_fact(event.tenant_id, approval_id)
         if raw.contract_namespace is None:
             return
         (fact,) = await read_quote_facts(
-            self._approvals, event.tenant_id, (event.approval_id,)
+            self._approvals, event.tenant_id, (approval_id,)
         )
         if fact.proposed_by_run is None:
             raise QuoteApprovalError("workflow_binding_invalid")

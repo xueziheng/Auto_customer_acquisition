@@ -14,8 +14,7 @@ APPS_ROOT = REPOSITORY_ROOT / "apps"
 def export_openapi() -> dict[str, Any]:
     """调用零参数 API 工厂并返回不含运行时依赖的 OpenAPI 契约。"""
     sys.path.insert(0, str(REPOSITORY_ROOT))
-    sys.path.insert(0, str(APPS_ROOT))
-    from api.main import create_app
+    from apps.api.main import create_app
 
     return create_app().openapi()
 

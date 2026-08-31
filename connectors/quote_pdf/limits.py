@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Buffer, Iterable
 from io import BytesIO
 
 from reportlab.platypus import SimpleDocTemplate
@@ -22,13 +22,14 @@ class BoundedBytesIO(BytesIO):
         self._maximum_bytes = maximum_bytes
         self._maximum_extent = 0
 
-    def write(self, value: bytes) -> int:
+    def write(self, value: Buffer) -> int:
         """在底层 buffer 扩展前拒绝越界写入。"""
-        end = self.tell() + len(value)
+        bytes_value = bytes(value)
+        end = self.tell() + len(bytes_value)
         if end > self._maximum_bytes:
             raise QuotePdfRenderError("byte_limit_exceeded")
         self._maximum_extent = max(self._maximum_extent, end)
-        return super().write(value)
+        return super().write(bytes_value)
 
     def read_result(self) -> bytes:
         """再次核最终大小；不返回任何截断成功结果。"""
@@ -73,9 +74,12 @@ def customer_texts(view: CustomerQuoteView) -> tuple[str, ...]:
         view.valid_until_display,
         *view.approved_terms,
     )
-    if any(not isinstance(value, str) for value in values):
-        raise QuotePdfRenderError("invalid_input")
-    return tuple(values)  # type: ignore[return-value]
+    texts: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise QuotePdfRenderError("invalid_input")
+        texts.append(value)
+    return tuple(texts)
 
 
 def validate_customer_text(

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from datetime import datetime
+from typing import Literal, cast
 
 from pydantic import TypeAdapter
 from pydantic import ValidationError as SchemaError
@@ -74,6 +75,30 @@ from workflows.quote_approval.basis_adapter import (
     pricing_options_from_intent,
     to_quote_basis,
 )
+
+QuoteApprovalPollOutcome = Literal[
+    "waiting",
+    "ready",
+    "rejected",
+    "expired",
+    "blocked",
+    "obsolete",
+    "already_applied",
+]
+
+
+def _poll_outcome(value: qa.QuoteApprovalOutcome) -> QuoteApprovalPollOutcome:
+    """轮询不接受仅适用于 apply 的结果，避免把异常状态投影为可等待。"""
+    if value not in {
+        "waiting",
+        "rejected",
+        "expired",
+        "blocked",
+        "obsolete",
+        "already_applied",
+    }:
+        raise QuoteApprovalUnavailableError("storage_inconsistent")
+    return cast(QuoteApprovalPollOutcome, value)
 
 
 def creation_intent(
@@ -586,6 +611,7 @@ class QuoteApprovalApplication:
             ids = tuple(f.approval_id for f in submission.facts) if submission else ()
             facts = await read_quote_facts(self._approvals,tenant_id,ids)
             deadline = min((f.expires_at for f in facts),default=None)
+            outcome: QuoteApprovalPollOutcome
             if receipt is not None:
                 if receipt.facts_hash != quote_approval_facts_hash(facts):
                     raise QuoteApprovalError("approval_fact_invalid")
@@ -596,7 +622,7 @@ class QuoteApprovalApplication:
                 if any(f.state=="applied" for f in facts):
                     raise QuoteApprovalUnavailableError("storage_inconsistent")
                 terminated = await session.terminate(facts)
-                outcome,error = terminated.outcome,terminated.error_code
+                outcome,error = _poll_outcome(terminated.outcome),terminated.error_code
                 if outcome == "waiting":
                     if any(f.state=="apply_failed" for f in facts):
                         outcome,error = "blocked","approval_fact_invalid"
@@ -657,10 +683,11 @@ class QuoteApprovalApplication:
         send = next(f for f in facts if f.approval_type=="quote_send")
         if send.decided_by is None or any(f.decided_by is None for f in facts):
             raise QuoteApprovalError("approval_fact_invalid")
+        decider_ids = tuple(cast(EmployeeId, fact.decided_by) for fact in facts)
         c = target.internal_quote.content
         try:
             async with (
-                self._context.open_for_approval(tenant_id, c.opportunity_id, send.decided_by, prepared_by=c.prepared_by, decider_ids=tuple(sorted({f.decided_by for f in facts}))) as context,
+                self._context.open_for_approval(tenant_id, c.opportunity_id, send.decided_by, prepared_by=c.prepared_by, decider_ids=tuple(sorted(set(decider_ids)))) as context,
                 self._quotes.open_approval(tenant_id, quote_id, executor=executor) as session,
             ):
                 current = await read_quote_facts(self._approvals,tenant_id,poll.approval_ids)

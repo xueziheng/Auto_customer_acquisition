@@ -179,7 +179,7 @@ class PriceRecordRepositoryImpl(_TenantBoundRepository):
                 price=Money(row.unit_amount, CurrencyCode(row.currency)),
                 basis=row.basis,
                 observed_at=row.observed_at,
-                evidence_ref=row.artifact_id,
+                evidence_ref=ArtifactId(row.artifact_id),
                 valid_until=row.valid_until,
             )
             for row in rows

@@ -72,7 +72,7 @@ async def actual_api_case(engine, monkeypatch, *, files=True):
         def now(cls, tz=None):
             return clock[0]
 
-    environ = _runtime_env(engine.url.render_as_string(hide_password=False))
+    environ = _runtime_env(engine.url.render_as_string(False))
     settings = quotation_settings_values()
     if not files:
         settings["files"] = None
@@ -387,7 +387,7 @@ async def test_actual_api_factory_degraded_parser_keeps_safe_metadata_and_core(
 
 def worker_environment(engine, tenant, mode):
     environ = _factory_environ(
-        engine.url.render_as_string(hide_password=False), tenant, hunter_enabled=False
+        engine.url.render_as_string(False), tenant, hunter_enabled=False
     )
     if mode != "no_config":
         values = quotation_settings_values()

@@ -9,7 +9,13 @@ from pydantic import ValidationError as PydanticValidationError
 from domains.approvals.errors import QuoteContractError
 from domains.approvals.models import ApprovalPackage
 from domains.approvals.schemas import ApprovalQuoteSubject
-from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId
+from shared.schemas.identifiers import (
+    ApprovalId,
+    EmployeeId,
+    OpportunityId,
+    QuoteId,
+    TenantId,
+)
 from shared.schemas.quote_creation import (
     canonical_creation_hash,
     canonical_creation_value,
@@ -91,8 +97,11 @@ def quote_contract_subject(
     if not marked:
         return None
     match = _REF.fullmatch(change_set_ref or "")
+    quote_version = proposed_change.get("quote_version")
+    opportunity_id = proposed_change.get("opportunity_id")
     if (
         match is None
+        or not isinstance(change_set_ref, str)
         or schema != "quote-approval-v1"
         or approval_type not in _TYPES
         or match[3] != approval_type
@@ -102,8 +111,9 @@ def quote_contract_subject(
         or proposed_change.get("content_hash") != match[2]
         or proposed_change.get("prepared_by") != proposed_by_employee
         or proposed_change.get("submitted_owner_id") != owner_employee
-        or type(proposed_change.get("quote_version")) is not int
-        or proposed_change["quote_version"] < 1
+        or type(quote_version) is not int
+        or quote_version < 1
+        or not isinstance(opportunity_id, str)
         or proposed_by_employee is None
         or owner_employee is None
     ):
@@ -114,10 +124,10 @@ def quote_contract_subject(
             approval_id=approval_id,
             approval_type=approval_type,
             change_set_ref=change_set_ref,
-            quote_id=match[1],
-            quote_version=proposed_change["quote_version"],
+            quote_id=QuoteId(match[1]),
+            quote_version=quote_version,
             content_hash=match[2],
-            opportunity_id=proposed_change.get("opportunity_id"),
+            opportunity_id=OpportunityId(opportunity_id),
             prepared_by=proposed_by_employee,
             submitted_owner_id=owner_employee,
         )

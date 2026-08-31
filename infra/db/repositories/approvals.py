@@ -311,23 +311,24 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
     ) -> list[ApprovalPackage]:
         self._require_tenant(tenant_id, "approval_list_pending")
         employee = str(employee_id)
+        statement = select(ApprovalPackageRow).where(
+            ApprovalPackageRow.tenant_id == str(self._tenant_id),
+            ApprovalPackageRow.state == ApprovalState.PENDING.value,
+            or_(
+                ApprovalPackageRow.proposed_by_employee.is_(None),
+                ApprovalPackageRow.proposed_by_employee != employee,
+            ),
+            or_(
+                ApprovalPackageRow.owner_employee.is_(None),
+                ApprovalPackageRow.owner_employee != employee,
+            ),
+        )
+        if legacy_only:
+            statement = statement.where(ApprovalPackageRow.contract_namespace.is_(None))
         rows = (
             (
                 await self._session.execute(
-                    select(ApprovalPackageRow)
-                    .where(
-                        ApprovalPackageRow.tenant_id == str(self._tenant_id),
-                        ApprovalPackageRow.state == ApprovalState.PENDING.value,
-                        or_(not legacy_only, ApprovalPackageRow.contract_namespace.is_(None)),
-                        or_(
-                            ApprovalPackageRow.proposed_by_employee.is_(None),
-                            ApprovalPackageRow.proposed_by_employee != employee,
-                        ),
-                        or_(
-                            ApprovalPackageRow.owner_employee.is_(None),
-                            ApprovalPackageRow.owner_employee != employee,
-                        ),
-                    )
+                    statement
                     .order_by(
                         ApprovalPackageRow.expires_at, ApprovalPackageRow.approval_id
                     )

@@ -319,7 +319,7 @@ async def initialize_public_case(case):
 async def runtime_case(engine, monkeypatch, *, cors_origins=()):
     """保留实际API lifespan与独立worker工厂，SDK网络才是替身。"""
     tenant = TenantId(new_id("tn"))
-    environ = _runtime_env(engine.url.render_as_string(hide_password=False))
+    environ = _runtime_env(engine.url.render_as_string(False))
     environ.update(TRADEOS_TENANT_ID=tenant,
                    TRADEOS_QUOTATION_SETTINGS_JSON=json.dumps(quotation_settings_values()),
                    TRADEOS_CORS_ALLOWED_ORIGINS=json.dumps(list(cors_origins) or ["http://127.0.0.1:4173"]),

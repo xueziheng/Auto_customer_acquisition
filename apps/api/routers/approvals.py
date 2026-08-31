@@ -8,7 +8,7 @@ POST /approvals/{id}/decide      批准/否决（自批禁止在服务层强制�
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
@@ -29,6 +29,12 @@ router = APIRouter()
 
 _APPROVAL_ID_RE = re.compile(r"apr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _APPROVER_ROLES = frozenset({"boss", "manager"})
+_READER_ROLES = frozenset(
+    {"boss", "manager", "sales", "sourcing", "product", "finance", "viewer"}
+)
+ApprovalReaderRole = Literal[
+    "boss", "manager", "sales", "sourcing", "product", "finance", "viewer"
+]
 
 
 class ApprovalDecisionBody(BaseModel):
@@ -43,6 +49,16 @@ class ApprovalDecisionBody(BaseModel):
 def _require_approver(identity: RequestIdentity) -> None:
     if identity.employee.role not in _APPROVER_ROLES:
         raise PermissionDenied("当前角色无权审批")
+
+
+def _reader_identity(identity: RequestIdentity) -> ApprovalReaderIdentity:
+    """将已经验证的员工角色收窄到审批公开 DTO 的有限角色集合。"""
+    if identity.employee.role not in _READER_ROLES:
+        raise PermissionDenied("当前角色无权读取审批")
+    return ApprovalReaderIdentity(
+        employee_id=identity.employee.employee_id,
+        role=cast(ApprovalReaderRole, identity.employee.role),
+    )
 
 
 def _approval_service(dependencies: ConfiguredApiDependencies):
@@ -70,9 +86,7 @@ async def list_pending_approvals(
     return await _approval_service(dependencies).list_for_reader(
         identity.tenant_id,
         limit=limit,
-        reader=ApprovalReaderIdentity(
-            employee_id=identity.employee.employee_id, role=identity.employee.role
-        ),
+        reader=_reader_identity(identity),
     )
 
 
@@ -89,9 +103,7 @@ async def get_approval(
     return await _approval_service(dependencies).get_for_reader(
         identity.tenant_id,
         _approval_id(approval_id),
-        reader=ApprovalReaderIdentity(
-            employee_id=identity.employee.employee_id, role=identity.employee.role
-        ),
+        reader=_reader_identity(identity),
     )
 
 
@@ -121,7 +133,5 @@ async def decide_approval(
     return await service.get_for_reader(
         identity.tenant_id,
         typed_id,
-        reader=ApprovalReaderIdentity(
-            employee_id=identity.employee.employee_id, role=identity.employee.role
-        ),
+        reader=_reader_identity(identity),
     )

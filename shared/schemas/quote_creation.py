@@ -170,6 +170,8 @@ def require_creation_decimal_resources(value: Decimal) -> None:
     if not value.is_finite():
         raise ValueError("金额必须为有限Decimal")
     sign, digits, exponent = value.as_tuple()
+    if not isinstance(exponent, int):
+        raise TypeError("有限Decimal指数必须为整数")
     if len(digits) > 4096 or abs(exponent) > 4096:
         raise ValueError("Decimal编码超出资源上限")
     if value.is_zero():

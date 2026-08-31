@@ -29,6 +29,8 @@ def _canonical_decimal(value: Decimal) -> str:
     if not value.is_finite():
         raise ValidationError("哈希输入 Decimal 必须有限")
     sign, digits, exponent = value.as_tuple()
+    if not isinstance(exponent, int):
+        raise ValidationError("哈希输入 Decimal 必须有限")
     text = "".join(str(digit) for digit in digits).lstrip("0") or "0"
     if text == "0":
         return "0"
