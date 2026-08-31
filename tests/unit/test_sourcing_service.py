@@ -88,6 +88,9 @@ PublicPlanStatus = _models.PublicPlanStatus
 SourcingReconciliationStatus = _models.SourcingReconciliationStatus
 SourcingSearchExecution = _models.SourcingSearchExecution
 SourcingSearchExecutionStatus = _models.SourcingSearchExecutionStatus
+SourcingStopCode = _models.SourcingStopCode
+SourcingStopDetail = _models.SourcingStopDetail
+SourcingStopStage = _models.SourcingStopStage
 SourcingSupplyOption = _models.SourcingSupplyOption
 SpecComparison = _models.SpecComparison
 SpecMatchLevel = _models.SpecMatchLevel
@@ -457,7 +460,13 @@ class _Cases(_MemoryRepo):
     ) -> Any | None:
         return await self.get(tenant_id, case_id)
 
-    async def update(self, tenant_id: TenantId, case: Any) -> None:
+    async def update(
+        self,
+        tenant_id: TenantId,
+        case: Any,
+        *,
+        clear_recoverable_stop: bool = False,
+    ) -> None:
         if self.state.get("fail_case_update"):
             raise RuntimeError("case storage unavailable")
         key = (tenant_id, case.case_id)
@@ -466,7 +475,36 @@ class _Cases(_MemoryRepo):
             from domains.sourcing.errors import SourcingCaseConflictError
 
             raise SourcingCaseConflictError("stale")
+        if (
+            current.stop_code is not None
+            and case.stop_code is None
+            and not clear_recoverable_stop
+        ):
+            case.stop_code = current.stop_code
+            case.stop_detail = current.stop_detail
         self.state[self.name][key] = copy.deepcopy(case)
+
+    async def set_recoverable_stop(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        expected_version: int,
+        stop_code: Any,
+        stop_detail: Any,
+    ) -> None:
+        key = (tenant_id, case_id)
+        current = self.state[self.name].get(key)
+        if (
+            current is None
+            or current.version != expected_version
+            or current.stop_code is not None
+        ):
+            from domains.sourcing.errors import SourcingCaseConflictError
+
+            raise SourcingCaseConflictError("stale waiting stop")
+        current.stop_code = stop_code
+        current.stop_detail = stop_detail
 
     async def find_active_for_need(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
@@ -2668,6 +2706,17 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
             actor=SYSTEM,
         )
     await service.confirm_review(TENANT, review.review_id, actor=BOSS)
+    review_version = review.expected_case_version
+    await service.record_waiting_stop(
+        TENANT,
+        case_id,
+        "opportunity_required",
+        actor=SYSTEM,
+    )
+    waiting = next(iter(factory.state["cases"].values()))
+    assert waiting.version == review_version
+    assert waiting.stop_code is SourcingStopCode.OPPORTUNITY_REQUIRED
+    assert waiting.stop_detail == SourcingStopDetail(SourcingStopStage.COST_HANDOFF)
     snapshot = await service.hand_to_costing(
         TENANT,
         case_id,
@@ -2678,6 +2727,8 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
     handed = next(iter(factory.state["cases"].values()))
     assert handed.state is CaseState.HANDED_TO_COSTING
     assert handed.version == review.expected_case_version + 1
+    assert handed.stop_code is None
+    assert handed.stop_detail is None
     assert snapshot["opportunity_id"] == OpportunityId("opp-real")
     assert isinstance(factory.state["events"][-1], SourcingCaseHandedToCosting)
     with pytest.raises(InvalidStateTransition):

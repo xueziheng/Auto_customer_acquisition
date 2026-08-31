@@ -117,7 +117,11 @@ class _Opportunities:
 class _HandoffSourcing:
     def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.waiting_stop_calls: list[tuple[Any, ...]] = []
         self.error = error
+
+    async def record_waiting_stop(self, tenant_id, case_id, reason, *, actor):
+        self.waiting_stop_calls.append((tenant_id, case_id, reason, actor))
 
     async def hand_to_costing(
         self, tenant_id, case_id, opportunity_id, *, expected_need_id, actor
@@ -150,6 +154,9 @@ async def test_handoff_step_requires_exact_need_opportunity_before_sourcing_call
     assert patch == {"sourcing_stop_reason": "opportunity_required"}
     assert opportunities.calls == [(TENANT, NEED_ID, SYSTEM_OPPORTUNITY_ACTOR)]
     assert sourcing.calls == []
+    assert sourcing.waiting_stop_calls == [
+        (TENANT, CASE_ID, "opportunity_required", SYSTEM_SOURCING_ACTOR)
+    ]
 
 
 @pytest.mark.asyncio

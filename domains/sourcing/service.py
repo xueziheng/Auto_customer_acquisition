@@ -272,6 +272,17 @@ class SourcingService(Protocol):
         """先锁内核对 owning Run 的 Need，再原子绑定 Opportunity 并推进终态。"""
         ...
 
+    async def record_waiting_stop(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        reason: str,
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        """持久化仍可恢复的固定停止码，不改变 Case/审核并发版本。"""
+        ...
+
     async def submit_candidate(
         self,
         tenant_id: TenantId,

@@ -1200,6 +1200,16 @@ class HandoffCostingStep:
             permanent_message="寻源成本交接 Opportunity 读取失败",
         )
         if opportunity is None:
+            await _await_dependency(
+                self._sourcing.record_waiting_stop(
+                    run.tenant_id,
+                    case_id,
+                    "opportunity_required",
+                    actor=self._sourcing_actor,
+                ),
+                transient_message="寻源成本交接停止原因暂不可用",
+                permanent_message="寻源成本交接停止原因保存失败",
+            )
             return ("wait", None, {"sourcing_stop_reason": "opportunity_required"})
         if (
             not isinstance(opportunity, OpportunityView)

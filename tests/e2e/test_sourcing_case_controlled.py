@@ -348,6 +348,16 @@ async def _run_controlled_need_to_estimated_cost(
             description="审核后先观察 Opportunity 缺失停止原因",
         )
         assert stopped_run.status == "running"
+        stopped_case = await client.get(f"/sourcing-cases/{case_id}")
+        assert stopped_case.status_code == 200, stopped_case.text
+        assert stopped_case.json()["stop"] == {
+            "code": "opportunity_required",
+            "stage": "cost_handoff",
+            "query_index": None,
+            "provider_http_status": None,
+            "observed_count": None,
+            "configured_limit": None,
+        }
 
         cross_tenant = await client.get(
             f"/sourcing-cases/{case_id}",
@@ -429,6 +439,10 @@ async def _run_controlled_need_to_estimated_cost(
         sheets = await _eventually(cost_ready, description="审核后真实 Costing handoff")
         assert sheets[0]["version_type"] == "estimated"
         assert sheets[0]["quantity"] == 500
+        handed_case = await client.get(f"/sourcing-cases/{case_id}")
+        assert handed_case.status_code == 200, handed_case.text
+        assert handed_case.json()["state"] == "handed_to_costing"
+        assert handed_case.json()["stop"] is None
 
         replayed = await client.post(
             f"/sourcing-cases/{case_id}/review",

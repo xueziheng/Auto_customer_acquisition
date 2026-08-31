@@ -1017,6 +1017,47 @@ async def test_case_and_review_cas_reject_stale_writes_without_overwrite(
     assert count == 0
 
 
+async def test_recoverable_stop_survives_a_concurrent_business_revision(
+    sourcing_engine: AsyncEngine,
+) -> None:
+    """等待投影不能推进审核版本，也不能被先前读取的正常写入静默擦掉。"""
+
+    Uow = _symbol("infra.db.sourcing_uow", "SqlAlchemySourcingUnitOfWork")
+    tenant_id = _tenant()
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    artifact_id = _artifact()
+    await _seed_need(sourcing_engine, tenant_id, need_id)
+    case = _case(tenant_id, need_id, case_id, artifact_id)
+    case.stop_code = None
+    case.stop_detail = None
+    sf = async_sessionmaker(sourcing_engine, expire_on_commit=False)
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.add(tenant_id, case)
+    async with Uow(sf, tenant_id) as uow:
+        stale_business_write = await uow.cases.get(tenant_id, case_id)
+    assert stale_business_write is not None
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.set_recoverable_stop(
+            tenant_id,
+            case_id,
+            expected_version=case.version,
+            stop_code=SourcingStopCode.OPPORTUNITY_REQUIRED,
+            stop_detail=SourcingStopDetail(SourcingStopStage.COST_HANDOFF),
+        )
+    stale_business_write.transition_to(
+        CaseState.DISCOVERING, changed_at=NOW + timedelta(minutes=1)
+    )
+    async with Uow(sf, tenant_id) as uow:
+        await uow.cases.update(tenant_id, stale_business_write)
+    async with Uow(sf, tenant_id) as uow:
+        current = await uow.cases.get(tenant_id, case_id)
+    assert current is not None
+    assert current.version == case.version + 1
+    assert current.stop_code is SourcingStopCode.OPPORTUNITY_REQUIRED
+    assert current.stop_detail == SourcingStopDetail(SourcingStopStage.COST_HANDOFF)
+
+
 async def test_public_plan_confirmation_cas_rejects_a_second_stale_confirmation(
     sourcing_engine: AsyncEngine,
 ) -> None:

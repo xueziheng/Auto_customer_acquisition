@@ -313,7 +313,13 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
         ).scalar_one_or_none()
         return _row_to_case(row) if row is not None else None
 
-    async def update(self, tenant_id: TenantId, case: SourcingCase) -> None:
+    async def update(
+        self,
+        tenant_id: TenantId,
+        case: SourcingCase,
+        *,
+        clear_recoverable_stop: bool = False,
+    ) -> None:
         self._require_tenant(tenant_id)
         if case.tenant_id != tenant_id:
             raise ValueError("案例租户与请求租户不一致")
@@ -335,6 +341,11 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
                 "opened_at",
             }
         }
+        if case.stop_code is None and not clear_recoverable_stop:
+            # stop 是一个不改变业务 revision 的安全 Workflow 投影。先前读取的
+            # 普通业务写不能将它擦除；只有完成该恢复动作的调用方可显式清除。
+            values["stop_code"] = SourcingCaseRow.stop_code
+            values["stop_detail"] = SourcingCaseRow.stop_detail
         result = await self._session.execute(
             update(SourcingCaseRow)
             .where(
@@ -346,6 +357,36 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
         )
         if cast(CursorResult[object], result).rowcount != 1:
             raise SourcingCaseConflictError("案例版本已变化，拒绝过期覆盖")
+
+    async def set_recoverable_stop(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        expected_version: int,
+        stop_code: SourcingStopCode,
+        stop_detail: SourcingStopDetail,
+    ) -> None:
+        """写入不会改变审核选择事实的等待投影，仍以版本和空 stop 条件拒绝覆盖。"""
+
+        self._require_tenant(tenant_id)
+        if expected_version < 1:
+            raise SourcingCaseConflictError("等待停止缺少可比较的案例版本")
+        result = await self._session.execute(
+            update(SourcingCaseRow)
+            .where(
+                SourcingCaseRow.tenant_id == tenant_id,
+                SourcingCaseRow.case_id == case_id,
+                SourcingCaseRow.version == expected_version,
+                SourcingCaseRow.stop_code.is_(None),
+            )
+            .values(
+                stop_code=stop_code.value,
+                stop_detail=_stop_detail_to_json(stop_detail),
+            )
+        )
+        if cast(CursorResult[object], result).rowcount != 1:
+            raise SourcingCaseConflictError("案例等待停止已变化，拒绝覆盖")
 
     async def find_active_for_need(
         self, tenant_id: TenantId, need_id: ValidatedNeedId

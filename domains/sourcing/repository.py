@@ -16,6 +16,8 @@ from domains.sourcing.models import (
     SourcingReview,
     SourcingSearchExecution,
     SourcingSearchReconciliation,
+    SourcingStopCode,
+    SourcingStopDetail,
     SourcingSupplyOption,
     SupplierCandidate,
 )
@@ -55,8 +57,26 @@ class SourcingCaseRepository(Protocol):
         """锁定单个同租户 Case，串行化跨聚合的 canonical Option 准备。"""
         ...
 
-    async def update(self, tenant_id: TenantId, case: SourcingCase) -> None:
-        """按实体版本条件更新，失败返回并发冲突而非覆盖。"""
+    async def update(
+        self,
+        tenant_id: TenantId,
+        case: SourcingCase,
+        *,
+        clear_recoverable_stop: bool = False,
+    ) -> None:
+        """按实体版本条件更新；默认保留并发写入的可恢复等待 stop。"""
+        ...
+
+    async def set_recoverable_stop(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        expected_version: int,
+        stop_code: SourcingStopCode,
+        stop_detail: SourcingStopDetail,
+    ) -> None:
+        """仅在未停止的精确 Case revision 写入安全等待投影，不改变业务版本。"""
         ...
 
     async def find_active_for_need(

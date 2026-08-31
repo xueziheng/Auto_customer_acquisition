@@ -32,6 +32,8 @@ from domains.sourcing.models import (
     SourcingSearchExecutionStatus,
     SourcingSearchReconciliation,
     SourcingStopCode,
+    SourcingStopDetail,
+    SourcingStopStage,
     SourcingSupplyOption,
     SpecComparison,
     SpecMatchLevel,
@@ -700,6 +702,15 @@ def _case_read_view(case: SourcingCase) -> SourcingCaseReadView:
         active_search_plan_id=case.active_search_plan_id,
         need_snapshot=case.need_snapshot,
         stop=stop,
+    )
+
+
+def _is_opportunity_wait_stop(case: SourcingCase) -> bool:
+    """仅识别由成本交接等待写入的安全、可恢复 stop。"""
+
+    return (
+        case.stop_code is SourcingStopCode.OPPORTUNITY_REQUIRED
+        and case.stop_detail == SourcingStopDetail(SourcingStopStage.COST_HANDOFF)
     )
 
 
@@ -2498,10 +2509,17 @@ class SourcingServiceImpl:
                 raise ValidationError("成本交接前必须有已确认的人工审核")
             if case.version != review.expected_case_version:
                 raise InvalidStateTransition("寻源审核绑定的 Case 版本已变化")
+            if case.stop_code is not None and not _is_opportunity_wait_stop(case):
+                raise InvalidStateTransition("寻源案例停止原因不允许直接进入成本交接")
             case.opportunity_id = opportunity_id
+            # Opportunity 缺失只是可恢复的 Workflow 等待；真正交接时必须撤销
+            # 这条安全停止投影，避免已完成 Case 继续显示过期的人工动作。
+            case.stop_code = None
+            case.stop_detail = None
+            case.failed_reason = None
             case.transition_to(CaseState.HANDED_TO_COSTING, changed_at=now)
             case.completed_at = now
-            await uow.cases.update(tenant_id, case)
+            await uow.cases.update(tenant_id, case, clear_recoverable_stop=True)
             await uow.bus.publish(
                 SourcingCaseHandedToCosting(
                     tenant_id=tenant_id,
@@ -2520,6 +2538,41 @@ class SourcingServiceImpl:
                     "成本交接快照缺少终态、版本、产品或价格证据"
                 )
             return snapshot
+
+    async def record_waiting_stop(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        reason: str,
+        *,
+        actor: SourcingActor,
+    ) -> None:
+        """记录可重放的交接等待原因，不能把它误写成终态失败。"""
+
+        self._require(
+            tenant_id, actor, SourcingAction.WORKFLOW_PROGRESS, SourcingScope.SYSTEM
+        )
+        if reason != SourcingStopCode.OPPORTUNITY_REQUIRED.value:
+            raise ValidationError("寻源等待停止原因不属于允许的成本交接状态")
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            if case.state is not CaseState.CANDIDATES_READY:
+                raise InvalidStateTransition(
+                    f"寻源案例处于 {case.state.value}，不能记录成本交接等待"
+                )
+            if _is_opportunity_wait_stop(case):
+                return
+            if case.stop_code is not None or case.stop_detail is not None:
+                raise InvalidStateTransition("寻源案例已有停止原因，不能覆盖成本交接等待")
+            case.stop_code = SourcingStopCode.OPPORTUNITY_REQUIRED
+            case.stop_detail = SourcingStopDetail(SourcingStopStage.COST_HANDOFF)
+            await uow.cases.set_recoverable_stop(
+                tenant_id,
+                case_id,
+                expected_version=case.version,
+                stop_code=case.stop_code,
+                stop_detail=case.stop_detail,
+            )
 
     async def get_handoff_snapshot(
         self,
