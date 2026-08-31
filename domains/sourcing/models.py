@@ -626,7 +626,12 @@ class SupplierCandidate:
                 for item in (facts.get(name), claims.get(name))
             )
 
-        for name in ("product_type", "material", "size", "model"):
+        required_spec_names = ["product_type", "material", "size"]
+        # V2 Need 的型号是可选事实；只有冻结需求声明过它、因而候选带有
+        # 同名比较项时才把它列为核验门槛，不能凭空制造客户需求。
+        if "model" in comparisons:
+            required_spec_names.append("model")
+        for name in required_spec_names:
             items = comparisons.get(name, [])
             if not items:
                 add_missing(name)

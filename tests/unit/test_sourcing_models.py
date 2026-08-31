@@ -162,7 +162,6 @@ def test_candidate_verification_collects_every_missing_item_without_short_circui
         "product_type",
         "material",
         "size",
-        "model",
         "quantity_tier",
         "moq",
         "price_unit",
@@ -178,6 +177,23 @@ def test_candidate_requires_resolved_specs_and_matching_price_currency() -> None
     assert unknown.passes_verification() == (False, ["material"])
     assert mismatch.passes_verification() == (False, ["currency"])
     assert candidate("valid").passes_verification() == (True, [])
+
+
+def test_candidate_without_model_requirement_can_pass_verification() -> None:
+    """V2 Need 未声明型号时，不得把不存在的规格当作候选缺口。"""
+
+    item = candidate("no-model-requirement")
+    item.verified_specs = [
+        comparison for comparison in item.verified_specs if comparison.spec_name != "model"
+    ]
+    item.observed_facts.pop("model")
+    item.match = MatchExplanation(
+        MatchLadderRung.PUBLIC_SOURCING,
+        item.verified_specs,
+        "三项已声明规格已核对",
+    )
+
+    assert item.passes_verification() == (True, [])
 
 
 def test_candidate_verification_rejects_normalized_duplicate_specs_without_overwrite() -> None:
