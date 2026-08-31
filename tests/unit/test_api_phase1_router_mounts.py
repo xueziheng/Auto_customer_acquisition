@@ -3,12 +3,12 @@ from __future__ import annotations
 from apps.api.main import create_app
 
 
-def test_all_phase1_shallow_module_routers_are_mounted() -> None:
+def test_phase1_module_routers_expose_their_real_contracts() -> None:
     paths = create_app().openapi()["paths"]
 
     assert {
-        "/products/status",
-        "/sourcing/status",
+        "/products",
+        "/sourcing-cases",
         "/costing-quotes/opportunities/{opportunity_id}/cost-sheets",
         "/costing-quotes/cost-sheets/{cost_sheet_id}",
         "/costing-quotes/cost-sheets/{cost_sheet_id}/items",
@@ -29,10 +29,9 @@ def test_all_phase1_shallow_module_routers_are_mounted() -> None:
     }.issubset(paths)
 
 
-def test_shallow_status_contract_is_truthful_and_has_no_secret_fields() -> None:
+def test_replaced_shallow_modules_do_not_advertise_contract_only_status() -> None:
     schema = create_app().openapi()
-    status_schema = schema["components"]["schemas"]["Phase1ModuleStatus"]
 
-    assert status_schema["properties"]["state"]["const"] == "contract_only"
-    assert "secret" not in status_schema["properties"]
-    assert "credential" not in status_schema["properties"]
+    assert "Phase1ModuleStatus" not in schema["components"]["schemas"]
+    assert "/products/status" not in schema["paths"]
+    assert "/sourcing/status" not in schema["paths"]
