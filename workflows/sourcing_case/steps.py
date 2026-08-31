@@ -618,10 +618,10 @@ class PrepareCandidatesStep:
 
 
 class AwaitProductCardsStep:
-    """内部路径无 Supplier Candidate，直接进入人工审核等待。"""
+    """内部路径直进审核；公开候选只接受精确产品卡 generation。"""
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
-        _base(run)
+        case_id, _need_id, _hash = _base(run)
         candidate_ids = run.context.get("supplier_candidate_ids")
         internal_ids = run.context.get("internal_product_ids")
         option_ids = run.context.get("option_ids")
@@ -637,7 +637,64 @@ class AwaitProductCardsStep:
             not isinstance(item, str) or not item.strip() for item in candidate_ids
         ):
             raise ValidationError("候选产品卡等待上下文无效")
-        return ("wait", None, {})
+        if candidate_ids != sorted(set(candidate_ids)):
+            raise ValidationError("候选产品卡等待集合无效")
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {})
+        if (
+            not isinstance(event, dict)
+            or event.get("event_type") != "SourcingProductCardsPrepared"
+            or not isinstance(event.get("payload"), dict)
+        ):
+            raise ValidationError("候选产品卡唤醒事件无效")
+        payload = event["payload"]
+        expected_keys = {
+            "case_id",
+            "candidate_ids",
+            "product_ids",
+            "option_ids",
+            "case_version",
+            "candidate_set_hash",
+        }
+        if set(payload) != expected_keys:
+            raise ValidationError("候选产品卡唤醒 payload 无效")
+        product_ids = payload.get("product_ids")
+        prepared_option_ids = payload.get("option_ids")
+        expected_version = run.context.get("candidate_case_version")
+        expected_hash = run.context.get("candidate_set_hash")
+        if (
+            payload.get("case_id") != str(case_id)
+            or payload.get("candidate_ids") != candidate_ids
+            or payload.get("case_version") != expected_version
+            or payload.get("candidate_set_hash") != expected_hash
+        ):
+            raise ValidationError("候选产品卡唤醒 generation 不一致")
+        if (
+            not isinstance(expected_version, int)
+            or isinstance(expected_version, bool)
+            or expected_version < 1
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+            or any(character not in "0123456789abcdef" for character in expected_hash)
+            or not isinstance(product_ids, list)
+            or not isinstance(prepared_option_ids, list)
+            or len(product_ids) != len(candidate_ids)
+            or len(prepared_option_ids) != len(candidate_ids)
+            or any(not isinstance(item, str) or not item.strip() for item in product_ids)
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in prepared_option_ids
+            )
+            or len(set(product_ids)) != len(product_ids)
+            or len(set(prepared_option_ids)) != len(prepared_option_ids)
+        ):
+            raise ValidationError("候选产品卡唤醒稳定 ID 无效")
+        return (
+            "advance",
+            "await_review",
+            {"product_ids": product_ids, "option_ids": prepared_option_ids},
+        )
 
 
 def sourcing_search_request_key(plan_hash: str, query_index: int) -> str:

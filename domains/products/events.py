@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from shared.events.catalog import SourcingCaseCompleted
+from shared.events.catalog import SourcingCandidatesVerified
 
 PUBLISHES = ()
 
-SUBSCRIBES = (SourcingCaseCompleted,)
-"""合格候选 → 候选产品卡（source_only 状态）。幂等：同一案例
-重复投递不重复建卡。"""
+SUBSCRIBES = (SourcingCandidatesVerified,)
+"""封存的精确候选 generation → source_only 产品卡。
+
+``SourcingCandidatesReady`` 是卡与 Option 全部完成后的最终事实，不是建卡
+请求；同 Case+Candidate 的重复 Verified 投递由产品来源键幂等复用。
+"""

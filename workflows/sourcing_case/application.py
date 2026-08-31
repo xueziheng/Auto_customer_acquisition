@@ -6,16 +6,23 @@ from connectors.search_contracts import SearchCostStatus
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
+    SourcingReviewCommand,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import (
     PublicPlanStatus,
     PublicSourcingPlan,
+    SourcingReview,
     SourcingSearchReconciliation,
     SourcingService,
 )
 from shared.errors import PolicyViolation, TransientError, ValidationError
-from shared.schemas.identifiers import SourcingCaseId, SourcingPlanId, TenantId
+from shared.schemas.identifiers import (
+    SourcingCaseId,
+    SourcingPlanId,
+    SourcingReviewId,
+    TenantId,
+)
 from tool_gateway.free_search_contracts import (
     SearchQuotaRepository,
     SearchQuotaSnapshot,
@@ -82,7 +89,7 @@ def _run_is_bound(run: WorkflowRun | None, tenant_id: TenantId, case_id: Sourcin
         and run.workflow_type == _WORKFLOW_TYPE
         and run.workflow_version == _WORKFLOW_VERSION
         and run.subject_ref == str(case_id)
-        and run.status is StepStatus.RUNNING
+        and run.status in {StepStatus.RUNNING, StepStatus.WAITING_EVENT}
         and isinstance(run.context, dict)
         and run.context.get("case_id") == str(case_id)
     )
@@ -123,6 +130,168 @@ class SourcingCaseApplication:
         return await self._sourcing.save_public_plan(
             tenant_id, case_id, command, actor=actor
         )
+
+    @staticmethod
+    def _request_id(value: str) -> str:
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > 200
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValidationError("寻源审核 request_id 无效")
+        return value
+
+    async def _review_event_delivered(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        event_type: str,
+        payload: dict[str, str],
+    ) -> bool:
+        transient = False
+        failed = False
+        delivered: object = False
+        try:
+            delivered = await self._engine.has_delivered_event(
+                tenant_id,
+                _WORKFLOW_TYPE,
+                str(case_id),
+                event_type,
+                payload,
+                workflow_version=_WORKFLOW_VERSION,
+                required_context={"case_id": str(case_id)},
+            )
+        except TransientError:
+            transient = True
+        except Exception:  # noqa: BLE001 -- 丢弃 Engine 存储中的自由错误
+            failed = True
+        if transient:
+            raise SourcingPlanDeliveryError("寻源审核工作流证据暂不可用")
+        if failed:
+            raise ValidationError("寻源审核工作流证据查询失败")
+        if not isinstance(delivered, bool):
+            raise ValidationError("寻源审核工作流证据无效")
+        return delivered
+
+    async def _review_run(
+        self, tenant_id: TenantId, case_id: SourcingCaseId
+    ) -> WorkflowRun:
+        transient = False
+        failed = False
+        run_id = None
+        try:
+            run_id = await self._engine.find_active_run(
+                tenant_id, _WORKFLOW_TYPE, str(case_id)
+            )
+        except TransientError:
+            transient = True
+        except Exception:  # noqa: BLE001 -- 丢弃 Engine 自由错误
+            failed = True
+        if transient:
+            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用")
+        if failed:
+            raise ValidationError("寻源审核工作流查询失败")
+        if run_id is None:
+            raise ValidationError("寻源审核 Workflow Run 绑定无效")
+        run: WorkflowRun | None = None
+        transient = False
+        failed = False
+        try:
+            run = await self._engine.get_run(tenant_id, run_id)
+        except TransientError:
+            transient = True
+        except Exception:  # noqa: BLE001 -- 丢弃 Engine 自由错误
+            failed = True
+        if transient:
+            raise SourcingPlanDeliveryError("寻源审核工作流暂不可用")
+        if failed:
+            raise ValidationError("寻源审核工作流读取失败")
+        if not _run_is_bound(run, tenant_id, case_id):
+            raise ValidationError("寻源审核 Workflow Run 绑定无效")
+        assert run is not None
+        return run
+
+    async def review(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        command: SourcingReviewCommand,
+        *,
+        request_id: str,
+        actor: SourcingActor,
+    ) -> SourcingReview:
+        """先保存/重放人工事实，再仅唤醒精确等待中的 V2 Run。"""
+
+        bounded_request_id = self._request_id(request_id)
+        transient = False
+        failed = False
+        review: SourcingReview | None = None
+        try:
+            review = await self._sourcing.review(
+                tenant_id, case_id, command, actor=actor
+            )
+        except TransientError:
+            transient = True
+        except Exception:  # noqa: BLE001 -- 不传播 Sourcing/存储自由错误
+            failed = True
+        if transient:
+            raise TransientError("寻源审核保存暂不可用")
+        if failed:
+            raise ValidationError("寻源审核保存失败")
+        if (
+            not isinstance(review, SourcingReview)
+            or review.tenant_id != tenant_id
+            or review.case_id != case_id
+            or not isinstance(review.review_id, str)
+            or not review.review_id.strip()
+        ):
+            raise ValidationError("寻源审核事实绑定无效")
+        payload = {
+            "review_id": str(SourcingReviewId(review.review_id)),
+            "request_id": bounded_request_id,
+        }
+        if await self._review_event_delivered(
+            tenant_id, case_id, "SourcingReviewSubmitted", payload
+        ):
+            return review
+        run = await self._review_run(tenant_id, case_id)
+        if run.current_step == "await_review":
+            event_type = "SourcingReviewSubmitted"
+        elif (
+            run.current_step == "handoff_costing"
+            and run.context.get("sourcing_stop_reason") == "opportunity_required"
+        ):
+            event_type = "SourcingHandoffRetryRequested"
+        else:
+            raise ValidationError("寻源审核 Run 不在可唤醒等待边界")
+        if await self._review_event_delivered(
+            tenant_id, case_id, event_type, payload
+        ):
+            return review
+        transient = False
+        failed = False
+        accepted: object = False
+        try:
+            accepted = await self._engine.deliver_event(
+                tenant_id, run.run_id, event_type, payload
+            )
+        except TransientError:
+            transient = True
+        except Exception:  # noqa: BLE001 -- 不传播 Engine 自由错误
+            failed = True
+        if transient:
+            raise SourcingPlanDeliveryError("寻源审核工作流唤醒暂不可用")
+        if failed:
+            raise ValidationError("寻源审核工作流唤醒失败")
+        if not isinstance(accepted, bool):
+            raise ValidationError("寻源审核工作流唤醒结果无效")
+        if not accepted and not await self._review_event_delivered(
+            tenant_id, case_id, event_type, payload
+        ):
+            raise ValidationError("寻源审核工作流未接受唤醒事件")
+        return review
 
     async def confirm_plan(
         self,

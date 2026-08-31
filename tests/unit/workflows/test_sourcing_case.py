@@ -446,6 +446,52 @@ async def test_verify_candidates_step_waits_safely_when_no_candidate_qualifies()
 
 
 @pytest.mark.asyncio
+async def test_await_product_cards_advances_only_on_exact_generation_payload() -> None:
+    """产品卡唤醒如与封存候选或 generation 不同，必须继续等待。"""
+
+    candidate_ids = ["spc-first", "spc-second"]
+    waiting = _run(
+        {
+            **_run().context,
+            "internal_product_ids": [],
+            "supplier_candidate_ids": candidate_ids,
+            "candidate_case_version": 8,
+            "candidate_set_hash": "c" * 64,
+        }
+    )
+    waiting.current_step = "await_product_cards"
+    step = _handlers(
+        _Products(ProductMatchResult((), ())), _Suppliers(), _Sourcing()
+    )["sourcing_case.v2.await_product_cards"]
+
+    assert await step.execute(waiting) == ("wait", None, {})
+
+    waiting.context["event"] = {
+        "event_type": "SourcingProductCardsPrepared",
+        "payload": {
+            "case_id": str(CASE_ID),
+            "candidate_ids": candidate_ids,
+            "product_ids": ["prd-first", "prd-second"],
+            "option_ids": ["sop-first", "sop-second"],
+            "case_version": 8,
+            "candidate_set_hash": "c" * 64,
+        },
+    }
+    assert await step.execute(waiting) == (
+        "advance",
+        "await_review",
+        {
+            "product_ids": ["prd-first", "prd-second"],
+            "option_ids": ["sop-first", "sop-second"],
+        },
+    )
+
+    waiting.context["event"]["payload"]["case_version"] = 9
+    with pytest.raises(ValidationError, match="generation"):
+        await step.execute(waiting)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_error", "error_type", "expected"),
     [

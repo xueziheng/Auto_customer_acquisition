@@ -28,6 +28,7 @@ from domains.sourcing.schemas import (
     OpenSourcingCase,
     PublicSourcingPlanCommand,
     SourcingHandoffSnapshot,
+    SourcingCandidateProductInputs,
     SourcingNeedSnapshot,
     SourcingReviewCommand,
     SourcingUncertainReconciliationCommand,
@@ -216,6 +217,19 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> SourcingSupplyOptionId:
         """SYSTEM 幂等登记真实候选产品卡与供应商候选的供给选项绑定。"""
+        ...
+
+    async def get_candidate_product_inputs(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_ids: tuple[SupplierCandidateId, ...],
+        *,
+        expected_case_version: int,
+        expected_candidate_set_hash: str,
+        actor: SourcingActor,
+    ) -> SourcingCandidateProductInputs:
+        """从仓储重建精确封存 generation 的产品卡输入。"""
         ...
 
     async def register_existing_product_option(

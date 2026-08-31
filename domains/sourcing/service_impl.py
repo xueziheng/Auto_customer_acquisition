@@ -54,6 +54,9 @@ from domains.sourcing.schemas import (
     OpenSourcingCase,
     PublicCandidateDraft,
     PublicSourcingPlanCommand,
+    SourcingCandidateProductInput,
+    SourcingCandidateProductInputs,
+    SourcingCandidateProductPriceInput,
     SourcingHandoffSnapshot,
     SourcingMatchInference,
     SourcingObservedFact,
@@ -1782,6 +1785,106 @@ class SourcingServiceImpl:
                 raise ValidationError("候选已绑定不同的 canonical 产品卡")
             return canonical.option_id
 
+    async def get_candidate_product_inputs(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        candidate_ids: tuple[SupplierCandidateId, ...],
+        *,
+        expected_case_version: int,
+        expected_candidate_set_hash: str,
+        actor: SourcingActor,
+    ) -> SourcingCandidateProductInputs:
+        """从仓储重建事件指定的精确封存候选 generation。"""
+
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.FACT_PUBLISH,
+            SourcingScope.SYSTEM,
+        )
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            if case.workflow_version != 2 or case.state not in {
+                CaseState.VERIFYING,
+                CaseState.CANDIDATES_READY,
+            }:
+                raise InvalidStateTransition(
+                    f"寻源案例处于 {case.state.value}，不能读取候选产品投影"
+                )
+            self._require_candidate_generation(
+                case,
+                expected_case_version=expected_case_version,
+                expected_candidate_set_hash=expected_candidate_set_hash,
+                allow_ready=True,
+            )
+            if candidate_ids != case.sealed_candidate_ids:
+                raise ValidationError("候选产品投影与封存 generation 不一致")
+            candidates = tuple(
+                sorted(
+                    (
+                        item
+                        for item in await uow.candidates.list_for_case(
+                            tenant_id, case_id, False
+                        )
+                        if not item.rejected and item.passes_verification()[0]
+                    ),
+                    key=lambda item: str(item.candidate_id),
+                )
+            )
+            if tuple(item.candidate_id for item in candidates) != candidate_ids:
+                raise ValidationError("仓储候选全集与封存 generation 不一致")
+            need = case.need_snapshot
+            if need is None or not isinstance(need.product_category.value, str):
+                raise ValidationError("封存 Case 缺少产品品类事实")
+            commands: list[SourcingCandidateProductInput] = []
+            for candidate in candidates:
+                if candidate.moq is None or candidate.match is None:
+                    raise ValidationError("封存候选缺少产品卡必需事实")
+                evidence_refs = tuple(
+                    sorted(
+                        {
+                            ArtifactId(snapshot.artifact_ref)
+                            for snapshot in candidate.evidence_snapshots
+                        },
+                        key=str,
+                    )
+                )
+                prices = tuple(
+                    SourcingCandidateProductPriceInput(
+                        minimum_quantity=tier.minimum_quantity,
+                        unit_amount=tier.amount,
+                        currency=tier.currency,
+                        unit=tier.unit,
+                        evidence_ref=tier.evidence_ref,
+                    )
+                    for tier in sorted(
+                        candidate.indicative_price_tiers,
+                        key=lambda item: item.minimum_quantity,
+                    )
+                )
+                commands.append(
+                    SourcingCandidateProductInput(
+                        sourcing_case_id=case_id,
+                        supplier_candidate_id=candidate.candidate_id,
+                        name_zh=candidate.product_title,
+                        name_en=candidate.product_title,
+                        category=need.product_category.value,
+                        spec_summary=candidate.match.summary,
+                        moq=candidate.moq,
+                        evidence_refs=evidence_refs,
+                        indicative_prices=prices,
+                    )
+                )
+            return SourcingCandidateProductInputs(
+                tenant_id=tenant_id,
+                case_id=case_id,
+                candidate_ids=candidate_ids,
+                case_version=expected_case_version,
+                candidate_set_hash=expected_candidate_set_hash,
+                commands=tuple(commands),
+            )
+
     async def register_existing_product_option(
         self,
         tenant_id: TenantId,
@@ -1866,15 +1969,26 @@ class SourcingServiceImpl:
         )
         if not isinstance(command, SourcingReviewCommand):
             raise ValidationError("寻源审核命令无效")
-        now = _aware(self._now())
+        submitted_by = _employee(actor)
         async with self._uow_factory(tenant_id) as uow:
             case = _case_required(await uow.cases.get(tenant_id, case_id))
+            existing = await uow.reviews.get_for_case(tenant_id, case_id)
+            if existing is not None:
+                if (
+                    existing.tenant_id == tenant_id
+                    and existing.case_id == case_id
+                    and existing.primary_option_id == command.primary_option_id
+                    and existing.alternate_option_ids == command.alternate_option_ids
+                    and existing.reason == command.reason
+                    and existing.expected_case_version == command.expected_case_version
+                    and existing.submitted_by == submitted_by
+                ):
+                    return existing
+                raise ValidationError("该寻源案例已有审核事实")
             if case.state is not CaseState.CANDIDATES_READY:
                 raise InvalidStateTransition(
                     f"寻源案例处于 {case.state.value}，不能提交审核"
                 )
-            if await uow.reviews.get_for_case(tenant_id, case_id) is not None:
-                raise ValidationError("该寻源案例已有审核事实")
             selections = (command.primary_option_id, *command.alternate_option_ids)
             for option_id in selections:
                 option = await uow.options.get(tenant_id, option_id)
@@ -1884,12 +1998,13 @@ class SourcingServiceImpl:
                     or not option.is_qualified
                 ):
                     raise ValidationError("审核只能选择本 Case 的合格供给选项")
+            now = _aware(self._now())
             review = SourcingReview.create(
                 review_id=SourcingReviewId(new_id("srv")),
                 tenant_id=tenant_id,
                 case_id=case_id,
                 command=command,
-                submitted_by=_employee(actor),
+                submitted_by=submitted_by,
                 submitted_at=now,
                 actual_case_version=case.version,
             )

@@ -2428,6 +2428,61 @@ async def test_candidate_projection_rejects_stale_generation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_product_inputs_rebuild_exact_sealed_generation() -> None:
+    """从可变 Case 读到非封存候选或重算 generation 会使产品卡混代。"""
+
+    service = _service(_Factory())
+    case_id = await _discovering(service)
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
+    candidate_id = await service.submit_candidate(
+        TENANT, case_id, _candidate(), actor=SOURCING
+    )
+    verified = await service.mark_candidates_verified(
+        TENANT, case_id, (candidate_id,), actor=SYSTEM
+    )
+
+    projection = await service.get_candidate_product_inputs(
+        TENANT,
+        case_id,
+        verified.candidate_ids,
+        expected_case_version=verified.case_version,
+        expected_candidate_set_hash=verified.candidate_set_hash,
+        actor=SYSTEM,
+    )
+
+    assert projection.tenant_id == TENANT
+    assert projection.case_id == case_id
+    assert projection.candidate_ids == verified.candidate_ids
+    assert projection.case_version == verified.case_version
+    assert projection.candidate_set_hash == verified.candidate_set_hash
+    assert len(projection.commands) == 1
+    command = projection.commands[0]
+    assert command.sourcing_case_id == case_id
+    assert command.supplier_candidate_id == candidate_id
+    assert command.name_zh == "Stainless hinge"
+    assert command.name_en == "Stainless hinge"
+    assert command.category == "hinges"
+    assert command.moq == 500
+    assert command.evidence_refs == (
+        ArtifactId("art_01K39P9M5D6K4A91YEQ80EJZ0X"),
+    )
+    assert command.indicative_prices[0].unit_amount == Decimal("1.25")
+
+    with pytest.raises(ValidationError, match="generation"):
+        await service.get_candidate_product_inputs(
+            TENANT,
+            case_id,
+            verified.candidate_ids,
+            expected_case_version=verified.case_version - 1,
+            expected_candidate_set_hash="0" * 64,
+            actor=SYSTEM,
+        )
+
+
+@pytest.mark.asyncio
 async def test_review_and_handoff_require_qualified_selection_and_confirmed_review() -> (
     None
 ):
@@ -2464,6 +2519,37 @@ async def test_review_and_handoff_require_qualified_selection_and_confirmed_revi
     with pytest.raises(InvalidStateTransition):
         await service.hand_to_costing(
             TENANT, case_id, OpportunityId("opp-real"), actor=SYSTEM
+        )
+
+
+@pytest.mark.asyncio
+async def test_review_exact_replay_returns_original_fact_but_changed_command_conflicts() -> None:
+    """同 Case 的重试请求不得重写人工选择事实。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    option_id = await _internal_option(service, case_id, ProductId("prd-main"))
+    await service.mark_candidates_ready(TENANT, case_id, (option_id,), (), actor=SYSTEM)
+    case = factory.state["cases"][(TENANT, case_id)]
+    command = SourcingReviewCommand(
+        primary_option_id=option_id,
+        alternate_option_ids=(),
+        reason="证据最完整",
+        expected_case_version=case.version,
+    )
+
+    first = await service.review(TENANT, case_id, command, actor=SOURCING)
+    replayed = await service.review(TENANT, case_id, command, actor=SOURCING)
+
+    assert replayed == first
+    assert len(factory.state["reviews"]) == 1
+    with pytest.raises(ValidationError, match="已有审核事实"):
+        await service.review(
+            TENANT,
+            case_id,
+            command.model_copy(update={"reason": "改选其他理由"}),
+            actor=SOURCING,
         )
 
 

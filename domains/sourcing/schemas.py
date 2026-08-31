@@ -618,6 +618,103 @@ class IndicativePriceTier(BaseModel):
         return self
 
 
+class SourcingCandidateProductPriceInput(BaseModel):
+    """候选产品卡的单个 INDICATIVE 价格档公共投影。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    minimum_quantity: int = Field(ge=1)
+    unit_amount: WireDecimal
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    unit: str = Field(min_length=1, max_length=50)
+    evidence_ref: ArtifactId
+
+    @model_validator(mode="after")
+    def validate_price(self) -> Self:
+        """参考价必须是正 Decimal 且能回到不可变证据。"""
+
+        if not self.unit_amount.is_finite() or self.unit_amount <= Decimal(0):
+            raise ValueError("unit_amount 必须是有限正 Decimal")
+        exponent = self.unit_amount.as_tuple().exponent
+        if not isinstance(exponent, int):
+            raise TypeError("unit_amount 必须可精确表示为 NUMERIC(28,12)")
+        scale = max(-exponent, 0)
+        integer_digits = max(self.unit_amount.adjusted() + 1, 0)
+        if scale > 12 or integer_digits > 16:
+            raise ValueError("unit_amount 必须可精确表示为 NUMERIC(28,12)")
+        _bounded_text(self.unit, field_name="unit", maximum=50)
+        _bounded_text(str(self.evidence_ref), field_name="evidence_ref", maximum=200)
+        return self
+
+
+class SourcingCandidateProductInput(BaseModel):
+    """寻源域向编排层暴露的严格产品卡输入。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    sourcing_case_id: SourcingCaseId
+    supplier_candidate_id: SupplierCandidateId
+    name_zh: str = Field(min_length=1, max_length=300)
+    name_en: str = Field(min_length=1, max_length=300)
+    category: str = Field(min_length=1, max_length=100)
+    spec_summary: str = Field(min_length=1, max_length=4_000)
+    moq: int = Field(ge=1)
+    evidence_refs: tuple[ArtifactId, ...] = Field(min_length=1)
+    indicative_prices: tuple[SourcingCandidateProductPriceInput, ...] = Field(
+        min_length=1
+    )
+
+    @model_validator(mode="after")
+    def validate_input(self) -> Self:
+        """命令与产品域强类型输入同形，但不跨域导入模型。"""
+
+        for field_name, value, maximum in (
+            ("sourcing_case_id", str(self.sourcing_case_id), 200),
+            ("supplier_candidate_id", str(self.supplier_candidate_id), 200),
+            ("name_zh", self.name_zh, 300),
+            ("name_en", self.name_en, 300),
+            ("category", self.category, 100),
+            ("spec_summary", self.spec_summary, 4_000),
+        ):
+            _bounded_text(value, field_name=field_name, maximum=maximum)
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValueError("evidence_refs 不得重复")
+        evidence = set(self.evidence_refs)
+        if any(item.evidence_ref not in evidence for item in self.indicative_prices):
+            raise ValueError("每个参考价 Evidence 必须属于 evidence_refs")
+        minimums = tuple(item.minimum_quantity for item in self.indicative_prices)
+        if len(set(minimums)) != len(minimums):
+            raise ValueError("indicative_prices 不得重复数量档")
+        return self
+
+
+class SourcingCandidateProductInputs(BaseModel):
+    """封存 generation 及其全部产品卡命令的 tenant-bound 投影。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    tenant_id: TenantId
+    case_id: SourcingCaseId
+    candidate_ids: tuple[SupplierCandidateId, ...] = Field(min_length=1, max_length=3)
+    case_version: int = Field(ge=1)
+    candidate_set_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commands: tuple[SourcingCandidateProductInput, ...] = Field(
+        min_length=1, max_length=3
+    )
+
+    @model_validator(mode="after")
+    def validate_generation(self) -> Self:
+        """严格保证命令集与封存候选集一一对应且顺序一致。"""
+
+        if (
+            tuple(sorted(self.candidate_ids, key=str)) != self.candidate_ids
+            or len(set(self.candidate_ids)) != len(self.candidate_ids)
+        ):
+            raise ValueError("candidate_ids 必须精确排序且不重复")
+        if tuple(item.supplier_candidate_id for item in self.commands) != self.candidate_ids:
+            raise ValueError("产品卡命令必须精确覆盖封存候选集")
+        if any(item.sourcing_case_id != self.case_id for item in self.commands):
+            raise ValueError("产品卡命令必须属于同一封存 Case")
+        return self
+
+
 class CandidateSubmission(BaseModel):
     """V2 候选写命令；价格只接受 ``indicative_price_tiers``。"""
 

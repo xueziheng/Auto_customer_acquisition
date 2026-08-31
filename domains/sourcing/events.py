@@ -17,6 +17,8 @@ PUBLISHES = (
     SourcingCandidatesReady,
     SourcingCaseHandedToCosting,
 )
+"""``SourcingCandidatesVerified`` 封存建卡 generation；
+``SourcingCandidatesReady`` 只表示全部产品卡与供给选项已完整冻结。"""
 """``SourcingCaseCompleted`` 的订阅方：
 - ``domains/costing``（起 ESTIMATED 成本表）
 - ``domains/opportunities``（更新 can_source）
