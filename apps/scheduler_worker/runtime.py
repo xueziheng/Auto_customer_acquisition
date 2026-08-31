@@ -306,6 +306,12 @@ from .quotations import (
 )
 from .quote_notifications import NotificationJobQuoteApprovalNotifier
 from .reply_events import ReplyQualificationEventHandlers
+from .sourcing_runtime import (
+    SourcingCaseComposition,
+    SourcingResearchComposition,
+    build_sourcing_case_composition,
+    build_sourcing_research_chain,
+)
 from .web_discovery import (
     WebDiscoveryToolComposition,
     build_web_discovery_tools,
@@ -582,6 +588,7 @@ class SchedulerDomainDependencies:
     reply_qualification: ReplyQualificationComposition | None = None
     account_discovery: AccountDiscoveryComposition | None = None
     demand_discovery: DemandDiscoveryComposition | None = None
+    sourcing_case: SourcingResearchComposition | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -612,6 +619,10 @@ class SchedulerDomainDependencies:
             )
         ):
             raise ValidationError("scheduler demand_discovery 依赖未完整配置")
+        if self.sourcing_case is not None and not isinstance(
+            self.sourcing_case, SourcingResearchComposition
+        ):
+            raise ValidationError("scheduler sourcing_case 依赖未完整配置")
 
 
 class _AccountDiscoveryWorkflowQueue(AccountDiscoveryQueue):
@@ -1348,6 +1359,31 @@ class SchedulerRuntimeFactory:
                     account_queue=account_queue,
                     free_search_enabled=demand_discovery.web_tools.provider == "tavily",
                 )
+            sourcing_composition: SourcingCaseComposition | None = None
+            sourcing_handlers: dict[str, StepHandler] = {}
+            if config.sourcing is not None:
+                if self._dependencies.sourcing_case is None:
+                    raise ValidationError("scheduler sourcing_case 生产依赖未配置")
+                sourcing_composition = build_sourcing_case_composition(
+                    factory=factory,
+                    tenant_id=config.tenant_id,
+                    settings=config.sourcing,
+                    research=build_sourcing_research_chain(
+                        factory=factory,
+                        tenant_id=config.tenant_id,
+                        settings=config.sourcing,
+                        composition=self._dependencies.sourcing_case,
+                        tool_user=tool_user,
+                        fingerprints=fingerprints,
+                        secret_resolver=secrets,
+                        country_policy=country_policy_reader,
+                        lease_duration=timedelta(seconds=config.tool_lease_seconds),
+                        now=self._now,
+                    ),
+                    opportunities=self._dependencies.opportunity_service,
+                    now=self._now,
+                )
+                sourcing_handlers.update(sourcing_composition.handlers)
             quote_handlers: dict[str, StepHandler] = {}
             if quote_domain is not None and quote_settings is not None:
                 quote_handlers.update(
@@ -1380,6 +1416,7 @@ class SchedulerRuntimeFactory:
                     **demand_handlers,
                     **playbook_handlers,
                     **country_policy_handlers,
+                    **sourcing_handlers,
                     **quote_handlers,
                 },
                 now=self._now,
@@ -1402,6 +1439,11 @@ class SchedulerRuntimeFactory:
             )
             register_playbook_change(workflow, outbox, change_approvals)
             register_country_policy_change(workflow, outbox, change_approvals)
+            if sourcing_composition is not None:
+                sourcing_composition.register(
+                    workflow,
+                    outbox,
+                )
             if (
                 quote_domain is not None
                 and quote_evidence is not None
@@ -1512,9 +1554,13 @@ class SchedulerRuntimeFactory:
                 campaign_driver=campaign_driver,
                 activation=runtime_activation,
                 quote_expiry_driver=(
-                    QuoteExpiryDriver(quotation.domain.quotations, config.tenant_id,
-                        limit=quote_settings.core.expiry_batch_limit)
-                    if quotation is not None and quote_settings is not None else None
+                    QuoteExpiryDriver(
+                        quotation.domain.quotations,
+                        config.tenant_id,
+                        limit=quote_settings.core.expiry_batch_limit,
+                    )
+                    if quotation is not None and quote_settings is not None
+                    else None
                 ),
             )
         except BaseException as error:

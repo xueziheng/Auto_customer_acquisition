@@ -48,6 +48,19 @@ _HUNTER_COMPANION_METADATA = (
     "TRADEOS_HUNTER_API_KEY_SECRET_REF",
     "TRADEOS_HUNTER_API_KEY_VERSION",
 )
+_SOURCING_SETTINGS = "TRADEOS_SOURCING_SETTINGS_JSON"
+_SOURCING_ENABLED_FIELDS = frozenset(
+    {
+        "enabled",
+        "model_identifier",
+        "tavily_secret_ref",
+        "max_search_queries_per_plan",
+        "max_pages_per_plan",
+        "system_actor_id",
+    }
+)
+_MAX_SOURCING_SEARCH_QUERIES_PER_PLAN = 20
+_MAX_SOURCING_PAGES_PER_PLAN = 50
 
 
 def _nonblank(value: str) -> str:
@@ -153,9 +166,7 @@ class HunterContactsSettings:
         if enabled != "true":
             raise ValidationError("scheduler worker 配置无效")
         try:
-            configuration_version = environ[
-                "TRADEOS_HUNTER_CONFIGURATION_VERSION"
-            ]
+            configuration_version = environ["TRADEOS_HUNTER_CONFIGURATION_VERSION"]
             secret_ref = environ["TRADEOS_HUNTER_API_KEY_SECRET_REF"]
             api_key_version = environ["TRADEOS_HUNTER_API_KEY_VERSION"]
             safe_secret_ref = validate_environment_secret_reference(secret_ref)
@@ -165,6 +176,91 @@ class HunterContactsSettings:
         except (KeyError, TypeError, ValidationError):
             raise ValidationError("scheduler worker 配置无效") from None
         return cls(True, configuration, safe_secret_ref)
+
+
+@dataclass(frozen=True)
+class SourcingSettings:
+    """Sourcing V2 的部署边界；只保存引用与硬上限，不解析任何凭证。"""
+
+    model_identifier: str
+    tavily_secret_ref: str = field(repr=False)
+    max_search_queries_per_plan: int
+    max_pages_per_plan: int
+    system_actor_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.model_identifier, str)
+            or len(_nonblank(self.model_identifier)) > 128
+            or not isinstance(self.tavily_secret_ref, str)
+            or validate_environment_secret_reference(self.tavily_secret_ref)
+            != self.tavily_secret_ref
+            or type(self.max_search_queries_per_plan) is not int
+            or not 1
+            <= self.max_search_queries_per_plan
+            <= _MAX_SOURCING_SEARCH_QUERIES_PER_PLAN
+            or type(self.max_pages_per_plan) is not int
+            or not 1 <= self.max_pages_per_plan <= _MAX_SOURCING_PAGES_PER_PLAN
+            or not isinstance(self.system_actor_id, str)
+            or len(_nonblank(self.system_actor_id)) > 128
+        ):
+            raise ValidationError("scheduler worker 配置无效")
+
+    @classmethod
+    def from_json(cls, raw: str) -> Self | None:
+        """严格解析显式启停配置，缺失配置由调用者解释为完全禁用。"""
+
+        def unique_pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate sourcing setting")
+                result[key] = value
+            return result
+
+        if not isinstance(raw, str):
+            raise ValidationError("scheduler worker 配置无效")
+        try:
+            payload = json.loads(raw, object_pairs_hook=unique_pairs)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise ValidationError("scheduler worker 配置无效") from None
+        if not isinstance(payload, dict) or type(payload.get("enabled")) is not bool:
+            raise ValidationError("scheduler worker 配置无效")
+        if payload == {"enabled": False}:
+            return None
+        if (
+            payload.get("enabled") is not True
+            or set(payload) != _SOURCING_ENABLED_FIELDS
+        ):
+            raise ValidationError("scheduler worker 配置无效")
+        model_identifier = payload["model_identifier"]
+        secret_ref = payload["tavily_secret_ref"]
+        search_limit = payload["max_search_queries_per_plan"]
+        page_limit = payload["max_pages_per_plan"]
+        actor_id = payload["system_actor_id"]
+        if (
+            not isinstance(model_identifier, str)
+            or len(_nonblank(model_identifier)) > 128
+            or not isinstance(secret_ref, str)
+            or not isinstance(actor_id, str)
+            or len(_nonblank(actor_id)) > 128
+            or type(search_limit) is not int
+            or not 1 <= search_limit <= _MAX_SOURCING_SEARCH_QUERIES_PER_PLAN
+            or type(page_limit) is not int
+            or not 1 <= page_limit <= _MAX_SOURCING_PAGES_PER_PLAN
+        ):
+            raise ValidationError("scheduler worker 配置无效")
+        try:
+            safe_secret_ref = validate_environment_secret_reference(secret_ref)
+        except ValidationError:
+            raise ValidationError("scheduler worker 配置无效") from None
+        return cls(
+            model_identifier,
+            safe_secret_ref,
+            search_limit,
+            page_limit,
+            actor_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -189,6 +285,7 @@ class SchedulerWorkerConfig:
     unsubscribe_active_key_id: str
     unsubscribe_key_refs: tuple[UnsubscribeKeyReference, ...]
     hunter_contacts: HunterContactsSettings
+    sourcing: SourcingSettings | None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> SchedulerWorkerConfig:
@@ -197,6 +294,11 @@ class SchedulerWorkerConfig:
         ):
             raise ValidationError("scheduler worker 配置无效")
         hunter_contacts = HunterContactsSettings.from_environ(environ)
+        sourcing = (
+            None
+            if _SOURCING_SETTINGS not in environ
+            else SourcingSettings.from_json(environ[_SOURCING_SETTINGS])
+        )
         database_url = environ["DATABASE_URL"]
         tenant = environ["TRADEOS_TENANT_ID"]
         selector = environ["TRADEOS_DKIM_SELECTOR"]
@@ -232,12 +334,8 @@ class SchedulerWorkerConfig:
             raise ValidationError("scheduler worker 配置无效")
         DnsAuthenticationRequest("validation.example", selector)
         lock_key = _integer(environ, "TRADEOS_SCHEDULER_LOCK_KEY", minimum=-(2**63))
-        health_port = _integer(
-            environ, "TRADEOS_SCHEDULER_HEALTH_PORT", minimum=1
-        )
-        tool_lease_seconds = _integer(
-            environ, "TRADEOS_TOOL_LEASE_SECONDS", minimum=1
-        )
+        health_port = _integer(environ, "TRADEOS_SCHEDULER_HEALTH_PORT", minimum=1)
+        tool_lease_seconds = _integer(environ, "TRADEOS_TOOL_LEASE_SECONDS", minimum=1)
         campaign_retry_interval_seconds = _integer(
             environ, "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS", minimum=1
         )
@@ -269,4 +367,5 @@ class SchedulerWorkerConfig:
             active_key_id,
             key_references,
             hunter_contacts,
+            sourcing,
         )

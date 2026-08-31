@@ -13,6 +13,7 @@ from shared.schemas.identifiers import (
     ApprovalId,
     ArtifactId,
     RunId,
+    SourcingCaseId,
     StepId,
     TenantId,
     ToolCallId,
@@ -20,9 +21,18 @@ from shared.schemas.identifiers import (
 
 DiscoveryLane = Literal["importer", "distributor", "ecommerce"]
 ResearchStopReason = Literal[
-    "plan_completed", "budget_exhausted", "no_results", "page_disallowed",
-    "no_readable_pages", "pending_verification", "no_supported_signals",
-    "quota_exhausted", "usage_unknown", "paid_enabled", "request_uncertain", "unsupported",
+    "plan_completed",
+    "budget_exhausted",
+    "no_results",
+    "page_disallowed",
+    "no_readable_pages",
+    "pending_verification",
+    "no_supported_signals",
+    "quota_exhausted",
+    "usage_unknown",
+    "paid_enabled",
+    "request_uncertain",
+    "unsupported",
 ]
 
 
@@ -48,6 +58,44 @@ class RunResearchView(BaseModel):
     uncertain_credits: int = Field(default=0, ge=0)
 
 
+class RunSourcingLadderView(BaseModel):
+    """寻源匹配梯级的安全结果；不包含结论正文或证据定位。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    rung: int = Field(ge=1, le=5)
+    outcome: Literal["no_qualified_supply", "qualified_supply_found"]
+
+
+class RunSourcingStopView(BaseModel):
+    """公开寻源停止原因的结构化白名单，不携带 provider 原文。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    code: str = Field(min_length=1, max_length=40)
+    stage: str | None = Field(default=None, min_length=1, max_length=40)
+    query_index: int | None = Field(default=None, ge=0)
+    provider_http_status: int | None = Field(default=None, ge=100, le=599)
+    observed_count: int | None = Field(default=None, ge=0)
+    configured_limit: int | None = Field(default=None, ge=0)
+
+
+class RunSourcingView(BaseModel):
+    """Sourcing Case V2 的租户绑定安全摘要。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    case_id: SourcingCaseId
+    plan_status: str | None = Field(default=None, min_length=1, max_length=32)
+    ladder: tuple[RunSourcingLadderView, ...] = ()
+    search_attempt_count: int = Field(default=0, ge=0)
+    page_attempt_count: int = Field(default=0, ge=0)
+    candidate_count: int = Field(default=0, ge=0)
+    primary_count: int = Field(default=0, ge=0, le=1)
+    alternate_count: int = Field(default=0, ge=0)
+    consumed_credits: int = Field(default=0, ge=0)
+    reserved_credits: int = Field(default=0, ge=0)
+    uncertain_credits: int = Field(default=0, ge=0)
+    stop_reason: RunSourcingStopView | None = None
+
+
 class RunSummaryView(BaseModel):
     """Run 列表的安全摘要；不含 workflow context、步骤 data 或业务正文。"""
 
@@ -65,6 +113,7 @@ class RunSummaryView(BaseModel):
     retry_count: int
     last_error: str | None
     research: RunResearchView | None = None
+    sourcing: RunSourcingView | None = None
 
 
 class RunStepView(BaseModel):
@@ -231,6 +280,9 @@ __all__ = (
     "RunAuditRepository",
     "RunAuditService",
     "RunDetailView",
+    "RunSourcingLadderView",
+    "RunSourcingStopView",
+    "RunSourcingView",
     "RunStepView",
     "RunSummaryView",
     "RunToolCallView",

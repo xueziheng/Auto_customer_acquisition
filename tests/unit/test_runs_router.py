@@ -21,6 +21,9 @@ from shared.schemas.identifiers import EmployeeId, RunId, TenantId
 from workflows.engine.audit import (
     RunAuditActor,
     RunDetailView,
+    RunSourcingLadderView,
+    RunSourcingStopView,
+    RunSourcingView,
     RunSummaryView,
 )
 
@@ -96,9 +99,7 @@ def _identity(role: str) -> RequestIdentity:
             EmployeeScope.TENANT if role == "boss" else EmployeeScope.SELF,
             role,
         ),
-        opportunity_actor=OpportunityActor(
-            str(employee_id), OpportunityScope(), role
-        ),
+        opportunity_actor=OpportunityActor(str(employee_id), OpportunityScope(), role),
     )
 
 
@@ -169,3 +170,56 @@ def test_invalid_run_id_is_rejected_without_querying_service() -> None:
 
     assert response.status_code == 400
     assert audit.calls == []
+
+
+def test_sourcing_summary_exposes_only_the_safe_whitelist() -> None:
+    view = RunSourcingView(
+        case_id="src_01K39P9M5D6K4A91YEQ80EJZ0X",
+        plan_status="running",
+        ladder=(RunSourcingLadderView(rung=1, outcome="no_qualified_supply"),),
+        search_attempt_count=2,
+        page_attempt_count=3,
+        candidate_count=1,
+        primary_count=1,
+        alternate_count=0,
+        consumed_credits=1,
+        reserved_credits=0,
+        uncertain_credits=0,
+        stop_reason=RunSourcingStopView(
+            code="page_limit",
+            stage="public_search",
+            query_index=1,
+            provider_http_status=None,
+            observed_count=3,
+            configured_limit=3,
+        ),
+    )
+
+    payload = view.model_dump(mode="json")
+
+    assert set(payload) == {
+        "case_id",
+        "plan_status",
+        "ladder",
+        "search_attempt_count",
+        "page_attempt_count",
+        "candidate_count",
+        "primary_count",
+        "alternate_count",
+        "consumed_credits",
+        "reserved_credits",
+        "uncertain_credits",
+        "stop_reason",
+    }
+    serialized = str(payload).casefold()
+    assert all(
+        forbidden not in serialized
+        for forbidden in (
+            "query_text",
+            "page_text",
+            "context",
+            "email",
+            "phone",
+            "secret_ref",
+        )
+    )
