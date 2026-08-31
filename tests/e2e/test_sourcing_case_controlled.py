@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from apps.scheduler_worker.research_acceptance_dependencies import (
     AcceptancePlaybookReader,
@@ -299,18 +299,62 @@ async def _run_controlled_need_to_estimated_cost(
         )
         case_view = await client.get(f"/sourcing-cases/{case_id}")
         assert case_view.status_code == 200, case_view.text
+        review_payload = {
+            "primary_option_id": option["option_id"],
+            "alternate_option_ids": [],
+            "reason": "Task 15 固定公开证据完整，批准仅作内部估算。",
+            "expected_case_version": case_view.json()["version"],
+        }
         review = await client.post(
             f"/sourcing-cases/{case_id}/review",
-            json={
-                "primary_option_id": option["option_id"],
-                "alternate_option_ids": [],
-                "reason": "Task 15 固定公开证据完整，批准仅作内部估算。",
-                "expected_case_version": case_view.json()["version"],
-            },
+            json=review_payload,
             headers={**headers, "Idempotency-Key": "task15-review-confirm"},
         )
         assert review.status_code == 200, review.text
         assert review.json()["confirmed_by"] == str(e2e_stack.employees.boss)
+        review_id = review.json()["review_id"]
+
+        async def opportunity_required() -> WorkflowRunRow | None:
+            async with e2e_stack.factory() as session:
+                run = await session.scalar(
+                    select(WorkflowRunRow).where(
+                        WorkflowRunRow.tenant_id == str(e2e_stack.tenant_id),
+                        WorkflowRunRow.workflow_type == "sourcing_case",
+                        WorkflowRunRow.subject_ref == case_id,
+                    )
+                )
+                handoff_step_status = (
+                    await session.scalar(
+                        select(WorkflowStepRow.status).where(
+                            WorkflowStepRow.tenant_id == str(e2e_stack.tenant_id),
+                            WorkflowStepRow.run_id == run.run_id,
+                            WorkflowStepRow.step_name == "handoff_costing",
+                        )
+                    )
+                    if run is not None
+                    else None
+                )
+            if (
+                run is not None
+                and run.current_step == "handoff_costing"
+                and run.context.get("sourcing_stop_reason") == "opportunity_required"
+                and handoff_step_status == "waiting_event"
+            ):
+                return run
+            return None
+
+        stopped_run = await _eventually(
+            opportunity_required,
+            description="审核后先观察 Opportunity 缺失停止原因",
+        )
+        assert stopped_run.status == "running"
+
+        cross_tenant = await client.get(
+            f"/sourcing-cases/{case_id}",
+            headers={**headers, "X-Tenant-Id": new_id("tn")},
+        )
+        assert cross_tenant.status_code == 403
+        assert cross_tenant.json()["code"] == "tenant_forbidden"
 
         opportunity_body = {
             "request": {
@@ -366,6 +410,14 @@ async def _run_controlled_need_to_estimated_cost(
         opportunity = created.json()
         assert opportunity["need_id"] == need_id
 
+        handoff_retry = await client.post(
+            f"/sourcing-cases/{case_id}/review",
+            json=review_payload,
+            headers={**headers, "Idempotency-Key": "task15-handoff-retry"},
+        )
+        assert handoff_retry.status_code == 200, handoff_retry.text
+        assert handoff_retry.json()["review_id"] == review_id
+
         async def cost_ready() -> list[dict[str, Any]] | None:
             response = await client.get(
                 f"/costing-quotes/opportunities/{opportunity['opportunity_id']}/cost-sheets"
@@ -377,6 +429,14 @@ async def _run_controlled_need_to_estimated_cost(
         sheets = await _eventually(cost_ready, description="审核后真实 Costing handoff")
         assert sheets[0]["version_type"] == "estimated"
         assert sheets[0]["quantity"] == 500
+
+        replayed = await client.post(
+            f"/sourcing-cases/{case_id}/review",
+            json=review_payload,
+            headers={**headers, "Idempotency-Key": "task15-terminal-review-replay"},
+        )
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.json()["review_id"] == review_id
 
     async with e2e_stack.factory() as session:
         product = await session.scalar(
@@ -410,6 +470,23 @@ async def _run_controlled_need_to_estimated_cost(
                 .order_by(ToolCallRow.tool_id)
             )
         )
+        cost_count = await session.scalar(
+            select(func.count())
+            .select_from(CostSheetRow)
+            .where(
+                CostSheetRow.tenant_id == str(e2e_stack.tenant_id),
+                CostSheetRow.opportunity_id == opportunity["opportunity_id"],
+            )
+        )
+        run_count = await session.scalar(
+            select(func.count())
+            .select_from(WorkflowRunRow)
+            .where(
+                WorkflowRunRow.tenant_id == str(e2e_stack.tenant_id),
+                WorkflowRunRow.workflow_type == "sourcing_case",
+                WorkflowRunRow.subject_ref == case_id,
+            )
+        )
 
     assert product is not None and product.candidate_status == "source_only"
     assert source is not None and source.sourcing_case_id == case_id
@@ -419,6 +496,8 @@ async def _run_controlled_need_to_estimated_cost(
     assert cost.source_sourcing_case_id == case_id
     assert cost.source_option_id == option["option_id"]
     assert cost.source_candidate_id == candidate["candidate_id"]
+    assert cost_count == 1
+    assert run_count == 1
     # 此控制链的 Gateway durable receipt 必须只包含两项公开只读能力；
     # 因而同时证明 contact/email/send/procurement/Quote 全部没有调用。
     assert tool_ids == ["web.read_page", "web.search"]
