@@ -12,6 +12,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -38,6 +39,10 @@ from apps.scheduler_worker.main import (
     WorkerRunResult,
     WorkerStartStatus,
     run_scheduler_worker,
+)
+from apps.scheduler_worker.research_acceptance_dependencies import (
+    AcceptanceEmployees,
+    AcceptancePlaybookReader,
 )
 from apps.scheduler_worker.runtime import (
     SchedulerDomainDependencies,
@@ -75,8 +80,20 @@ from domains.opportunities.permissions import (
 )
 from domains.opportunities.scorer import OpportunityScorerImpl
 from domains.opportunities.service_impl import OpportunityServiceImpl
+from domains.organization.permissions import (
+    OrganizationActor,
+    OrganizationScope,
+    OrganizationScopeLevel,
+    Phase1OrganizationAuthorizer,
+)
+from domains.organization.schemas import (
+    PlaybookApprovalFact,
+    PlaybookProposalCreate,
+)
+from domains.organization.service_impl import OrganizationServiceImpl
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
+from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow, TerritoryAssignmentRow
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
@@ -186,14 +203,22 @@ class E2EStack:
     scheduler_runtime: SchedulerRuntime
     scheduler_task: asyncio.Task[WorkerRunResult]
     controls: ControlledSourcingPorts
+    playbook_reader: AcceptancePlaybookReader
+    scheduler_audience: _E2ESchedulerAudience
 
 
 class _E2ESchedulerAudience:
-    """空受众是未订阅的 sourcing 事件的真实 no-op，不替代任何业务服务。"""
+    """Task 15 没有通知受众；任何调用都是额外副作用，必须立即可见。"""
+
+    calls: int
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     async def recipients_for(self, *args: object, **kwargs: object) -> tuple[()]:
         del args, kwargs
-        return ()
+        self.calls += 1
+        raise AssertionError("Task 15 sourcing 受控链不得调用 notification audience")
 
 
 @dataclass
@@ -307,16 +332,6 @@ class _ControlledSourcingModel:
         return await self._controls.extract_candidate(
             system_prompt=system_prompt, need=need, page=page
         )
-
-
-class _ControlledResearchPlaybook:
-    """受控链仅为真实 Gateway 提供已经批准的研究边界。"""
-
-    async def allows_research(
-        self, tenant_id: TenantId, category: str, country: str
-    ) -> bool:
-        del tenant_id, category, country
-        return True
 
 
 def _docker_available() -> bool:
@@ -680,6 +695,63 @@ async def _seed_controlled_public_research_policy(
     assert decision.configured is True and decision.allowed is True
 
 
+async def _seed_controlled_research_playbook(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: TenantId,
+    boss_id: EmployeeId,
+    approver_id: EmployeeId,
+) -> None:
+    """用真实组织服务持久化、审批并激活 Task 15 的受控研究 Playbook。"""
+
+    service = OrganizationServiceImpl(
+        lambda bound_tenant: SqlAlchemyOrganizationUnitOfWork(
+            factory, bound_tenant
+        ),  # type: ignore[arg-type, return-value]
+        Phase1OrganizationAuthorizer(tenant_id),
+        now=lambda: _SEED_TIME,
+    )
+    boss = OrganizationActor(
+        str(boss_id),
+        OrganizationScope(OrganizationScopeLevel.TENANT, tenant_id),
+        "boss",
+    )
+    system = OrganizationActor(
+        "system:task15-controlled-playbook",
+        OrganizationScope(OrganizationScopeLevel.SYSTEM, tenant_id),
+        "system",
+    )
+    proposal = await service.propose_playbook(
+        tenant_id,
+        PlaybookProposalCreate.model_validate(
+            {
+                "company_type": "trading_company",
+                "minimum_deal_amount": Decimal("1000.00"),
+                "minimum_deal_currency": "USD",
+                "sourcing_regions": ["controlled-e2e"],
+                "monthly_budget_credits": 10,
+                "supply_capabilities_note": (
+                    "Task 15 controlled, non-network public research only."
+                ),
+            }
+        ),
+        actor=boss,
+        idempotency_key=IdempotencyKey("task15-controlled-research-playbook-v1"),
+    )
+    activation = await service.activate_playbook(
+        tenant_id,
+        proposal.playbook_version_id,
+        PlaybookApprovalFact(
+            approval_id=ApprovalId(new_id("apr")),
+            approval_type="playbook_change",
+            change_set_ref=proposal.change_set_ref,
+            decided_by=approver_id,
+            decided_at=_SEED_TIME,
+        ),
+        actor=system,
+    )
+    assert activation.playbook_version_id == proposal.playbook_version_id
+
+
 def _start_process(
     command: list[str],
     *,
@@ -881,14 +953,27 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             authorizer=Phase1EmployeeAuthorizer(tenant_id),
             audit=EmployeeStandardAuditLogger(),
         )
+        playbook_reader = AcceptancePlaybookReader(
+            tenant_id,
+            OrganizationServiceImpl(
+                lambda bound_tenant: SqlAlchemyOrganizationUnitOfWork(
+                    factory, bound_tenant
+                ),  # type: ignore[arg-type, return-value]
+                Phase1OrganizationAuthorizer(tenant_id),
+                now=lambda: _SEED_TIME,
+            ),
+            AcceptanceEmployees(factory),
+        )
+        playbook_reader.bind_actor(employees.boss)
+        scheduler_audience = _E2ESchedulerAudience()
         scheduler_context = SchedulerRuntimeFactory(
             scheduler_env,
             SchedulerDomainDependencies(
                 opportunities,
                 RequestScopedHandoffEmployeeReader(employee_scope),
-                _E2ESchedulerAudience(),
+                scheduler_audience,
                 sourcing_case=SourcingResearchComposition(
-                    playbook=_ControlledResearchPlaybook(),
+                    playbook=playbook_reader,
                     search_transport=_ControlledTavilyTransport(controls),
                     page_transport=_ControlledPageTransport(controls),
                     artifacts=raw_artifacts,
@@ -922,6 +1007,8 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             scheduler_runtime=scheduler_runtime,
             scheduler_task=scheduler_task,
             controls=controls,
+            playbook_reader=playbook_reader,
+            scheduler_audience=scheduler_audience,
         )
     finally:
         try:

@@ -11,6 +11,9 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from apps.scheduler_worker.research_acceptance_dependencies import (
+    AcceptancePlaybookReader,
+)
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service_impl import DemandServiceImpl
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
@@ -28,6 +31,7 @@ from shared.schemas.identifiers import ProspectAccountId, new_id
 from tests.e2e.conftest import (
     E2EStack,
     _seed_controlled_public_research_policy,
+    _seed_controlled_research_playbook,
     e2e_stack_lifecycle,
 )
 
@@ -133,6 +137,12 @@ async def _run_controlled_need_to_estimated_cost(
     )
     need_id = await _create_validated_need(e2e_stack)
     await _seed_controlled_public_research_policy(
+        e2e_stack.factory,
+        e2e_stack.tenant_id,
+        e2e_stack.employees.boss,
+        e2e_stack.employees.manager,
+    )
+    await _seed_controlled_research_playbook(
         e2e_stack.factory,
         e2e_stack.tenant_id,
         e2e_stack.employees.boss,
@@ -426,5 +436,10 @@ async def test_controlled_need_to_estimated_cost_uses_real_core_only() -> None:
     async for stack in e2e_stack_lifecycle():
         assert isinstance(stack, E2EStack)
         await _run_controlled_need_to_estimated_cost(stack)
+        # 调度器实际走到 Gateway 时必须读取真实、已激活的 Playbook；不能
+        # 以恒真替身绕过组织域。sourcing 事件也没有订阅者，若意外调用
+        # audience 则测试栈会立即报错，并在这里保留可审计的零调用断言。
+        assert isinstance(stack.playbook_reader, AcceptancePlaybookReader)
+        assert stack.scheduler_audience.calls == 0
         return
     raise AssertionError("Task 15 真实 E2E 栈未启动")
