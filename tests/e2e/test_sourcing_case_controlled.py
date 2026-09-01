@@ -23,6 +23,7 @@ from infra.db.tables import (
     ProductCandidateSourceRow,
     ProductRow,
     SearchQuotaAccountRow,
+    SourcingCaseRow,
     SourcingSupplyOptionRow,
     ToolCallRow,
     WorkflowRunRow,
@@ -360,12 +361,68 @@ async def _run_controlled_need_to_estimated_cost(
             "configured_limit": None,
         }
 
-        cross_tenant = await client.get(
-            f"/sourcing-cases/{case_id}",
-            headers={**headers, "X-Tenant-Id": new_id("tn")},
+        async def owner_state() -> tuple[object, ...]:
+            """跨租户拒绝前后精确读取本租户可变业务状态。"""
+
+            async with e2e_stack.factory() as session:
+                case_state = (
+                    await session.execute(
+                        select(
+                            SourcingCaseRow.version,
+                            SourcingCaseRow.state,
+                            SourcingCaseRow.opportunity_id,
+                            SourcingCaseRow.stop_code,
+                            SourcingCaseRow.stop_detail,
+                        ).where(
+                            SourcingCaseRow.tenant_id == str(e2e_stack.tenant_id),
+                            SourcingCaseRow.case_id == case_id,
+                        )
+                    )
+                ).one()
+                run_state = (
+                    await session.execute(
+                        select(
+                            WorkflowRunRow.run_id,
+                            WorkflowRunRow.current_step,
+                            WorkflowRunRow.status,
+                            WorkflowRunRow.context,
+                            WorkflowRunRow.retry_count,
+                        ).where(
+                            WorkflowRunRow.tenant_id == str(e2e_stack.tenant_id),
+                            WorkflowRunRow.workflow_type == "sourcing_case",
+                            WorkflowRunRow.subject_ref == case_id,
+                        )
+                    )
+                ).one()
+                cost_ids = list(
+                    await session.scalars(
+                        select(CostSheetRow.cost_sheet_id)
+                        .where(CostSheetRow.tenant_id == str(e2e_stack.tenant_id))
+                        .order_by(CostSheetRow.cost_sheet_id)
+                    )
+                )
+                tool_ids_before = list(
+                    await session.scalars(
+                        select(ToolCallRow.tool_call_id)
+                        .where(ToolCallRow.tenant_id == str(e2e_stack.tenant_id))
+                        .order_by(ToolCallRow.tool_call_id)
+                    )
+                )
+            return case_state, run_state, tuple(cost_ids), tuple(tool_ids_before)
+
+        before_cross_tenant_post = await owner_state()
+        cross_tenant = await client.post(
+            f"/sourcing-cases/{case_id}/review",
+            json=review_payload,
+            headers={
+                **headers,
+                "X-Tenant-Id": new_id("tn"),
+                "Idempotency-Key": "task15-cross-tenant-review-post",
+            },
         )
         assert cross_tenant.status_code == 403
         assert cross_tenant.json()["code"] == "tenant_forbidden"
+        assert await owner_state() == before_cross_tenant_post
 
         opportunity_body = {
             "request": {
@@ -420,6 +477,17 @@ async def _run_controlled_need_to_estimated_cost(
         assert created.status_code == 201, created.text
         opportunity = created.json()
         assert opportunity["need_id"] == need_id
+
+        generation_before_restart = e2e_stack.scheduler_generation
+        runtime_before_restart = e2e_stack.scheduler_runtime
+        await e2e_stack.restart_scheduler()
+        assert e2e_stack.scheduler_generation == generation_before_restart + 1
+        assert e2e_stack.scheduler_runtime is not runtime_before_restart
+        assert not e2e_stack.scheduler_task.done()
+        assert (
+            "sourcing_case.v2.check_ladder"
+            in e2e_stack.scheduler_runtime.workflow._handlers
+        )
 
         handoff_retry = await client.post(
             f"/sourcing-cases/{case_id}/review",

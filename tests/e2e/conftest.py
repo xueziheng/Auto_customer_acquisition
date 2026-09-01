@@ -9,14 +9,14 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import BinaryIO
+from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -190,7 +190,7 @@ class ManagedProcess:
             self.process.wait(timeout=5)
 
 
-@dataclass(frozen=True)
+@dataclass
 class E2EStack:
     api_origin: str
     web_origin: str
@@ -203,6 +203,10 @@ class E2EStack:
     vite_process: ManagedProcess
     scheduler_runtime: SchedulerRuntime
     scheduler_task: asyncio.Task[WorkerRunResult]
+    scheduler_context: Any
+    scheduler_stop: asyncio.Event
+    scheduler_generation: int
+    restart_scheduler: Callable[[], Awaitable[None]]
     controls: ControlledSourcingPorts
     playbook_reader: AcceptancePlaybookReader
     scheduler_audience: _E2ESchedulerAudience
@@ -969,9 +973,10 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         )
         playbook_reader.bind_actor(employees.boss)
         scheduler_audience = _E2ESchedulerAudience()
-        scheduler_context = SchedulerRuntimeFactory(
-            scheduler_env,
-            SchedulerDomainDependencies(
+        def scheduler_dependencies() -> SchedulerDomainDependencies:
+            """每次实际 runtime 启动均新建组合根；仅三条外部传输保持受控。"""
+
+            return SchedulerDomainDependencies(
                 opportunities,
                 RequestScopedHandoffEmployeeReader(employee_scope),
                 scheduler_audience,
@@ -982,22 +987,58 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
                     artifacts=raw_artifacts,
                     model_port=_ControlledSourcingModel(controls),
                 ),
-            ),
-        )()
-        scheduler_runtime = await scheduler_context.__aenter__()
-        scheduler_stop = asyncio.Event()
-        scheduler_task = asyncio.create_task(
-            run_scheduler_worker(
-                scheduler_runtime,
-                stop_event=scheduler_stop,
-                install_signal_handlers=False,
             )
+
+        async def start_scheduler() -> tuple[
+            Any, SchedulerRuntime, asyncio.Event, asyncio.Task[WorkerRunResult]
+        ]:
+            """真正进入新的 factory context 并启动新的单副本 worker。"""
+
+            context = SchedulerRuntimeFactory(
+                scheduler_env, scheduler_dependencies()
+            )()
+            runtime = await context.__aenter__()
+            stop = asyncio.Event()
+            task = asyncio.create_task(
+                run_scheduler_worker(
+                    runtime,
+                    stop_event=stop,
+                    install_signal_handlers=False,
+                )
+            )
+            await asyncio.sleep(0)
+            if task.done():
+                await task
+                await context.__aexit__(None, None, None)
+                raise AssertionError("scheduler worker 未进入运行循环")
+            return context, runtime, stop, task
+
+        scheduler_context, scheduler_runtime, scheduler_stop, scheduler_task = (
+            await start_scheduler()
         )
-        await asyncio.sleep(0)
-        if scheduler_task.done():
-            await scheduler_task
-            raise AssertionError("scheduler worker 未进入运行循环")
-        yield E2EStack(
+        stack: E2EStack | None = None
+
+        async def restart_scheduler() -> None:
+            """关闭旧 worker/context 后重新创建 runtime，供 E2E 验证持久重放。"""
+
+            nonlocal scheduler_context, scheduler_runtime, scheduler_stop, scheduler_task
+            if stack is None:
+                raise AssertionError("E2E scheduler 重启在栈初始化前调用")
+            old_runtime = scheduler_runtime
+            await _shutdown_scheduler(scheduler_task, scheduler_stop)
+            await scheduler_context.__aexit__(None, None, None)
+            scheduler_context, scheduler_runtime, scheduler_stop, scheduler_task = (
+                await start_scheduler()
+            )
+            if scheduler_runtime is old_runtime:
+                raise AssertionError("E2E scheduler runtime 未实际重建")
+            stack.scheduler_context = scheduler_context
+            stack.scheduler_runtime = scheduler_runtime
+            stack.scheduler_stop = scheduler_stop
+            stack.scheduler_task = scheduler_task
+            stack.scheduler_generation += 1
+
+        stack = E2EStack(
             api_origin=api_origin,
             web_origin=web_origin,
             tenant_id=tenant_id,
@@ -1009,10 +1050,15 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             vite_process=vite_process,
             scheduler_runtime=scheduler_runtime,
             scheduler_task=scheduler_task,
+            scheduler_context=scheduler_context,
+            scheduler_stop=scheduler_stop,
+            scheduler_generation=1,
+            restart_scheduler=restart_scheduler,
             controls=controls,
             playbook_reader=playbook_reader,
             scheduler_audience=scheduler_audience,
         )
+        yield stack
     finally:
         try:
             if scheduler_task is not None and scheduler_stop is not None:
