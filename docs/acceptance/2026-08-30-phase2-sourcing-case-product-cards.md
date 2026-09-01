@@ -47,7 +47,7 @@ pytest tests/e2e/test_sourcing_case_controlled.py::test_controlled_need_to_estim
 pytest tests/unit/test_quotation_linux_support.py -q -rs
 24 passed in 2.25s
 pytest tests/integration/test_quote_source_readers_linux.py -q -rs
-1 passed in 134.79s, 0 skipped
+1 passed in 97.25s, 0 skipped（`897eb0a` 后的最终正式复跑；134.79s 为此前历史结果）
 ```
 
 Linux source gate 的 network boundary 是两段式。显式开发 bootstrap 只取固定官方 Python digest 和仓库内的
@@ -92,7 +92,7 @@ reason: explicit_market_category_and_research_budget_not_provided
 | `python3 scripts/scan_sensitive.py` | PASS，退出码 0 |
 | `pytest -q -rs` | **`7946 passed in 2725.08s (0:45:25)`**，0 failed，0 skipped（无 skipped 区段）；这是修复轮 3 后唯一作为最终完整计数的自然结束进程。 |
 | migrations root | PASS，81 passed，77.02s，0 skipped |
-| Task13 root：scheduler/runtime/outbox/run tests | PASS，79 passed，88.21s，0 skipped |
+| Task13 root：scheduler/runtime/outbox/run tests | PASS，77 passed，62.01s，0 skipped |
 | Task14 root：sourcing/products router tests | PASS，9 passed，9.39s，0 skipped |
 | `npm run gen:api` / `npm test` / `npm run typecheck` / `npm run build` / `npm run lint` | 全部 PASS；Vitest 23 files、282 tests；lint 0 errors、195 warnings。 |
 
@@ -120,4 +120,5 @@ reason: explicit_market_category_and_research_budget_not_provided
 - P85 所列的真实 Tavily/真实供应商页面、真实模型、真实直接供应商报价、真实联系人/邮件/采购、客户 Quote 均未测试且未调用；它们需要新的明确授权。
 - Browser 生命周期和测试日志均在 Browser session 或 `/tmp`，未写入仓库。全部 42 个 `output/playwright/t10-*` 目录原样保留、未暂存、未删除；其中 41 个目录当前为未跟踪，`t10-1c6ab00109e941cca22b87cc795b56c3` 含既有已跟踪视觉工件：`t10-07fa7625fd954e77906e0e2f57e1d393`、`t10-0a2834fb147e4460848e56aeadc076dd`、`t10-0bbfb12386fd4afc972c2dc0b4d27304`、`t10-188cce469d99479da14bce6443503661`、`t10-18d07560bb8e494daa654c02bf232061`、`t10-1c6ab00109e941cca22b87cc795b56c3`、`t10-1d229e8307c648f5b23ccd6286c864c9`、`t10-1dc0b1435b3141dd824aaa9b3d0ddb1a`、`t10-1f080820958a4998971724ba64cddd89`、`t10-212d11a8650b44c5938c5439d6e6794e`、`t10-30a9801cc4a24dbdb774da5d03b6b20c`、`t10-44b684564b704ca19fe27b575c0de355`、`t10-46d14f488a2b412b9fa21fe89473342b`、`t10-47a087010a954f1fbbe34e76db7fb417`、`t10-51e4169d6811441d86f34438ad24ffb9`、`t10-572210897d1544bf8c68d36833e19c93`、`t10-5a796840f5314efbbc70e4630b60ca6e`、`t10-5aa94ee5c00b4796a91ce70ddfb4a43b`、`t10-5f7a69c01ac6431e829d76251537ed71`、`t10-607358735a1249e9874605d3895b09f8`、`t10-60c68cbcfe11447ea5603236102bac21`、`t10-6a426e1869b54e7ebf643e3d7c140f0a`、`t10-7382073af5e046b4ae72b39c0eb83f1c`、`t10-7464bef9b74344669179b3ac04fa6392`、`t10-7726591a7b4f4479bfecbaed8bea8068`、`t10-92b1e73c438042958b541ac73ac01b77`、`t10-9d527eb01e0f4de5a68f7fbbc53fb754`、`t10-a320c0334c5f4c6ebf78e67ef47d370e`、`t10-ad2ec8cfce144ac49bea4d7979ff4b0a`、`t10-b084421611a8409e98e6c53f4944c34f`、`t10-b920f6b4629d40b0a9409f1237222407`、`t10-c0da091c5b66450e9068a38fb707c6b5`、`t10-c1fb347fa5504e7cbb8c41ef1ccc35c5`、`t10-c3f364b9ff7b4d2683637cc60ae97508`、`t10-d1c9b9a89f0b49769b57ff9b7ce4619f`、`t10-d6eda81d25e14d9680de58438471cd65`、`t10-da548d26fa83450e8110b1ec26b3315f`、`t10-dbd3b59a412d411ab15fdf47feaccfe6`、`t10-ea989ed470ca4693868be7226c639bdb`、`t10-ede41480cb5147e2b9595fad52f88852`、`t10-f429e69bbc4a4befb6e612d34b28baa9`、`t10-fe53163de0834f6e99236adac7e531d0`。
 - Git 每次读取可能报告已有 AppleDouble `._pack-*.idx` non-monotonic warning；没有清理或修改任何 `.git/objects` 文件。
+- 本轮最终 inventory（优先于上方历史清单）：物理 49 个 `t10-*`；48 个未跟踪、1 个既有跟踪。所有目录均保留且未暂存、未删除；完整目录名以本次 `find output/playwright -maxdepth 1 -type d -name 't10-*'` 的只读输出为准。
 - lint 的 195 个 warning 保持为 warning，未降低 lint/scanner/mypy/boundary 规则。
