@@ -410,6 +410,13 @@ def test_fixed_child_entry_cannot_reenter_pytest(mode):
     assert not any("pytest" in value for value in command)
 
 
+def test_browser_cold_source_build_keeps_full_workflow_and_cleanup_budget():
+    """冷源码层可占较长准备时间，仍不得挤占真实表单闭环或45秒回收窗口。"""
+    assert lifecycle.TOTAL_SECONDS["browser"] == 360
+    assert lifecycle.CLEANUP_SECONDS == 45
+    assert lifecycle.TOTAL_SECONDS["browser"] - lifecycle.CLEANUP_SECONDS == 315
+
+
 @pytest.mark.parametrize("mode", ["../browser", "browser;command", "relay", "arbitrary"])
 async def test_invalid_mode_never_launches_process(mode):
     with pytest.raises(ValueError):

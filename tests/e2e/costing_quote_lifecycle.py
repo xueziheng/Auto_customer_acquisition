@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-TOTAL_SECONDS = {"integration": 300, "browser": 300, "visual": 900}
+TOTAL_SECONDS = {"integration": 300, "browser": 360, "visual": 900}
 CLEANUP_SECONDS = 45
 TERM_SECONDS = 5
 OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output/playwright"
