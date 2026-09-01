@@ -74,7 +74,7 @@ NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
 
 
 def _candidate_submission_for_runtime_need(artifact_id: ArtifactId):
-    """使生产装配验收候选逐项复述该测试实际冻结的 application。"""
+    """使生产装配验收候选逐项复述该测试实际冻结的 Need 规格。"""
 
     from tests.integration.test_sourcing_service_persistence import (
         _candidate_submission,
@@ -771,9 +771,10 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
             text(
                 "INSERT INTO validated_needs "
                 "(tenant_id, need_id, account_id, product_category, source_message_id, "
-                "status, application, quantity, created_at) VALUES "
+                "status, application, material, size_spec, quantity, created_at) VALUES "
                 "(:tenant, :need, 'account-root-sourcing', CAST(:category AS jsonb), "
                 "'message-root-sourcing', 'sourcing_ready', CAST(:application AS jsonb), "
+                "CAST(:material AS jsonb), CAST(:size_spec AS jsonb), "
                 "CAST(:quantity AS jsonb), :now)"
             ),
             {
@@ -782,6 +783,12 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
                 "category": json.dumps({"value": "hinges", "provenance": provenance}),
                 "application": json.dumps(
                     {"value": "marine doors", "provenance": provenance}
+                ),
+                "material": json.dumps(
+                    {"value": "required-material", "provenance": provenance}
+                ),
+                "size_spec": json.dumps(
+                    {"value": "required-size", "provenance": provenance}
                 ),
                 "quantity": json.dumps({"value": 5000, "provenance": provenance}),
                 "now": NOW,
