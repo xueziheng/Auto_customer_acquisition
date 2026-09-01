@@ -50,14 +50,7 @@ from infra.db.tables import (
     WorkflowStepRow,
 )
 from shared.errors import ValidationError
-from shared.events.catalog import (
-    EvidenceLevel,
-    NeedBecameSourcingReady,
-    NeedValidated,
-    SourcingCandidatesReady,
-    SourcingCandidatesVerified,
-    SourcingCaseHandedToCosting,
-)
+from shared.events.catalog import EvidenceLevel, NeedBecameSourcingReady, NeedValidated
 from shared.schemas.identifiers import (
     ArtifactId,
     OpportunityId,
@@ -262,13 +255,13 @@ class _Engine:
 
 class _Outbox:
     def __init__(self) -> None:
-        self.events: list[type[object]] = []
+        self.events: list[tuple[type[object], str]] = []
 
     def register_handler(
         self, event_type: type[object], name: str, handler: object
     ) -> None:
         assert name and handler is not None
-        self.events.append(event_type)
+        self.events.append((event_type, name))
 
 
 def _research(
@@ -635,12 +628,16 @@ async def test_composition_uses_real_services_and_registers_complete_events(
     assert [type(item).__name__ for item in engine.definitions] == [
         "WorkflowDefinition"
     ]
-    assert outbox.events == [
-        NeedValidated,
-        NeedBecameSourcingReady,
-        SourcingCandidatesVerified,
-        SourcingCandidatesReady,
-        SourcingCaseHandedToCosting,
+    assert [(event.__name__, name) for event, name in outbox.events] == [
+        ("NeedValidated", "sourcing_case.need_validated"),
+        ("NeedBecameSourcingReady", "sourcing_case.need_ready"),
+        ("SourcingCandidatesVerified", "sourcing_case.product_projector"),
+        ("SourcingCandidatesReady", "sourcing_case.ready_audit"),
+        ("SourcingCaseHandedToCosting", "sourcing_case.costing_handoff"),
+        ("DemandSignalCaptured", "sourcing_case.demand_signal_audit"),
+        ("NeedHypothesisCreated", "sourcing_case.hypothesis_audit"),
+        ("SourcingCaseOpened", "sourcing_case.case_opened_audit"),
+        ("OpportunityQualified", "sourcing_case.opportunity_qualified_audit"),
     ]
     assert gateway.calls == 0
     assert model.calls == 0

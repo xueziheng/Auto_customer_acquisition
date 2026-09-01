@@ -9,7 +9,14 @@ import pytest
 
 from apps.scheduler_worker.config import SchedulerWorkerConfig
 from shared.errors import ValidationError
-from shared.events.catalog import SourcingCandidatesReady
+from shared.events.catalog import (
+    DemandSignalCaptured,
+    DomainEvent,
+    NeedHypothesisCreated,
+    OpportunityQualified,
+    SourcingCandidatesReady,
+    SourcingCaseOpened,
+)
 from shared.schemas.identifiers import (
     SourcingCaseId,
     SourcingSupplyOptionId,
@@ -208,6 +215,47 @@ def test_ready_acknowledgement_is_type_and_tenant_only() -> None:
         await ack.handle(event)
         with pytest.raises(ValidationError, match="SourcingCandidatesReady"):
             await ack.handle(object())
+
+    asyncio.run(consume())
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        DemandSignalCaptured,
+        NeedHypothesisCreated,
+        SourcingCaseOpened,
+        OpportunityQualified,
+    ],
+)
+def test_lifecycle_audit_acknowledgement_is_explicit_type_and_tenant_only(
+    event_type: type[DomainEvent],
+) -> None:
+    """阶段确认只接收已注册的事实，不能成为全局 no-handler 旁路。"""
+
+    from apps.scheduler_worker.sourcing_runtime import (
+        SourcingLifecycleAuditAcknowledgement,
+    )
+
+    tenant = TenantId("tn_01K2C5R6J7ABCDEFGHJKMNPQRS")
+    ack = SourcingLifecycleAuditAcknowledgement(tenant, event_type)
+
+    import asyncio
+
+    async def consume() -> None:
+        await ack.handle(
+            event_type(
+                tenant_id=tenant,
+                occurred_at=datetime(2026, 8, 31, tzinfo=UTC),
+            )
+        )
+        with pytest.raises(ValidationError, match=event_type.__name__):
+            await ack.handle(
+                SourcingCandidatesReady(
+                    tenant_id=tenant,
+                    occurred_at=datetime(2026, 8, 31, tzinfo=UTC),
+                )
+            )
 
     asyncio.run(consume())
 

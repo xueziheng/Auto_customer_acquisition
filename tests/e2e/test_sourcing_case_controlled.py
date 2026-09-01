@@ -19,6 +19,7 @@ from domains.demand.service_impl import DemandServiceImpl
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.tables import (
     CostSheetRow,
+    OutboxEventRow,
     ProductCandidateSourceRow,
     ProductRow,
     SearchQuotaAccountRow,
@@ -36,6 +37,8 @@ from tests.e2e.conftest import (
 )
 
 _NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
+
+
 async def _eventually[T](
     predicate: Callable[[], Awaitable[T | None]],
     *,
@@ -278,9 +281,7 @@ async def _run_controlled_need_to_estimated_cost(
                     select(WorkflowStepRow.status)
                     .join(
                         WorkflowRunRow,
-                        (
-                            WorkflowRunRow.tenant_id == WorkflowStepRow.tenant_id
-                        )
+                        (WorkflowRunRow.tenant_id == WorkflowStepRow.tenant_id)
                         & (WorkflowRunRow.run_id == WorkflowStepRow.run_id),
                     )
                     .where(
@@ -501,10 +502,29 @@ async def _run_controlled_need_to_estimated_cost(
                 WorkflowRunRow.subject_ref == case_id,
             )
         )
+        dead_outbox_event_types = list(
+            await session.scalars(
+                select(OutboxEventRow.event_type)
+                .where(
+                    OutboxEventRow.tenant_id == str(e2e_stack.tenant_id),
+                    OutboxEventRow.status == "dead",
+                )
+                .order_by(OutboxEventRow.event_type)
+            )
+        )
+        outbox_event_statuses = list(
+            await session.execute(
+                select(OutboxEventRow.event_type, OutboxEventRow.status)
+                .where(OutboxEventRow.tenant_id == str(e2e_stack.tenant_id))
+                .order_by(OutboxEventRow.event_type)
+            )
+        )
 
     assert product is not None and product.candidate_status == "source_only"
     assert source is not None and source.sourcing_case_id == case_id
-    assert persisted_option is not None and persisted_option.source == "supplier_candidate"
+    assert (
+        persisted_option is not None and persisted_option.source == "supplier_candidate"
+    )
     assert cost is not None
     assert cost.version_type == "estimated"
     assert cost.source_sourcing_case_id == case_id
@@ -512,6 +532,10 @@ async def _run_controlled_need_to_estimated_cost(
     assert cost.source_candidate_id == candidate["candidate_id"]
     assert cost_count == 1
     assert run_count == 1
+    assert dead_outbox_event_types == []
+    assert all(status == "delivered" for _, status in outbox_event_statuses), (
+        outbox_event_statuses
+    )
     # 此控制链的 Gateway durable receipt 必须只包含两项公开只读能力；
     # 因而同时证明 contact/email/send/procurement/Quote 全部没有调用。
     assert tool_ids == ["web.read_page", "web.search"]

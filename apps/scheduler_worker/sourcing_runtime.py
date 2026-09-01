@@ -95,11 +95,16 @@ from infra.db.tables import (
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import (
+    DemandSignalCaptured,
+    DomainEvent,
     NeedBecameSourcingReady,
+    NeedHypothesisCreated,
     NeedValidated,
+    OpportunityQualified,
     SourcingCandidatesReady,
     SourcingCandidatesVerified,
     SourcingCaseHandedToCosting,
+    SourcingCaseOpened,
 )
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -174,6 +179,29 @@ class SourcingCandidatesReadyAuditAcknowledgement:
         if not isinstance(event, SourcingCandidatesReady):
             raise ValidationError("审计确认只接受 SourcingCandidatesReady")
         if event.tenant_id != self._tenant_id:
+            return
+
+
+class SourcingLifecycleAuditAcknowledgement:
+    """确认本阶段已消费一个明确的寻源前置/交接事实。
+
+    这是显式订阅而非全局 ``no-handler`` 豁免：Outbox 会为每个具名处理器留存
+    durable delivery 记录。本确认不写业务状态、不调用外部端口，其他事件仍由
+    Outbox 的 no-handler 失败关闭策略处理。
+    """
+
+    def __init__(
+        self,
+        tenant_id: TenantId,
+        event_type: type[DomainEvent],
+    ) -> None:
+        self._tenant_id = tenant_id
+        self._event_type = event_type
+
+    async def handle(self, event: object) -> None:
+        if type(event) is not self._event_type:
+            raise ValidationError(f"审计确认只接受 {self._event_type.__name__}")
+        if getattr(event, "tenant_id", None) != self._tenant_id:
             return
 
 
@@ -709,7 +737,7 @@ class SourcingCaseComposition:
         engine: WorkflowEngine,
         outbox: object,
     ) -> None:
-        """注册完整且语义诚实的 V2 definition 与五类订阅。"""
+        """注册完整且语义诚实的 V2 definition 与显式阶段订阅。"""
         engine.register(build_sourcing_case_definition())
         register = getattr(outbox, "register_handler", None)
         if not callable(register):
@@ -730,6 +758,18 @@ class SourcingCaseComposition:
             product_actor=self.product_actor,
         )
         ready = SourcingCandidatesReadyAuditAcknowledgement(self.tenant_id)
+        demand_signal = SourcingLifecycleAuditAcknowledgement(
+            self.tenant_id, DemandSignalCaptured
+        )
+        hypothesis = SourcingLifecycleAuditAcknowledgement(
+            self.tenant_id, NeedHypothesisCreated
+        )
+        case_opened = SourcingLifecycleAuditAcknowledgement(
+            self.tenant_id, SourcingCaseOpened
+        )
+        opportunity_qualified = SourcingLifecycleAuditAcknowledgement(
+            self.tenant_id, OpportunityQualified
+        )
         costing = SourcingCostHandoffHandler(
             sourcing=self.sourcing,
             costing=self.costing,
@@ -744,6 +784,26 @@ class SourcingCaseComposition:
         )
         register(SourcingCandidatesReady, "sourcing_case.ready_audit", ready)
         register(SourcingCaseHandedToCosting, "sourcing_case.costing_handoff", costing)
+        register(
+            DemandSignalCaptured,
+            "sourcing_case.demand_signal_audit",
+            demand_signal,
+        )
+        register(
+            NeedHypothesisCreated,
+            "sourcing_case.hypothesis_audit",
+            hypothesis,
+        )
+        register(
+            SourcingCaseOpened,
+            "sourcing_case.case_opened_audit",
+            case_opened,
+        )
+        register(
+            OpportunityQualified,
+            "sourcing_case.opportunity_qualified_audit",
+            opportunity_qualified,
+        )
 
 
 def build_sourcing_case_composition(
