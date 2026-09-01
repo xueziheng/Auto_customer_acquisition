@@ -14,8 +14,7 @@ from sqlalchemy import func, select
 from apps.scheduler_worker.research_acceptance_dependencies import (
     AcceptancePlaybookReader,
 )
-from domains.demand.models import NeedStatus, ValidatedNeed
-from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
+from infra.db.outbox import PostgresEventBus
 from infra.db.tables import (
     CostSheetRow,
     OutboxEventRow,
@@ -25,18 +24,17 @@ from infra.db.tables import (
     SourcingCaseRow,
     SourcingSupplyOptionRow,
     ToolCallRow,
+    ValidatedNeedRow,
     WorkflowRunRow,
     WorkflowStepRow,
 )
 from shared.events.catalog import NeedValidated
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
-    MessageId,
     ProspectAccountId,
     ValidatedNeedId,
     new_id,
 )
-from shared.schemas.provenance import FactualField, Provenance, SourceType
 from tests.e2e.conftest import (
     E2EStack,
     _seed_controlled_public_research_policy,
@@ -65,49 +63,60 @@ async def _eventually[T](
 
 
 async def _create_validated_need(stack: Any) -> str:
-    """合法落入已验证前置状态，只发布本子项目消费的 NeedValidated。"""
+    """以真实 PostgreSQL 的 ValidatedNeed 前置状态只发布 NeedValidated。"""
 
-    source_message_id = MessageId("msg_task15_need")
-    provenance = Provenance(
-        source_type=SourceType.CONVERSATION,
-        source_id=str(source_message_id),
-        extracted_by="human",
-        extracted_at=_NOW,
-    )
+    source_message_id = "msg_task15_need"
+    need_id = ValidatedNeedId(new_id("need"))
+    account_id = ProspectAccountId(new_id("acc"))
 
-    def fact[T](value: T) -> FactualField[T]:
-        return FactualField(value=value, provenance=provenance)
+    def fact(value: str | int) -> dict[str, object]:
+        return {
+            "value": value,
+            "provenance": {
+                "source_type": "conversation",
+                "source_id": source_message_id,
+                "extracted_by": "human",
+                "extracted_at": _NOW.isoformat(),
+                "confirmed_by": None,
+                "confirmed_at": None,
+                "source_url": None,
+                "page_hash": None,
+                "source_quote": None,
+            },
+        }
 
-    need = ValidatedNeed(
-        need_id=ValidatedNeedId(new_id("need")),
-        tenant_id=stack.tenant_id,
-        account_id=ProspectAccountId(new_id("acc")),
-        product_category=fact("hinges"),
-        source_message_id=source_message_id,
-        created_at=_NOW,
-        status=NeedStatus.SOURCING_READY,
-        application=fact("marine"),
-        material=fact("304 stainless steel"),
-        size_spec=fact("4 inch"),
-        quantity=fact(500),
-    )
-    assert need.completeness == 3
-    async with SqlAlchemyDemandUnitOfWork(
-        stack.factory, stack.tenant_id, now=lambda: _NOW
-    ) as uow:
-        await uow.needs.add(need)
-        await uow.bus.publish(
+    async with stack.factory() as session:
+        # 受控寻源子项目从已验证 Need 开始。这是真实 PG 数据状态，不构造
+        # DemandSignal/Hypothesis，也不越过 domain 的公开 service 边界。
+        session.add(
+            ValidatedNeedRow(
+                tenant_id=str(stack.tenant_id),
+                need_id=str(need_id),
+                account_id=str(account_id),
+                product_category=fact("hinges"),
+                source_message_id=source_message_id,
+                source_conversation_id=None,
+                status="sourcing_ready",
+                created_at=_NOW,
+                application=fact("marine"),
+                material=fact("304 stainless steel"),
+                size_spec=fact("4 inch"),
+                quantity=fact(500),
+            )
+        )
+        await PostgresEventBus(session, stack.tenant_id, now=lambda: _NOW).publish(
             NeedValidated(
                 tenant_id=stack.tenant_id,
                 occurred_at=_NOW,
-                need_id=need.need_id,
-                account_id=need.account_id,
+                need_id=need_id,
+                account_id=account_id,
                 category="hinges",
                 evidence_level=EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING,
-                completeness=need.completeness,
+                completeness=3,
             )
         )
-    return str(need.need_id)
+        await session.commit()
+    return str(need_id)
 
 
 async def _seed_confirmed_free_tavily_usage(stack: Any) -> None:
