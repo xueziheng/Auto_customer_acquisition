@@ -126,6 +126,8 @@ def _open_command(*, completeness: int = 3, quantity: int = 5000) -> OpenSourcin
             completeness=completeness,
             derivation_version="need-completeness-v1",
             product_category=NeedFact(value="hinges", provenance=_provenance()),
+            material=NeedFact(value="required-material", provenance=_provenance()),
+            size_spec=NeedFact(value="required-size", provenance=_provenance()),
             quantity=NeedFact(value=quantity, provenance=_provenance()),
             snapshot_hash="a" * 64,
         ),
@@ -1060,6 +1062,45 @@ async def test_submit_candidate_rejects_required_value_drift_from_frozen_need() 
 
     with pytest.raises(ValidationError, match="冻结需求"):
         await service.submit_candidate(TENANT, case_id, drifted, actor=SYSTEM)
+
+    assert factory.state["candidates"] == {}
+
+
+@pytest.mark.asyncio
+async def test_submit_candidate_rejects_material_and_size_not_declared_by_frozen_need() -> (
+    None
+):
+    """完整度 3 不能让候选输入把未验证规格伪造成客户需求。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    incomplete_need = _open_command().need.model_copy(
+        update={"material": None, "size_spec": None}
+    )
+    case_id = await service.open_case(
+        TENANT,
+        _open_command().model_copy(update={"need": incomplete_need}),
+        actor=SYSTEM,
+    )
+    for rung in range(1, 6):
+        await service.record_ladder_check(
+            TENANT, case_id, _check(case_id, rung), actor=SYSTEM
+        )
+    plan = await service.save_public_plan(
+        TENANT, case_id, _plan(case_id, 1), actor=BOSS
+    )
+    await service.confirm_public_plan(
+        TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
+    )
+
+    case = factory.state["cases"][(TENANT, case_id)]
+    assert case.need_snapshot is not None
+    assert case.need_snapshot.completeness == 3
+    assert case.need_snapshot.material is None
+    assert case.need_snapshot.size_spec is None
+
+    with pytest.raises(ValidationError, match="冻结需求未声明"):
+        await service.submit_candidate(TENANT, case_id, _candidate(), actor=SYSTEM)
 
     assert factory.state["candidates"] == {}
 

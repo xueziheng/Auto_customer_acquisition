@@ -309,6 +309,8 @@ def _command(tenant_id: TenantId, need_id: ValidatedNeedId) -> OpenSourcingCase:
             completeness=3,
             derivation_version="need-completeness-v1",
             product_category=NeedFact(value="hinges", provenance=provenance),
+            material=NeedFact(value="required-material", provenance=provenance),
+            size_spec=NeedFact(value="required-size", provenance=provenance),
             quantity=NeedFact(value=5000, provenance=provenance),
             snapshot_hash="a" * 64,
         ),

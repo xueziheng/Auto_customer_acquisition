@@ -308,6 +308,10 @@ def _candidate_from_submission(
     }
     for item in submission.specs:
         name = _normalize(item.spec_name)
+        # material/size 是候选合格判定的基础客户规格；Need 快照没有该事实时，
+        # 候选不得把网页观察值伪造成 required。应先补齐/验证 Need，再重试寻源。
+        if name in {"material", "size"} and name not in required_specs:
+            raise ValidationError("冻结需求未声明候选必需规格")
         required = required_specs.get(name)
         if required is not None and item.required != required:
             raise ValidationError("候选规格要求与冻结需求不一致")
