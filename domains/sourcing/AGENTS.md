@@ -100,6 +100,9 @@ AI 参考图         必须明确标注
 V2 先记录 rung 1–5 的精确证据，再允许 boss 草拟、确认并运行带 hash 的 Tavily basic 公开计划。
 额度 unknown、paid、不足或请求 uncertain 必须停止；uncertain 仅能由人工保守核对后恢复。公开
 Candidate 使用 `product_type`/`size`，内部 Product 使用 `product_category`/`size_spec`；两套词表不得
-互推。模型输出是 immutable calibration draft，完整但不合格的候选必须保留为 rejected Candidate。
+互推。Case 的 immutable `need_snapshot` 是 Candidate required spec/value 的唯一来源：Need 已声明的
+product type、material、size、application 和 model 必须精确复述；Need 未声明 model 时不得凭空要求它。
+模型输出是 immutable calibration draft，完整但不合格的候选必须保留为 rejected Candidate。
 所有公开价格保持 `INDICATIVE`，本域禁止写入新的 quoted 价格。审核先 submit，再由 boss 对同一
-primary（最多两个 alternate）确认；Opportunity 缺失时停止 `opportunity_required`，不得交接成本。
+primary（最多两个 alternate）确认；Opportunity 缺失时持久化停止 `opportunity_required`，不得交接成本；
+Opportunity 补齐后只能恢复同一 Case/Run，且 ESTIMATED 成本交接必须保持唯一。

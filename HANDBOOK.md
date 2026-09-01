@@ -575,12 +575,14 @@ unknown/paid 不得“先试一次”，uncertain 保留预留并由 boss 人工
 
 公开页面只生成带 URL/时间/hash/Artifact 的 immutable calibration draft。Candidate 的公开
 `product_type`/`size` 与内部 Product `product_category`/`size_spec` 是不同词表；Need `model` 可选，
-未知不得补造。完整却不合格的结果保留为 rejected Candidate，不能删除改写草稿。公开价格均为
+未知不得补造。Case 的 `need_snapshot` 是唯一 canonical 规格来源：Need 已声明的 product type、material、
+size、application（和已声明时的 model）都必须由 Candidate 复述为相同 required value；声明的 model
+不得省略或漂移，未声明时也不得把 model 设为必填。完整却不合格的结果保留为 rejected Candidate，不能删除改写草稿。公开价格均为
 `INDICATIVE`，不得新写 quoted price、发供应商询价或客户 Quote。
 
 候选封存后由 `SourcingCandidatesVerified` 投影为 `source_only` Product/Supply Option；完整卡集才发布
 Ready。sourcing 人员先提交 primary（可选最多两个 alternate），boss 再确认同一事实。仅当有 Opportunity
-才发布 handoff；缺失时停在 `opportunity_required`，补齐后以同一 Run 只创建一个 ESTIMATED CostSheet，
+才发布 handoff；缺失时持久化停在 `opportunity_required`，补齐后只能以同一 Run 的精确 retry 恢复，并且只创建一个 ESTIMATED CostSheet，
 其中 `product_purchase` 使用 Decimal 与 indicative basis。没有任何一项授权联系人发现、邮箱验证、发信、
 采购或真实 direct supplier quote。
 
