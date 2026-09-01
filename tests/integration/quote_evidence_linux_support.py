@@ -24,8 +24,14 @@ PYTHON_IMAGE = "python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad
 _SOURCE_MANIFEST_LABEL = "org.tradeos.source-manifest-sha256"
 _SOURCE_PLATFORM_LABEL = "org.tradeos.source-platform"
 _SOURCE_PLATFORM = "linux/arm64"
+_DEPENDENCY_ONLY_LABEL = "org.tradeos.dependency-only"
+_DEPENDENCY_BASE_LABEL = "org.tradeos.dependency-base"
+_DEPENDENCY_LOCK_LABEL = "org.tradeos.dependency-lock-sha256"
+_DEPENDENCY_MANIFEST_LABEL = "org.tradeos.dependency-manifest-sha256"
+_DEPENDENCY_PLATFORM_LABEL = "org.tradeos.dependency-platform"
+_DEPENDENCY_LOCK_PATH = Path("tests/fixtures/quote_evidence/linux/requirements.lock")
 _AUDITED_DEPENDENCY_MANIFEST_SHA256 = (
-    "40c05b6ce0e7e0dbef7ec7b4b23905c9abe40a91ea3d5b0aebb5c18fccc3f4c4"
+    "5f1de242e69d0476eee532fa42fd6b5ea396997a065525162cd242b70091029b"
 )
 _REQUIRED_DEPENDENCY_MODULES = (
     "alembic",
@@ -35,6 +41,55 @@ _REQUIRED_DEPENDENCY_MODULES = (
     "sqlalchemy",
     "testcontainers",
 )
+
+
+def _repository_root() -> Path:
+    """返回本受限构建唯一允许读取的仓库根目录。"""
+
+    return Path(__file__).resolve().parents[2]
+
+
+def dependency_lock_sha256() -> str:
+    """锁文件的内容地址；不从环境、镜像层或本机包缓存推导。"""
+
+    lock_path = _repository_root() / _DEPENDENCY_LOCK_PATH
+    with lock_path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def _dependency_labels() -> dict[str, str]:
+    """依赖产物的可审计身份；只允许固定 Python 根层和锁文件。"""
+
+    return {
+        _DEPENDENCY_ONLY_LABEL: "true",
+        _DEPENDENCY_BASE_LABEL: PYTHON_IMAGE,
+        _DEPENDENCY_LOCK_LABEL: dependency_lock_sha256(),
+        _DEPENDENCY_MANIFEST_LABEL: _AUDITED_DEPENDENCY_MANIFEST_SHA256,
+        _DEPENDENCY_PLATFORM_LABEL: _SOURCE_PLATFORM,
+    }
+
+
+def dependency_bootstrap_image_tag() -> str:
+    """显式 bootstrap 写入的唯一 artifact 标签；不枚举 Docker 本机镜像。"""
+
+    return "tradeos-test-dependency:quote-evidence-linux-" + dependency_lock_sha256()[:16]
+
+
+def _tar_context(root: Path, paths: tuple[Path, ...]) -> io.BytesIO:
+    """以稳定元数据打包明确白名单，拒绝把工作树其余内容交给 Docker。"""
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for path in paths:
+            entry = archive.gettarinfo(str(path), arcname=str(path.relative_to(root)))
+            entry.mode = 0o644
+            entry.mtime = 0
+            entry.uid = entry.gid = 0
+            entry.uname = entry.gname = ""
+            with path.open("rb") as source:
+                archive.addfile(entry, source)
+    buffer.seek(0)
+    return buffer
 
 
 def _source_paths(
@@ -139,7 +194,12 @@ def _source_paths(
             "tests/e2e/costing_quote_relay.py",
         ):
             paths.append(root / name)
-    paths.append(root / "tests/fixtures/quote_evidence/linux/Dockerfile")
+    paths.extend(
+        (
+            root / "tests/fixtures/quote_evidence/linux/Dockerfile",
+            root / _DEPENDENCY_LOCK_PATH,
+        )
+    )
     return tuple(sorted(set(paths)))
 
 
@@ -207,49 +267,100 @@ def _dependency_runtime_is_complete(client: Any, image_id: str) -> bool:
     return True
 
 
+def _dependency_image_is_source_free(client: Any, image_id: str) -> bool:
+    """确认 bootstrap 不含 /opt/tradeos 旧源码或已安装的项目 distribution。"""
+
+    program = (
+        "from importlib.metadata import distributions; from pathlib import Path; "
+        "assert not Path('/opt/tradeos').exists(); "
+        "assert not any((item.metadata['Name'] or '').lower() == 'tradeos-agent' "
+        "for item in distributions()); print('dependency-only')"
+    )
+    try:
+        output = client.containers.run(
+            image_id,
+            ["-c", program],
+            entrypoint=["python"],
+            network_mode="none",
+            remove=True,
+            user="65534:65534",
+            read_only=True,
+        )
+    except docker.errors.ContainerError:
+        return False
+    return output == b"dependency-only\n"
+
+
+def bootstrap_dependency_image() -> str:
+    """仅按仓库内带 hash 的公开依赖锁构建 dependency-only Linux/arm64 产物。
+
+    这是唯一允许联网的开发 bootstrap；所有源码层和正式 Linux 用例均继续
+    ``network_mode=none``。上下文不包含 TradeOS 源码，镜像也不会安装本项目。
+    """
+
+    root = _repository_root()
+    paths = (
+        root / "tests/fixtures/quote_evidence/linux/Dockerfile",
+        root / _DEPENDENCY_LOCK_PATH,
+    )
+    buffer = _tar_context(root, paths)
+    client = docker.from_env()
+    try:
+        image, logs = client.images.build(
+            fileobj=buffer,
+            custom_context=True,
+            dockerfile="tests/fixtures/quote_evidence/linux/Dockerfile",
+            buildargs={"PYTHON_IMAGE": PYTHON_IMAGE},
+            target="dependency",
+            platform=_SOURCE_PLATFORM,
+            network_mode="default",
+            labels=_dependency_labels(),
+            tag=dependency_bootstrap_image_tag(),
+            rm=True,
+        )
+        del logs
+        image_id = image.id
+        if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
+            raise RuntimeError("dependency-only bootstrap 未返回精确 image ID")
+        return image_id
+    except Exception as error:
+        if isinstance(error, RuntimeError):
+            raise
+        raise RuntimeError("dependency-only bootstrap 构建失败") from None
+    finally:
+        client.close()
+        buffer.close()
+
+
 def audited_dependency_image_id() -> str:
-    """选择同一官方 Python 根层、同一依赖 manifest 的本地离线依赖镜像。"""
+    """验证显式 bootstrap 产物；绝不联网、枚举或猜测本机其他镜像。"""
 
     client = docker.from_env()
     try:
-        base = client.images.get(PYTHON_IMAGE)
-        base_layers = base.attrs.get("RootFS", {}).get("Layers")
-        if not isinstance(base_layers, list) or not base_layers:
-            raise RuntimeError("not_run：受审计 Python 基础层无效")
-        images = sorted(
-            client.images.list(),
-            key=lambda image: (
-                len(image.attrs.get("RootFS", {}).get("Layers", [])),
-                getattr(image, "id", ""),
-            ),
-            reverse=True,
-        )
-        for image in images:
-            attrs = image.attrs
-            layers = attrs.get("RootFS", {}).get("Layers")
-            if (
-                attrs.get("Architecture") != "arm64"
-                or attrs.get("Os") != "linux"
-                or not isinstance(layers, list)
-                or layers[: len(base_layers)] != base_layers
-                or len(layers) <= len(base_layers)
-            ):
-                continue
-            image_id = getattr(image, "id", "")
-            if (
-                not isinstance(image_id, str)
-                or not image_id.startswith("sha256:")
-                or len(image_id) != 71
-            ):
-                continue
-            if not _dependency_runtime_is_complete(client, image_id):
-                continue
-            if (
-                _dependency_manifest_sha256(client, image_id)
-                == _AUDITED_DEPENDENCY_MANIFEST_SHA256
-            ):
-                return image_id
-        raise RuntimeError("not_run：缺少受审计的本地离线依赖镜像")
+        try:
+            image = client.images.get(dependency_bootstrap_image_tag())
+        except docker.errors.ImageNotFound:
+            raise RuntimeError(
+                "缺少 dependency-only bootstrap artifact；先显式运行 bootstrap"
+            ) from None
+        image_id = image.id
+        if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
+            raise RuntimeError("dependency-only bootstrap artifact 没有精确 image ID")
+        attrs = image.attrs
+        labels = attrs.get("Config", {}).get("Labels") or {}
+        if (
+            attrs.get("Architecture") != "arm64"
+            or attrs.get("Os") != "linux"
+            or any(labels.get(name) != value for name, value in _dependency_labels().items())
+        ):
+            raise RuntimeError("dependency-only bootstrap 标签或平台不匹配")
+        if not _dependency_image_is_source_free(client, image_id):
+            raise RuntimeError("dependency-only bootstrap 含项目源码或 distribution")
+        if not _dependency_runtime_is_complete(client, image_id):
+            raise RuntimeError("dependency-only bootstrap 缺少 Linux runner 依赖")
+        if _dependency_manifest_sha256(client, image_id) != _AUDITED_DEPENDENCY_MANIFEST_SHA256:
+            raise RuntimeError("dependency-only bootstrap 依赖 manifest 不匹配")
+        return image_id
     finally:
         client.close()
 
@@ -263,22 +374,12 @@ def build_parser_image(
         raise ValueError("T10必须显式复用quotation/chain和已验收image")
     if quotation and (not chain or base_image is None):
         raise ValueError("报价同链必须显式复用chain和已验收image")
-    root = Path(__file__).resolve().parents[2]
+    root = _repository_root()
     paths = _source_paths(
         root, chain=chain, quotation=quotation, costing_quote=costing_quote
     )
     source_manifest = _manifest_sha256(root, paths)
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for path in paths:
-            entry = archive.gettarinfo(str(path), arcname=str(path.relative_to(root)))
-            entry.mode = 0o644
-            entry.mtime = 0
-            entry.uid = entry.gid = 0
-            entry.uname = entry.gname = ""
-            with path.open("rb") as source:
-                archive.addfile(entry, source)
-    buffer.seek(0)
+    buffer = _tar_context(root, paths)
     client = docker.from_env()
     phase = "base_lookup"
     try:

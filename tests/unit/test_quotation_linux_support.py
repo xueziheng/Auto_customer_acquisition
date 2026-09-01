@@ -70,62 +70,158 @@ def test_image_id_rebuilds_current_source_from_an_offline_dependency_image(
     client.close.assert_called_once()
 
 
-def test_audited_dependency_image_requires_python_root_platform_and_manifest(
+def test_audited_dependency_image_validates_only_the_explicit_bootstrap_artifact(
     monkeypatch,
 ):
-    base_layers = ["sha256:base-a", "sha256:base-b"]
-    accepted = SimpleNamespace(
-        id="sha256:" + "a" * 64,
+    """不能扫描作者机镜像；只接受本次固定配方刚构建出的 dependency-only 产物。"""
+
+    dependency = "sha256:" + "a" * 64
+    image = SimpleNamespace(
+        id=dependency,
         attrs={
             "Architecture": "arm64",
             "Os": "linux",
-            "RootFS": {"Layers": [*base_layers, "sha256:deps"]},
-        },
+            "Config": {
+                "Labels": {
+                    "org.tradeos.dependency-only": "true",
+                    "org.tradeos.dependency-base": support.PYTHON_IMAGE,
+                    "org.tradeos.dependency-lock-sha256": "lock-sha",
+                    "org.tradeos.dependency-manifest-sha256": (
+                        support._AUDITED_DEPENDENCY_MANIFEST_SHA256
+                    ),
+                    "org.tradeos.dependency-platform": "linux/arm64",
+                }
+            },
+        }
     )
-    rejected = SimpleNamespace(
-        id="sha256:" + "b" * 64,
+    images = SimpleNamespace(get=Mock(return_value=image))
+    client = SimpleNamespace(images=images, containers=SimpleNamespace(), close=Mock())
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_lock_sha256", lambda: "lock-sha")
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "fixed-tag")
+    monkeypatch.setattr(
+        support,
+        "_dependency_manifest_sha256",
+        lambda _client, image_id: support._AUDITED_DEPENDENCY_MANIFEST_SHA256,
+    )
+    monkeypatch.setattr(support, "_dependency_runtime_is_complete", lambda *_: True)
+    monkeypatch.setattr(support, "_dependency_image_is_source_free", lambda *_: True)
+
+    assert support.audited_dependency_image_id() == dependency
+    images.get.assert_called_once_with("fixed-tag")
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {},
+        {"org.tradeos.dependency-only": "false"},
+        {"org.tradeos.dependency-only": "true"},
+    ],
+)
+def test_audited_dependency_image_rejects_missing_or_wrong_bootstrap_labels(
+    monkeypatch, labels
+):
+    dependency = "sha256:" + "a" * 64
+    image = SimpleNamespace(
+        id=dependency,
         attrs={
-            "Architecture": "amd64",
-            "Os": "linux",
-            "RootFS": {"Layers": [*base_layers, "sha256:wrong"]},
-        },
+            "Architecture": "arm64", "Os": "linux", "Config": {"Labels": labels}
+        }
     )
-    later = SimpleNamespace(
-        id="sha256:" + "0" * 64,
-        attrs={
-            "Architecture": "arm64",
-            "Os": "linux",
-            "RootFS": {"Layers": [*base_layers, "sha256:later"]},
-        },
+    client = SimpleNamespace(
+        images=SimpleNamespace(get=Mock(return_value=image)),
+        containers=SimpleNamespace(),
+        close=Mock(),
     )
-    base = SimpleNamespace(attrs={"RootFS": {"Layers": base_layers}})
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_lock_sha256", lambda: "lock-sha")
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "fixed-tag")
+
+    with pytest.raises(RuntimeError, match="dependency-only"):
+        support.audited_dependency_image_id()
+    client.close.assert_called_once()
+
+
+def test_audited_dependency_image_hard_fails_when_explicit_bootstrap_is_missing(
+    monkeypatch,
+):
+    """正式源码门不能为补依赖联网，缺 artifact 必须要求单独 bootstrap。"""
+
     client = SimpleNamespace(
         images=SimpleNamespace(
-            get=lambda _: base,
-            list=lambda: [rejected, accepted, later],
+            get=Mock(side_effect=support.docker.errors.ImageNotFound("missing"))
         ),
         close=Mock(),
     )
     monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "missing")
     monkeypatch.setattr(
         support,
-        "_dependency_manifest_sha256",
-        lambda _client, image_id: (
-            support._AUDITED_DEPENDENCY_MANIFEST_SHA256
-            if image_id == accepted.id
-            else "0" * 64
-        ),
-    )
-    runtime_checks = []
-    monkeypatch.setattr(
-        support,
-        "_dependency_runtime_is_complete",
-        lambda _client, image_id: runtime_checks.append(image_id) or image_id == accepted.id,
+        "bootstrap_dependency_image",
+        lambda: pytest.fail("正式 selector 不得启动联网 bootstrap"),
     )
 
-    assert support.audited_dependency_image_id() == accepted.id
-    assert runtime_checks == [accepted.id]
+    with pytest.raises(RuntimeError, match="先显式运行 bootstrap"):
+        support.audited_dependency_image_id()
+    client.images.get.assert_called_once_with("missing")
     client.close.assert_called_once()
+
+
+def test_dependency_bootstrap_is_the_only_networked_build_and_uses_minimal_context(
+    monkeypatch,
+):
+    """bootstrap 可取公开锁定依赖；后续源码层仍必须 network none。"""
+
+    seen = {}
+
+    def build(**kwargs):
+        with tarfile.open(fileobj=kwargs["fileobj"]) as archive:
+            seen["names"] = archive.getnames()
+        seen["target"] = kwargs["target"]
+        seen["network_mode"] = kwargs["network_mode"]
+        seen["labels"] = kwargs["labels"]
+        seen["tag"] = kwargs["tag"]
+        return SimpleNamespace(id="sha256:" + "a" * 64), []
+
+    client = SimpleNamespace(images=SimpleNamespace(build=build), close=Mock())
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_lock_sha256", lambda: "lock-sha")
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "fixed-tag")
+
+    assert support.bootstrap_dependency_image() == "sha256:" + "a" * 64
+    assert seen["names"] == [
+        "tests/fixtures/quote_evidence/linux/Dockerfile",
+        "tests/fixtures/quote_evidence/linux/requirements.lock",
+    ]
+    assert seen["target"] == "dependency"
+    assert seen["network_mode"] == "default"
+    assert seen["tag"] == "fixed-tag"
+    assert seen["labels"] == {
+        "org.tradeos.dependency-only": "true",
+        "org.tradeos.dependency-base": support.PYTHON_IMAGE,
+        "org.tradeos.dependency-lock-sha256": "lock-sha",
+        "org.tradeos.dependency-manifest-sha256": (
+            support._AUDITED_DEPENDENCY_MANIFEST_SHA256
+        ),
+        "org.tradeos.dependency-platform": "linux/arm64",
+    }
+    client.close.assert_called_once()
+
+
+def test_dependency_bootstrap_lock_is_hashed_and_cannot_install_the_project():
+    """锁文件既固定版本也固定 arm64 轮子内容，不能借 editable 项目源码。"""
+
+    lock = (
+        Path(__file__).parents[1]
+        / "fixtures/quote_evidence/linux/requirements.lock"
+    ).read_text()
+    entries = [line for line in lock.splitlines() if line and not line.startswith("#")]
+    assert entries
+    assert all("==" in line and " --hash=sha256:" in line for line in entries)
+    assert "tradeos-agent" not in "\n".join(entries).lower()
+    assert "file://" not in "\n".join(entries).lower()
 
 
 @pytest.mark.parametrize("quotation", [True, False])

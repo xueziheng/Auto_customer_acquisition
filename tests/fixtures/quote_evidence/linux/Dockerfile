@@ -1,5 +1,14 @@
 ARG PYTHON_IMAGE
 ARG TEST_BASE_IMAGE
+
+FROM ${PYTHON_IMAGE} AS dependency
+WORKDIR /opt/dependency-bootstrap
+COPY tests/fixtures/quote_evidence/linux/requirements.lock ./requirements.lock
+# 仅此 bootstrap 层可以获取公开包仓库；锁定 hash 后的正式源码层一律 network none。
+RUN python -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes -r requirements.lock \
+ && test ! -e /opt/tradeos
+USER 65534:65534
+
 FROM ${TEST_BASE_IMAGE} AS chain
 USER 0:0
 WORKDIR /usr/local/lib/python3.12/site-packages
