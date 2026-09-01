@@ -74,7 +74,8 @@ Web预算检查用独立命名空间的 tenant+run PostgreSQL advisory transacti
 
 仅当 `TRADEOS_SOURCING_SETTINGS_JSON` 严格显式 enabled 且全部研究端口已注入时，root 才装配 V2。Tavily ref 只保存引用、构造期不得解析或联网；真实运行只能经 Tool Gateway 的 tenant、permission、playbook、country policy 与 rate-limit checks。受控验收可替换 Tavily、public-page、extraction model 端口，不能替换 PostgreSQL、domain service、Workflow、Outbox 或 API。不得接触联系人、发信、采购、客户 Quote 端口。
 
-当前阶段已发布但不推进后续业务状态的 `DemandSignalCaptured`、`NeedHypothesisCreated`、
-`SourcingCaseOpened` 与 `OpportunityQualified` 必须由此 composition 注册具名、tenant-bound audit
-acknowledgement；它只确认该事件已经消费，不能创建联系人、采购、报价或外部调用。不得把这条
-显式订阅扩展成全局无 handler 的宽容策略：其他未注册事件仍由 Outbox 标记为 dead。
+本子项目从 `ValidatedNeed` 开始；`DemandSignalCaptured` 与 `NeedHypothesisCreated` 各自仍有
+catalog 所定义的真实下游语义，禁止由本 composition 作无副作用 acknowledgement 并提前标记
+delivered。仅 `SourcingCaseOpened` 与 `OpportunityQualified` 是当前阶段不推进后续业务状态的具名、
+tenant-bound audit acknowledgement；它只确认已消费，不能创建联系人、采购、报价或外部调用。
+不得把这条显式订阅扩展成全局无 handler 的宽容策略：其他未注册事件仍由 Outbox 标记为 dead。

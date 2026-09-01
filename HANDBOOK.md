@@ -608,11 +608,13 @@ PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
   python -c 'from tests.integration.quote_evidence_linux_support import bootstrap_dependency_image; print(bootstrap_dependency_image())'
 ```
 
-bootstrap 是此门唯一允许访问公开包仓库的阶段；它写入带固定 lock hash 的
-`dependency-only` image 标签，并标记 base digest、lock hash、pip manifest 与 `linux/arm64`。正式
-`image_id()` 和 Linux pytest 不会自动 bootstrap、pull 或访问 PyPI：只按该精确标签读取、复核 labels、
-pip manifest、必需模块以及 `/opt/tradeos`/`tradeos-agent` 缺席；找不到时 hard-fail 并要求先显式运行
-bootstrap。之后当前源码层和所有 runner 构建一律 `network_mode=none`，source manifest 覆盖其白名单输入。
+bootstrap 是此门唯一允许访问公开包仓库的阶段；它写入带固定 lock hash 的 **lock-addressed bootstrap
+tag**，其后必须作为已验证的 dependency-only artifact 复核，而不是宣称为不可变 content address。标签标记
+base digest、lock hash、pip manifest 与 `linux/arm64`。正式 `image_id()` 和 Linux pytest 不会自动 bootstrap、
+pull 或访问 PyPI：只按该精确标签读取，复核 labels、候选 RootFS 是否以本地 pinned Python digest 的真实层序列
+为前缀、pip manifest、必需模块，以及 `/opt/tradeos`、`tradeos-agent` 和所有 TradeOS 顶层源码根/包均缺席；
+找不到 artifact 时 hard-fail 并要求先显式运行 bootstrap。之后当前源码层和所有 runner 构建一律
+`network_mode=none`，source manifest 覆盖其白名单输入。
 
 ## 附：常用命令
 
