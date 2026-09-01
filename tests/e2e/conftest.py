@@ -98,6 +98,7 @@ from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow, TerritoryAssignmentRow
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from infra.secrets import EnvironmentSecretResolver
+from shared.events.catalog import DomainEvent
 from shared.public_page_url import canonical_public_page_url
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -208,17 +209,19 @@ class E2EStack:
 
 
 class _E2ESchedulerAudience:
-    """Task 15 没有通知受众；任何调用都是额外副作用，必须立即可见。"""
+    """真实通知投影的必需组合依赖；仅记录调用，绝不产生外部收件人。"""
 
-    calls: int
+    calls: list[tuple[TenantId, DomainEvent]]
 
     def __init__(self) -> None:
-        self.calls = 0
+        self.calls = []
 
-    async def recipients_for(self, *args: object, **kwargs: object) -> tuple[()]:
-        del args, kwargs
-        self.calls += 1
-        raise AssertionError("Task 15 sourcing 受控链不得调用 notification audience")
+    async def recipients_for(
+        self, tenant_id: TenantId, event: DomainEvent
+    ) -> tuple[()]:
+        """保留真实投影/outbox 路径；受控栈明确没有可投递的通知受众。"""
+        self.calls.append((tenant_id, event))
+        return ()
 
 
 @dataclass

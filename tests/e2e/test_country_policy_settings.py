@@ -56,6 +56,7 @@ async def test_real_country_policy_settings_approval_and_activation(
 ) -> None:
     """生产变更若绕过 scheduler、独立审批或 fail-closed 就绪，本测试必须失败。"""
     assert not e2e_stack.scheduler_task.done(), "真实 scheduler/outbox 循环未运行"
+    audience_calls_before = len(e2e_stack.scheduler_audience.calls)
     screenshot_dir_value = os.environ.get("TRADEOS_E2E_SCREENSHOT_DIR")
     screenshot_dir = (
         Path(screenshot_dir_value) if screenshot_dir_value is not None else None
@@ -212,6 +213,33 @@ async def test_real_country_policy_settings_approval_and_activation(
             ),
             {"tenant_id": str(e2e_stack.tenant_id)},
         )
+        dead_outbox = list(
+            (
+                await session.execute(
+                    text(
+                        "SELECT event.event_type, event.last_error, "
+                        "delivery.handler_name, delivery.last_error AS delivery_error "
+                        "FROM outbox_events AS event "
+                        "JOIN outbox_deliveries AS delivery "
+                        "ON delivery.tenant_id = event.tenant_id "
+                        "AND delivery.event_id = event.event_id "
+                        "WHERE event.tenant_id=:tenant_id AND event.status='dead' "
+                        "AND delivery.status='dead' "
+                        "ORDER BY event.event_type, delivery.handler_name"
+                    ),
+                    {"tenant_id": str(e2e_stack.tenant_id)},
+                )
+            ).mappings()
+        )
+        dead_outbox_diagnostics = [
+            (
+                str(item["event_type"]),
+                str(item["handler_name"]),
+                str(item["delivery_error"]),
+            )
+            for item in dead_outbox
+        ]
+        assert dead_outbox == [], dead_outbox_diagnostics
         dead_outbox_count = await session.scalar(
             text(
                 "SELECT count(*) FROM outbox_events "
@@ -222,3 +250,9 @@ async def test_real_country_policy_settings_approval_and_activation(
     assert activation_count == 1
     assert hunter_call_count == 0
     assert dead_outbox_count == 0
+    assert [
+        (tenant_id, type(event).__name__)
+        for tenant_id, event in e2e_stack.scheduler_audience.calls[
+            audience_calls_before:
+        ]
+    ] == [(e2e_stack.tenant_id, "ApprovalDecided")]

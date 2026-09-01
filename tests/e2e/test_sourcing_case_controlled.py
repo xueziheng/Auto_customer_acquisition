@@ -528,11 +528,12 @@ async def test_controlled_need_to_estimated_cost_uses_real_core_only() -> None:
 
     async for stack in e2e_stack_lifecycle():
         assert isinstance(stack, E2EStack)
+        audience_calls_before = len(stack.scheduler_audience.calls)
         await _run_controlled_need_to_estimated_cost(stack)
         # 调度器实际走到 Gateway 时必须读取真实、已激活的 Playbook；不能
-        # 以恒真替身绕过组织域。sourcing 事件也没有订阅者，若意外调用
-        # audience 则测试栈会立即报错，并在这里保留可审计的零调用断言。
+        # 以恒真替身绕过组织域。Notification audience 是完整 scheduler
+        # 组合的必需依赖；本受控寻源链不得额外触发它。
         assert isinstance(stack.playbook_reader, AcceptancePlaybookReader)
-        assert stack.scheduler_audience.calls == 0
+        assert len(stack.scheduler_audience.calls) == audience_calls_before
         return
     raise AssertionError("Task 15 真实 E2E 栈未启动")
