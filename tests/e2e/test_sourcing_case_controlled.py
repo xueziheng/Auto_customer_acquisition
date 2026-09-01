@@ -14,8 +14,7 @@ from sqlalchemy import func, select
 from apps.scheduler_worker.research_acceptance_dependencies import (
     AcceptancePlaybookReader,
 )
-from domains.demand.schemas import SignalCaptureRequest
-from domains.demand.service_impl import DemandServiceImpl
+from domains.demand.models import NeedStatus, ValidatedNeed
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.tables import (
     CostSheetRow,
@@ -29,7 +28,15 @@ from infra.db.tables import (
     WorkflowRunRow,
     WorkflowStepRow,
 )
-from shared.schemas.identifiers import ProspectAccountId, new_id
+from shared.events.catalog import NeedValidated
+from shared.schemas.evidence import EvidenceLevel
+from shared.schemas.identifiers import (
+    MessageId,
+    ProspectAccountId,
+    ValidatedNeedId,
+    new_id,
+)
+from shared.schemas.provenance import FactualField, Provenance, SourceType
 from tests.e2e.conftest import (
     E2EStack,
     _seed_controlled_public_research_policy,
@@ -58,48 +65,49 @@ async def _eventually[T](
 
 
 async def _create_validated_need(stack: Any) -> str:
-    """通过真实 Demand service + Outbox 创建具备寻源完整度的 Need。"""
+    """合法落入已验证前置状态，只发布本子项目消费的 NeedValidated。"""
 
-    service = DemandServiceImpl(
-        lambda tenant_id: SqlAlchemyDemandUnitOfWork(
-            stack.factory, tenant_id, now=lambda: _NOW
-        ),
-        now=lambda: _NOW,
+    source_message_id = MessageId("msg_task15_need")
+    provenance = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id=str(source_message_id),
+        extracted_by="human",
+        extracted_at=_NOW,
     )
-    signal_id = await service.capture_signal(
-        stack.tenant_id,
-        SignalCaptureRequest(
-            signal_type="inbound_inquiry",
-            entity_name="Task 15 Marine Buyer",
-            raw_observation="Customer requested marine hinges.",
-            observed_at=_NOW,
-            source_type="conversation",
-            source_id="msg_task15_need",
-            extracted_by="human",
-        ),
+
+    def fact[T](value: T) -> FactualField[T]:
+        return FactualField(value=value, provenance=provenance)
+
+    need = ValidatedNeed(
+        need_id=ValidatedNeedId(new_id("need")),
+        tenant_id=stack.tenant_id,
+        account_id=ProspectAccountId(new_id("acc")),
+        product_category=fact("hinges"),
+        source_message_id=source_message_id,
+        created_at=_NOW,
+        status=NeedStatus.SOURCING_READY,
+        application=fact("marine"),
+        material=fact("304 stainless steel"),
+        size_spec=fact("4 inch"),
+        quantity=fact(500),
     )
-    hypothesis_id = await service.create_hypothesis(
-        stack.tenant_id,
-        ProspectAccountId(new_id("acc")),
-        "marine hinges",
-        [signal_id],
-        "客户明确需要海用铰链。",
-        "human",
-    )
-    return str(
-        await service.promote_to_validated(
-            stack.tenant_id,
-            hypothesis_id,
-            "msg_task15_need",
-            {
-                "product_category": "hinges",
-                "application": "marine",
-                "material": "304 stainless steel",
-                "size_spec": "4 inch",
-                "quantity": 500,
-            },
+    assert need.completeness == 3
+    async with SqlAlchemyDemandUnitOfWork(
+        stack.factory, stack.tenant_id, now=lambda: _NOW
+    ) as uow:
+        await uow.needs.add(need)
+        await uow.bus.publish(
+            NeedValidated(
+                tenant_id=stack.tenant_id,
+                occurred_at=_NOW,
+                need_id=need.need_id,
+                account_id=need.account_id,
+                category="hinges",
+                evidence_level=EvidenceLevel.CUSTOMER_QUANTITY_AND_TIMING,
+                completeness=need.completeness,
+            )
         )
-    )
+    return str(need.need_id)
 
 
 async def _seed_confirmed_free_tavily_usage(stack: Any) -> None:
@@ -603,6 +611,14 @@ async def _run_controlled_need_to_estimated_cost(
     assert dead_outbox_event_types == []
     assert all(status == "delivered" for _, status in outbox_event_statuses), (
         outbox_event_statuses
+    )
+    delivered_event_types = {event_type for event_type, _ in outbox_event_statuses}
+    # Task 15 从已验证 Need 前置状态开始；不得为了本子项目伪造 demand/prospecting
+    # 事件再由寻源 runtime 空消费。Case/Opportunity 两项交接事实仍须可审计地 delivered。
+    assert "DemandSignalCaptured" not in delivered_event_types
+    assert "NeedHypothesisCreated" not in delivered_event_types
+    assert {"NeedValidated", "SourcingCaseOpened", "OpportunityQualified"} <= (
+        delivered_event_types
     )
     # 此控制链的 Gateway durable receipt 必须只包含两项公开只读能力；
     # 因而同时证明 contact/email/send/procurement/Quote 全部没有调用。

@@ -95,10 +95,8 @@ from infra.db.tables import (
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import (
-    DemandSignalCaptured,
     DomainEvent,
     NeedBecameSourcingReady,
-    NeedHypothesisCreated,
     NeedValidated,
     OpportunityQualified,
     SourcingCandidatesReady,
@@ -758,12 +756,6 @@ class SourcingCaseComposition:
             product_actor=self.product_actor,
         )
         ready = SourcingCandidatesReadyAuditAcknowledgement(self.tenant_id)
-        demand_signal = SourcingLifecycleAuditAcknowledgement(
-            self.tenant_id, DemandSignalCaptured
-        )
-        hypothesis = SourcingLifecycleAuditAcknowledgement(
-            self.tenant_id, NeedHypothesisCreated
-        )
         case_opened = SourcingLifecycleAuditAcknowledgement(
             self.tenant_id, SourcingCaseOpened
         )
@@ -784,16 +776,6 @@ class SourcingCaseComposition:
         )
         register(SourcingCandidatesReady, "sourcing_case.ready_audit", ready)
         register(SourcingCaseHandedToCosting, "sourcing_case.costing_handoff", costing)
-        register(
-            DemandSignalCaptured,
-            "sourcing_case.demand_signal_audit",
-            demand_signal,
-        )
-        register(
-            NeedHypothesisCreated,
-            "sourcing_case.hypothesis_audit",
-            hypothesis,
-        )
         register(
             SourcingCaseOpened,
             "sourcing_case.case_opened_audit",

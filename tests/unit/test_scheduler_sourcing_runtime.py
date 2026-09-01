@@ -10,9 +10,7 @@ import pytest
 from apps.scheduler_worker.config import SchedulerWorkerConfig
 from shared.errors import ValidationError
 from shared.events.catalog import (
-    DemandSignalCaptured,
     DomainEvent,
-    NeedHypothesisCreated,
     OpportunityQualified,
     SourcingCandidatesReady,
     SourcingCaseOpened,
@@ -222,8 +220,6 @@ def test_ready_acknowledgement_is_type_and_tenant_only() -> None:
 @pytest.mark.parametrize(
     "event_type",
     [
-        DemandSignalCaptured,
-        NeedHypothesisCreated,
         SourcingCaseOpened,
         OpportunityQualified,
     ],

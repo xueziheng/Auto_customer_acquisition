@@ -634,8 +634,6 @@ async def test_composition_uses_real_services_and_registers_complete_events(
         ("SourcingCandidatesVerified", "sourcing_case.product_projector"),
         ("SourcingCandidatesReady", "sourcing_case.ready_audit"),
         ("SourcingCaseHandedToCosting", "sourcing_case.costing_handoff"),
-        ("DemandSignalCaptured", "sourcing_case.demand_signal_audit"),
-        ("NeedHypothesisCreated", "sourcing_case.hypothesis_audit"),
         ("SourcingCaseOpened", "sourcing_case.case_opened_audit"),
         ("OpportunityQualified", "sourcing_case.opportunity_qualified_audit"),
     ]
