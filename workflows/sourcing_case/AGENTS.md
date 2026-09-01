@@ -22,3 +22,5 @@ Phase 1 人工执行时**走同一批域服务接口**——数据结构与门�
 ## V2 受控公开寻源
 
 V2 固定八步：`check_ladder → await_public_plan → public_search → verify_candidates → prepare_candidates → await_product_cards → await_review → handoff_costing`。`public_search` 不允许引擎自动重试；它只恢复持久 search receipt/page attempt，遇到额度 unknown/paid/exhausted、unsafe page 或 uncertain 都必须进入带 stop reason 的等待。Verified 只唤醒产品卡投影，Ready 只说明卡集完成；review submit 与 boss confirm 是两个事实。Opportunity 缺失时必须同时持久化 Case stop 与 Run 等待上下文为 `opportunity_required`；Opportunity 补齐后只接受该 Case/Run 的精确 retry，重放/重启不能再产生第二次成本交接。
+
+租户 guard 必须先于任何 Workflow 写入：错误 tenant 的 retry/review POST 必须 403，且 owner tenant 的 Case、Run、CostSheet、ToolCall 全部不变。受控验收需真实关闭并重建 scheduler runtime 后再做该精确 retry/replay，不能以同进程重复调用替代。

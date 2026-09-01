@@ -147,7 +147,7 @@ SHA256 `7557d8839ce85094c21a904852c89eda180c4d1617cbf2e4dc66c83ada3c7838`，
 API/PG仅internal网络；本机Docker实际Ports为空，Mac无法直连，使用已批准的有限测试HTTP桥：
 host仅loopback、固定容器relay→127.0.0.1:8000真实Uvicorn、每请求15秒/请求响应各1MiB/最多8并发。
 不开放任意URL、目标、命令或重定向，不证明原生Docker发布或生产入口。
-Fix1自动总生命周期300秒、协调视觉900秒，父层从准备前计时：最多255/855秒工作，保留末45秒清理。
+当前自动总生命周期为 integration 300 秒、browser 360 秒、协调视觉900秒；父层从准备前计时，browser 最多315秒工作并保留末45秒清理。360 秒是冷源码层与已有 session E2E 栈下仍能完成真实表单闭环的受测预算，不改变 fail-closed 清理语义。
 独立子进程承载同步Docker与真实Chromium；只按本次实际子孙身份及network/PG/API名字+owner+ID核对后清理。
 daemon无响应时不能证明服务端build已取消/资源已删；必须有界非零并记cleanup_unknown，不计verified。
 API/worker同一测试OS进程但独立runtime，跨进程是API与Vite/Chromium；未验worker独立OS崩溃隔离。

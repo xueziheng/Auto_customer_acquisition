@@ -598,6 +598,22 @@ reason: explicit_market_category_and_research_budget_not_provided
 不要读取、打印或复制密钥值；“环境已配置”不构成真实联网授权。完整门禁和 Browser 数据态证据以
 `docs/acceptance/2026-08-30-phase2-sourcing-case-product-cards.md` 的实际结果为准。
 
+Linux 来源门的 dependency-only 基础产物也有明确的网络边界。开发人员需要更新该受审计产物时，先从
+项目 Python 环境显式运行下列 bootstrap；它只使用固定官方 Python digest 和仓库
+`tests/fixtures/quote_evidence/linux/requirements.lock` 中带 SHA-256 的公开 Linux/arm64 wheels，不能包含
+`tradeos-agent` 或 `file://` 项：
+
+```bash
+PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
+  python -c 'from tests.integration.quote_evidence_linux_support import bootstrap_dependency_image; print(bootstrap_dependency_image())'
+```
+
+bootstrap 是此门唯一允许访问公开包仓库的阶段；它写入带固定 lock hash 的
+`dependency-only` image 标签，并标记 base digest、lock hash、pip manifest 与 `linux/arm64`。正式
+`image_id()` 和 Linux pytest 不会自动 bootstrap、pull 或访问 PyPI：只按该精确标签读取、复核 labels、
+pip manifest、必需模块以及 `/opt/tradeos`/`tradeos-agent` 缺席；找不到时 hard-fail 并要求先显式运行
+bootstrap。之后当前源码层和所有 runner 构建一律 `network_mode=none`，source manifest 覆盖其白名单输入。
+
 ## 附：常用命令
 
 ```bash

@@ -89,6 +89,9 @@ AI 参考图         必须明确标注
 发布：`SourcingCaseOpened`、`SourcingCandidatesVerified`、`SourcingCandidatesReady`、`SourcingCaseHandedToCosting`；旧 `SourcingCaseCompleted` 只作兼容读取。
 订阅：无（启动由 Workflow/Outbox 驱动）
 
+当前 scheduler 对 `SourcingCaseOpened` 的显式 audit acknowledgement 仅确认 outbox 已被当前阶段消费；它不能
+创建候选、联系人、采购、报价或任何外部动作。缺 handler 仍必须由全局 Outbox 标为 dead，不能在本域放宽。
+
 ## Phase 1 范围
 
 状态机、核验清单、证据快照结构、匹配梯子接口、三候选上限。人工录入走同一套结构。
@@ -106,3 +109,5 @@ product type、material、size、application 和 model 必须精确复述；Need
 所有公开价格保持 `INDICATIVE`，本域禁止写入新的 quoted 价格。审核先 submit，再由 boss 对同一
 primary（最多两个 alternate）确认；Opportunity 缺失时持久化停止 `opportunity_required`，不得交接成本；
 Opportunity 补齐后只能恢复同一 Case/Run，且 ESTIMATED 成本交接必须保持唯一。
+当 frozen Need 缺 `material` 或 `size` 时，Candidate 也不得提供该 canonical required value 来补造需求事实；
+必须先补全 Need 或收到拒绝，不能 qualified。
