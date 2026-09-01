@@ -53,6 +53,8 @@ _TRADEOS_SOURCE_ROOTS = (
     "migrations",
     "agent_runtime",
     "notification_gateway",
+    "scripts",
+    "skills",
     "tests",
 )
 

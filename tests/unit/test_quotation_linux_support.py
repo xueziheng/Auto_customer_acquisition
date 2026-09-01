@@ -242,6 +242,8 @@ def test_dependency_source_free_verifier_checks_every_tradeos_top_level_root():
         "migrations",
         "agent_runtime",
         "notification_gateway",
+        "scripts",
+        "skills",
         "tests",
     ):
         assert repr(root) in program
