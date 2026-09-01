@@ -4,7 +4,7 @@ import tarfile
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -44,6 +44,7 @@ def test_image_id_rebuilds_current_source_from_an_offline_dependency_image(
         attrs={
             "Architecture": "arm64",
             "Os": "linux",
+            "RootFS": {"Layers": ["sha256:python-base", "sha256:dependencies"]},
             "Config": {
                 "Labels": {
                     "org.tradeos.source-manifest-sha256": manifest,
@@ -81,6 +82,7 @@ def test_audited_dependency_image_validates_only_the_explicit_bootstrap_artifact
         attrs={
             "Architecture": "arm64",
             "Os": "linux",
+            "RootFS": {"Layers": ["sha256:python-base", "sha256:dependencies"]},
             "Config": {
                 "Labels": {
                     "org.tradeos.dependency-only": "true",
@@ -94,7 +96,16 @@ def test_audited_dependency_image_validates_only_the_explicit_bootstrap_artifact
             },
         }
     )
-    images = SimpleNamespace(get=Mock(return_value=image))
+    pinned_python = SimpleNamespace(
+        attrs={"RootFS": {"Layers": ["sha256:python-base"]}}
+    )
+    images = SimpleNamespace(
+        get=Mock(
+            side_effect=lambda value: image
+            if value == "fixed-tag"
+            else pinned_python
+        )
+    )
     client = SimpleNamespace(images=images, containers=SimpleNamespace(), close=Mock())
     monkeypatch.setattr(support.docker, "from_env", lambda: client)
     monkeypatch.setattr(support, "dependency_lock_sha256", lambda: "lock-sha")
@@ -108,8 +119,133 @@ def test_audited_dependency_image_validates_only_the_explicit_bootstrap_artifact
     monkeypatch.setattr(support, "_dependency_image_is_source_free", lambda *_: True)
 
     assert support.audited_dependency_image_id() == dependency
-    images.get.assert_called_once_with("fixed-tag")
+    assert images.get.call_args_list == [
+        call("fixed-tag"),
+        call(support.PYTHON_IMAGE),
+    ]
     client.close.assert_called_once()
+
+
+def test_audited_dependency_image_requires_the_pinned_python_rootfs_prefix(
+    monkeypatch,
+):
+    """候选仅能由本地 pinned Python 基础层增量构建，不能借相同标签冒充。"""
+
+    dependency = "sha256:" + "a" * 64
+    image = SimpleNamespace(
+        id=dependency,
+        attrs={
+            "Architecture": "arm64",
+            "Os": "linux",
+            "RootFS": {"Layers": ["sha256:python-base", "sha256:dependencies"]},
+            "Config": {
+                "Labels": {
+                    "org.tradeos.dependency-only": "true",
+                    "org.tradeos.dependency-base": support.PYTHON_IMAGE,
+                    "org.tradeos.dependency-lock-sha256": "lock-sha",
+                    "org.tradeos.dependency-manifest-sha256": (
+                        support._AUDITED_DEPENDENCY_MANIFEST_SHA256
+                    ),
+                    "org.tradeos.dependency-platform": "linux/arm64",
+                }
+            },
+        },
+    )
+    pinned_python = SimpleNamespace(
+        attrs={"RootFS": {"Layers": ["sha256:python-base"]}}
+    )
+    images = SimpleNamespace(
+        get=Mock(
+            side_effect=lambda value: image
+            if value == "fixed-tag"
+            else pinned_python
+        )
+    )
+    client = SimpleNamespace(images=images, containers=SimpleNamespace(), close=Mock())
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_lock_sha256", lambda: "lock-sha")
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "fixed-tag")
+    monkeypatch.setattr(
+        support,
+        "_dependency_manifest_sha256",
+        lambda _client, image_id: support._AUDITED_DEPENDENCY_MANIFEST_SHA256,
+    )
+    monkeypatch.setattr(support, "_dependency_runtime_is_complete", lambda *_: True)
+    monkeypatch.setattr(support, "_dependency_image_is_source_free", lambda *_: True)
+
+    assert support.audited_dependency_image_id() == dependency
+    assert images.get.call_args_list == [
+        call("fixed-tag"),
+        call(support.PYTHON_IMAGE),
+    ]
+
+
+def test_audited_dependency_image_rejects_non_pinned_python_rootfs_prefix(
+    monkeypatch,
+):
+    """标签正确但基底层不匹配的本机候选必须 fail-closed。"""
+
+    dependency = "sha256:" + "a" * 64
+    image = SimpleNamespace(
+        id=dependency,
+        attrs={
+            "Architecture": "arm64",
+            "Os": "linux",
+            "RootFS": {"Layers": ["sha256:untrusted-base", "sha256:dependencies"]},
+            "Config": {"Labels": support._dependency_labels()},
+        },
+    )
+    pinned_python = SimpleNamespace(
+        attrs={"RootFS": {"Layers": ["sha256:python-base"]}}
+    )
+    images = SimpleNamespace(
+        get=Mock(
+            side_effect=lambda value: image
+            if value == "fixed-tag"
+            else pinned_python
+        )
+    )
+    client = SimpleNamespace(images=images, containers=SimpleNamespace(), close=Mock())
+    monkeypatch.setattr(support.docker, "from_env", lambda: client)
+    monkeypatch.setattr(support, "dependency_bootstrap_image_tag", lambda: "fixed-tag")
+
+    with pytest.raises(RuntimeError, match="pinned Python RootFS"):
+        support.audited_dependency_image_id()
+    assert images.get.call_args_list == [
+        call("fixed-tag"),
+        call(support.PYTHON_IMAGE),
+    ]
+
+
+def test_dependency_source_free_verifier_checks_every_tradeos_top_level_root():
+    """隔离依赖镜像不得可导入或携带任一 TradeOS 顶层源码根。"""
+
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return b"dependency-only\n"
+
+    client = SimpleNamespace(containers=SimpleNamespace(run=run))
+
+    assert support._dependency_image_is_source_free(client, "sha256:" + "a" * 64)
+    program = calls[0][0][1][1]
+    for root in (
+        "apps",
+        "domains",
+        "shared",
+        "connectors",
+        "workflows",
+        "tool_gateway",
+        "artifact_store",
+        "infra",
+        "migrations",
+        "agent_runtime",
+        "notification_gateway",
+        "tests",
+    ):
+        assert repr(root) in program
+    assert "find_spec" in program
 
 
 @pytest.mark.parametrize(

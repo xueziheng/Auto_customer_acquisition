@@ -41,6 +41,20 @@ _REQUIRED_DEPENDENCY_MODULES = (
     "sqlalchemy",
     "testcontainers",
 )
+_TRADEOS_SOURCE_ROOTS = (
+    "apps",
+    "domains",
+    "shared",
+    "connectors",
+    "workflows",
+    "tool_gateway",
+    "artifact_store",
+    "infra",
+    "migrations",
+    "agent_runtime",
+    "notification_gateway",
+    "tests",
+)
 
 
 def _repository_root() -> Path:
@@ -268,11 +282,19 @@ def _dependency_runtime_is_complete(client: Any, image_id: str) -> bool:
 
 
 def _dependency_image_is_source_free(client: Any, image_id: str) -> bool:
-    """确认 bootstrap 不含 /opt/tradeos 旧源码或已安装的项目 distribution。"""
+    """确认 bootstrap 不含任一 TradeOS 源码根或已安装项目 distribution。"""
 
     program = (
-        "from importlib.metadata import distributions; from pathlib import Path; "
+        "from importlib.metadata import distributions; "
+        "from importlib.util import find_spec; from pathlib import Path; "
+        "from sys import path as sys_path; "
+        f"roots={_TRADEOS_SOURCE_ROOTS!r}; "
         "assert not Path('/opt/tradeos').exists(); "
+        "assert not any((Path('/opt/tradeos') / root).exists() for root in roots); "
+        "assert not any(Path('/').joinpath(root).exists() for root in roots); "
+        "assert all(find_spec(root) is None for root in roots); "
+        "assert not any(Path(entry, root).exists() for entry in sys_path if entry "
+        "for root in roots); "
         "assert not any((item.metadata['Name'] or '').lower() == 'tradeos-agent' "
         "for item in distributions()); print('dependency-only')"
     )
@@ -289,6 +311,22 @@ def _dependency_image_is_source_free(client: Any, image_id: str) -> bool:
     except docker.errors.ContainerError:
         return False
     return output == b"dependency-only\n"
+
+
+def _has_pinned_python_rootfs_prefix(client: Any, image: Any) -> bool:
+    """候选 RootFS 必须以本地 pinned Python 基础镜像的真实层序列开头。"""
+
+    try:
+        pinned_python = client.images.get(PYTHON_IMAGE)
+    except docker.errors.ImageNotFound:
+        return False
+    candidate_layers = image.attrs.get("RootFS", {}).get("Layers")
+    pinned_layers = pinned_python.attrs.get("RootFS", {}).get("Layers")
+    if not isinstance(candidate_layers, list) or not isinstance(pinned_layers, list):
+        return False
+    if not pinned_layers or len(candidate_layers) < len(pinned_layers):
+        return False
+    return candidate_layers[:len(pinned_layers)] == pinned_layers
 
 
 def bootstrap_dependency_image() -> str:
@@ -354,6 +392,8 @@ def audited_dependency_image_id() -> str:
             or any(labels.get(name) != value for name, value in _dependency_labels().items())
         ):
             raise RuntimeError("dependency-only bootstrap 标签或平台不匹配")
+        if not _has_pinned_python_rootfs_prefix(client, image):
+            raise RuntimeError("dependency-only bootstrap pinned Python RootFS 前缀不匹配")
         if not _dependency_image_is_source_free(client, image_id):
             raise RuntimeError("dependency-only bootstrap 含项目源码或 distribution")
         if not _dependency_runtime_is_complete(client, image_id):
