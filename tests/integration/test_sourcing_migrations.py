@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import CheckConstraint, Table, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import (
@@ -256,6 +257,48 @@ async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
 
         def inspect_admission_contract(connection: Connection) -> dict[str, object]:
             inspector = inspect(connection)
+
+            def column_contract(table_name: str) -> dict[str, tuple[str, bool]]:
+                return {
+                    str(column["name"]): (
+                        str(column["type"].compile(dialect=connection.dialect)),
+                        bool(column["nullable"]),
+                    )
+                    for column in inspector.get_columns(table_name)
+                }
+
+            def orm_column_contract(table: Table) -> dict[str, tuple[str, bool]]:
+                return {
+                    column.name: (
+                        str(column.type.compile(dialect=connection.dialect)),
+                        column.nullable,
+                    )
+                    for column in table.columns
+                }
+
+            def normalize_check(sql: str) -> str:
+                normalized = "".join(sql.lower().split())
+                normalized = normalized.replace("::text", "").replace(
+                    "::charactervarying", ""
+                )
+                normalized = re.sub(
+                    r"=any\(array\[(.*?)\]\[\]\)", r"in(\1)", normalized
+                )
+                return normalized.replace("(", "").replace(")", "")
+
+            def check_contract(table_name: str) -> dict[str, str]:
+                return {
+                    str(item["name"]): normalize_check(str(item["sqltext"]))
+                    for item in inspector.get_check_constraints(table_name)
+                }
+
+            def orm_check_contract(table: Table) -> dict[str, str]:
+                return {
+                    str(constraint.name): normalize_check(str(constraint.sqltext))
+                    for constraint in table.constraints
+                    if isinstance(constraint, CheckConstraint)
+                }
+
             return {
                 "tables": set(inspector.get_table_names()),
                 "admission_columns": {
@@ -322,6 +365,28 @@ async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
                         "sourcing_priority_snapshots"
                     )
                 },
+                "admission_column_contract": column_contract(
+                    "sourcing_admissions"
+                ),
+                "snapshot_column_contract": column_contract(
+                    "sourcing_priority_snapshots"
+                ),
+                "orm_admission_column_contract": orm_column_contract(
+                    SourcingAdmissionRow.__table__
+                ),
+                "orm_snapshot_column_contract": orm_column_contract(
+                    SourcingPrioritySnapshotRow.__table__
+                ),
+                "admission_check_contract": check_contract("sourcing_admissions"),
+                "snapshot_check_contract": check_contract(
+                    "sourcing_priority_snapshots"
+                ),
+                "orm_admission_check_contract": orm_check_contract(
+                    SourcingAdmissionRow.__table__
+                ),
+                "orm_snapshot_check_contract": orm_check_contract(
+                    SourcingPrioritySnapshotRow.__table__
+                ),
             }
 
         async with engine.connect() as connection:
@@ -432,6 +497,22 @@ async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
             "ck_sourcing_priority_snapshots_times",
             "ck_sourcing_priority_snapshots_version",
         }
+        assert (
+            contract["admission_column_contract"]
+            == contract["orm_admission_column_contract"]
+        )
+        assert (
+            contract["snapshot_column_contract"]
+            == contract["orm_snapshot_column_contract"]
+        )
+        assert (
+            contract["admission_check_contract"]
+            == contract["orm_admission_check_contract"]
+        )
+        assert (
+            contract["snapshot_check_contract"]
+            == contract["orm_snapshot_check_contract"]
+        )
     finally:
         if engine is not None:
             await engine.dispose()
@@ -462,6 +543,24 @@ async def test_0053_enforces_state_tenant_immutability_and_safe_downgrade(
                 need_id="need-admission-schema-b",
                 case_id="case-admission-schema-b",
             )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-admission-null-block",
+                case_id="case-admission-null-block",
+            )
+            for suffix in (
+                "waiting-no-snapshot",
+                "starting-no-token",
+                "admitted-no-actor",
+                "blocked-mismatch-no-snapshot",
+            ):
+                await _seed_need_and_case(
+                    connection,
+                    tenant_id=TENANT_A,
+                    need_id=f"need-{suffix}",
+                    case_id=f"case-{suffix}",
+                )
             await connection.execute(
                 text(
                     "INSERT INTO sourcing_admissions "
@@ -491,6 +590,80 @@ async def test_0053_enforces_state_tenant_immutability_and_safe_downgrade(
                 },
             )
 
+            await _expect_integrity(
+                connection,
+                "INSERT INTO sourcing_admissions "
+                "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                "current_snapshot_id,blocked_reason,created_at,updated_at) VALUES "
+                "(:tenant,'adm-null-block','case-admission-null-block',"
+                "'need-admission-null-block','blocked',:ready,NULL,NULL,"
+                ":created,:created)",
+                {"tenant": TENANT_A, "ready": ready_at, "created": created_at},
+            )
+            illegal_state_rows = (
+                {
+                    "suffix": "waiting-no-snapshot",
+                    "state": "waiting",
+                    "snapshot": None,
+                    "claim_token": None,
+                    "claim_expires": None,
+                    "workflow_run": None,
+                    "admitted_at": None,
+                    "admitted_by": None,
+                    "blocked_reason": None,
+                },
+                {
+                    "suffix": "starting-no-token",
+                    "state": "starting",
+                    "snapshot": "sps-starting-no-token",
+                    "claim_token": None,
+                    "claim_expires": created_at + timedelta(minutes=5),
+                    "workflow_run": None,
+                    "admitted_at": None,
+                    "admitted_by": None,
+                    "blocked_reason": None,
+                },
+                {
+                    "suffix": "admitted-no-actor",
+                    "state": "admitted",
+                    "snapshot": "sps-admitted-no-actor",
+                    "claim_token": None,
+                    "claim_expires": None,
+                    "workflow_run": "run-admitted-no-actor",
+                    "admitted_at": created_at,
+                    "admitted_by": None,
+                    "blocked_reason": None,
+                },
+                {
+                    "suffix": "blocked-mismatch-no-snapshot",
+                    "state": "blocked",
+                    "snapshot": None,
+                    "claim_token": None,
+                    "claim_expires": None,
+                    "workflow_run": None,
+                    "admitted_at": None,
+                    "admitted_by": None,
+                    "blocked_reason": "case_state_mismatch",
+                },
+            )
+            for invalid in illegal_state_rows:
+                await _expect_integrity(
+                    connection,
+                    "INSERT INTO sourcing_admissions "
+                    "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                    "current_snapshot_id,claim_token,claim_expires_at,workflow_run_id,"
+                    "admitted_at,admitted_by,blocked_reason,created_at,updated_at) "
+                    "VALUES (:tenant,'adm-' || :suffix,'case-' || :suffix,"
+                    "'need-' || :suffix,:state,:ready,:snapshot,:claim_token,"
+                    ":claim_expires,:workflow_run,:admitted_at,:admitted_by,"
+                    ":blocked_reason,:created,:created)",
+                    {
+                        "tenant": TENANT_A,
+                        "ready": ready_at,
+                        "created": created_at,
+                        **invalid,
+                    },
+                )
             await _expect_integrity(
                 connection,
                 "UPDATE sourcing_admissions SET state='blocked',"

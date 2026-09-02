@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
@@ -115,6 +115,34 @@ class _TenantBoundRepository(TenantScopedRepository):
     def _require_tenant(self, tenant_id: TenantId) -> None:
         if tenant_id != self._tenant_id:
             raise ValueError("请求租户与仓储绑定租户不一致")
+
+
+def _require_utc_datetime(value: object, field_name: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != timedelta(0)
+    ):
+        raise ValidationError(f"{field_name} 必须是 UTC 时间")
+    return value
+
+
+def _require_bounded_identifier(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError(f"{field_name} 无效")
+    return value
+
+
+def _require_limit(value: object, *, maximum: int) -> int:
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise ValidationError(f"limit 必须是 1..{maximum} 的整数")
+    return value
 
 
 def _comparison_to_json(value: SpecComparison) -> dict[str, object]:
@@ -560,6 +588,8 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
     ) -> None:
         if admission.tenant_id != tenant_id:
             raise ValueError("准入租户与请求租户不一致")
+        for field_name in ("ready_at", "created_at", "updated_at"):
+            _require_utc_datetime(getattr(admission, field_name), field_name)
         if snapshot is None:
             if not (
                 admission.state is AdmissionState.BLOCKED
@@ -571,6 +601,8 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     "无首快照仅允许 priority_facts_invalid blocked 准入"
                 )
             return
+        for field_name in ("ready_at", "facts_observed_at", "created_at"):
+            _require_utc_datetime(getattr(snapshot, field_name), field_name)
         if (
             snapshot.tenant_id != tenant_id
             or snapshot.admission_id != admission.admission_id
@@ -679,6 +711,8 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         self._require_tenant(tenant_id)
         if snapshot.tenant_id != tenant_id:
             raise ValueError("快照租户与请求租户不一致")
+        for field_name in ("ready_at", "facts_observed_at", "created_at"):
+            _require_utc_datetime(getattr(snapshot, field_name), field_name)
         row = (
             await self._session.execute(
                 self._admissions()
@@ -737,6 +771,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     SourcingAdmissionRow.admission_id == str(snapshot.admission_id),
                     SourcingAdmissionRow.state == current.state.value,
                     SourcingAdmissionRow.updated_at == current.updated_at,
+                    SourcingAdmissionRow.updated_at <= snapshot.created_at,
                 )
                 .values(
                     state=changed.state.value,
@@ -774,10 +809,14 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         now: datetime,
     ) -> list[SourcingAdmission]:
         self._require_tenant(tenant_id)
-        if limit <= 0:
-            return []
-        if not claim_token or claim_token != claim_token.strip():
-            raise ValidationError("claim_token 无效")
+        limit = _require_limit(limit, maximum=50)
+        claim_token = _require_bounded_identifier(claim_token, "claim_token")
+        claim_expires_at = _require_utc_datetime(
+            claim_expires_at, "claim_expires_at"
+        )
+        now = _require_utc_datetime(now, "now")
+        if claim_expires_at <= now:
+            raise ValidationError("claim_expires_at 必须晚于 now")
         candidates = (
             (
                 await self._session.execute(
@@ -793,7 +832,10 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                             == SourcingAdmissionRow.current_snapshot_id,
                         ),
                     )
-                    .where(self._claimable(now))
+                    .where(
+                        self._claimable(now),
+                        SourcingAdmissionRow.updated_at <= now,
+                    )
                     .order_by(
                         SourcingPrioritySnapshotRow.cluster_member_count.desc(),
                         SourcingPrioritySnapshotRow.ready_at,
@@ -818,6 +860,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                         SourcingAdmissionRow.current_snapshot_id
                         == candidate.current_snapshot_id,
                         self._claimable(now),
+                        SourcingAdmissionRow.updated_at <= now,
                     )
                     .values(
                         state=AdmissionState.STARTING.value,
@@ -842,6 +885,10 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         admitted_at: datetime,
     ) -> SourcingAdmission | None:
         self._require_tenant(tenant_id)
+        claim_token = _require_bounded_identifier(claim_token, "claim_token")
+        _require_bounded_identifier(workflow_run_id, "workflow_run_id")
+        admitted_by = _require_bounded_identifier(admitted_by, "admitted_by")
+        admitted_at = _require_utc_datetime(admitted_at, "admitted_at")
         row = (
             await self._session.execute(
                 update(SourcingAdmissionRow)
@@ -850,6 +897,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     SourcingAdmissionRow.admission_id == str(admission_id),
                     SourcingAdmissionRow.state == AdmissionState.STARTING.value,
                     SourcingAdmissionRow.claim_token == claim_token,
+                    SourcingAdmissionRow.updated_at <= admitted_at,
                 )
                 .values(
                     state=AdmissionState.ADMITTED.value,
@@ -869,6 +917,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         self, tenant_id: TenantId, now: datetime
     ) -> list[SourcingAdmission]:
         self._require_tenant(tenant_id)
+        now = _require_utc_datetime(now, "now")
         rows = (
             (
                 await self._session.execute(
@@ -876,6 +925,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     .where(
                         SourcingAdmissionRow.state == AdmissionState.STARTING.value,
                         SourcingAdmissionRow.claim_expires_at <= now,
+                        SourcingAdmissionRow.updated_at <= now,
                     )
                     .order_by(
                         SourcingAdmissionRow.claim_expires_at,
@@ -898,6 +948,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                         SourcingAdmissionRow.state == AdmissionState.STARTING.value,
                         SourcingAdmissionRow.claim_token == candidate.claim_token,
                         SourcingAdmissionRow.claim_expires_at <= now,
+                        SourcingAdmissionRow.updated_at <= now,
                     )
                     .values(
                         state=AdmissionState.WAITING.value,
@@ -920,6 +971,8 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         released_at: datetime,
     ) -> SourcingAdmission | None:
         self._require_tenant(tenant_id)
+        claim_token = _require_bounded_identifier(claim_token, "claim_token")
+        released_at = _require_utc_datetime(released_at, "released_at")
         row = (
             await self._session.execute(
                 update(SourcingAdmissionRow)
@@ -928,6 +981,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     SourcingAdmissionRow.admission_id == str(admission_id),
                     SourcingAdmissionRow.state == AdmissionState.STARTING.value,
                     SourcingAdmissionRow.claim_token == claim_token,
+                    SourcingAdmissionRow.updated_at <= released_at,
                 )
                 .values(
                     state=AdmissionState.WAITING.value,
@@ -951,6 +1005,9 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         self._require_tenant(tenant_id)
         if not isinstance(reason, AdmissionBlockedReason):
             raise ValidationError("blocked_reason 必须是 AdmissionBlockedReason")
+        blocked_at = _require_utc_datetime(blocked_at, "blocked_at")
+        if claim_token is not None:
+            claim_token = _require_bounded_identifier(claim_token, "claim_token")
         eligibility = (
             SourcingAdmissionRow.state == AdmissionState.WAITING.value
             if claim_token is None
@@ -966,6 +1023,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     SourcingAdmissionRow.tenant_id == str(tenant_id),
                     SourcingAdmissionRow.admission_id == str(admission_id),
                     eligibility,
+                    SourcingAdmissionRow.updated_at <= blocked_at,
                 )
                 .values(
                     state=AdmissionState.BLOCKED.value,
@@ -983,8 +1041,9 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         self, tenant_id: TenantId, state: AdmissionState, limit: int
     ) -> list[SourcingAdmission]:
         self._require_tenant(tenant_id)
-        if limit <= 0:
-            return []
+        if not isinstance(state, AdmissionState):
+            raise ValidationError("admission state 无效")
+        limit = _require_limit(limit, maximum=200)
         rows = (
             (
                 await self._session.execute(

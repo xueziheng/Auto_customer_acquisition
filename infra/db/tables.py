@@ -4822,6 +4822,7 @@ class SourcingAdmissionRow(Base):
             "(state = 'blocked' AND claim_token IS NULL "
             "AND claim_expires_at IS NULL AND workflow_run_id IS NULL "
             "AND admitted_at IS NULL AND admitted_by IS NULL "
+            "AND blocked_reason IS NOT NULL "
             "AND blocked_reason IN ('priority_facts_invalid','case_state_mismatch') "
             "AND (current_snapshot_id IS NOT NULL "
             "OR blocked_reason = 'priority_facts_invalid'))",
