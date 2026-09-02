@@ -274,6 +274,18 @@ class DemandServiceImpl:
         return value
 
     @staticmethod
+    def _priority_fact_version_time(value: object, message: str) -> datetime:
+        """排序事实版本只接受持久化的严格 UTC 时间，不回退到读取时钟。"""
+
+        if (
+            not isinstance(value, datetime)
+            or value.tzinfo is None
+            or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValidationError(message)
+        return value
+
+    @staticmethod
     def _require_text(
         value: object,
         label: str,
@@ -1279,7 +1291,6 @@ class DemandServiceImpl:
             or len(need_id) > 40
         ):
             raise ValidationError("已验证需求标识无效")
-        observed_at = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
             need = await uow.needs.get(tenant_id, need_id)
             if need is None:
@@ -1287,6 +1298,10 @@ class DemandServiceImpl:
             if need.tenant_id != tenant_id:
                 raise ValidationError("已验证需求租户不一致")
             if need.cluster_id is None:
+                observed_at = self._priority_fact_version_time(
+                    need.created_at,
+                    "已验证需求事实版本时间无效",
+                )
                 return NeedClusterPriorityFacts(
                     need_id=str(need.need_id),
                     cluster_id=None,
@@ -1301,6 +1316,16 @@ class DemandServiceImpl:
             members = await self._load_cluster_needs(uow, tenant_id, cluster)
             if need.need_id not in {member.need_id for member in members}:
                 raise ValidationError("需求簇成员链不完整")
+            created_at = self._priority_fact_version_time(
+                cluster.created_at,
+                "需求簇事实版本时间无效",
+            )
+            observed_at = self._priority_fact_version_time(
+                cluster.updated_at,
+                "需求簇事实版本时间无效",
+            )
+            if observed_at < created_at:
+                raise ValidationError("需求簇事实版本时间无效")
             return NeedClusterPriorityFacts(
                 need_id=str(need.need_id),
                 cluster_id=str(cluster.cluster_id),

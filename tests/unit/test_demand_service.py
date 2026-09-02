@@ -6,7 +6,7 @@ import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -35,6 +35,7 @@ class _Need:
     tenant_id: TenantId
     cluster_id: NeedClusterId | None
     completeness: int
+    created_at: object
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class _Cluster:
     cluster_id: NeedClusterId
     tenant_id: TenantId
     member_need_ids: list[ValidatedNeedId]
+    created_at: object = NOW - timedelta(hours=2)
+    updated_at: object = NOW
 
 
 def _need(
@@ -52,12 +55,14 @@ def _need(
     tenant_id: TenantId = TENANT,
     cluster_id: NeedClusterId | None = None,
     completeness: int = 3,
+    created_at: object = NOW,
 ) -> _Need:
     return _Need(
         need_id=need_id,
         tenant_id=tenant_id,
         cluster_id=cluster_id,
         completeness=completeness,
+        created_at=created_at,
     )
 
 
@@ -95,9 +100,9 @@ class _Uow:
         yield self
 
 
-def _service(uow: _Uow) -> object:
+def _service(uow: _Uow, *, now: object = NOW) -> object:
     implementation = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
-    return implementation(lambda tenant_id: uow.context(), now=lambda: NOW)
+    return implementation(lambda tenant_id: uow.context(), now=lambda: now)
 
 
 def _priority_facts_type() -> type[object]:
@@ -150,6 +155,40 @@ async def test_cluster_priority_facts_expose_verified_cluster_membership() -> No
         cluster_id=str(CLUSTER_ID),
         cluster_member_count=3,
         facts_observed_at=NOW,
+    )
+
+
+async def test_cluster_priority_facts_are_stable_when_only_reader_clock_advances() -> None:
+    """把 observed_at 重新绑定读时钟会使相同底层事实产生不同 hash。"""
+
+    cluster = _Cluster(
+        cluster_id=CLUSTER_ID,
+        tenant_id=TENANT,
+        member_need_ids=[NEED_ID, OTHER_NEED_ID],
+        created_at=NOW - timedelta(hours=2),
+        updated_at=NOW - timedelta(hours=1),
+    )
+    uow = _Uow(
+        needs=_Needs(
+            {
+                NEED_ID: _need(NEED_ID, cluster_id=CLUSTER_ID),
+                OTHER_NEED_ID: _need(OTHER_NEED_ID, cluster_id=CLUSTER_ID),
+            },
+            [],
+        ),
+        clusters=_Clusters({CLUSTER_ID: cluster}, []),
+    )
+
+    first = await _service(uow, now=NOW).get_cluster_priority_facts(TENANT, NEED_ID)
+    second = await _service(
+        uow, now=NOW + timedelta(days=1)
+    ).get_cluster_priority_facts(TENANT, NEED_ID)
+
+    assert first == second == _priority_facts_type()(
+        need_id=str(NEED_ID),
+        cluster_id=str(CLUSTER_ID),
+        cluster_member_count=2,
+        facts_observed_at=NOW - timedelta(hours=1),
     )
 
 
@@ -222,3 +261,58 @@ async def test_cluster_priority_facts_return_single_member_for_unclustered_compl
         facts_observed_at=NOW,
     )
     assert uow.clusters.get_calls == []
+
+
+async def test_unclustered_priority_facts_use_stable_need_creation_time() -> None:
+    created_at = NOW - timedelta(days=3)
+    uow = _Uow(
+        needs=_Needs({NEED_ID: _need(NEED_ID, created_at=created_at)}, []),
+        clusters=_Clusters({}, []),
+    )
+
+    first = await _service(uow, now=NOW).get_cluster_priority_facts(TENANT, NEED_ID)
+    second = await _service(
+        uow, now=NOW + timedelta(days=7)
+    ).get_cluster_priority_facts(TENANT, NEED_ID)
+
+    assert first == second
+    assert first.facts_observed_at == created_at
+
+
+@pytest.mark.parametrize(
+    "cluster",
+    [
+        _Cluster(CLUSTER_ID, TENANT, [NEED_ID], updated_at=None),
+        _Cluster(CLUSTER_ID, TENANT, [NEED_ID], updated_at=NOW.replace(tzinfo=None)),
+        _Cluster(
+            CLUSTER_ID,
+            TENANT,
+            [NEED_ID],
+            created_at=NOW,
+            updated_at=NOW - timedelta(seconds=1),
+        ),
+    ],
+)
+async def test_cluster_priority_facts_reject_invalid_stable_version_time(
+    cluster: _Cluster,
+) -> None:
+    uow = _Uow(
+        needs=_Needs({NEED_ID: _need(NEED_ID, cluster_id=CLUSTER_ID)}, []),
+        clusters=_Clusters({CLUSTER_ID: cluster}, []),
+    )
+
+    with pytest.raises(ValidationError, match="^需求簇事实版本时间无效$"):
+        await _service(uow).get_cluster_priority_facts(TENANT, NEED_ID)
+
+
+@pytest.mark.parametrize("created_at", [None, NOW.replace(tzinfo=None)])
+async def test_unclustered_priority_facts_reject_invalid_creation_time(
+    created_at: object,
+) -> None:
+    uow = _Uow(
+        needs=_Needs({NEED_ID: _need(NEED_ID, created_at=created_at)}, []),
+        clusters=_Clusters({}, []),
+    )
+
+    with pytest.raises(ValidationError, match="^已验证需求事实版本时间无效$"):
+        await _service(uow).get_cluster_priority_facts(TENANT, NEED_ID)

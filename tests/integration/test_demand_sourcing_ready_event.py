@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Self
 
 import pytest
@@ -299,3 +299,56 @@ async def test_cluster_assignment_publishes_membership_facts_once_per_need(
     assert len(formed_payloads) == 1
     assert formed_payloads[0]["cluster_id"] == first_cluster_id
     assert formed_payloads[0]["member_count"] == 2
+
+
+async def test_priority_facts_change_only_when_cluster_membership_version_changes(
+    demand_db: AsyncEngine,
+) -> None:
+    """推进读时钟不改事实；新增成员只推进一次 cluster 版本与成员数。"""
+
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock, account_names=_Countries())
+    first_need_id = ValidatedNeedId(
+        await _promote_need(
+            service,
+            tenant,
+            {
+                "product_category": "hinges",
+                "application": "marine",
+                "material": "stainless",
+            },
+        )
+    )
+    cluster_id = await service.try_assign_cluster(tenant, first_need_id)
+    assert cluster_id is not None
+    initial = await service.get_cluster_priority_facts(tenant, first_need_id)
+
+    clock.value = NOW + timedelta(hours=1)
+    repeated = await service.get_cluster_priority_facts(tenant, first_need_id)
+
+    assert repeated == initial
+    assert initial.cluster_member_count == 1
+    assert initial.facts_observed_at == NOW
+
+    second_need_id = ValidatedNeedId(
+        await _promote_need(
+            service,
+            tenant,
+            {
+                "product_category": "hinges",
+                "application": "marine",
+                "material": "stainless",
+            },
+        )
+    )
+    assert await service.try_assign_cluster(tenant, second_need_id) == cluster_id
+    changed = await service.get_cluster_priority_facts(tenant, first_need_id)
+
+    assert changed.cluster_member_count == 2
+    assert changed.facts_observed_at == NOW + timedelta(hours=1)
+    assert changed != initial
+
+    clock.value = NOW + timedelta(days=1)
+    assert await service.get_cluster_priority_facts(tenant, first_need_id) == changed

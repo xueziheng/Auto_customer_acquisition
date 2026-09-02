@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -31,6 +32,16 @@ class DemandPriorityFactsReader(Protocol):
     async def get_cluster_priority_facts(
         self, tenant_id: TenantId, need_id: ValidatedNeedId
     ) -> NeedClusterPriorityFacts: ...
+
+
+@dataclass(frozen=True)
+class _ValidPriorityFacts:
+    facts: SourcingPriorityFactsInput
+
+
+@dataclass(frozen=True)
+class _PermanentInvalidPriorityFacts:
+    """Demand 明确拒绝或 DTO 结构损坏；不得与暂态不可用或 stale 混同。"""
 
 
 def _normalize(value: str) -> str:
@@ -126,7 +137,7 @@ async def _read_priority_input(
     demand: DemandPriorityFactsReader,
     tenant_id: TenantId,
     need_id: ValidatedNeedId,
-) -> SourcingPriorityFactsInput | None:
+) -> _ValidPriorityFacts | _PermanentInvalidPriorityFacts:
     error: Exception | None = None
     raw: object | None = None
     try:
@@ -141,8 +152,13 @@ async def _read_priority_input(
         )
         if classified.is_retryable:
             raise classified from None
-        return None
-    return _priority_input(raw, expected_need_id=need_id)
+        return _PermanentInvalidPriorityFacts()
+    facts = _priority_input(raw, expected_need_id=need_id)
+    return (
+        _ValidPriorityFacts(facts)
+        if facts is not None
+        else _PermanentInvalidPriorityFacts()
+    )
 
 
 def _dependency_is_retryable(
@@ -228,10 +244,10 @@ class SourcingTriggerHandler:
             )
         if case_id is None:
             return
-        facts = await _read_priority_input(self._demand, self._tenant_id, need_id)
+        priority = await _read_priority_input(self._demand, self._tenant_id, need_id)
         command = (
-            SourcingAdmissionEnqueueCommand(facts=facts)
-            if facts is not None
+            SourcingAdmissionEnqueueCommand(facts=priority.facts)
+            if isinstance(priority, _ValidPriorityFacts)
             else SourcingAdmissionEnqueueCommand(
                 facts=None,
                 blocked_reason="priority_facts_invalid",
@@ -282,13 +298,35 @@ class SourcingClusterMembershipHandler:
             or not _valid_identifier(event.changed_need_id)
             or type(event.member_count) is not int
             or event.member_count < 1
+            or not _is_utc_datetime(event.occurred_at)
         ):
             raise ValidationError("需求簇成员变更事件载荷无效")
         if event.tenant_id != self._tenant_id:
             return
         need_id = ValidatedNeedId(str(event.changed_need_id))
-        facts = await _read_priority_input(self._demand, self._tenant_id, need_id)
-        if facts is None or facts.cluster_id != event.cluster_id:
+        cluster_id = NeedClusterId(str(event.cluster_id))
+        priority = await _read_priority_input(self._demand, self._tenant_id, need_id)
+        if isinstance(priority, _PermanentInvalidPriorityFacts):
+            block_error: Exception | None = None
+            try:
+                await self._sourcing.block_cluster_admissions(
+                    self._tenant_id,
+                    cluster_id,
+                    need_id,
+                    blocked_at=event.occurred_at,
+                    actor=self._sourcing_actor,
+                )
+            except Exception as error:  # noqa: BLE001 - Outbox 边界按重试语义分类
+                block_error = error
+            if block_error is not None:
+                _dependency_is_retryable(
+                    block_error,
+                    transient_message="寻源准入需求簇阻断暂不可用",
+                    permanent_message="寻源准入需求簇阻断失败",
+                )
+            return
+        facts = priority.facts
+        if facts.cluster_id != cluster_id:
             return
         refresh_error: Exception | None = None
         try:

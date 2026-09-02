@@ -50,6 +50,7 @@ from domains.sourcing.schemas import (
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
@@ -204,6 +205,22 @@ class SourcingService(Protocol):
         单个事务内覆盖该簇全部 ``waiting``/``blocked``，并覆盖 changed Need
         尚无首快照的 ``priority_facts_invalid`` 记录；每条快照仍保留自身
         Case、Need 与 ready_at，禁止把多个 Need 的业务字段合并。
+        """
+        ...
+
+    async def block_cluster_admissions(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+        changed_need_id: ValidatedNeedId,
+        *,
+        blocked_at: datetime,
+        actor: SourcingActor,
+    ) -> tuple[SourcingAdmissionId, ...]:
+        """永久非法簇事实以固定原因阻断精确 refresh targets。
+
+        只把 ``waiting`` 转为 ``priority_facts_invalid``；相同原因的 blocked
+        幂等保留，其他 blocked 原因以及 ``starting``/``admitted`` 均不可改写。
         """
         ...
 

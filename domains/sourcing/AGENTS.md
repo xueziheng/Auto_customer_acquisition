@@ -119,6 +119,9 @@ waiting ──claim──> starting ──canonical Run bound──> admitted
   禁止加入权重、置信度、数量、国家、利润或 aging threshold。
 - 每份快照的 ``facts_hash`` 必须是排序输入的 canonical JSON SHA-256，时间使用 UTC；
   相同 hash 不得追加快照。只保存 current snapshot 指针，历史快照不得更新或删除。
+- Demand 永久非法簇事实必须复用精确 cluster refresh target 查询：同事务把 waiting 以固定
+  ``priority_facts_invalid`` 阻断；既有同原因 blocked 幂等，``case_state_mismatch``、starting、
+  admitted 与其他 tenant 均保持不变，不得保存异常文本。
 - admission 的 public read view 不得暴露 claim token、lease、Workflow context、底层异常或完整
   Need snapshot。内部排序解释只能使用确定性中文模板，禁止由模型生成。
 - 本域只维护准入自身不变量，不读取 Directive、Demand 或 Workflow；这些跨域编排留给

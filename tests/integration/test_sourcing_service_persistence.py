@@ -672,6 +672,7 @@ async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent
                 )
             ).scalars()
         }
+    assert before_count is not None
 
     refreshed = await service.refresh_cluster_admissions(
         tenant,
@@ -690,6 +691,25 @@ async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent
 
     assert refreshed == replayed
     assert len(refreshed) == 3
+    async with sessions() as session:
+        repeated_count = await session.scalar(
+            select(func.count()).select_from(SourcingPrioritySnapshotRow)
+        )
+    assert repeated_count == before_count + 3
+    next_version = await service.refresh_cluster_admissions(
+        tenant,
+        changed_need,
+        facts=SourcingPriorityFactsInput(
+            need_id=changed_need,
+            cluster_id=cluster_id,
+            cluster_member_count=10,
+            facts_observed_at=NOW + timedelta(minutes=3),
+        ),
+        refreshed_at=NOW + timedelta(minutes=3),
+        actor=system,
+    )
+    assert len(next_version) == 3
+    assert set(next_version).isdisjoint(refreshed)
     async with sessions() as session:
         after_count = await session.scalar(
             select(func.count()).select_from(SourcingPrioritySnapshotRow)
@@ -720,14 +740,14 @@ async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent
                 await session.execute(select(SourcingPrioritySnapshotRow))
             ).scalars()
         }
-    assert before_count is not None and after_count == before_count + 3
+    assert after_count == before_count + 6
     for admission_id in (first_id, second_id, changed_id):
         row = rows[str(admission_id)]
         snapshot = snapshots[row.current_snapshot_id]
         assert (row.tenant_id, snapshot.cluster_id, snapshot.cluster_member_count) == (
             str(tenant),
             str(cluster_id),
-            9,
+            10,
         )
         assert row.state == AdmissionState.WAITING.value
     assert rows[str(other_cluster_id)].current_snapshot_id not in set(refreshed)
@@ -742,6 +762,237 @@ async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent
         rows[str(admitted_id)].current_snapshot_id
         == immutable_snapshot_ids[str(admitted_id)]
     )
+
+
+@pytest.mark.asyncio
+async def test_cluster_block_is_tenant_bound_state_safe_and_idempotent_in_postgres(
+    integration_engine: AsyncEngine,
+) -> None:
+    """永久非法事实整簇阻断 waiting；既有阻断、终态与其他租户不可改写。"""
+
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    cluster_id = NeedClusterId(new_id("ncl"))
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant, SourcingScope.SYSTEM, "system")
+    other_system = SourcingActor(
+        "system-worker", other_tenant, SourcingScope.SYSTEM, "system"
+    )
+    service = _service_type()(
+        lambda bound: SqlAlchemySourcingUnitOfWork(sessions, bound),
+        Phase2SourcingAuthorizer(tenant),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+    other_service = _service_type()(
+        lambda bound: SqlAlchemySourcingUnitOfWork(sessions, bound),
+        Phase2SourcingAuthorizer(other_tenant),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+
+    async def enqueue(
+        bound_service: Any,
+        bound_tenant: TenantId,
+        actor: SourcingActor,
+        suffix: str,
+        *,
+        target_cluster: NeedClusterId | None,
+        blocked: bool = False,
+        member_count: int = 2,
+    ) -> tuple[ValidatedNeedId, SourcingAdmissionId]:
+        need_id = ValidatedNeedId(new_id(f"need{suffix}"))
+        await _seed_need(integration_engine, bound_tenant, need_id)
+        case_id = await bound_service.open_case(
+            bound_tenant, _command(bound_tenant, need_id), actor=actor
+        )
+        command = (
+            SourcingAdmissionEnqueueCommand(
+                facts=None,
+                blocked_reason="priority_facts_invalid",
+            )
+            if blocked
+            else SourcingAdmissionEnqueueCommand(
+                facts=SourcingPriorityFactsInput(
+                    need_id=need_id,
+                    cluster_id=target_cluster,
+                    cluster_member_count=member_count,
+                    facts_observed_at=NOW - timedelta(minutes=1),
+                )
+            )
+        )
+        admission_id = await bound_service.enqueue_admission(
+            bound_tenant,
+            case_id,
+            need_id,
+            ready_at=NOW - timedelta(hours=1),
+            command=command,
+            actor=actor,
+        )
+        return need_id, admission_id
+
+    _, first_id = await enqueue(
+        service, tenant, system, "first", target_cluster=cluster_id
+    )
+    _, second_id = await enqueue(
+        service, tenant, system, "second", target_cluster=cluster_id
+    )
+    changed_need, changed_id = await enqueue(
+        service,
+        tenant,
+        system,
+        "changed",
+        target_cluster=None,
+        blocked=True,
+    )
+    _, other_cluster_id = await enqueue(
+        service,
+        tenant,
+        system,
+        "other",
+        target_cluster=NeedClusterId(new_id("ncl")),
+    )
+    _, starting_id = await enqueue(
+        service,
+        tenant,
+        system,
+        "starting",
+        target_cluster=cluster_id,
+        member_count=20,
+    )
+    _, admitted_id = await enqueue(
+        service,
+        tenant,
+        system,
+        "admitted",
+        target_cluster=cluster_id,
+        member_count=20,
+    )
+    _, case_mismatch_id = await enqueue(
+        service, tenant, system, "mismatch", target_cluster=cluster_id
+    )
+    _, cross_tenant_id = await enqueue(
+        other_service,
+        other_tenant,
+        other_system,
+        "cross",
+        target_cluster=cluster_id,
+    )
+    claimed = await service.claim_admissions(
+        tenant,
+        limit=2,
+        claim_token="claim-cluster-block",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        actor=system,
+    )
+    assert {item.admission_id for item in claimed} == {starting_id, admitted_id}
+    await service.complete_admission(
+        tenant,
+        admitted_id,
+        claim_token="claim-cluster-block",
+        workflow_run_id=RunId(new_id("run")),
+        admitted_by="system:sourcing",
+        admitted_at=NOW + timedelta(seconds=1),
+        actor=system,
+    )
+    await service.block_admission(
+        tenant,
+        case_mismatch_id,
+        reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        blocked_at=NOW,
+        actor=system,
+    )
+    immutable_ids = (
+        other_cluster_id,
+        starting_id,
+        admitted_id,
+        case_mismatch_id,
+        cross_tenant_id,
+    )
+    async with sessions() as session:
+        before_snapshots = await session.scalar(
+            select(func.count())
+            .select_from(SourcingPrioritySnapshotRow)
+            .where(
+                SourcingPrioritySnapshotRow.tenant_id.in_(
+                    [str(tenant), str(other_tenant)]
+                )
+            )
+        )
+        immutable_before = {
+            row.admission_id: (
+                row.state,
+                row.blocked_reason,
+                row.current_snapshot_id,
+                row.updated_at,
+            )
+            for row in (
+                await session.execute(
+                    select(SourcingAdmissionRow).where(
+                        SourcingAdmissionRow.tenant_id.in_(
+                            [str(tenant), str(other_tenant)]
+                        ),
+                        SourcingAdmissionRow.admission_id.in_(immutable_ids)
+                    )
+                )
+            ).scalars()
+        }
+
+    blocked = await service.block_cluster_admissions(
+        tenant,
+        cluster_id,
+        changed_need,
+        blocked_at=NOW - timedelta(minutes=1),
+        actor=system,
+    )
+    replayed = await service.block_cluster_admissions(
+        tenant,
+        cluster_id,
+        changed_need,
+        blocked_at=NOW + timedelta(minutes=2),
+        actor=system,
+    )
+
+    assert blocked == replayed == tuple(sorted((first_id, second_id, changed_id)))
+    async with sessions() as session:
+        after_snapshots = await session.scalar(
+            select(func.count())
+            .select_from(SourcingPrioritySnapshotRow)
+            .where(
+                SourcingPrioritySnapshotRow.tenant_id.in_(
+                    [str(tenant), str(other_tenant)]
+                )
+            )
+        )
+        rows = {
+            row.admission_id: row
+            for row in (
+                await session.execute(
+                    select(SourcingAdmissionRow).where(
+                        SourcingAdmissionRow.tenant_id.in_(
+                            [str(tenant), str(other_tenant)]
+                        ),
+                        SourcingAdmissionRow.admission_id.in_(
+                            [first_id, second_id, changed_id, *immutable_ids]
+                        )
+                    )
+                )
+            ).scalars()
+        }
+    assert after_snapshots == before_snapshots
+    for admission_id in (first_id, second_id, changed_id):
+        row = rows[str(admission_id)]
+        assert row.state == AdmissionState.BLOCKED.value
+        assert row.blocked_reason == AdmissionBlockedReason.PRIORITY_FACTS_INVALID.value
+        assert row.updated_at == NOW
+    for admission_id in immutable_ids:
+        row = rows[str(admission_id)]
+        assert (
+            row.state,
+            row.blocked_reason,
+            row.current_snapshot_id,
+            row.updated_at,
+        ) == immutable_before[str(admission_id)]
 
 
 @pytest.mark.asyncio

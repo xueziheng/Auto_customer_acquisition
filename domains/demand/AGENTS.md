@@ -156,4 +156,6 @@ NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交
 账户字段，也不在此读取入口套用完整度 3 的寻源门槛。未归簇 Need 固定为一成员事实；归簇 Need 必须
 同时满足簇→Need 和 Need→簇的双向成员链。每条 Need 首次归簇后，在同一事务发布
 `NeedClusterMembershipChanged`；既有 `NeedClusterFormed` 仍仅表达第二成员首次形成多成员簇，二者均不
-表示已经开始寻源、询价或报价。
+表示已经开始寻源、询价或报价。优先级事实的观察时间是底层版本：归簇后必须使用经双向成员链核验、
+严格 UTC 且不早于创建时间的 `NeedCluster.updated_at`；未归簇时使用严格 UTC 的
+`ValidatedNeed.created_at`。禁止用读取时钟制造新版本，也禁止在遗留时间缺失/非法时回退当前时间。

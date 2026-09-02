@@ -450,7 +450,8 @@ class DemandService(Protocol):
 
         未归簇的已验证需求返回 member_count=1；归簇时成员数是该租户内当前
         完整成员链的累计数。此读取不判断寻源门槛，不生成排序键，也不暴露
-        数量或账户字段。
+        数量或账户字段。观察时间是持久事实版本时间（未归簇 Need.created_at；
+        归簇 Cluster.updated_at），重复读取不得使用服务时钟制造新版本。
         """
         ...
 

@@ -110,6 +110,7 @@ from shared.public_page_url import canonical_public_page_url
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
@@ -1319,6 +1320,51 @@ class SourcingServiceImpl:
                 )
                 snapshot_ids.append(canonical.snapshot_id)
             return tuple(snapshot_ids)
+
+    async def block_cluster_admissions(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+        changed_need_id: ValidatedNeedId,
+        *,
+        blocked_at: datetime,
+        actor: SourcingActor,
+    ) -> tuple[SourcingAdmissionId, ...]:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_REFRESH,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(tenant_id, "tenant_id")
+        _bounded_identifier(cluster_id, "cluster_id")
+        _bounded_identifier(changed_need_id, "changed_need_id")
+        blocked_at = _utc_time(blocked_at, "blocked_at")
+        async with self._uow_factory(tenant_id) as uow:
+            targets = await uow.admissions.list_cluster_refresh_targets(
+                tenant_id,
+                cluster_id,
+                changed_need_id,
+            )
+            blocked_ids: list[SourcingAdmissionId] = []
+            for admission, _ in targets:
+                if admission.state is AdmissionState.BLOCKED:
+                    if (
+                        admission.blocked_reason
+                        is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+                    ):
+                        blocked_ids.append(admission.admission_id)
+                    continue
+                effective_time = max(blocked_at, admission.updated_at)
+                blocked = await uow.admissions.block(
+                    tenant_id,
+                    admission.admission_id,
+                    AdmissionBlockedReason.PRIORITY_FACTS_INVALID,
+                    effective_time,
+                )
+                if blocked is not None:
+                    blocked_ids.append(blocked.admission_id)
+            return tuple(blocked_ids)
 
     async def claim_admissions(
         self,

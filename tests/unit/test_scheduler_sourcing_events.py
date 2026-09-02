@@ -132,6 +132,7 @@ class _Sourcing:
         self.open_calls: list[tuple[Any, ...]] = []
         self.enqueue_calls: list[tuple[Any, ...]] = []
         self.refresh_calls: list[tuple[Any, ...]] = []
+        self.block_cluster_calls: list[tuple[Any, ...]] = []
 
     async def open_case(self, tenant_id, command, *, actor):
         self.open_calls.append((tenant_id, command, actor))
@@ -154,6 +155,14 @@ class _Sourcing:
             (tenant_id, changed_need_id, facts, refreshed_at, actor)
         )
         return self.refresh_result
+
+    async def block_cluster_admissions(
+        self, tenant_id, cluster_id, changed_need_id, *, blocked_at, actor
+    ):
+        self.block_cluster_calls.append(
+            (tenant_id, cluster_id, changed_need_id, blocked_at, actor)
+        )
+        return ()
 
 
 def _validated(*, completeness: int = 3, tenant_id: TenantId = TENANT) -> NeedValidated:
@@ -182,10 +191,11 @@ def _membership(
     cluster_id: object = CLUSTER_ID,
     changed_need_id: object = NEED_ID,
     member_count: object = 2,
+    occurred_at: object = NOW + timedelta(minutes=1),
 ) -> NeedClusterMembershipChanged:
     return NeedClusterMembershipChanged(
         tenant_id=cast(TenantId, tenant_id),
-        occurred_at=NOW + timedelta(minutes=1),
+        occurred_at=cast(datetime, occurred_at),
         cluster_id=cast(NeedClusterId, cluster_id),
         changed_need_id=cast(ValidatedNeedId, changed_need_id),
         member_count=member_count,  # type: ignore[arg-type]
@@ -361,6 +371,34 @@ async def test_out_of_order_membership_for_old_cluster_is_no_op() -> None:
 
     assert demand.calls == [(TENANT, NEED_ID)]
     assert sourcing.refresh_calls == []
+    assert sourcing.block_cluster_calls == []
+
+
+@pytest.mark.asyncio
+async def test_permanently_invalid_membership_facts_block_exact_cluster_targets() -> None:
+    """把永久非法事实静默 no-op 会让旧 waiting 排序永久继续生效。"""
+
+    demand = _Demand(_facts(count=False))
+    sourcing = _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    await handler.handle(_membership(member_count=999))
+
+    assert sourcing.refresh_calls == []
+    assert sourcing.block_cluster_calls == [
+        (
+            TENANT,
+            CLUSTER_ID,
+            NEED_ID,
+            NOW + timedelta(minutes=1),
+            SYSTEM,
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -390,6 +428,7 @@ async def test_membership_rejects_non_positive_exact_integer_before_io(
         _membership(cluster_id=None),
         _membership(cluster_id="cluster\x00unsafe"),
         _membership(changed_need_id=""),
+        _membership(occurred_at=NOW.replace(tzinfo=None)),
     ],
 )
 async def test_membership_rejects_invalid_tenant_and_ids_before_io(
@@ -427,6 +466,7 @@ async def test_membership_transient_facts_failure_retries_without_refresh() -> N
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert sourcing.refresh_calls == []
+    assert sourcing.block_cluster_calls == []
 
 
 def test_safe_context_remains_available_for_atomic_task8_migration() -> None:

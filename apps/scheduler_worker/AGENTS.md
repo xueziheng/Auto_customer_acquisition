@@ -86,4 +86,6 @@ durable enqueue 一次 Sourcing Admission；事件 handler 严禁直接启动 Wo
 公共服务读取。当前簇事实只刷新该簇全部 waiting/blocked admission 以及 changed Need 的无快照阻断项；
 starting/admitted 不变，priority-invalid 可恢复，case-state-mismatch 只更新快照不恢复。旧
 `NeedClusterFormed` 不由这条路径消费。暂态事实读取失败以固定脱敏错误交回 Outbox，不得固化为 blocked；
-永久非法排序结构只能形成固定 `priority_facts_invalid`，禁止保存原异常或自由文本。
+永久非法排序结构在 readiness 路径只能形成固定 `priority_facts_invalid`，在 membership 路径必须复用
+精确 refresh targets 将同簇 waiting 固定阻断；valid 但当前 cluster 为空或不同才是 stale no-op。三类
+结果不得混同，且禁止保存原异常或自由文本。
