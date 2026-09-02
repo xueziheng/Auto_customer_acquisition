@@ -4752,6 +4752,194 @@ class SourcingCaseRow(Base):
     failed_reason: Mapped[str | None] = mapped_column(Text)
 
 
+class SourcingAdmissionRow(Base):
+    """每个需求唯一的 tenant-bound 自动寻源准入行。"""
+
+    __tablename__ = "sourcing_admissions"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "admission_id", name="pk_sourcing_admissions"
+        ),
+        UniqueConstraint("tenant_id", "case_id", name="uq_sourcing_admissions_case"),
+        UniqueConstraint("tenant_id", "need_id", name="uq_sourcing_admissions_need"),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"],
+            ["sourcing_cases.tenant_id", "sourcing_cases.case_id"],
+            name="fk_sourcing_admissions_case",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_sourcing_admissions_need",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "admission_id", "current_snapshot_id"],
+            [
+                "sourcing_priority_snapshots.tenant_id",
+                "sourcing_priority_snapshots.admission_id",
+                "sourcing_priority_snapshots.snapshot_id",
+            ],
+            name="fk_sourcing_admissions_current_snapshot",
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        CheckConstraint(
+            "state IN ('waiting','starting','admitted','blocked')",
+            name="ck_sourcing_admissions_state",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(admission_id) <> '' "
+            "AND btrim(case_id) <> '' AND btrim(need_id) <> '' "
+            "AND (current_snapshot_id IS NULL OR btrim(current_snapshot_id) <> '') "
+            "AND (claim_token IS NULL OR btrim(claim_token) <> '') "
+            "AND (workflow_run_id IS NULL OR btrim(workflow_run_id) <> '') "
+            "AND (admitted_by IS NULL OR btrim(admitted_by) <> '')",
+            name="ck_sourcing_admissions_core",
+        ),
+        CheckConstraint(
+            "ready_at <= created_at AND updated_at >= created_at",
+            name="ck_sourcing_admissions_times",
+        ),
+        CheckConstraint(
+            "(state = 'waiting' AND current_snapshot_id IS NOT NULL "
+            "AND claim_token IS NULL AND claim_expires_at IS NULL "
+            "AND workflow_run_id IS NULL AND admitted_at IS NULL "
+            "AND admitted_by IS NULL AND blocked_reason IS NULL) OR "
+            "(state = 'starting' AND current_snapshot_id IS NOT NULL "
+            "AND claim_token IS NOT NULL AND claim_expires_at IS NOT NULL "
+            "AND claim_expires_at > updated_at AND workflow_run_id IS NULL "
+            "AND admitted_at IS NULL AND admitted_by IS NULL "
+            "AND blocked_reason IS NULL) OR "
+            "(state = 'admitted' AND current_snapshot_id IS NOT NULL "
+            "AND claim_token IS NULL AND claim_expires_at IS NULL "
+            "AND workflow_run_id IS NOT NULL AND admitted_at IS NOT NULL "
+            "AND admitted_by IS NOT NULL AND admitted_at = updated_at "
+            "AND blocked_reason IS NULL) OR "
+            "(state = 'blocked' AND claim_token IS NULL "
+            "AND claim_expires_at IS NULL AND workflow_run_id IS NULL "
+            "AND admitted_at IS NULL AND admitted_by IS NULL "
+            "AND blocked_reason IN ('priority_facts_invalid','case_state_mismatch') "
+            "AND (current_snapshot_id IS NOT NULL "
+            "OR blocked_reason = 'priority_facts_invalid'))",
+            name="ck_sourcing_admissions_state_fields",
+        ),
+        Index(
+            "ix_sourcing_admissions_queue",
+            "tenant_id",
+            "state",
+            "current_snapshot_id",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    admission_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(20))
+    ready_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    current_snapshot_id: Mapped[str | None] = mapped_column(String(40))
+    claim_token: Mapped[str | None] = mapped_column(String(200))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    workflow_run_id: Mapped[str | None] = mapped_column(String(40))
+    blocked_reason: Mapped[str | None] = mapped_column(String(40))
+    admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    admitted_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SourcingPrioritySnapshotRow(Base):
+    """准入排序事实快照；数据库触发器拒绝 UPDATE 与 DELETE。"""
+
+    __tablename__ = "sourcing_priority_snapshots"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "snapshot_id", name="pk_sourcing_priority_snapshots"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "admission_id",
+            "snapshot_id",
+            name="uq_sourcing_priority_snapshots_admission_snapshot",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "admission_id",
+            "facts_hash",
+            name="uq_sourcing_priority_snapshots_facts",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "admission_id"],
+            ["sourcing_admissions.tenant_id", "sourcing_admissions.admission_id"],
+            name="fk_sourcing_priority_snapshots_admission",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"],
+            ["sourcing_cases.tenant_id", "sourcing_cases.case_id"],
+            name="fk_sourcing_priority_snapshots_case",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "need_id"],
+            ["validated_needs.tenant_id", "validated_needs.need_id"],
+            name="fk_sourcing_priority_snapshots_need",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "btrim(tenant_id) <> '' AND btrim(snapshot_id) <> '' "
+            "AND btrim(admission_id) <> '' AND btrim(case_id) <> '' "
+            "AND btrim(need_id) <> '' "
+            "AND (cluster_id IS NULL OR btrim(cluster_id) <> '')",
+            name="ck_sourcing_priority_snapshots_core",
+        ),
+        CheckConstraint(
+            "cluster_member_count >= 1 "
+            "AND (cluster_id IS NOT NULL OR cluster_member_count = 1)",
+            name="ck_sourcing_priority_snapshots_cluster",
+        ),
+        CheckConstraint(
+            "ranking_version = 'need-cluster-admission-v1'",
+            name="ck_sourcing_priority_snapshots_version",
+        ),
+        CheckConstraint(
+            "facts_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_sourcing_priority_snapshots_hash",
+        ),
+        CheckConstraint(
+            "ready_at <= created_at AND facts_observed_at <= created_at",
+            name="ck_sourcing_priority_snapshots_times",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    snapshot_id: Mapped[str] = mapped_column(String(40))
+    admission_id: Mapped[str] = mapped_column(String(40))
+    case_id: Mapped[str] = mapped_column(String(40))
+    need_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str | None] = mapped_column(String(40))
+    cluster_member_count: Mapped[int] = mapped_column(Integer)
+    ready_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ranking_version: Mapped[str] = mapped_column(String(64))
+    facts_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+Index(
+    "ix_sourcing_priority_snapshots_order",
+    SourcingPrioritySnapshotRow.tenant_id,
+    SourcingPrioritySnapshotRow.cluster_member_count.desc(),
+    SourcingPrioritySnapshotRow.ready_at,
+    SourcingPrioritySnapshotRow.need_id,
+    SourcingPrioritySnapshotRow.snapshot_id,
+)
+
+
 class SourcingLadderCheckRow(Base):
     """逐级且不可变的供给匹配检查事实。"""
 

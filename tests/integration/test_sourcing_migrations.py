@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -15,7 +16,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -69,6 +70,10 @@ SUPPLY_TABLES = {
     "supplier_price_records",
 }
 ALL_TABLES = SOURCING_TABLES | SUPPLY_TABLES
+ADMISSION_TABLES = {
+    "sourcing_admissions",
+    "sourcing_priority_snapshots",
+}
 
 TENANT_A = "tn_0" + "A" * 25
 TENANT_B = "tn_0" + "B" * 25
@@ -234,6 +239,332 @@ async def _seed_need_and_case(
             "hash": "a" * 64,
         },
     )
+
+
+async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
+    db_url: str,
+) -> None:
+    """0053 的准入、快照、复合 FK 与索引都由数据库真实约束。"""
+    from infra.db.tables import SourcingAdmissionRow, SourcingPrioritySnapshotRow
+
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0052")
+        assert not (await _current_tables(db_url)) & ADMISSION_TABLES
+        _run_alembic(db_url, "upgrade", "0053")
+        engine = create_engine_from(db_url)
+
+        def inspect_admission_contract(connection: Connection) -> dict[str, object]:
+            inspector = inspect(connection)
+            return {
+                "tables": set(inspector.get_table_names()),
+                "admission_columns": {
+                    str(column["name"])
+                    for column in inspector.get_columns("sourcing_admissions")
+                },
+                "snapshot_columns": {
+                    str(column["name"])
+                    for column in inspector.get_columns("sourcing_priority_snapshots")
+                },
+                "admission_pk": tuple(
+                    inspector.get_pk_constraint("sourcing_admissions")[
+                        "constrained_columns"
+                    ]
+                ),
+                "snapshot_pk": tuple(
+                    inspector.get_pk_constraint("sourcing_priority_snapshots")[
+                        "constrained_columns"
+                    ]
+                ),
+                "admission_fks": {
+                    str(item["name"]): (
+                        tuple(item["constrained_columns"]),
+                        str(item["referred_table"]),
+                        tuple(item["referred_columns"]),
+                    )
+                    for item in inspector.get_foreign_keys("sourcing_admissions")
+                },
+                "snapshot_fks": {
+                    str(item["name"]): (
+                        tuple(item["constrained_columns"]),
+                        str(item["referred_table"]),
+                        tuple(item["referred_columns"]),
+                    )
+                    for item in inspector.get_foreign_keys(
+                        "sourcing_priority_snapshots"
+                    )
+                },
+                "admission_uniques": {
+                    str(item["name"]): tuple(item["column_names"])
+                    for item in inspector.get_unique_constraints("sourcing_admissions")
+                },
+                "snapshot_uniques": {
+                    str(item["name"]): tuple(item["column_names"])
+                    for item in inspector.get_unique_constraints(
+                        "sourcing_priority_snapshots"
+                    )
+                },
+                "admission_indexes": {
+                    str(item["name"]): tuple(item["column_names"])
+                    for item in inspector.get_indexes("sourcing_admissions")
+                },
+                "snapshot_indexes": {
+                    str(item["name"]): tuple(item["column_names"])
+                    for item in inspector.get_indexes("sourcing_priority_snapshots")
+                },
+                "admission_checks": {
+                    str(item["name"])
+                    for item in inspector.get_check_constraints("sourcing_admissions")
+                },
+                "snapshot_checks": {
+                    str(item["name"])
+                    for item in inspector.get_check_constraints(
+                        "sourcing_priority_snapshots"
+                    )
+                },
+            }
+
+        async with engine.connect() as connection:
+            contract = await connection.run_sync(inspect_admission_contract)
+            current_fk = (
+                await connection.execute(
+                    text(
+                        "SELECT condeferrable, condeferred FROM pg_constraint "
+                        "WHERE conname='fk_sourcing_admissions_current_snapshot'"
+                    )
+                )
+            ).one()
+            revision = await connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+            order_index = await connection.scalar(
+                text(
+                    "SELECT pg_get_indexdef(indexrelid) FROM pg_index "
+                    "WHERE indexrelid = "
+                    "'ix_sourcing_priority_snapshots_order'::regclass"
+                )
+            )
+
+        assert revision == "0053"
+        assert ADMISSION_TABLES <= contract["tables"]
+        assert contract["admission_columns"] == set(
+            SourcingAdmissionRow.__table__.columns.keys()
+        )
+        assert contract["snapshot_columns"] == set(
+            SourcingPrioritySnapshotRow.__table__.columns.keys()
+        )
+        assert contract["admission_pk"] == ("tenant_id", "admission_id")
+        assert contract["snapshot_pk"] == ("tenant_id", "snapshot_id")
+        assert contract["admission_fks"] == {
+            "fk_sourcing_admissions_case": (
+                ("tenant_id", "case_id"),
+                "sourcing_cases",
+                ("tenant_id", "case_id"),
+            ),
+            "fk_sourcing_admissions_need": (
+                ("tenant_id", "need_id"),
+                "validated_needs",
+                ("tenant_id", "need_id"),
+            ),
+            "fk_sourcing_admissions_current_snapshot": (
+                ("tenant_id", "admission_id", "current_snapshot_id"),
+                "sourcing_priority_snapshots",
+                ("tenant_id", "admission_id", "snapshot_id"),
+            ),
+        }
+        assert current_fk == (True, True)
+        assert contract["snapshot_fks"] == {
+            "fk_sourcing_priority_snapshots_admission": (
+                ("tenant_id", "admission_id"),
+                "sourcing_admissions",
+                ("tenant_id", "admission_id"),
+            ),
+            "fk_sourcing_priority_snapshots_case": (
+                ("tenant_id", "case_id"),
+                "sourcing_cases",
+                ("tenant_id", "case_id"),
+            ),
+            "fk_sourcing_priority_snapshots_need": (
+                ("tenant_id", "need_id"),
+                "validated_needs",
+                ("tenant_id", "need_id"),
+            ),
+        }
+        assert contract["admission_uniques"] == {
+            "uq_sourcing_admissions_case": ("tenant_id", "case_id"),
+            "uq_sourcing_admissions_need": ("tenant_id", "need_id"),
+        }
+        assert contract["snapshot_uniques"] == {
+            "uq_sourcing_priority_snapshots_admission_snapshot": (
+                "tenant_id",
+                "admission_id",
+                "snapshot_id",
+            ),
+            "uq_sourcing_priority_snapshots_facts": (
+                "tenant_id",
+                "admission_id",
+                "facts_hash",
+            ),
+        }
+        assert contract["admission_indexes"]["ix_sourcing_admissions_queue"] == (
+            "tenant_id",
+            "state",
+            "current_snapshot_id",
+        )
+        assert contract["snapshot_indexes"]["ix_sourcing_priority_snapshots_order"] == (
+            "tenant_id",
+            "cluster_member_count",
+            "ready_at",
+            "need_id",
+            "snapshot_id",
+        )
+        assert "cluster_member_count DESC" in order_index
+        assert contract["admission_checks"] == {
+            "ck_sourcing_admissions_core",
+            "ck_sourcing_admissions_state",
+            "ck_sourcing_admissions_state_fields",
+            "ck_sourcing_admissions_times",
+        }
+        assert contract["snapshot_checks"] == {
+            "ck_sourcing_priority_snapshots_cluster",
+            "ck_sourcing_priority_snapshots_core",
+            "ck_sourcing_priority_snapshots_hash",
+            "ck_sourcing_priority_snapshots_times",
+            "ck_sourcing_priority_snapshots_version",
+        }
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0053_enforces_state_tenant_immutability_and_safe_downgrade(
+    db_url: str,
+) -> None:
+    """0053 在数据库边界拒绝坏状态、跨租户引用、快照改写和证据降级。"""
+    created_at = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+    ready_at = created_at - timedelta(days=2)
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0052")
+        _run_alembic(db_url, "upgrade", "0053")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-admission-schema-a",
+                case_id="case-admission-schema-a",
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_B,
+                need_id="need-admission-schema-b",
+                case_id="case-admission-schema-b",
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_admissions "
+                    "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                    "current_snapshot_id,created_at,updated_at) VALUES "
+                    "(:tenant,'adm-schema-a','case-admission-schema-a',"
+                    "'need-admission-schema-a','waiting',:ready,'sps-schema-a',"
+                    ":created,:created)"
+                ),
+                {"tenant": TENANT_A, "ready": ready_at, "created": created_at},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_priority_snapshots "
+                    "(tenant_id,snapshot_id,admission_id,case_id,need_id,cluster_id,"
+                    "cluster_member_count,ready_at,ranking_version,facts_observed_at,"
+                    "facts_hash,created_at) VALUES "
+                    "(:tenant,'sps-schema-a','adm-schema-a',"
+                    "'case-admission-schema-a','need-admission-schema-a',NULL,1,"
+                    ":ready,'need-cluster-admission-v1',:created,:hash,:created)"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "ready": ready_at,
+                    "created": created_at,
+                    "hash": "b" * 64,
+                },
+            )
+
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET state='blocked',"
+                "current_snapshot_id=NULL,blocked_reason='case_state_mismatch' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-schema-a'",
+                {"tenant": TENANT_A},
+            )
+            await _expect_integrity(
+                connection,
+                "INSERT INTO sourcing_priority_snapshots "
+                "(tenant_id,snapshot_id,admission_id,case_id,need_id,cluster_id,"
+                "cluster_member_count,ready_at,ranking_version,facts_observed_at,"
+                "facts_hash,created_at) VALUES "
+                "(:tenant,'sps-bad-hash','adm-schema-a','case-admission-schema-a',"
+                "'need-admission-schema-a',NULL,1,:ready,"
+                "'need-cluster-admission-v1',:created,:hash,:created)",
+                {
+                    "tenant": TENANT_A,
+                    "ready": ready_at,
+                    "created": created_at,
+                    "hash": "B" * 64,
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "INSERT INTO sourcing_admissions "
+                "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                "current_snapshot_id,blocked_reason,created_at,updated_at) VALUES "
+                "(:tenant,'adm-cross-tenant','case-admission-schema-b',"
+                "'need-admission-schema-a','blocked',:ready,NULL,"
+                "'priority_facts_invalid',:created,:created)",
+                {"tenant": TENANT_A, "ready": ready_at, "created": created_at},
+            )
+            with pytest.raises(DBAPIError):
+                async with connection.begin_nested():
+                    await connection.execute(
+                        text(
+                            "UPDATE sourcing_priority_snapshots "
+                            "SET cluster_member_count=2 "
+                            "WHERE tenant_id=:tenant AND snapshot_id='sps-schema-a'"
+                        ),
+                        {"tenant": TENANT_A},
+                    )
+            with pytest.raises(DBAPIError):
+                async with connection.begin_nested():
+                    await connection.execute(
+                        text(
+                            "DELETE FROM sourcing_priority_snapshots "
+                            "WHERE tenant_id=:tenant AND snapshot_id='sps-schema-a'"
+                        ),
+                        {"tenant": TENANT_A},
+                    )
+
+        downgrade = _alembic_result(db_url, "downgrade", "0052")
+        assert downgrade.returncode != 0
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0053"
+            )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE"
+                )
+            )
+        _run_alembic(db_url, "downgrade", "0052")
+        assert not (await _current_tables(db_url)) & ADMISSION_TABLES
+        _run_alembic(db_url, "upgrade", "0053")
+        assert ADMISSION_TABLES <= await _current_tables(db_url)
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
 
 
 _INSERT_PRODUCT = (

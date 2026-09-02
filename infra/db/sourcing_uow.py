@@ -13,6 +13,7 @@ from infra.db.repositories.sourcing import (
     LadderCheckRepositoryImpl,
     PublicCandidateDraftRepositoryImpl,
     PublicSourcingPlanRepositoryImpl,
+    SourcingAdmissionRepositoryImpl,
     SourcingCaseRepositoryImpl,
     SourcingHandoffRepositoryImpl,
     SourcingReviewRepositoryImpl,
@@ -37,6 +38,9 @@ class SqlAlchemySourcingUnitOfWork:
     async def __aenter__(self) -> Self:
         self._session = self._factory()
         self.cases = SourcingCaseRepositoryImpl(self._session, self._tenant_id)
+        self.admissions = SourcingAdmissionRepositoryImpl(
+            self._session, self._tenant_id
+        )
         self.checks = LadderCheckRepositoryImpl(self._session, self._tenant_id)
         self.plans = PublicSourcingPlanRepositoryImpl(self._session, self._tenant_id)
         self.candidates = CandidateRepositoryImpl(self._session, self._tenant_id)

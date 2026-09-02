@@ -4,16 +4,28 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 from typing import cast
 
 from pydantic import BaseModel
-from sqlalchemy import CursorResult, Select, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    CursorResult,
+    Select,
+    and_,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.sourcing.errors import SourcingCaseConflictError, SourcingPlanStaleError
 from domains.sourcing.models import (
+    AdmissionBlockedReason,
+    AdmissionState,
     CaseState,
     EvidenceSnapshot,
     LadderCheck,
@@ -23,7 +35,9 @@ from domains.sourcing.models import (
     PriceRejectionReason,
     PublicPlanStatus,
     PublicSourcingPlan,
+    SourcingAdmission,
     SourcingCase,
+    SourcingPrioritySnapshot,
     SourcingReconciliationStatus,
     SourcingReview,
     SourcingSearchExecution,
@@ -57,11 +71,13 @@ from infra.db.tables import (
     ProductCandidatePriceRefRow,
     ProductCandidateSourceRow,
     ProductRow,
+    SourcingAdmissionRow,
     SourcingCandidateDraftRow,
     SourcingCandidateEvidenceRow,
     SourcingCandidateRow,
     SourcingCaseRow,
     SourcingLadderCheckRow,
+    SourcingPrioritySnapshotRow,
     SourcingPublicPlanRow,
     SourcingReviewRow,
     SourcingSearchExecutionRow,
@@ -72,11 +88,14 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
+    SourcingPrioritySnapshotId,
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
@@ -428,6 +447,573 @@ class SourcingCaseRepositoryImpl(_TenantBoundRepository):
             )
         ).scalars()
         return [_row_to_case(row) for row in rows]
+
+
+def _admission_values(value: SourcingAdmission) -> dict[str, object]:
+    return {
+        "tenant_id": str(value.tenant_id),
+        "admission_id": str(value.admission_id),
+        "case_id": str(value.case_id),
+        "need_id": str(value.need_id),
+        "state": value.state.value,
+        "ready_at": value.ready_at,
+        "current_snapshot_id": (
+            str(value.current_snapshot_id)
+            if value.current_snapshot_id is not None
+            else None
+        ),
+        "claim_token": value.claim_token,
+        "claim_expires_at": value.claim_expires_at,
+        "workflow_run_id": (
+            str(value.workflow_run_id) if value.workflow_run_id is not None else None
+        ),
+        "blocked_reason": (
+            value.blocked_reason.value if value.blocked_reason is not None else None
+        ),
+        "admitted_at": value.admitted_at,
+        "admitted_by": value.admitted_by,
+        "created_at": value.created_at,
+        "updated_at": value.updated_at,
+    }
+
+
+def _row_to_admission(row: SourcingAdmissionRow) -> SourcingAdmission:
+    return SourcingAdmission(
+        tenant_id=TenantId(row.tenant_id),
+        admission_id=SourcingAdmissionId(row.admission_id),
+        case_id=SourcingCaseId(row.case_id),
+        need_id=ValidatedNeedId(row.need_id),
+        state=AdmissionState(row.state),
+        ready_at=row.ready_at,
+        current_snapshot_id=(
+            SourcingPrioritySnapshotId(row.current_snapshot_id)
+            if row.current_snapshot_id is not None
+            else None
+        ),
+        claim_token=row.claim_token,
+        claim_expires_at=row.claim_expires_at,
+        workflow_run_id=(
+            RunId(row.workflow_run_id) if row.workflow_run_id is not None else None
+        ),
+        blocked_reason=(
+            AdmissionBlockedReason(row.blocked_reason)
+            if row.blocked_reason is not None
+            else None
+        ),
+        admitted_at=row.admitted_at,
+        admitted_by=row.admitted_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _snapshot_values(value: SourcingPrioritySnapshot) -> dict[str, object]:
+    return {
+        "tenant_id": str(value.tenant_id),
+        "snapshot_id": str(value.snapshot_id),
+        "admission_id": str(value.admission_id),
+        "case_id": str(value.case_id),
+        "need_id": str(value.need_id),
+        "cluster_id": str(value.cluster_id) if value.cluster_id is not None else None,
+        "cluster_member_count": value.cluster_member_count,
+        "ready_at": value.ready_at,
+        "ranking_version": value.ranking_version,
+        "facts_observed_at": value.facts_observed_at,
+        "facts_hash": value.facts_hash,
+        "created_at": value.created_at,
+    }
+
+
+def _row_to_snapshot(row: SourcingPrioritySnapshotRow) -> SourcingPrioritySnapshot:
+    return SourcingPrioritySnapshot(
+        tenant_id=TenantId(row.tenant_id),
+        snapshot_id=SourcingPrioritySnapshotId(row.snapshot_id),
+        admission_id=SourcingAdmissionId(row.admission_id),
+        case_id=SourcingCaseId(row.case_id),
+        need_id=ValidatedNeedId(row.need_id),
+        cluster_id=(
+            NeedClusterId(row.cluster_id) if row.cluster_id is not None else None
+        ),
+        cluster_member_count=row.cluster_member_count,
+        ready_at=row.ready_at,
+        ranking_version=row.ranking_version,
+        facts_observed_at=row.facts_observed_at,
+        facts_hash=row.facts_hash,
+        created_at=row.created_at,
+    )
+
+
+class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
+    """PostgreSQL 准入队列；排序、锁与租户边界都在 SQL 中完成。"""
+
+    def _admissions(self) -> Select[tuple[SourcingAdmissionRow]]:
+        return self.scoped_query(SourcingAdmissionRow)
+
+    def _snapshots(self) -> Select[tuple[SourcingPrioritySnapshotRow]]:
+        return self.scoped_query(SourcingPrioritySnapshotRow)
+
+    @staticmethod
+    def _require_initial_pair(
+        tenant_id: TenantId,
+        admission: SourcingAdmission,
+        snapshot: SourcingPrioritySnapshot | None,
+    ) -> None:
+        if admission.tenant_id != tenant_id:
+            raise ValueError("准入租户与请求租户不一致")
+        if snapshot is None:
+            if not (
+                admission.state is AdmissionState.BLOCKED
+                and admission.blocked_reason
+                is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+                and admission.current_snapshot_id is None
+            ):
+                raise ValidationError(
+                    "无首快照仅允许 priority_facts_invalid blocked 准入"
+                )
+            return
+        if (
+            snapshot.tenant_id != tenant_id
+            or snapshot.admission_id != admission.admission_id
+            or snapshot.case_id != admission.case_id
+            or snapshot.need_id != admission.need_id
+            or snapshot.ready_at != admission.ready_at
+            or admission.current_snapshot_id != snapshot.snapshot_id
+        ):
+            raise ValidationError("首快照与准入记录不一致")
+
+    async def _current_snapshot(
+        self, admission: SourcingAdmissionRow
+    ) -> SourcingPrioritySnapshot | None:
+        if admission.current_snapshot_id is None:
+            return None
+        row = (
+            await self._session.execute(
+                self._snapshots().where(
+                    SourcingPrioritySnapshotRow.admission_id == admission.admission_id,
+                    SourcingPrioritySnapshotRow.snapshot_id
+                    == admission.current_snapshot_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ValidationError("准入 current snapshot 不存在或不属于当前租户")
+        return _row_to_snapshot(row)
+
+    async def get_or_create(
+        self,
+        tenant_id: TenantId,
+        admission: SourcingAdmission,
+        initial_snapshot: SourcingPrioritySnapshot | None,
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot | None, bool]:
+        self._require_tenant(tenant_id)
+        self._require_initial_pair(tenant_id, admission, initial_snapshot)
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingAdmissionRow)
+                .values(**_admission_values(admission))
+                .on_conflict_do_nothing()
+                .returning(SourcingAdmissionRow.admission_id)
+            )
+        ).scalar_one_or_none()
+        if inserted_id is not None:
+            if initial_snapshot is not None:
+                inserted_snapshot_id = (
+                    await self._session.execute(
+                        pg_insert(SourcingPrioritySnapshotRow)
+                        .values(**_snapshot_values(initial_snapshot))
+                        .on_conflict_do_nothing()
+                        .returning(SourcingPrioritySnapshotRow.snapshot_id)
+                    )
+                ).scalar_one_or_none()
+                if inserted_snapshot_id is None:
+                    raise ValidationError("首快照标识或事实哈希已被其他记录占用")
+            return admission, initial_snapshot, True
+
+        rows = (
+            (
+                await self._session.execute(
+                    self._admissions()
+                    .where(
+                        or_(
+                            SourcingAdmissionRow.admission_id
+                            == str(admission.admission_id),
+                            SourcingAdmissionRow.case_id == str(admission.case_id),
+                            SourcingAdmissionRow.need_id == str(admission.need_id),
+                        )
+                    )
+                    .limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(rows) != 1:
+            raise ValidationError("准入唯一键与既有 canonical 记录冲突")
+        canonical = rows[0]
+        if canonical.case_id != str(admission.case_id) or canonical.need_id != str(
+            admission.need_id
+        ):
+            raise ValidationError("准入标识与既有 Case/Need canonical 记录冲突")
+        return (
+            _row_to_admission(canonical),
+            await self._current_snapshot(canonical),
+            False,
+        )
+
+    async def get(
+        self, tenant_id: TenantId, admission_id: SourcingAdmissionId
+    ) -> SourcingAdmission | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self._admissions().where(
+                    SourcingAdmissionRow.admission_id == str(admission_id)
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_admission(row) if row is not None else None
+
+    async def append_snapshot_if_changed(
+        self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
+        self._require_tenant(tenant_id)
+        if snapshot.tenant_id != tenant_id:
+            raise ValueError("快照租户与请求租户不一致")
+        row = (
+            await self._session.execute(
+                self._admissions()
+                .where(SourcingAdmissionRow.admission_id == str(snapshot.admission_id))
+                .with_for_update(of=SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ValidationError("准入记录不存在")
+        current = _row_to_admission(row)
+        if (
+            current.case_id != snapshot.case_id
+            or current.need_id != snapshot.need_id
+            or current.ready_at != snapshot.ready_at
+        ):
+            raise ValidationError("优先级快照与准入记录不一致")
+
+        inserted_id = (
+            await self._session.execute(
+                pg_insert(SourcingPrioritySnapshotRow)
+                .values(**_snapshot_values(snapshot))
+                .on_conflict_do_nothing()
+                .returning(SourcingPrioritySnapshotRow.snapshot_id)
+            )
+        ).scalar_one_or_none()
+        created = inserted_id is not None
+        if created:
+            canonical = snapshot
+        else:
+            canonical_row = (
+                await self._session.execute(
+                    self._snapshots().where(
+                        SourcingPrioritySnapshotRow.admission_id
+                        == str(snapshot.admission_id),
+                        SourcingPrioritySnapshotRow.facts_hash == snapshot.facts_hash,
+                    )
+                )
+            ).scalar_one_or_none()
+            if canonical_row is None:
+                raise ValidationError("快照标识已被其他事实占用")
+            canonical = _row_to_snapshot(canonical_row)
+            if current.current_snapshot_id == canonical.snapshot_id:
+                return current, canonical, False
+
+        changed = current.with_current_snapshot(snapshot)
+        if canonical.snapshot_id != snapshot.snapshot_id:
+            changed = replace(
+                changed,
+                current_snapshot_id=canonical.snapshot_id,
+            )
+        updated_row = (
+            await self._session.execute(
+                update(SourcingAdmissionRow)
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.admission_id == str(snapshot.admission_id),
+                    SourcingAdmissionRow.state == current.state.value,
+                    SourcingAdmissionRow.updated_at == current.updated_at,
+                )
+                .values(
+                    state=changed.state.value,
+                    current_snapshot_id=str(changed.current_snapshot_id),
+                    blocked_reason=(
+                        changed.blocked_reason.value
+                        if changed.blocked_reason is not None
+                        else None
+                    ),
+                    updated_at=changed.updated_at,
+                )
+                .returning(SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        if updated_row is None:
+            raise ValidationError("准入 current snapshot 并发推进失败")
+        return _row_to_admission(updated_row), canonical, created
+
+    @staticmethod
+    def _claimable(now: datetime) -> ColumnElement[bool]:
+        return or_(
+            SourcingAdmissionRow.state == AdmissionState.WAITING.value,
+            and_(
+                SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                SourcingAdmissionRow.claim_expires_at <= now,
+            ),
+        )
+
+    async def claim_ordered(
+        self,
+        tenant_id: TenantId,
+        limit: int,
+        claim_token: str,
+        claim_expires_at: datetime,
+        now: datetime,
+    ) -> list[SourcingAdmission]:
+        self._require_tenant(tenant_id)
+        if limit <= 0:
+            return []
+        if not claim_token or claim_token != claim_token.strip():
+            raise ValidationError("claim_token 无效")
+        candidates = (
+            (
+                await self._session.execute(
+                    self._admissions()
+                    .join(
+                        SourcingPrioritySnapshotRow,
+                        and_(
+                            SourcingPrioritySnapshotRow.tenant_id
+                            == SourcingAdmissionRow.tenant_id,
+                            SourcingPrioritySnapshotRow.admission_id
+                            == SourcingAdmissionRow.admission_id,
+                            SourcingPrioritySnapshotRow.snapshot_id
+                            == SourcingAdmissionRow.current_snapshot_id,
+                        ),
+                    )
+                    .where(self._claimable(now))
+                    .order_by(
+                        SourcingPrioritySnapshotRow.cluster_member_count.desc(),
+                        SourcingPrioritySnapshotRow.ready_at,
+                        SourcingPrioritySnapshotRow.need_id,
+                        SourcingPrioritySnapshotRow.snapshot_id,
+                    )
+                    .limit(limit)
+                    .with_for_update(of=SourcingAdmissionRow, skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        claimed: list[SourcingAdmission] = []
+        for candidate in candidates:
+            changed = (
+                await self._session.execute(
+                    update(SourcingAdmissionRow)
+                    .where(
+                        SourcingAdmissionRow.tenant_id == str(tenant_id),
+                        SourcingAdmissionRow.admission_id == candidate.admission_id,
+                        SourcingAdmissionRow.current_snapshot_id
+                        == candidate.current_snapshot_id,
+                        self._claimable(now),
+                    )
+                    .values(
+                        state=AdmissionState.STARTING.value,
+                        claim_token=claim_token,
+                        claim_expires_at=claim_expires_at,
+                        updated_at=now,
+                    )
+                    .returning(SourcingAdmissionRow)
+                )
+            ).scalar_one_or_none()
+            if changed is not None:
+                claimed.append(_row_to_admission(changed))
+        return claimed
+
+    async def complete(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        workflow_run_id: RunId,
+        admitted_by: str,
+        admitted_at: datetime,
+    ) -> SourcingAdmission | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                update(SourcingAdmissionRow)
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                    SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                    SourcingAdmissionRow.claim_token == claim_token,
+                )
+                .values(
+                    state=AdmissionState.ADMITTED.value,
+                    claim_token=None,
+                    claim_expires_at=None,
+                    workflow_run_id=str(workflow_run_id),
+                    admitted_by=admitted_by,
+                    admitted_at=admitted_at,
+                    updated_at=admitted_at,
+                )
+                .returning(SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        return _row_to_admission(row) if row is not None else None
+
+    async def release_expired_claims(
+        self, tenant_id: TenantId, now: datetime
+    ) -> list[SourcingAdmission]:
+        self._require_tenant(tenant_id)
+        rows = (
+            (
+                await self._session.execute(
+                    self._admissions()
+                    .where(
+                        SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                        SourcingAdmissionRow.claim_expires_at <= now,
+                    )
+                    .order_by(
+                        SourcingAdmissionRow.claim_expires_at,
+                        SourcingAdmissionRow.admission_id,
+                    )
+                    .with_for_update(of=SourcingAdmissionRow, skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        released: list[SourcingAdmission] = []
+        for candidate in rows:
+            changed = (
+                await self._session.execute(
+                    update(SourcingAdmissionRow)
+                    .where(
+                        SourcingAdmissionRow.tenant_id == str(tenant_id),
+                        SourcingAdmissionRow.admission_id == candidate.admission_id,
+                        SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                        SourcingAdmissionRow.claim_token == candidate.claim_token,
+                        SourcingAdmissionRow.claim_expires_at <= now,
+                    )
+                    .values(
+                        state=AdmissionState.WAITING.value,
+                        claim_token=None,
+                        claim_expires_at=None,
+                        updated_at=now,
+                    )
+                    .returning(SourcingAdmissionRow)
+                )
+            ).scalar_one_or_none()
+            if changed is not None:
+                released.append(_row_to_admission(changed))
+        return released
+
+    async def release(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        released_at: datetime,
+    ) -> SourcingAdmission | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                update(SourcingAdmissionRow)
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                    SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                    SourcingAdmissionRow.claim_token == claim_token,
+                )
+                .values(
+                    state=AdmissionState.WAITING.value,
+                    claim_token=None,
+                    claim_expires_at=None,
+                    updated_at=released_at,
+                )
+                .returning(SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        return _row_to_admission(row) if row is not None else None
+
+    async def block(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        reason: AdmissionBlockedReason,
+        blocked_at: datetime,
+        claim_token: str | None = None,
+    ) -> SourcingAdmission | None:
+        self._require_tenant(tenant_id)
+        if not isinstance(reason, AdmissionBlockedReason):
+            raise ValidationError("blocked_reason 必须是 AdmissionBlockedReason")
+        eligibility = (
+            SourcingAdmissionRow.state == AdmissionState.WAITING.value
+            if claim_token is None
+            else and_(
+                SourcingAdmissionRow.state == AdmissionState.STARTING.value,
+                SourcingAdmissionRow.claim_token == claim_token,
+            )
+        )
+        row = (
+            await self._session.execute(
+                update(SourcingAdmissionRow)
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                    eligibility,
+                )
+                .values(
+                    state=AdmissionState.BLOCKED.value,
+                    claim_token=None,
+                    claim_expires_at=None,
+                    blocked_reason=reason.value,
+                    updated_at=blocked_at,
+                )
+                .returning(SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        return _row_to_admission(row) if row is not None else None
+
+    async def list_by_state(
+        self, tenant_id: TenantId, state: AdmissionState, limit: int
+    ) -> list[SourcingAdmission]:
+        self._require_tenant(tenant_id)
+        if limit <= 0:
+            return []
+        rows = (
+            (
+                await self._session.execute(
+                    self._admissions()
+                    .outerjoin(
+                        SourcingPrioritySnapshotRow,
+                        and_(
+                            SourcingPrioritySnapshotRow.tenant_id
+                            == SourcingAdmissionRow.tenant_id,
+                            SourcingPrioritySnapshotRow.admission_id
+                            == SourcingAdmissionRow.admission_id,
+                            SourcingPrioritySnapshotRow.snapshot_id
+                            == SourcingAdmissionRow.current_snapshot_id,
+                        ),
+                    )
+                    .where(SourcingAdmissionRow.state == state.value)
+                    .order_by(
+                        SourcingPrioritySnapshotRow.cluster_member_count.desc().nulls_last(),
+                        SourcingAdmissionRow.ready_at,
+                        SourcingAdmissionRow.need_id,
+                        SourcingAdmissionRow.admission_id,
+                    )
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_row_to_admission(row) for row in rows]
 
 
 def _ladder_to_row(value: LadderCheck) -> SourcingLadderCheckRow:

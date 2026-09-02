@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0052"
+_ALEMBIC_HEAD = "0053"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -205,7 +205,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
             revision = await connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
-        assert revision == _ALEMBIC_HEAD == "0052"
+        assert revision == "0052"
         assert "base_directive_version" in columns
         assert "ck_directive_proposals_base_version" in checks
         assert legacy_base is None
