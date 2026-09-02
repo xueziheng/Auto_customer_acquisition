@@ -159,4 +159,22 @@ describe("Sourcing admission detail", () => {
     await eventually(() => expect(root.querySelector(".admission-timing")).not.toBeNull());
     expect(root.querySelector(".admission-timing")?.textContent).toContain("准入等待用时未知");
   });
+
+  it.each([
+    [{ ready_at: "2026-09-02T08:00:00", admitted_at: "2026-09-02T09:05:00Z" }, "准入等待用时未知"],
+    [{ ready_at: "September 2, 2026 08:00 UTC", admitted_at: "2026-09-02T09:05:00Z" }, "准入等待用时未知"],
+    [{ ready_at: "2026-09-02T08:00:00+08:00", admitted_at: "2026-09-02T01:05:00Z" }, "准入等待用时1 小时 5 分钟"],
+  ] as const)("requires zoned ISO instants for admitted duration", async (overrides, expected) => {
+    const detail = admissionDetail("admitted", overrides);
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/notifications") return jsonResponse([]);
+      if (path === `/sourcing-admissions/${admissionId}`) return jsonResponse(detail);
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+    const root = await mount(fetch);
+
+    await eventually(() => expect(root.querySelector(".admission-timing")).not.toBeNull());
+    expect(root.querySelector(".admission-timing")?.textContent).toContain(expected);
+  });
 });

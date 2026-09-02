@@ -17,6 +17,7 @@ const blockedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0C";
 const admittedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0D";
 const startingId = "sad_01K39P9M5D6K4A91YEQ80EJZ0E";
 const legacyCaseId = "src_01K39P9M5D6K4A91YEQ80EJZ0F";
+const overflowCaseId = "src_01K39P9M5D6K4A91YEQ80EJZ0G";
 
 const enabledPolicy: AdmissionPolicy = {
   automatic_admission_enabled: true,
@@ -69,9 +70,13 @@ function openedCase(caseId: string): SourcingCase {
 }
 
 function admissionCenterFetch(options: {
+  admittedOverrides?: Partial<Admission>;
+  extraCases?: SourcingCase[];
+  failedState?: Admission["state"];
   manualKeys?: string[];
   manualStatus?: number;
   pendingManual?: Promise<Response>;
+  stateItems?: Partial<Record<Admission["state"], Admission[]>>;
 } = {}): typeof globalThis.fetch {
   const waiting = [
     admissionFixture(waitingOneId, "waiting"),
@@ -83,10 +88,11 @@ function admissionCenterFetch(options: {
     }),
   ];
   const byState: Record<string, Admission[]> = {
-    admitted: [admissionFixture(admittedId, "admitted")],
+    admitted: [admissionFixture(admittedId, "admitted", options.admittedOverrides)],
     blocked: [admissionFixture(blockedId, "blocked")],
     starting: [admissionFixture(startingId, "starting")],
     waiting,
+    ...options.stateItems,
   };
   const openCases = [
     openedCase(admissionFixture(waitingEightId, "waiting").case_id),
@@ -95,13 +101,16 @@ function admissionCenterFetch(options: {
     openedCase(admissionFixture(startingId, "starting").case_id),
     openedCase(admissionFixture(admittedId, "admitted").case_id),
     openedCase(admissionFixture(waitingOneId, "waiting").case_id),
+    ...(options.extraCases ?? []),
   ];
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = input as Request;
     const url = new URL(request.url);
     if (url.pathname === "/notifications") return jsonResponse([]);
     if (request.method === "GET" && url.pathname === "/sourcing-admissions") {
-      return jsonResponse({ items: byState[url.searchParams.get("state") ?? "waiting"], policy: enabledPolicy });
+      const state = url.searchParams.get("state") ?? "waiting";
+      if (state === options.failedState) return jsonResponse({ code: "unavailable" }, 503);
+      return jsonResponse({ items: byState[state], policy: enabledPolicy });
     }
     if (request.method === "GET" && url.pathname === "/sourcing-cases") return jsonResponse(openCases);
     if (request.method === "POST" && url.pathname === `/sourcing-admissions/${waitingOneId}/admit`) {
@@ -878,6 +887,58 @@ describe("Sourcing admission queue", () => {
       expect([...row!.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.getAttribute("href")))
         .toEqual([`/sourcing/${id}`, `/sourcing/${item.case_id}`]);
     }
+  });
+
+  it("fails closed when a 50-item admission page may be truncated", async () => {
+    const truncatedWaiting = Array.from({ length: 50 }, (_, index) => admissionFixture(
+      `sad_truncated_${String(index).padStart(2, "0")}`,
+      "waiting",
+    ));
+    const root = await mount("/sourcing", admissionCenterFetch({
+      extraCases: [openedCase(overflowCaseId)],
+      stateItems: { waiting: truncatedWaiting },
+    }));
+
+    await eventually(() => expect(root.textContent).toContain("准入队列可能已截断，无法安全区分等待与处理中的 Case"));
+    expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+    expect(root.textContent).not.toContain(overflowCaseId);
+    expect(root.textContent).not.toContain(legacyCaseId);
+  });
+
+  it("fails closed when any admission state cannot be read", async () => {
+    const root = await mount("/sourcing", admissionCenterFetch({ failedState: "blocked" }));
+
+    await eventually(() => expect(root.textContent).toContain("寻源准入队列暂不可用"));
+    expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+    expect(root.textContent).not.toContain(admissionFixture(blockedId, "blocked").case_id);
+    expect(root.textContent).not.toContain(legacyCaseId);
+  });
+
+  it("closes a stale manual dialog when a refresh cannot rebuild the admission partition", async () => {
+    const options: Parameters<typeof admissionCenterFetch>[0] = {};
+    const root = await mount("/sourcing", admissionCenterFetch(options));
+    await eventually(() => expect(root.querySelector("button[data-manual-admit]")).not.toBeNull());
+    root.querySelector<HTMLButtonElement>("button[data-manual-admit]")!.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+
+    options.failedState = "blocked";
+    [...root.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("刷新"))!.click();
+
+    await eventually(() => expect(root.textContent).toContain("寻源准入队列暂不可用"));
+    expect(root.querySelector('[role="dialog"]')).toBeNull();
+    expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
+  });
+
+  it.each([
+    [{ ready_at: "2026-09-02T08:00:00", admitted_at: "2026-09-02T09:05:00Z" }, "准入等待用时 未知"],
+    [{ ready_at: "2026-09-02T08:00:00+08:00", admitted_at: "2026-09-02T01:05:00Z" }, "准入等待用时 1 小时 5 分钟"],
+  ] as const)("requires zoned ISO instants for active admitted timing", async (overrides, expected) => {
+    const root = await mount("/sourcing", admissionCenterFetch({ admittedOverrides: overrides }));
+
+    await eventually(() => expect(root.textContent).toContain(expected));
   });
 
   it("disables only the selected row while manual admission is pending", async () => {

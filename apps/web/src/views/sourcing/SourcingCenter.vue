@@ -4,6 +4,7 @@ import { RouterLink } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { displayZonedIsoTime, elapsedZonedSeconds } from "./zonedTime";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Admission = components["schemas"]["SourcingAdmissionReadView"];
@@ -19,6 +20,7 @@ const activeAdmissions = ref<Admission[]>([]);
 const cases = ref<SourcingCase[]>([]);
 const policy = ref<AdmissionPolicy>({ status: "policy_status_unknown" });
 const loading = ref(true);
+const partitionReady = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const manualTarget = ref<Admission | null>(null);
@@ -39,9 +41,7 @@ const representedCases = computed(() => new Set([
 const historicalCases = computed(() => cases.value.filter((item) => !representedCases.value.has(item.case_id)));
 
 function formatTime(value: string | null | undefined): string {
-  if (!value) return "未知";
-  const time = new Date(value);
-  return Number.isNaN(time.getTime()) ? "未知" : value.replace("T", " ").replace("Z", " UTC");
+  return displayZonedIsoTime(value);
 }
 
 function formatWait(seconds: number): string {
@@ -53,11 +53,8 @@ function formatWait(seconds: number): string {
 }
 
 function admittedWait(item: Admission): string {
-  if (!item.admitted_at) return "未知";
-  const readyAt = Date.parse(item.ready_at);
-  const admittedAt = Date.parse(item.admitted_at);
-  if (!Number.isFinite(readyAt) || !Number.isFinite(admittedAt) || admittedAt < readyAt) return "未知";
-  return formatWait(Math.floor((admittedAt - readyAt) / 1000));
+  const seconds = elapsedZonedSeconds(item.ready_at, item.admitted_at);
+  return seconds === null ? "未知" : formatWait(seconds);
 }
 
 function activeTiming(item: Admission): string {
@@ -89,7 +86,11 @@ async function loadAdmissionState(state: AdmissionState): Promise<AdmissionList 
     const result = await client.GET("/sourcing-admissions", {
       params: { query: { limit: 50, state } },
     });
-    if (result.response.status === 200 && result.data) return result.data;
+    if (result.response.status === 200 && result.data) {
+      if (result.data.items.length < 50) return result.data;
+      error.value ??= "准入队列可能已截断，无法安全区分等待与处理中的 Case";
+      return null;
+    }
     error.value ??= listError(result.response.status);
   } catch {
     error.value ??= "无法连接寻源准入服务";
@@ -107,6 +108,8 @@ async function loadCases(): Promise<SourcingCase[]> {
 
 async function loadAll(): Promise<void> {
   loading.value = true;
+  partitionReady.value = false;
+  if (!pendingAdmissionId.value) manualTarget.value = null;
   error.value = null;
   const [waiting, blocked, starting, admitted, loadedCases] = await Promise.all([
     loadAdmissionState("waiting"),
@@ -115,11 +118,21 @@ async function loadAll(): Promise<void> {
     loadAdmissionState("admitted"),
     loadCases(),
   ]);
+  if (!waiting || !blocked || !starting || !admitted) {
+    waitingAdmissions.value = [];
+    blockedAdmissions.value = [];
+    activeAdmissions.value = [];
+    cases.value = [];
+    policy.value = waiting?.policy ?? blocked?.policy ?? starting?.policy ?? admitted?.policy ?? { status: "policy_status_unknown" };
+    loading.value = false;
+    return;
+  }
   waitingAdmissions.value = waiting?.items ?? [];
   blockedAdmissions.value = blocked?.items ?? [];
   activeAdmissions.value = [...(starting?.items ?? []), ...(admitted?.items ?? [])];
   cases.value = loadedCases;
   policy.value = waiting?.policy ?? blocked?.policy ?? starting?.policy ?? admitted?.policy ?? { status: "policy_status_unknown" };
+  partitionReady.value = true;
   loading.value = false;
 }
 
@@ -221,7 +234,7 @@ onMounted(() => void loadAll());
     >
       正在读取准入队列…
     </div>
-    <template v-else>
+    <template v-else-if="partitionReady">
       <section
         class="queue-section"
         data-section="waiting-admission"

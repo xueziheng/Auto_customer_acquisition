@@ -7,6 +7,7 @@ import { apiClient, createApiClient } from "../../api/client";
 import SourcingPlanForm from "./SourcingPlanForm.vue";
 import SourcingRecoveryForm from "./SourcingRecoveryForm.vue";
 import SourcingReviewForm from "./SourcingReviewForm.vue";
+import { displayZonedIsoTime, elapsedZonedSeconds } from "./zonedTime";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type PublicPlanCommand = components["schemas"]["PublicSourcingPlanCommand"];
@@ -144,9 +145,7 @@ function safeError(status: number): string {
 }
 
 function displayTime(value: string | null | undefined): string {
-  if (!value) return "未知";
-  const time = new Date(value);
-  return Number.isNaN(time.getTime()) ? "未知" : value.replace("T", " ").replace("Z", " UTC");
+  return displayZonedIsoTime(value);
 }
 
 function displayWait(seconds: number): string {
@@ -161,19 +160,11 @@ function safeWait(seconds: number): string {
   return Number.isFinite(seconds) && seconds >= 0 ? displayWait(seconds) : "未知";
 }
 
-function elapsedSeconds(start: string | null | undefined, end: string | null | undefined): number | null {
-  if (!start || !end) return null;
-  const startTime = Date.parse(start);
-  const endTime = Date.parse(end);
-  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) return null;
-  return Math.floor((endTime - startTime) / 1000);
-}
-
 const admissionTiming = computed(() => {
   const admission = admissionDetail.value?.admission;
   if (!admission) return { label: "自就绪起", value: "未知" };
   if (admission.state === "admitted") {
-    const seconds = elapsedSeconds(admission.ready_at, admission.admitted_at);
+    const seconds = elapsedZonedSeconds(admission.ready_at, admission.admitted_at);
     return { label: "准入等待用时", value: seconds === null ? "未知" : safeWait(seconds) };
   }
   return {
