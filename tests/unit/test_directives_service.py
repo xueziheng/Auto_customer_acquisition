@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Self
 
 import pytest
@@ -46,8 +46,11 @@ class _Employees:
 
 
 class _Bus:
+    def __init__(self, state: _State) -> None:
+        self._state = state
+
     async def publish(self, event: object) -> None:
-        return None
+        self._state.events.append(event)
 
 
 class _State:
@@ -55,6 +58,7 @@ class _State:
         self.proposals: dict[str, DirectiveProposal] = {}
         self.directives: list[Directive] = []
         self.active: Directive | None = None
+        self.events: list[object] = []
 
 
 class _Proposals:
@@ -147,7 +151,7 @@ class _Uow:
     def __init__(self, state: _State) -> None:
         self.proposals = _Proposals(state)
         self.directives = _Directives(state)
-        self.bus = _Bus()
+        self.bus = _Bus(state)
 
     async def __aenter__(self) -> Self:
         return self
@@ -316,6 +320,78 @@ async def test_sourcing_admission_proposal_copies_the_complete_active_directive(
     assert view.sourcing_admission_batch_limit == 3
 
 
+async def test_generic_proposal_preserves_active_sourcing_admission_and_baseline() -> (
+    None
+):
+    state = _State()
+    admission = SourcingAdmissionConfig(
+        mode="cluster_ranked",
+        automatic_admission_enabled=False,
+        batch_limit=11,
+    )
+    original = replace(_full_content(), sourcing_admission=admission)
+    _active(state, 7, original)
+    generic_content = replace(
+        _full_content(),
+        monthly_budget_credits=1200,
+        notes="Change only ordinary Directive fields.",
+    )
+
+    proposal_id = await _service(state).submit_proposal(
+        TENANT,
+        "Raise the monthly budget without changing sourcing admission.",
+        generic_content,
+        "Only the ordinary Directive fields change.",
+        ["Monthly budget increases to 1200 credits."],
+        "directive-parser-v1",
+    )
+
+    proposal = state.proposals[proposal_id]
+    assert proposal.parsed == replace(
+        generic_content,
+        sourcing_admission=admission,
+    )
+    assert proposal.base_directive_version == 7
+    view = await _service(state).get_proposal(TENANT, proposal_id)
+    assert view.sourcing_admission_mode == "cluster_ranked"
+    assert view.automatic_sourcing_admission_enabled is False
+    assert view.sourcing_admission_batch_limit == 11
+
+
+async def test_stale_generic_proposal_cannot_clear_or_overwrite_admission() -> None:
+    state = _State()
+    admission = SourcingAdmissionConfig(
+        mode="cluster_ranked",
+        automatic_admission_enabled=True,
+        batch_limit=3,
+    )
+    original = replace(_full_content(), sourcing_admission=admission)
+    _active(state, 7, original)
+    service = _service(state)
+    proposal_id = await service.submit_proposal(
+        TENANT,
+        "Raise the monthly budget without changing sourcing admission.",
+        replace(_full_content(), monthly_budget_credits=1200),
+        "Only the monthly budget changes.",
+        ["Monthly budget increases to 1200 credits."],
+        "directive-parser-v1",
+    )
+    newer = _active(
+        state,
+        8,
+        replace(original, monthly_budget_credits=1500),
+    )
+    before = list(state.directives)
+
+    with pytest.raises(InvalidStateTransition, match="陈旧"):
+        await service.confirm_proposal(TENANT, proposal_id, BOSS)
+
+    assert state.active == newer
+    assert state.directives == before
+    assert state.proposals[proposal_id].state is ProposalState.PENDING_CONFIRMATION
+    assert state.events == []
+
+
 async def test_non_boss_cannot_confirm_sourcing_admission() -> None:
     state = _State()
     proposal_id = await _service(state).submit_sourcing_admission_proposal(
@@ -357,3 +433,33 @@ async def test_stale_sourcing_admission_proposal_cannot_overwrite_newer_directiv
     assert state.active == newer
     assert state.directives == before
     assert state.proposals[proposal_id].state is ProposalState.PENDING_CONFIRMATION
+    assert state.events == []
+
+
+async def test_stale_baseline_takes_precedence_over_expired_proposal() -> None:
+    state = _State()
+    original = _full_content()
+    _active(state, 7, original)
+    service = _service(state)
+    proposal_id = await service.submit_sourcing_admission_proposal(
+        TENANT,
+        "Enable bounded cluster-ranked sourcing.",
+        _config(),
+        "Enable cluster-ranked sourcing admission.",
+        ["Up to three waiting cases may be admitted per cycle."],
+        "directive-parser-v1",
+    )
+    state.proposals[proposal_id] = replace(
+        state.proposals[proposal_id],
+        created_at=NOW - timedelta(days=8),
+    )
+    newer = _active(state, 8, replace(original, monthly_budget_credits=1200))
+    before = list(state.directives)
+
+    with pytest.raises(InvalidStateTransition, match="陈旧"):
+        await service.confirm_proposal(TENANT, proposal_id, BOSS)
+
+    assert state.active == newer
+    assert state.directives == before
+    assert state.proposals[proposal_id].state is ProposalState.PENDING_CONFIRMATION
+    assert state.events == []

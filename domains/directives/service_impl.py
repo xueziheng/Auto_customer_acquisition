@@ -394,17 +394,31 @@ class DirectiveServiceImpl:
         )
         _text(parsed_by, "指令解析器版本无效", maximum=128)
         now = _utc(self._now())
-        proposal = DirectiveProposal(
-            proposal_id=new_id("dpr"),
-            tenant_id=tenant_id,
-            raw_text=raw_text,
-            parsed=parsed,
-            interpretation_summary=interpretation_summary,
-            expected_behavior_changes=changes,
-            parsed_by=parsed_by,
-            created_at=now,
-        )
         async with self._uow_factory(tenant_id) as uow:
+            active = await uow.directives.get_active(tenant_id)
+            complete = _validate_content(
+                replace(
+                    parsed,
+                    sourcing_admission=(
+                        None
+                        if active is None
+                        else active.content.sourcing_admission
+                    ),
+                )
+            )
+            proposal = DirectiveProposal(
+                proposal_id=new_id("dpr"),
+                tenant_id=tenant_id,
+                raw_text=raw_text,
+                parsed=complete,
+                interpretation_summary=interpretation_summary,
+                expected_behavior_changes=changes,
+                parsed_by=parsed_by,
+                created_at=now,
+                base_directive_version=(
+                    None if active is None else active.version
+                ),
+            )
             await uow.proposals.add(proposal)
         return proposal.proposal_id
 
@@ -533,6 +547,14 @@ class DirectiveServiceImpl:
                 raise ValidationError("指令提案不存在")
             if proposal.state is not ProposalState.PENDING_CONFIRMATION:
                 raise InvalidStateTransition("指令提案已决策，不能再次确认")
+            version = await uow.directives.next_version(tenant_id)
+            active = await uow.directives.get_active_for_update(tenant_id)
+            if proposal.base_directive_version is not None:
+                current_version = 0 if active is None else active.version
+                if proposal.base_directive_version != current_version:
+                    raise InvalidStateTransition(
+                        "指令提案基线已陈旧，必须基于当前指令重新提交"
+                    )
             if now >= proposal.created_at + _PROPOSAL_TTL:
                 await uow.proposals.update(
                     replace(
@@ -543,14 +565,6 @@ class DirectiveServiceImpl:
                 )
                 expired = True
             else:
-                version = await uow.directives.next_version(tenant_id)
-                active = await uow.directives.get_active_for_update(tenant_id)
-                if proposal.parsed.sourcing_admission is not None:
-                    current_version = 0 if active is None else active.version
-                    if proposal.base_directive_version != current_version:
-                        raise InvalidStateTransition(
-                            "寻源准入提案基线已陈旧，必须基于当前指令重新提交"
-                        )
                 if active is not None:
                     await uow.directives.mark_superseded(
                         tenant_id, active.directive_id
