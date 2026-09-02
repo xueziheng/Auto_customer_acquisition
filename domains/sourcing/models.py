@@ -13,6 +13,7 @@ from hashlib import sha256
 from typing import Any, cast
 from urllib.parse import urlsplit
 
+from domains.sourcing.admission import canonical_priority_facts_hash
 from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
 from domains.sourcing.schemas import (
     IndicativePriceTier,
@@ -943,7 +944,13 @@ def _require_utc_time(value: datetime, field_name: str) -> None:
 def _require_nonempty_identifier(value: object, field_name: str) -> None:
     """在领域边界拒绝空白业务标识，避免不可审计的准入记录。"""
 
-    if not isinstance(value, str) or not value or value != value.strip():
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
         raise ValidationError(f"{field_name} 无效")
 
 
@@ -997,6 +1004,15 @@ class SourcingPrioritySnapshot:
             raise ValidationError("facts_hash 必须是小写 SHA-256")
         for field_name in ("ready_at", "facts_observed_at", "created_at"):
             _require_utc_time(getattr(self, field_name), field_name)
+        if self.facts_hash != canonical_priority_facts_hash(
+            need_id=self.need_id,
+            cluster_id=self.cluster_id,
+            cluster_member_count=self.cluster_member_count,
+            ready_at=self.ready_at,
+            facts_observed_at=self.facts_observed_at,
+            ranking_version=self.ranking_version,
+        ):
+            raise ValidationError("facts_hash 与排序事实不一致")
 
 
 @dataclass(frozen=True)
@@ -1094,6 +1110,8 @@ class SourcingAdmission:
                 f"寻源准入不能从 {self.state.value} 转为 {target.value}；允许：{allowed}"
             )
         _require_utc_time(changed_at, "changed_at")
+        if changed_at < self.updated_at:
+            raise ValidationError("changed_at 不得早于 updated_at")
         return cast(
             SourcingAdmission,
             replace(cast(Any, self), state=target, updated_at=changed_at, **changes),
@@ -1149,12 +1167,20 @@ class SourcingAdmission:
         )
 
     def block(
-        self, reason: AdmissionBlockedReason, *, blocked_at: datetime
+        self,
+        reason: AdmissionBlockedReason,
+        *,
+        blocked_at: datetime,
+        claim_token: str | None = None,
     ) -> SourcingAdmission:
         """以固定原因阻断可修复事实；不保存自由文本或异常内容。"""
 
         if not isinstance(reason, AdmissionBlockedReason):
             raise ValidationError("blocked_reason 必须是 AdmissionBlockedReason")
+        if self.state is AdmissionState.STARTING and claim_token != self.claim_token:
+            raise InvalidStateTransition("寻源准入 block claim token 与当前 starting 状态不匹配")
+        if self.state is AdmissionState.WAITING and claim_token is not None:
+            raise ValidationError("waiting 准入不得提供 claim_token")
         return self._transition(
             AdmissionState.BLOCKED,
             changed_at=blocked_at,
@@ -1188,10 +1214,21 @@ class SourcingAdmission:
             or snapshot.need_id != self.need_id
         ):
             raise ValidationError("优先级快照与准入记录不一致")
+        if snapshot.created_at < self.updated_at:
+            raise ValidationError("snapshot.created_at 不得早于 updated_at")
+        if snapshot.ready_at != self.ready_at:
+            raise ValidationError("snapshot.ready_at 必须等于 admission.ready_at")
+        recovered_state = (
+            AdmissionState.WAITING
+            if self.state is AdmissionState.BLOCKED
+            and self.blocked_reason is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+            else self.state
+        )
         return replace(
             self,
+            state=recovered_state,
             current_snapshot_id=snapshot.snapshot_id,
-            ready_at=snapshot.ready_at,
+            blocked_reason=(None if recovered_state is AdmissionState.WAITING else self.blocked_reason),
             updated_at=snapshot.created_at,
         )
 

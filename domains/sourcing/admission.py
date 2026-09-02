@@ -1,20 +1,100 @@
-"""寻源准入的纯排序规则。
-
-这里刻意不读取 Need、Directive 或 Workflow。排序输入已经由跨域编排层核验并
-冻结为 ``SourcingPrioritySnapshot``，本模块只执行可复现的 v1 排序与解释。
-"""
+"""寻源准入的纯排序和哈希规则。"""
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from typing import TYPE_CHECKING, Protocol
 
-from domains.sourcing.models import (
-    ADMISSION_RANKING_VERSION,
-    AdmissionBlockedReason,
-    AdmissionState,
-    SourcingAdmission,
-    SourcingPrioritySnapshot,
-)
+from shared.errors import ValidationError
+from shared.schemas.identifiers import NeedClusterId, ValidatedNeedId
+
+if TYPE_CHECKING:
+    from domains.sourcing.models import SourcingPrioritySnapshot
+
+
+class PriorityExplanationFacts(Protocol):
+    """生成固定中文排序说明所需的最小不可变事实。"""
+
+    cluster_id: NeedClusterId | None
+    cluster_member_count: int
+
+
+def _utc_iso8601(value: datetime, field_name: str) -> str:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != timedelta(0)
+    ):
+        raise ValidationError(f"{field_name} 必须是 UTC 时间")
+    return value.astimezone(UTC).isoformat()
+
+
+def _bounded_id(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError(f"{field_name} 无效")
+    return value
+
+
+def priority_facts_payload(
+    *,
+    need_id: ValidatedNeedId,
+    cluster_id: NeedClusterId | None,
+    cluster_member_count: int,
+    ready_at: datetime,
+    facts_observed_at: datetime,
+    ranking_version: str,
+) -> dict[str, str | int | None]:
+    """构造 v1 排序事实的唯一 canonical payload，不接收任何贸易聚合字段。"""
+
+    if isinstance(cluster_member_count, bool) or not isinstance(
+        cluster_member_count, int
+    ) or cluster_member_count < 1:
+        raise ValidationError("cluster_member_count 必须是正整数")
+    if cluster_id is None and cluster_member_count != 1:
+        raise ValidationError("未归簇需求的 cluster_member_count 必须为 1")
+    return {
+        "need_id": _bounded_id(need_id, "need_id"),
+        "cluster_id": (
+            None if cluster_id is None else _bounded_id(cluster_id, "cluster_id")
+        ),
+        "cluster_member_count": cluster_member_count,
+        "ready_at": _utc_iso8601(ready_at, "ready_at"),
+        "facts_observed_at": _utc_iso8601(facts_observed_at, "facts_observed_at"),
+        "ranking_version": _bounded_id(ranking_version, "ranking_version"),
+    }
+
+
+def canonical_priority_facts_hash(
+    *,
+    need_id: ValidatedNeedId,
+    cluster_id: NeedClusterId | None,
+    cluster_member_count: int,
+    ready_at: datetime,
+    facts_observed_at: datetime,
+    ranking_version: str,
+) -> str:
+    """计算唯一 v1 排序事实的 SHA-256；后续服务必须复用本函数。"""
+
+    payload = priority_facts_payload(
+        need_id=need_id,
+        cluster_id=cluster_id,
+        cluster_member_count=cluster_member_count,
+        ready_at=ready_at,
+        facts_observed_at=facts_observed_at,
+        ranking_version=ranking_version,
+    )
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def priority_sort_key(snapshot: SourcingPrioritySnapshot) -> tuple[int, datetime, str]:
@@ -23,7 +103,7 @@ def priority_sort_key(snapshot: SourcingPrioritySnapshot) -> tuple[int, datetime
     return (-snapshot.cluster_member_count, snapshot.ready_at, str(snapshot.need_id))
 
 
-def priority_explanation(snapshot: SourcingPrioritySnapshot) -> str:
+def priority_explanation(snapshot: PriorityExplanationFacts) -> str:
     """返回固定中文解释，不使用模型或隐含权重。"""
 
     if snapshot.cluster_id is None:
@@ -31,12 +111,25 @@ def priority_explanation(snapshot: SourcingPrioritySnapshot) -> str:
     return f"该需求簇当前有 {snapshot.cluster_member_count} 条已验证需求；同规模需求按等待时间排序。"
 
 
+def __getattr__(name: str) -> object:
+    """延迟暴露领域模型，避免模型校验复用本模块时形成循环导入。"""
+
+    if name in {
+        "ADMISSION_RANKING_VERSION",
+        "AdmissionBlockedReason",
+        "AdmissionState",
+        "SourcingAdmission",
+        "SourcingPrioritySnapshot",
+    }:
+        from domains.sourcing import models
+
+        return getattr(models, name)
+    raise AttributeError(name)
+
+
 __all__ = (
-    "ADMISSION_RANKING_VERSION",
-    "AdmissionBlockedReason",
-    "AdmissionState",
-    "SourcingAdmission",
-    "SourcingPrioritySnapshot",
+    "canonical_priority_facts_hash",
     "priority_explanation",
+    "priority_facts_payload",
     "priority_sort_key",
 )

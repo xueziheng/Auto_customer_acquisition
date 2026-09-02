@@ -165,7 +165,7 @@ class SourcingService(Protocol):
         facts: SourcingPriorityFactsInput,
         actor: SourcingActor,
     ) -> SourcingAdmissionId:
-        """为一个 Validated Need 幂等创建准入与首个不可变排序快照。"""
+        """原子创建或读取一个 admission 与首个 current priority snapshot，避免循环持久化。"""
         ...
 
     async def refresh_admission(
@@ -177,7 +177,7 @@ class SourcingService(Protocol):
         refreshed_at: datetime,
         actor: SourcingActor,
     ) -> SourcingPrioritySnapshotId | None:
-        """仅刷新 waiting/blocked admission；starting/admitted 必须保持原快照。"""
+        """同事务追加/去重快照并推进 current pointer；仅 invalid-facts blocked 可自动恢复。"""
         ...
 
     async def claim_admissions(
@@ -231,9 +231,10 @@ class SourcingService(Protocol):
         *,
         reason: AdmissionBlockedReason,
         blocked_at: datetime,
+        claim_token: str | None = None,
         actor: SourcingActor,
     ) -> None:
-        """以固定原因阻断当前 admission；禁止底层异常文本穿越领域边界。"""
+        """阻断 waiting 或精确 claim 的 starting admission，禁止陈旧 worker 清除新租约。"""
         ...
 
     async def list_admissions(

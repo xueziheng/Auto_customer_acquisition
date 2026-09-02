@@ -137,3 +137,47 @@ def test_phase2_authorizer_rejects_non_actor_objects_and_invalid_actor_identity(
         )
     with pytest.raises(ValidationError):
         module.SourcingActor("", tenant, module.SourcingScope.TENANT, "boss")
+
+
+def test_phase2_admission_actions_have_no_implicit_role_or_scope_grants() -> None:
+    module = _permissions()
+    tenant = TenantId("tenant-a")
+    expected = {
+        "ADMISSION_ENQUEUE": {("system", "SYSTEM")},
+        "ADMISSION_REFRESH": {("system", "SYSTEM")},
+        "ADMISSION_CLAIM": {("system", "SYSTEM")},
+        "ADMISSION_COMPLETE": {("system", "SYSTEM")},
+        "ADMISSION_READ": {
+            ("boss", "TENANT"),
+            ("product", "TENANT"),
+            ("sourcing", "TENANT"),
+            ("finance", "TENANT"),
+        },
+        "ADMISSION_MANUAL_START": {
+            ("boss", "TENANT"),
+            ("sourcing", "TENANT"),
+        },
+    }
+
+    for action_name, allowed in expected.items():
+        action = module.SourcingAction[action_name]
+        for role in ("boss", "product", "sourcing", "finance", "system", "unknown"):
+            for scope_name in ("TENANT", "SYSTEM"):
+                scope = module.SourcingScope[scope_name]
+                if role == "system" and scope is module.SourcingScope.TENANT:
+                    continue
+                if role != "system" and scope is module.SourcingScope.SYSTEM:
+                    continue
+                actor = module.SourcingActor("actor-a", tenant, scope, role)
+                if (role, scope_name) in allowed:
+                    assert (
+                        module.Phase2SourcingAuthorizer(tenant).require(
+                            actor, action, scope, tenant
+                        )
+                        == f"phase2:{role}:{scope.value}:{action.value}"
+                    )
+                else:
+                    with pytest.raises(PermissionDenied):
+                        module.Phase2SourcingAuthorizer(tenant).require(
+                            actor, action, scope, tenant
+                        )

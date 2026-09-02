@@ -107,9 +107,12 @@ class SourcingAdmissionRepository(Protocol):
     """准入与只增优先级快照的 tenant-bound 存储契约。"""
 
     async def get_or_create(
-        self, tenant_id: TenantId, admission: SourcingAdmission
-    ) -> tuple[SourcingAdmission, bool]:
-        """按 tenant+Case/Need 原子返回唯一 admission，不得跨租户读取。"""
+        self,
+        tenant_id: TenantId,
+        admission: SourcingAdmission,
+        initial_snapshot: SourcingPrioritySnapshot,
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
+        """原子写入 admission 与首快照并绑定 current pointer，或返回既有 canonical 二元组。"""
         ...
 
     async def get(
@@ -120,8 +123,8 @@ class SourcingAdmissionRepository(Protocol):
 
     async def append_snapshot_if_changed(
         self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
-    ) -> tuple[SourcingPrioritySnapshot, bool]:
-        """以 facts_hash 去重追加不可变快照，并返回 canonical 当前快照。"""
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
+        """同事务按 facts_hash 去重追加、推进 current pointer 并返回更新后的 admission。"""
         ...
 
     async def claim_ordered(
@@ -169,8 +172,9 @@ class SourcingAdmissionRepository(Protocol):
         admission_id: SourcingAdmissionId,
         reason: AdmissionBlockedReason,
         blocked_at: datetime,
+        claim_token: str | None = None,
     ) -> SourcingAdmission | None:
-        """以固定原因阻断单条记录；不接收自由异常文本。"""
+        """阻断 waiting 或精确匹配租约的 starting 记录，不接收自由异常文本。"""
         ...
 
     async def list_by_state(
