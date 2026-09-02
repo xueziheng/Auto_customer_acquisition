@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import pytest
 
@@ -81,6 +81,8 @@ OTHER_TENANT = TenantId("tenant-other")
 SYSTEM = SourcingActor("system-worker", TENANT, SourcingScope.SYSTEM, "system")
 BOSS = SourcingActor("emp-boss", TENANT, SourcingScope.TENANT, "boss")
 SOURCING = SourcingActor("emp-sourcing", TENANT, SourcingScope.TENANT, "sourcing")
+PRODUCT = SourcingActor("emp-product", TENANT, SourcingScope.TENANT, "product")
+FINANCE = SourcingActor("emp-finance", TENANT, SourcingScope.TENANT, "finance")
 
 _models = importlib.import_module("domains.sourcing.models")
 ADMISSION_RANKING_VERSION = _models.ADMISSION_RANKING_VERSION
@@ -712,9 +714,19 @@ class _Reviews(_MemoryRepo):
 
 
 class _Admissions(_MemoryRepo):
+    def __init__(
+        self,
+        state: dict[str, Any],
+        name: str,
+        get_or_create_calls: list[int],
+    ) -> None:
+        super().__init__(state, name)
+        self.get_or_create_calls = get_or_create_calls
+
     async def get_or_create(
         self, tenant_id: TenantId, admission: Any, initial_snapshot: Any | None
     ) -> tuple[Any, Any | None, bool]:
+        self.get_or_create_calls[0] += 1
         for (candidate_tenant, _), current in self.state[self.name].items():
             if candidate_tenant == tenant_id and (
                 current.case_id == admission.case_id
@@ -1090,11 +1102,19 @@ class _Bus:
 
 
 class _MemoryUow:
-    def __init__(self, state: dict[str, Any], *, bus_fails: bool = False) -> None:
+    def __init__(
+        self,
+        state: dict[str, Any],
+        admission_get_or_create_calls: list[int],
+        *,
+        bus_fails: bool = False,
+    ) -> None:
         self.state = state
         self.bus_fails = bus_fails
         self.cases = _Cases(state, "cases")
-        self.admissions = _Admissions(state, "admissions")
+        self.admissions = _Admissions(
+            state, "admissions", admission_get_or_create_calls
+        )
         self.checks = _Checks(state, "checks")
         self.plans = _Plans(state, "plans")
         self.candidates = _Candidates(state, "candidates")
@@ -1124,6 +1144,7 @@ class _MemoryUow:
 class _Factory:
     def __init__(self, *, bus_fails: bool = False) -> None:
         self.calls = 0
+        self.admission_get_or_create_calls = [0]
         self.bus_fails = bus_fails
         self.state: dict[str, Any] = {
             "cases": {},
@@ -1144,7 +1165,11 @@ class _Factory:
 
     def __call__(self, tenant_id: TenantId) -> _MemoryUow:
         self.calls += 1
-        return _MemoryUow(self.state, bus_fails=self.bus_fails)
+        return _MemoryUow(
+            self.state,
+            self.admission_get_or_create_calls,
+            bus_fails=self.bus_fails,
+        )
 
 
 class _EvidenceReader:
@@ -1255,6 +1280,119 @@ async def _enqueue(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing_snapshot", "缺少已验证需求快照"),
+        ("snapshot_need_mismatch", "Case、Need 与快照不一致"),
+        ("completeness_two", "完整度不足 3"),
+        ("non_opened", "OPENED"),
+        ("workflow_v1", "V2"),
+    ],
+)
+async def test_admission_enqueue_fails_closed_before_repository_write(
+    fault: str, message: str
+) -> None:
+    """准入目标必须仍是完整、同 Need 的 OPENED V2 Case。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    need_id = _open_command().need.need_id
+    key = (TENANT, case_id)
+    case = factory.state["cases"][key]
+    if fault == "missing_snapshot":
+        case = replace(case, need_snapshot=None, need_snapshot_hash=None)
+    elif fault == "snapshot_need_mismatch":
+        assert case.need_snapshot is not None
+        case = replace(
+            case,
+            need_snapshot=case.need_snapshot.model_copy(
+                update={"need_id": ValidatedNeedId("need-snapshot-other")}
+            ),
+        )
+    elif fault == "completeness_two":
+        assert case.need_snapshot is not None
+        case = replace(
+            case,
+            need_snapshot=case.need_snapshot.model_copy(update={"completeness": 2}),
+        )
+    elif fault == "non_opened":
+        case = replace(case, state=CaseState.DISCOVERING)
+    else:
+        case = replace(case, workflow_version=1)
+    factory.state["cases"][key] = case
+
+    with pytest.raises(ValidationError, match=message):
+        await _enqueue(service, case_id, need_id)
+
+    assert factory.admission_get_or_create_calls == [0]
+    assert factory.state["admissions"] == {}
+    assert factory.state["priority_snapshots"] == {}
+
+
+@pytest.mark.asyncio
+async def test_admission_enqueue_accepts_complete_opened_v2_case() -> None:
+    """完整度恰为 3 的目标 Need 可以进入 waiting 并保存首快照。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+
+    assert factory.admission_get_or_create_calls == [1]
+    assert (TENANT, admission_id) in factory.state["admissions"]
+    assert len(factory.state["priority_snapshots"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [False, True])
+async def test_non_opened_case_replay_cannot_change_starting_or_admitted_record(
+    terminal: bool,
+) -> None:
+    """Case 离开 OPENED 后，重放不得补写或改变既有 starting/终态 admission。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    need_id = _open_command().need.need_id
+    admission_id = await _enqueue(service, case_id, need_id)
+    await service.claim_admissions(
+        TENANT,
+        limit=1,
+        claim_token="claim-case-closed",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=SYSTEM,
+    )
+    if terminal:
+        await service.complete_admission(
+            TENANT,
+            admission_id,
+            claim_token="claim-case-closed",
+            workflow_run_id=RunId("run-case-closed"),
+            admitted_by="system:sourcing",
+            admitted_at=NOW + timedelta(minutes=1),
+            actor=SYSTEM,
+        )
+    key = (TENANT, case_id)
+    factory.state["cases"][key] = replace(
+        factory.state["cases"][key],
+        state=(CaseState.FAILED if terminal else CaseState.DISCOVERING),
+    )
+    admission_before = copy.deepcopy(factory.state["admissions"])
+    snapshots_before = copy.deepcopy(factory.state["priority_snapshots"])
+    repository_calls_before = factory.admission_get_or_create_calls[0]
+
+    with pytest.raises(ValidationError, match="OPENED"):
+        await _enqueue(service, case_id, need_id)
+
+    assert factory.admission_get_or_create_calls == [repository_calls_before]
+    assert factory.state["admissions"] == admission_before
+    assert factory.state["priority_snapshots"] == snapshots_before
+
+
+@pytest.mark.asyncio
 async def test_admission_enqueue_is_canonical_and_refresh_appends_only_changed_facts() -> (
     None
 ):
@@ -1348,6 +1486,69 @@ async def test_admitted_refresh_is_a_no_op() -> None:
     assert result is None
     assert await service.get_admission(TENANT, admission_id, actor=BOSS) == before
     assert len(factory.state["priority_snapshots"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_starting_refresh_is_a_strict_no_op() -> None:
+    """starting 租约期间的 refresh 不得改状态、token、pointer 或快照集。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    need_id = _open_command().need.need_id
+    admission_id = await _enqueue(service, case_id, need_id)
+    await service.claim_admissions(
+        TENANT,
+        limit=1,
+        claim_token="claim-refresh-noop",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=SYSTEM,
+    )
+    admission_before = copy.deepcopy(factory.state["admissions"])
+    snapshots_before = copy.deepcopy(factory.state["priority_snapshots"])
+
+    result = await service.refresh_admission(
+        TENANT,
+        admission_id,
+        facts=_priority_facts(
+            need_id,
+            count=9,
+            cluster_id=NeedClusterId("cluster-starting-later"),
+            observed_at=NOW + timedelta(minutes=1),
+        ),
+        refreshed_at=NOW + timedelta(minutes=2),
+        actor=SYSTEM,
+    )
+
+    assert result is None
+    assert factory.state["admissions"] == admission_before
+    assert factory.state["priority_snapshots"] == snapshots_before
+
+
+@pytest.mark.asyncio
+async def test_transient_facts_absence_never_persists_a_blocked_admission() -> None:
+    """暂时读不到事实由 application 停止本轮，领域 refresh 不固化 blocked。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+    admission_before = copy.deepcopy(factory.state["admissions"])
+    snapshots_before = copy.deepcopy(factory.state["priority_snapshots"])
+    uow_calls_before = factory.calls
+
+    with pytest.raises(ValidationError, match="排序事实无效"):
+        await service.refresh_admission(
+            TENANT,
+            admission_id,
+            facts=cast(Any, None),
+            refreshed_at=NOW + timedelta(minutes=1),
+            actor=SYSTEM,
+        )
+
+    assert factory.calls == uow_calls_before
+    assert factory.state["admissions"] == admission_before
+    assert factory.state["priority_snapshots"] == snapshots_before
 
 
 @pytest.mark.asyncio
@@ -1622,6 +1823,60 @@ async def test_admission_list_preserves_repository_order_and_builds_safe_views()
         "admitted_by",
         "can_current_user_manual_start",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actor", "can_manual_start"),
+    [
+        (BOSS, True),
+        (SOURCING, True),
+        (PRODUCT, False),
+        (FINANCE, False),
+    ],
+)
+async def test_admission_safe_views_apply_role_and_state_manual_start_policy(
+    actor: SourcingActor, can_manual_start: bool
+) -> None:
+    """四类内部读角色都可见；只有 boss/sourcing 的 waiting 可手动启动。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+
+    waiting_detail = await service.get_admission(TENANT, admission_id, actor=actor)
+    waiting_list = await service.list_admissions(
+        TENANT,
+        state=AdmissionState.WAITING,
+        limit=10,
+        now=NOW,
+        actor=actor,
+    )
+    assert waiting_detail is not None
+    assert waiting_detail.can_current_user_manual_start is can_manual_start
+    assert [item.admission_id for item in waiting_list] == [admission_id]
+    assert waiting_list[0].can_current_user_manual_start is can_manual_start
+
+    await service.block_admission(
+        TENANT,
+        admission_id,
+        reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        blocked_at=NOW + timedelta(minutes=1),
+        actor=SYSTEM,
+    )
+    blocked_detail = await service.get_admission(TENANT, admission_id, actor=actor)
+    blocked_list = await service.list_admissions(
+        TENANT,
+        state=AdmissionState.BLOCKED,
+        limit=10,
+        now=NOW + timedelta(minutes=1),
+        actor=actor,
+    )
+    assert blocked_detail is not None
+    assert blocked_detail.can_current_user_manual_start is False
+    assert [item.admission_id for item in blocked_list] == [admission_id]
+    assert blocked_list[0].can_current_user_manual_start is False
 
 
 @pytest.mark.asyncio

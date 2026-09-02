@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -513,6 +514,111 @@ async def test_admission_service_persists_canonical_snapshots_and_token_transiti
     assert [item.admission_id for item in blocked] == [first_id]
     assert blocked[0].blocked_reason == "case_state_mismatch"
     assert blocked[0].snapshot_id == changed_snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing_snapshot", "缺少已验证需求快照"),
+        ("snapshot_need_mismatch", "Case、Need 与快照不一致"),
+        ("completeness_two", "完整度不足 3"),
+        ("non_opened", "OPENED"),
+    ],
+)
+async def test_admission_enqueue_rejects_ineligible_case_without_postgres_writes(
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    message: str,
+) -> None:
+    """真实事务中不合格 Case 必须在 admission repository 首次写入前关闭。
+
+    数据库以 NOT NULL 与 JSON-object CHECK 双重拒绝无快照行；该分支在真实读取后注入
+    丢失快照的 repository 投影，其余分支直接修改真实 PostgreSQL Case 行。
+    """
+
+    tenant_id = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    await _seed_need(integration_engine, tenant_id, need_id)
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sessions, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+    case_id = await service.open_case(
+        tenant_id, _command(tenant_id, need_id), actor=system
+    )
+
+    parameters: dict[str, object] = {"tenant": tenant_id, "case": case_id}
+    mutation = None
+    if fault == "missing_snapshot":
+        repository_module = importlib.import_module("infra.db.repositories.sourcing")
+        original_row_to_case = repository_module._row_to_case
+        monkeypatch.setattr(
+            repository_module,
+            "_row_to_case",
+            lambda row: replace(
+                original_row_to_case(row),
+                need_snapshot=None,
+                need_snapshot_hash=None,
+            ),
+        )
+    elif fault == "snapshot_need_mismatch":
+        mutation = text(
+            "UPDATE sourcing_cases SET need_snapshot = jsonb_set("
+            "need_snapshot, '{need_id}', to_jsonb(CAST(:other_need AS text))) "
+            "WHERE tenant_id = :tenant AND case_id = :case"
+        )
+        parameters["other_need"] = ValidatedNeedId(new_id("need"))
+    elif fault == "completeness_two":
+        mutation = text(
+            "UPDATE sourcing_cases SET need_snapshot = jsonb_set("
+            "need_snapshot, '{completeness}', CAST('2' AS jsonb)) "
+            "WHERE tenant_id = :tenant AND case_id = :case"
+        )
+    else:
+        mutation = text(
+            "UPDATE sourcing_cases SET state = 'discovering' "
+            "WHERE tenant_id = :tenant AND case_id = :case"
+        )
+    if mutation is not None:
+        async with integration_engine.begin() as connection:
+            await connection.execute(mutation, parameters)
+
+    with pytest.raises(ValidationError, match=message):
+        await service.enqueue_admission(
+            tenant_id,
+            case_id,
+            need_id,
+            ready_at=NOW - timedelta(minutes=1),
+            command=SourcingAdmissionEnqueueCommand(
+                facts=SourcingPriorityFactsInput(
+                    need_id=need_id,
+                    cluster_id=NeedClusterId(new_id("cluster")),
+                    cluster_member_count=4,
+                    facts_observed_at=NOW - timedelta(minutes=1),
+                )
+            ),
+            actor=system,
+        )
+
+    async with sessions() as session:
+        admission_count = await session.scalar(
+            select(func.count())
+            .select_from(SourcingAdmissionRow)
+            .where(SourcingAdmissionRow.tenant_id == str(tenant_id))
+        )
+        snapshot_count = await session.scalar(
+            select(func.count())
+            .select_from(SourcingPrioritySnapshotRow)
+            .where(SourcingPrioritySnapshotRow.tenant_id == str(tenant_id))
+        )
+    assert admission_count == 0
+    assert snapshot_count == 0
 
 
 async def _seed_candidate_artifact(

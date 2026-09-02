@@ -1161,9 +1161,20 @@ class SourcingServiceImpl:
             )
 
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get(tenant_id, case_id))
-            if case.need_id != need_id or case.workflow_version != 2:
-                raise ValidationError("寻源准入 Case 与 Need 不一致")
+            case = _case_required(
+                await uow.cases.get_for_update(tenant_id, case_id)
+            )
+            if case.workflow_version != 2:
+                raise ValidationError("寻源准入要求 V2 Case")
+            if case.state is not CaseState.OPENED:
+                raise ValidationError("寻源准入要求 Case 仍处于 OPENED")
+            need_snapshot = case.need_snapshot
+            if need_snapshot is None:
+                raise ValidationError("寻源准入 Case 缺少已验证需求快照")
+            if case.need_id != need_id or need_snapshot.need_id != case.need_id:
+                raise ValidationError("寻源准入 Case、Need 与快照不一致")
+            if need_snapshot.completeness < 3:
+                raise ValidationError("寻源准入目标 Need 完整度不足 3")
             canonical, canonical_snapshot, created = (
                 await uow.admissions.get_or_create(tenant_id, admission, snapshot)
             )
