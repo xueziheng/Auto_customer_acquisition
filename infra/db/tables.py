@@ -232,6 +232,10 @@ class DirectiveProposalRow(Base):
             "decided_by IS NOT NULL)",
             name="ck_directive_proposals_decision",
         ),
+        CheckConstraint(
+            "base_directive_version IS NULL OR base_directive_version >= 0",
+            name="ck_directive_proposals_base_version",
+        ),
         Index(
             "ix_directive_proposals_tenant_state_created",
             "tenant_id",
@@ -254,6 +258,7 @@ class DirectiveProposalRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decided_by: Mapped[str | None] = mapped_column(String(40))
+    base_directive_version: Mapped[int | None] = mapped_column(Integer)
 
 
 class DirectiveVersionRow(Base):

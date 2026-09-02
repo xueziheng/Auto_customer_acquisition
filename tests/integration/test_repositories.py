@@ -681,6 +681,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "proposal_id", "raw_text", "parsed_content",
             "interpretation_summary", "expected_behavior_changes", "parsed_by",
             "state", "created_at", "decided_at", "decided_by",
+            "base_directive_version",
         },
         "directive_versions": {
             "tenant_id", "directive_id", "version", "content",
@@ -1142,7 +1143,7 @@ def test_orm_metadata_parity_with_head() -> None:
         "directive_proposals": {
             "pk_directive_proposals", "ck_directive_proposals_state",
             "ck_directive_proposals_jsonb", "ck_directive_proposals_core_nonblank",
-            "ck_directive_proposals_decision",
+            "ck_directive_proposals_decision", "ck_directive_proposals_base_version",
         },
         "directive_versions": {
             "pk_directive_versions", "uq_directive_versions_tenant_version",

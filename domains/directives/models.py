@@ -111,6 +111,15 @@ class HandoffRules:
 
 
 @dataclass(frozen=True)
+class SourcingAdmissionConfig:
+    """老板确认的 Need Cluster 寻源准入完整配置。"""
+
+    mode: str
+    automatic_admission_enabled: bool
+    batch_limit: int
+
+
+@dataclass(frozen=True)
 class DirectiveContent:
     """指令的结构化内容。所有段可选——一条指令通常只动其中几段。"""
 
@@ -123,6 +132,7 @@ class DirectiveContent:
     paused_markets: list[str] = field(default_factory=list)
     monthly_budget_credits: int | None = None
     notes: str | None = None
+    sourcing_admission: SourcingAdmissionConfig | None = None
 
 
 class ProposalState(str, Enum):
@@ -165,6 +175,7 @@ class DirectiveProposal:
     state: ProposalState = ProposalState.PENDING_CONFIRMATION
     decided_at: datetime | None = None
     decided_by: EmployeeId | None = None
+    base_directive_version: int | None = None
 
 
 @dataclass

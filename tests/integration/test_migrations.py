@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0051"
+_ALEMBIC_HEAD = "0052"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -133,6 +133,188 @@ ARTIFACT_TABLES: tuple[str, ...] = ("raw_artifacts", "artifacts")
 
 # 固定注入时钟（closed_at 绑定值；非业务逻辑数字）。
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
+
+
+async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
+    db_url: str,
+) -> None:
+    """0052 保留历史 NULL，冻结非负基线，并拒绝丢失新证据的降级。"""
+    from infra.db.session import create_engine_from
+    from infra.db.tables import DirectiveProposalRow
+
+    tenant = "tn_migration_0052"
+    legacy_id = "dpr_migration_0052_legacy"
+    evidence_id = "dpr_migration_0052_evidence"
+    content = json.dumps(
+        {
+            "objective": "focus_existing_needs",
+            "market_assignments": [],
+            "discovery": None,
+            "demand_discovery": None,
+            "outreach": None,
+            "handoff": None,
+            "paused_markets": [],
+            "monthly_budget_credits": None,
+            "notes": None,
+        }
+    )
+    insert_legacy = text(
+        "INSERT INTO directive_proposals "
+        "(tenant_id,proposal_id,raw_text,parsed_content,interpretation_summary,"
+        "expected_behavior_changes,parsed_by,state,created_at,decided_at,decided_by) "
+        "VALUES (:tenant,:proposal,'Directive',CAST(:content AS jsonb),'Summary',"
+        "'[\"Change\"]'::jsonb,'parser-v1','pending_confirmation',:now,NULL,NULL)"
+    )
+    engine = create_engine_from(db_url)
+    try:
+        _run_alembic(db_url, "downgrade", "0051")
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert_legacy,
+                {
+                    "tenant": tenant,
+                    "proposal": legacy_id,
+                    "content": content,
+                    "now": _NOW,
+                },
+            )
+
+        _run_alembic(db_url, "upgrade", "0052")
+        async with engine.connect() as connection:
+            columns = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_columns("directive_proposals")
+                }
+            )
+            checks = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_check_constraints(
+                        "directive_proposals"
+                    )
+                }
+            )
+            legacy_base = await connection.scalar(
+                text(
+                    "SELECT base_directive_version FROM directive_proposals "
+                    "WHERE tenant_id=:tenant AND proposal_id=:proposal"
+                ),
+                {"tenant": tenant, "proposal": legacy_id},
+            )
+            revision = await connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+        assert revision == _ALEMBIC_HEAD == "0052"
+        assert "base_directive_version" in columns
+        assert "ck_directive_proposals_base_version" in checks
+        assert legacy_base is None
+        assert "base_directive_version" in DirectiveProposalRow.__table__.columns
+        assert any(
+            constraint.name == "ck_directive_proposals_base_version"
+            for constraint in DirectiveProposalRow.__table__.constraints
+        )
+
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO directive_proposals "
+                        "(tenant_id,proposal_id,raw_text,parsed_content,"
+                        "interpretation_summary,expected_behavior_changes,parsed_by,"
+                        "state,created_at,decided_at,decided_by,base_directive_version) "
+                        "VALUES (:tenant,'dpr_migration_0052_invalid','Directive',"
+                        "CAST(:content AS jsonb),'Summary','[\"Change\"]'::jsonb,"
+                        "'parser-v1','pending_confirmation',:now,NULL,NULL,-1)"
+                    ),
+                    {"tenant": tenant, "content": content, "now": _NOW},
+                )
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO directive_proposals "
+                    "(tenant_id,proposal_id,raw_text,parsed_content,"
+                    "interpretation_summary,expected_behavior_changes,parsed_by,"
+                    "state,created_at,decided_at,decided_by,base_directive_version) "
+                    "VALUES (:tenant,:proposal,'Directive',CAST(:content AS jsonb),"
+                    "'Summary','[\"Change\"]'::jsonb,'parser-v1',"
+                    "'pending_confirmation',:now,NULL,NULL,0)"
+                ),
+                {
+                    "tenant": tenant,
+                    "proposal": evidence_id,
+                    "content": content,
+                    "now": _NOW,
+                },
+            )
+        with pytest.raises(DBAPIError):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE directive_proposals SET base_directive_version=1 "
+                        "WHERE tenant_id=:tenant AND proposal_id=:proposal"
+                    ),
+                    {"tenant": tenant, "proposal": evidence_id},
+                )
+
+        with pytest.raises(AssertionError, match="alembic downgrade 0051"):
+            _run_alembic(db_url, "downgrade", "0051")
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0052"
+            )
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE directive_proposals DISABLE TRIGGER "
+                    "trg_directive_proposals_guard"
+                )
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM directive_proposals "
+                    "WHERE tenant_id=:tenant AND proposal_id=:proposal"
+                ),
+                {"tenant": tenant, "proposal": evidence_id},
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE directive_proposals ENABLE TRIGGER "
+                    "trg_directive_proposals_guard"
+                )
+            )
+
+        _run_alembic(db_url, "downgrade", "0051")
+        assert "base_directive_version" not in await _columns(
+            engine, "directive_proposals"
+        )
+        _run_alembic(db_url, "upgrade", "head")
+        assert "base_directive_version" in await _columns(
+            engine, "directive_proposals"
+        )
+    finally:
+        _run_alembic(db_url, "upgrade", "head")
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE directive_proposals DISABLE TRIGGER "
+                    "trg_directive_proposals_guard"
+                )
+            )
+            await connection.execute(
+                text("DELETE FROM directive_proposals WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE directive_proposals ENABLE TRIGGER "
+                    "trg_directive_proposals_guard"
+                )
+            )
+        await engine.dispose()
 
 
 def _run_alembic(db_url: str, *command: str) -> None:

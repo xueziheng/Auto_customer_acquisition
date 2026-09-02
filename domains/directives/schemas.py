@@ -40,6 +40,15 @@ class DemandDiscoveryPlanInput:
 
 
 @dataclass(frozen=True)
+class SourcingAdmissionConfigInput:
+    """提交给指令域的完整寻源准入配置，不承载任何默认授权。"""
+
+    mode: str
+    automatic_admission_enabled: bool
+    batch_limit: int
+
+
+@dataclass(frozen=True)
 class ProposalView:
     """提案视图 —— 老板确认界面的数据源。
 
@@ -57,6 +66,9 @@ class ProposalView:
     decided_at: datetime | None = None
     decided_by_id: str | None = None
     decided_by_name: str | None = None
+    sourcing_admission_mode: str | None = None
+    automatic_sourcing_admission_enabled: bool | None = None
+    sourcing_admission_batch_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -81,3 +93,6 @@ class DirectiveView:
     is_rollback: bool = False
     rollback_of_version: int | None = None
     superseded_at: datetime | None = None
+    sourcing_admission_mode: str | None = None
+    automatic_sourcing_admission_enabled: bool | None = None
+    sourcing_admission_batch_limit: int | None = None

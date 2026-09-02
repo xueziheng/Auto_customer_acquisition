@@ -19,6 +19,7 @@ from domains.directives.models import (
     MarketAssignment,
     OutreachBounds,
     ProposalState,
+    SourcingAdmissionConfig,
 )
 from domains.directives.repository import DirectiveUnitOfWorkFactory
 from domains.directives.schemas import (
@@ -26,6 +27,7 @@ from domains.directives.schemas import (
     DirectiveView,
     DiscoverySearchQueryInput,
     ProposalView,
+    SourcingAdmissionConfigInput,
 )
 from domains.directives.service import DirectiveEmployeeReader
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
@@ -154,6 +156,15 @@ def _validate_content(content: DirectiveContent) -> DirectiveContent:
         raise ValidationError("月度预算积分无效")
     if content.notes is not None:
         _text(content.notes, "指令备注无效", maximum=2_000)
+    sourcing_admission = content.sourcing_admission
+    if sourcing_admission is not None and (
+        not isinstance(sourcing_admission, SourcingAdmissionConfig)
+        or sourcing_admission.mode != "cluster_ranked"
+        or type(sourcing_admission.automatic_admission_enabled) is not bool
+        or type(sourcing_admission.batch_limit) is not int
+        or not 1 <= sourcing_admission.batch_limit <= 50
+    ):
+        raise ValidationError("寻源准入配置无效")
     return content
 
 
@@ -233,6 +244,16 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
         fields["paused_markets"] = ", ".join(content.paused_markets)
     if content.monthly_budget_credits is not None:
         fields["monthly_budget_credits"] = str(content.monthly_budget_credits)
+    if content.sourcing_admission is not None:
+        fields["sourcing_admission_mode"] = content.sourcing_admission.mode
+        fields["automatic_sourcing_admission_enabled"] = (
+            "true"
+            if content.sourcing_admission.automatic_admission_enabled
+            else "false"
+        )
+        fields["sourcing_admission_batch_limit"] = str(
+            content.sourcing_admission.batch_limit
+        )
     return fields
 
 
@@ -361,6 +382,8 @@ class DirectiveServiceImpl:
         self._validate_tenant(tenant_id)
         _text(raw_text, "老板指令原话无效", maximum=10_000)
         _validate_content(parsed)
+        if parsed.sourcing_admission is not None:
+            raise ValidationError("寻源准入配置必须通过寻源准入提案接口提交")
         _text(interpretation_summary, "指令理解摘要无效", maximum=4_000)
         changes = _strings(
             expected_behavior_changes,
@@ -434,6 +457,65 @@ class DirectiveServiceImpl:
             parsed_by,
         )
 
+    async def submit_sourcing_admission_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        config: SourcingAdmissionConfigInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+    ) -> str:
+        self._validate_tenant(tenant_id)
+        _text(raw_text, "老板指令原话无效", maximum=10_000)
+        if not isinstance(config, SourcingAdmissionConfigInput):
+            raise ValidationError("寻源准入提案输入无效")
+        admission = SourcingAdmissionConfig(
+            mode=config.mode,
+            automatic_admission_enabled=config.automatic_admission_enabled,
+            batch_limit=config.batch_limit,
+        )
+        if (
+            admission.mode != "cluster_ranked"
+            or type(admission.automatic_admission_enabled) is not bool
+            or type(admission.batch_limit) is not int
+            or not 1 <= admission.batch_limit <= 50
+        ):
+            raise ValidationError("寻源准入配置无效")
+        _text(interpretation_summary, "指令理解摘要无效", maximum=4_000)
+        changes = _strings(
+            expected_behavior_changes,
+            "指令预计行为变化不能为空",
+            maximum_items=50,
+            maximum_length=1_000,
+            allow_empty=False,
+        )
+        _text(parsed_by, "指令解析器版本无效", maximum=128)
+        now = _utc(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            active = await uow.directives.get_active(tenant_id)
+            base_content = (
+                DirectiveContent(objective=DirectiveObjective.FOCUS_EXISTING_NEEDS)
+                if active is None
+                else active.content
+            )
+            parsed = _validate_content(
+                replace(base_content, sourcing_admission=admission)
+            )
+            proposal = DirectiveProposal(
+                proposal_id=new_id("dpr"),
+                tenant_id=tenant_id,
+                raw_text=raw_text,
+                parsed=parsed,
+                interpretation_summary=interpretation_summary,
+                expected_behavior_changes=changes,
+                parsed_by=parsed_by,
+                created_at=now,
+                base_directive_version=0 if active is None else active.version,
+            )
+            await uow.proposals.add(proposal)
+        return proposal.proposal_id
+
     async def confirm_proposal(
         self,
         tenant_id: TenantId,
@@ -463,6 +545,12 @@ class DirectiveServiceImpl:
             else:
                 version = await uow.directives.next_version(tenant_id)
                 active = await uow.directives.get_active_for_update(tenant_id)
+                if proposal.parsed.sourcing_admission is not None:
+                    current_version = 0 if active is None else active.version
+                    if proposal.base_directive_version != current_version:
+                        raise InvalidStateTransition(
+                            "寻源准入提案基线已陈旧，必须基于当前指令重新提交"
+                        )
                 if active is not None:
                     await uow.directives.mark_superseded(
                         tenant_id, active.directive_id
@@ -621,6 +709,21 @@ class DirectiveServiceImpl:
                 if proposal.decided_by is None
                 else names[proposal.decided_by]
             ),
+            sourcing_admission_mode=(
+                None
+                if proposal.parsed.sourcing_admission is None
+                else proposal.parsed.sourcing_admission.mode
+            ),
+            automatic_sourcing_admission_enabled=(
+                None
+                if proposal.parsed.sourcing_admission is None
+                else proposal.parsed.sourcing_admission.automatic_admission_enabled
+            ),
+            sourcing_admission_batch_limit=(
+                None
+                if proposal.parsed.sourcing_admission is None
+                else proposal.parsed.sourcing_admission.batch_limit
+            ),
         )
 
     async def get_confirmed_discovery_plan(
@@ -736,6 +839,7 @@ class DirectiveServiceImpl:
         discovery = content.discovery
         outreach = content.outreach
         handoff = content.handoff
+        sourcing_admission = content.sourcing_admission
         return DirectiveView(
             directive_id=str(directive.directive_id),
             source_proposal_id=directive.source_proposal_id,
@@ -770,6 +874,19 @@ class DirectiveServiceImpl:
             is_rollback=directive.rollback_of is not None,
             rollback_of_version=directive.rollback_of,
             superseded_at=directive.superseded_at,
+            sourcing_admission_mode=(
+                None if sourcing_admission is None else sourcing_admission.mode
+            ),
+            automatic_sourcing_admission_enabled=(
+                None
+                if sourcing_admission is None
+                else sourcing_admission.automatic_admission_enabled
+            ),
+            sourcing_admission_batch_limit=(
+                None
+                if sourcing_admission is None
+                else sourcing_admission.batch_limit
+            ),
         )
 
 

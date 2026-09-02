@@ -73,3 +73,11 @@ Directive 新版本生效（DirectiveActivated 事件广播）
 execution_mode 缺省永久解释为 outreach_preparation；research_only 只在显式确认后
 执行三条研究线路，不需要 Campaign/role/assessment。查询携带 discovery_lane；预算、
 目标与排除项不能猜补。研究计划不得被解释成触达、邮箱验证、发送或报价授权。
+
+## Phase 2 寻源准入策略
+
+Need Cluster 寻源准入配置是完整 Directive 的可选段，不是局部补丁。新提案必须复制当前
+生效 Directive 的全部内容、只替换 `sourcing_admission`，并记录当前版本作为乐观基线；
+确认时基线陈旧必须拒绝，不能覆盖之后生效的市场、探索、触达、handoff 或预算配置。
+历史提案的空基线保留旧语义，历史 Directive 缺少该段一律解释为未配置；未配置、关闭或
+读取未知都不授权启动寻源 Workflow。

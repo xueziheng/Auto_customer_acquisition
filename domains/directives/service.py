@@ -9,6 +9,7 @@ from domains.directives.schemas import (
     DemandDiscoveryPlanInput,
     DirectiveView,
     ProposalView,
+    SourcingAdmissionConfigInput,
 )
 from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId
 
@@ -51,6 +52,18 @@ class DirectiveService(Protocol):
         parsed_by: str,
     ) -> str:
         """提交需求探索提案；域内转换为不可变指令内容并二次校验。"""
+        ...
+
+    async def submit_sourcing_admission_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        config: SourcingAdmissionConfigInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+    ) -> str:
+        """基于当前完整指令提交寻源准入配置，并记录乐观基线版本。"""
         ...
 
     async def confirm_proposal(

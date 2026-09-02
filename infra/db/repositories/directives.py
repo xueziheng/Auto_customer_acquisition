@@ -25,6 +25,7 @@ from domains.directives.models import (
     MarketAssignment,
     OutreachBounds,
     ProposalState,
+    SourcingAdmissionConfig,
 )
 from domains.directives.repository import DirectiveRepository, ProposalRepository
 from infra.db.tables import BossDirectiveRow, DirectiveProposalRow, DirectiveVersionRow
@@ -129,6 +130,17 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
         "paused_markets": list(content.paused_markets),
         "monthly_budget_credits": content.monthly_budget_credits,
         "notes": content.notes,
+        "sourcing_admission": (
+            None
+            if content.sourcing_admission is None
+            else {
+                "mode": content.sourcing_admission.mode,
+                "automatic_admission_enabled": (
+                    content.sourcing_admission.automatic_admission_enabled
+                ),
+                "batch_limit": content.sourcing_admission.batch_limit,
+            }
+        ),
     }
 
 
@@ -157,7 +169,7 @@ def _content_from_json(value: object) -> DirectiveContent:
         "monthly_budget_credits",
         "notes",
     }
-    if set(data) != expected:
+    if set(data) not in (expected, expected | {"sourcing_admission"}):
         raise ValidationError("指令持久化字段集合无效")
     assignments_raw = data["market_assignments"]
     if not isinstance(assignments_raw, list):
@@ -331,6 +343,31 @@ def _content_from_json(value: object) -> DirectiveContent:
         raise ValidationError("指令预算持久化字段无效")
     if notes is not None and not isinstance(notes, str):
         raise ValidationError("指令备注持久化字段无效")
+    sourcing_admission = None
+    sourcing_raw = data.get("sourcing_admission")
+    if sourcing_raw is not None:
+        item = _mapping(sourcing_raw, "sourcing_admission")
+        if set(item) != {
+            "mode",
+            "automatic_admission_enabled",
+            "batch_limit",
+        }:
+            raise ValidationError("指令寻源准入持久化字段无效")
+        mode = item["mode"]
+        enabled = item["automatic_admission_enabled"]
+        batch_limit = item["batch_limit"]
+        if (
+            mode != "cluster_ranked"
+            or type(enabled) is not bool
+            or type(batch_limit) is not int
+            or not 1 <= batch_limit <= 50
+        ):
+            raise ValidationError("指令寻源准入持久化字段无效")
+        sourcing_admission = SourcingAdmissionConfig(
+            mode=cast(str, mode),
+            automatic_admission_enabled=cast(bool, enabled),
+            batch_limit=cast(int, batch_limit),
+        )
     objective = data["objective"]
     if not isinstance(objective, str):
         raise ValidationError("指令目标持久化字段无效")
@@ -345,6 +382,7 @@ def _content_from_json(value: object) -> DirectiveContent:
             paused_markets=_string_list(data["paused_markets"], "paused_markets"),
             monthly_budget_credits=budget,
             notes=notes,
+            sourcing_admission=sourcing_admission,
         )
     except ValueError as exc:
         raise ValidationError("指令目标持久化字段无效") from exc
@@ -368,6 +406,7 @@ def _row_to_proposal(row: DirectiveProposalRow) -> DirectiveProposal:
         state=state,
         decided_at=row.decided_at,
         decided_by=EmployeeId(row.decided_by) if row.decided_by is not None else None,
+        base_directive_version=row.base_directive_version,
     )
 
 
@@ -405,6 +444,7 @@ class ProposalRepositoryImpl(_TenantBound, ProposalRepository):
                     if proposal.decided_by is not None
                     else None
                 ),
+                base_directive_version=proposal.base_directive_version,
             )
         )
         await self._session.flush()
