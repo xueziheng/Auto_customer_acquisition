@@ -157,6 +157,31 @@ function displayWait(seconds: number): string {
   return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
 }
 
+function safeWait(seconds: number): string {
+  return Number.isFinite(seconds) && seconds >= 0 ? displayWait(seconds) : "未知";
+}
+
+function elapsedSeconds(start: string | null | undefined, end: string | null | undefined): number | null {
+  if (!start || !end) return null;
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) return null;
+  return Math.floor((endTime - startTime) / 1000);
+}
+
+const admissionTiming = computed(() => {
+  const admission = admissionDetail.value?.admission;
+  if (!admission) return { label: "自就绪起", value: "未知" };
+  if (admission.state === "admitted") {
+    const seconds = elapsedSeconds(admission.ready_at, admission.admitted_at);
+    return { label: "准入等待用时", value: seconds === null ? "未知" : safeWait(seconds) };
+  }
+  return {
+    label: admission.state === "waiting" ? "当前已等待" : "自就绪起",
+    value: safeWait(admission.waiting_duration_seconds),
+  };
+});
+
 function policyLabel(status: AdmissionDetail["policy"]["status"]): string {
   return ({
     automatic_admission_disabled: "自动准入已关闭",
@@ -501,6 +526,21 @@ onMounted(() => void loadEntry());
         </div>
       </section>
 
+      <section class="detail-panel admission-timing">
+        <header>
+          <div>
+            <p class="card-kicker">
+              ADMISSION STATE &amp; TIME
+            </p><h2>准入状态与时间</h2>
+          </div>
+        </header>
+        <dl class="snapshot-grid">
+          <div><dt>状态</dt><dd>{{ admissionDetail.admission.state }}</dd></div>
+          <div><dt>Case 就绪时间</dt><dd>{{ displayTime(admissionDetail.admission.ready_at) }}</dd></div>
+          <div><dt>{{ admissionTiming.label }}</dt><dd>{{ admissionTiming.value }}</dd></div>
+        </dl>
+      </section>
+
       <section
         class="detail-panel immutable-snapshot"
         aria-labelledby="snapshot-title"
@@ -519,8 +559,6 @@ onMounted(() => void loadEntry());
           <div><dt>Snapshot</dt><dd>{{ admissionDetail.admission.snapshot_id ?? "无" }}</dd></div>
           <div><dt>需求簇</dt><dd>{{ admissionDetail.admission.cluster_id ?? "尚未归簇" }}</dd></div>
           <div><dt>成员数</dt><dd>{{ admissionDetail.admission.cluster_member_count ? `${admissionDetail.admission.cluster_member_count} 条已验证需求` : "未知" }}</dd></div>
-          <div><dt>Case 就绪时间</dt><dd>{{ displayTime(admissionDetail.admission.ready_at) }}</dd></div>
-          <div><dt>已等待</dt><dd>{{ displayWait(admissionDetail.admission.waiting_duration_seconds) }}</dd></div>
           <div><dt>事实观测时间</dt><dd>{{ displayTime(admissionDetail.admission.facts_observed_at) }}</dd></div>
         </dl>
         <p class="snapshot-explanation">

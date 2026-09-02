@@ -31,7 +31,11 @@ const policyLabel = computed(() => ({
   policy_not_configured: "自动准入未配置",
   policy_status_unknown: "自动准入策略状态未知",
 }[policy.value.status]));
-const representedCases = computed(() => new Set(activeAdmissions.value.map((item) => item.case_id)));
+const representedCases = computed(() => new Set([
+  ...waitingAdmissions.value,
+  ...blockedAdmissions.value,
+  ...activeAdmissions.value,
+].map((item) => item.case_id)));
 const historicalCases = computed(() => cases.value.filter((item) => !representedCases.value.has(item.case_id)));
 
 function formatTime(value: string | null | undefined): string {
@@ -46,6 +50,20 @@ function formatWait(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
   return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
+}
+
+function admittedWait(item: Admission): string {
+  if (!item.admitted_at) return "未知";
+  const readyAt = Date.parse(item.ready_at);
+  const admittedAt = Date.parse(item.admitted_at);
+  if (!Number.isFinite(readyAt) || !Number.isFinite(admittedAt) || admittedAt < readyAt) return "未知";
+  return formatWait(Math.floor((admittedAt - readyAt) / 1000));
+}
+
+function activeTiming(item: Admission): string {
+  return item.state === "admitted"
+    ? `准入等待用时 ${admittedWait(item)}`
+    : `自就绪起 ${formatWait(item.waiting_duration_seconds)}`;
 }
 
 function clusterLabel(item: Admission): string {
@@ -238,7 +256,7 @@ onMounted(() => void loadAll());
           </div>
           <dl>
             <div><dt>需求簇</dt><dd>{{ clusterLabel(item) }}</dd></div>
-            <div><dt>就绪 / 已等待</dt><dd>{{ formatTime(item.ready_at) }} · {{ formatWait(item.waiting_duration_seconds) }}</dd></div>
+            <div><dt>就绪 / 等待</dt><dd>{{ formatTime(item.ready_at) }} · 当前已等待 {{ formatWait(item.waiting_duration_seconds) }}</dd></div>
             <div><dt>排序版本</dt><dd>{{ item.ranking_version ?? "无有效快照" }}</dd></div>
           </dl>
           <p class="explanation">
@@ -268,7 +286,7 @@ onMounted(() => void loadAll());
           </div>
           <dl>
             <div><dt>状态</dt><dd>已阻断 · {{ blockedLabel(item) }}</dd></div>
-            <div><dt>就绪 / 已等待</dt><dd>{{ formatTime(item.ready_at) }} · {{ formatWait(item.waiting_duration_seconds) }}</dd></div>
+            <div><dt>就绪 / 时长</dt><dd>{{ formatTime(item.ready_at) }} · 自就绪起 {{ formatWait(item.waiting_duration_seconds) }}</dd></div>
             <div><dt>排序版本</dt><dd>{{ item.ranking_version ?? "无有效快照" }}</dd></div>
           </dl>
           <p class="explanation">
@@ -297,16 +315,29 @@ onMounted(() => void loadAll());
         >
           当前没有处理中的寻源 Case
         </p>
-        <RouterLink
+        <article
           v-for="item in activeAdmissions"
           :key="item.admission_id"
           class="case-row"
-          :to="`/sourcing/${item.admission_id}`"
         >
           <span><strong>{{ item.case_id }}</strong><small>Need {{ item.need_id }}</small></span>
           <span>{{ item.state === "starting" ? "启动绑定中" : "已准入" }}</span>
-          <span>{{ item.admitted_at ? `${formatTime(item.admitted_at)} · ${item.admitted_by}` : item.explanation }}</span>
-        </RouterLink>
+          <span>
+            {{ formatTime(item.ready_at) }} · {{ activeTiming(item) }}
+            <small>{{ item.state === "starting" ? item.explanation : `${formatTime(item.admitted_at)} · ${item.admitted_by ?? "未知"}` }}</small>
+          </span>
+          <nav
+            class="case-actions"
+            :aria-label="`${item.case_id} 入口`"
+          >
+            <RouterLink :to="`/sourcing/${item.admission_id}`">
+              准入审计详情
+            </RouterLink>
+            <RouterLink :to="`/sourcing/${item.case_id}`">
+              Case 工作台
+            </RouterLink>
+          </nav>
+        </article>
         <RouterLink
           v-for="item in historicalCases"
           :key="item.case_id"
@@ -373,6 +404,7 @@ onMounted(() => void loadAll());
 .explanation { color: var(--text-secondary); }.blocked-row { border-color: var(--danger); background: var(--danger-soft); }
 .case-row { display: flex; justify-content: space-between; gap: var(--space3); align-items: center; padding: var(--space3) var(--space4); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); text-decoration: none; background: var(--surface); }
 .case-row:hover { border-color: var(--action); }.case-row span { display: grid; gap: 2px; }.case-row small { color: var(--text-secondary); }
+.case-actions { display: flex; flex-wrap: wrap; gap: var(--space2); }.case-actions a { color: var(--action); white-space: nowrap; }
 .empty { padding: var(--space5); color: var(--text-secondary); text-align: center; }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: var(--space4); background: rgba(16, 35, 35, .42); }
 .manual-dialog { width: min(480px, 100%); display: grid; gap: var(--space3); padding: var(--space5); border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 16px 48px rgba(16, 35, 35, .2); }

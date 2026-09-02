@@ -9,11 +9,14 @@ import type { components } from "../src/api/api";
 const caseId = "src_01K39P9M5D6K4A91YEQ80EJZ0X";
 type Admission = components["schemas"]["SourcingAdmissionReadView"];
 type AdmissionPolicy = components["schemas"]["SourcingAdmissionPolicyView"];
+type SourcingCase = components["schemas"]["SourcingCaseReadView"];
 
 const waitingEightId = "sad_01K39P9M5D6K4A91YEQ80EJZ0A";
 const waitingOneId = "sad_01K39P9M5D6K4A91YEQ80EJZ0B";
 const blockedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0C";
 const admittedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0D";
+const startingId = "sad_01K39P9M5D6K4A91YEQ80EJZ0E";
+const legacyCaseId = "src_01K39P9M5D6K4A91YEQ80EJZ0F";
 
 const enabledPolicy: AdmissionPolicy = {
   automatic_admission_enabled: true,
@@ -49,6 +52,22 @@ function admissionFixture(
   };
 }
 
+function openedCase(caseId: string): SourcingCase {
+  return {
+    active_search_plan_id: null,
+    case_id: caseId,
+    ladder_checked_to: null,
+    need_id: `vnd_${caseId.slice(4)}`,
+    need_snapshot: null,
+    opened_at: "2026-09-02T08:00:00Z",
+    state: "opened",
+    state_changed_at: null,
+    stop: null,
+    version: 1,
+    workflow_version: 1,
+  };
+}
+
 function admissionCenterFetch(options: {
   manualKeys?: string[];
   manualStatus?: number;
@@ -66,9 +85,17 @@ function admissionCenterFetch(options: {
   const byState: Record<string, Admission[]> = {
     admitted: [admissionFixture(admittedId, "admitted")],
     blocked: [admissionFixture(blockedId, "blocked")],
-    starting: [],
+    starting: [admissionFixture(startingId, "starting")],
     waiting,
   };
+  const openCases = [
+    openedCase(admissionFixture(waitingEightId, "waiting").case_id),
+    openedCase(legacyCaseId),
+    openedCase(admissionFixture(blockedId, "blocked").case_id),
+    openedCase(admissionFixture(startingId, "starting").case_id),
+    openedCase(admissionFixture(admittedId, "admitted").case_id),
+    openedCase(admissionFixture(waitingOneId, "waiting").case_id),
+  ];
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = input as Request;
     const url = new URL(request.url);
@@ -76,7 +103,7 @@ function admissionCenterFetch(options: {
     if (request.method === "GET" && url.pathname === "/sourcing-admissions") {
       return jsonResponse({ items: byState[url.searchParams.get("state") ?? "waiting"], policy: enabledPolicy });
     }
-    if (request.method === "GET" && url.pathname === "/sourcing-cases") return jsonResponse([]);
+    if (request.method === "GET" && url.pathname === "/sourcing-cases") return jsonResponse(openCases);
     if (request.method === "POST" && url.pathname === `/sourcing-admissions/${waitingOneId}/admit`) {
       const key = request.headers.get("Idempotency-Key");
       if (key) options.manualKeys?.push(key);
@@ -814,7 +841,43 @@ describe("Sourcing admission queue", () => {
       waitingEightId,
       blockedId,
     ]);
+    const representedCaseIds = [waitingOneId, waitingEightId, blockedId, startingId, admittedId]
+      .map((id) => admissionFixture(id, id === blockedId ? "blocked" : id === admittedId ? "admitted" : id === startingId ? "starting" : "waiting").case_id);
+    for (const representedCaseId of representedCaseIds) {
+      const rows = [...root.querySelectorAll<HTMLElement>("article, .case-row")]
+        .filter((row) => row.textContent?.includes(representedCaseId));
+      expect(rows, representedCaseId).toHaveLength(1);
+    }
+    const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] .case-row')];
+    expect(processingRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining(admissionFixture(startingId, "starting").case_id),
+      expect.stringContaining(admissionFixture(admittedId, "admitted").case_id),
+      expect.stringContaining(legacyCaseId),
+    ]);
+    expect(processingRows[0]?.textContent).toContain("自就绪起 1 小时");
+    expect(processingRows[0]?.textContent).toContain("该需求尚未归入多成员需求簇");
+    expect(processingRows[1]?.textContent).toContain("准入等待用时 1 小时 5 分钟");
+    expect(processingRows[1]?.textContent).toContain("emp_sourcing");
+    expect(processingRows[1]?.textContent).toContain("2026-09-02 09:05:00 UTC");
+    const blockedRow = root.querySelector<HTMLElement>(`[data-admission-id="${blockedId}"]`);
+    expect(blockedRow?.textContent).toContain("自就绪起 1 小时");
     expect(root.textContent).toContain("一个 Need 对应一个 Case；需求簇不是合并订单");
+  });
+
+  it("offers separate admission audit and Case workspace links for active admissions", async () => {
+    const root = await mount("/sourcing", admissionCenterFetch());
+    await eventually(() => expect(root.textContent).toContain("处理中"));
+
+    for (const [id, state] of [[startingId, "starting"], [admittedId, "admitted"]] as const) {
+      const item = admissionFixture(id, state);
+      const row = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] .case-row')]
+        .find((candidate) => candidate.textContent?.includes(item.case_id));
+      expect(row).toBeDefined();
+      expect(row?.textContent).toContain("准入审计详情");
+      expect(row?.textContent).toContain("Case 工作台");
+      expect([...row!.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.getAttribute("href")))
+        .toEqual([`/sourcing/${id}`, `/sourcing/${item.case_id}`]);
+    }
   });
 
   it("disables only the selected row while manual admission is pending", async () => {
