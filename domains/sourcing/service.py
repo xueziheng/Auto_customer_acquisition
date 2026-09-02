@@ -165,7 +165,12 @@ class SourcingService(Protocol):
         facts: SourcingPriorityFactsInput,
         actor: SourcingActor,
     ) -> SourcingAdmissionId:
-        """原子创建或读取一个 admission 与首个 current priority snapshot，避免循环持久化。"""
+        """原子创建或读取 admission 与首个 current priority snapshot。
+
+        Priority facts 永久无效时，实现可创建没有首快照的
+        ``priority_facts_invalid`` blocked admission；其余状态必须与首快照同事务
+        canonical 化，避免 admission/snapshot 初始持久化循环。
+        """
         ...
 
     async def refresh_admission(
@@ -177,7 +182,11 @@ class SourcingService(Protocol):
         refreshed_at: datetime,
         actor: SourcingActor,
     ) -> SourcingPrioritySnapshotId | None:
-        """同事务追加/去重快照并推进 current pointer；仅 invalid-facts blocked 可自动恢复。"""
+        """同事务追加/去重快照并推进 current pointer。
+
+        首次有效快照也必须推进空 pointer；仅 ``priority_facts_invalid`` blocked
+        可随有效快照恢复 waiting，``case_state_mismatch`` 不得因排序事实自动恢复。
+        """
         ...
 
     async def claim_admissions(

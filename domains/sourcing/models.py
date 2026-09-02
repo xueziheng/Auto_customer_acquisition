@@ -13,7 +13,7 @@ from hashlib import sha256
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from domains.sourcing.admission import canonical_priority_facts_hash
+from domains.sourcing._admission_facts import canonical_priority_facts_hash
 from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
 from domains.sourcing.schemas import (
     IndicativePriceTier,
@@ -1004,6 +1004,10 @@ class SourcingPrioritySnapshot:
             raise ValidationError("facts_hash 必须是小写 SHA-256")
         for field_name in ("ready_at", "facts_observed_at", "created_at"):
             _require_utc_time(getattr(self, field_name), field_name)
+        if self.ready_at > self.created_at:
+            raise ValidationError("ready_at 不得晚于 created_at")
+        if self.facts_observed_at > self.created_at:
+            raise ValidationError("facts_observed_at 不得晚于 created_at")
         if self.facts_hash != canonical_priority_facts_hash(
             need_id=self.need_id,
             cluster_id=self.cluster_id,
@@ -1021,6 +1025,8 @@ class SourcingAdmission:
 
     Case 业务状态继续由 ``SourcingCase`` 管理；本实体只表达自动流程是否获准
     启动。所有状态事实被冻结在返回的新对象中，调用方必须经 Repository 持久化。
+    ``waiting`` 必须指向排序快照；无快照的 ``blocked`` 仅表示排序事实永久无效，
+    因此 ``case_state_mismatch`` 必须保留它所核对的既有快照。
     """
 
     tenant_id: TenantId
@@ -1046,6 +1052,8 @@ class SourcingAdmission:
             _require_nonempty_identifier(self.current_snapshot_id, "current_snapshot_id")
         for field_name in ("ready_at", "created_at", "updated_at"):
             _require_utc_time(getattr(self, field_name), field_name)
+        if self.ready_at > self.created_at:
+            raise ValidationError("ready_at 不得晚于 created_at")
         if self.updated_at < self.created_at:
             raise ValidationError("updated_at 不得早于 created_at")
         if not isinstance(self.state, AdmissionState):
@@ -1090,6 +1098,7 @@ class SourcingAdmission:
                 and self.workflow_run_id is not None
                 and self.admitted_at is not None
                 and self.admitted_by is not None
+                and self.admitted_at == self.updated_at
                 and self.blocked_reason is None
             )
         else:
@@ -1097,6 +1106,11 @@ class SourcingAdmission:
                 not claim_present
                 and not admitted_present
                 and isinstance(self.blocked_reason, AdmissionBlockedReason)
+                and (
+                    self.current_snapshot_id is not None
+                    or self.blocked_reason
+                    is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+                )
             )
         if not valid:
             raise ValidationError("准入状态与字段组合不一致")

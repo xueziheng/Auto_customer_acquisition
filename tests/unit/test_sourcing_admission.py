@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
+import domains.sourcing.admission as admission_api
 from domains.sourcing.admission import (
     ADMISSION_RANKING_VERSION,
     AdmissionBlockedReason,
@@ -76,6 +77,7 @@ def _snapshot(
 
 def _admission(
     *, state: AdmissionState = AdmissionState.WAITING,
+    ready_at: datetime = READY_AT,
     current_snapshot_id: SourcingPrioritySnapshotId | None = CURRENT_SNAPSHOT_ID,
     claim_token: str | None = None,
     claim_expires_at: datetime | None = None,
@@ -83,6 +85,8 @@ def _admission(
     blocked_reason: AdmissionBlockedReason | None = None,
     admitted_at: datetime | None = None,
     admitted_by: str | None = None,
+    created_at: datetime = NOW,
+    updated_at: datetime = NOW,
 ) -> SourcingAdmission:
     return SourcingAdmission(
         tenant_id=TENANT,
@@ -90,7 +94,7 @@ def _admission(
         case_id=SourcingCaseId("case-need-8"),
         need_id=NEED_ID,
         state=state,
-        ready_at=READY_AT,
+        ready_at=ready_at,
         current_snapshot_id=current_snapshot_id,
         claim_token=claim_token,
         claim_expires_at=claim_expires_at,
@@ -98,8 +102,8 @@ def _admission(
         blocked_reason=blocked_reason,
         admitted_at=admitted_at,
         admitted_by=admitted_by,
-        created_at=NOW,
-        updated_at=NOW,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -107,6 +111,21 @@ def test_priority_key_is_exact_cluster_count_then_utc_wait_then_need_id() -> Non
     snapshot = _snapshot()
 
     assert priority_sort_key(snapshot) == (-8, READY_AT, str(NEED_ID))
+
+
+def test_admission_module_has_static_public_exports() -> None:
+    assert {
+        "ADMISSION_RANKING_VERSION",
+        "AdmissionBlockedReason",
+        "AdmissionState",
+        "SourcingAdmission",
+        "SourcingPrioritySnapshot",
+        "canonical_priority_facts_hash",
+        "priority_explanation",
+        "priority_facts_payload",
+        "priority_sort_key",
+    }.issubset(admission_api.__all__)
+    assert admission_api.AdmissionState.WAITING is AdmissionState.WAITING
 
 
 def test_priority_order_is_stable_for_clustered_and_unclustered_needs() -> None:
@@ -165,6 +184,78 @@ def test_priority_snapshot_never_contains_quantity_or_other_aggregated_trade_fie
     assert "country" not in names
     assert "specification" not in names
     assert "provenance" not in names
+
+
+@pytest.mark.parametrize(
+    ("ready_at", "facts_observed_at"),
+    (
+        (NOW + timedelta(seconds=1), NOW),
+        (READY_AT, NOW + timedelta(seconds=1)),
+    ),
+)
+def test_priority_snapshot_hydration_times_must_not_follow_creation(
+    ready_at: datetime, facts_observed_at: datetime
+) -> None:
+    with pytest.raises(ValidationError):
+        _snapshot(
+            ready_at=ready_at,
+            facts_observed_at=facts_observed_at,
+            created_at=NOW,
+        )
+
+
+def test_admission_hydration_times_and_admitted_timestamp_are_ordered() -> None:
+    with pytest.raises(ValidationError):
+        _admission(ready_at=NOW + timedelta(seconds=1))
+    with pytest.raises(ValidationError):
+        _admission(
+            state=AdmissionState.ADMITTED,
+            workflow_run_id=RunId("run-1"),
+            admitted_by="system:sourcing",
+            admitted_at=NOW + timedelta(seconds=1),
+        )
+
+
+def test_priority_invalid_block_can_start_without_snapshot_and_refresh_recovers() -> None:
+    blocked = _admission(
+        state=AdmissionState.BLOCKED,
+        current_snapshot_id=None,
+        blocked_reason=AdmissionBlockedReason.PRIORITY_FACTS_INVALID,
+    )
+    with pytest.raises(ValidationError):
+        blocked.retry(retried_at=NOW)
+    refreshed = blocked.with_current_snapshot(
+        _snapshot(
+            facts_observed_at=NOW + timedelta(minutes=1),
+            created_at=NOW + timedelta(minutes=1),
+        )
+    )
+
+    assert refreshed.state is AdmissionState.WAITING
+    assert refreshed.current_snapshot_id == CURRENT_SNAPSHOT_ID
+    assert refreshed.updated_at == NOW + timedelta(minutes=1)
+
+
+def test_case_state_mismatch_block_requires_existing_snapshot_and_does_not_auto_recover() -> None:
+    with pytest.raises(ValidationError):
+        _admission(
+            state=AdmissionState.BLOCKED,
+            current_snapshot_id=None,
+            blocked_reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        )
+
+    blocked = _admission(
+        state=AdmissionState.BLOCKED,
+        blocked_reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+    )
+    refreshed = blocked.with_current_snapshot(
+        _snapshot(
+            facts_observed_at=NOW + timedelta(minutes=1),
+            created_at=NOW + timedelta(minutes=1),
+        )
+    )
+    assert refreshed.state is AdmissionState.BLOCKED
+    assert refreshed.blocked_reason is AdmissionBlockedReason.CASE_STATE_MISMATCH
 
 
 @pytest.mark.parametrize(
@@ -276,7 +367,12 @@ def test_admission_transitions_and_snapshot_refresh_never_move_time_backwards() 
             "claim-1", workflow_run_id=RunId("run-1"), admitted_by="system:sourcing", admitted_at=NOW - timedelta(seconds=1)
         )
     with pytest.raises(ValidationError, match="updated_at"):
-        _admission().with_current_snapshot(_snapshot(created_at=NOW - timedelta(seconds=1)))
+        _admission().with_current_snapshot(
+            _snapshot(
+                facts_observed_at=NOW - timedelta(seconds=1),
+                created_at=NOW - timedelta(seconds=1),
+            )
+        )
     with pytest.raises(ValidationError, match="ready_at"):
         _admission().with_current_snapshot(_snapshot(ready_at=READY_AT + timedelta(seconds=1)))
 
@@ -326,6 +422,17 @@ def test_safe_view_requires_all_snapshot_facts_and_fixed_explanation() -> None:
     }
 
     assert SourcingAdmissionReadView(**values).snapshot_id == snapshot.snapshot_id
+    for state in ("starting", "admitted", "blocked"):
+        state_values = values | {
+            "state": state,
+            "blocked_reason": (
+                "case_state_mismatch" if state == "blocked" else None
+            ),
+            "admitted_at": NOW if state == "admitted" else None,
+            "admitted_by": "system:sourcing" if state == "admitted" else None,
+        }
+        with pytest.raises(PydanticValidationError):
+            SourcingAdmissionReadView(**state_values)
     with pytest.raises(PydanticValidationError):
         SourcingAdmissionReadView(**(values | {"explanation": "任意文字"}))
     with pytest.raises(PydanticValidationError):
@@ -339,6 +446,7 @@ def test_safe_view_requires_all_snapshot_facts_and_fixed_explanation() -> None:
         "ranking_version": None,
         "explanation": None,
         "waiting_duration_seconds": None,
+        "can_current_user_manual_start": False,
     }
     with pytest.raises(PydanticValidationError):
         SourcingAdmissionReadView(**no_snapshot)

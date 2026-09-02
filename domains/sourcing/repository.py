@@ -110,9 +110,14 @@ class SourcingAdmissionRepository(Protocol):
         self,
         tenant_id: TenantId,
         admission: SourcingAdmission,
-        initial_snapshot: SourcingPrioritySnapshot,
-    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
-        """原子写入 admission 与首快照并绑定 current pointer，或返回既有 canonical 二元组。"""
+        initial_snapshot: SourcingPrioritySnapshot | None,
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot | None, bool]:
+        """原子写入 admission 与可选首快照并绑定 current pointer。
+
+        无快照仅允许 ``priority_facts_invalid`` blocked admission；其他状态必须
+        随首快照一同 canonical 化。实现返回既有记录时也必须返回其 current snapshot
+        （无快照的固定阻断记录则返回 ``None``）。
+        """
         ...
 
     async def get(
@@ -124,7 +129,7 @@ class SourcingAdmissionRepository(Protocol):
     async def append_snapshot_if_changed(
         self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
     ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
-        """同事务按 facts_hash 去重追加、推进 current pointer 并返回更新后的 admission。"""
+        """同事务按 facts_hash 去重追加、推进（含空）current pointer 并返回更新后的 admission。"""
         ...
 
     async def claim_ordered(

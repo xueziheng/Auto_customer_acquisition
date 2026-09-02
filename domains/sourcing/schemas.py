@@ -18,7 +18,6 @@ from pydantic import (
     model_validator,
 )
 
-from domains.sourcing.admission import priority_explanation
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -936,6 +935,8 @@ class SourcingAdmissionReadView(BaseModel):
                 raise ValueError("ready_at 必须是 UTC 时间")
             if self.facts_observed_at.utcoffset() != timedelta(0):
                 raise ValueError("facts_observed_at 必须是 UTC 时间")
+            from domains.sourcing.admission import priority_explanation
+
             expected_explanation = priority_explanation(
                 SimpleNamespace(
                     cluster_id=self.cluster_id,
@@ -958,6 +959,8 @@ class SourcingAdmissionReadView(BaseModel):
                 raise ValueError("admitted 准入必须提供准入时间和执行者")
         elif self.admitted_at is not None or self.admitted_by is not None:
             raise ValueError("非 admitted 准入不得提供准入事实")
+        if self.can_current_user_manual_start and self.state != "waiting":
+            raise ValueError("仅 waiting 准入可允许当前用户人工启动")
         return self
 
 
