@@ -2651,6 +2651,16 @@ class WorkflowRunRow(Base):
         Index(
             "ix_workflow_runs_tenant_status_poll", "tenant_id", "status", "next_poll_at"
         ),
+        Index(
+            "uq_workflow_runs_sourcing_v2_subject",
+            "tenant_id",
+            "workflow_type",
+            "subject_ref",
+            unique=True,
+            postgresql_where=text(
+                "workflow_type = 'sourcing_case' AND workflow_version = 2"
+            ),
+        ),
     )
 
     run_id: Mapped[str] = mapped_column(String(32), primary_key=True)

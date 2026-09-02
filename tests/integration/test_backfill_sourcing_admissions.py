@@ -745,7 +745,7 @@ async def test_non_sourcing_workflow_cannot_reuse_protected_run_key(
     with pytest.raises(ValidationError) as error:
         await workflow.start(TENANT, "other_flow", "other-subject", {}, key)
 
-    assert str(error.value) == "workflow 幂等键与既有 Run 绑定不一致"
+    assert str(error.value) == "Sourcing Case V2 准入状态不允许启动"
     assert key not in str(error.value)
     assert "other-subject" not in str(error.value)
     async with integration_engine.connect() as connection:
@@ -759,6 +759,159 @@ async def test_non_sourcing_workflow_cannot_reuse_protected_run_key(
             )
             == 1
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("workflow_type", "workflow_version"),
+    (("other_flow", 1), ("sourcing_case", 1)),
+)
+async def test_wrong_workflow_cannot_preempt_protected_run_key(
+    integration_engine: AsyncEngine,
+    db_url: str,
+    workflow_type: str,
+    workflow_version: int,
+) -> None:
+    """错误 type/version 不能先占 canonical key 并永久阻断合法 V2 start。"""
+
+    case_id, need_id, _ = await _seed_case(
+        integration_engine,
+        TENANT,
+        f"protected-preempt-{workflow_type}-{workflow_version}",
+    )
+    report = await run_database_backfill(db_url, TENANT, True)
+    assert report.results[0].status == "applied"
+    await _mark_admission_starting(integration_engine, TENANT, case_id)
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    wrong = PostgresWorkflowEngine(factory, {"noop": _NoopHandler()})
+    wrong.register(
+        WorkflowDefinition(
+            workflow_type=workflow_type,
+            version=workflow_version,
+            steps=(StepDefinition(step_name="first", handler_ref="noop"),),
+            transitions={},
+        )
+    )
+    key = f"sourcing-case:v2:{TENANT}:{need_id}"
+
+    with pytest.raises(ValidationError, match="准入状态不允许启动"):
+        await wrong.start(TENANT, workflow_type, case_id, {}, key)
+
+    canonical_run = await _workflow_engine(factory).start(
+        TENANT,
+        "sourcing_case",
+        case_id,
+        {},
+        key,
+    )
+    async with integration_engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    "SELECT run_id, workflow_type, workflow_version FROM workflow_runs "
+                    "WHERE tenant_id = :tenant AND idempotency_key = :key"
+                ),
+                {"tenant": str(TENANT), "key": key},
+            )
+        ).all()
+    assert rows == [(str(canonical_run), "sourcing_case", 2)]
+
+
+@pytest.mark.asyncio
+async def test_reserved_key_race_rejects_wrong_workflow_and_keeps_canonical_run(
+    integration_engine: AsyncEngine,
+    db_url: str,
+) -> None:
+    """并发抢同一 protected key 时错误 workflow 永远不能成为持久赢家。"""
+
+    case_id, need_id, _ = await _seed_case(
+        integration_engine,
+        TENANT,
+        "protected-key-race",
+    )
+    report = await run_database_backfill(db_url, TENANT, True)
+    assert report.results[0].status == "applied"
+    await _mark_admission_starting(integration_engine, TENANT, case_id)
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    wrong = PostgresWorkflowEngine(factory, {"noop": _NoopHandler()})
+    wrong.register(
+        WorkflowDefinition(
+            workflow_type="other_flow",
+            version=1,
+            steps=(StepDefinition(step_name="first", handler_ref="noop"),),
+            transitions={},
+        )
+    )
+    canonical = _workflow_engine(factory)
+    key = f"sourcing-case:v2:{TENANT}:{need_id}"
+    release = asyncio.Event()
+
+    async def start_wrong() -> object:
+        await release.wait()
+        return await wrong.start(TENANT, "other_flow", "other-subject", {}, key)
+
+    async def start_canonical() -> object:
+        await release.wait()
+        return await canonical.start(TENANT, "sourcing_case", case_id, {}, key)
+
+    tasks = (asyncio.create_task(start_wrong()), asyncio.create_task(start_canonical()))
+    release.set()
+    wrong_result, canonical_result = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
+
+    assert isinstance(wrong_result, ValidationError)
+    assert str(wrong_result) == "Sourcing Case V2 准入状态不允许启动"
+    assert not isinstance(canonical_result, BaseException)
+    async with integration_engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    "SELECT run_id, workflow_type, workflow_version, subject_ref "
+                    "FROM workflow_runs WHERE tenant_id = :tenant "
+                    "AND idempotency_key = :key"
+                ),
+                {"tenant": str(TENANT), "key": key},
+            )
+        ).all()
+    assert rows == [(str(canonical_result), "sourcing_case", 2, case_id)]
+
+
+@pytest.mark.asyncio
+async def test_near_reserved_prefixes_remain_available_to_other_workflows(
+    integration_engine: AsyncEngine,
+) -> None:
+    """只有带终止冒号的精确 namespace 前缀受保护，近似文本不误伤。"""
+
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    workflow = PostgresWorkflowEngine(factory, {"noop": _NoopHandler()})
+    workflow.register(
+        WorkflowDefinition(
+            workflow_type="other_flow",
+            version=1,
+            steps=(StepDefinition(step_name="first", handler_ref="noop"),),
+            transitions={},
+        )
+    )
+    keys = (
+        "sourcing-case:v2",
+        f"sourcing-case:v20:{TENANT}:need-free",
+        f"prefix:sourcing-case:v2:{TENANT}:need-free",
+    )
+
+    run_ids = [
+        await workflow.start(
+            TENANT,
+            "other_flow",
+            f"near-prefix-{index}",
+            {},
+            key,
+        )
+        for index, key in enumerate(keys)
+    ]
+
+    assert len(set(run_ids)) == len(keys)
 
 
 @pytest.mark.asyncio

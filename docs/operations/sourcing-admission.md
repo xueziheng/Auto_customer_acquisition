@@ -129,10 +129,19 @@ key、context 或 subject 内容。
   再以同一命令重跑。`enqueue_admission` 的 canonical Case/Need 约束使合法重跑保持幂等。
 - 本工具没有业务回滚命令。Admission 和 immutable priority snapshot 是审计证据，不允许通过
   删除记录“撤销”。若录入事实损坏，应修复来源事实并走既有 refresh/block 流程。
-- 不得在回填窗口中 downgrade 0055。迁移本身会在存在任一 Sourcing Admission 或 V2 Run 时
-  fail closed，不能删除审计证据来强行降级。即使尚无此类数据，确需回退也必须先停止回填和所有
-  V2 start、核验数据库内相关行数为零，并按变更单确认兼容版本；移除 guard 会重新开放未准入
-  Run 的写入窗口。
+- 不得在回填窗口中 downgrade 0055。0055 的 downgrade 是确定性的 schema 往返：它不检查、
+  删除或改写 Admission、snapshot、Run，而只删除准入 trigger 和 V2 subject 唯一索引。因此
+  Alembic 返回成功**不等于业务回退安全**，已有业务行也不应被删除成零来迎合 migration。
+- 确需回退时，必须先停止 scheduler、人工准入、API 和所有可写 `workflow_runs` 的旧/新进程，
+  排空在途事务，并通过正常恢复入口处置所有未解释的 `STARTING` 未绑定状态。变更单必须记录
+  Admission 各状态计数、Sourcing V2 Run 总数，以及
+  `(tenant_id, workflow_type, subject_ref)` 重复 V2 Run 数为零；这些是前后核对值，不是清理目标。
+- 只有在回退版本明确关闭 Sourcing V2 自动/人工 start 的情况下才能执行 `downgrade 0054`。
+  完成后核验 trigger 和 `uq_workflow_runs_sourcing_v2_subject` 均已移除、上述业务计数完全不变；
+  其它 Workflow 即使恢复，Sourcing V2 仍须保持停用。缺少 guard/index 时恢复旧 V2 写入口会重新
+  开放未准入 Run 和同 Case 多 Run 的窗口。
+- 重新升级 0055 前再次停止所有写入口并核验重复数为零；不得依赖 migration 替运维判断或修复
+  回退窗口产生的数据冲突。备份、审批、兼容版本和恢复方案任一未知时都不执行 downgrade。
 
 受控测试通过只证明命令与核心服务接线正确，不代表生产已执行回填、启用真实 Sourcing V2，
 或授权任何外部来源调用。

@@ -31,6 +31,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import TextClause, inspect, text
@@ -325,22 +326,32 @@ async def test_workflow_scheduling_indexes_present(db_url: str) -> None:
 
 
 async def test_roundtrip_downgrade_0003_then_upgrade_head(db_url: str) -> None:
-    """迁移 round-trip：head 两表在 → downgrade 0003 消失 → upgrade head 恢复。"""
+    """在独立数据库往返 0004，结果不依赖其它测试留下的审计事实。"""
     from infra.db.session import create_engine_from
 
-    engine = create_engine_from(db_url)
+    database_name = "test_workflow_roundtrip_" + uuid4().hex
+    parent_engine = create_engine_from(db_url)
+    async with parent_engine.connect() as connection:
+        admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await admin.execute(text(f'CREATE DATABASE "{database_name}"'))
+    isolated_url = parent_engine.url.set(database=database_name).render_as_string(False)
+    engine = create_engine_from(isolated_url)
     try:
+        _run_alembic(isolated_url, "upgrade", "head")
         names = await _table_names(engine)
         assert set(EXPECTED_TABLES) <= names, "roundtrip 前置：head 应含两表"
-        _run_alembic(db_url, "downgrade", "0003")
+        _run_alembic(isolated_url, "downgrade", "0003")
         names = await _table_names(engine)
         assert not (set(EXPECTED_TABLES) & names), "downgrade 0003 后两表应消失"
-        _run_alembic(db_url, "upgrade", "head")
+        _run_alembic(isolated_url, "upgrade", "head")
         names = await _table_names(engine)
         assert set(EXPECTED_TABLES) <= names, "upgrade head 后两表应恢复"
     finally:
-        _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()
+        async with parent_engine.connect() as connection:
+            admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await admin.execute(text(f'DROP DATABASE "{database_name}"'))
+        await parent_engine.dispose()
 
 
 async def test_run_idempotency_key_unique_per_tenant(db_url: str) -> None:

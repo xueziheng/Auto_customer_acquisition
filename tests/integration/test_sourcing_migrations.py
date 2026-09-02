@@ -135,6 +135,16 @@ def _alembic_result(db_url: str, *command: str) -> subprocess.CompletedProcess[b
     )
 
 
+def _normalize_partial_index_predicate(predicate: str) -> str:
+    """归一化 PostgreSQL 反射和 ORM 文本中的等价 cast/括号。"""
+
+    normalized = predicate.lower()
+    normalized = normalized.replace("::text", "").replace(
+        "::character varying", ""
+    )
+    return re.sub(r"[()\s]+", "", normalized)
+
+
 def _sync_table_names(connection: Connection) -> set[str]:
     return set(inspect(connection).get_table_names())
 
@@ -2630,7 +2640,7 @@ async def test_0050_downgrade_normalizes_all_new_page_categories(db_url: str) ->
 
 
 async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
-    """0055 执行真实 start 语义，且有 V2 审计事实时拒绝移除 guard。"""
+    """0055 guard/index 与 ORM 同构，且有审计事实时仍可确定性往返。"""
 
     tenant = "tn_migration_0055"
     need_id = "need-migration-0055"
@@ -2702,6 +2712,49 @@ async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
 
         _run_alembic(db_url, "upgrade", "0055")
         engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            db_indexes = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"]): item
+                    for item in inspect(sync).get_indexes("workflow_runs")
+                }
+            )
+            trigger_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgrelid='workflow_runs'::regclass "
+                    "AND tgname='trg_workflow_runs_sourcing_v2_admission' "
+                    "AND NOT tgisinternal"
+                )
+            )
+        subject_index = db_indexes["uq_workflow_runs_sourcing_v2_subject"]
+        assert tuple(subject_index["column_names"]) == (
+            "tenant_id",
+            "workflow_type",
+            "subject_ref",
+        )
+        assert subject_index["unique"] is True
+        db_predicate = str(
+            subject_index.get("dialect_options", {}).get("postgresql_where", "")
+        )
+        assert _normalize_partial_index_predicate(db_predicate) == (
+            "workflow_type='sourcing_case'andworkflow_version=2"
+        )
+        orm_indexes = {
+            index.name: index for index in Base.metadata.tables["workflow_runs"].indexes
+        }
+        assert "uq_workflow_runs_sourcing_v2_subject" in orm_indexes
+        orm_subject_index = orm_indexes["uq_workflow_runs_sourcing_v2_subject"]
+        assert tuple(column.name for column in orm_subject_index.columns) == (
+            "tenant_id",
+            "workflow_type",
+            "subject_ref",
+        )
+        assert orm_subject_index.unique is True
+        assert _normalize_partial_index_predicate(
+            str(orm_subject_index.dialect_options["postgresql"]["where"])
+        ) == "workflow_type='sourcing_case'andworkflow_version=2"
+        assert trigger_count == 1
         async with engine.begin() as connection:
             await _expect_integrity(
                 connection,
@@ -2758,14 +2811,58 @@ async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
         await engine.dispose()
         engine = None
 
-        downgrade = _alembic_result(db_url, "downgrade", "0054")
-        assert downgrade.returncode != 0
+        _run_alembic(db_url, "downgrade", "0054")
         engine = create_engine_from(db_url)
         async with engine.connect() as connection:
-            assert (
-                await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0055"
+            assert await connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            ) == "0054"
+            indexes_after_downgrade = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_indexes("workflow_runs")
+                }
             )
+            trigger_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgrelid='workflow_runs'::regclass "
+                    "AND tgname='trg_workflow_runs_sourcing_v2_admission' "
+                    "AND NOT tgisinternal"
+                )
+            )
+            retained = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND run_id='run-0055-canonical'"
+                ),
+                {"tenant": tenant},
+            )
+        assert "uq_workflow_runs_sourcing_v2_subject" not in indexes_after_downgrade
+        assert trigger_count == 0
+        assert retained == 1
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0055")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            indexes_after_reupgrade = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"])
+                    for item in inspect(sync).get_indexes("workflow_runs")
+                }
+            )
+            trigger_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgrelid='workflow_runs'::regclass "
+                    "AND tgname='trg_workflow_runs_sourcing_v2_admission' "
+                    "AND NOT tgisinternal"
+                )
+            )
+        assert "uq_workflow_runs_sourcing_v2_subject" in indexes_after_reupgrade
+        assert trigger_count == 1
         async with engine.begin() as connection:
             await connection.execute(text("SET LOCAL session_replication_role = replica"))
             for table in (
@@ -2782,7 +2879,6 @@ async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
                 )
         await engine.dispose()
         engine = None
-        _run_alembic(db_url, "downgrade", "0054")
     finally:
         if engine is not None:
             await engine.dispose()
