@@ -932,6 +932,99 @@ describe("Sourcing admission queue", () => {
     expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
   });
 
+  it("reloads canonical server order when a pending manual admission overlaps refresh", async () => {
+    let resolveManual!: (response: Response) => void;
+    const pendingManual = new Promise<Response>((resolve) => { resolveManual = resolve; });
+    let manualStarted = false;
+    let manualResolved = false;
+    const fallback = admissionCenterFetch({ pendingManual });
+    const promotedStarting = admissionFixture(waitingOneId, "starting");
+    const promotedAdmitted = admissionFixture(waitingOneId, "admitted");
+    const existingAdmitted = admissionFixture(admittedId, "admitted");
+    const stateAfterRefresh: Record<Admission["state"], Admission[]> = {
+      waiting: [admissionFixture(waitingEightId, "waiting")],
+      blocked: [admissionFixture(blockedId, "blocked")],
+      starting: [promotedStarting],
+      admitted: [existingAdmitted],
+    };
+    const canonicalState: Record<Admission["state"], Admission[]> = {
+      waiting: [admissionFixture(waitingEightId, "waiting")],
+      blocked: [admissionFixture(blockedId, "blocked")],
+      starting: [],
+      admitted: [existingAdmitted, promotedAdmitted],
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === `/sourcing-admissions/${waitingOneId}/admit`) {
+        manualStarted = true;
+        return fallback(input);
+      }
+      if (request.method === "GET" && url.pathname === "/sourcing-admissions" && manualStarted) {
+        const state = url.searchParams.get("state") as Admission["state"];
+        return jsonResponse({
+          items: (manualResolved ? canonicalState : stateAfterRefresh)[state],
+          policy: enabledPolicy,
+        });
+      }
+      return fallback(input);
+    });
+    const root = await mount("/sourcing", fetch);
+    await eventually(() => expect(root.querySelectorAll<HTMLButtonElement>("button[data-manual-admit]")).toHaveLength(2));
+
+    root.querySelector<HTMLButtonElement>("button[data-manual-admit]")!.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+    [...root.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+      .find((button) => button.textContent?.includes("确认准入"))!.click();
+    await eventually(() => expect(manualStarted).toBe(true));
+
+    [...root.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("刷新"))!.click();
+    await eventually(() => {
+      const activeText = root.querySelector('[data-section="active-cases"]')?.textContent ?? "";
+      expect(activeText).toContain(promotedStarting.case_id);
+      expect(activeText).toContain(existingAdmitted.case_id);
+    });
+
+    manualResolved = true;
+    resolveManual(jsonResponse(promotedAdmitted));
+    await eventually(() => {
+      const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] article.case-row')];
+      expect(processingRows.map((row) => row.textContent)).toEqual([
+        expect.stringContaining(existingAdmitted.case_id),
+        expect.stringContaining(promotedAdmitted.case_id),
+      ]);
+      expect(processingRows.filter((row) => row.textContent?.includes(promotedAdmitted.case_id))).toHaveLength(1);
+    });
+  });
+
+  it("removes a pending dialog when refresh must fail closed", async () => {
+    let resolveManual!: (response: Response) => void;
+    const pendingManual = new Promise<Response>((resolve) => { resolveManual = resolve; });
+    const options: Parameters<typeof admissionCenterFetch>[0] = { pendingManual };
+    const root = await mount("/sourcing", admissionCenterFetch(options));
+    await eventually(() => expect(root.querySelector("button[data-manual-admit]")).not.toBeNull());
+
+    root.querySelector<HTMLButtonElement>("button[data-manual-admit]")!.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+    [...root.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+      .find((button) => button.textContent?.includes("确认准入"))!.click();
+    await eventually(() => expect(root.textContent).toContain("正在准入…"));
+
+    options.failedState = "blocked";
+    [...root.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("刷新"))!.click();
+
+    await eventually(() => expect(root.textContent).toContain("寻源准入队列暂不可用"));
+    expect(root.querySelector('[role="dialog"]')).toBeNull();
+    expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+
+    resolveManual(jsonResponse(admissionFixture(waitingOneId, "admitted")));
+    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该 Case 获准启动"));
+    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+  });
+
   it.each([
     [{ ready_at: "2026-09-02T08:00:00", admitted_at: "2026-09-02T09:05:00Z" }, "准入等待用时 未知"],
     [{ ready_at: "2026-09-02T08:00:00+08:00", admitted_at: "2026-09-02T01:05:00Z" }, "准入等待用时 1 小时 5 分钟"],

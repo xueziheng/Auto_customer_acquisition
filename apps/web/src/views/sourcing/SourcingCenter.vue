@@ -26,6 +26,7 @@ const notice = ref<string | null>(null);
 const manualTarget = ref<Admission | null>(null);
 const pendingAdmissionId = ref<string | null>(null);
 const manualRequestKeys = new Map<string, string>();
+let loadGeneration = 0;
 
 const policyLabel = computed(() => ({
   automatic_admission_disabled: "自动准入已关闭",
@@ -81,19 +82,21 @@ function listError(status: number): string {
   return "寻源准入队列读取失败";
 }
 
-async function loadAdmissionState(state: AdmissionState): Promise<AdmissionList | null> {
+async function loadAdmissionState(state: AdmissionState, generation: number): Promise<AdmissionList | null> {
   try {
     const result = await client.GET("/sourcing-admissions", {
       params: { query: { limit: 50, state } },
     });
     if (result.response.status === 200 && result.data) {
       if (result.data.items.length < 50) return result.data;
-      error.value ??= "准入队列可能已截断，无法安全区分等待与处理中的 Case";
+      if (generation === loadGeneration) {
+        error.value ??= "准入队列可能已截断，无法安全区分等待与处理中的 Case";
+      }
       return null;
     }
-    error.value ??= listError(result.response.status);
+    if (generation === loadGeneration) error.value ??= listError(result.response.status);
   } catch {
-    error.value ??= "无法连接寻源准入服务";
+    if (generation === loadGeneration) error.value ??= "无法连接寻源准入服务";
   }
   return null;
 }
@@ -107,17 +110,19 @@ async function loadCases(): Promise<SourcingCase[]> {
 }
 
 async function loadAll(): Promise<void> {
+  const generation = ++loadGeneration;
   loading.value = true;
   partitionReady.value = false;
-  if (!pendingAdmissionId.value) manualTarget.value = null;
+  manualTarget.value = null;
   error.value = null;
   const [waiting, blocked, starting, admitted, loadedCases] = await Promise.all([
-    loadAdmissionState("waiting"),
-    loadAdmissionState("blocked"),
-    loadAdmissionState("starting"),
-    loadAdmissionState("admitted"),
+    loadAdmissionState("waiting", generation),
+    loadAdmissionState("blocked", generation),
+    loadAdmissionState("starting", generation),
+    loadAdmissionState("admitted", generation),
     loadCases(),
   ]);
+  if (generation !== loadGeneration) return;
   if (!waiting || !blocked || !starting || !admitted) {
     waitingAdmissions.value = [];
     blockedAdmissions.value = [];
@@ -171,11 +176,10 @@ async function confirmManualAdmission(): Promise<void> {
       },
     });
     if (result.response.status === 200 && result.data) {
-      waitingAdmissions.value = waitingAdmissions.value.filter((item) => item.admission_id !== target.admission_id);
-      activeAdmissions.value = [...activeAdmissions.value, result.data];
       manualRequestKeys.delete(target.admission_id);
       manualTarget.value = null;
       notice.value = "已准入；这只代表该 Case 获准启动，不代表寻源、询价或报价已完成。";
+      await loadAll();
       return;
     }
     error.value = manualError(result.response.status);
