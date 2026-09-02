@@ -187,3 +187,26 @@ Task 9 新增的唯一真实 PostgreSQL claim 用例受文件级 autouse 前后
 
 仓库仍打印既有 AppleDouble pack index 警告；本轮未读取、修改或清理该共享文件。没有修改 Task 10
 前端或 Tool Gateway。
+
+## 审查修复第 3 轮（独立后续提交）
+
+本轮只修测试隔离，不改任何生产文件。reviewer 指定反序 pair 稳定复现为 `1 passed, 1 failed`：
+`test_admission_service_persists_canonical_snapshots_and_token_transitions` 写入 0053 admission/snapshot
+证据后没有清理，紧接的 `test_0047_to_0049_roundtrip` 因 evidence guard 拒绝 downgrade 0046。
+
+`test_sourcing_service_persistence.py` 现统一使用文件级 autouse async fixture：每个测试节点前成对清空
+`sourcing_admissions` 与 append-only `sourcing_priority_snapshots`，并在 `try/yield/finally` 的
+`finally` 中再次成对清理，因此测试断言失败也不会污染后续 migration。该 TRUNCATE 只适用于仓库当前
+默认、未配置 xdist 的串行 integration 测试边界；不在并行 worker 间删除其他测试的数据。
+
+验证结果：
+
+- reviewer 最小反序 pair：RED `1 passed, 1 failed`；GREEN `2 passed in 5.39s`。
+- 该文件全部 admission 命名节点后紧接 migration roundtrip：`6 passed, 16 deselected in 4.10s`。
+- 完整 sourcing persistence + sourcing migrations 两文件组合：`44 passed in 30.23s`。
+- Task 8 shared starter/driver 与 Task 9 API/OpenAPI/runtime composition：`117 passed in 15.34s`。
+- 仅改动测试文件的 Ruff、全库 boundaries 七项与 `git diff --check` 均通过。
+- 提交前将完整 persistence/migrations 与 Task 8/9 重点套件合并 fresh 复跑：
+  `161 passed in 41.60s`；随后 Ruff、boundaries 与 diff-check 再次全部以 0 退出。
+
+仓库仍打印既有 AppleDouble pack index 警告；本轮未触碰。Task 10、Tool Gateway 与生产代码均未修改。

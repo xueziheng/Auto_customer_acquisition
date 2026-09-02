@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -81,6 +83,28 @@ SourcingSupplyOption = _models.SourcingSupplyOption
 SpecComparison = _models.SpecComparison
 SpecMatchLevel = _models.SpecMatchLevel
 SupplyOptionSource = _models.SupplyOptionSource
+
+
+async def _truncate_sourcing_admission_evidence(engine: AsyncEngine) -> None:
+    """成对清空 0053 append-only 表；仅供默认串行 integration 测试隔离。"""
+
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
+        )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolated_sourcing_admission_evidence(
+    integration_engine: AsyncEngine,
+) -> AsyncIterator[None]:
+    """每个节点前后清理；finally 保证断言失败也不污染后续 migration。"""
+
+    await _truncate_sourcing_admission_evidence(integration_engine)
+    try:
+        yield
+    finally:
+        await _truncate_sourcing_admission_evidence(integration_engine)
 
 
 def _service_type() -> type[Any]:
