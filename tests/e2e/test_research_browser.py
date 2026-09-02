@@ -101,7 +101,7 @@ async def test_research_confirm_refresh_and_radar_tabs_are_operable_across_origi
                 await expect(
                     page.get_by_role("heading", name="指挥中心", exact=True)
                 ).to_be_visible()
-                await page.get_by_label("老板原始指令").fill(
+                await page.locator("#boss-command").fill(
                     "只研究美国铰链进口商、分销商、电商，最多4个检索式、6页、6信号、3假设。"
                 )
                 await page.get_by_role("button", name="生成待确认提案").click()

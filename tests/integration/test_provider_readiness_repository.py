@@ -6,17 +6,18 @@ import asyncio
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 from typing import Self
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.repositories.provider_readiness import ProviderReadinessRepositoryImpl
@@ -57,19 +58,15 @@ async def db_factory(
     )
 
 
-@pytest.fixture
-def alembic_runner(db_url: str) -> Callable[[str, str], None]:
-    def _run(command: str, revision: str) -> None:
-        result = subprocess.run(
-            [sys.executable, "scripts/run_alembic.py", command, revision],
-            cwd=_REPO_ROOT,
-            env={**os.environ, "DATABASE_URL": db_url},
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode == 0, "Provider readiness Alembic 迁移失败"
-
-    return _run
+def _run_alembic(db_url: str, command: str, revision: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_alembic.py", command, revision],
+        cwd=_REPO_ROOT,
+        env={**os.environ, "DATABASE_URL": db_url},
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, "Provider readiness Alembic 迁移失败"
 
 
 def _actor(tenant: TenantId, suffix: str) -> ProviderReadinessActor:
@@ -633,9 +630,24 @@ async def test_database_rejects_update_and_delete(db_factory) -> None:
 
 
 async def test_migration_upgrade_downgrade_upgrade_round_trip(
-    alembic_runner,
+    integration_engine: AsyncEngine,
 ) -> None:
-    alembic_runner("downgrade", "0032")
-    alembic_runner("upgrade", "0033")
-    alembic_runner("downgrade", "0032")
-    alembic_runner("upgrade", "head")
+    """在隔离库往返 0033，不跨越共享库中的后续不可变业务证据。"""
+
+    database_name = "test_provider_readiness_" + uuid4().hex
+    async with integration_engine.connect() as connection:
+        admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await admin.execute(text(f'CREATE DATABASE "{database_name}"'))
+    isolated_url = integration_engine.url.set(database=database_name).render_as_string(
+        False
+    )
+    try:
+        _run_alembic(isolated_url, "upgrade", "head")
+        _run_alembic(isolated_url, "downgrade", "0032")
+        _run_alembic(isolated_url, "upgrade", "0033")
+        _run_alembic(isolated_url, "downgrade", "0032")
+        _run_alembic(isolated_url, "upgrade", "head")
+    finally:
+        async with integration_engine.connect() as connection:
+            admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await admin.execute(text(f'DROP DATABASE "{database_name}"'))

@@ -103,6 +103,7 @@ from infra.db.tables import (
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import (
+    DirectiveActivated,
     DomainEvent,
     NeedBecameSourcingReady,
     NeedClusterMembershipChanged,
@@ -782,6 +783,14 @@ class SourcingCaseComposition:
             NeedClusterMembershipChanged,
             "sourcing_case.cluster_membership",
             cluster_membership,
+        )
+        register(
+            DirectiveActivated,
+            "sourcing_case.directive_activated_audit",
+            SourcingLifecycleAuditAcknowledgement(
+                self.tenant_id,
+                DirectiveActivated,
+            ),
         )
         register(
             SourcingCandidatesVerified, "sourcing_case.product_projector", projector

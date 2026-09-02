@@ -61,6 +61,7 @@ from infra.db.tables import (
 )
 from shared.errors import InvalidStateTransition, TransientError, ValidationError
 from shared.events.catalog import (
+    DirectiveActivated,
     EvidenceLevel,
     NeedBecameSourcingReady,
     NeedClusterMembershipChanged,
@@ -787,6 +788,7 @@ async def test_composition_uses_real_services_and_registers_complete_events(
         ("NeedValidated", "sourcing_case.need_validated"),
         ("NeedBecameSourcingReady", "sourcing_case.need_ready"),
         ("NeedClusterMembershipChanged", "sourcing_case.cluster_membership"),
+        ("DirectiveActivated", "sourcing_case.directive_activated_audit"),
         ("SourcingCandidatesVerified", "sourcing_case.product_projector"),
         ("SourcingCandidatesReady", "sourcing_case.ready_audit"),
         ("SourcingCaseHandedToCosting", "sourcing_case.costing_handoff"),
@@ -1496,6 +1498,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         )
         assert runtime.sourcing_admission_driver.lease_duration == timedelta(minutes=5)
         event_types = {
+            "DirectiveActivated",
             "NeedValidated",
             "NeedBecameSourcingReady",
             "NeedClusterMembershipChanged",
@@ -1507,6 +1510,14 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         session = runtime.outbox._factory()
         try:
             bus = PostgresEventBus(session, tenant, now=lambda: NOW)
+            await bus.publish(
+                DirectiveActivated(
+                    tenant_id=tenant,
+                    occurred_at=NOW,
+                    directive_id=directive_id,
+                    version=1,
+                )
+            )
             await bus.publish(
                 NeedValidated(
                     tenant_id=tenant,
@@ -1865,13 +1876,15 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
                         "WHERE tenant_id=:tenant AND event_type = ANY(:types) "
                         "AND (event_payload->>'need_id'=:need "
                         "OR event_payload->>'changed_need_id'=:need "
-                        "OR event_payload->>'case_id'=:case)"
+                        "OR event_payload->>'case_id'=:case "
+                        "OR event_payload->>'directive_id'=:directive)"
                     ),
                     {
                         "tenant": str(tenant),
                         "types": list(event_types),
                         "need": str(need_id),
                         "case": str(case_id),
+                        "directive": directive_id,
                     },
                 )
             ).all()

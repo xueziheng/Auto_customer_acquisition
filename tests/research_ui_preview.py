@@ -24,6 +24,10 @@ from shared.schemas.identifiers import ProspectAccountId, RunId, new_id
 from tests.unit.test_runs_router import TENANT, _identity
 from tests.unit.workflows.test_research_discovery import research_plan
 from workflows.engine.audit import RunDetailView, RunResearchView, RunSummaryView
+from workflows.sourcing_case.application import (
+    SourcingAdmissionListView,
+    SourcingAdmissionPolicyView,
+)
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
 LANES = ("importer", "distributor", "ecommerce")
@@ -238,6 +242,14 @@ class Preview:
     async def list_notifications(self, *args, **kwargs):
         return []
 
+    async def list_read_view(self, tenant, **kwargs):
+        """新准入卡在旧研究预览中保持显式未配置，而不是返回 503。"""
+        assert tenant == TENANT
+        return SourcingAdmissionListView(
+            policy=SourcingAdmissionPolicyView(status="policy_not_configured"),
+            items=(),
+        )
+
     async def list_accounts(self, tenant, **kwargs):
         assert tenant == TENANT
         return self.accounts
@@ -281,6 +293,7 @@ dependencies = SimpleNamespace(
     prospecting=fixture,
     run_audit=fixture,
     in_app_notifications=fixture,
+    sourcing_admission_application=fixture,
     organization=None,
     compliance=None,
     approvals=None,

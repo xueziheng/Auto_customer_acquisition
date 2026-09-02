@@ -176,6 +176,50 @@ async def _run_controlled_need_to_estimated_cost(
         base_url=e2e_stack.api_origin, headers=headers, timeout=10
     ) as client:
 
+        async def admission_waiting() -> dict[str, Any] | None:
+            response = await client.get("/sourcing-admissions?state=waiting")
+            assert response.status_code == 200, response.text
+            for item in response.json()["items"]:
+                if item["need_id"] == need_id and item["state"] == "waiting":
+                    return item
+            return None
+
+        await _eventually(
+            admission_waiting,
+            description="Need 进入真实 Sourcing Admission 等待队列",
+        )
+        async with e2e_stack.factory() as session:
+            run_count_before_policy = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(WorkflowRunRow)
+                    .where(
+                        WorkflowRunRow.tenant_id == str(e2e_stack.tenant_id),
+                        WorkflowRunRow.workflow_type == "sourcing_case",
+                    )
+                )
+                or 0
+            )
+        assert run_count_before_policy == 0
+
+        proposed = await client.post(
+            "/commands/sourcing-admission-proposals",
+            json={
+                "message": "Task 15 受控链启用需求簇寻源准入，每轮一个案例",
+                "mode": "cluster_ranked",
+                "automatic_admission_enabled": True,
+                "batch_limit": 1,
+            },
+        )
+        assert proposed.status_code == 200, proposed.text
+        confirmed_policy = await client.post(
+            "/commands/sourcing-admission-proposals/"
+            f"{proposed.json()['proposal_id']}/confirm",
+            headers={**headers, "Idempotency-Key": "task15-admission-policy"},
+        )
+        assert confirmed_policy.status_code == 200, confirmed_policy.text
+        assert confirmed_policy.json()["batch_limit"] == 1
+
         async def case_ready() -> dict[str, Any] | None:
             response = await client.get("/sourcing-cases")
             assert response.status_code == 200, response.text

@@ -616,6 +616,68 @@ pull 或访问 PyPI：只按该精确标签读取，复核 labels、候选 RootF
 找不到 artifact 时 hard-fail 并要求先显式运行 bootstrap。之后当前源码层和所有 runner 构建一律
 `network_mode=none`，source manifest 覆盖其白名单输入。
 
+## 十二、Phase2 NeedCluster Sourcing Admission
+
+本子项目只控制“哪一个已存在的 Sourcing Case V2 可以启动 Workflow”。它已完成工程实现、受控核心和
+Browser 验收；尚未合并、推送、部署或生产启用，不代表整个 Phase2 完成。一个 `Validated Need` 始终
+对应一个 Case 和一份独立 Need snapshot；需求簇不是合并订单，也不会合并数量、规格或 Provenance。
+
+### 正常操作
+
+1. 先按当前合法单 head 完成迁移，并核验 API 与 scheduler 使用同一新版构建；0055 的 Run guard 和
+   subject 唯一索引必须已生效。生产升级、历史回填和回退的完整窗口要求见
+   `docs/operations/sourcing-admission.md`。
+2. 完整度达到 3 的 Need 只会经真实 Outbox 建立 canonical V2 Case 和 durable Admission。没有当前
+   boss-confirmed `sourcing_admission` Directive、策略关闭或策略状态未知时，scheduler 必须保持零
+   Workflow start；不得直接写 active Directive、Admission 或 Run 表绕过确认。
+3. 老板在指挥中心创建准入提案，逐项核对 `mode=cluster_ranked`、自动准入开关和整数
+   `batch_limit`，再确认精确提案。确认只更新策略，不会在 API 请求内领取 Admission 或启动 Run。
+4. scheduler 每轮先读取当前策略，再释放已到期租约并按“需求簇成员数降序、`ready_at` 升序、稳定
+   ID”领取不超过 `batch_limit` 条。每条仍独立启动并绑定 canonical Run；进入 `starting/admitted`
+   后不因新的 membership 事件改写排序快照。
+5. 在寻源中心分别核对“等待准入”和“处理中”，并打开准入审计详情查看 immutable snapshot、事实观测
+   时间、排序版本、Directive 版本、准入人和时间。成员数只表示当前有多少条相似已验证需求，不表示
+   集体采购或供应已经确认。
+6. 授权老板或 sourcing 员工可逐条人工准入。每次使用一个非空原始 `Idempotency-Key`；若 HTTP 结果
+   不确定，先 GET 当前 Admission/Run，再以**同一个键**重放，禁止换键制造第二条 Run。
+
+### 停止
+
+- 计划性停止：老板提交并确认 `automatic_admission_enabled=false` 的新提案；下一轮起不再 claim 新项。
+  这不会取消已经 admitted 的 Run，也不删除 Waiting Admission 或不可变快照。
+- 紧急停止：先停止 scheduler worker，再核对 `waiting/starting/admitted/blocked` 数量、未到期 claim 和
+  Workflow Run。不要靠删除 Admission、清快照、改租约时间或 downgrade 来假装已经停止。
+- 策略读取失败、返回未知结构或存储结果不确定时必须失败关闭为零新 start。日志和 UI 只显示固定停止
+  原因，不保存原异常、Need snapshot 或 Provenance 原文。
+- 准入只授权 Workflow start，不授权 Tavily/页面/模型、联系人、邮件、采购、供应商询价或客户 Quote；
+  下游仍各自受现有计划、额度、Tool Gateway 和人工审批门禁控制。
+
+### 重启与恢复
+
+1. runtime 重建后从 PostgreSQL 读取当前策略、Admission、租约和 Run；canonical
+   `sourcing-case:v2:{tenant}:{need_id}` 业务键、数据库 guard 与 subject 唯一索引共同阻止重复 Case/Run。
+2. `starting` 且已有 canonical Run 的记录按原绑定完成恢复；没有可核实结果的在途项保持等待人工核对，
+   到期租约只经正式 release 路径回到 waiting。不得直接把 `starting` 改为 `admitted`。
+3. readiness 重放只幂等确保同一 Need 的 Case/Admission；`NeedClusterMembershipChanged` 重新读取 Demand
+   当前事实并只刷新 matching waiting/blocked 项。`NeedClusterFormed` 保留“第二成员首次形成多成员簇”
+   的既有语义，不由准入路径消费。
+4. 历史 OPENED V2 Case 缺 Admission 时，先停 scheduler/人工准入并运行默认 dry-run：
+
+```bash
+PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
+  PYTHONPATH="$PWD" python3 scripts/backfill_sourcing_admissions.py \
+  --dry-run --tenant-id "tenant_REPLACE"
+```
+
+只有核对变更窗口、备份和精确 tenant 后才可显式 `--apply`。回填只补 Admission 和首份 immutable
+snapshot，不启动 Workflow；恢复 scheduler 前再次核对 active Directive、重复 V2 subject 数为零及所有
+结果的固定原因。
+
+受控验收的真实命令、`8-member / 3-member / unclustered` 排序、batch 2、runtime 重建、人工重放、
+外部调用零计数和 Browser 证据见
+`docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md`。Catalog Product Proposal、联系人多源
+瀑布、70/30 allocator、自动 backpressure、真实 direct supplier quote 与商业来源仍未完成。
+
 ## 附：常用命令
 
 ```bash

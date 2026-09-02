@@ -15,6 +15,7 @@ from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from shared.errors import ValidationError
 from shared.events.catalog import (
+    DirectiveActivated,
     DomainEvent,
     OpportunityQualified,
     SourcingCandidatesReady,
@@ -271,6 +272,7 @@ def test_ready_acknowledgement_is_type_and_tenant_only() -> None:
 @pytest.mark.parametrize(
     "event_type",
     [
+        DirectiveActivated,
         SourcingCaseOpened,
         OpportunityQualified,
     ],

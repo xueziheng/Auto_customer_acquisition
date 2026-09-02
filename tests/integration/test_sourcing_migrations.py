@@ -9,12 +9,14 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import CheckConstraint, Table, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -109,6 +111,26 @@ EXPECTED_STOP_CODES = (
     "no_qualified_supply",
     "manual_stop",
 )
+
+
+@pytest_asyncio.fixture(scope="module")
+async def db_url(db_url: str) -> AsyncIterator[str]:
+    """迁移往返使用独立库，不受其它集成测试留下的不可逆事实影响。"""
+
+    admin_engine = create_engine_from(db_url)
+    database_name = "test_sourcing_migrations_" + uuid4().hex
+    isolated_url = admin_engine.url.set(database=database_name).render_as_string(False)
+    try:
+        async with admin_engine.connect() as connection:
+            admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await admin.execute(text(f'CREATE DATABASE "{database_name}"'))
+        _run_alembic(isolated_url, "upgrade", "head")
+        yield type(db_url)(isolated_url)
+    finally:
+        async with admin_engine.connect() as connection:
+            admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await admin.execute(text(f'DROP DATABASE "{database_name}"'))
+        await admin_engine.dispose()
 
 
 class _CostingUowFactory:

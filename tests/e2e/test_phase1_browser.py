@@ -599,7 +599,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             )
             await page.goto(f"{stack.web_origin}/commands")
             await assert_surface("/commands", "指挥中心")
-            await page.get_by_label("老板原始指令").fill(proposal.raw_text)
+            await page.locator("#boss-command").fill(proposal.raw_text)
             await page.get_by_role("button", name="生成待确认提案").click()
             await expect(page.get_by_text(str(proposal_id), exact=True)).to_be_visible()
             await expect(page.get_by_text("工作流不得越过")).to_be_visible()

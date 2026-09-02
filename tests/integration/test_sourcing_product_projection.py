@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -23,8 +25,11 @@ from domains.sourcing.permissions import (
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
+    SourcingAdmissionEnqueueCommand,
+    SourcingPriorityFactsInput,
     SourcingReviewCommand,
     VerifyPublicCandidateDraftsResult,
+    canonical_sourcing_need_snapshot_hash,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
@@ -187,9 +192,39 @@ async def test_verified_projection_replay_persists_one_complete_generation(
         Phase2ProductAuthorizer(tenant_id),
         now=lambda: NOW,
     )
-    case_id = await sourcing.open_case(
-        tenant_id, _command(tenant_id, need_id), actor=sourcing_actor
+    open_command = _command(tenant_id, need_id)
+    canonical_need = open_command.need.model_copy(
+        update={
+            "snapshot_hash": canonical_sourcing_need_snapshot_hash(open_command.need)
+        }
     )
+    case_id = await sourcing.open_case(
+        tenant_id,
+        open_command.model_copy(update={"need": canonical_need}),
+        actor=sourcing_actor,
+    )
+    admission_id = await sourcing.enqueue_admission(
+        tenant_id,
+        case_id,
+        need_id,
+        ready_at=NOW,
+        command=SourcingAdmissionEnqueueCommand(
+            facts=SourcingPriorityFactsInput(
+                need_id=need_id,
+                cluster_member_count=1,
+                facts_observed_at=NOW,
+            )
+        ),
+        actor=sourcing_actor,
+    )
+    claimed = await sourcing.claim_admissions(
+        tenant_id,
+        limit=1,
+        claim_token=f"projection:{case_id}",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=sourcing_actor,
+    )
+    assert len(claimed) == 1 and claimed[0].admission_id == admission_id
     for rung in range(1, 6):
         await sourcing.record_ladder_check(
             tenant_id,
@@ -299,14 +334,22 @@ async def test_verified_projection_replay_persists_one_complete_generation(
         {
             "case_id": str(case_id),
             "need_id": str(need_id),
-            "need_snapshot_hash": "a" * 64,
+            "need_snapshot_hash": canonical_need.snapshot_hash,
             "internal_product_ids": [],
             "supplier_candidate_ids": [],
             "sourcing_plan_id": str(plan.plan_id),
             "sourcing_plan_hash": plan.plan_hash,
             "supplier_candidate_draft_ids": ["scd-projection"],
         },
-        f"projection:{case_id}",
+        f"sourcing-case:v2:{tenant_id}:{need_id}",
+    )
+    await sourcing.complete_admission(
+        tenant_id,
+        admission_id,
+        claim_token=f"projection:{case_id}",
+        workflow_run_id=RunId(run_id),
+        admitted_at=NOW,
+        actor=sourcing_actor,
     )
     assert await engine.poll_due(tenant_id, 1) == 1
     assert await engine.poll_due(tenant_id, 1) == 1

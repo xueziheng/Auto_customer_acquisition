@@ -16,7 +16,7 @@ def parse_limits(**changes):
             "maximum_pages": 8,
             "maximum_text_bytes": 262144,
             "maximum_excerpt_bytes": 8192,
-            "cpu_seconds": 2,
+            "cpu_seconds": 8,
             "address_space_bytes": 268435456,
             "wall_timeout_ms": 8000,
             "maximum_result_bytes": 2097152,

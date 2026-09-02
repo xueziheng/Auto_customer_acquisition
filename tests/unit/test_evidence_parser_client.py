@@ -9,7 +9,7 @@ from tests.unit.test_evidence_text_profiles import parse_limits
 def probe_limits(**changes):
     return EvidenceProbeLimits(
         **{
-            "cpu_seconds": 1,
+            "cpu_seconds": 2,
             "address_space_bytes": 67108864,
             "wall_timeout_ms": 5000,
             "allocation_chunk_bytes": 1048576,

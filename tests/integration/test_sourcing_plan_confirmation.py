@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from connectors.search_contracts import SearchCostStatus, SearchUsage
@@ -23,8 +24,11 @@ from domains.sourcing.schemas import (
     OpenSourcingCase,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
+    SourcingAdmissionEnqueueCommand,
     SourcingNeedSnapshot,
+    SourcingPriorityFactsInput,
     SourcingUncertainReconciliationCommand,
+    canonical_sourcing_need_snapshot_hash,
 )
 from domains.sourcing.service import (
     LadderCheck,
@@ -46,7 +50,7 @@ from infra.db.tables import (
     WorkflowStepRow,
 )
 from infra.db.workflow_engine import PostgresWorkflowEngine
-from shared.errors import TransientError, ValidationError
+from shared.errors import TransientError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
@@ -59,6 +63,7 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 from workflows.sourcing_case.application import (
+    SourcingAdmissionStarter,
     SourcingCaseApplication,
     SourcingPlanDeliveryError,
 )
@@ -142,14 +147,17 @@ def _open_command(
         confirmed_by=EmployeeId("emp-boss"),
         confirmed_at=NOW,
     )
+    draft = SourcingNeedSnapshot(
+        need_id=need_id,
+        completeness=3,
+        derivation_version="need-completeness-v1",
+        product_category=NeedFact(value="hinges", provenance=provenance),
+        quantity=NeedFact(value=5000, provenance=provenance),
+        snapshot_hash="0" * 64,
+    )
     return OpenSourcingCase(
-        need=SourcingNeedSnapshot(
-            need_id=need_id,
-            completeness=3,
-            derivation_version="need-completeness-v1",
-            product_category=NeedFact(value="hinges", provenance=provenance),
-            quantity=NeedFact(value=5000, provenance=provenance),
-            snapshot_hash="a" * 64,
+        need=draft.model_copy(
+            update={"snapshot_hash": canonical_sourcing_need_snapshot_hash(draft)}
         ),
         trigger_key=f"sourcing-case:v2:{tenant_id}:{need_id}",
     )
@@ -222,15 +230,23 @@ async def _seed_artifact(
         )
 
 
-async def _prepare_case(
+async def _open_case(
     service: SourcingServiceImpl,
     tenant_id: TenantId,
     need_id: ValidatedNeedId,
     system: SourcingActor,
 ) -> SourcingCaseId:
-    case_id = await service.open_case(
+    return await service.open_case(
         tenant_id, _open_command(tenant_id, need_id), actor=system
     )
+
+
+async def _record_no_supply_ladder(
+    service: SourcingServiceImpl,
+    tenant_id: TenantId,
+    case_id: SourcingCaseId,
+    system: SourcingActor,
+) -> None:
     for rung in range(1, 6):
         await service.record_ladder_check(
             tenant_id,
@@ -254,11 +270,12 @@ async def _prepare_case(
             ),
             actor=system,
         )
-    return case_id
 
 
 async def _seed_waiting_run(
     factory,
+    service: SourcingServiceImpl,
+    system: SourcingActor,
     tenant_id: TenantId,
     case_id: SourcingCaseId,
     need_id: ValidatedNeedId,
@@ -271,26 +288,64 @@ async def _seed_waiting_run(
     handlers["sourcing_case.v2.await_public_plan"] = AwaitPublicPlanStep()
     engine = PostgresWorkflowEngine(factory, handlers, now=lambda: NOW)
     engine.register(definition)
-    run_id = RunId(new_id("run"))
+
+    admission_id = await service.enqueue_admission(
+        tenant_id,
+        case_id,
+        need_id,
+        ready_at=NOW,
+        command=SourcingAdmissionEnqueueCommand(
+            facts=SourcingPriorityFactsInput(
+                need_id=need_id,
+                cluster_member_count=1,
+                facts_observed_at=NOW,
+            ),
+        ),
+        actor=system,
+    )
+    claimed = await service.claim_admissions(
+        tenant_id,
+        limit=1,
+        claim_token=f"plan-confirmation:{case_id}",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=system,
+    )
+    assert len(claimed) == 1 and claimed[0].admission_id == admission_id
+    starter = SourcingAdmissionStarter(
+        sourcing=service,
+        engine=engine,
+        tenant_id=tenant_id,
+        sourcing_actor=system,
+        now=lambda: NOW,
+    )
+    assert await starter.admit_one(claimed[0]) == "admitted"
+    async with SqlAlchemySourcingUnitOfWork(factory, tenant_id) as uow:
+        admission = await uow.admissions.get(tenant_id, admission_id)
+    assert admission is not None and admission.workflow_run_id is not None
+    run_id = admission.workflow_run_id
+
+    await _record_no_supply_ladder(service, tenant_id, case_id, system)
     async with factory() as session, session.begin():
-        session.add(
-            WorkflowRunRow(
-                run_id=run_id,
-                tenant_id=tenant_id,
-                workflow_type="sourcing_case",
-                workflow_version=2,
-                subject_ref=case_id,
-                current_step="await_public_plan",
-                status="running",
-                created_at=NOW,
-                context={
-                    "case_id": str(case_id),
-                    "need_id": str(need_id),
-                    "need_snapshot_hash": "a" * 64,
-                },
-                idempotency_key=f"sourcing-plan:{case_id}",
+        run = (
+            await session.execute(
+                select(WorkflowRunRow).where(
+                    WorkflowRunRow.tenant_id == tenant_id,
+                    WorkflowRunRow.run_id == run_id,
+                )
             )
-        )
+        ).scalar_one()
+        first_step = (
+            await session.execute(
+                select(WorkflowStepRow).where(
+                    WorkflowStepRow.tenant_id == tenant_id,
+                    WorkflowStepRow.run_id == run_id,
+                    WorkflowStepRow.step_name == "check_ladder",
+                )
+            )
+        ).scalar_one()
+        run.current_step = "await_public_plan"
+        first_step.status = "completed"
+        first_step.data = {"outcome": "continue"}
         session.add(
             WorkflowStepRow(
                 step_id=new_id("wfs"),
@@ -352,8 +407,10 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
         )
 
     service = make_service()
-    case_id = await _prepare_case(service, tenant_id, need_id, system)
-    engine, run_id = await _seed_waiting_run(factory, tenant_id, case_id, need_id)
+    case_id = await _open_case(service, tenant_id, need_id, system)
+    engine, run_id = await _seed_waiting_run(
+        factory, service, system, tenant_id, case_id, need_id
+    )
     quota = PostgresSearchQuotaRepository(factory, tenant_id, now=lambda: NOW)
     application = SourcingCaseApplication(
         sourcing=service, quota=quota, engine=engine
@@ -484,10 +541,10 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
 
 
 @pytest.mark.asyncio
-async def test_exact_event_replay_fails_closed_before_history_when_active_run_is_duplicate(
+async def test_database_rejects_duplicate_run_and_exact_event_replay_stays_idempotent(
     integration_engine: AsyncEngine,
 ) -> None:
-    """即使 exact event 已持久化，两个 active Case Run 也必须先触发唯一性拒绝。"""
+    """0055 阻断第二条 Case Run 后，exact event replay 仍返回 canonical Run。"""
 
     tenant_id = TenantId(new_id("tn"))
     need_id = ValidatedNeedId(new_id("need"))
@@ -505,9 +562,9 @@ async def test_exact_event_replay_fails_closed_before_history_when_active_run_is
         provider_usage_evidence_reader=_UsageReader(tenant_id, evidence_id),
         now=lambda: NOW,
     )
-    case_id = await _prepare_case(service, tenant_id, need_id, system)
+    case_id = await _open_case(service, tenant_id, need_id, system)
     engine, owning_run_id = await _seed_waiting_run(
-        factory, tenant_id, case_id, need_id
+        factory, service, system, tenant_id, case_id, need_id
     )
     application = SourcingCaseApplication(
         sourcing=service,
@@ -535,26 +592,27 @@ async def test_exact_event_replay_fails_closed_before_history_when_active_run_is
     )
 
     duplicate_run_id = RunId(new_id("run"))
-    async with factory() as session, session.begin():
-        session.add(
-            WorkflowRunRow(
-                run_id=duplicate_run_id,
-                tenant_id=tenant_id,
-                workflow_type="sourcing_case",
-                workflow_version=2,
-                subject_ref=case_id,
-                current_step="public_search",
-                status="running",
-                created_at=NOW,
-                context={"case_id": str(case_id)},
-                idempotency_key=f"duplicate-active:{case_id}",
+    with pytest.raises(IntegrityError):
+        async with factory() as session, session.begin():
+            session.add(
+                WorkflowRunRow(
+                    run_id=duplicate_run_id,
+                    tenant_id=tenant_id,
+                    workflow_type="sourcing_case",
+                    workflow_version=2,
+                    subject_ref=case_id,
+                    current_step="public_search",
+                    status="running",
+                    created_at=NOW,
+                    context={"case_id": str(case_id)},
+                    idempotency_key=f"duplicate-active:{case_id}",
+                )
             )
-        )
 
-    with pytest.raises(ValidationError, match="not unique"):
-        await application.run(
-            tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
-        )
+    replay = await application.run(
+        tenant_id, case_id, plan.plan_id, plan.plan_hash, actor=boss
+    )
+    assert replay.status is PublicPlanStatus.RUNNING
     async with factory() as session:
         active_ids = (
             await session.execute(
@@ -566,7 +624,7 @@ async def test_exact_event_replay_fails_closed_before_history_when_active_run_is
                 )
             )
         ).scalars().all()
-    assert set(active_ids) == {str(owning_run_id), str(duplicate_run_id)}
+    assert set(active_ids) == {str(owning_run_id)}
 
 
 async def _rebuild_engine(factory, run_id: RunId) -> tuple[PostgresWorkflowEngine, RunId]:

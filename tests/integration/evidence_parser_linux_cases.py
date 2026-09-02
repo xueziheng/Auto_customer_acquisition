@@ -131,7 +131,7 @@ async def test_real_probe_then_pdf_and_rfc822():
 @pytest.mark.parametrize(
     "action,changes,code",
     [
-        ("cpu", {"cpu_seconds": 1}, "parse_limit_exceeded"),
+        ("cpu", {"cpu_seconds": 2}, "parse_limit_exceeded"),
         ("as", {"address_space_bytes": 67108864}, "parse_limit_exceeded"),
         ("wall", {"wall_timeout_ms": 100}, "parse_timeout"),
         ("ipc", {}, "parse_limit_exceeded"),

@@ -80,8 +80,19 @@ Demand Signal → Need Hypothesis → 触达 → 回复识别 → Validated Need
 review 和 Opportunity gate，最终创建唯一 ESTIMATED 成本表。公开价格仍是 indicative，不能报价；真实
 Tavily、真实模型、真实供应商报价和任何联系/发送均不是该结论的一部分。
 
-这不代表整个 Phase 2 完成。后续仍需独立规格、实现与验收：NeedCluster 寻源排序、联系人多源瀑布、
-70/30 自适应分配、接管队列自动背压、真实 direct supplier quote、商业来源。它们分别需要足够的
+### NeedCluster Sourcing Admission（子项目完成）
+
+已验证 Need 现在先各自形成不可变 Case/排序快照，再进入租户隔离的 durable admission 队列；老板确认
+`cluster_ranked` 策略与每轮上限前不会启动 Run。自动准入按当前需求簇成员数降序、就绪时间升序领取，
+runtime 重启和事件重放复用同一 Case/Run，授权员工也可用幂等请求单条人工准入。需求簇只影响尚未启动
+Case 的顺序，不合并 Need、数量、规格、Provenance 或订单；历史 V1/V2 Run 保持原解释。
+
+实际受控核心、Browser 与未运行边界见
+[NeedCluster Sourcing Admission 验收](docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md)。
+这不代表生产已启用，也不代表整个 Phase 2 完成。
+
+后续仍需独立规格、实现与验收：Catalog Product Proposal、联系人多源瀑布、70/30 自适应分配、
+接管队列自动背压、真实 direct supplier quote、商业来源。它们分别需要足够的
 真实样本/第二联系人 provider、已校准策略数据、成熟额度契约以及逐次人工授权；不得由本子项目自动启用。
 利润阈值、精度、汇率与条款由用户明确配置；不修改Phase1运营状态或勾完整个Phase2。
 
@@ -92,7 +103,7 @@ Tavily、真实模型、真实供应商报价和任何联系/发送均不是该�
 - Sourcing Case 自动化：候选发现、规格核对、拒绝诱导性最低价、证据快照
 - Deal Cost Sheet 三版本和报价版本/审批已纳入上面成本报价批次；后续业务扩展继续按独立验收推进
 - 候选产品卡生成
-- **需求簇驱动寻源排序**——寻源队列默认按簇排，而非按单条需求排。簇达到一定规模自动提议进入正式产品目录。这是把系统从「找客户工具」变成「供应链优势」的关键一步
+- **Catalog Product Proposal**——需求簇达到何种规模、数量、复购与跨国家证据后才提议进入正式产品目录，仍需独立规格、阈值校准和人工确认；本批只完成寻源准入排序，没有实现目录产品提案
 - **联系人多源瀑布补全**——按单价升序依次尝试、命中即停（此时才会有第二家 provider）
 - **70/30 自适应分配器**——以「每积分产出的已验证需求数」为反馈信号自动调整探索配比，本质是多臂老虎机。老板仍可手动倾斜
 - **接管队列反压**——待接管积压超阈值时自动降低探索类任务配额，把预算挪到已验证需求的寻源与报价上

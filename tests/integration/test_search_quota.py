@@ -7,6 +7,7 @@ import importlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -552,7 +553,9 @@ async def test_account_reservation_commit_failure_never_dispatches(quota, monkey
     assert (await rebuilt.run_state(run)).stop_reason == "request_uncertain"
 
 
-async def test_0039_roundtrip_schema_matches_orm(db_url, tmp_path):
+async def test_0039_roundtrip_schema_matches_orm(
+    integration_engine: AsyncEngine, tmp_path
+):
     from pathlib import Path
     from shutil import copytree
 
@@ -582,7 +585,14 @@ async def test_0039_roundtrip_schema_matches_orm(db_url, tmp_path):
     assert len(heads) == 1
     current_head = heads[0]
     tables = ("search_quota_accounts", "search_quota_reservations", "search_quota_runs")
-    engine = create_engine_from(db_url)
+    database_name = "test_search_quota_roundtrip_" + uuid4().hex
+    async with integration_engine.connect() as connection:
+        admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await admin.execute(text(f'CREATE DATABASE "{database_name}"'))
+    isolated_url = integration_engine.url.set(database=database_name).render_as_string(
+        False
+    )
+    engine = create_engine_from(isolated_url)
 
     def contract(connection):
         inspector = inspect(connection)
@@ -612,17 +622,18 @@ async def test_0039_roundtrip_schema_matches_orm(db_url, tmp_path):
             }
 
     try:
+        _run_alembic(isolated_url, "upgrade", "head")
         async with engine.connect() as conn:
             assert (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
                 == current_head
             )
             await conn.run_sync(contract)
-        _run_alembic(db_url, "downgrade", "0038")
+        _run_alembic(isolated_url, "downgrade", "0038")
         async with engine.connect() as conn:
             names = await conn.run_sync(lambda sync: inspect(sync).get_table_names())
             assert not set(tables) & set(names)
-        _run_alembic(db_url, "upgrade", "head")
+        _run_alembic(isolated_url, "upgrade", "head")
         async with engine.connect() as conn:
             await conn.run_sync(contract)
             assert (
@@ -630,8 +641,10 @@ async def test_0039_roundtrip_schema_matches_orm(db_url, tmp_path):
                 == current_head
             )
     finally:
-        _run_alembic(db_url, "upgrade", "head")
         await engine.dispose()
+        async with integration_engine.connect() as connection:
+            admin = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await admin.execute(text(f'DROP DATABASE "{database_name}"'))
 
 
 async def test_legacy_brave_composition_retains_provider_and_does_not_claim_free_quota(quota):
