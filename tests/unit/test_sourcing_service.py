@@ -1273,6 +1273,17 @@ async def test_admission_case_snapshot_read_is_system_only_and_tenant_bound() ->
     factory = _Factory()
     service = _service(factory)
     case_id = await _opened(service)
+    canonical_hash = "5f8927d174dab1b6259004d1ced240fa24bbb2873a87932096be614f6f335736"
+    stored = factory.state["cases"][(TENANT, case_id)]
+    assert stored.need_snapshot is not None
+    canonical_snapshot = stored.need_snapshot.model_copy(
+        update={"snapshot_hash": canonical_hash}
+    )
+    factory.state["cases"][(TENANT, case_id)] = replace(
+        stored,
+        need_snapshot=canonical_snapshot,
+        need_snapshot_hash=canonical_hash,
+    )
     calls_after_open = factory.calls
 
     view = await service.get_admission_case_snapshot(
@@ -1281,7 +1292,7 @@ async def test_admission_case_snapshot_read_is_system_only_and_tenant_bound() ->
 
     assert view is not None
     assert view.case_id == case_id
-    assert view.need_snapshot == _open_command().need
+    assert view.need_snapshot == canonical_snapshot
     assert factory.calls == calls_after_open + 1
 
     other_system = SourcingActor(
@@ -1293,6 +1304,42 @@ async def test_admission_case_snapshot_read_is_system_only_and_tenant_bound() ->
         )
     assert factory.calls == calls_after_open + 1
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["persisted_hash_drift", "snapshot_body_drift"])
+async def test_admission_case_snapshot_read_rejects_three_way_hash_drift(
+    fault: str,
+) -> None:
+    """持久 hash、内嵌 hash 与正文 canonical hash 任一漂移都必须永久拒绝。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    key = (TENANT, case_id)
+    stored = factory.state["cases"][key]
+    assert stored.need_snapshot is not None
+    canonical_hash = "5f8927d174dab1b6259004d1ced240fa24bbb2873a87932096be614f6f335736"
+    snapshot = stored.need_snapshot.model_copy(update={"snapshot_hash": canonical_hash})
+    if fault == "persisted_hash_drift":
+        persisted_hash = "b" * 64
+    else:
+        persisted_hash = canonical_hash
+        snapshot = snapshot.model_copy(
+            update={
+                "quantity": snapshot.quantity.model_copy(update={"value": 6000})
+            }
+        )
+    factory.state["cases"][key] = replace(
+        stored,
+        need_snapshot=snapshot,
+        need_snapshot_hash=persisted_hash,
+    )
+    calls_before_read = factory.calls
+
+    with pytest.raises(ValidationError, match="^寻源准入 Case 冻结快照完整性无效$"):
+        await service.get_admission_case_snapshot(TENANT, case_id, actor=SYSTEM)
+
+    assert factory.calls == calls_before_read + 1
 
 def _priority_facts(
     need_id: ValidatedNeedId,

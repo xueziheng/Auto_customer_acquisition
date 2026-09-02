@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Literal, cast
 
+from pydantic import ValidationError as PydanticValidationError
+
 from domains.sourcing.admission import (
     canonical_priority_facts_hash,
     priority_explanation,
@@ -79,6 +81,7 @@ from domains.sourcing.schemas import (
     SourcingHandoffSnapshot,
     SourcingLadderCheckReadView,
     SourcingMatchInference,
+    SourcingNeedSnapshot,
     SourcingObservedFact,
     SourcingPriorityFactsInput,
     SourcingReconciliationReadView,
@@ -91,6 +94,7 @@ from domains.sourcing.schemas import (
     SpecComparisonView,
     VerifyPublicCandidateDraftsCommand,
     VerifyPublicCandidateDraftsResult,
+    canonical_sourcing_need_snapshot_hash,
 )
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
@@ -1593,8 +1597,26 @@ class SourcingServiceImpl:
             SourcingScope.SYSTEM,
         )
         _bounded_identifier(case_id, "case_id")
-        async with self._uow_factory(tenant_id) as uow:
-            case = await uow.cases.get(tenant_id, case_id)
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                case = await uow.cases.get(tenant_id, case_id)
+        except PydanticValidationError:
+            raise ValidationError("寻源准入 Case 冻结快照完整性无效") from None
+        if case is not None:
+            snapshot = case.need_snapshot
+            persisted_hash = case.need_snapshot_hash
+            if (
+                not isinstance(snapshot, SourcingNeedSnapshot)
+                or not isinstance(persisted_hash, str)
+                or len(persisted_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in persisted_hash
+                )
+                or persisted_hash != snapshot.snapshot_hash
+                or persisted_hash != canonical_sourcing_need_snapshot_hash(snapshot)
+            ):
+                raise ValidationError("寻源准入 Case 冻结快照完整性无效")
         return _case_read_view(case) if case is not None else None
 
     async def record_ladder_check(

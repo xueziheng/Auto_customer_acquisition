@@ -544,6 +544,7 @@ async def test_canonical_case_mismatch_blocks_without_start(fault: str) -> None:
     ("error", "expected_state", "release_count", "pending_count"),
     [
         (TransientError("canonical-private"), AdmissionState.WAITING, 1, 0),
+        (ValidationError("canonical-private"), AdmissionState.BLOCKED, 0, 0),
         (RuntimeError("canonical-private"), AdmissionState.STARTING, 0, 1),
     ],
 )

@@ -729,6 +729,180 @@ async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_a
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["persisted_hash_drift", "snapshot_body_drift"])
+async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
+    fault: str,
+    integration_engine: AsyncEngine,
+) -> None:
+    """真实 PG 中持久 hash 或冻结正文漂移都必须 zero-start 并固定阻断。"""
+
+    from apps.scheduler_worker.directive_reader import SourcingAdmissionPolicyRead
+    from apps.scheduler_worker.sourcing_admission import SourcingAdmissionDriver
+    from domains.sourcing.permissions import (
+        Phase2SourcingAuthorizer,
+        SourcingActor,
+        SourcingScope,
+    )
+    from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
+    from tests.integration.test_sourcing_service_persistence import (
+        _UnusedEvidenceReader,
+    )
+
+    tenant = TenantId(new_id("tn"))
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    admission_id = new_id("sad")
+    priority_snapshot_id = new_id("sps")
+    provenance = {
+        "source_type": "conversation",
+        "source_id": "msg-hash-drift",
+        "extracted_by": "human",
+        "extracted_at": NOW.isoformat(),
+        "confirmed_by": None,
+        "confirmed_at": None,
+        "source_url": None,
+        "page_hash": None,
+        "source_quote": None,
+    }
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO validated_needs "
+                "(tenant_id, need_id, account_id, product_category, source_message_id, "
+                "status, application, material, size_spec, quantity, created_at) VALUES "
+                "(:tenant, :need, 'account-hash-drift', CAST(:category AS jsonb), "
+                "'message-hash-drift', 'sourcing_ready', CAST(:application AS jsonb), "
+                "CAST(:material AS jsonb), CAST(:size_spec AS jsonb), "
+                "CAST(:quantity AS jsonb), :now)"
+            ),
+            {
+                "tenant": str(tenant),
+                "need": str(need_id),
+                "category": json.dumps({"value": "hinges", "provenance": provenance}),
+                "application": json.dumps(
+                    {"value": "marine doors", "provenance": provenance}
+                ),
+                "material": json.dumps(
+                    {"value": "required-material", "provenance": provenance}
+                ),
+                "size_spec": json.dumps(
+                    {"value": "required-size", "provenance": provenance}
+                ),
+                "quantity": json.dumps({"value": 5000, "provenance": provenance}),
+                "now": NOW,
+            },
+        )
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    snapshot = await PostgresSourcingNeedReader(sessions, tenant).read(tenant, need_id)
+    frozen_body = snapshot.model_dump(mode="json")
+    persisted_hash = snapshot.snapshot_hash
+    if fault == "persisted_hash_drift":
+        persisted_hash = "b" * 64
+    else:
+        frozen_body["quantity"]["value"] = 6000
+
+    async with sessions() as session, session.begin():
+        session.add(
+            SourcingCaseRow(
+                tenant_id=str(tenant),
+                case_id=str(case_id),
+                need_id=str(need_id),
+                workflow_version=2,
+                trigger_key=f"sourcing-case:v2:{tenant}:{need_id}",
+                need_snapshot=frozen_body,
+                need_snapshot_hash=persisted_hash,
+                state="opened",
+                sealed_candidate_ids=[],
+                version=1,
+                opened_at=NOW,
+                state_changed_at=NOW,
+            )
+        )
+        await session.flush()
+        session.add(
+            SourcingAdmissionRow(
+                tenant_id=str(tenant),
+                admission_id=admission_id,
+                case_id=str(case_id),
+                need_id=str(need_id),
+                state="waiting",
+                ready_at=NOW - timedelta(minutes=1),
+                current_snapshot_id=priority_snapshot_id,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.flush()
+        session.add(
+            SourcingPrioritySnapshotRow(
+                tenant_id=str(tenant),
+                snapshot_id=priority_snapshot_id,
+                admission_id=admission_id,
+                case_id=str(case_id),
+                need_id=str(need_id),
+                cluster_id=None,
+                cluster_member_count=1,
+                ready_at=NOW - timedelta(minutes=1),
+                ranking_version="need-cluster-admission-v1",
+                facts_observed_at=NOW - timedelta(minutes=1),
+                facts_hash="c" * 64,
+                created_at=NOW,
+            )
+        )
+
+    actor = SourcingActor(
+        "system:sourcing-admission", tenant, SourcingScope.SYSTEM, "system"
+    )
+    service = SourcingServiceImpl(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sessions, bound_tenant),
+        Phase2SourcingAuthorizer(tenant),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+
+    class Policy:
+        async def read(self, requested_tenant: TenantId) -> SourcingAdmissionPolicyRead:
+            assert requested_tenant == tenant
+            return SourcingAdmissionPolicyRead("dir-hash", 1, True, 1)
+
+    class Engine:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, ...]] = []
+
+        async def start(self, *args: object) -> RunId:
+            self.calls.append(args)
+            return RunId("run-must-not-start")
+
+    engine = Engine()
+    driver = SourcingAdmissionDriver(
+        policy=Policy(),  # type: ignore[arg-type]
+        sourcing=service,
+        engine=engine,  # type: ignore[arg-type]
+        tenant_id=tenant,
+        sourcing_actor=actor,
+        lease_duration=timedelta(minutes=5),
+        now=lambda: NOW,
+    )
+
+    result = await driver.scan_once()
+
+    async with sessions() as session:
+        stored = await session.scalar(
+            select(SourcingAdmissionRow).where(
+                SourcingAdmissionRow.tenant_id == tenant,
+                SourcingAdmissionRow.admission_id == admission_id,
+            )
+        )
+    assert result.blocked_count == 1
+    assert engine.calls == []
+    assert stored is not None
+    assert (stored.state, stored.blocked_reason) == (
+        "blocked",
+        "case_state_mismatch",
+    )
+
+
+@pytest.mark.asyncio
 async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_sourcing_events(
     db_url: str,
     integration_engine: AsyncEngine,

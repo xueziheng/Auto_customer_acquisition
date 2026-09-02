@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -68,7 +67,11 @@ from domains.sourcing.permissions import (
     SourcingActor,
     SourcingScope,
 )
-from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
+from domains.sourcing.schemas import (
+    NeedFact,
+    SourcingNeedSnapshot,
+    canonical_sourcing_need_snapshot_hash,
+)
 from domains.sourcing.service import (
     CandidateEvidenceSnapshot,
     PublicSourcingPlan,
@@ -284,25 +287,11 @@ class PostgresSourcingNeedReader:
             if need.required_by
             else None,
         }
-        hash_payload = {
-            "need_id": str(need_id),
-            "completeness": need.completeness,
-            "derivation_version": "need-completeness-v1",
-            **{
-                key: value.model_dump(mode="json") if value is not None else None
-                for key, value in facts.items()
-            },
-        }
-        snapshot_hash = sha256(
-            json.dumps(
-                hash_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            ).encode("utf-8")
-        ).hexdigest()
-        return SourcingNeedSnapshot(
+        snapshot = SourcingNeedSnapshot(
             need_id=need_id,
             completeness=need.completeness,
             derivation_version="need-completeness-v1",
-            snapshot_hash=snapshot_hash,
+            snapshot_hash="0" * 64,
             product_category=cast(NeedFact, facts["product_category"]),
             application=cast(NeedFact | None, facts["application"]),
             material=cast(NeedFact | None, facts["material"]),
@@ -312,6 +301,11 @@ class PostgresSourcingNeedReader:
             unit=cast(NeedFact | None, facts["unit"]),
             destination=cast(NeedFact | None, facts["destination"]),
             required_by=cast(NeedFact | None, facts["required_by"]),
+        )
+        return snapshot.model_copy(
+            update={
+                "snapshot_hash": canonical_sourcing_need_snapshot_hash(snapshot)
+            }
         )
 
 

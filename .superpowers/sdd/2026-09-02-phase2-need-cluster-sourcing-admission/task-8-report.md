@@ -69,7 +69,7 @@ git diff --check：exit 0（持续出现仓库既有 AppleDouble pack index warn
 ## Commit
 
 - 初始实现：`9dffa46` — `feat: admit sourcing workflows by cluster priority`
-- 第 1 轮审查修复：`fix: start sourcing from frozen case snapshot`（hash 在提交后回报）。
+- 第 1 轮审查修复：`fce07eb` — `fix: start sourcing from frozen case snapshot`。
 
 ## 第 1 轮审查修复：以 canonical Case frozen snapshot 启动
 
@@ -109,6 +109,46 @@ Task 8 brief focused：114 passed in 6.15s
 Task 6-8 + scheduler/quote-expiry/service/repository/permissions：436 passed in 10.35s
 Ruff affected files：All checks passed
 mypy affected production boundaries：Success, 4 source files
+Python 3.12 boundaries：7 项全部通过
+git diff --check：exit 0（仓库既有 AppleDouble warning 仍在）
+```
+
+## 第 2 轮审查修复：三方 frozen snapshot hash 完整性
+
+审查只读探针进一步证明，专用 canonical Case read 虽已返回 frozen snapshot，却没有比较 Case 持久化
+`need_snapshot_hash`、快照内嵌 `snapshot_hash` 与冻结正文 canonical 重算 hash；因此持久 hash 为 B、DTO
+内嵌 hash 为 A 的历史漂移仍可能启动。
+
+本轮继续严格 TDD。unit RED 中两个漂移分支均因 service 未抛永久错误而失败；修正真实 PG fixture 的
+外键插入顺序后，两个 PG 探针均观察到旧代码实际 `admitted_count == 1`，证明会调用 Engine 并错误
+admit，而不是测试搭建错误。
+
+最小修复：
+
+- 将 `PostgresSourcingNeedReader` 原有的 canonical JSON（排序 key、紧凑分隔符、保留 Unicode）和
+  SHA-256 算法原样提取为 `canonical_sourcing_need_snapshot_hash`，放在拥有
+  `SourcingNeedSnapshot` 契约的 sourcing schema 模块；快照创建与完整性读取共用唯一实现。
+- `get_admission_case_snapshot` 保持原安全 DTO 和 `ADMISSION_COMPLETE + SYSTEM`、tenant-bound
+  repository 路径不变；在领域 Case 上严格校验持久 hash 格式、内嵌 hash、canonical 重算 hash 三者
+  完全一致。缺失、非法或漂移只抛固定 `寻源准入 Case 冻结快照完整性无效`，不修复历史数据，也不
+  透传底层/Pydantic 异常文本。
+- driver 无需新增分支：固定 `ValidationError` 沿既有 permanent pre-start 路径原子写入
+  `case_state_mismatch`；known transient 仍 release waiting，unknown 仍保留 starting 等 lease。
+- 真实 PG 参数化探针分别注入持久 hash 与内嵌 hash 不同，以及两者相同但 quantity 正文被篡改；两者
+  均 zero start、fixed block。原 frozen A/current Need B、首次 bind 失败后同一 canonical Run 的完整
+  production composition 测试仍通过。
+
+审查 RED / GREEN 与最终门禁：
+
+```text
+unit RED（三方 hash）：2 failed, 4 passed
+真实 PostgreSQL RED（三方 hash）：2 failed；旧代码两项均 admitted_count == 1
+三方 hash unit + PG GREEN：8 passed in 4.19s
+Task 8 brief focused：117 passed in 6.50s
+service / repository / permissions：277 passed in 8.16s
+相关 sourcing event：22 passed in 0.33s
+Ruff affected files：All checks passed
+mypy affected production boundaries：Success, 3 source files
 Python 3.12 boundaries：7 项全部通过
 git diff --check：exit 0（仓库既有 AppleDouble warning 仍在）
 ```

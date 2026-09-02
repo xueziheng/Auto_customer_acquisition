@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Literal, Self
 
@@ -95,6 +97,21 @@ class SourcingNeedSnapshot(BaseModel):
     destination: NeedFact | None = None
     required_by: NeedFact | None = None
     snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def canonical_sourcing_need_snapshot_hash(snapshot: SourcingNeedSnapshot) -> str:
+    """按冻结正文的 canonical JSON 计算唯一 SHA-256；不信任自报 hash。"""
+
+    if not isinstance(snapshot, SourcingNeedSnapshot):
+        raise TypeError("snapshot 必须是 SourcingNeedSnapshot")
+    payload = snapshot.model_dump(mode="json", exclude={"snapshot_hash"})
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 class OpenSourcingCase(BaseModel):
