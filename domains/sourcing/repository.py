@@ -5,14 +5,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self, runtime_checkable
 
 from domains.sourcing.models import (
+    AdmissionBlockedReason,
+    AdmissionState,
     CaseState,
     LadderCheck,
     PublicSourcingPlan,
+    SourcingAdmission,
     SourcingCase,
+    SourcingPrioritySnapshot,
     SourcingReview,
     SourcingSearchExecution,
     SourcingSearchReconciliation,
@@ -25,6 +30,7 @@ from domains.sourcing.schemas import PublicCandidateDraft, SourcingHandoffSnapsh
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -94,6 +100,84 @@ class SourcingCaseRepository(Protocol):
     async def list_by_state(
         self, tenant_id: TenantId, state: CaseState, limit: int
     ) -> list[SourcingCase]: ...
+
+
+@runtime_checkable
+class SourcingAdmissionRepository(Protocol):
+    """准入与只增优先级快照的 tenant-bound 存储契约。"""
+
+    async def get_or_create(
+        self, tenant_id: TenantId, admission: SourcingAdmission
+    ) -> tuple[SourcingAdmission, bool]:
+        """按 tenant+Case/Need 原子返回唯一 admission，不得跨租户读取。"""
+        ...
+
+    async def get(
+        self, tenant_id: TenantId, admission_id: SourcingAdmissionId
+    ) -> SourcingAdmission | None:
+        """读取单条同租户 admission；不存在或异租户均返回 ``None``。"""
+        ...
+
+    async def append_snapshot_if_changed(
+        self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
+    ) -> tuple[SourcingPrioritySnapshot, bool]:
+        """以 facts_hash 去重追加不可变快照，并返回 canonical 当前快照。"""
+        ...
+
+    async def claim_ordered(
+        self,
+        tenant_id: TenantId,
+        limit: int,
+        claim_token: str,
+        claim_expires_at: datetime,
+        now: datetime,
+    ) -> list[SourcingAdmission]:
+        """只按当前快照固定排序 claim 等待项；实现必须跳过并发已锁定记录。"""
+        ...
+
+    async def complete(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        workflow_run_id: RunId,
+        admitted_by: str,
+        admitted_at: datetime,
+    ) -> SourcingAdmission | None:
+        """仅用匹配租约绑定 canonical Run；失配时不改写同租户记录。"""
+        ...
+
+    async def release_expired_claims(
+        self, tenant_id: TenantId, now: datetime
+    ) -> list[SourcingAdmission]:
+        """释放到期租约，不对尚未到期的不确定执行做即时重试。"""
+        ...
+
+    async def release(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        released_at: datetime,
+    ) -> SourcingAdmission | None:
+        """以当前租约释放已知暂态失败，避免其他 worker 覆盖新 claim。"""
+        ...
+
+    async def block(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        reason: AdmissionBlockedReason,
+        blocked_at: datetime,
+    ) -> SourcingAdmission | None:
+        """以固定原因阻断单条记录；不接收自由异常文本。"""
+        ...
+
+    async def list_by_state(
+        self, tenant_id: TenantId, state: AdmissionState, limit: int
+    ) -> list[SourcingAdmission]:
+        """按 repository 的确定性顺序读取同租户状态列表。"""
+        ...
 
 
 @runtime_checkable
@@ -303,6 +387,7 @@ class SourcingUnitOfWork(Protocol):
     """寻源聚合与 Outbox 共事务边界。"""
 
     cases: SourcingCaseRepository
+    admissions: SourcingAdmissionRepository
     checks: LadderCheckRepository
     plans: PublicSourcingPlanRepository
     candidates: CandidateRepository

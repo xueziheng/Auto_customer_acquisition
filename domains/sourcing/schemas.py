@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal, Self
@@ -20,9 +20,11 @@ from pydantic import (
 from shared.events.catalog import SourcingCandidatesVerified
 from shared.schemas.identifiers import (
     ArtifactId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -102,6 +104,41 @@ class OpenSourcingCase(BaseModel):
 
         _bounded_text(self.trigger_key, field_name="trigger_key", maximum=200)
         return self
+
+
+class SourcingPriorityFactsInput(BaseModel):
+    """跨域传入的已核验排序事实；不携带数量、国家、规格或 Provenance。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    need_id: ValidatedNeedId
+    cluster_id: NeedClusterId | None = None
+    cluster_member_count: int = Field(ge=1)
+    facts_observed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_cluster_shape_and_utc(self) -> Self:
+        """未归簇必为一个 Need；所有跨边界排序时间固定为 UTC。"""
+
+        _bounded_text(str(self.need_id), field_name="need_id", maximum=200)
+        if self.cluster_id is not None:
+            _bounded_text(str(self.cluster_id), field_name="cluster_id", maximum=200)
+        elif self.cluster_member_count != 1:
+            raise ValueError("未归簇需求的 cluster_member_count 必须为 1")
+        if self.facts_observed_at.utcoffset() != timedelta(0):
+            raise ValueError("facts_observed_at 必须是 UTC 时间")
+        return self
+
+
+class SourcingAdmissionManualStartCommand(BaseModel):
+    """人工准入的请求标识；身份、tenant 与实际启动参数只能由服务上下文提供。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    request_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str) -> str:
+        return _bounded_text(value, field_name="request_id", maximum=200)
 
 
 class PublicSourcingQuery(BaseModel):
@@ -836,6 +873,53 @@ class SourcingCaseReadView(BaseModel):
     active_search_plan_id: SourcingPlanId | None = None
     need_snapshot: SourcingNeedSnapshot | None = None
     stop: SourcingStopPublicView | None = None
+
+
+class SourcingAdmissionReadView(BaseModel):
+    """等待准入/已准入记录的最小安全读取投影。
+
+    不返回 claim token、租约、Workflow context、完整 Need snapshot 或底层异常；
+    这些字段不能帮助人工判断，却会扩大并发控制与业务数据暴露面。
+    """
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    admission_id: SourcingAdmissionId
+    case_id: SourcingCaseId
+    need_id: ValidatedNeedId
+    state: Literal["waiting", "starting", "admitted", "blocked"]
+    blocked_reason: Literal["priority_facts_invalid", "case_state_mismatch"] | None = None
+    cluster_id: NeedClusterId | None = None
+    cluster_member_count: int | None = Field(default=None, ge=1)
+    ready_at: AwareDatetime
+    ranking_version: Literal["need-cluster-admission-v1"] | None = None
+    explanation: str | None = Field(default=None, max_length=200)
+    admitted_at: AwareDatetime | None = None
+    admitted_by: str | None = Field(default=None, max_length=200)
+    can_current_user_manual_start: bool
+
+    @model_validator(mode="after")
+    def validate_safe_state_projection(self) -> Self:
+        """展示层不得伪造排序或已准入事实，且时间一律使用 UTC。"""
+
+        if self.ready_at.utcoffset() != timedelta(0):
+            raise ValueError("ready_at 必须是 UTC 时间")
+        if self.admitted_at is not None and self.admitted_at.utcoffset() != timedelta(0):
+            raise ValueError("admitted_at 必须是 UTC 时间")
+        if self.state == "blocked":
+            if self.blocked_reason is None:
+                raise ValueError("blocked 准入必须提供 blocked_reason")
+        elif self.blocked_reason is not None:
+            raise ValueError("非 blocked 准入不得提供 blocked_reason")
+        if self.cluster_id is None and self.cluster_member_count not in {None, 1}:
+            raise ValueError("未归簇需求的 cluster_member_count 必须为 1")
+        if self.cluster_member_count is None and self.ranking_version is not None:
+            raise ValueError("无排序事实时不得提供 ranking_version")
+        if self.state == "admitted":
+            if self.admitted_at is None or self.admitted_by is None:
+                raise ValueError("admitted 准入必须提供准入时间和执行者")
+        elif self.admitted_at is not None or self.admitted_by is not None:
+            raise ValueError("非 admitted 准入不得提供准入事实")
+        return self
 
 
 class SourcingLadderCheckReadView(BaseModel):

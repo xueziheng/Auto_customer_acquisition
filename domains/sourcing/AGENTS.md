@@ -96,7 +96,33 @@ AI 参考图         必须明确标注
 
 状态机、核验清单、证据快照结构、匹配梯子接口、三候选上限。人工录入走同一套结构。
 
-不做：自动寻源执行（Phase 2）、按需求簇排序寻源队列（Phase 2 挂载点）、1688/以图搜款集成（Phase 2）。
+不做：自动寻源执行（Phase 2）、1688/以图搜款集成（Phase 2）。
+
+## Phase 2 · Sourcing Admission
+
+每条 ``Validated Need`` 只对应一个 tenant-bound admission 与一个独立 Case；不得为
+排序合并数量、单位、国家、规格或 Provenance。admission 的状态仅表示是否获准启动
+自动流程，绝不替代既有 ``CaseState``：
+
+```text
+waiting ──claim──> starting ──canonical Run bound──> admitted
+   ↑                   │
+   └──lease expired────┘
+   │
+   └──invalid facts──> blocked ──facts repaired / explicit retry──> waiting
+```
+
+- ``admitted`` 是不可改写终态；``starting`` 必须同时有 claim token 和 UTC lease；
+  ``blocked`` 只能使用固定原因 ``priority_facts_invalid`` 或 ``case_state_mismatch``。
+- ``SourcingPrioritySnapshot`` 只增不改。v1 唯一允许的排序键是
+  ``cluster_member_count DESC → ready_at ASC → need_id ASC``；未归簇的 count 固定为 1。
+  禁止加入权重、置信度、数量、国家、利润或 aging threshold。
+- 每份快照的 ``facts_hash`` 必须是排序输入的 canonical JSON SHA-256，时间使用 UTC；
+  相同 hash 不得追加快照。只保存 current snapshot 指针，历史快照不得更新或删除。
+- admission 的 public read view 不得暴露 claim token、lease、Workflow context、底层异常或完整
+  Need snapshot。内部排序解释只能使用确定性中文模板，禁止由模型生成。
+- 本域只维护准入自身不变量，不读取 Directive、Demand 或 Workflow；这些跨域编排留给
+  scheduler/application，且它们只能经各域的 public service/schema 合同协作。
 
 ## V2 公开寻源边界
 

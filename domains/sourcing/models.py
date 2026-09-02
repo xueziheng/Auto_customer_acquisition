@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from hashlib import sha256
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from domains.sourcing.errors import SourcingPlanStaleError, SourcingReviewStaleError
@@ -28,11 +29,14 @@ from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
+    SourcingPrioritySnapshotId,
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
@@ -135,6 +139,39 @@ class CaseState(str, Enum):
     CANDIDATES_READY = "candidates_ready"
     HANDED_TO_COSTING = "handed_to_costing"
     FAILED = "failed"
+
+
+ADMISSION_RANKING_VERSION = "need-cluster-admission-v1"
+"""当前准入排序语义的不可变版本号；改变规则必须发布新版本。"""
+
+
+class AdmissionState(str, Enum):
+    """寻源自动准入状态；与既有 ``CaseState`` 分离。"""
+
+    WAITING = "waiting"
+    STARTING = "starting"
+    ADMITTED = "admitted"
+    BLOCKED = "blocked"
+
+
+class AdmissionBlockedReason(str, Enum):
+    """准入无法继续的固定、可修复原因；禁止存储底层异常文本。"""
+
+    PRIORITY_FACTS_INVALID = "priority_facts_invalid"
+    CASE_STATE_MISMATCH = "case_state_mismatch"
+
+
+ADMISSION_STATE_TRANSITIONS: dict[AdmissionState, frozenset[AdmissionState]] = {
+    AdmissionState.WAITING: frozenset(
+        {AdmissionState.STARTING, AdmissionState.BLOCKED}
+    ),
+    AdmissionState.STARTING: frozenset(
+        {AdmissionState.WAITING, AdmissionState.ADMITTED, AdmissionState.BLOCKED}
+    ),
+    AdmissionState.ADMITTED: frozenset(),
+    AdmissionState.BLOCKED: frozenset({AdmissionState.WAITING}),
+}
+"""准入状态转换表；终态 ``admitted`` 永不回退或改写。"""
 
 
 CASE_STATE_TRANSITIONS: dict[CaseState, frozenset[CaseState]] = {
@@ -889,6 +926,273 @@ class SourcingReview:
             self,
             confirmed_by=confirmed_by,
             confirmed_at=confirmed_at,
+        )
+
+
+def _require_utc_time(value: datetime, field_name: str) -> None:
+    """拒绝非 UTC 或无时区时间，避免同一等待事实得到不同排序或哈希。"""
+
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != timedelta(0)
+    ):
+        raise ValidationError(f"{field_name} 必须是 UTC 时间")
+
+
+def _require_nonempty_identifier(value: object, field_name: str) -> None:
+    """在领域边界拒绝空白业务标识，避免不可审计的准入记录。"""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValidationError(f"{field_name} 无效")
+
+
+@dataclass(frozen=True)
+class SourcingPrioritySnapshot:
+    """不可变的准入排序事实。
+
+    仅保存簇规模、等待时间和稳定 Need 标识所需事实；数量、国家、规格、
+    Provenance、置信度和利润均不得混入，防止将不同需求错误合并或改变 v1 排序。
+    """
+
+    tenant_id: TenantId
+    snapshot_id: SourcingPrioritySnapshotId
+    admission_id: SourcingAdmissionId
+    case_id: SourcingCaseId
+    need_id: ValidatedNeedId
+    cluster_id: NeedClusterId | None
+    cluster_member_count: int
+    ready_at: datetime
+    ranking_version: str
+    facts_observed_at: datetime
+    facts_hash: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "tenant_id",
+            "snapshot_id",
+            "admission_id",
+            "case_id",
+            "need_id",
+        ):
+            _require_nonempty_identifier(getattr(self, field_name), field_name)
+        if self.cluster_id is not None:
+            _require_nonempty_identifier(self.cluster_id, "cluster_id")
+        if (
+            isinstance(self.cluster_member_count, bool)
+            or not isinstance(self.cluster_member_count, int)
+            or self.cluster_member_count < 1
+        ):
+            raise ValidationError("cluster_member_count 必须是正整数")
+        if self.cluster_id is None and self.cluster_member_count != 1:
+            raise ValidationError("未归簇需求的 cluster_member_count 必须为 1")
+        if self.ranking_version != ADMISSION_RANKING_VERSION:
+            raise ValidationError("ranking_version 不受支持")
+        if (
+            not isinstance(self.facts_hash, str)
+            or len(self.facts_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.facts_hash)
+        ):
+            raise ValidationError("facts_hash 必须是小写 SHA-256")
+        for field_name in ("ready_at", "facts_observed_at", "created_at"):
+            _require_utc_time(getattr(self, field_name), field_name)
+
+
+@dataclass(frozen=True)
+class SourcingAdmission:
+    """一个 Validated Need 对应一个、tenant-bound 的寻源准入记录。
+
+    Case 业务状态继续由 ``SourcingCase`` 管理；本实体只表达自动流程是否获准
+    启动。所有状态事实被冻结在返回的新对象中，调用方必须经 Repository 持久化。
+    """
+
+    tenant_id: TenantId
+    admission_id: SourcingAdmissionId
+    case_id: SourcingCaseId
+    need_id: ValidatedNeedId
+    state: AdmissionState
+    ready_at: datetime
+    current_snapshot_id: SourcingPrioritySnapshotId | None
+    claim_token: str | None
+    claim_expires_at: datetime | None
+    workflow_run_id: RunId | None
+    blocked_reason: AdmissionBlockedReason | None
+    admitted_at: datetime | None
+    admitted_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in ("tenant_id", "admission_id", "case_id", "need_id"):
+            _require_nonempty_identifier(getattr(self, field_name), field_name)
+        if self.current_snapshot_id is not None:
+            _require_nonempty_identifier(self.current_snapshot_id, "current_snapshot_id")
+        for field_name in ("ready_at", "created_at", "updated_at"):
+            _require_utc_time(getattr(self, field_name), field_name)
+        if self.updated_at < self.created_at:
+            raise ValidationError("updated_at 不得早于 created_at")
+        if not isinstance(self.state, AdmissionState):
+            raise ValidationError("admission state 无效")
+        self._validate_state_fields()
+
+    def _validate_state_fields(self) -> None:
+        claim_present = self.claim_token is not None or self.claim_expires_at is not None
+        admitted_values = (self.workflow_run_id, self.admitted_at, self.admitted_by)
+        admitted_present = any(value is not None for value in admitted_values)
+        if self.claim_token is not None:
+            _require_nonempty_identifier(self.claim_token, "claim_token")
+        if self.claim_expires_at is not None:
+            _require_utc_time(self.claim_expires_at, "claim_expires_at")
+        if self.admitted_by is not None:
+            _require_nonempty_identifier(self.admitted_by, "admitted_by")
+        if self.admitted_at is not None:
+            _require_utc_time(self.admitted_at, "admitted_at")
+        if self.workflow_run_id is not None:
+            _require_nonempty_identifier(self.workflow_run_id, "workflow_run_id")
+
+        if self.state is AdmissionState.WAITING:
+            valid = (
+                self.current_snapshot_id is not None
+                and not claim_present
+                and not admitted_present
+                and self.blocked_reason is None
+            )
+        elif self.state is AdmissionState.STARTING:
+            valid = (
+                self.current_snapshot_id is not None
+                and self.claim_token is not None
+                and self.claim_expires_at is not None
+                and self.claim_expires_at > self.updated_at
+                and not admitted_present
+                and self.blocked_reason is None
+            )
+        elif self.state is AdmissionState.ADMITTED:
+            valid = (
+                self.current_snapshot_id is not None
+                and not claim_present
+                and self.workflow_run_id is not None
+                and self.admitted_at is not None
+                and self.admitted_by is not None
+                and self.blocked_reason is None
+            )
+        else:
+            valid = (
+                not claim_present
+                and not admitted_present
+                and isinstance(self.blocked_reason, AdmissionBlockedReason)
+            )
+        if not valid:
+            raise ValidationError("准入状态与字段组合不一致")
+
+    def _transition(self, target: AdmissionState, *, changed_at: datetime, **changes: object) -> SourcingAdmission:
+        if target not in ADMISSION_STATE_TRANSITIONS[self.state]:
+            allowed = ",".join(
+                item.value for item in sorted(ADMISSION_STATE_TRANSITIONS[self.state], key=lambda item: item.value)
+            ) or "无"
+            raise InvalidStateTransition(
+                f"寻源准入不能从 {self.state.value} 转为 {target.value}；允许：{allowed}"
+            )
+        _require_utc_time(changed_at, "changed_at")
+        return cast(
+            SourcingAdmission,
+            replace(cast(Any, self), state=target, updated_at=changed_at, **changes),
+        )
+
+    def claim(
+        self, claim_token: str, *, claim_expires_at: datetime, claimed_at: datetime
+    ) -> SourcingAdmission:
+        """从等待态取得短租约；不能绕过状态机重复启动 Workflow。"""
+
+        return self._transition(
+            AdmissionState.STARTING,
+            changed_at=claimed_at,
+            claim_token=claim_token,
+            claim_expires_at=claim_expires_at,
+        )
+
+    def release_expired_claim(self, *, now: datetime) -> SourcingAdmission:
+        """仅到期租约可释放回等待态；未知执行结果必须保留到到期。"""
+
+        _require_utc_time(now, "now")
+        if self.state is not AdmissionState.STARTING:
+            return self
+        if self.claim_expires_at is None or now < self.claim_expires_at:
+            return self
+        return self._transition(
+            AdmissionState.WAITING,
+            changed_at=now,
+            claim_token=None,
+            claim_expires_at=None,
+        )
+
+    def complete(
+        self,
+        claim_token: str,
+        *,
+        workflow_run_id: RunId,
+        admitted_by: str,
+        admitted_at: datetime,
+    ) -> SourcingAdmission:
+        """以同一租约绑定 canonical Workflow Run，之后准入事实不可改写。"""
+
+        if self.state is not AdmissionState.STARTING or claim_token != self.claim_token:
+            raise InvalidStateTransition("寻源准入 claim token 与当前 starting 状态不匹配")
+        return self._transition(
+            AdmissionState.ADMITTED,
+            changed_at=admitted_at,
+            claim_token=None,
+            claim_expires_at=None,
+            workflow_run_id=workflow_run_id,
+            admitted_by=admitted_by,
+            admitted_at=admitted_at,
+        )
+
+    def block(
+        self, reason: AdmissionBlockedReason, *, blocked_at: datetime
+    ) -> SourcingAdmission:
+        """以固定原因阻断可修复事实；不保存自由文本或异常内容。"""
+
+        if not isinstance(reason, AdmissionBlockedReason):
+            raise ValidationError("blocked_reason 必须是 AdmissionBlockedReason")
+        return self._transition(
+            AdmissionState.BLOCKED,
+            changed_at=blocked_at,
+            claim_token=None,
+            claim_expires_at=None,
+            blocked_reason=reason,
+        )
+
+    def retry(self, *, retried_at: datetime) -> SourcingAdmission:
+        """修复固定阻断原因后回到等待态；无快照时仍失败关闭。"""
+
+        return self._transition(
+            AdmissionState.WAITING,
+            changed_at=retried_at,
+            blocked_reason=None,
+        )
+
+    def with_current_snapshot(
+        self, snapshot: SourcingPrioritySnapshot
+    ) -> SourcingAdmission:
+        """更新等待/阻断项的当前不可变快照；已启动或已准入记录禁止改写。"""
+
+        if self.state not in {AdmissionState.WAITING, AdmissionState.BLOCKED}:
+            raise InvalidStateTransition(
+                f"寻源准入处于 {self.state.value} 时不能更新优先级快照；允许：waiting,blocked"
+            )
+        if not isinstance(snapshot, SourcingPrioritySnapshot) or (
+            snapshot.tenant_id != self.tenant_id
+            or snapshot.admission_id != self.admission_id
+            or snapshot.case_id != self.case_id
+            or snapshot.need_id != self.need_id
+        ):
+            raise ValidationError("优先级快照与准入记录不一致")
+        return replace(
+            self,
+            current_snapshot_id=snapshot.snapshot_id,
+            ready_at=snapshot.ready_at,
+            updated_at=snapshot.created_at,
         )
 
 

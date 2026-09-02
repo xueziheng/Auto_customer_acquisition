@@ -9,6 +9,8 @@ from typing import Protocol, runtime_checkable
 from domains.sourcing.models import (
     LadderCheck,
     LadderOutcome,
+    AdmissionBlockedReason,
+    AdmissionState,
     MatchLadderRung,
     PriceRejectionReason,
     PublicPlanStatus,
@@ -17,6 +19,7 @@ from domains.sourcing.models import (
     SourcingSearchExecution,
     SourcingSearchExecutionStatus,
     SourcingSearchReconciliation,
+    SourcingAdmission,
     SourcingReview,
     SpecComparison,
     SpecMatchLevel,
@@ -31,6 +34,8 @@ from domains.sourcing.schemas import (
     SourcingCandidateProductInputs,
     SourcingNeedSnapshot,
     SourcingReviewCommand,
+    SourcingAdmissionReadView,
+    SourcingPriorityFactsInput,
     SourcingCaseReadView,
     SourcingCandidateReadView,
     SourcingLadderCheckReadView,
@@ -48,6 +53,8 @@ from shared.schemas.identifiers import (
     ProductId,
     RunId,
     SourcingCaseId,
+    SourcingAdmissionId,
+    SourcingPrioritySnapshotId,
     SourcingPlanId,
     SourcingReviewId,
     SourcingSupplyOptionId,
@@ -146,6 +153,99 @@ class SourcingService(Protocol):
         - 同租户、Need、workflow version 共用 ``trigger_key``，重复入口返回既有 ID
         - 发布 ``SourcingCaseOpened``
         """
+        ...
+
+    async def enqueue_admission(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        need_id: ValidatedNeedId,
+        *,
+        ready_at: datetime,
+        facts: SourcingPriorityFactsInput,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionId:
+        """为一个 Validated Need 幂等创建准入与首个不可变排序快照。"""
+        ...
+
+    async def refresh_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        facts: SourcingPriorityFactsInput,
+        refreshed_at: datetime,
+        actor: SourcingActor,
+    ) -> SourcingPrioritySnapshotId | None:
+        """仅刷新 waiting/blocked admission；starting/admitted 必须保持原快照。"""
+        ...
+
+    async def claim_admissions(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        claim_token: str,
+        claim_expires_at: datetime,
+        actor: SourcingActor,
+    ) -> list[SourcingAdmission]:
+        """以 repository 固定全局顺序 claim waiting admission，不能在内存重排。"""
+        ...
+
+    async def complete_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        claim_token: str,
+        workflow_run_id: RunId,
+        admitted_by: str,
+        admitted_at: datetime,
+        actor: SourcingActor,
+    ) -> None:
+        """用 canonical Run 完成准入；失配租约不得覆盖新的状态。"""
+        ...
+
+    async def release_expired_admission_claims(
+        self, tenant_id: TenantId, *, now: datetime, actor: SourcingActor
+    ) -> list[SourcingAdmission]:
+        """释放已过期的未知启动租约，供同一幂等键保守恢复。"""
+        ...
+
+    async def release_admission_claim(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        claim_token: str,
+        released_at: datetime,
+        actor: SourcingActor,
+    ) -> None:
+        """已知暂态启动失败才释放匹配的 claim，不影响其他 worker 的租约。"""
+        ...
+
+    async def block_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        reason: AdmissionBlockedReason,
+        blocked_at: datetime,
+        actor: SourcingActor,
+    ) -> None:
+        """以固定原因阻断当前 admission；禁止底层异常文本穿越领域边界。"""
+        ...
+
+    async def list_admissions(
+        self,
+        tenant_id: TenantId,
+        *,
+        state: AdmissionState,
+        limit: int,
+        now: datetime,
+        actor: SourcingActor,
+    ) -> list[SourcingAdmissionReadView]:
+        """读取安全准入视图，不泄露 claim、租约、Workflow context 或完整 Need。"""
         ...
 
     async def record_ladder_check(

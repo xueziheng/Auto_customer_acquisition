@@ -26,6 +26,12 @@ class SourcingAction(str, Enum):
     REVIEW_SUBMIT = "sourcing_review:submit"
     REVIEW_CONFIRM = "sourcing_review:confirm"
     COSTING_HANDOFF_READ = "sourcing_costing_handoff:read"
+    ADMISSION_ENQUEUE = "sourcing_admission:enqueue"
+    ADMISSION_REFRESH = "sourcing_admission:refresh"
+    ADMISSION_CLAIM = "sourcing_admission:claim"
+    ADMISSION_COMPLETE = "sourcing_admission:complete"
+    ADMISSION_READ = "sourcing_admission:read"
+    ADMISSION_MANUAL_START = "sourcing_admission:manual_start"
 
 
 class SourcingScope(str, Enum):
@@ -95,6 +101,7 @@ _READ_ACTIONS = frozenset(
         SourcingAction.CASE_LIST,
     }
 )
+_ADMISSION_READ_ACTIONS = frozenset({SourcingAction.ADMISSION_READ})
 _BOSS_ACTIONS = _READ_ACTIONS | frozenset(
     {
         SourcingAction.PLAN_DRAFT,
@@ -103,22 +110,33 @@ _BOSS_ACTIONS = _READ_ACTIONS | frozenset(
         SourcingAction.SEARCH_RECONCILE,
         SourcingAction.REVIEW_CONFIRM,
         SourcingAction.REVIEW_SUBMIT,
+        SourcingAction.ADMISSION_MANUAL_START,
     }
-)
+) | _ADMISSION_READ_ACTIONS
 _PRODUCT_ACTIONS = _READ_ACTIONS | frozenset(
     {
         SourcingAction.CANDIDATE_ENTER,
         SourcingAction.REVIEW_SUBMIT,
     }
+) | _ADMISSION_READ_ACTIONS
+_SOURCING_ACTIONS = _PRODUCT_ACTIONS | frozenset(
+    {SourcingAction.PLAN_DRAFT, SourcingAction.ADMISSION_MANUAL_START}
 )
-_SOURCING_ACTIONS = _PRODUCT_ACTIONS | frozenset({SourcingAction.PLAN_DRAFT})
-_FINANCE_ACTIONS = _READ_ACTIONS | frozenset({SourcingAction.COSTING_HANDOFF_READ})
+_FINANCE_ACTIONS = (
+    _READ_ACTIONS
+    | _ADMISSION_READ_ACTIONS
+    | frozenset({SourcingAction.COSTING_HANDOFF_READ})
+)
 _SYSTEM_ACTIONS = frozenset(
     {
         SourcingAction.CASE_OPEN,
         SourcingAction.WORKFLOW_PROGRESS,
         SourcingAction.FACT_PUBLISH,
         SourcingAction.COSTING_HANDOFF_READ,
+        SourcingAction.ADMISSION_ENQUEUE,
+        SourcingAction.ADMISSION_REFRESH,
+        SourcingAction.ADMISSION_CLAIM,
+        SourcingAction.ADMISSION_COMPLETE,
     }
 )
 
