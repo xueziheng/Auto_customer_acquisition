@@ -107,6 +107,23 @@ def _priority_facts_type() -> type[object]:
     return facts_type
 
 
+async def test_cluster_priority_facts_reject_invalid_tenant_before_opening_uow() -> None:
+    """无效 tenant 输入必须在构造 tenant-bound UoW 前失败，不能触达任一仓储。"""
+    implementation = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    opened_tenants: list[TenantId] = []
+
+    def unopened_uow(tenant_id: TenantId) -> object:
+        opened_tenants.append(tenant_id)
+        raise AssertionError("无效 tenant 不得打开 UoW 或触达仓储")
+
+    service = implementation(unopened_uow, now=lambda: NOW)
+
+    with pytest.raises(ValidationError, match="需求雷达查询无效"):
+        await service.get_cluster_priority_facts(TenantId(" tenant"), NEED_ID)
+
+    assert opened_tenants == []
+
+
 async def test_cluster_priority_facts_expose_verified_cluster_membership() -> None:
     """删掉成员双向核验或错误计数时，已核验的累计事实必须失效。"""
     cluster = _Cluster(

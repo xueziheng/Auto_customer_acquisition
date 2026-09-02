@@ -108,53 +108,6 @@ class _FailAfterReadinessPublishUnitOfWork:
         await self._inner.__aexit__(exc_type, exc, tb)
 
 
-class _RecordingClusterBus:
-    """保留新 membership outbox 写入，并记录旧 formed 语义。"""
-
-    def __init__(self, inner: object, events: list[object]) -> None:
-        self._inner = inner
-        self._events = events
-
-    async def publish(self, event: object) -> None:
-        if type(event).__name__ == "NeedClusterFormed":
-            self._events.append(event)
-            return
-        await self._inner.publish(event)
-
-
-class _RecordingClusterUnitOfWork:
-    """真实 demand UoW；旧 formed 契约尚未注册 outbox 时只记录其发生。"""
-
-    def __init__(
-        self,
-        factory: async_sessionmaker[AsyncSession],
-        tenant: TenantId,
-        clock: MutableClock,
-        events: list[object],
-    ) -> None:
-        uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
-        self._inner = uow_type(factory, tenant, now=clock.now)
-        self._events = events
-
-    async def __aenter__(self) -> Self:
-        inner = await self._inner.__aenter__()
-        self.signals = inner.signals
-        self.snapshot_artifacts = inner.snapshot_artifacts
-        self.hypotheses = inner.hypotheses
-        self.needs = inner.needs
-        self.clusters = inner.clusters
-        self.bus = _RecordingClusterBus(inner.bus, self._events)
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: object,
-    ) -> None:
-        await self._inner.__aexit__(exc_type, exc, tb)
-
-
 def _failing_service(
     factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
 ) -> DemandService:
@@ -164,21 +117,6 @@ def _failing_service(
             factory, requested, clock
         ),
         now=clock.now,
-    )
-
-
-def _cluster_recording_service(
-    factory: async_sessionmaker[AsyncSession],
-    clock: MutableClock,
-    events: list[object],
-) -> DemandService:
-    service_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
-    return service_type(
-        lambda requested: _RecordingClusterUnitOfWork(
-            factory, requested, clock, events
-        ),
-        now=clock.now,
-        account_names=_Countries(),
     )
 
 
@@ -242,7 +180,6 @@ async def _outbox_payloads(
                         tables.OutboxEventRow.tenant_id == str(tenant),
                         tables.OutboxEventRow.event_type == event_type,
                     )
-                    .order_by(tables.OutboxEventRow.published_at)
                 )
             ).all()
         )
@@ -325,9 +262,11 @@ async def test_cluster_assignment_publishes_membership_facts_once_per_need(
     """首次归簇均写成员变更事实；第二成员仍是唯一的 formed 时点。"""
     factory = async_sessionmaker(demand_db, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
-    cluster_events: list[object] = []
-    service = _cluster_recording_service(
-        factory, MutableClock(NOW), cluster_events
+    service = _service(
+        factory,
+        tenant,
+        MutableClock(NOW),
+        account_names=_Countries(),
     )
     first_need_id = await _promote_need(
         service,
@@ -349,11 +288,12 @@ async def test_cluster_assignment_publishes_membership_facts_once_per_need(
     )
     assert first_cluster_id is not None
     assert second_cluster_id == first_cluster_id == duplicate_cluster_id
-    assert [payload["member_count"] for payload in membership_payloads] == [1, 2]
-    assert [payload["changed_need_id"] for payload in membership_payloads] == [
-        first_need_id,
-        second_need_id,
-    ]
-    assert [type(event).__name__ for event in cluster_events] == ["NeedClusterFormed"]
-    assert cluster_events[0].member_count == 2
-    assert (await _outbox_types(factory, tenant)).count("NeedClusterFormed") == 0
+    membership_by_need = {
+        payload["changed_need_id"]: payload for payload in membership_payloads
+    }
+    assert membership_by_need[first_need_id]["member_count"] == 1
+    assert membership_by_need[second_need_id]["member_count"] == 2
+    formed_payloads = await _outbox_payloads(factory, tenant, "NeedClusterFormed")
+    assert len(formed_payloads) == 1
+    assert formed_payloads[0]["cluster_id"] == first_cluster_id
+    assert formed_payloads[0]["member_count"] == 2

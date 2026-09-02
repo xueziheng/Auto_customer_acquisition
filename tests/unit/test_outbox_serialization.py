@@ -33,6 +33,7 @@ from shared.events.catalog import (
     HandoffRequested,
     MessageSent,
     NeedBecameSourcingReady,
+    NeedClusterFormed,
     NeedClusterMembershipChanged,
     OpportunityLost,
     OpportunityQualified,
@@ -121,6 +122,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedHypothesisRejected",
         "NeedValidated",
         "NeedBecameSourcingReady",
+        "NeedClusterFormed",
         "NeedClusterMembershipChanged",
         "SourcingCaseOpened",
         "SourcingCandidatesVerified",
@@ -204,6 +206,23 @@ def test_need_cluster_membership_changed_roundtrips_exact_tenant_bound_payload()
         "member_count": 2,
     }
     assert _load("deserialize")(NeedClusterMembershipChanged, payload) == event
+
+
+def test_need_cluster_formed_roundtrips_through_registered_outbox() -> None:
+    """第二成员形成簇的既有事实必须可持久化，而非在真实总线中回滚。"""
+    event = NeedClusterFormed(
+        tenant_id=TenantId("tn_0" + "A" * 25),
+        occurred_at=_NOW,
+        cluster_id="ncl_0" + "B" * 25,
+        category="hinges",
+        member_count=2,
+    )
+
+    payload = _load("serialize")(event)
+
+    assert _load("EVENT_REGISTRY")["NeedClusterFormed"] is NeedClusterFormed
+    assert _load("resolve_event_type")("NeedClusterFormed") is NeedClusterFormed
+    assert _load("deserialize")(NeedClusterFormed, payload) == event
 
 
 @pytest.mark.parametrize(
@@ -722,8 +741,6 @@ def test_serialized_payload_is_json_serializable() -> None:
 def test_unknown_event_type_rejected() -> None:
     """未注册事件类型：resolve_event_type 抛 ValidationError（发布/反序列化入口）。"""
     resolve_event_type = _load("resolve_event_type")
-    with pytest.raises(ValidationError):
-        resolve_event_type("NeedClusterFormed")  # catalog 有类但本切片明确不注册
     with pytest.raises(ValidationError):
         resolve_event_type("TotallyUnknownEvent")
 

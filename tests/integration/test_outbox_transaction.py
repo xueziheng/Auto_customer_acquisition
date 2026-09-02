@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
@@ -29,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from infra.db.tables import OpportunityRow, OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.catalog import (
-    NeedClusterFormed,
+    DomainEvent,
     OpportunityWon,
     ReputationThresholdBreached,
     SendingIdentityActivated,
@@ -49,6 +50,11 @@ from shared.schemas.identifiers import (
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 _VALID_SENDING_ID = SendingIdentityId(new_id("sid"))
+
+
+@dataclass(frozen=True)
+class _UnregisteredEvent(DomainEvent):
+    """仅用于验证 outbox 白名单仍拒绝未注册事件。"""
 
 _MODULE_BY_SYMBOL = {
     "PostgresEventBus": "infra.db.outbox",
@@ -214,13 +220,10 @@ async def test_bus_publish_unknown_event_rejected(engine_fx: AsyncEngine) -> Non
     session = sf()
     try:
         bus = PostgresEventBus(session, TenantId("tBus4"))
-        evt = NeedClusterFormed(
+        evt = _UnregisteredEvent(
             tenant_id=TenantId("tBus4"),
             occurred_at=_NOW,
             run_id=RunId("r4"),
-            cluster_id="cluster-1",
-            category="hinges",
-            member_count=2,
         )
         with pytest.raises(ValidationError):
             await bus.publish(evt)
