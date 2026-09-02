@@ -844,6 +844,33 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             raise ValidationError("准入 current snapshot 并发推进失败")
         return _row_to_admission(updated_row), canonical, created
 
+    async def list_cluster_refresh_targets(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+        changed_need_id: ValidatedNeedId,
+    ) -> list[tuple[SourcingAdmission, SourcingPrioritySnapshot | None]]:
+        self._require_tenant(tenant_id)
+        _require_bounded_identifier(cluster_id, "cluster_id")
+        _require_bounded_identifier(changed_need_id, "changed_need_id")
+        rows = (
+            await self._session.execute(
+                self._admissions_with_current_snapshot()
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.state.in_(
+                        (AdmissionState.WAITING.value, AdmissionState.BLOCKED.value)
+                    ),
+                    or_(
+                        SourcingPrioritySnapshotRow.cluster_id == str(cluster_id),
+                        SourcingAdmissionRow.need_id == str(changed_need_id),
+                    ),
+                )
+                .order_by(SourcingAdmissionRow.admission_id)
+            )
+        ).all()
+        return [self._read_pair(row[0], row[1]) for row in rows]
+
     @staticmethod
     def _claimable(now: datetime) -> ColumnElement[bool]:
         return or_(

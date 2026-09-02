@@ -1,33 +1,51 @@
-"""需求就绪事件到 Sourcing Case V2 Run 的安全、幂等接线。"""
+"""需求就绪与需求簇成员事实到 durable Sourcing Admission 的接线。"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
-from apps.scheduler_worker.sourcing_events import SourcingTriggerHandler
+from apps.scheduler_worker import sourcing_events as _sourcing_events
+from domains.demand.schemas import NeedClusterPriorityFacts
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
 from shared.errors import TransientError, ValidationError
-from shared.events.catalog import NeedBecameSourcingReady, NeedValidated
+from shared.events.catalog import (
+    NeedBecameSourcingReady,
+    NeedClusterMembershipChanged,
+    NeedValidated,
+)
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     EmployeeId,
-    RunId,
+    NeedClusterId,
+    SourcingAdmissionId,
     SourcingCaseId,
+    SourcingPrioritySnapshotId,
     TenantId,
     ValidatedNeedId,
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 
-NOW = datetime(2026, 8, 30, 10, tzinfo=UTC)
+NOW = datetime(2026, 9, 2, 10, tzinfo=UTC)
 TENANT = TenantId("tenant-trigger")
 OTHER_TENANT = TenantId("tenant-other")
 NEED_ID = ValidatedNeedId("need-trigger")
+CLUSTER_ID = NeedClusterId("cluster-trigger")
 CASE_ID = SourcingCaseId("src-trigger")
+ADMISSION_ID = SourcingAdmissionId("sad-trigger")
 SYSTEM = SourcingActor("system:sourcing", TENANT, SourcingScope.SYSTEM, "system")
+SourcingTriggerHandler = _sourcing_events.SourcingTriggerHandler
+_safe_context = _sourcing_events._safe_context
+
+
+def _membership_handler_type() -> type[Any]:
+    handler_type = getattr(_sourcing_events, "SourcingClusterMembershipHandler", None)
+    if handler_type is None:
+        pytest.fail("RED：SourcingClusterMembershipHandler 尚未实现")
+    return handler_type
 
 
 def _provenance() -> ProvenanceSummary:
@@ -53,53 +71,89 @@ def _snapshot(*, need_id: ValidatedNeedId = NEED_ID) -> SourcingNeedSnapshot:
     )
 
 
+def _facts(
+    *,
+    need_id: str = NEED_ID,
+    cluster_id: str | None = CLUSTER_ID,
+    count: object = 8,
+    observed_at: object = NOW,
+) -> NeedClusterPriorityFacts:
+    return NeedClusterPriorityFacts(
+        need_id=need_id,
+        cluster_id=cluster_id,
+        cluster_member_count=count,  # type: ignore[arg-type]
+        facts_observed_at=observed_at,  # type: ignore[arg-type]
+    )
+
+
 class _Reader:
     def __init__(self, snapshot: SourcingNeedSnapshot | None = None) -> None:
         self.snapshot = snapshot or _snapshot()
-        self.calls = 0
+        self.calls: list[tuple[TenantId, ValidatedNeedId]] = []
 
-    async def read(self, tenant_id, need_id):
-        self.calls += 1
+    async def read(self, tenant_id: TenantId, need_id: ValidatedNeedId):
+        self.calls.append((tenant_id, need_id))
         return self.snapshot
 
 
+class _Demand:
+    def __init__(
+        self,
+        facts: NeedClusterPriorityFacts | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.facts = facts or _facts()
+        self.error = error
+        self.calls: list[tuple[TenantId, ValidatedNeedId]] = []
+
+    async def get_cluster_priority_facts(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> NeedClusterPriorityFacts:
+        self.calls.append((tenant_id, need_id))
+        if self.error is not None:
+            raise self.error
+        return self.facts
+
+
 class _Sourcing:
-    def __init__(self) -> None:
-        self.commands: list[Any] = []
-        self.created_keys: set[str] = set()
+    def __init__(
+        self,
+        *,
+        enqueue_error: Exception | None = None,
+        refresh_result: tuple[SourcingPrioritySnapshotId, ...] | None = None,
+    ) -> None:
+        self.enqueue_error = enqueue_error
+        self.refresh_result = (
+            (SourcingPrioritySnapshotId("sps-refreshed"),)
+            if refresh_result is None
+            else refresh_result
+        )
+        self.open_calls: list[tuple[Any, ...]] = []
+        self.enqueue_calls: list[tuple[Any, ...]] = []
+        self.refresh_calls: list[tuple[Any, ...]] = []
 
     async def open_case(self, tenant_id, command, *, actor):
-        self.commands.append((tenant_id, command, actor))
-        self.created_keys.add(command.trigger_key)
+        self.open_calls.append((tenant_id, command, actor))
         return CASE_ID
 
+    async def enqueue_admission(
+        self, tenant_id, case_id, need_id, *, ready_at, command, actor
+    ):
+        self.enqueue_calls.append(
+            (tenant_id, case_id, need_id, ready_at, command, actor)
+        )
+        if self.enqueue_error is not None:
+            raise self.enqueue_error
+        return ADMISSION_ID
 
-class _Engine:
-    def __init__(self, *, fail_first: bool = False) -> None:
-        self.calls: list[tuple[Any, ...]] = []
-        self.fail_first = fail_first
-        self._run = RunId("run-trigger")
-        self.created_keys: set[str] = set()
-
-    async def start(self, *args, **kwargs):
-        self.calls.append((*args, kwargs))
-        if self.fail_first:
-            self.fail_first = False
-            raise RuntimeError("postgres-dsn-secret")
-        self.created_keys.add(args[4])
-        return self._run
-
-
-class _TransientFirstEngine(_Engine):
-    async def start(self, *args, **kwargs):
-        self.calls.append((*args, kwargs))
-        if len(self.calls) == 1:
-            raise TransientError(
-                "postgres://user:secret@workflow-db/private",
-                context={"credential": "raw-token"},
-            )
-        self.created_keys.add(args[4])
-        return self._run
+    async def refresh_cluster_admissions(
+        self, tenant_id, changed_need_id, *, facts, refreshed_at, actor
+    ):
+        self.refresh_calls.append(
+            (tenant_id, changed_need_id, facts, refreshed_at, actor)
+        )
+        return self.refresh_result
 
 
 def _validated(*, completeness: int = 3, tenant_id: TenantId = TENANT) -> NeedValidated:
@@ -122,10 +176,26 @@ def _became_ready(*, tenant_id: TenantId = TENANT) -> NeedBecameSourcingReady:
     )
 
 
-def _handler(reader=None, sourcing=None, engine=None):
+def _membership(
+    *,
+    tenant_id: object = TENANT,
+    cluster_id: object = CLUSTER_ID,
+    changed_need_id: object = NEED_ID,
+    member_count: object = 2,
+) -> NeedClusterMembershipChanged:
+    return NeedClusterMembershipChanged(
+        tenant_id=cast(TenantId, tenant_id),
+        occurred_at=NOW + timedelta(minutes=1),
+        cluster_id=cast(NeedClusterId, cluster_id),
+        changed_need_id=cast(ValidatedNeedId, changed_need_id),
+        member_count=member_count,  # type: ignore[arg-type]
+    )
+
+
+def _trigger(reader=None, sourcing=None, demand=None) -> SourcingTriggerHandler:
     return SourcingTriggerHandler(
-        engine=engine or _Engine(),
-        sourcing=sourcing or _Sourcing(),
+        sourcing=cast(Any, sourcing or _Sourcing()),
+        demand=cast(Any, demand or _Demand()),
         need_reader=reader or _Reader(),
         tenant_id=TENANT,
         sourcing_actor=SYSTEM,
@@ -133,110 +203,237 @@ def _handler(reader=None, sourcing=None, engine=None):
 
 
 @pytest.mark.asyncio
-async def test_both_need_events_share_exact_case_and_run_key_with_allowlist_context() -> (
-    None
-):
-    reader = _Reader()
-    sourcing = _Sourcing()
-    engine = _Engine()
-    handler = _handler(reader, sourcing, engine)
+@pytest.mark.parametrize("event", [_validated(), _became_ready()])
+async def test_each_readiness_event_reads_once_and_only_enqueues(event: object) -> None:
+    """回归变异：重新注入 engine.start、重复读事实或漏掉 durable enqueue 均应失败。"""
 
-    await handler.handle(_validated())
-    await handler.handle(_became_ready())
+    reader, demand, sourcing = _Reader(), _Demand(), _Sourcing()
+    handler = _trigger(reader, sourcing, demand)
 
-    assert reader.calls == 2
-    assert len(sourcing.commands) == len(engine.calls) == 2
-    expected_key = f"sourcing-case:v2:{TENANT}:{NEED_ID}"
-    assert [item[1].trigger_key for item in sourcing.commands] == [
-        expected_key,
-        expected_key,
-    ]
-    assert sourcing.created_keys == engine.created_keys == {expected_key}
-    for call in engine.calls:
-        tenant_id, workflow_type, subject_ref, context, idempotency_key, kwargs = call
-        assert (tenant_id, workflow_type, subject_ref, idempotency_key, kwargs) == (
-            TENANT,
-            "sourcing_case",
-            str(CASE_ID),
-            expected_key,
-            {},
-        )
-        assert context == {
-            "case_id": str(CASE_ID),
-            "need_id": str(NEED_ID),
-            "need_snapshot_hash": "a" * 64,
-            "product_category": "industrial hinges",
-            "keywords": ["stainless steel"],
-        }
+    await handler.handle(event)
+
+    assert reader.calls == [(TENANT, NEED_ID)]
+    assert demand.calls == [(TENANT, NEED_ID)]
+    assert len(sourcing.open_calls) == len(sourcing.enqueue_calls) == 1
+    open_command = sourcing.open_calls[0][1]
+    assert open_command.trigger_key == f"sourcing-case:v2:{TENANT}:{NEED_ID}"
+    tenant, case_id, need_id, ready_at, command, actor = sourcing.enqueue_calls[0]
+    assert (tenant, case_id, need_id, ready_at, actor) == (
+        TENANT,
+        CASE_ID,
+        NEED_ID,
+        NOW,
+        SYSTEM,
+    )
+    assert command.blocked_reason is None
+    assert command.facts is not None
+    assert command.facts.model_dump() == {
+        "need_id": NEED_ID,
+        "cluster_id": CLUSTER_ID,
+        "cluster_member_count": 8,
+        "facts_observed_at": NOW,
+    }
+    assert not hasattr(handler, "_engine")
 
 
 @pytest.mark.asyncio
 async def test_low_completeness_cross_tenant_and_unknown_event_have_zero_io() -> None:
-    reader = _Reader()
-    sourcing = _Sourcing()
-    engine = _Engine()
-    handler = _handler(reader, sourcing, engine)
+    reader, demand, sourcing = _Reader(), _Demand(), _Sourcing()
+    handler = _trigger(reader, sourcing, demand)
 
     await handler.handle(_validated(completeness=2))
     await handler.handle(_validated(tenant_id=OTHER_TENANT))
     with pytest.raises(ValidationError, match="未知寻源触发事件类型"):
         await handler.handle(object())
 
-    assert reader.calls == 0
-    assert sourcing.commands == engine.calls == []
+    assert reader.calls == demand.calls == []
+    assert sourcing.open_calls == sourcing.enqueue_calls == []
 
 
 @pytest.mark.asyncio
-async def test_need_reader_mismatch_stops_before_open_and_start() -> None:
-    reader = _Reader(_snapshot(need_id=ValidatedNeedId("need-other")))
-    sourcing = _Sourcing()
-    engine = _Engine()
-    handler = _handler(reader, sourcing, engine)
-
-    with pytest.raises(ValidationError, match="可信需求快照与触发事件不匹配"):
-        await handler.handle(_became_ready())
-
-    assert reader.calls == 1
-    assert sourcing.commands == engine.calls == []
-
-
-@pytest.mark.asyncio
-async def test_opened_case_is_reused_when_first_workflow_start_fails() -> None:
-    reader = _Reader()
-    sourcing = _Sourcing()
-    engine = _Engine(fail_first=True)
-    handler = _handler(reader, sourcing, engine)
-
-    with pytest.raises(TransientError, match="寻源工作流启动暂不可用") as caught:
-        await handler.handle(_validated())
-    assert "postgres-dsn-secret" not in str(caught.value)
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
-
-    await handler.handle(_validated())
-
-    assert len(sourcing.commands) == len(engine.calls) == 2
-    assert sourcing.created_keys == engine.created_keys
-    assert engine.calls[0][4] == engine.calls[1][4]
-    assert engine.calls[0][2] == engine.calls[1][2] == str(CASE_ID)
-
-
-@pytest.mark.asyncio
-async def test_transient_start_failure_stays_retryable_and_drops_raw_exception_chain() -> (
+async def test_permanently_invalid_priority_shape_creates_only_fixed_blocked_admission() -> (
     None
 ):
-    reader = _Reader()
-    sourcing = _Sourcing()
-    engine = _TransientFirstEngine()
-    handler = _handler(reader, sourcing, engine)
+    """永久结构损坏必须可消费且固定阻断，不能伪造排序事实或泄漏异常。"""
 
-    with pytest.raises(TransientError, match="^寻源工作流启动暂不可用$") as caught:
-        await handler.handle(_validated())
+    demand = _Demand(_facts(count=False))
+    sourcing = _Sourcing()
+
+    await _trigger(sourcing=sourcing, demand=demand).handle(_validated())
+
+    assert len(sourcing.enqueue_calls) == 1
+    command = sourcing.enqueue_calls[0][4]
+    assert command.facts is None
+    assert command.blocked_reason == "priority_facts_invalid"
+
+
+@pytest.mark.asyncio
+async def test_transient_priority_read_stays_retryable_detached_and_does_not_enqueue() -> (
+    None
+):
+    demand = _Demand(
+        error=TransientError(
+            "postgres://user:secret@demand/private",
+            context={"credential": "raw-token"},
+        )
+    )
+    sourcing = _Sourcing()
+
+    with pytest.raises(TransientError, match="^需求簇优先级事实暂不可用$") as caught:
+        await _trigger(sourcing=sourcing, demand=demand).handle(_validated())
 
     assert caught.value.context == {}
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert "raw-token" not in str(caught.value)
-    await handler.handle(_validated())
-    assert len(sourcing.commands) == len(engine.calls) == 2
-    assert engine.created_keys == {f"sourcing-case:v2:{TENANT}:{NEED_ID}"}
+    assert len(sourcing.open_calls) == 1
+    assert sourcing.enqueue_calls == []
+
+
+@pytest.mark.asyncio
+async def test_existing_non_opened_case_replay_is_acknowledged_without_bypass() -> None:
+    """既有 starting/terminal V1/V2 由 service 拒绝时保持原样，不毒化重复事件。"""
+
+    sourcing = _Sourcing(enqueue_error=ValidationError("untrusted-case-state"))
+
+    await _trigger(sourcing=sourcing).handle(_validated())
+
+    assert len(sourcing.open_calls) == len(sourcing.enqueue_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_membership_refresh_uses_current_demand_facts_not_event_count() -> None:
+    demand = _Demand(_facts(count=9, observed_at=NOW + timedelta(minutes=2)))
+    sourcing = _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    await handler.handle(_membership(member_count=2))
+
+    assert demand.calls == [(TENANT, NEED_ID)]
+    assert len(sourcing.refresh_calls) == 1
+    tenant, changed_need, facts, refreshed_at, actor = sourcing.refresh_calls[0]
+    assert (tenant, changed_need, actor) == (TENANT, NEED_ID, SYSTEM)
+    assert facts.cluster_member_count == 9
+    assert facts.cluster_id == CLUSTER_ID
+    assert refreshed_at == NOW + timedelta(minutes=2)
+
+
+@pytest.mark.asyncio
+async def test_membership_before_admission_and_duplicate_are_safe_service_calls() -> (
+    None
+):
+    """无目标时 service 返回空；重复事件仍以同一 current facts 交给 hash 幂等层。"""
+
+    demand = _Demand()
+    sourcing = _Sourcing(refresh_result=())
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    event = _membership()
+    await handler.handle(event)
+    await handler.handle(event)
+
+    assert demand.calls == [(TENANT, NEED_ID), (TENANT, NEED_ID)]
+    assert len(sourcing.refresh_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_membership_for_old_cluster_is_no_op() -> None:
+    demand = _Demand(_facts(cluster_id="cluster-current", count=10))
+    sourcing = _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    await handler.handle(_membership(cluster_id=NeedClusterId("cluster-old")))
+
+    assert demand.calls == [(TENANT, NEED_ID)]
+    assert sourcing.refresh_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member_count", [0, -1, False, True, 1.0])
+async def test_membership_rejects_non_positive_exact_integer_before_io(
+    member_count: object,
+) -> None:
+    demand, sourcing = _Demand(), _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    with pytest.raises(ValidationError, match="需求簇成员变更事件载荷无效"):
+        await handler.handle(_membership(member_count=member_count))
+
+    assert demand.calls == sourcing.refresh_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        _membership(tenant_id=" "),
+        _membership(cluster_id=None),
+        _membership(cluster_id="cluster\x00unsafe"),
+        _membership(changed_need_id=""),
+    ],
+)
+async def test_membership_rejects_invalid_tenant_and_ids_before_io(
+    event: NeedClusterMembershipChanged,
+) -> None:
+    demand, sourcing = _Demand(), _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    with pytest.raises(ValidationError, match="需求簇成员变更事件载荷无效"):
+        await handler.handle(event)
+
+    assert demand.calls == sourcing.refresh_calls == []
+
+
+@pytest.mark.asyncio
+async def test_membership_transient_facts_failure_retries_without_refresh() -> None:
+    demand = _Demand(error=RuntimeError("postgres://user:secret@demand/private"))
+    sourcing = _Sourcing()
+    handler = _membership_handler_type()(
+        demand=demand,
+        sourcing=sourcing,
+        tenant_id=TENANT,
+        sourcing_actor=SYSTEM,
+    )
+
+    with pytest.raises(TransientError, match="^需求簇优先级事实暂不可用$") as caught:
+        await handler.handle(_membership())
+
+    assert caught.value.context == {}
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert sourcing.refresh_calls == []
+
+
+def test_safe_context_remains_available_for_atomic_task8_migration() -> None:
+    assert _safe_context(_snapshot(), str(CASE_ID)) == {
+        "case_id": str(CASE_ID),
+        "need_id": str(NEED_ID),
+        "need_snapshot_hash": "a" * 64,
+        "product_category": "industrial hinges",
+        "keywords": ["stainless steel"],
+    }

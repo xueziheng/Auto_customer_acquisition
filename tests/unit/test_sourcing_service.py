@@ -772,6 +772,32 @@ class _Admissions(_MemoryRepo):
         )
         return admission, snapshot
 
+    async def list_cluster_refresh_targets(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+        changed_need_id: ValidatedNeedId,
+    ) -> list[tuple[Any, Any | None]]:
+        pairs = []
+        for (candidate_tenant, _), admission in self.state[self.name].items():
+            if candidate_tenant != tenant_id or admission.state not in {
+                AdmissionState.WAITING,
+                AdmissionState.BLOCKED,
+            }:
+                continue
+            snapshot = (
+                None
+                if admission.current_snapshot_id is None
+                else self.state["priority_snapshots"][
+                    (tenant_id, admission.current_snapshot_id)
+                ]
+            )
+            if admission.need_id == changed_need_id or (
+                snapshot is not None and snapshot.cluster_id == cluster_id
+            ):
+                pairs.append((copy.deepcopy(admission), copy.deepcopy(snapshot)))
+        return sorted(pairs, key=lambda pair: str(pair[0].admission_id))
+
     async def append_snapshot_if_changed(
         self, tenant_id: TenantId, snapshot: Any
     ) -> tuple[Any, Any, bool]:
@@ -794,8 +820,7 @@ class _Admissions(_MemoryRepo):
         canonical = snapshot if canonical is None else canonical
         if current.current_snapshot_id == canonical.snapshot_id and not (
             current.state is AdmissionState.BLOCKED
-            and current.blocked_reason
-            is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+            and current.blocked_reason is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
         ):
             return current, copy.deepcopy(canonical), False
         changed = current.with_current_snapshot(snapshot)
@@ -1526,6 +1551,146 @@ async def test_starting_refresh_is_a_strict_no_op() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cluster_refresh_updates_all_eligible_targets_without_state_bypass() -> (
+    None
+):
+    """同簇无截断刷新；changed 无快照可恢复，starting/admitted/异簇保持不变。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    cluster_id = NeedClusterId("cluster-refresh")
+
+    async def open_and_enqueue(
+        suffix: str,
+        *,
+        target_cluster: NeedClusterId | None,
+    ) -> tuple[ValidatedNeedId, SourcingAdmissionId]:
+        need_id = ValidatedNeedId(f"need-refresh-{suffix}")
+        command = _open_command().model_copy(
+            update={
+                "need": _open_command().need.model_copy(update={"need_id": need_id}),
+                "trigger_key": f"sourcing-case:v2:{TENANT}:{need_id}",
+            }
+        )
+        case_id = await service.open_case(TENANT, command, actor=SYSTEM)
+        admission_id = await _enqueue(
+            service,
+            case_id,
+            need_id,
+            count=2,
+            cluster_id=target_cluster,
+        )
+        return need_id, admission_id
+
+    first_need, first_id = await open_and_enqueue("first", target_cluster=cluster_id)
+    second_need, second_id = await open_and_enqueue("second", target_cluster=cluster_id)
+    _, other_id = await open_and_enqueue(
+        "other", target_cluster=NeedClusterId("cluster-other")
+    )
+    _, starting_id = await open_and_enqueue("starting", target_cluster=cluster_id)
+    _, admitted_id = await open_and_enqueue("admitted", target_cluster=cluster_id)
+    _, case_blocked_id = await open_and_enqueue(
+        "case-blocked", target_cluster=cluster_id
+    )
+
+    starting_key = (TENANT, starting_id)
+    admitted_key = (TENANT, admitted_id)
+    case_blocked_key = (TENANT, case_blocked_id)
+    factory.state["admissions"][starting_key] = factory.state["admissions"][
+        starting_key
+    ].claim(
+        "claim-starting",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        claimed_at=NOW,
+    )
+    admitted_starting = factory.state["admissions"][admitted_key].claim(
+        "claim-admitted",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        claimed_at=NOW,
+    )
+    factory.state["admissions"][admitted_key] = admitted_starting.complete(
+        "claim-admitted",
+        workflow_run_id=RunId("run-refresh-admitted"),
+        admitted_by="system:sourcing",
+        admitted_at=NOW + timedelta(minutes=1),
+    )
+    factory.state["admissions"][case_blocked_key] = factory.state["admissions"][
+        case_blocked_key
+    ].block(
+        AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        blocked_at=NOW,
+    )
+
+    changed_need = ValidatedNeedId("need-refresh-changed")
+    changed_command = _open_command().model_copy(
+        update={
+            "need": _open_command().need.model_copy(update={"need_id": changed_need}),
+            "trigger_key": f"sourcing-case:v2:{TENANT}:{changed_need}",
+        }
+    )
+    changed_case = await service.open_case(TENANT, changed_command, actor=SYSTEM)
+    changed_id = await service.enqueue_admission(
+        TENANT,
+        changed_case,
+        changed_need,
+        ready_at=NOW - timedelta(hours=2),
+        command=SourcingAdmissionEnqueueCommand(
+            facts=None,
+            blocked_reason="priority_facts_invalid",
+        ),
+        actor=SYSTEM,
+    )
+    before_starting = copy.deepcopy(factory.state["admissions"][starting_key])
+    before_admitted = copy.deepcopy(factory.state["admissions"][admitted_key])
+    before_other = copy.deepcopy(factory.state["admissions"][(TENANT, other_id)])
+    initial_snapshots = len(factory.state["priority_snapshots"])
+    current_facts = _priority_facts(
+        changed_need,
+        count=9,
+        cluster_id=cluster_id,
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    refreshed = await service.refresh_cluster_admissions(
+        TENANT,
+        changed_need,
+        facts=current_facts,
+        refreshed_at=NOW + timedelta(minutes=2),
+        actor=SYSTEM,
+    )
+    replayed = await service.refresh_cluster_admissions(
+        TENANT,
+        changed_need,
+        facts=current_facts,
+        refreshed_at=NOW + timedelta(minutes=3),
+        actor=SYSTEM,
+    )
+
+    assert refreshed == replayed
+    assert len(refreshed) == 4
+    assert len(factory.state["priority_snapshots"]) == initial_snapshots + 4
+    assert factory.state["admissions"][starting_key] == before_starting
+    assert factory.state["admissions"][admitted_key] == before_admitted
+    assert factory.state["admissions"][(TENANT, other_id)] == before_other
+    for admission_id, need_id in (
+        (first_id, first_need),
+        (second_id, second_need),
+        (changed_id, changed_need),
+    ):
+        view = await service.get_admission(TENANT, admission_id, actor=BOSS)
+        assert view is not None
+        assert view.need_id == need_id
+        assert view.cluster_id == cluster_id
+        assert view.cluster_member_count == 9
+        assert view.state == "waiting"
+    case_blocked = await service.get_admission(TENANT, case_blocked_id, actor=BOSS)
+    assert case_blocked is not None
+    assert case_blocked.state == "blocked"
+    assert case_blocked.blocked_reason == "case_state_mismatch"
+    assert case_blocked.cluster_member_count == 9
+
+
+@pytest.mark.asyncio
 async def test_transient_facts_absence_never_persists_a_blocked_admission() -> None:
     """暂时读不到事实由 application 停止本轮，领域 refresh 不固化 blocked。"""
 
@@ -1907,6 +2072,7 @@ async def test_admission_authorization_precedes_uow_construction() -> None:
     "operation",
     [
         "refresh",
+        "refresh_cluster",
         "claim",
         "complete",
         "release_expired",
@@ -1934,6 +2100,18 @@ async def test_every_admission_entry_authorizes_before_uow(operation: str) -> No
                 TENANT,
                 admission_id,
                 facts=_priority_facts(ValidatedNeedId("need-forbidden")),
+                refreshed_at=NOW,
+                actor=other_system,
+            )
+        elif operation == "refresh_cluster":
+            changed_need_id = ValidatedNeedId("need-cluster-forbidden")
+            await service.refresh_cluster_admissions(
+                TENANT,
+                changed_need_id,
+                facts=_priority_facts(
+                    changed_need_id,
+                    cluster_id=NeedClusterId("cluster-forbidden"),
+                ),
                 refreshed_at=NOW,
                 actor=other_system,
             )

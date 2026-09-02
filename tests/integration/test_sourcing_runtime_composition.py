@@ -24,6 +24,7 @@ from apps.scheduler_worker.sourcing_runtime import (
 )
 from domains.costing.permissions import CostingScope
 from domains.costing.service_impl import CostingServiceImpl
+from domains.demand.service_impl import DemandServiceImpl
 from domains.products.permissions import ProductRole
 from domains.products.service_impl import ProductServiceImpl
 from domains.sourcing.permissions import SourcingScope
@@ -39,9 +40,11 @@ from infra.db.tables import (
     ProductRow,
     SearchQuotaAccountRow,
     SearchQuotaReservationRow,
+    SourcingAdmissionRow,
     SourcingCandidateRow,
     SourcingCaseRow,
     SourcingPageAttemptRow,
+    SourcingPrioritySnapshotRow,
     SourcingPublicPlanRow,
     SourcingReviewRow,
     SourcingSupplyOptionRow,
@@ -50,9 +53,15 @@ from infra.db.tables import (
     WorkflowStepRow,
 )
 from shared.errors import ValidationError
-from shared.events.catalog import EvidenceLevel, NeedBecameSourcingReady, NeedValidated
+from shared.events.catalog import (
+    EvidenceLevel,
+    NeedBecameSourcingReady,
+    NeedClusterMembershipChanged,
+    NeedValidated,
+)
 from shared.schemas.identifiers import (
     ArtifactId,
+    NeedClusterId,
     OpportunityId,
     RunId,
     SourcingCaseId,
@@ -605,6 +614,7 @@ async def test_composition_uses_real_services_and_registers_complete_events(
     )
 
     assert isinstance(composition.sourcing, SourcingServiceImpl)
+    assert isinstance(composition.demand, DemandServiceImpl)
     assert isinstance(composition.products, ProductServiceImpl)
     assert isinstance(composition.suppliers, SupplierServiceImpl)
     assert isinstance(composition.costing, CostingServiceImpl)
@@ -631,6 +641,7 @@ async def test_composition_uses_real_services_and_registers_complete_events(
     assert [(event.__name__, name) for event, name in outbox.events] == [
         ("NeedValidated", "sourcing_case.need_validated"),
         ("NeedBecameSourcingReady", "sourcing_case.need_ready"),
+        ("NeedClusterMembershipChanged", "sourcing_case.cluster_membership"),
         ("SourcingCandidatesVerified", "sourcing_case.product_projector"),
         ("SourcingCandidatesReady", "sourcing_case.ready_audit"),
         ("SourcingCaseHandedToCosting", "sourcing_case.costing_handoff"),
@@ -832,6 +843,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         event_types = {
             "NeedValidated",
             "NeedBecameSourcingReady",
+            "NeedClusterMembershipChanged",
             "SourcingCandidatesVerified",
             "SourcingCandidatesReady",
             "SourcingCaseHandedToCosting",
@@ -858,6 +870,15 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
                     completeness=3,
                 )
             )
+            await bus.publish(
+                NeedClusterMembershipChanged(
+                    tenant_id=tenant,
+                    occurred_at=NOW,
+                    cluster_id=NeedClusterId(new_id("ncl")),
+                    changed_need_id=need_id,
+                    member_count=2,
+                )
+            )
             await session.commit()
         finally:
             await session.close()
@@ -881,7 +902,44 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         run_id = await runtime.workflow.find_active_run(
             tenant, "sourcing_case", str(case_id)
         )
-        assert run_id is not None
+        assert run_id is None
+        async with runtime.outbox._factory() as session:
+            admissions = list(
+                (
+                    await session.execute(
+                        select(SourcingAdmissionRow).where(
+                            SourcingAdmissionRow.tenant_id == tenant,
+                            SourcingAdmissionRow.need_id == need_id,
+                        )
+                    )
+                ).scalars()
+            )
+            snapshots = list(
+                (
+                    await session.execute(
+                        select(SourcingPrioritySnapshotRow).where(
+                            SourcingPrioritySnapshotRow.tenant_id == tenant,
+                            SourcingPrioritySnapshotRow.need_id == need_id,
+                        )
+                    )
+                ).scalars()
+            )
+        assert len(admissions) == len(snapshots) == 1
+        assert admissions[0].state == "waiting"
+        assert snapshots[0].cluster_member_count == 1
+        run_id = await runtime.workflow.start(
+            tenant,
+            "sourcing_case",
+            str(case_id),
+            {
+                "case_id": str(case_id),
+                "need_id": str(need_id),
+                "need_snapshot_hash": cases[0].need_snapshot_hash,
+                "product_category": "hinges",
+                "keywords": ["required-material", "required-size"],
+            },
+            f"sourcing-case:v2:{tenant}:{need_id}",
+        )
         async with runtime.outbox._factory() as session:
             root_run = await session.scalar(
                 select(WorkflowRunRow).where(
@@ -1092,6 +1150,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
                         "SELECT event_type, status FROM outbox_events "
                         "WHERE tenant_id=:tenant AND event_type = ANY(:types) "
                         "AND (event_payload->>'need_id'=:need "
+                        "OR event_payload->>'changed_need_id'=:need "
                         "OR event_payload->>'case_id'=:case)"
                     ),
                     {

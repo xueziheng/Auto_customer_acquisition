@@ -14,6 +14,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from domains.demand.schemas import NeedClusterPriorityFacts
 from domains.sourcing.errors import SourcingCaseConflictError
 from domains.sourcing.permissions import (
     Phase2SourcingAuthorizer,
@@ -58,6 +59,7 @@ from shared.schemas.identifiers import (
     OpportunityId,
     ProductId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
     TenantId,
@@ -65,7 +67,6 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.provenance import ProvenanceSummary, SourceType
-from workflows.engine.runner import WorkflowRun
 
 NOW = datetime(2026, 8, 30, 11, tzinfo=UTC)
 
@@ -517,6 +518,233 @@ async def test_admission_service_persists_canonical_snapshots_and_token_transiti
 
 
 @pytest.mark.asyncio
+async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent_in_postgres(
+    integration_engine: AsyncEngine,
+) -> None:
+    """真实 LEFT JOIN 同时覆盖整簇与 changed 无快照项，不截断或跨租户。"""
+
+    tenant = TenantId(new_id("tn"))
+    other_tenant = TenantId(new_id("tn"))
+    cluster_id = NeedClusterId(new_id("ncl"))
+    other_cluster = NeedClusterId(new_id("ncl"))
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    system = SourcingActor("system-worker", tenant, SourcingScope.SYSTEM, "system")
+    other_system = SourcingActor(
+        "system-worker", other_tenant, SourcingScope.SYSTEM, "system"
+    )
+    service = _service_type()(
+        lambda bound: SqlAlchemySourcingUnitOfWork(sessions, bound),
+        Phase2SourcingAuthorizer(tenant),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+    other_service = _service_type()(
+        lambda bound: SqlAlchemySourcingUnitOfWork(sessions, bound),
+        Phase2SourcingAuthorizer(other_tenant),
+        _UnusedEvidenceReader(),
+        now=lambda: NOW,
+    )
+
+    async def enqueue(
+        bound_service: Any,
+        bound_tenant: TenantId,
+        actor: SourcingActor,
+        need_id: ValidatedNeedId,
+        *,
+        target_cluster: NeedClusterId | None,
+        blocked: bool = False,
+        member_count: int = 2,
+    ) -> SourcingAdmissionId:
+        await _seed_need(integration_engine, bound_tenant, need_id)
+        case_id = await bound_service.open_case(
+            bound_tenant, _command(bound_tenant, need_id), actor=actor
+        )
+        command = (
+            SourcingAdmissionEnqueueCommand(
+                facts=None, blocked_reason="priority_facts_invalid"
+            )
+            if blocked
+            else SourcingAdmissionEnqueueCommand(
+                facts=SourcingPriorityFactsInput(
+                    need_id=need_id,
+                    cluster_id=target_cluster,
+                    cluster_member_count=(
+                        member_count if target_cluster is not None else 1
+                    ),
+                    facts_observed_at=NOW - timedelta(minutes=1),
+                )
+            )
+        )
+        return await bound_service.enqueue_admission(
+            bound_tenant,
+            case_id,
+            need_id,
+            ready_at=NOW - timedelta(hours=1),
+            command=command,
+            actor=actor,
+        )
+
+    first_need, second_need, changed_need, starting_need, admitted_need = (
+        ValidatedNeedId(new_id("need")) for _ in range(5)
+    )
+    other_cluster_need = ValidatedNeedId(new_id("need"))
+    cross_tenant_need = ValidatedNeedId(new_id("need"))
+    first_id = await enqueue(
+        service, tenant, system, first_need, target_cluster=cluster_id
+    )
+    second_id = await enqueue(
+        service, tenant, system, second_need, target_cluster=cluster_id
+    )
+    changed_id = await enqueue(
+        service,
+        tenant,
+        system,
+        changed_need,
+        target_cluster=None,
+        blocked=True,
+    )
+    starting_id = await enqueue(
+        service,
+        tenant,
+        system,
+        starting_need,
+        target_cluster=cluster_id,
+        member_count=20,
+    )
+    admitted_id = await enqueue(
+        service,
+        tenant,
+        system,
+        admitted_need,
+        target_cluster=cluster_id,
+        member_count=20,
+    )
+    other_cluster_id = await enqueue(
+        service,
+        tenant,
+        system,
+        other_cluster_need,
+        target_cluster=other_cluster,
+    )
+    cross_tenant_id = await enqueue(
+        other_service,
+        other_tenant,
+        other_system,
+        cross_tenant_need,
+        target_cluster=cluster_id,
+    )
+    claimed = await service.claim_admissions(
+        tenant,
+        limit=2,
+        claim_token="claim-cluster-refresh",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        actor=system,
+    )
+    assert {item.admission_id for item in claimed} == {starting_id, admitted_id}
+    await service.complete_admission(
+        tenant,
+        admitted_id,
+        claim_token="claim-cluster-refresh",
+        workflow_run_id=RunId(new_id("run")),
+        admitted_by="system:sourcing",
+        admitted_at=NOW + timedelta(seconds=1),
+        actor=system,
+    )
+    facts = SourcingPriorityFactsInput(
+        need_id=changed_need,
+        cluster_id=cluster_id,
+        cluster_member_count=9,
+        facts_observed_at=NOW,
+    )
+    async with sessions() as session:
+        before_count = await session.scalar(
+            select(func.count()).select_from(SourcingPrioritySnapshotRow)
+        )
+        immutable_snapshot_ids = {
+            row.admission_id: row.current_snapshot_id
+            for row in (
+                await session.execute(
+                    select(SourcingAdmissionRow).where(
+                        SourcingAdmissionRow.admission_id.in_(
+                            [starting_id, admitted_id]
+                        )
+                    )
+                )
+            ).scalars()
+        }
+
+    refreshed = await service.refresh_cluster_admissions(
+        tenant,
+        changed_need,
+        facts=facts,
+        refreshed_at=NOW + timedelta(minutes=1),
+        actor=system,
+    )
+    replayed = await service.refresh_cluster_admissions(
+        tenant,
+        changed_need,
+        facts=facts,
+        refreshed_at=NOW + timedelta(minutes=2),
+        actor=system,
+    )
+
+    assert refreshed == replayed
+    assert len(refreshed) == 3
+    async with sessions() as session:
+        after_count = await session.scalar(
+            select(func.count()).select_from(SourcingPrioritySnapshotRow)
+        )
+        rows = {
+            row.admission_id: row
+            for row in (
+                await session.execute(
+                    select(SourcingAdmissionRow).where(
+                        SourcingAdmissionRow.admission_id.in_(
+                            [
+                                first_id,
+                                second_id,
+                                changed_id,
+                                starting_id,
+                                admitted_id,
+                                other_cluster_id,
+                                cross_tenant_id,
+                            ]
+                        )
+                    )
+                )
+            ).scalars()
+        }
+        snapshots = {
+            row.snapshot_id: row
+            for row in (
+                await session.execute(select(SourcingPrioritySnapshotRow))
+            ).scalars()
+        }
+    assert before_count is not None and after_count == before_count + 3
+    for admission_id in (first_id, second_id, changed_id):
+        row = rows[str(admission_id)]
+        snapshot = snapshots[row.current_snapshot_id]
+        assert (row.tenant_id, snapshot.cluster_id, snapshot.cluster_member_count) == (
+            str(tenant),
+            str(cluster_id),
+            9,
+        )
+        assert row.state == AdmissionState.WAITING.value
+    assert rows[str(other_cluster_id)].current_snapshot_id not in set(refreshed)
+    assert rows[str(cross_tenant_id)].current_snapshot_id not in set(refreshed)
+    assert rows[str(starting_id)].state == AdmissionState.STARTING.value
+    assert rows[str(admitted_id)].state == AdmissionState.ADMITTED.value
+    assert (
+        rows[str(starting_id)].current_snapshot_id
+        == immutable_snapshot_ids[str(starting_id)]
+    )
+    assert (
+        rows[str(admitted_id)].current_snapshot_id
+        == immutable_snapshot_ids[str(admitted_id)]
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fault", "message"),
     [
@@ -728,23 +956,35 @@ class _NeedReader:
         return self._snapshot
 
 
-class _NeverRunStep:
-    async def execute(
-        self, run: WorkflowRun
-    ) -> tuple[str, str | None, dict[str, object]]:
-        raise AssertionError(f"本测试只验证 durable start，不应 poll {run.run_id}")
+class _PriorityReader:
+    def __init__(self, need_id: ValidatedNeedId) -> None:
+        self._need_id = need_id
+
+    async def get_cluster_priority_facts(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> NeedClusterPriorityFacts:
+        assert need_id == self._need_id
+        return NeedClusterPriorityFacts(
+            need_id=str(need_id),
+            cluster_id=None,
+            cluster_member_count=1,
+            facts_observed_at=NOW,
+        )
 
 
-class _UnknownFailureFirstStart:
-    def __init__(self, engine: Any) -> None:
-        self._engine = engine
+class _UnknownFailureFirstEnqueue:
+    def __init__(self, sourcing: Any) -> None:
+        self._sourcing = sourcing
         self.calls = 0
 
-    async def start(self, *args: Any, **kwargs: Any) -> Any:
+    async def open_case(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._sourcing.open_case(*args, **kwargs)
+
+    async def enqueue_admission(self, *args: Any, **kwargs: Any) -> Any:
         self.calls += 1
         if self.calls == 1:
-            raise RuntimeError("untrusted workflow storage failure")
-        return await self._engine.start(*args, **kwargs)
+            raise RuntimeError("untrusted admission storage failure")
+        return await self._sourcing.enqueue_admission(*args, **kwargs)
 
 
 class _Clock:
@@ -1091,31 +1331,20 @@ async def test_open_case_is_idempotent_and_event_is_atomic_in_postgres(
 
 
 @pytest.mark.asyncio
-async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
+async def test_outbox_retries_sanitized_enqueue_failure_and_recovers_one_admission(
     integration_engine: AsyncEngine,
 ) -> None:
-    """开案已提交而 Workflow Engine 临时失败时，Outbox 必须可恢复且不泄密。"""
+    """开案已提交而准入入队临时失败时，Outbox 必须可恢复且不泄密。"""
 
     from apps.scheduler_worker.sourcing_events import SourcingTriggerHandler
     from infra.db.outbox import PostgresEventBus
     from infra.db.outbox_delivery import OutboxDeliverer
-    from infra.db.workflow_engine import PostgresWorkflowEngine
-    from workflows.sourcing_case.flow import build_sourcing_case_definition
 
     tenant_id = TenantId(new_id("tn"))
     need_id = ValidatedNeedId(new_id("need"))
     await _seed_need(integration_engine, tenant_id, need_id)
     factory = async_sessionmaker(integration_engine, expire_on_commit=False)
     clock = _Clock(NOW)
-    definition = build_sourcing_case_definition()
-    never_run = _NeverRunStep()
-    real_engine = PostgresWorkflowEngine(
-        factory,
-        {step.handler_ref: never_run for step in definition.steps},
-        now=clock.now,
-    )
-    real_engine.register(definition)
-    flaky_engine = _UnknownFailureFirstStart(real_engine)
     system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
     sourcing = _service_type()(
         lambda bound_tenant: SqlAlchemySourcingUnitOfWork(factory, bound_tenant),
@@ -1123,10 +1352,11 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
         _UnusedEvidenceReader(),
         now=clock.now,
     )
+    flaky_sourcing = _UnknownFailureFirstEnqueue(sourcing)
     command = _command(tenant_id, need_id)
     handler = SourcingTriggerHandler(
-        engine=flaky_engine,
-        sourcing=sourcing,
+        sourcing=cast(Any, flaky_sourcing),
+        demand=_PriorityReader(need_id),
         need_reader=_NeedReader(command.need),
         tenant_id=tenant_id,
         sourcing_actor=system,
@@ -1174,9 +1404,9 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
             ),
             {"tenant": str(tenant_id), "need": str(need_id)},
         )
-        case_id = await connection.scalar(
+        admission_count = await connection.scalar(
             text(
-                "SELECT case_id FROM sourcing_cases "
+                "SELECT count(*) FROM sourcing_admissions "
                 "WHERE tenant_id=:tenant AND need_id=:need"
             ),
             {"tenant": str(tenant_id), "need": str(need_id)},
@@ -1190,6 +1420,7 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
         )
     assert first == ("pending", "TransientError", "pending", 1, "TransientError")
     assert case_count == 1
+    assert admission_count == 0
     assert run_count == 0
 
     clock.value = NOW + timedelta(seconds=31)
@@ -1214,6 +1445,22 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
             ),
             {"tenant": str(tenant_id), "need": str(need_id)},
         )
+        admission_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_admissions "
+                "WHERE tenant_id=:tenant AND need_id=:need"
+            ),
+            {"tenant": str(tenant_id), "need": str(need_id)},
+        )
+        priority_snapshot_count = await connection.scalar(
+            text(
+                "SELECT count(*) FROM sourcing_priority_snapshots p "
+                "JOIN sourcing_admissions a "
+                "ON a.tenant_id=p.tenant_id AND a.admission_id=p.admission_id "
+                "WHERE a.tenant_id=:tenant AND a.need_id=:need"
+            ),
+            {"tenant": str(tenant_id), "need": str(need_id)},
+        )
         runs = (
             await connection.execute(
                 text(
@@ -1226,15 +1473,10 @@ async def test_outbox_retries_sanitized_start_failure_and_recovers_one_real_run(
         ).all()
     assert recovered == ("delivered", None, "delivered", 1, None)
     assert case_count == 1
-    assert runs == [
-        (
-            "running",
-            2,
-            case_id,
-            f"sourcing-case:v2:{tenant_id}:{need_id}",
-        )
-    ]
-    assert flaky_engine.calls == 2
+    assert admission_count == 1
+    assert priority_snapshot_count == 1
+    assert runs == []
+    assert flaky_sourcing.calls == 2
 
 
 @pytest.mark.asyncio

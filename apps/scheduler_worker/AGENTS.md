@@ -79,3 +79,11 @@ catalog 所定义的真实下游语义，禁止由本 composition 作无副作�
 delivered。仅 `SourcingCaseOpened` 与 `OpportunityQualified` 是当前阶段不推进后续业务状态的具名、
 tenant-bound audit acknowledgement；它只确认已消费，不能创建联系人、采购、报价或外部调用。
 不得把这条显式订阅扩展成全局无 handler 的宽容策略：其他未注册事件仍由 Outbox 标记为 dead。
+
+需求就绪事件只能读取一次可信 Need snapshot、开一次 canonical V2 Case、读取一次 Demand 当前簇事实并
+durable enqueue 一次 Sourcing Admission；事件 handler 严禁直接启动 Workflow。`NeedClusterMembershipChanged`
+由精确 consumer `sourcing_case.cluster_membership` 消费，事件成员数只校验形状，排序事实必须重新从 Demand
+公共服务读取。当前簇事实只刷新该簇全部 waiting/blocked admission 以及 changed Need 的无快照阻断项；
+starting/admitted 不变，priority-invalid 可恢复，case-state-mismatch 只更新快照不恢复。旧
+`NeedClusterFormed` 不由这条路径消费。暂态事实读取失败以固定脱敏错误交回 Outbox，不得固化为 blocked；
+永久非法排序结构只能形成固定 `priority_facts_invalid`，禁止保存原异常或自由文本。

@@ -29,6 +29,7 @@ from domains.sourcing.models import (
 from domains.sourcing.schemas import PublicCandidateDraft, SourcingHandoffSnapshot
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
+    NeedClusterId,
     RunId,
     SourcingAdmissionId,
     SourcingCaseId,
@@ -136,6 +137,19 @@ class SourcingAdmissionRepository(Protocol):
         self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
     ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
         """同事务按 facts_hash 去重追加、推进（含空）current pointer 并返回更新后的 admission。"""
+        ...
+
+    async def list_cluster_refresh_targets(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+        changed_need_id: ValidatedNeedId,
+    ) -> list[tuple[SourcingAdmission, SourcingPrioritySnapshot | None]]:
+        """一次 LEFT JOIN 读取整簇可刷新项及 changed Need 的无快照阻断项。
+
+        仅返回 ``waiting``/``blocked``，按 admission ID 稳定排序且不截断；
+        ``starting``/``admitted`` 必须在 SQL 目标集之外保持不变。
+        """
         ...
 
     async def claim_ordered(

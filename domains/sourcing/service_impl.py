@@ -1259,6 +1259,67 @@ class SourcingServiceImpl:
             )
             return canonical.snapshot_id
 
+    async def refresh_cluster_admissions(
+        self,
+        tenant_id: TenantId,
+        changed_need_id: ValidatedNeedId,
+        *,
+        facts: SourcingPriorityFactsInput,
+        refreshed_at: datetime,
+        actor: SourcingActor,
+    ) -> tuple[SourcingPrioritySnapshotId, ...]:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_REFRESH,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(tenant_id, "tenant_id")
+        _bounded_identifier(changed_need_id, "changed_need_id")
+        if not isinstance(facts, SourcingPriorityFactsInput):
+            raise ValidationError("寻源准入排序事实无效")
+        if facts.need_id != changed_need_id:
+            raise ValidationError("排序事实 Need 与成员变更 Need 不一致")
+        if facts.cluster_id is None:
+            raise ValidationError("需求簇刷新必须提供 cluster_id")
+        refreshed_at = _utc_time(refreshed_at, "refreshed_at")
+        if facts.facts_observed_at > refreshed_at:
+            raise ValidationError("facts_observed_at 不得晚于 refreshed_at")
+        async with self._uow_factory(tenant_id) as uow:
+            targets = await uow.admissions.list_cluster_refresh_targets(
+                tenant_id,
+                facts.cluster_id,
+                changed_need_id,
+            )
+            snapshot_ids: list[SourcingPrioritySnapshotId] = []
+            for admission, _ in targets:
+                snapshot = SourcingPrioritySnapshot(
+                    tenant_id=tenant_id,
+                    snapshot_id=SourcingPrioritySnapshotId(new_id("sps")),
+                    admission_id=admission.admission_id,
+                    case_id=admission.case_id,
+                    need_id=admission.need_id,
+                    cluster_id=facts.cluster_id,
+                    cluster_member_count=facts.cluster_member_count,
+                    ready_at=admission.ready_at,
+                    ranking_version=ADMISSION_RANKING_VERSION,
+                    facts_observed_at=facts.facts_observed_at,
+                    facts_hash=canonical_priority_facts_hash(
+                        need_id=admission.need_id,
+                        cluster_id=facts.cluster_id,
+                        cluster_member_count=facts.cluster_member_count,
+                        ready_at=admission.ready_at,
+                        facts_observed_at=facts.facts_observed_at,
+                        ranking_version=ADMISSION_RANKING_VERSION,
+                    ),
+                    created_at=refreshed_at,
+                )
+                _, canonical, _ = await uow.admissions.append_snapshot_if_changed(
+                    tenant_id, snapshot
+                )
+                snapshot_ids.append(canonical.snapshot_id)
+            return tuple(snapshot_ids)
+
     async def claim_admissions(
         self,
         tenant_id: TenantId,

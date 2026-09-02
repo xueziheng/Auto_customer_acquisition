@@ -22,7 +22,11 @@ from apps.scheduler_worker.free_web_discovery import (
     build_free_search_reader,
 )
 from apps.scheduler_worker.sourcing_costing import SourcingCostHandoffHandler
-from apps.scheduler_worker.sourcing_events import SourcingTriggerHandler
+from apps.scheduler_worker.sourcing_events import (
+    DemandPriorityFactsReader,
+    SourcingClusterMembershipHandler,
+    SourcingTriggerHandler,
+)
 from apps.scheduler_worker.sourcing_projections import SourcingCandidateProductProjector
 from apps.scheduler_worker.sourcing_web import (
     PostgresPublicCandidateDraftWriter,
@@ -43,6 +47,7 @@ from domains.costing.permissions import (
 )
 from domains.costing.service import CostingService
 from domains.costing.service_impl import CostingServiceImpl
+from domains.demand.service_impl import DemandServiceImpl
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
 )
@@ -97,6 +102,7 @@ from shared.errors import ValidationError, detached_dependency_error
 from shared.events.catalog import (
     DomainEvent,
     NeedBecameSourcingReady,
+    NeedClusterMembershipChanged,
     NeedValidated,
     OpportunityQualified,
     SourcingCandidatesReady,
@@ -720,6 +726,7 @@ class SourcingCaseComposition:
 
     tenant_id: TenantId
     handlers: dict[str, StepHandler]
+    demand: DemandPriorityFactsReader
     sourcing: SourcingService
     products: ProductService
     suppliers: SupplierService
@@ -741,9 +748,15 @@ class SourcingCaseComposition:
         if not callable(register):
             raise ValidationError("寻源 Outbox registry 无效")
         trigger = SourcingTriggerHandler(
-            engine=engine,
             sourcing=self.sourcing,
+            demand=self.demand,
             need_reader=self.need_reader,
+            tenant_id=self.tenant_id,
+            sourcing_actor=self.sourcing_actor,
+        )
+        cluster_membership = SourcingClusterMembershipHandler(
+            demand=self.demand,
+            sourcing=self.sourcing,
             tenant_id=self.tenant_id,
             sourcing_actor=self.sourcing_actor,
         )
@@ -771,6 +784,11 @@ class SourcingCaseComposition:
         )
         register(NeedValidated, "sourcing_case.need_validated", trigger)
         register(NeedBecameSourcingReady, "sourcing_case.need_ready", trigger)
+        register(
+            NeedClusterMembershipChanged,
+            "sourcing_case.cluster_membership",
+            cluster_membership,
+        )
         register(
             SourcingCandidatesVerified, "sourcing_case.product_projector", projector
         )
@@ -807,6 +825,10 @@ def build_sourcing_case_composition(
     ):
         raise ValidationError("寻源 research-only 依赖绑定无效")
     need_reader = PostgresSourcingNeedReader(factory, tenant_id)
+    demand = DemandServiceImpl(
+        cast(Any, lambda bound: SqlAlchemyDemandUnitOfWork(factory, bound)),
+        now=now,
+    )
     evidence_reader = PostgresCandidateEvidenceSnapshotReader(factory, tenant_id)
     sourcing_actor = SourcingActor(
         settings.system_actor_id, tenant_id, SourcingScope.SYSTEM, "system"
@@ -872,6 +894,7 @@ def build_sourcing_case_composition(
     return SourcingCaseComposition(
         tenant_id,
         handlers,
+        demand,
         sourcing,
         products,
         suppliers,

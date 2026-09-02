@@ -190,6 +190,23 @@ class SourcingService(Protocol):
         """
         ...
 
+    async def refresh_cluster_admissions(
+        self,
+        tenant_id: TenantId,
+        changed_need_id: ValidatedNeedId,
+        *,
+        facts: SourcingPriorityFactsInput,
+        refreshed_at: datetime,
+        actor: SourcingActor,
+    ) -> tuple[SourcingPrioritySnapshotId, ...]:
+        """用 changed Need 的当前已核验簇事实刷新整簇可等待准入。
+
+        单个事务内覆盖该簇全部 ``waiting``/``blocked``，并覆盖 changed Need
+        尚无首快照的 ``priority_facts_invalid`` 记录；每条快照仍保留自身
+        Case、Need 与 ready_at，禁止把多个 Need 的业务字段合并。
+        """
+        ...
+
     async def claim_admissions(
         self,
         tenant_id: TenantId,
