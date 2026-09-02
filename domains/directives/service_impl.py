@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from domains.directives.errors import DirectiveProposalNotFoundError
 from domains.directives.models import (
     DemandDiscoveryConfig,
     Directive,
@@ -479,8 +480,10 @@ class DirectiveServiceImpl:
         interpretation_summary: str,
         expected_behavior_changes: list[str],
         parsed_by: str,
+        *,
+        submitted_by: EmployeeId,
     ) -> str:
-        self._validate_tenant(tenant_id)
+        await self._require_boss(tenant_id, submitted_by)
         _text(raw_text, "老板指令原话无效", maximum=10_000)
         if not isinstance(config, SourcingAdmissionConfigInput):
             raise ValidationError("寻源准入提案输入无效")
@@ -544,7 +547,7 @@ class DirectiveServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             proposal = await uow.proposals.get_for_update(tenant_id, proposal_id)
             if proposal is None:
-                raise ValidationError("指令提案不存在")
+                raise DirectiveProposalNotFoundError("指令提案不存在")
             if proposal.state is not ProposalState.PENDING_CONFIRMATION:
                 raise InvalidStateTransition("指令提案已决策，不能再次确认")
             version = await uow.directives.next_version(tenant_id)
@@ -696,7 +699,7 @@ class DirectiveServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             proposal = await uow.proposals.get(tenant_id, proposal_id)
         if proposal is None:
-            raise ValidationError("指令提案不存在")
+            raise DirectiveProposalNotFoundError("指令提案不存在")
         names: dict[EmployeeId, str] = {}
         if proposal.decided_by is not None:
             names = await self._employees.names_for(

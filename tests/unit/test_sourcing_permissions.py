@@ -146,7 +146,11 @@ def test_phase2_admission_actions_have_no_implicit_role_or_scope_grants() -> Non
         "ADMISSION_ENQUEUE": {("system", "SYSTEM")},
         "ADMISSION_REFRESH": {("system", "SYSTEM")},
         "ADMISSION_CLAIM": {("system", "SYSTEM")},
-        "ADMISSION_COMPLETE": {("system", "SYSTEM")},
+        "ADMISSION_COMPLETE": {
+            ("boss", "TENANT"),
+            ("sourcing", "TENANT"),
+            ("system", "SYSTEM"),
+        },
         "ADMISSION_READ": {
             ("boss", "TENANT"),
             ("product", "TENANT"),

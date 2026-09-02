@@ -445,6 +445,10 @@ async def test_enabled_policy_claims_exact_policy_limit_and_preserves_repository
     assert result.stop_reason == "batch_processed"
     assert (result.claimed_count, result.admitted_count) == (2, 2)
     assert sourcing.rows[2].state is AdmissionState.WAITING
+    assert all(call["actor"] == SYSTEM for call in sourcing.complete_calls)
+    assert all(
+        call["admitted_by"] == SYSTEM.actor_id for call in sourcing.complete_calls
+    )
 
 
 @pytest.mark.asyncio

@@ -212,7 +212,10 @@ class SourcingAdmissionStarter:
         return current
 
     async def admit_one(
-        self, admission: SourcingAdmission
+        self,
+        admission: SourcingAdmission,
+        *,
+        completing_actor: SourcingActor,
     ) -> SourcingAdmissionAttemptOutcome:
         """处理一条已 claim admission；未知提交结果等待租约恢复。"""
 
@@ -221,6 +224,17 @@ class SourcingAdmissionStarter:
             or admission.tenant_id != self._tenant_id
             or admission.state is not AdmissionState.STARTING
             or admission.claim_token is None
+            or not isinstance(completing_actor, SourcingActor)
+            or completing_actor.tenant_id != self._tenant_id
+            or (
+                completing_actor.scope.value,
+                completing_actor.role,
+            )
+            not in {
+                ("system", "system"),
+                ("tenant", "boss"),
+                ("tenant", "sourcing"),
+            }
         ):
             return "pending_recovery"
         claim_token = admission.claim_token
@@ -284,9 +298,9 @@ class SourcingAdmissionStarter:
                 admission.admission_id,
                 claim_token=claim_token,
                 workflow_run_id=RunId(run_id),
-                admitted_by=self._sourcing_actor.actor_id,
+                admitted_by=completing_actor.actor_id,
                 admitted_at=self._current_time(),
-                actor=self._sourcing_actor,
+                actor=completing_actor,
             )
         except Exception:  # noqa: BLE001 - Run 或 bind 可能已提交
             return "pending_recovery"
@@ -548,23 +562,35 @@ class SourcingAdmissionApplication:
         admission = await self._get_admission(admission_id, actor=actor)
         if admission is None:
             return None
+        permanent_case_mismatch = False
         try:
             case = await self._sourcing.get_admission_case_snapshot(
                 self._tenant_id,
                 admission.case_id,
                 actor=self._sourcing_actor,
             )
-        except Exception:  # noqa: BLE001 - canonical Case 读取错误统一脱敏
+        except ValidationError:
+            permanent_case_mismatch = True
+            case = None
+        except TransientError:
+            raise TransientError("寻源准入 Case 暂不可确认") from None
+        except Exception:  # noqa: BLE001 - 未知读取结果保守地保持未 claim
             raise TransientError("寻源准入 Case 暂不可确认") from None
         if admission.state == AdmissionState.BLOCKED.value:
             raise InvalidStateTransition("寻源准入当前不可人工启动")
-        if (
-            not isinstance(case, SourcingCaseReadView)
-            or case.case_id != admission.case_id
-            or case.need_id != admission.need_id
-        ):
-            raise InvalidStateTransition("寻源准入当前不可人工启动")
+        if not permanent_case_mismatch:
+            if case is None:
+                permanent_case_mismatch = True
+            elif not isinstance(case, SourcingCaseReadView):
+                raise TransientError("寻源准入 Case 暂不可确认") from None
+            elif (
+                case.case_id != admission.case_id
+                or case.need_id != admission.need_id
+            ):
+                permanent_case_mismatch = True
         if admission.state == AdmissionState.ADMITTED.value:
+            if permanent_case_mismatch:
+                raise InvalidStateTransition("寻源准入当前不可人工启动")
             return admission
 
         try:
@@ -603,7 +629,10 @@ class SourcingAdmissionApplication:
             raise TransientError("寻源准入启动状态暂不可确认") from None
 
         try:
-            outcome = await self._starter.admit_one(claimed)
+            outcome = await self._starter.admit_one(
+                claimed,
+                completing_actor=actor,
+            )
         except Exception:  # noqa: BLE001 - 共享启动路径的异常统一脱敏
             raise TransientError("寻源准入启动状态暂不可确认") from None
         if outcome == "blocked":

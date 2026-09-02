@@ -28,6 +28,7 @@ SourcingAdmissionConfig = _models.SourcingAdmissionConfig
 
 NOW = datetime(2026, 9, 2, 12, tzinfo=UTC)
 TENANT = TenantId("tn_directive_admission")
+OTHER_TENANT = TenantId("tn_directive_other")
 BOSS = EmployeeId("emp_boss")
 STAFF = EmployeeId("emp_staff")
 
@@ -169,6 +170,16 @@ class _Factory:
         return _Uow(self._state)
 
 
+class _CountingFactory(_Factory):
+    def __init__(self, state: _State) -> None:
+        super().__init__(state)
+        self.calls = 0
+
+    def __call__(self, tenant_id: TenantId) -> _Uow:
+        self.calls += 1
+        return super().__call__(tenant_id)
+
+
 def _service(state: _State) -> DirectiveServiceImpl:
     return DirectiveServiceImpl(_Factory(state), _Employees(), now=lambda: NOW)
 
@@ -243,6 +254,7 @@ async def test_sourcing_admission_proposal_rejects_non_exact_configuration(
             "Enable cluster-ranked sourcing admission.",
             ["Up to three waiting cases may be admitted per cycle."],
             "directive-parser-v1",
+            submitted_by=BOSS,
         )
 
 
@@ -265,7 +277,40 @@ async def test_sourcing_admission_proposal_requires_expected_behavior_changes() 
             "Enable cluster-ranked sourcing admission.",
             [],
             "directive-parser-v1",
+            submitted_by=BOSS,
         )
+
+
+@pytest.mark.parametrize(
+    ("tenant_id", "submitted_by"),
+    [(TENANT, STAFF), (OTHER_TENANT, BOSS)],
+)
+async def test_sourcing_admission_submit_requires_active_boss_before_uow(
+    tenant_id: TenantId,
+    submitted_by: EmployeeId,
+) -> None:
+    factory = _CountingFactory(_State())
+    service = DirectiveServiceImpl(factory, _Employees(), now=lambda: NOW)
+
+    with pytest.raises(PermissionDenied):
+        await service.submit_sourcing_admission_proposal(
+            tenant_id,
+            "Enable bounded cluster-ranked sourcing.",
+            _config(),
+            "Enable cluster-ranked sourcing admission.",
+            ["Up to three waiting cases may be admitted per cycle."],
+            "directive-parser-v1",
+            submitted_by=submitted_by,
+        )
+
+    assert factory.calls == 0
+
+
+async def test_missing_proposal_has_explicit_not_found_semantics() -> None:
+    with pytest.raises(ValidationError) as caught:
+        await _service(_State()).get_proposal(TENANT, "dpr_missing")
+
+    assert type(caught.value).__name__ == "DirectiveProposalNotFoundError"
 
 
 async def test_generic_proposal_cannot_bypass_sourcing_admission_baseline() -> None:
@@ -301,6 +346,7 @@ async def test_sourcing_admission_proposal_copies_the_complete_active_directive(
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
 
     proposal = state.proposals[proposal_id]
@@ -379,6 +425,7 @@ async def test_generic_proposal_without_active_uses_zero_baseline_and_goes_stale
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     await service.confirm_proposal(TENANT, admission_id, BOSS)
     active = state.active
@@ -423,6 +470,7 @@ async def test_generic_without_admission_goes_stale_after_policy_is_enabled() ->
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     await service.confirm_proposal(TENANT, admission_id, BOSS)
     active = state.active
@@ -484,6 +532,7 @@ async def test_non_boss_cannot_confirm_sourcing_admission() -> None:
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
 
     with pytest.raises(PermissionDenied, match="只有在职老板"):
@@ -505,6 +554,7 @@ async def test_stale_sourcing_admission_proposal_cannot_overwrite_newer_directiv
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     newer_content = replace(original, monthly_budget_credits=1200)
     newer = _active(state, 8, newer_content)
@@ -531,6 +581,7 @@ async def test_stale_baseline_takes_precedence_over_expired_proposal() -> None:
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     state.proposals[proposal_id] = replace(
         state.proposals[proposal_id],

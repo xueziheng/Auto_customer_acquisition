@@ -9,12 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime.trade_manager import TradeManagerAgent
+from domains.directives.errors import DirectiveProposalNotFoundError
 from domains.directives.schemas import ProposalView, SourcingAdmissionConfigInput
 from domains.directives.service import DirectiveService
 from domains.employees.permissions import EmployeeAction
 from shared.errors import (
     InvalidStateTransition,
-    TradeOSError,
+    PermissionDenied,
     TransientError,
     ValidationError,
 )
@@ -159,9 +160,10 @@ async def create_sourcing_admission_proposal(
                 f"每轮最多启动 {body.batch_limit} 个寻源案例",
             ],
             "api:sourcing-admission-v1",
+            submitted_by=identity.employee.employee_id,
         )
         proposal = await directives.get_proposal(identity.tenant_id, proposal_id)
-    except TradeOSError:
+    except (PermissionDenied, InvalidStateTransition):
         raise
     except Exception:  # noqa: BLE001 - Directive 存储异常不得进入 HTTP
         raise TransientError("寻源准入提案状态暂不可用") from None
@@ -187,10 +189,8 @@ async def confirm_sourcing_admission_proposal(
     directives = _directives(dependencies)
     try:
         proposal = await directives.get_proposal(identity.tenant_id, normalized)
-    except ValidationError:
+    except DirectiveProposalNotFoundError:
         raise HTTPException(status_code=404) from None
-    except TradeOSError:
-        raise
     except Exception:  # noqa: BLE001 - Directive 存储异常不得进入 HTTP
         raise TransientError("寻源准入提案状态暂不可用") from None
     if proposal is None:
@@ -214,7 +214,9 @@ async def confirm_sourcing_admission_proposal(
             identity.tenant_id, normalized, identity.employee.employee_id
         )
         active = await directives.get_active(identity.tenant_id)
-    except TradeOSError:
+    except DirectiveProposalNotFoundError:
+        raise HTTPException(status_code=404) from None
+    except (PermissionDenied, InvalidStateTransition):
         raise
     except Exception:  # noqa: BLE001 - Directive 存储异常不得进入 HTTP
         raise TransientError("寻源准入生效版本暂不可确认") from None

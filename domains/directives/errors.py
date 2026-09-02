@@ -22,6 +22,10 @@ class MissingBehaviorChangesError(ValidationError):
     """
 
 
+class DirectiveProposalNotFoundError(ValidationError):
+    """当前租户下不存在指定指令提案。"""
+
+
 class InvalidDiscoveryRatioError(ValidationError):
     """探索配比两项之和不是 100。"""
 

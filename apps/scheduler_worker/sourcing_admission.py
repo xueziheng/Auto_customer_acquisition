@@ -227,7 +227,10 @@ class SourcingAdmissionDriver:
     ) -> SourcingAdmissionAttemptOutcome:
         """把批处理中的单项启动委托给 API 共用的 application seam。"""
 
-        return await self._starter.admit_one(admission)
+        return await self._starter.admit_one(
+            admission,
+            completing_actor=self._sourcing_actor,
+        )
 
 
 __all__ = (

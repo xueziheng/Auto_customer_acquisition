@@ -125,6 +125,7 @@ async def test_new_sourcing_admission_directive_round_trips_and_rollback_version
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     await service.confirm_proposal(tenant, proposal_id, BOSS)
 
@@ -227,6 +228,7 @@ async def test_concurrent_generic_confirmations_allow_one_matching_baseline_only
         "Enable cluster-ranked sourcing admission.",
         ["Up to three waiting cases may be admitted per cycle."],
         "directive-parser-v1",
+        submitted_by=BOSS,
     )
     await service.confirm_proposal(tenant, initial_proposal, BOSS)
 

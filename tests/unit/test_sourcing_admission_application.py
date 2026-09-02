@@ -18,7 +18,12 @@ from domains.sourcing.service import (
     AdmissionState,
     SourcingAdmission,
 )
-from shared.errors import InvalidStateTransition, PermissionDenied, TransientError
+from shared.errors import (
+    InvalidStateTransition,
+    PermissionDenied,
+    TransientError,
+    ValidationError,
+)
 from shared.schemas.identifiers import (
     EmployeeId,
     SourcingAdmissionId,
@@ -40,6 +45,9 @@ ADMISSION_ID = SourcingAdmissionId("sad-application")
 CASE_ID = SourcingCaseId("src-application")
 NEED_ID = ValidatedNeedId("need-application")
 USER = SourcingActor("emp-boss", TENANT, SourcingScope.TENANT, "boss")
+SOURCING_USER = SourcingActor(
+    "emp-sourcing", TENANT, SourcingScope.TENANT, "sourcing"
+)
 SYSTEM = SourcingActor(
     "system:sourcing-admission", TENANT, SourcingScope.SYSTEM, "system"
 )
@@ -155,6 +163,8 @@ class _Sourcing:
     def __init__(self, view: SourcingAdmissionReadView | None = None) -> None:
         self.view = view or _view()
         self.calls: list[tuple[object, ...]] = []
+        self.case_error: Exception | None = None
+        self.case_value: object = _case()
 
     async def list_admissions(self, tenant_id, *, state, limit, now, actor):
         self.calls.append(("list", tenant_id, state, limit, now, actor))
@@ -166,7 +176,9 @@ class _Sourcing:
 
     async def get_admission_case_snapshot(self, tenant_id, case_id, *, actor):
         self.calls.append(("case", tenant_id, case_id, actor))
-        return _case()
+        if self.case_error is not None:
+            raise self.case_error
+        return self.case_value
 
     async def claim_manual_admission(
         self, tenant_id, admission_id, command, *, claim_expires_at, actor
@@ -190,10 +202,15 @@ class _Starter:
     ) -> None:
         self.outcome = outcome
         self.sourcing = sourcing
-        self.calls: list[SourcingAdmission] = []
+        self.calls: list[tuple[SourcingAdmission, SourcingActor]] = []
 
-    async def admit_one(self, admission: SourcingAdmission) -> str:
-        self.calls.append(admission)
+    async def admit_one(
+        self,
+        admission: SourcingAdmission,
+        *,
+        completing_actor: SourcingActor,
+    ) -> str:
+        self.calls.append((admission, completing_actor))
         if self.outcome == "admitted" and self.sourcing is not None:
             self.sourcing.view = _view("admitted")
         return self.outcome
@@ -250,9 +267,10 @@ async def test_list_projects_distinct_safe_policy_states(
 
 
 @pytest.mark.asyncio
-async def test_manual_admit_reads_admission_and_case_then_reuses_shared_starter() -> (
-    None
-):
+@pytest.mark.parametrize("actor", [USER, SOURCING_USER])
+async def test_manual_admit_preserves_authorized_employee_as_completing_actor(
+    actor: SourcingActor,
+) -> None:
     sourcing = _Sourcing()
     application, starter = _application(sourcing)
 
@@ -260,14 +278,14 @@ async def test_manual_admit_reads_admission_and_case_then_reuses_shared_starter(
         TENANT,
         ADMISSION_ID,
         request_id="manual-request-1",
-        actor=USER,
+        actor=actor,
     )
 
     assert result == _view("admitted")
     assert [call[0] for call in sourcing.calls] == ["get", "case", "claim", "get"]
     assert sourcing.calls[2][3].request_id == "manual-request-1"
     assert sourcing.calls[2][4] == NOW + LEASE
-    assert starter.calls == [_claimed()]
+    assert starter.calls == [(_claimed(), actor)]
 
 
 @pytest.mark.asyncio
@@ -338,3 +356,41 @@ async def test_manual_unknown_start_result_is_fixed_503_and_tenant_gate_precedes
             actor=wrong_actor,
         )
     assert sourcing.calls == []
+
+
+@pytest.mark.asyncio
+async def test_manual_permanent_case_validation_claims_then_blocks_via_shared_starter() -> (
+    None
+):
+    sourcing = _Sourcing()
+    sourcing.case_error = ValidationError("private frozen snapshot mismatch")
+    application, starter = _application(sourcing, starter=_Starter("blocked"))
+
+    with pytest.raises(InvalidStateTransition, match="^寻源准入当前不可人工启动$"):
+        await application.admit_one(
+            TENANT,
+            ADMISSION_ID,
+            request_id="manual-request-1",
+            actor=USER,
+        )
+
+    assert [call[0] for call in sourcing.calls] == ["get", "case", "claim"]
+    assert starter.calls == [(_claimed(), USER)]
+
+
+@pytest.mark.asyncio
+async def test_manual_missing_canonical_case_claims_then_blocks() -> None:
+    sourcing = _Sourcing()
+    sourcing.case_value = None
+    application, starter = _application(sourcing, starter=_Starter("blocked"))
+
+    with pytest.raises(InvalidStateTransition, match="^寻源准入当前不可人工启动$"):
+        await application.admit_one(
+            TENANT,
+            ADMISSION_ID,
+            request_id="manual-request-1",
+            actor=USER,
+        )
+
+    assert [call[0] for call in sourcing.calls] == ["get", "case", "claim"]
+    assert starter.calls == [(_claimed(), USER)]

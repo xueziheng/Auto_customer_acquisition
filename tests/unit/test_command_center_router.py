@@ -18,6 +18,7 @@ from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
+from shared.errors import ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
@@ -54,6 +55,8 @@ class _Directives:
         interpretation_summary,
         expected_behavior_changes,
         parsed_by,
+        *,
+        submitted_by,
     ):
         self.calls.append(
             (
@@ -64,6 +67,7 @@ class _Directives:
                 interpretation_summary,
                 expected_behavior_changes,
                 parsed_by,
+                submitted_by,
             )
         )
         return PROPOSAL_ID
@@ -107,6 +111,12 @@ class _UnavailableConfirmDirectives(_Directives):
     async def confirm_proposal(self, *args, **kwargs):
         del args, kwargs
         raise RuntimeError("postgres://user:secret@example.invalid/directives")
+
+
+class _InvalidProjectionDirectives(_Directives):
+    async def get_proposal(self, *args, **kwargs):
+        del args, kwargs
+        raise ValidationError("employee projection leaked secret-token")
 
 
 class _EmployeeAuthorizer:
@@ -359,3 +369,29 @@ def test_directive_failures_are_fixed_503_and_openapi_documents_safe_errors() ->
         assert {"400", "403", "404", "409", "503"} <= set(
             paths[path]["post"]["responses"]
         )
+
+
+def test_internal_proposal_projection_validation_is_sanitized_503() -> None:
+    app = _app("boss", _InvalidProjectionDirectives())
+    responses = (
+        _request(
+            app,
+            "POST",
+            "/commands/sourcing-admission-proposals",
+            json=_body(),
+        ),
+        _request(
+            app,
+            "POST",
+            f"/commands/sourcing-admission-proposals/{PROPOSAL_ID}/confirm",
+            headers=[("Idempotency-Key", "confirm-projection-failure")],
+        ),
+    )
+
+    for response in responses:
+        assert response.status_code == 503
+        assert response.json() == {
+            "code": "service_unavailable",
+            "message": "服务暂时不可用",
+        }
+        assert "secret-token" not in response.text

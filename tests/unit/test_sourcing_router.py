@@ -151,6 +151,12 @@ class _AdmissionApplication:
         return _admission_view(state="admitted")
 
 
+class _BlockedManualAdmissionApplication(_AdmissionApplication):
+    async def admit_one(self, tenant_id, admission_id, *, request_id, actor):
+        self.calls.append(("admit", tenant_id, admission_id, request_id, actor))
+        raise InvalidStateTransition("private case mismatch detail")
+
+
 def _dependencies_with_admission(admission: _AdmissionApplication) -> SimpleNamespace:
     return SimpleNamespace(
         sourcing=_Sourcing(),
@@ -526,3 +532,25 @@ def test_manual_admit_rejects_missing_duplicate_or_invalid_raw_key_before_io() -
         if item["in"] == "header" and item["name"] == "Idempotency-Key"
     )
     assert header["required"] is True
+
+
+def test_manual_case_mismatch_is_fixed_sanitized_409() -> None:
+    app, _ = _app("boss")
+    admission = _BlockedManualAdmissionApplication()
+    app.dependency_overrides[get_api_dependencies] = partial(
+        _dependencies_with_admission, admission
+    )
+
+    response = _request(
+        app,
+        "POST",
+        f"/sourcing-admissions/{ADMISSION_ID}/admit",
+        headers=[("Idempotency-Key", "manual-case-mismatch")],
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "invalid_state",
+        "message": "当前状态不允许此操作",
+    }
+    assert "private" not in response.text

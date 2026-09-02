@@ -84,3 +84,57 @@ Task 9 新增的唯一真实 PostgreSQL claim 用例受文件级 autouse 前后
 顺序下 immutable admission evidence 阻止 API migration downgrade 测试。
 
 仓库仍会打印既有 AppleDouble pack index 警告；本任务未读取、修改或清理该共享文件。
+
+## 审查修复第 1 轮（独立后续提交）
+
+### 修复内容
+
+- 共享 `SourcingAdmissionStarter.admit_one` 现在显式接收可信 `completing_actor`。scheduler 只传
+  `system/system` actor；人工入口只传 router 身份解析后、application 已做 tenant/role 门禁的
+  boss/sourcing actor。`complete_admission.admitted_by` 与 domain authorization 都保留该真实员工，
+  客户端没有可提交或伪造 actor 字符串的字段。
+- 人工入口仍先读 tenant-bound admission 与 canonical Case。永久的 Case 缺失、冻结快照/hash 或
+  case/need 绑定不一致，不再误报 503 并遗留 waiting：它们进入精确单项 claim 和同一 starter，落为
+  `case_state_mismatch` blocked、零 Workflow start、HTTP 409。已知 transient 和未知读取异常均在 claim
+  前固定脱敏 503；畸形 dependency 投影也按未知错误保守处理。
+- Directive proposal 使用明确的 `DirectiveProposalNotFoundError` 表达 absent，router 只把该类型映射
+  为 404；权限/状态冲突分别保持 403/409；持久化 shape、员工投影、submit 后回读及未知依赖异常统一
+  去链为固定 503，避免把内部 `ValidationError` 错分为客户端错误或暴露内部消息。
+- 专用 `submit_sourcing_admission_proposal` 契约新增可信 `submitted_by`，service 在创建 UoW 前调用
+  boss/tenant authorizer。router 与 service 构成双层门禁；直接绕过 router 的非 boss 或 tenant mismatch
+  调用均被拒绝且 UoW 进入次数为零。
+- 0053 admission evidence 清理由 `yield` fixture 的 `finally` 保证，即使断言失败仍执行。由于
+  `sourcing_priority_snapshots` 有 immutable DELETE trigger，且 admission/snapshot 之间存在约束，只能
+  在仓库默认串行 pytest（未配置 xdist）的文件边界内清理精确两张表：
+  `TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE`；没有无保护的测试尾部清理。
+
+### RED / GREEN 证据
+
+- 第一组纯 RED：`8 failed, 27 passed`，覆盖 boss/sourcing 审计 actor、permanent Case validation、
+  command-center internal projection 503、submit service 双重鉴权、typed not-found。修正测试自身
+  `NameError` 后复跑仍为相同 8 个预期产品失败。
+- 最小实现后：`35 passed`。
+- 补充 canonical Case 缺失场景先得到 `1 failed`（既有实现错误返回 503），修复后 application
+  `10 passed`。
+- 真实 PostgreSQL 场景先暴露测试假数据 hash 非 canonical，再暴露 complete authorization 被硬编码
+  为 system；分别修正测试输入和 production scope 后六个 scheduler/manual 参数场景 `6 passed`。
+
+### 审查轮验证
+
+- Task 9 API/OpenAPI 指定套件：`63 passed in 14.60s`。
+- Task 8 shared application/driver：`37 passed in 0.35s`。
+- Directives Task 3 定点 service/persistence：`22 passed in 3.44s`。
+- sourcing service/repository/PostgreSQL/permissions：`258 passed in 8.10s`。
+- 完整 sourcing runtime composition：`12 passed in 5.15s`。
+- 0053 evidence 反序验证：enabled runtime 后接 migration downgrade 为
+  `2 passed in 6.66s`；六个 admission PG 场景后接 downgrade 为 `7 passed in 6.22s`。
+- Task 3 历史报告命令共选中 84 个用例：`83 passed, 1 failed, 35 deselected in 47.75s`。唯一失败为
+  `tests/integration/test_repositories.py::test_orm_metadata_parity_with_head`：0053 已创建索引
+  `ix_sourcing_admissions_queue` 与 `ix_sourcing_priority_snapshots_order`，但旧 parity expected set 未更新。
+  Task 9 相对 base `4e729a83205a40cd30cd3210170031d9f2c5044f` 未触及 tables、migration 或该 expected set，源码
+  静态证明为既有门禁缺口；按任务裁决记录到 Task 12 全量门禁修复清单，本轮不扩 scope。
+- review 受影响文件 `ruff check` 通过；8 个 production 文件 `mypy` 通过；boundaries 七项、敏感信息扫描
+  与 `git diff --check` 均通过。
+- 提交前 fresh gate：review 相关 unit/directives persistence `121 passed in 8.01s`；六个真实 PG
+  scheduler/manual 场景紧接 0053 downgrade `7 passed in 5.64s`；Task 9 API/OpenAPI 四文件
+  `77 passed in 9.94s`；随后再次执行 Ruff、mypy、boundaries 与敏感信息扫描均以 0 退出。

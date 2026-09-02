@@ -1446,7 +1446,7 @@ class SourcingServiceImpl:
             tenant_id,
             actor,
             SourcingAction.ADMISSION_COMPLETE,
-            SourcingScope.SYSTEM,
+            actor.scope,
         )
         _bounded_identifier(admission_id, "admission_id")
         _bounded_identifier(claim_token, "claim_token")

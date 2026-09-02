@@ -62,8 +62,10 @@ class DirectiveService(Protocol):
         interpretation_summary: str,
         expected_behavior_changes: list[str],
         parsed_by: str,
+        *,
+        submitted_by: EmployeeId,
     ) -> str:
-        """基于当前完整指令提交寻源准入配置，并记录乐观基线版本。"""
+        """由在职老板基于当前完整指令提交准入配置并记录乐观基线。"""
         ...
 
     async def confirm_proposal(

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
@@ -28,6 +30,7 @@ from domains.demand.service_impl import DemandServiceImpl
 from domains.employees.schemas import EmployeeView
 from domains.products.permissions import ProductRole
 from domains.products.service_impl import ProductServiceImpl
+from domains.sourcing.admission import canonical_priority_facts_hash
 from domains.sourcing.permissions import SourcingScope
 from domains.sourcing.schemas import SourcingObservedFact, SpecComparisonView
 from domains.sourcing.service_impl import SourcingServiceImpl
@@ -56,7 +59,7 @@ from infra.db.tables import (
     WorkflowRunRow,
     WorkflowStepRow,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import InvalidStateTransition, TransientError, ValidationError
 from shared.events.catalog import (
     EvidenceLevel,
     NeedBecameSourcingReady,
@@ -69,6 +72,7 @@ from shared.schemas.identifiers import (
     NeedClusterId,
     OpportunityId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingSupplyOptionId,
@@ -85,6 +89,27 @@ from tool_gateway.handlers.web_search import ToolGatewayWebSearcher
 from tool_gateway.handlers.web_slots import WebPageSnapshotSlot, WebSearchResultSlot
 
 NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+
+@pytest_asyncio.fixture
+async def _isolated_sourcing_admission_evidence(
+    integration_engine: AsyncEngine,
+) -> AsyncIterator[None]:
+    """0053 append-only snapshot 只能整体清理；本文件按默认串行 pytest 使用。"""
+
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
+        )
+    try:
+        yield
+    finally:
+        async with integration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE"
+                )
+            )
 
 
 def _candidate_submission_for_runtime_need(artifact_id: ArtifactId):
@@ -729,12 +754,26 @@ async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["persisted_hash_drift", "snapshot_body_drift"])
-async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
+@pytest.mark.parametrize(
+    ("entrypoint", "fault", "expected_state", "expected_admitted_by"),
+    [
+        ("scheduler", "persisted_hash_drift", "blocked", None),
+        ("scheduler", "snapshot_body_drift", "blocked", None),
+        ("manual_boss", "persisted_hash_drift", "blocked", None),
+        ("manual_sourcing", "snapshot_body_drift", "blocked", None),
+        ("manual_boss", "valid", "admitted", "employee-manual-boss"),
+        ("manual_sourcing", "valid", "admitted", "employee-manual-sourcing"),
+    ],
+)
+async def test_admission_entrypoints_preserve_actor_and_block_real_pg_case_drift(
+    entrypoint: str,
     fault: str,
+    expected_state: str,
+    expected_admitted_by: str | None,
     integration_engine: AsyncEngine,
+    _isolated_sourcing_admission_evidence: None,
 ) -> None:
-    """真实 PG 中持久 hash 或冻结正文漂移都必须 zero-start 并固定阻断。"""
+    """真实 PG 锁住 scheduler/manual 共用 starter 的审计与漂移阻断。"""
 
     from apps.scheduler_worker.directive_reader import SourcingAdmissionPolicyRead
     from apps.scheduler_worker.sourcing_admission import SourcingAdmissionDriver
@@ -753,6 +792,7 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
     case_id = SourcingCaseId(new_id("src"))
     admission_id = new_id("sad")
     priority_snapshot_id = new_id("sps")
+    admission_ready_at = NOW - timedelta(minutes=1)
     provenance = {
         "source_type": "conversation",
         "source_id": "msg-hash-drift",
@@ -798,7 +838,7 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
     persisted_hash = snapshot.snapshot_hash
     if fault == "persisted_hash_drift":
         persisted_hash = "b" * 64
-    else:
+    elif fault == "snapshot_body_drift":
         frozen_body["quantity"]["value"] = 6000
 
     async with sessions() as session, session.begin():
@@ -826,7 +866,7 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
                 case_id=str(case_id),
                 need_id=str(need_id),
                 state="waiting",
-                ready_at=NOW - timedelta(minutes=1),
+                ready_at=admission_ready_at,
                 current_snapshot_id=priority_snapshot_id,
                 created_at=NOW,
                 updated_at=NOW,
@@ -842,10 +882,17 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
                 need_id=str(need_id),
                 cluster_id=None,
                 cluster_member_count=1,
-                ready_at=NOW - timedelta(minutes=1),
+                ready_at=admission_ready_at,
                 ranking_version="need-cluster-admission-v1",
-                facts_observed_at=NOW - timedelta(minutes=1),
-                facts_hash="c" * 64,
+                facts_observed_at=admission_ready_at,
+                facts_hash=canonical_priority_facts_hash(
+                    need_id=need_id,
+                    cluster_id=None,
+                    cluster_member_count=1,
+                    ready_at=admission_ready_at,
+                    facts_observed_at=admission_ready_at,
+                    ranking_version="need-cluster-admission-v1",
+                ),
                 created_at=NOW,
             )
         )
@@ -884,7 +931,50 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
         now=lambda: NOW,
     )
 
-    result = await driver.scan_once()
+    if entrypoint == "scheduler":
+        result = await driver.scan_once()
+        assert result.blocked_count == 1
+    else:
+        from workflows.sourcing_case.application import (
+            SourcingAdmissionApplication,
+            SourcingAdmissionStarter,
+        )
+
+        role = "boss" if entrypoint == "manual_boss" else "sourcing"
+        completing_actor = SourcingActor(
+            f"employee-manual-{role}", tenant, SourcingScope.TENANT, role
+        )
+        application = SourcingAdmissionApplication(
+            sourcing=service,
+            policy=Policy(),  # type: ignore[arg-type]
+            starter=SourcingAdmissionStarter(
+                sourcing=service,
+                engine=engine,  # type: ignore[arg-type]
+                tenant_id=tenant,
+                sourcing_actor=actor,
+                now=lambda: NOW,
+            ),
+            tenant_id=tenant,
+            sourcing_actor=actor,
+            lease_duration=timedelta(minutes=5),
+            now=lambda: NOW,
+        )
+        if expected_state == "blocked":
+            with pytest.raises(InvalidStateTransition):
+                await application.admit_one(
+                    tenant,
+                    SourcingAdmissionId(admission_id),
+                    request_id=f"manual-request-{role}",
+                    actor=completing_actor,
+                )
+        else:
+            view = await application.admit_one(
+                tenant,
+                SourcingAdmissionId(admission_id),
+                request_id=f"manual-request-{role}",
+                actor=completing_actor,
+            )
+            assert view is not None and view.admitted_by == expected_admitted_by
 
     async with sessions() as session:
         stored = await session.scalar(
@@ -893,25 +983,12 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
                 SourcingAdmissionRow.admission_id == admission_id,
             )
         )
-    assert result.blocked_count == 1
-    assert engine.calls == []
     assert stored is not None
-    assert (stored.state, stored.blocked_reason) == (
-        "blocked",
-        "case_state_mismatch",
-    )
-    async with integration_engine.begin() as connection:
-        await connection.execute(
-            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
-        )
-        await connection.execute(
-            text("DELETE FROM sourcing_cases WHERE tenant_id = :tenant"),
-            {"tenant": str(tenant)},
-        )
-        await connection.execute(
-            text("DELETE FROM validated_needs WHERE tenant_id = :tenant"),
-            {"tenant": str(tenant)},
-        )
+    assert stored.state == expected_state
+    assert stored.admitted_by == expected_admitted_by
+    if expected_state == "blocked":
+        assert engine.calls == []
+        assert stored.blocked_reason == "case_state_mismatch"
 
 
 @pytest.mark.asyncio
@@ -919,6 +996,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
     db_url: str,
     integration_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
+    _isolated_sourcing_admission_evidence: None,
 ) -> None:
     """P68：root 注册的真实五个 sourcing handler 经 PG Outbox 收敛一次完整链。"""
 
@@ -1551,10 +1629,6 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         assert Decimal(str(items[0].amount)) == Decimal("1.25")
     assert model.calls == transport.calls == pages.calls == artifacts.calls == 0
     assert playbook.calls == 0
-    async with integration_engine.begin() as connection:
-        await connection.execute(
-            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
-        )
 
 
 @pytest.mark.asyncio
