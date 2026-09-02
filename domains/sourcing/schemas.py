@@ -164,6 +164,10 @@ class SourcingAdmissionEnqueueCommand(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
     facts: SourcingPriorityFactsInput | None = None
     blocked_reason: Literal["priority_facts_invalid"] | None = None
+    expected_case_snapshot_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:

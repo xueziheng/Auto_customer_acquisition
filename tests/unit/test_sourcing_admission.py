@@ -149,12 +149,18 @@ def test_enqueue_command_rejects_ambiguous_or_non_priority_invalid_combinations(
         facts_observed_at=NOW,
     )
 
-    assert SourcingAdmissionEnqueueCommand(facts=facts).facts == facts
+    bound = SourcingAdmissionEnqueueCommand(
+        facts=facts,
+        expected_case_snapshot_hash="a" * 64,
+    )
+    assert bound.facts == facts
+    assert bound.expected_case_snapshot_hash == "a" * 64
 
     for values in (
         {},
         {"facts": facts, "blocked_reason": "priority_facts_invalid"},
         {"blocked_reason": "case_state_mismatch"},
+        {"facts": facts, "expected_case_snapshot_hash": "not-a-sha256"},
     ):
         with pytest.raises(PydanticValidationError):
             SourcingAdmissionEnqueueCommand(**values)

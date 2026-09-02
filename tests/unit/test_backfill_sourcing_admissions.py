@@ -126,8 +126,14 @@ class _Demand:
 
 
 class _Sourcing:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        outcome: str = "admission_ensured",
+    ) -> None:
         self.error = error
+        self.outcome = outcome
         self.calls: list[tuple[object, ...]] = []
 
     async def enqueue_admission(
@@ -145,7 +151,7 @@ class _Sourcing:
         )
         if self.error is not None:
             raise self.error
-        return f"sad-{case_id}"
+        return self.outcome
 
 
 @pytest.mark.asyncio
@@ -284,7 +290,7 @@ async def test_unknown_write_stops_and_never_echoes_exception() -> None:
         demand=_Demand(),
         sourcing=_Sourcing(
             error=RuntimeError(
-                "postgresql://secret-user:secret-pass@db/prod provenance raw"
+                "database failure credential-marker provenance raw"
             )
         ),
         now=lambda: NOW,
@@ -298,6 +304,29 @@ async def test_unknown_write_stops_and_never_echoes_exception() -> None:
     assert "secret-user" not in rendered
     assert "secret-pass" not in rendered
     assert "provenance raw" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_apply_maps_run_created_after_inventory_to_fixed_skip() -> None:
+    """库存读取后若出现 Run，原子 writer 的结果必须阻止过期判断继续写入。"""
+
+    sourcing = _Sourcing(outcome="workflow_run_exists")
+    report = await execute_backfill(
+        tenant_id=TENANT,
+        apply=True,
+        inventory=_Inventory([_case("src-late-run")]),
+        demand=_Demand(),
+        sourcing=sourcing,
+        now=lambda: NOW,
+    )
+
+    assert report.to_dict()["results"] == [
+        {
+            "case_id": "src-late-run",
+            "status": "skipped",
+            "reason": "workflow_run_exists",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -333,7 +362,7 @@ def test_apply_requires_explicit_exact_tenant_before_runner_io(capsys) -> None:
 
     exit_code = main(
         {
-            "DATABASE_URL": "postgresql+asyncpg://secret-user:secret-pass@db/prod",
+            "DATABASE_URL": "postgresql+asyncpg://db.invalid/prod",
             "TRADEOS_TENANT_ID": str(TENANT),
         },
         ["--apply"],
@@ -378,7 +407,7 @@ def test_no_arguments_is_dry_run_and_stdout_is_safe_json(capsys) -> None:
 
     exit_code = main(
         {
-            "DATABASE_URL": "postgresql+asyncpg://secret-user:secret-pass@db/prod",
+            "DATABASE_URL": "postgresql+asyncpg://db.invalid/prod",
             "TRADEOS_TENANT_ID": str(TENANT),
             "UNRELATED_SECRET": "raw provenance secret snapshot text",
         },
@@ -418,7 +447,7 @@ def test_cli_execution_failure_is_fixed_json_and_exit_three(capsys) -> None:
 
     exit_code = main(
         {
-            "DATABASE_URL": "postgresql+asyncpg://secret-user:secret-pass@db/prod",
+            "DATABASE_URL": "postgresql+asyncpg://db.invalid/prod",
             "TRADEOS_TENANT_ID": str(TENANT),
         },
         ["--dry-run"],

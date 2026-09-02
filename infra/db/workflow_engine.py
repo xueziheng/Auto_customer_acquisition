@@ -41,6 +41,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.tables import WorkflowRunRow, WorkflowStepRow
+from infra.db.workflow_subject_lock import acquire_workflow_subject_lock
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId, new_id
 from workflows.engine.runner import (
@@ -275,6 +276,12 @@ class PostgresWorkflowEngine:
         run_id = new_id("run")
         session = self._factory()
         try:
+            await acquire_workflow_subject_lock(
+                session,
+                tenant_id,
+                workflow_type,
+                subject_ref,
+            )
             result = await session.execute(
                 insert(WorkflowRunRow)
                 .values(

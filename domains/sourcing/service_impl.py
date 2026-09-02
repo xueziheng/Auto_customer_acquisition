@@ -325,6 +325,29 @@ def _case_required(case: SourcingCase | None) -> SourcingCase:
     return case
 
 
+def _require_case_need_snapshot_integrity(
+    case: SourcingCase,
+    *,
+    expected_hash: str | None = None,
+) -> SourcingNeedSnapshot:
+    """在持有 Case 行锁的调用路径中核验冻结快照正文与双重哈希。"""
+
+    snapshot = case.need_snapshot
+    persisted_hash = case.need_snapshot_hash
+    if (
+        not isinstance(snapshot, SourcingNeedSnapshot)
+        or not isinstance(persisted_hash, str)
+        or len(persisted_hash) != 64
+        or any(character not in "0123456789abcdef" for character in persisted_hash)
+        or persisted_hash != snapshot.snapshot_hash
+        or persisted_hash != canonical_sourcing_need_snapshot_hash(snapshot)
+        or expected_hash is not None
+        and persisted_hash != expected_hash
+    ):
+        raise ValidationError("寻源准入 Case 冻结快照完整性无效")
+    return snapshot
+
+
 def _quantity(case: SourcingCase) -> int:
     if case.need_snapshot is None:
         raise ValidationError("寻源案例缺少强类型需求快照")
@@ -1165,7 +1188,14 @@ class SourcingServiceImpl:
             )
 
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
+            try:
+                case = _case_required(
+                    await uow.cases.get_for_update(tenant_id, case_id)
+                )
+            except PydanticValidationError:
+                raise ValidationError(
+                    "寻源准入 Case 冻结快照完整性无效"
+                ) from None
             if case.workflow_version != 2:
                 raise ValidationError("寻源准入要求 V2 Case")
             if case.state is not CaseState.OPENED:
@@ -1173,6 +1203,11 @@ class SourcingServiceImpl:
             need_snapshot = case.need_snapshot
             if need_snapshot is None:
                 raise ValidationError("寻源准入 Case 缺少已验证需求快照")
+            if command.expected_case_snapshot_hash is not None:
+                need_snapshot = _require_case_need_snapshot_integrity(
+                    case,
+                    expected_hash=command.expected_case_snapshot_hash,
+                )
             if case.need_id != need_id or need_snapshot.need_id != case.need_id:
                 raise ValidationError("寻源准入 Case、Need 与快照不一致")
             if need_snapshot.completeness < 3:
@@ -1640,19 +1675,7 @@ class SourcingServiceImpl:
         except PydanticValidationError:
             raise ValidationError("寻源准入 Case 冻结快照完整性无效") from None
         if case is not None:
-            snapshot = case.need_snapshot
-            persisted_hash = case.need_snapshot_hash
-            if (
-                not isinstance(snapshot, SourcingNeedSnapshot)
-                or not isinstance(persisted_hash, str)
-                or len(persisted_hash) != 64
-                or any(
-                    character not in "0123456789abcdef" for character in persisted_hash
-                )
-                or persisted_hash != snapshot.snapshot_hash
-                or persisted_hash != canonical_sourcing_need_snapshot_hash(snapshot)
-            ):
-                raise ValidationError("寻源准入 Case 冻结快照完整性无效")
+            _require_case_need_snapshot_integrity(case)
         return _case_read_view(case) if case is not None else None
 
     async def record_ladder_check(

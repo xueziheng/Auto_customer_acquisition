@@ -38,6 +38,7 @@ from infra.db.tables import (
     SourcingCaseRow,
     WorkflowRunRow,
 )
+from infra.db.workflow_subject_lock import acquire_workflow_subject_lock
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -48,6 +49,11 @@ from shared.schemas.identifiers import (
 
 BackfillMode = Literal["dry_run", "apply"]
 BackfillStatus = Literal["would_create", "applied", "skipped", "unknown"]
+AdmissionWriteOutcome = Literal[
+    "admission_ensured",
+    "already_admitted",
+    "workflow_run_exists",
+]
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,39}\Z")
 _STARTED_STATES = frozenset({"discovering", "verifying", "candidates_ready"})
@@ -196,7 +202,7 @@ class SourcingAdmissionWriter(Protocol):
         ready_at: datetime,
         command: SourcingAdmissionEnqueueCommand,
         actor: SourcingActor,
-    ) -> object: ...
+    ) -> AdmissionWriteOutcome: ...
 
 
 class PostgresHistoricalCaseInventory:
@@ -265,6 +271,78 @@ class PostgresHistoricalCaseInventory:
             )
             for row in rows
         ]
+
+
+class PostgresSourcingAdmissionWriter:
+    """与正常 Run 创建共享 subject 锁，并在锁内复核后调用生产领域服务。"""
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        service: SourcingServiceImpl,
+    ) -> None:
+        self._factory = factory
+        self._service = service
+
+    async def enqueue_admission(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        need_id: ValidatedNeedId,
+        *,
+        ready_at: datetime,
+        command: SourcingAdmissionEnqueueCommand,
+        actor: SourcingActor,
+    ) -> AdmissionWriteOutcome:
+        """串行化 Run 创建，锁内复核冲突并由 sourcing service 完成资格与写入。"""
+
+        if command.expected_case_snapshot_hash is None:
+            raise ValidationError("历史回填必须绑定已核验 Case 快照哈希")
+        async with self._factory() as guard, guard.begin():
+            await acquire_workflow_subject_lock(
+                guard,
+                tenant_id,
+                "sourcing_case",
+                str(case_id),
+            )
+            has_run = bool(
+                await guard.scalar(
+                    select(
+                        exists(
+                            select(WorkflowRunRow.run_id).where(
+                                WorkflowRunRow.tenant_id == str(tenant_id),
+                                WorkflowRunRow.workflow_type == "sourcing_case",
+                                WorkflowRunRow.subject_ref == str(case_id),
+                            )
+                        )
+                    )
+                )
+            )
+            if has_run:
+                return "workflow_run_exists"
+            has_admission = bool(
+                await guard.scalar(
+                    select(
+                        exists(
+                            select(SourcingAdmissionRow.admission_id).where(
+                                SourcingAdmissionRow.tenant_id == str(tenant_id),
+                                SourcingAdmissionRow.case_id == str(case_id),
+                            )
+                        )
+                    )
+                )
+            )
+            if has_admission:
+                return "already_admitted"
+            await self._service.enqueue_admission(
+                tenant_id,
+                case_id,
+                need_id,
+                ready_at=ready_at,
+                command=command,
+                actor=actor,
+            )
+            return "admission_ensured"
 
 
 class _UnavailableCandidateEvidenceReader:
@@ -438,18 +516,36 @@ async def execute_backfill(
             )
             continue
         try:
-            await sourcing.enqueue_admission(
+            outcome = await sourcing.enqueue_admission(
                 tenant_id,
                 SourcingCaseId(case_id),
                 need_id,
                 ready_at=opened_at,
-                command=SourcingAdmissionEnqueueCommand(facts=facts),
+                command=SourcingAdmissionEnqueueCommand(
+                    facts=facts,
+                    expected_case_snapshot_hash=snapshot.snapshot_hash,
+                ),
                 actor=actor,
             )
         except ValidationError:
             results.append(_skip(case_id, "eligibility_changed"))
             continue
         except Exception:  # noqa: BLE001 - 结果不确定时停止，禁止扩大未知写入面。
+            results.append(
+                BackfillResult(
+                    case_id,
+                    status="unknown",
+                    reason="admission_write_unknown",
+                )
+            )
+            break
+        if outcome == "workflow_run_exists":
+            results.append(_skip(case_id, "workflow_run_exists"))
+            continue
+        if outcome == "already_admitted":
+            results.append(_skip(case_id, "already_admitted"))
+            continue
+        if outcome != "admission_ensured":
             results.append(
                 BackfillResult(
                     case_id,
@@ -490,7 +586,7 @@ async def run_database_backfill(
             ),
             now=clock,
         )
-        sourcing = SourcingServiceImpl(
+        sourcing_service = SourcingServiceImpl(
             cast(
                 Any,
                 lambda requested: SqlAlchemySourcingUnitOfWork(factory, requested),
@@ -499,6 +595,7 @@ async def run_database_backfill(
             _UnavailableCandidateEvidenceReader(),
             now=clock,
         )
+        sourcing = PostgresSourcingAdmissionWriter(factory, sourcing_service)
         return await execute_backfill(
             tenant_id=tenant_id,
             apply=apply,

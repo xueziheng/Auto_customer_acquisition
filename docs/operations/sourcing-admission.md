@@ -24,8 +24,9 @@ Workflow，不会搜索网页、联系供应商、发现联系人、发信、采
 ## 执行前
 
 1. 使用已完成本批迁移的部署数据库。命令不自动执行 Alembic migration。
-2. 先停止普通 scheduler，并暂停从 API 发起人工准入；确认没有正在进行的准入操作。这样可
-   防止回填产生 Admission 后被另一个进程立即领取，混淆本次审计边界。
+2. 建议在变更窗口内暂停普通 scheduler 与人工准入，以便核对本次审计结果。这只是降低运维
+   噪声，不是正确性前提：回填写入口与正常 Workflow Run 创建共享同 tenant、同 workflow type、
+   同 Case 的事务互斥锁，并会在锁内重新核验 Run 与 Admission。
 3. 由运维环境加载 `DATABASE_URL`。默认 dry-run 可从 `TRADEOS_TENANT_ID` 读取租户；
    `--apply` 不接受该隐式租户，必须在命令行再次写出精确 tenant ID。
 4. 不在聊天、终端历史、工单或报告中粘贴数据库密码、Token、密钥值、Need snapshot 或
@@ -83,7 +84,12 @@ PATH=/Users/xueziheng/miniconda3/envs/tradeos-py312/bin:$PATH \
 
 `applied / admission_ensured` 表示生产 Sourcing service 已幂等确保 Admission 及其首个 immutable
 priority snapshot 存在。命令使用 Case 的原始 `opened_at` 作为 `ready_at`，不以执行时间改写
-历史等待顺序。并发状态变化导致的域校验拒绝固定报告为 `eligibility_changed`，不会绕过域门禁。
+历史等待顺序。若正常 Run 在互斥边界上先完成创建，回填固定报告
+`workflow_run_exists` 且不写 Admission；若 Admission 已存在则报告 `already_admitted`。Case 或
+Need 在此期间发生的其它状态变化仍由生产领域服务复核；库存阶段验证过的 Case snapshot hash
+也会传入领域命令，并在 Case 行锁内再次核对正文、内嵌 hash、持久化 hash 和 canonical hash。
+拒绝时固定报告
+`eligibility_changed`，不会绕过域门禁。
 
 执行成功后：
 
