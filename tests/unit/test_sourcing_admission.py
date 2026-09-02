@@ -19,8 +19,10 @@ from domains.sourcing.admission import (
     priority_sort_key,
 )
 from domains.sourcing.schemas import (
+    SourcingAdmissionEnqueueCommand,
     SourcingAdmissionManualStartCommand,
     SourcingAdmissionReadView,
+    SourcingPriorityFactsInput,
 )
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
@@ -126,6 +128,34 @@ def test_admission_module_has_static_public_exports() -> None:
         "priority_sort_key",
     }.issubset(admission_api.__all__)
     assert admission_api.AdmissionState.WAITING is AdmissionState.WAITING
+
+
+def test_enqueue_command_allows_priority_invalid_without_unconstructable_facts() -> None:
+    command = SourcingAdmissionEnqueueCommand(
+        blocked_reason="priority_facts_invalid"
+    )
+
+    assert command.facts is None
+    assert command.blocked_reason == "priority_facts_invalid"
+
+
+def test_enqueue_command_rejects_ambiguous_or_non_priority_invalid_combinations() -> None:
+    facts = SourcingPriorityFactsInput(
+        need_id=NEED_ID,
+        cluster_id=CLUSTER_ID,
+        cluster_member_count=8,
+        facts_observed_at=NOW,
+    )
+
+    assert SourcingAdmissionEnqueueCommand(facts=facts).facts == facts
+
+    for values in (
+        {},
+        {"facts": facts, "blocked_reason": "priority_facts_invalid"},
+        {"blocked_reason": "case_state_mismatch"},
+    ):
+        with pytest.raises(PydanticValidationError):
+            SourcingAdmissionEnqueueCommand(**values)
 
 
 def test_priority_order_is_stable_for_clustered_and_unclustered_needs() -> None:
@@ -441,16 +471,14 @@ def test_safe_view_requires_all_snapshot_facts_and_fixed_explanation() -> None:
         "snapshot_id": None,
         "cluster_id": None,
         "cluster_member_count": None,
-        "ready_at": None,
         "facts_observed_at": None,
         "ranking_version": None,
         "explanation": None,
-        "waiting_duration_seconds": None,
         "can_current_user_manual_start": False,
     }
     with pytest.raises(PydanticValidationError):
         SourcingAdmissionReadView(**no_snapshot)
-    assert SourcingAdmissionReadView(
+    blocked_without_snapshot = SourcingAdmissionReadView(
         **(
             no_snapshot
             | {
@@ -458,7 +486,32 @@ def test_safe_view_requires_all_snapshot_facts_and_fixed_explanation() -> None:
                 "blocked_reason": "priority_facts_invalid",
             }
         )
-    ).snapshot_id is None
+    )
+    assert blocked_without_snapshot.snapshot_id is None
+    assert blocked_without_snapshot.ready_at == READY_AT
+    assert blocked_without_snapshot.waiting_duration_seconds == 60
+    with pytest.raises(PydanticValidationError):
+        SourcingAdmissionReadView(
+            **(
+                no_snapshot
+                | {
+                    "state": "blocked",
+                    "blocked_reason": "priority_facts_invalid",
+                    "waiting_duration_seconds": -1,
+                }
+            )
+        )
+    with pytest.raises(PydanticValidationError):
+        SourcingAdmissionReadView(
+            **(
+                no_snapshot
+                | {
+                    "state": "blocked",
+                    "blocked_reason": "priority_facts_invalid",
+                    "ready_at": None,
+                }
+            )
+        )
     names = set(SourcingAdmissionReadView.model_fields)
     assert {"claim_token", "claim_expires_at", "workflow_context"}.isdisjoint(names)
 

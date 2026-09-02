@@ -136,6 +136,30 @@ class SourcingPriorityFactsInput(BaseModel):
         return self
 
 
+class SourcingAdmissionEnqueueCommand(BaseModel):
+    """原子创建准入的互斥输入，不允许调用者伪造无效排序事实。
+
+    有 ``facts`` 时创建 waiting admission 与首快照；没有 ``facts`` 时只能以固定的
+    ``priority_facts_invalid`` 原因创建无首快照 blocked admission。Case 状态问题必须
+    在已有快照的记录上处理，不能伪造为初始阻断。
+    """
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    facts: SourcingPriorityFactsInput | None = None
+    blocked_reason: Literal["priority_facts_invalid"] | None = None
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> Self:
+        """确保首快照 waiting 与无事实固定阻断两种模式严格互斥。"""
+
+        if self.facts is None:
+            if self.blocked_reason != "priority_facts_invalid":
+                raise ValueError("无排序事实仅允许 priority_facts_invalid 阻断")
+        elif self.blocked_reason is not None:
+            raise ValueError("提供排序事实时不得提供 blocked_reason")
+        return self
+
+
 class SourcingAdmissionManualStartCommand(BaseModel):
     """人工准入的请求标识；身份、tenant 与实际启动参数只能由服务上下文提供。"""
 
@@ -898,11 +922,11 @@ class SourcingAdmissionReadView(BaseModel):
     snapshot_id: SourcingPrioritySnapshotId | None = None
     cluster_id: NeedClusterId | None = None
     cluster_member_count: int | None = Field(default=None, ge=1)
-    ready_at: AwareDatetime | None = None
+    ready_at: AwareDatetime
     facts_observed_at: AwareDatetime | None = None
     ranking_version: Literal["need-cluster-admission-v1"] | None = None
     explanation: str | None = Field(default=None, max_length=200)
-    waiting_duration_seconds: int | None = Field(default=None, ge=0)
+    waiting_duration_seconds: int = Field(ge=0)
     admitted_at: AwareDatetime | None = None
     admitted_by: str | None = Field(default=None, max_length=200)
     can_current_user_manual_start: bool
@@ -911,14 +935,14 @@ class SourcingAdmissionReadView(BaseModel):
     def validate_safe_state_projection(self) -> Self:
         """展示层不得伪造排序或已准入事实，且时间一律使用 UTC。"""
 
+        if self.ready_at.utcoffset() != timedelta(0):
+            raise ValueError("ready_at 必须是 UTC 时间")
         snapshot_facts = (
             self.snapshot_id,
             self.cluster_member_count,
-            self.ready_at,
             self.facts_observed_at,
             self.ranking_version,
             self.explanation,
-            self.waiting_duration_seconds,
         )
         if any(value is None for value in snapshot_facts):
             if any(value is not None for value in snapshot_facts) or self.cluster_id is not None:
@@ -929,10 +953,8 @@ class SourcingAdmissionReadView(BaseModel):
             ):
                 raise ValueError("无排序快照仅允许 priority_facts_invalid blocked 准入")
         else:
-            if self.ready_at is None or self.facts_observed_at is None:
+            if self.facts_observed_at is None:
                 raise ValueError("排序快照时间缺失")
-            if self.ready_at.utcoffset() != timedelta(0):
-                raise ValueError("ready_at 必须是 UTC 时间")
             if self.facts_observed_at.utcoffset() != timedelta(0):
                 raise ValueError("facts_observed_at 必须是 UTC 时间")
             from domains.sourcing.admission import priority_explanation

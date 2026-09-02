@@ -35,6 +35,7 @@ from domains.sourcing.schemas import (
     SourcingNeedSnapshot,
     SourcingReviewCommand,
     SourcingAdmissionReadView,
+    SourcingAdmissionEnqueueCommand,
     SourcingPriorityFactsInput,
     SourcingCaseReadView,
     SourcingCandidateReadView,
@@ -162,14 +163,14 @@ class SourcingService(Protocol):
         need_id: ValidatedNeedId,
         *,
         ready_at: datetime,
-        facts: SourcingPriorityFactsInput,
+        command: SourcingAdmissionEnqueueCommand,
         actor: SourcingActor,
     ) -> SourcingAdmissionId:
         """原子创建或读取 admission 与首个 current priority snapshot。
 
-        Priority facts 永久无效时，实现可创建没有首快照的
-        ``priority_facts_invalid`` blocked admission；其余状态必须与首快照同事务
-        canonical 化，避免 admission/snapshot 初始持久化循环。
+        ``command`` 的两种模式严格互斥：有 ``facts`` 时同事务创建 waiting admission
+        与首快照；facts 无法构造时，仅固定 ``priority_facts_invalid`` 可创建没有首
+        快照的 blocked admission。调用方不得以伪造 facts 或自由异常文本绕过该边界。
         """
         ...
 
