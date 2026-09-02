@@ -47,6 +47,7 @@ from domains.compliance.permissions import (
 from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.conversations.service import ConversationService
 from domains.demand.service import DemandService
+from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.employees.service import EmployeeService
@@ -97,6 +98,7 @@ from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
+from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
 )
@@ -281,6 +283,10 @@ from .campaign_events import (
     CampaignEventHandlers,
 )
 from .config import SchedulerWorkerConfig
+from .directive_reader import (
+    DirectiveSourcingAdmissionPolicyReader,
+    SchedulerDirectiveEmployeeReader,
+)
 from .hunter_contacts import (
     HunterContactComposition,
     build_hunter_contact_tools,
@@ -306,6 +312,7 @@ from .quotations import (
 )
 from .quote_notifications import NotificationJobQuoteApprovalNotifier
 from .reply_events import ReplyQualificationEventHandlers
+from .sourcing_admission import SourcingAdmissionDriver
 from .sourcing_runtime import (
     SourcingCaseComposition,
     SourcingResearchComposition,
@@ -328,6 +335,7 @@ class CompleteOutboxRegistry(Protocol):
 
 
 _HEALTH_CHECKPOINTS = frozenset({"config", "schema", "database", "registry"})
+_SOURCING_ADMISSION_LEASE_DURATION = timedelta(minutes=5)
 
 
 class _NoSignalUvicornServer(uvicorn.Server):
@@ -1011,6 +1019,9 @@ class SchedulerRuntimeFactory:
                 jobs=jobs,
                 now=self._now,
             )
+            scheduler_employee_actor = EmployeeActor(
+                "system:scheduler", EmployeeScope.SYSTEM, "system"
+            )
             handoff_handlers = build_human_handoff_step_handlers(
                 opportunity_service=self._dependencies.opportunity_service,
                 employee_service=self._dependencies.employee_service,
@@ -1020,9 +1031,7 @@ class SchedulerRuntimeFactory:
                     OpportunityScope(level=OpportunityScopeLevel.SYSTEM),
                     "system",
                 ),
-                employee_system_actor=EmployeeActor(
-                    "system:scheduler", EmployeeScope.SYSTEM, "system"
-                ),
+                employee_system_actor=scheduler_employee_actor,
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
                 now=self._now,
@@ -1360,6 +1369,7 @@ class SchedulerRuntimeFactory:
                     free_search_enabled=demand_discovery.web_tools.provider == "tavily",
                 )
             sourcing_composition: SourcingCaseComposition | None = None
+            sourcing_policy_reader: DirectiveSourcingAdmissionPolicyReader | None = None
             sourcing_handlers: dict[str, StepHandler] = {}
             if config.sourcing is not None:
                 if self._dependencies.sourcing_case is None:
@@ -1382,6 +1392,21 @@ class SchedulerRuntimeFactory:
                     ),
                     opportunities=self._dependencies.opportunity_service,
                     now=self._now,
+                )
+                directive_employees = SchedulerDirectiveEmployeeReader(
+                    self._dependencies.employee_service,
+                    scheduler_employee_actor,
+                    config.tenant_id,
+                )
+                directives = DirectiveServiceImpl(
+                    lambda requested_tenant: SqlAlchemyDirectiveUnitOfWork(  # type: ignore[arg-type, return-value]
+                        factory, requested_tenant, now=self._now
+                    ),
+                    directive_employees,
+                    now=self._now,
+                )
+                sourcing_policy_reader = DirectiveSourcingAdmissionPolicyReader(
+                    directives
                 )
                 sourcing_handlers.update(sourcing_composition.handlers)
             quote_handlers: dict[str, StepHandler] = {}
@@ -1422,6 +1447,21 @@ class SchedulerRuntimeFactory:
                 now=self._now,
             )
             engine_ref = workflow
+            sourcing_admission_driver = (
+                SourcingAdmissionDriver(
+                    policy=sourcing_policy_reader,
+                    sourcing=sourcing_composition.sourcing,
+                    engine=workflow,
+                    need_reader=sourcing_composition.need_reader,
+                    tenant_id=config.tenant_id,
+                    sourcing_actor=sourcing_composition.sourcing_actor,
+                    lease_duration=_SOURCING_ADMISSION_LEASE_DURATION,
+                    now=self._now,
+                )
+                if sourcing_composition is not None
+                and sourcing_policy_reader is not None
+                else None
+            )
             if account_queue is not None:
                 account_queue.bind(workflow)
             outbox = OutboxDeliverer(
@@ -1562,6 +1602,7 @@ class SchedulerRuntimeFactory:
                     if quotation is not None and quote_settings is not None
                     else None
                 ),
+                sourcing_admission_driver=sourcing_admission_driver,
             )
         except BaseException as error:
             primary = error

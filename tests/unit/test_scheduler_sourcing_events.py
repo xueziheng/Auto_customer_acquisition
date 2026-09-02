@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 from apps.scheduler_worker import sourcing_events as _sourcing_events
+from apps.scheduler_worker._sourcing_context import _safe_context
 from domains.demand.schemas import NeedClusterPriorityFacts
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
@@ -38,7 +39,6 @@ CASE_ID = SourcingCaseId("src-trigger")
 ADMISSION_ID = SourcingAdmissionId("sad-trigger")
 SYSTEM = SourcingActor("system:sourcing", TENANT, SourcingScope.SYSTEM, "system")
 SourcingTriggerHandler = _sourcing_events.SourcingTriggerHandler
-_safe_context = _sourcing_events._safe_context
 
 
 def _membership_handler_type() -> type[Any]:

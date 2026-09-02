@@ -25,6 +25,7 @@ from apps.scheduler_worker.sourcing_runtime import (
 from domains.costing.permissions import CostingScope
 from domains.costing.service_impl import CostingServiceImpl
 from domains.demand.service_impl import DemandServiceImpl
+from domains.employees.schemas import EmployeeView
 from domains.products.permissions import ProductRole
 from domains.products.service_impl import ProductServiceImpl
 from domains.sourcing.permissions import SourcingScope
@@ -34,8 +35,11 @@ from domains.suppliers.service import SupplierRole
 from domains.suppliers.service_impl import SupplierServiceImpl
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.tables import (
+    BossDirectiveRow,
     CostItemRow,
     CostSheetRow,
+    DirectiveProposalRow,
+    DirectiveVersionRow,
     ProductCandidateSourceRow,
     ProductRow,
     SearchQuotaAccountRow,
@@ -52,7 +56,7 @@ from infra.db.tables import (
     WorkflowRunRow,
     WorkflowStepRow,
 )
-from shared.errors import ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.events.catalog import (
     EvidenceLevel,
     NeedBecameSourcingReady,
@@ -61,6 +65,7 @@ from shared.events.catalog import (
 )
 from shared.schemas.identifiers import (
     ArtifactId,
+    EmployeeId,
     NeedClusterId,
     OpportunityId,
     RunId,
@@ -775,6 +780,25 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         "page_hash": None,
         "source_quote": None,
     }
+    proposal_id = new_id("dpr")
+    directive_id = new_id("dir")
+    boss_id = EmployeeId("employee-boss")
+    directive_content = {
+        "objective": "focus_existing_needs",
+        "market_assignments": [],
+        "discovery": None,
+        "demand_discovery": None,
+        "outreach": None,
+        "handoff": None,
+        "paused_markets": [],
+        "monthly_budget_credits": None,
+        "notes": None,
+        "sourcing_admission": {
+            "mode": "cluster_ranked",
+            "automatic_admission_enabled": True,
+            "batch_limit": 1,
+        },
+    }
     async with integration_engine.begin() as connection:
         await connection.execute(
             text(
@@ -803,13 +827,66 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
                 "now": NOW,
             },
         )
+        await connection.execute(
+            DirectiveProposalRow.__table__.insert().values(
+                tenant_id=str(tenant),
+                proposal_id=proposal_id,
+                raw_text="按需求簇排序，每轮最多启动一个寻源案例",
+                parsed_content=directive_content,
+                interpretation_summary="启用按需求簇排序的自动准入",
+                expected_behavior_changes=["每轮最多自动准入 1 条"],
+                parsed_by="test",
+                state="confirmed",
+                created_at=NOW,
+                decided_at=NOW,
+                decided_by=str(boss_id),
+                base_directive_version=0,
+            )
+        )
+        await connection.execute(
+            DirectiveVersionRow.__table__.insert().values(
+                tenant_id=str(tenant),
+                directive_id=directive_id,
+                version=1,
+                content=directive_content,
+                source_proposal_id=proposal_id,
+                activated_at=NOW,
+                activated_by=str(boss_id),
+                superseded_at=None,
+                rollback_of=None,
+            )
+        )
+        await connection.execute(
+            BossDirectiveRow.__table__.insert().values(
+                tenant_id=str(tenant),
+                directive_id=directive_id,
+                version=1,
+                activated_at=NOW,
+            )
+        )
     model = _Model()
     transport = _SearchTransport()
     pages = _PageTransport()
     artifacts = _Artifacts()
     playbook = _Playbook()
+    class Employees:
+        async def get_employee(self, requested_tenant, employee_id, *, actor):
+            del actor
+            return EmployeeView(
+                employee_id=employee_id,
+                tenant_id=requested_tenant,
+                name="Boss",
+                role="boss",
+                user_id=UserId("user-boss"),
+                is_active=True,
+            )
+
+        async def resolve_owner(self, *args, **kwargs):
+            del args, kwargs
+
     dependencies = replace(
         _factory_dependencies(runtime_module, with_hunter=False),
+        employee_service=Employees(),
         sourcing_case=SourcingResearchComposition(
             playbook=playbook,  # type: ignore[arg-type]
             search_transport=transport,  # type: ignore[arg-type]
@@ -840,6 +917,12 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
 
     async with factory() as runtime:
         assert "sourcing_case.v2.check_ladder" in runtime.workflow._handlers
+        assert runtime.sourcing_admission_driver is not None
+        assert runtime.sourcing_admission_driver.tenant_id == tenant
+        assert runtime.sourcing_admission_driver.sourcing_actor == SourcingActor(
+            "system:sourcing-runtime", tenant, SourcingScope.SYSTEM, "system"
+        )
+        assert runtime.sourcing_admission_driver.lease_duration == timedelta(minutes=5)
         event_types = {
             "NeedValidated",
             "NeedBecameSourcingReady",
@@ -927,31 +1010,67 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         assert len(admissions) == len(snapshots) == 1
         assert admissions[0].state == "waiting"
         assert snapshots[0].cluster_member_count == 1
-        run_id = await runtime.workflow.start(
-            tenant,
-            "sourcing_case",
-            str(case_id),
-            {
-                "case_id": str(case_id),
-                "need_id": str(need_id),
-                "need_snapshot_hash": cases[0].need_snapshot_hash,
-                "product_category": "hinges",
-                "keywords": ["required-material", "required-size"],
-            },
-            f"sourcing-case:v2:{tenant}:{need_id}",
+        original_complete = runtime.sourcing_admission_driver._sourcing.complete_admission
+        bind_attempts = 0
+
+        async def fail_first_bind(*args, **kwargs):
+            nonlocal bind_attempts
+            bind_attempts += 1
+            if bind_attempts == 1:
+                raise TransientError("private-bind-failure")
+            return await original_complete(*args, **kwargs)
+
+        monkeypatch.setattr(
+            runtime.sourcing_admission_driver._sourcing,
+            "complete_admission",
+            fail_first_bind,
         )
+        first_scan = await runtime.sourcing_admission_driver.scan_once()
+        assert first_scan.pending_recovery_count == 1
         async with runtime.outbox._factory() as session:
-            root_run = await session.scalar(
-                select(WorkflowRunRow).where(
-                    WorkflowRunRow.tenant_id == tenant,
-                    WorkflowRunRow.run_id == run_id,
+            after_crash = await session.scalar(
+                select(SourcingAdmissionRow).where(
+                    SourcingAdmissionRow.tenant_id == tenant,
+                    SourcingAdmissionRow.need_id == need_id,
                 )
             )
-        assert root_run is not None
-        assert (root_run.workflow_type, root_run.workflow_version) == (
+        assert after_crash is not None and after_crash.state == "starting"
+
+        clock.value = NOW + timedelta(minutes=5)
+        second_scan = await runtime.sourcing_admission_driver.scan_once()
+        assert second_scan.expired_released_count == 1
+        assert second_scan.admitted_count == 1
+        run_id = await runtime.workflow.find_active_run(
+            tenant, "sourcing_case", str(case_id)
+        )
+        assert run_id is not None
+        async with runtime.outbox._factory() as session:
+            root_runs = list(
+                (
+                    await session.execute(
+                        select(WorkflowRunRow).where(
+                            WorkflowRunRow.tenant_id == tenant,
+                            WorkflowRunRow.workflow_type == "sourcing_case",
+                            WorkflowRunRow.subject_ref == str(case_id),
+                        )
+                    )
+                ).scalars()
+            )
+            admission_row = await session.scalar(
+                select(SourcingAdmissionRow).where(
+                    SourcingAdmissionRow.tenant_id == tenant,
+                    SourcingAdmissionRow.need_id == need_id,
+                )
+            )
+        assert len(root_runs) == 1
+        assert root_runs[0].run_id == run_id
+        assert (root_runs[0].workflow_type, root_runs[0].workflow_version) == (
             "sourcing_case",
             2,
         )
+        assert admission_row is not None
+        assert admission_row.state == "admitted"
+        assert admission_row.workflow_run_id == run_id
 
         await _seed_candidate_artifact(integration_engine, tenant, evidence_artifact_id)
         await _seed_handoff_dependencies(
@@ -1141,7 +1260,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
             )
         assert pending_cost_sheets == []
 
-        clock.value = NOW + timedelta(seconds=31)
+        clock.value += timedelta(seconds=31)
         await runtime.outbox.drain()
         async with runtime.outbox._factory() as session:
             states = (

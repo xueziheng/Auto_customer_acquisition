@@ -1,8 +1,7 @@
-"""需求就绪事实到 Sourcing Case V2 Run 的安全触发接线。"""
+"""需求就绪事实到 durable Sourcing Admission 的安全触发接线。"""
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -42,33 +41,6 @@ class _ValidPriorityFacts:
 @dataclass(frozen=True)
 class _PermanentInvalidPriorityFacts:
     """Demand 明确拒绝或 DTO 结构损坏；不得与暂态不可用或 stale 混同。"""
-
-
-def _normalize(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
-
-
-def _safe_context(snapshot: SourcingNeedSnapshot, case_id: str) -> dict[str, object]:
-    if not isinstance(snapshot.product_category.value, str):
-        raise ValidationError("可信寻源需求品类必须是文本")
-    category = _normalize(snapshot.product_category.value)
-    if not category:
-        raise ValidationError("可信寻源需求品类不能为空")
-    keywords = sorted(
-        {
-            normalized
-            for fact in (snapshot.application, snapshot.material, snapshot.size_spec)
-            if fact is not None and isinstance(fact.value, str)
-            if (normalized := _normalize(fact.value))
-        }
-    )
-    return {
-        "case_id": case_id,
-        "need_id": str(snapshot.need_id),
-        "need_snapshot_hash": snapshot.snapshot_hash,
-        "product_category": category,
-        "keywords": keywords,
-    }
 
 
 def _raise_dependency_error(

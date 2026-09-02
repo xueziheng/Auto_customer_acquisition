@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -107,6 +108,26 @@ class _BlockingDrainer:
         self.entered.set()
         await asyncio.Event().wait()
         return 0
+
+
+class _AdmissionDriver:
+    def __init__(
+        self,
+        results: list[object],
+        order: list[str] | None = None,
+    ) -> None:
+        self._results = deque(results)
+        self.order = order
+        self.calls = 0
+
+    async def scan_once(self) -> object:
+        self.calls += 1
+        if self.order is not None:
+            self.order.append("sourcing_admission")
+        result = self._results.popleft() if self._results else object()
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 def _config(module: Any, *, lock_key: int, interval: float = 0.01) -> Any:
@@ -555,6 +576,116 @@ async def test_cycle_order_and_conditional_post_drain(
     assert result.status is module.WorkerStartStatus.STARTED
     assert result.cycles_completed == 1
     assert order == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow_count", [0, 1])
+async def test_cycle_orders_sourcing_admission_after_expiry_with_fresh_lock_check(
+    workflow_count: int,
+) -> None:
+    """把准入移到 workflow 后或复用旧 heartbeat 都会漏过此回归。"""
+
+    module = _scheduler()
+    order: list[str] = []
+
+    class Campaign:
+        async def scan_once(self) -> int:
+            order.append("campaign")
+            return 0
+
+    class Expiry:
+        async def scan_once(self) -> int:
+            order.append("quote_expiry")
+            return 0
+
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([1, 1], order),
+        workflow=_Poller([workflow_count], order),
+        tenant_id=TenantId("scheduler-admission-order"),
+        config=module.SchedulerConfig(1, 99, 1),
+        campaign_driver=Campaign(),
+        quote_expiry_driver=Expiry(),
+        sourcing_admission_driver=_AdmissionDriver([object()], order),
+    )
+
+    async def confirm_lock() -> None:
+        order.append("lock")
+
+    await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+
+    assert order == [
+        "drain:1",
+        "campaign",
+        "lock",
+        "quote_expiry",
+        "lock",
+        "sourcing_admission",
+        "workflow:1",
+    ] + (["drain:2"] if workflow_count else [])
+
+
+@pytest.mark.asyncio
+async def test_sourcing_admission_failure_is_phase_isolated_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _scheduler()
+    order: list[str] = []
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([0], order),
+        workflow=_Poller([0], order),
+        tenant_id=TenantId("scheduler-admission-error"),
+        config=module.SchedulerConfig(1, 7, 1),
+        sourcing_admission_driver=_AdmissionDriver(
+            [RuntimeError("postgres://user:secret@admission/private")], order
+        ),
+    )
+    lock_checks = 0
+
+    async def confirm_lock() -> None:
+        nonlocal lock_checks
+        lock_checks += 1
+
+    caplog.set_level(logging.INFO, logger="apps.scheduler_worker.main")
+    await module._run_cycle(runtime, 4, confirm_lock=confirm_lock)
+
+    assert order == ["drain:1", "sourcing_admission", "workflow:1"]
+    assert lock_checks == 1
+    assert "secret" not in caplog.text
+    record = next(
+        row
+        for row in caplog.records
+        if getattr(row, "scheduler_phase", None) == "sourcing_admission"
+    )
+    assert record.message == "scheduler 阶段失败"
+    assert record.__dict__["cycle"] == 4
+
+
+@pytest.mark.asyncio
+async def test_lock_loss_immediately_before_admission_prevents_it_and_later_phases() -> None:
+    module = _scheduler()
+    outbox, workflow = AsyncMock(), AsyncMock()
+    admission = AsyncMock()
+    outbox.drain.return_value = workflow.poll_due.return_value = 1
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=outbox,
+        workflow=workflow,
+        tenant_id=TenantId("scheduler-admission-lock-loss"),
+        config=module.SchedulerConfig(1, 7, 1),
+        sourcing_admission_driver=admission,
+    )
+
+    async def lost() -> None:
+        raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=lost)
+
+    admission.scan_once.assert_not_awaited()
+    workflow.poll_due.assert_not_awaited()
+    assert outbox.drain.await_count == 1
 
 
 async def test_phase_failure_isolated_and_next_cycle_continues(

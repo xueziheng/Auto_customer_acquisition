@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from apps.scheduler_worker.config import SchedulerWorkerConfig
+from apps.scheduler_worker.directive_reader import SchedulerDirectiveEmployeeReader
+from domains.employees.permissions import Actor as EmployeeActor
+from domains.employees.permissions import EmployeeScope
+from domains.employees.schemas import EmployeeView
 from shared.errors import ValidationError
 from shared.events.catalog import (
     DomainEvent,
@@ -16,11 +21,57 @@ from shared.events.catalog import (
     SourcingCaseOpened,
 )
 from shared.schemas.identifiers import (
+    EmployeeId,
     SourcingCaseId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
+    UserId,
 )
+
+
+def test_scheduler_runtime_has_strict_optional_sourcing_admission_driver() -> None:
+    """未装配 V2 保持兼容；装配时必须提供真正的 scan_once 窄接口。"""
+
+    from apps.scheduler_worker.main import SchedulerConfig, SchedulerRuntime
+
+    base = {
+        "lock_engine": SimpleNamespace(),
+        "outbox": SimpleNamespace(drain=lambda: None),
+        "workflow": SimpleNamespace(poll_due=lambda *_: None),
+        "tenant_id": TenantId("tenant-sourcing-driver-runtime"),
+        "config": SchedulerConfig(1, 99, 1),
+    }
+    assert SchedulerRuntime(**base).sourcing_admission_driver is None
+    with pytest.raises(ValidationError, match="sourcing admission"):
+        SchedulerRuntime(**base, sourcing_admission_driver=object())
+
+
+@pytest.mark.asyncio
+async def test_scheduler_directive_employee_reader_keeps_system_actor_and_tenant_boundary() -> None:
+    tenant = TenantId("tenant-directive-reader")
+    actor = EmployeeActor("system:scheduler-directive", EmployeeScope.SYSTEM, "system")
+    boss_id = EmployeeId("employee-boss")
+    calls: list[tuple[object, ...]] = []
+
+    class Employees:
+        async def get_employee(self, tenant_id, employee_id, *, actor):
+            calls.append((tenant_id, employee_id, actor))
+            return EmployeeView(
+                employee_id=employee_id,
+                tenant_id=tenant_id,
+                name="Boss",
+                role="boss",
+                user_id=UserId("user-boss"),
+                is_active=True,
+            )
+
+    reader = SchedulerDirectiveEmployeeReader(Employees(), actor, tenant)
+
+    assert await reader.is_active_boss(tenant, boss_id) is True
+    assert await reader.names_for(tenant, (boss_id, boss_id)) == {boss_id: "Boss"}
+    assert await reader.names_for(TenantId("tenant-other"), (boss_id,)) == {}
+    assert calls == [(tenant, boss_id, actor), (tenant, boss_id, actor)]
 
 
 def _base_environ() -> dict[str, str]:
