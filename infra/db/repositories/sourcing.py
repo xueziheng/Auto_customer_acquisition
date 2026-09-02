@@ -580,6 +580,41 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
     def _snapshots(self) -> Select[tuple[SourcingPrioritySnapshotRow]]:
         return self.scoped_query(SourcingPrioritySnapshotRow)
 
+    def _admissions_with_current_snapshot(
+        self,
+    ) -> Select[tuple[SourcingAdmissionRow, SourcingPrioritySnapshotRow]]:
+        """以 tenant+current pointer 连接安全读取投影，保留无首快照阻断项。"""
+
+        return (
+            select(SourcingAdmissionRow, SourcingPrioritySnapshotRow)
+            .select_from(SourcingAdmissionRow)
+            .outerjoin(
+                SourcingPrioritySnapshotRow,
+                and_(
+                    SourcingPrioritySnapshotRow.tenant_id
+                    == SourcingAdmissionRow.tenant_id,
+                    SourcingPrioritySnapshotRow.admission_id
+                    == SourcingAdmissionRow.admission_id,
+                    SourcingPrioritySnapshotRow.snapshot_id
+                    == SourcingAdmissionRow.current_snapshot_id,
+                ),
+            )
+            .where(SourcingAdmissionRow.tenant_id == str(self._tenant_id))
+        )
+
+    @staticmethod
+    def _read_pair(
+        admission_row: SourcingAdmissionRow,
+        snapshot_row: SourcingPrioritySnapshotRow | None,
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot | None]:
+        admission = _row_to_admission(admission_row)
+        if admission.current_snapshot_id is not None and snapshot_row is None:
+            raise ValidationError("准入 current snapshot 不存在或不属于当前租户")
+        snapshot = (
+            _row_to_snapshot(snapshot_row) if snapshot_row is not None else None
+        )
+        return admission, snapshot
+
     @staticmethod
     def _require_initial_pair(
         tenant_id: TenantId,
@@ -705,6 +740,21 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         ).scalar_one_or_none()
         return _row_to_admission(row) if row is not None else None
 
+    async def get_with_current_snapshot(
+        self, tenant_id: TenantId, admission_id: SourcingAdmissionId
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot | None] | None:
+        self._require_tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                self._admissions_with_current_snapshot().where(
+                    SourcingAdmissionRow.admission_id == str(admission_id)
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return self._read_pair(row[0], row[1])
+
     async def append_snapshot_if_changed(
         self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
     ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
@@ -754,7 +804,11 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             if canonical_row is None:
                 raise ValidationError("快照标识已被其他事实占用")
             canonical = _row_to_snapshot(canonical_row)
-            if current.current_snapshot_id == canonical.snapshot_id:
+            if current.current_snapshot_id == canonical.snapshot_id and not (
+                current.state is AdmissionState.BLOCKED
+                and current.blocked_reason
+                is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+            ):
                 return current, canonical, False
 
         changed = current.with_current_snapshot(snapshot)
@@ -1040,6 +1094,16 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
     async def list_by_state(
         self, tenant_id: TenantId, state: AdmissionState, limit: int
     ) -> list[SourcingAdmission]:
+        return [
+            admission
+            for admission, _ in await self.list_by_state_with_current_snapshot(
+                tenant_id, state, limit
+            )
+        ]
+
+    async def list_by_state_with_current_snapshot(
+        self, tenant_id: TenantId, state: AdmissionState, limit: int
+    ) -> list[tuple[SourcingAdmission, SourcingPrioritySnapshot | None]]:
         self._require_tenant(tenant_id)
         if not isinstance(state, AdmissionState):
             raise ValidationError("admission state 无效")
@@ -1047,18 +1111,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         rows = (
             (
                 await self._session.execute(
-                    self._admissions()
-                    .outerjoin(
-                        SourcingPrioritySnapshotRow,
-                        and_(
-                            SourcingPrioritySnapshotRow.tenant_id
-                            == SourcingAdmissionRow.tenant_id,
-                            SourcingPrioritySnapshotRow.admission_id
-                            == SourcingAdmissionRow.admission_id,
-                            SourcingPrioritySnapshotRow.snapshot_id
-                            == SourcingAdmissionRow.current_snapshot_id,
-                        ),
-                    )
+                    self._admissions_with_current_snapshot()
                     .where(SourcingAdmissionRow.state == state.value)
                     .order_by(
                         SourcingPrioritySnapshotRow.cluster_member_count.desc().nulls_last(),
@@ -1069,10 +1122,9 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     .limit(limit)
                 )
             )
-            .scalars()
             .all()
         )
-        return [_row_to_admission(row) for row in rows]
+        return [self._read_pair(row[0], row[1]) for row in rows]
 
 
 def _ladder_to_row(value: LadderCheck) -> SourcingLadderCheckRow:

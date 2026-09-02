@@ -259,6 +259,16 @@ class SourcingService(Protocol):
         """读取安全准入视图，不泄露 claim、租约、Workflow context 或完整 Need。"""
         ...
 
+    async def get_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionReadView | None:
+        """读取单条安全准入视图；不存在与异租户统一返回 ``None``。"""
+        ...
+
     async def record_ladder_check(
         self,
         tenant_id: TenantId,

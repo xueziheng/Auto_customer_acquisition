@@ -215,6 +215,61 @@ async def test_get_or_create_atomically_binds_initial_snapshot_and_deduplicates(
     assert replayed_snapshot == snapshot
 
 
+async def test_current_snapshot_reads_are_tenant_bound_and_keep_repository_order(
+    integration_engine: AsyncEngine,
+) -> None:
+    """安全 service 读取必须一次 JOIN 得到 current snapshot，且不改变 SQL 排序。"""
+
+    tenant = TenantId("tn_admission_read_bundle")
+    other_tenant = TenantId("tn_admission_read_other")
+    sessions = _sessions(integration_engine)
+    count_three, snapshot_three = _bundle(tenant, "read_three", 3)
+    count_eight, snapshot_eight = _bundle(
+        tenant, "read_eight", 8, ready_at=READY_AT + timedelta(hours=1)
+    )
+    invalid, _ = _bundle(tenant, "read_invalid", 1)
+    invalid = replace(
+        invalid,
+        state=AdmissionState.BLOCKED,
+        current_snapshot_id=None,
+        blocked_reason=AdmissionBlockedReason.PRIORITY_FACTS_INVALID,
+    )
+    for admission, snapshot in (
+        (count_three, snapshot_three),
+        (count_eight, snapshot_eight),
+        (invalid, None),
+    ):
+        await _store_bundle(integration_engine, sessions, admission, snapshot)
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        owner = await uow.admissions.get_with_current_snapshot(
+            tenant, count_three.admission_id
+        )
+        foreign = await uow.admissions.get_with_current_snapshot(
+            tenant, SourcingAdmissionId("adm_not_owned")
+        )
+        waiting = await uow.admissions.list_by_state_with_current_snapshot(
+            tenant, AdmissionState.WAITING, 20
+        )
+        blocked = await uow.admissions.list_by_state_with_current_snapshot(
+            tenant, AdmissionState.BLOCKED, 20
+        )
+    async with SqlAlchemySourcingUnitOfWork(sessions, other_tenant) as other_uow:
+        cross_tenant = await other_uow.admissions.get_with_current_snapshot(
+            other_tenant, count_three.admission_id
+        )
+
+    assert owner == (count_three, snapshot_three)
+    assert foreign is None
+    assert cross_tenant is None
+    assert [item[0].admission_id for item in waiting] == [
+        count_eight.admission_id,
+        count_three.admission_id,
+    ]
+    assert [item[1] for item in waiting] == [snapshot_eight, snapshot_three]
+    assert blocked == [(invalid, None)]
+
+
 async def test_get_or_create_is_atomic_under_concurrent_canonical_proposals(
     integration_engine: AsyncEngine,
 ) -> None:
@@ -295,6 +350,30 @@ async def test_append_snapshot_deduplicates_and_recovers_only_priority_invalid(
     assert replay_created is False
     assert replay_canonical.snapshot_id == canonical.snapshot_id
     assert unchanged == repaired
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        blocked_with_snapshot = await uow.admissions.block(
+            tenant,
+            invalid.admission_id,
+            AdmissionBlockedReason.PRIORITY_FACTS_INVALID,
+            NOW + timedelta(minutes=1),
+        )
+    assert blocked_with_snapshot is not None
+    same_hash_repair = replace(
+        repaired_snapshot,
+        snapshot_id=SourcingPrioritySnapshotId("sps_invalid_same_hash_repair"),
+        created_at=NOW + timedelta(minutes=2),
+    )
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        same_hash_recovered, same_hash_canonical, same_hash_created = (
+            await uow.admissions.append_snapshot_if_changed(
+                tenant, same_hash_repair
+            )
+        )
+    assert same_hash_recovered.state is AdmissionState.WAITING
+    assert same_hash_recovered.blocked_reason is None
+    assert same_hash_canonical.snapshot_id == canonical.snapshot_id
+    assert same_hash_created is False
 
     mismatch, mismatch_snapshot = _bundle(
         tenant,

@@ -6,8 +6,13 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Literal
+from types import SimpleNamespace
+from typing import Literal, cast
 
+from domains.sourcing.admission import (
+    canonical_priority_facts_hash,
+    priority_explanation,
+)
 from domains.sourcing.errors import (
     MissingEvidenceSnapshotError,
     SourcingHandoffInvariantError,
@@ -15,7 +20,10 @@ from domains.sourcing.errors import (
     SourcingThresholdNotMetError,
 )
 from domains.sourcing.models import (
+    ADMISSION_RANKING_VERSION,
     MAX_QUALIFIED_CANDIDATES,
+    AdmissionBlockedReason,
+    AdmissionState,
     CaseState,
     EvidenceSnapshot,
     LadderCheck,
@@ -25,7 +33,9 @@ from domains.sourcing.models import (
     PriceRejectionReason,
     PublicPlanStatus,
     PublicSourcingPlan,
+    SourcingAdmission,
     SourcingCase,
+    SourcingPrioritySnapshot,
     SourcingReconciliationStatus,
     SourcingReview,
     SourcingSearchExecution,
@@ -58,6 +68,8 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingPlanReadView,
     PublicSourcingQueryReadView,
+    SourcingAdmissionEnqueueCommand,
+    SourcingAdmissionReadView,
     SourcingArtifactSummaryView,
     SourcingCandidateProductInput,
     SourcingCandidateProductInputs,
@@ -68,6 +80,7 @@ from domains.sourcing.schemas import (
     SourcingLadderCheckReadView,
     SourcingMatchInference,
     SourcingObservedFact,
+    SourcingPriorityFactsInput,
     SourcingReconciliationReadView,
     SourcingReviewCommand,
     SourcingReviewReadView,
@@ -86,7 +99,7 @@ from domains.sourcing.service import (
     ProviderUsageEvidenceSnapshot,
     PublicSourcingRunView,
 )
-from shared.errors import InvalidStateTransition, ValidationError
+from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import (
     SourcingCandidatesReady,
     SourcingCandidatesVerified,
@@ -100,8 +113,10 @@ from shared.schemas.identifiers import (
     OpportunityId,
     ProductId,
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
+    SourcingPrioritySnapshotId,
     SourcingReviewId,
     SourcingSupplyOptionId,
     SupplierCandidateId,
@@ -119,6 +134,106 @@ def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValidationError("寻源服务时间必须含时区")
     return value
+
+
+def _utc_time(value: object, field_name: str) -> datetime:
+    """准入排序与租约只接受 UTC，避免相同事实产生不同持久表示。"""
+
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != UTC.utcoffset(None)
+    ):
+        raise ValidationError(f"{field_name} 必须是 UTC 时间")
+    return value
+
+
+def _bounded_identifier(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError(f"{field_name} 无效")
+    return value
+
+
+def _admission_limit(value: object, *, maximum: int) -> int:
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise ValidationError(f"limit 必须是 1..{maximum} 的整数")
+    return value
+
+
+def _admission_read_view(
+    admission: SourcingAdmission,
+    snapshot: SourcingPrioritySnapshot | None,
+    *,
+    now: datetime,
+    can_manual_start: bool,
+) -> SourcingAdmissionReadView:
+    """从同一 current pointer 对构造最小安全投影，不补造应用策略状态。"""
+
+    if snapshot is None:
+        if not (
+            admission.state is AdmissionState.BLOCKED
+            and admission.blocked_reason
+            is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
+            and admission.current_snapshot_id is None
+        ):
+            raise ValidationError("准入 current snapshot 缺失")
+    elif (
+        snapshot.tenant_id != admission.tenant_id
+        or snapshot.admission_id != admission.admission_id
+        or snapshot.case_id != admission.case_id
+        or snapshot.need_id != admission.need_id
+        or snapshot.snapshot_id != admission.current_snapshot_id
+        or snapshot.ready_at != admission.ready_at
+    ):
+        raise ValidationError("准入 current snapshot 与 admission 不一致")
+    waiting_duration = max(0, int((now - admission.ready_at).total_seconds()))
+    return SourcingAdmissionReadView(
+        admission_id=admission.admission_id,
+        case_id=admission.case_id,
+        need_id=admission.need_id,
+        state=admission.state.value,
+        blocked_reason=(
+            admission.blocked_reason.value
+            if admission.blocked_reason is not None
+            else None
+        ),
+        snapshot_id=(snapshot.snapshot_id if snapshot is not None else None),
+        cluster_id=(snapshot.cluster_id if snapshot is not None else None),
+        cluster_member_count=(
+            snapshot.cluster_member_count if snapshot is not None else None
+        ),
+        ready_at=admission.ready_at,
+        facts_observed_at=(
+            snapshot.facts_observed_at if snapshot is not None else None
+        ),
+        ranking_version=(
+            cast(Literal["need-cluster-admission-v1"], ADMISSION_RANKING_VERSION)
+            if snapshot is not None
+            else None
+        ),
+        explanation=(
+            priority_explanation(
+                SimpleNamespace(
+                    cluster_id=snapshot.cluster_id,
+                    cluster_member_count=snapshot.cluster_member_count,
+                )
+            )
+            if snapshot is not None
+            else None
+        ),
+        waiting_duration_seconds=waiting_duration,
+        admitted_at=admission.admitted_at,
+        admitted_by=admission.admitted_by,
+        can_current_user_manual_start=(
+            can_manual_start and admission.state is AdmissionState.WAITING
+        ),
+    )
 
 
 def _normalize(value: str) -> str:
@@ -952,6 +1067,397 @@ class SourcingServiceImpl:
                     )
                 )
             return canonical.case_id
+
+    async def enqueue_admission(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        need_id: ValidatedNeedId,
+        *,
+        ready_at: datetime,
+        command: SourcingAdmissionEnqueueCommand,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionId:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_ENQUEUE,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(tenant_id, "tenant_id")
+        _bounded_identifier(case_id, "case_id")
+        _bounded_identifier(need_id, "need_id")
+        ready_at = _utc_time(ready_at, "ready_at")
+        if not isinstance(command, SourcingAdmissionEnqueueCommand):
+            raise ValidationError("寻源准入命令无效")
+        facts = command.facts
+        if facts is not None and facts.need_id != need_id:
+            raise ValidationError("排序事实 Need 与准入 Need 不一致")
+        now = _utc_time(self._now(), "now")
+        if ready_at > now:
+            raise ValidationError("ready_at 不得晚于创建时间")
+        if facts is not None and facts.facts_observed_at > now:
+            raise ValidationError("facts_observed_at 不得晚于创建时间")
+
+        admission_id = SourcingAdmissionId(new_id("sad"))
+        snapshot: SourcingPrioritySnapshot | None = None
+        if facts is None:
+            admission = SourcingAdmission(
+                tenant_id=tenant_id,
+                admission_id=admission_id,
+                case_id=case_id,
+                need_id=need_id,
+                state=AdmissionState.BLOCKED,
+                ready_at=ready_at,
+                current_snapshot_id=None,
+                claim_token=None,
+                claim_expires_at=None,
+                workflow_run_id=None,
+                blocked_reason=AdmissionBlockedReason.PRIORITY_FACTS_INVALID,
+                admitted_at=None,
+                admitted_by=None,
+                created_at=now,
+                updated_at=now,
+            )
+        else:
+            snapshot_id = SourcingPrioritySnapshotId(new_id("sps"))
+            snapshot = SourcingPrioritySnapshot(
+                tenant_id=tenant_id,
+                snapshot_id=snapshot_id,
+                admission_id=admission_id,
+                case_id=case_id,
+                need_id=need_id,
+                cluster_id=facts.cluster_id,
+                cluster_member_count=facts.cluster_member_count,
+                ready_at=ready_at,
+                ranking_version=ADMISSION_RANKING_VERSION,
+                facts_observed_at=facts.facts_observed_at,
+                facts_hash=canonical_priority_facts_hash(
+                    need_id=need_id,
+                    cluster_id=facts.cluster_id,
+                    cluster_member_count=facts.cluster_member_count,
+                    ready_at=ready_at,
+                    facts_observed_at=facts.facts_observed_at,
+                    ranking_version=ADMISSION_RANKING_VERSION,
+                ),
+                created_at=now,
+            )
+            admission = SourcingAdmission(
+                tenant_id=tenant_id,
+                admission_id=admission_id,
+                case_id=case_id,
+                need_id=need_id,
+                state=AdmissionState.WAITING,
+                ready_at=ready_at,
+                current_snapshot_id=snapshot_id,
+                claim_token=None,
+                claim_expires_at=None,
+                workflow_run_id=None,
+                blocked_reason=None,
+                admitted_at=None,
+                admitted_by=None,
+                created_at=now,
+                updated_at=now,
+            )
+
+        async with self._uow_factory(tenant_id) as uow:
+            case = _case_required(await uow.cases.get(tenant_id, case_id))
+            if case.need_id != need_id or case.workflow_version != 2:
+                raise ValidationError("寻源准入 Case 与 Need 不一致")
+            canonical, canonical_snapshot, created = (
+                await uow.admissions.get_or_create(tenant_id, admission, snapshot)
+            )
+            if (
+                canonical.tenant_id != tenant_id
+                or canonical.case_id != case_id
+                or canonical.need_id != need_id
+                or canonical.ready_at != ready_at
+            ):
+                raise ValidationError("寻源准入幂等键已绑定不同 Case、Need 或时间")
+            if created:
+                if canonical_snapshot != snapshot:
+                    raise ValidationError("寻源准入首快照 canonical 绑定不一致")
+            elif snapshot is not None and canonical_snapshot is None:
+                repaired = replace(
+                    snapshot,
+                    admission_id=canonical.admission_id,
+                )
+                _, canonical_snapshot, _ = (
+                    await uow.admissions.append_snapshot_if_changed(
+                        tenant_id, repaired
+                    )
+                )
+            return canonical.admission_id
+
+    async def refresh_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        facts: SourcingPriorityFactsInput,
+        refreshed_at: datetime,
+        actor: SourcingActor,
+    ) -> SourcingPrioritySnapshotId | None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_REFRESH,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(tenant_id, "tenant_id")
+        _bounded_identifier(admission_id, "admission_id")
+        if not isinstance(facts, SourcingPriorityFactsInput):
+            raise ValidationError("寻源准入排序事实无效")
+        refreshed_at = _utc_time(refreshed_at, "refreshed_at")
+        if facts.facts_observed_at > refreshed_at:
+            raise ValidationError("facts_observed_at 不得晚于 refreshed_at")
+        async with self._uow_factory(tenant_id) as uow:
+            admission = await uow.admissions.get(tenant_id, admission_id)
+            if admission is None:
+                raise ValidationError("寻源准入不存在或租户不匹配")
+            if facts.need_id != admission.need_id:
+                raise ValidationError("排序事实 Need 与准入 Need 不一致")
+            if admission.state in {
+                AdmissionState.STARTING,
+                AdmissionState.ADMITTED,
+            }:
+                return None
+            snapshot = SourcingPrioritySnapshot(
+                tenant_id=tenant_id,
+                snapshot_id=SourcingPrioritySnapshotId(new_id("sps")),
+                admission_id=admission.admission_id,
+                case_id=admission.case_id,
+                need_id=admission.need_id,
+                cluster_id=facts.cluster_id,
+                cluster_member_count=facts.cluster_member_count,
+                ready_at=admission.ready_at,
+                ranking_version=ADMISSION_RANKING_VERSION,
+                facts_observed_at=facts.facts_observed_at,
+                facts_hash=canonical_priority_facts_hash(
+                    need_id=admission.need_id,
+                    cluster_id=facts.cluster_id,
+                    cluster_member_count=facts.cluster_member_count,
+                    ready_at=admission.ready_at,
+                    facts_observed_at=facts.facts_observed_at,
+                    ranking_version=ADMISSION_RANKING_VERSION,
+                ),
+                created_at=refreshed_at,
+            )
+            _, canonical, _ = await uow.admissions.append_snapshot_if_changed(
+                tenant_id, snapshot
+            )
+            return canonical.snapshot_id
+
+    async def claim_admissions(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        claim_token: str,
+        claim_expires_at: datetime,
+        actor: SourcingActor,
+    ) -> list[SourcingAdmission]:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_CLAIM,
+            SourcingScope.SYSTEM,
+        )
+        limit = _admission_limit(limit, maximum=50)
+        _bounded_identifier(claim_token, "claim_token")
+        claim_expires_at = _utc_time(claim_expires_at, "claim_expires_at")
+        now = _utc_time(self._now(), "now")
+        if claim_expires_at <= now:
+            raise ValidationError("claim_expires_at 必须晚于 now")
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.admissions.claim_ordered(
+                tenant_id, limit, claim_token, claim_expires_at, now
+            )
+
+    async def complete_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        claim_token: str,
+        workflow_run_id: RunId,
+        admitted_by: str,
+        admitted_at: datetime,
+        actor: SourcingActor,
+    ) -> None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_COMPLETE,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(admission_id, "admission_id")
+        _bounded_identifier(claim_token, "claim_token")
+        _bounded_identifier(workflow_run_id, "workflow_run_id")
+        _bounded_identifier(admitted_by, "admitted_by")
+        admitted_at = _utc_time(admitted_at, "admitted_at")
+        async with self._uow_factory(tenant_id) as uow:
+            completed = await uow.admissions.complete(
+                tenant_id,
+                admission_id,
+                claim_token,
+                workflow_run_id,
+                admitted_by,
+                admitted_at,
+            )
+            if completed is None:
+                raise InvalidStateTransition(
+                    "寻源准入 claim token 与当前 starting 状态不匹配"
+                )
+
+    async def release_expired_admission_claims(
+        self, tenant_id: TenantId, *, now: datetime, actor: SourcingActor
+    ) -> list[SourcingAdmission]:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_CLAIM,
+            SourcingScope.SYSTEM,
+        )
+        now = _utc_time(now, "now")
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.admissions.release_expired_claims(tenant_id, now)
+
+    async def release_admission_claim(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        claim_token: str,
+        released_at: datetime,
+        actor: SourcingActor,
+    ) -> None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_COMPLETE,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(admission_id, "admission_id")
+        _bounded_identifier(claim_token, "claim_token")
+        released_at = _utc_time(released_at, "released_at")
+        async with self._uow_factory(tenant_id) as uow:
+            released = await uow.admissions.release(
+                tenant_id, admission_id, claim_token, released_at
+            )
+            if released is None:
+                raise InvalidStateTransition(
+                    "寻源准入 claim token 与当前 starting 状态不匹配"
+                )
+
+    async def block_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        reason: AdmissionBlockedReason,
+        blocked_at: datetime,
+        claim_token: str | None = None,
+        actor: SourcingActor,
+    ) -> None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_COMPLETE,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(admission_id, "admission_id")
+        if not isinstance(reason, AdmissionBlockedReason):
+            raise ValidationError("blocked_reason 必须是 AdmissionBlockedReason")
+        blocked_at = _utc_time(blocked_at, "blocked_at")
+        if claim_token is not None:
+            _bounded_identifier(claim_token, "claim_token")
+        async with self._uow_factory(tenant_id) as uow:
+            blocked = await uow.admissions.block(
+                tenant_id,
+                admission_id,
+                reason,
+                blocked_at,
+                claim_token=claim_token,
+            )
+            if blocked is None:
+                raise InvalidStateTransition(
+                    "寻源准入 claim token 与当前状态不匹配"
+                )
+
+    def _can_manual_start(
+        self, tenant_id: TenantId, actor: SourcingActor
+    ) -> bool:
+        try:
+            self._require(
+                tenant_id,
+                actor,
+                SourcingAction.ADMISSION_MANUAL_START,
+                SourcingScope.TENANT,
+            )
+        except PermissionDenied:
+            return False
+        return True
+
+    async def list_admissions(
+        self,
+        tenant_id: TenantId,
+        *,
+        state: AdmissionState,
+        limit: int,
+        now: datetime,
+        actor: SourcingActor,
+    ) -> list[SourcingAdmissionReadView]:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_READ,
+            SourcingScope.TENANT,
+        )
+        can_manual_start = self._can_manual_start(tenant_id, actor)
+        if not isinstance(state, AdmissionState):
+            raise ValidationError("admission state 无效")
+        limit = _admission_limit(limit, maximum=200)
+        now = _utc_time(now, "now")
+        async with self._uow_factory(tenant_id) as uow:
+            pairs = await uow.admissions.list_by_state_with_current_snapshot(
+                tenant_id, state, limit
+            )
+            return [
+                _admission_read_view(
+                    admission,
+                    snapshot,
+                    now=now,
+                    can_manual_start=can_manual_start,
+                )
+                for admission, snapshot in pairs
+            ]
+
+    async def get_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionReadView | None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_READ,
+            SourcingScope.TENANT,
+        )
+        can_manual_start = self._can_manual_start(tenant_id, actor)
+        _bounded_identifier(admission_id, "admission_id")
+        now = _utc_time(self._now(), "now")
+        async with self._uow_factory(tenant_id) as uow:
+            pair = await uow.admissions.get_with_current_snapshot(
+                tenant_id, admission_id
+            )
+            if pair is None:
+                return None
+            return _admission_read_view(
+                pair[0], pair[1], now=now, can_manual_start=can_manual_start
+            )
 
     async def record_ladder_check(
         self,

@@ -29,22 +29,31 @@ from domains.sourcing.schemas import (
     PublicCandidateDraftSpec,
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
+    SourcingAdmissionEnqueueCommand,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
+    SourcingPriorityFactsInput,
     SourcingReviewCommand,
     SpecComparisonView,
     VerifyPublicCandidateDraftsCommand,
 )
 from domains.sourcing.service import CandidateEvidenceSnapshot
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
-from infra.db.tables import OutboxEventRow, SourcingCaseRow, SourcingLadderCheckRow
+from infra.db.tables import (
+    OutboxEventRow,
+    SourcingAdmissionRow,
+    SourcingCaseRow,
+    SourcingLadderCheckRow,
+    SourcingPrioritySnapshotRow,
+)
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import NeedValidated
 from shared.schemas.evidence import EvidenceLevel
 from shared.schemas.identifiers import (
     ArtifactId,
     EmployeeId,
+    NeedClusterId,
     OpportunityId,
     ProductId,
     RunId,
@@ -60,6 +69,8 @@ from workflows.engine.runner import WorkflowRun
 NOW = datetime(2026, 8, 30, 11, tzinfo=UTC)
 
 _models = importlib.import_module("domains.sourcing.models")
+AdmissionBlockedReason = _models.AdmissionBlockedReason
+AdmissionState = _models.AdmissionState
 CaseState = _models.CaseState
 LadderCheck = _models.LadderCheck
 LadderOutcome = _models.LadderOutcome
@@ -316,6 +327,192 @@ def _command(tenant_id: TenantId, need_id: ValidatedNeedId) -> OpenSourcingCase:
         ),
         trigger_key=f"sourcing-case:v2:{tenant_id}:{need_id}",
     )
+
+
+@pytest.mark.asyncio
+async def test_admission_service_persists_canonical_snapshots_and_token_transitions(
+    integration_engine: AsyncEngine,
+) -> None:
+    """真实 UoW 下重复事实只增一次，且陈旧 token 不能覆盖 current starting。"""
+
+    tenant_id = TenantId(new_id("tn"))
+    first_need = ValidatedNeedId(new_id("need"))
+    second_need = ValidatedNeedId(new_id("need"))
+    await _seed_need(integration_engine, tenant_id, first_need)
+    await _seed_need(integration_engine, tenant_id, second_need)
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    current_time = [NOW]
+    system = SourcingActor("system-worker", tenant_id, SourcingScope.SYSTEM, "system")
+    boss = SourcingActor("emp-boss", tenant_id, SourcingScope.TENANT, "boss")
+    service = _service_type()(
+        lambda bound_tenant: SqlAlchemySourcingUnitOfWork(sessions, bound_tenant),
+        Phase2SourcingAuthorizer(tenant_id),
+        _UnusedEvidenceReader(),
+        now=lambda: current_time[0],
+    )
+    first_case = await service.open_case(
+        tenant_id, _command(tenant_id, first_need), actor=system
+    )
+    second_case = await service.open_case(
+        tenant_id, _command(tenant_id, second_need), actor=system
+    )
+
+    def facts(
+        need_id: ValidatedNeedId, count: int, cluster: str | None
+    ) -> SourcingPriorityFactsInput:
+        return SourcingPriorityFactsInput(
+            need_id=need_id,
+            cluster_id=(NeedClusterId(cluster) if cluster is not None else None),
+            cluster_member_count=count,
+            facts_observed_at=current_time[0],
+        )
+
+    first_id = await service.enqueue_admission(
+        tenant_id,
+        first_case,
+        first_need,
+        ready_at=NOW - timedelta(days=2),
+        command=SourcingAdmissionEnqueueCommand(facts=facts(first_need, 1, None)),
+        actor=system,
+    )
+    first_replay = await service.enqueue_admission(
+        tenant_id,
+        first_case,
+        first_need,
+        ready_at=NOW - timedelta(days=2),
+        command=SourcingAdmissionEnqueueCommand(facts=facts(first_need, 1, None)),
+        actor=system,
+    )
+    second_id = await service.enqueue_admission(
+        tenant_id,
+        second_case,
+        second_need,
+        ready_at=NOW - timedelta(days=1),
+        command=SourcingAdmissionEnqueueCommand(
+            facts=facts(second_need, 8, "cluster-eight")
+        ),
+        actor=system,
+    )
+    initial_view = await service.get_admission(tenant_id, first_id, actor=boss)
+    replay_view = await service.get_admission(tenant_id, first_replay, actor=boss)
+    assert first_replay == first_id
+    assert replay_view == initial_view
+
+    current_time[0] = NOW + timedelta(minutes=1)
+    changed_facts = facts(first_need, 3, "cluster-three")
+    changed_snapshot = await service.refresh_admission(
+        tenant_id,
+        first_id,
+        facts=changed_facts,
+        refreshed_at=current_time[0],
+        actor=system,
+    )
+    replay_snapshot = await service.refresh_admission(
+        tenant_id,
+        first_id,
+        facts=changed_facts,
+        refreshed_at=current_time[0] + timedelta(seconds=1),
+        actor=system,
+    )
+    assert replay_snapshot == changed_snapshot
+
+    current_time[0] = NOW + timedelta(minutes=2)
+    claimed = await service.claim_admissions(
+        tenant_id,
+        limit=2,
+        claim_token="claim-current",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        actor=system,
+    )
+    assert [item.admission_id for item in claimed] == [second_id, first_id]
+    with pytest.raises(InvalidStateTransition, match="claim token"):
+        await service.complete_admission(
+            tenant_id,
+            second_id,
+            claim_token="claim-stale",
+            workflow_run_id=RunId(new_id("run")),
+            admitted_by="system:sourcing",
+            admitted_at=NOW + timedelta(minutes=3),
+            actor=system,
+        )
+    run_id = RunId(new_id("run"))
+    await service.complete_admission(
+        tenant_id,
+        second_id,
+        claim_token="claim-current",
+        workflow_run_id=run_id,
+        admitted_by="system:sourcing",
+        admitted_at=NOW + timedelta(minutes=3),
+        actor=system,
+    )
+    with pytest.raises(InvalidStateTransition, match="claim token"):
+        await service.block_admission(
+            tenant_id,
+            first_id,
+            reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+            blocked_at=NOW + timedelta(minutes=3),
+            claim_token="claim-stale",
+            actor=system,
+        )
+    await service.block_admission(
+        tenant_id,
+        first_id,
+        reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        blocked_at=NOW + timedelta(minutes=3),
+        claim_token="claim-current",
+        actor=system,
+    )
+    assert (
+        await service.refresh_admission(
+            tenant_id,
+            second_id,
+            facts=facts(second_need, 9, "cluster-nine"),
+            refreshed_at=NOW + timedelta(minutes=4),
+            actor=system,
+        )
+        is None
+    )
+
+    admitted = await service.list_admissions(
+        tenant_id,
+        state=AdmissionState.ADMITTED,
+        limit=20,
+        now=NOW + timedelta(minutes=4),
+        actor=boss,
+    )
+    blocked = await service.list_admissions(
+        tenant_id,
+        state=AdmissionState.BLOCKED,
+        limit=20,
+        now=NOW + timedelta(minutes=4),
+        actor=boss,
+    )
+    async with sessions() as session:
+        admission_count = await session.scalar(
+            select(func.count())
+            .select_from(SourcingAdmissionRow)
+            .where(SourcingAdmissionRow.tenant_id == str(tenant_id))
+        )
+        snapshot_count = await session.scalar(
+            select(func.count())
+            .select_from(SourcingPrioritySnapshotRow)
+            .where(SourcingPrioritySnapshotRow.tenant_id == str(tenant_id))
+        )
+        stored_run = await session.scalar(
+            select(SourcingAdmissionRow.workflow_run_id).where(
+                SourcingAdmissionRow.tenant_id == str(tenant_id),
+                SourcingAdmissionRow.admission_id == str(second_id),
+            )
+        )
+
+    assert admission_count == 2
+    assert snapshot_count == 3
+    assert stored_run == str(run_id)
+    assert [item.admission_id for item in admitted] == [second_id]
+    assert admitted[0].admitted_by == "system:sourcing"
+    assert [item.admission_id for item in blocked] == [first_id]
+    assert blocked[0].blocked_reason == "case_state_mismatch"
+    assert blocked[0].snapshot_id == changed_snapshot
 
 
 async def _seed_candidate_artifact(

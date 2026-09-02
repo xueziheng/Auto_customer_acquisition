@@ -126,6 +126,12 @@ class SourcingAdmissionRepository(Protocol):
         """读取单条同租户 admission；不存在或异租户均返回 ``None``。"""
         ...
 
+    async def get_with_current_snapshot(
+        self, tenant_id: TenantId, admission_id: SourcingAdmissionId
+    ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot | None] | None:
+        """一次 tenant-bound JOIN 读取 admission 与其 current snapshot。"""
+        ...
+
     async def append_snapshot_if_changed(
         self, tenant_id: TenantId, snapshot: SourcingPrioritySnapshot
     ) -> tuple[SourcingAdmission, SourcingPrioritySnapshot, bool]:
@@ -186,6 +192,12 @@ class SourcingAdmissionRepository(Protocol):
         self, tenant_id: TenantId, state: AdmissionState, limit: int
     ) -> list[SourcingAdmission]:
         """按 repository 的确定性顺序读取同租户状态列表。"""
+        ...
+
+    async def list_by_state_with_current_snapshot(
+        self, tenant_id: TenantId, state: AdmissionState, limit: int
+    ) -> list[tuple[SourcingAdmission, SourcingPrioritySnapshot | None]]:
+        """按同一 repository 顺序批量读取 admission 与 current snapshot，禁止 N+1。"""
         ...
 
 
