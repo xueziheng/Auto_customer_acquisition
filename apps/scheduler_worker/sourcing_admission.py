@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from domains.sourcing.permissions import SourcingActor, SourcingScope
-from domains.sourcing.schemas import SourcingNeedSnapshot
+from domains.sourcing.schemas import SourcingCaseReadView, SourcingNeedSnapshot
 from domains.sourcing.service import (
     AdmissionBlockedReason,
     AdmissionState,
@@ -20,7 +20,6 @@ from domains.sourcing.service import (
 from shared.errors import TradeOSError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId
 from workflows.engine.runner import WorkflowEngine
-from workflows.sourcing_case.ports import SourcingNeedReader
 
 from ._sourcing_context import _safe_context
 from .directive_reader import SourcingAdmissionPolicyRead
@@ -65,7 +64,6 @@ class SourcingAdmissionDriver:
         policy: SourcingAdmissionPolicyReader,
         sourcing: SourcingService,
         engine: WorkflowEngine,
-        need_reader: SourcingNeedReader,
         tenant_id: TenantId,
         sourcing_actor: SourcingActor,
         lease_duration: timedelta,
@@ -75,11 +73,11 @@ class SourcingAdmissionDriver:
             (policy, "read"),
             (sourcing, "release_expired_admission_claims"),
             (sourcing, "claim_admissions"),
+            (sourcing, "get_admission_case_snapshot"),
             (sourcing, "complete_admission"),
             (sourcing, "release_admission_claim"),
             (sourcing, "block_admission"),
             (engine, "start"),
-            (need_reader, "read"),
         )
         if any(not callable(getattr(value, name, None)) for value, name in required):
             raise ValidationError("寻源准入 driver 依赖无效")
@@ -100,7 +98,6 @@ class SourcingAdmissionDriver:
         self._policy = policy
         self._sourcing = sourcing
         self._engine = engine
-        self._need_reader = need_reader
         self._tenant_id = tenant_id
         self._sourcing_actor = sourcing_actor
         self._lease_duration = lease_duration
@@ -237,14 +234,34 @@ class SourcingAdmissionDriver:
             return "pending_recovery"
         claim_token = admission.claim_token
         try:
-            snapshot = await self._need_reader.read(
-                self._tenant_id, admission.need_id
+            case = await self._sourcing.get_admission_case_snapshot(
+                self._tenant_id,
+                admission.case_id,
+                actor=self._sourcing_actor,
             )
         except Exception as error:  # noqa: BLE001 - 未启动前按已知语义处置
             return await self._handle_pre_start_error(admission, claim_token, error)
+        if case is None:
+            return await self._block(admission, claim_token)
         if (
-            not isinstance(snapshot, SourcingNeedSnapshot)
+            not isinstance(case, SourcingCaseReadView)
+        ):
+            return "pending_recovery"
+        snapshot = case.need_snapshot
+        if (
+            case.case_id != admission.case_id
+            or case.need_id != admission.need_id
+            or type(case.workflow_version) is not int
+            or case.workflow_version != 2
+            or case.state != "opened"
+            or not isinstance(snapshot, SourcingNeedSnapshot)
             or snapshot.need_id != admission.need_id
+            or not isinstance(snapshot.snapshot_hash, str)
+            or len(snapshot.snapshot_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in snapshot.snapshot_hash
+            )
         ):
             return await self._block(admission, claim_token)
         try:

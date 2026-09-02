@@ -1010,6 +1010,24 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         assert len(admissions) == len(snapshots) == 1
         assert admissions[0].state == "waiting"
         assert snapshots[0].cluster_member_count == 1
+        mutable_provenance = {**provenance, "source_id": "msg-current-need-b"}
+        async with integration_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE validated_needs SET product_category=CAST(:category AS jsonb) "
+                    "WHERE tenant_id=:tenant AND need_id=:need"
+                ),
+                {
+                    "tenant": str(tenant),
+                    "need": str(need_id),
+                    "category": json.dumps(
+                        {
+                            "value": "mutable current category b",
+                            "provenance": mutable_provenance,
+                        }
+                    ),
+                },
+            )
         original_complete = runtime.sourcing_admission_driver._sourcing.complete_admission
         bind_attempts = 0
 
@@ -1067,6 +1085,11 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         assert (root_runs[0].workflow_type, root_runs[0].workflow_version) == (
             "sourcing_case",
             2,
+        )
+        assert root_runs[0].context["product_category"] == "hinges"
+        assert (
+            root_runs[0].context["need_snapshot_hash"]
+            == cases[0].need_snapshot_hash
         )
         assert admission_row is not None
         assert admission_row.state == "admitted"

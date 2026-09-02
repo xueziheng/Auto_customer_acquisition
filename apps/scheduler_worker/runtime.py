@@ -1452,7 +1452,6 @@ class SchedulerRuntimeFactory:
                     policy=sourcing_policy_reader,
                     sourcing=sourcing_composition.sourcing,
                     engine=workflow,
-                    need_reader=sourcing_composition.need_reader,
                     tenant_id=config.tenant_id,
                     sourcing_actor=sourcing_composition.sourcing_actor,
                     lease_duration=_SOURCING_ADMISSION_LEASE_DURATION,

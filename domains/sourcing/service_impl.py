@@ -1577,6 +1577,26 @@ class SourcingServiceImpl:
                 pair[0], pair[1], now=now, can_manual_start=can_manual_start
             )
 
+    async def get_admission_case_snapshot(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCaseReadView | None:
+        """准入 SYSTEM actor 只读本租户 canonical Case 的 frozen 安全投影。"""
+
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_COMPLETE,
+            SourcingScope.SYSTEM,
+        )
+        _bounded_identifier(case_id, "case_id")
+        async with self._uow_factory(tenant_id) as uow:
+            case = await uow.cases.get(tenant_id, case_id)
+        return _case_read_view(case) if case is not None else None
+
     async def record_ladder_check(
         self,
         tenant_id: TenantId,

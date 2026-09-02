@@ -18,7 +18,11 @@ from apps.scheduler_worker.sourcing_admission import SourcingAdmissionDriver
 from domains.directives.schemas import DirectiveView
 from domains.directives.service import DirectiveService
 from domains.sourcing.permissions import SourcingActor, SourcingScope
-from domains.sourcing.schemas import NeedFact, SourcingNeedSnapshot
+from domains.sourcing.schemas import (
+    NeedFact,
+    SourcingCaseReadView,
+    SourcingNeedSnapshot,
+)
 from domains.sourcing.service import (
     AdmissionBlockedReason,
     AdmissionState,
@@ -151,17 +155,22 @@ def _provenance() -> ProvenanceSummary:
     )
 
 
-def _snapshot(need_id: ValidatedNeedId) -> SourcingNeedSnapshot:
+def _snapshot(
+    need_id: ValidatedNeedId,
+    *,
+    label: str = "Industrial Hinges",
+    snapshot_hash: str = "a" * 64,
+) -> SourcingNeedSnapshot:
     return SourcingNeedSnapshot(
         need_id=need_id,
         completeness=3,
         derivation_version="need-completeness-v1",
-        product_category=NeedFact(value="Industrial Hinges", provenance=_provenance()),
-        application=NeedFact(value="Marine Doors", provenance=_provenance()),
-        material=NeedFact(value="Stainless Steel", provenance=_provenance()),
-        size_spec=NeedFact(value="100 mm", provenance=_provenance()),
+        product_category=NeedFact(value=label, provenance=_provenance()),
+        application=NeedFact(value=f"{label} Application", provenance=_provenance()),
+        material=NeedFact(value=f"{label} Material", provenance=_provenance()),
+        size_spec=NeedFact(value=f"{label} Size", provenance=_provenance()),
         quantity=NeedFact(value=5000, provenance=_provenance()),
-        snapshot_hash="a" * 64,
+        snapshot_hash=snapshot_hash,
     )
 
 
@@ -186,6 +195,25 @@ def _admission(suffix: str) -> SourcingAdmission:
     )
 
 
+def _case_view(
+    admission: SourcingAdmission,
+    *,
+    need_id: ValidatedNeedId | None = None,
+    state: str = "opened",
+    workflow_version: int = 2,
+    snapshot: SourcingNeedSnapshot | None = None,
+) -> SourcingCaseReadView:
+    return SourcingCaseReadView(
+        case_id=admission.case_id,
+        need_id=need_id or admission.need_id,
+        state=state,
+        workflow_version=workflow_version,
+        version=1,
+        opened_at=NOW,
+        need_snapshot=snapshot or _snapshot(admission.need_id),
+    )
+
+
 class _Policy:
     def __init__(self, value: object = None, error: Exception | None = None) -> None:
         self.value = value
@@ -199,27 +227,29 @@ class _Policy:
         return self.value
 
 
-class _NeedReader:
-    def __init__(self, snapshots: dict[ValidatedNeedId, SourcingNeedSnapshot]) -> None:
-        self.snapshots = snapshots
-        self.calls: list[tuple[TenantId, ValidatedNeedId]] = []
-
-    async def read(
-        self, tenant_id: TenantId, need_id: ValidatedNeedId
-    ) -> SourcingNeedSnapshot:
-        self.calls.append((tenant_id, need_id))
-        return self.snapshots[need_id]
-
-
 class _Sourcing:
     def __init__(self, admissions: list[SourcingAdmission]) -> None:
         self.rows = admissions
+        self.case_views = {row.case_id: _case_view(row) for row in admissions}
+        self.case_errors: dict[SourcingCaseId, Exception] = {}
         self.claim_calls: list[dict[str, object]] = []
         self.release_expired_calls: list[datetime] = []
         self.complete_calls: list[dict[str, object]] = []
         self.release_calls: list[dict[str, object]] = []
         self.block_calls: list[dict[str, object]] = []
         self.complete_errors: deque[Exception | None] = deque()
+
+    async def get_admission_case_snapshot(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCaseReadView | None:
+        assert (tenant_id, actor) == (TENANT, SYSTEM)
+        if case_id in self.case_errors:
+            raise self.case_errors[case_id]
+        return self.case_views.get(case_id)
 
     async def release_expired_admission_claims(
         self, tenant_id: TenantId, *, now: datetime, actor: SourcingActor
@@ -337,14 +367,12 @@ def _driver(
     policy: _Policy,
     sourcing: _Sourcing,
     engine: _Engine,
-    reader: _NeedReader,
     clock: _Clock,
 ) -> SourcingAdmissionDriver:
     return SourcingAdmissionDriver(
         policy=policy,  # type: ignore[arg-type]
         sourcing=sourcing,  # type: ignore[arg-type]
         engine=engine,  # type: ignore[arg-type]
-        need_reader=reader,
         tenant_id=TENANT,
         sourcing_actor=SYSTEM,
         lease_duration=LEASE,
@@ -373,9 +401,7 @@ async def test_missing_disabled_and_unknown_policy_are_distinct_and_start_nothin
 ) -> None:
     row = _admission("a")
     sourcing, engine, clock = _Sourcing([row]), _Engine(), _Clock()
-    result = await _driver(
-        policy, sourcing, engine, _NeedReader({row.need_id: _snapshot(row.need_id)}), clock
-    ).scan_once()
+    result = await _driver(policy, sourcing, engine, clock).scan_once()
 
     assert result.stop_reason == reason
     assert result.claimed_count == result.admitted_count == 0
@@ -387,12 +413,10 @@ async def test_missing_disabled_and_unknown_policy_are_distinct_and_start_nothin
 async def test_enabled_policy_claims_exact_policy_limit_and_preserves_repository_order() -> None:
     rows = [_admission("z"), _admission("a"), _admission("m")]
     sourcing, engine, clock = _Sourcing(rows), _Engine(), _Clock()
-    reader = _NeedReader({row.need_id: _snapshot(row.need_id) for row in rows})
     driver = _driver(
         _Policy(SourcingAdmissionPolicyRead("dir", 9, True, 2)),
         sourcing,
         engine,
-        reader,
         clock,
     )
 
@@ -424,6 +448,132 @@ async def test_enabled_policy_claims_exact_policy_limit_and_preserves_repository
 
 
 @pytest.mark.asyncio
+async def test_run_context_uses_frozen_case_snapshot() -> None:
+    """把 context 改由其他来源重建会偷换 Case 已冻结的事实。"""
+
+    row = _admission("frozen")
+    frozen = _snapshot(row.need_id, label="Frozen A", snapshot_hash="a" * 64)
+    sourcing, engine, clock = _Sourcing([row]), _Engine(), _Clock()
+    sourcing.case_views[row.case_id] = _case_view(row, snapshot=frozen)
+
+    result = await _driver(
+        _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
+        sourcing,
+        engine,
+        clock,
+    ).scan_once()
+
+    assert result.admitted_count == 1
+    assert engine.calls[0][3] == {
+        "case_id": "src-frozen",
+        "need_id": "need-frozen",
+        "need_snapshot_hash": "a" * 64,
+        "product_category": "frozen a",
+        "keywords": [
+            "frozen a application",
+            "frozen a material",
+            "frozen a size",
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "terminal",
+        "non_opened",
+        "non_v2",
+        "case_need_mismatch",
+        "snapshot_need_mismatch",
+        "missing_snapshot",
+        "missing_hash",
+    ],
+)
+async def test_canonical_case_mismatch_blocks_without_start(fault: str) -> None:
+    """Case 终态、版本、Need 或 frozen snapshot 任一失配都不能启动。"""
+
+    row = _admission(fault)
+    sourcing, engine, clock = _Sourcing([row]), _Engine(), _Clock()
+    case = _case_view(row)
+    if fault == "terminal":
+        case = case.model_copy(update={"state": "failed"})
+    elif fault == "non_opened":
+        case = case.model_copy(update={"state": "discovering"})
+    elif fault == "non_v2":
+        case = case.model_copy(update={"workflow_version": 1})
+    elif fault == "case_need_mismatch":
+        case = case.model_copy(update={"need_id": ValidatedNeedId("need-other")})
+    elif fault == "snapshot_need_mismatch":
+        assert case.need_snapshot is not None
+        case = case.model_copy(
+            update={
+                "need_snapshot": case.need_snapshot.model_copy(
+                    update={"need_id": ValidatedNeedId("need-other")}
+                )
+            }
+        )
+    elif fault == "missing_snapshot":
+        case = case.model_copy(update={"need_snapshot": None})
+    else:
+        assert case.need_snapshot is not None
+        case = case.model_copy(
+            update={
+                "need_snapshot": case.need_snapshot.model_copy(
+                    update={"snapshot_hash": None}
+                )
+            }
+        )
+    sourcing.case_views[row.case_id] = case
+
+    result = await _driver(
+        _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
+        sourcing,
+        engine,
+        clock,
+    ).scan_once()
+
+    assert result.blocked_count == 1
+    assert engine.calls == []
+    assert sourcing.rows[0].state is AdmissionState.BLOCKED
+    assert sourcing.rows[0].blocked_reason is AdmissionBlockedReason.CASE_STATE_MISMATCH
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_state", "release_count", "pending_count"),
+    [
+        (TransientError("canonical-private"), AdmissionState.WAITING, 1, 0),
+        (RuntimeError("canonical-private"), AdmissionState.STARTING, 0, 1),
+    ],
+)
+async def test_canonical_case_read_failure_is_sanitized_and_conservative(
+    error: Exception,
+    expected_state: AdmissionState,
+    release_count: int,
+    pending_count: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    row = _admission(expected_state.value)
+    sourcing, engine, clock = _Sourcing([row]), _Engine(), _Clock()
+    sourcing.case_errors[row.case_id] = error
+    caplog.set_level(logging.INFO, logger="apps.scheduler_worker.sourcing_admission")
+
+    result = await _driver(
+        _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
+        sourcing,
+        engine,
+        clock,
+    ).scan_once()
+
+    assert sourcing.rows[0].state is expected_state
+    assert len(sourcing.release_calls) == release_count
+    assert result.pending_recovery_count == pending_count
+    assert engine.calls == []
+    assert "canonical-private" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_claimed_items_are_isolated_by_transient_permanent_and_unknown_start_result() -> None:
     rows = [_admission("transient"), _admission("permanent"), _admission("unknown")]
     sourcing = _Sourcing(rows)
@@ -439,7 +589,6 @@ async def test_claimed_items_are_isolated_by_transient_permanent_and_unknown_sta
         _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 3)),
         sourcing,
         engine,
-        _NeedReader({row.need_id: _snapshot(row.need_id) for row in rows}),
         clock,
     ).scan_once()
 
@@ -468,7 +617,6 @@ async def test_start_before_bind_failure_recovers_one_canonical_run_after_lease(
         _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
         sourcing,
         engine,
-        _NeedReader({row.need_id: _snapshot(row.need_id)}),
         clock,
     )
 
@@ -498,7 +646,6 @@ async def test_driver_logs_only_fixed_reason_and_counts(
         _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
         sourcing,
         engine,
-        _NeedReader({row.need_id: _snapshot(row.need_id)}),
         clock,
     ).scan_once()
 

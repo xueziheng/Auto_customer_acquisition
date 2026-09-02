@@ -303,6 +303,20 @@ class SourcingService(Protocol):
         """读取单条安全准入视图；不存在与异租户统一返回 ``None``。"""
         ...
 
+    async def get_admission_case_snapshot(
+        self,
+        tenant_id: TenantId,
+        case_id: SourcingCaseId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingCaseReadView | None:
+        """SYSTEM 准入完成前读取 canonical Case 的安全 frozen DTO。
+
+        仅复用 ``ADMISSION_COMPLETE`` 能力并强制 tenant-bound repository 查询；
+        不返回 claim、租约、Workflow context 或域内部聚合。
+        """
+        ...
+
     async def record_ladder_check(
         self,
         tenant_id: TenantId,

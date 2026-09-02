@@ -68,4 +68,47 @@ git diff --check：exit 0（持续出现仓库既有 AppleDouble pack index warn
 
 ## Commit
 
-- `feat: admit sourcing workflows by cluster priority`（hash 在提交后补录）。
+- 初始实现：`9dffa46` — `feat: admit sourcing workflows by cluster priority`
+- 第 1 轮审查修复：`fix: start sourcing from frozen case snapshot`（hash 在提交后回报）。
+
+## 第 1 轮审查修复：以 canonical Case frozen snapshot 启动
+
+审查探针确认初始 driver 在 claim 后重新读取可变 current ValidatedNeed，会让 frozen Case snapshot A
+启动成 Run context B；同时没有在 start 前重验 Case 的状态、workflow 版本与 Need 对齐。
+
+审查 RED：
+
+```text
+canonical Case driver + public service 定向：11 failed, 16 passed
+```
+
+失败精确覆盖 frozen A/current B 被替换、terminal/discovering、V1、Case Need mismatch、snapshot Need
+mismatch、缺 snapshot/hash 均错误 start，以及 known transient/unknown canonical read 未生效和 public
+读取能力缺失。
+
+最小修复：
+
+- `SourcingService` 增加 `get_admission_case_snapshot`，复用现有 `SourcingCaseReadView`，先按既有
+  `ADMISSION_COMPLETE + SYSTEM` 判权，再做 tenant-bound Case repository 查询；没有把通用
+  `CASE_READ` 授给 SYSTEM，没有新增 DTO、repository 旁路或 claim/secret 字段。
+- driver 完全移除 current `SourcingNeedReader` 依赖。每条 claim 在 start 前读取 canonical Case，严格
+  校验 Case/Admission ID 与 Need 对齐、exact V2、OPENED、frozen snapshot 与 64 位小写十六进制 hash；
+  `_safe_context` 只接收 Case frozen snapshot。
+- 永久 Case/Need/version/frozen mismatch 零 start 并固定 `case_state_mismatch` block；known transient
+  read 脱敏后 release waiting；unknown 保留 starting 等 lease。原 policy 三态、DB claim 顺序/batch、
+  scheduler lock/order 与稳定幂等键恢复均未改变。
+- 真实 PostgreSQL probe 在 durable enqueue 后把 current ValidatedNeed 改为 B，最终 Run context 仍为
+  frozen A 的 category/hash；同时继续覆盖 start-before-bind 失败后 lease 恢复只产生一个 canonical Run。
+
+审查 GREEN：
+
+```text
+新 driver/public service 定向：27 passed
+真实 PostgreSQL frozen A/current B + canonical recovery：1 passed in 4.93s
+Task 8 brief focused：114 passed in 6.15s
+Task 6-8 + scheduler/quote-expiry/service/repository/permissions：436 passed in 10.35s
+Ruff affected files：All checks passed
+mypy affected production boundaries：Success, 4 source files
+Python 3.12 boundaries：7 项全部通过
+git diff --check：exit 0（仓库既有 AppleDouble warning 仍在）
+```

@@ -1266,6 +1266,34 @@ def test_concrete_service_preserves_the_public_protocol_surface() -> None:
     assert isinstance(_service(_Factory()), SourcingService)
 
 
+@pytest.mark.asyncio
+async def test_admission_case_snapshot_read_is_system_only_and_tenant_bound() -> None:
+    """准入 driver 只能经 public service 读取本租户 frozen Case DTO。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    calls_after_open = factory.calls
+
+    view = await service.get_admission_case_snapshot(
+        TENANT, case_id, actor=SYSTEM
+    )
+
+    assert view is not None
+    assert view.case_id == case_id
+    assert view.need_snapshot == _open_command().need
+    assert factory.calls == calls_after_open + 1
+
+    other_system = SourcingActor(
+        "system-other", OTHER_TENANT, SourcingScope.SYSTEM, "system"
+    )
+    with pytest.raises(PermissionDenied, match="Phase 2 寻源授权拒绝"):
+        await service.get_admission_case_snapshot(
+            OTHER_TENANT, case_id, actor=other_system
+        )
+    assert factory.calls == calls_after_open + 1
+
+
 def _priority_facts(
     need_id: ValidatedNeedId,
     *,
