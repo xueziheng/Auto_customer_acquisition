@@ -506,7 +506,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
     demand_handlers = build_demand_discovery_handlers(
         task_reader=DirectiveDemandDiscoveryTaskReader(dependencies.directives),
         searcher=_ControlledDemandSearcher(),
-        page_reader=_ControlledDemandPageReader(raw_store),
+        page_reader=_ControlledDemandPageReader(raw_store, observed_at=clock.now()),
         capability=DemandIntelligenceAgent(
             "controlled-discovery-model-v1",
             _ControlledDemandModel(),

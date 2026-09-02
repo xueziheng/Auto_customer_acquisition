@@ -300,8 +300,9 @@ class _ControlledDemandSearcher:
 
 
 class _ControlledDemandPageReader:
-    def __init__(self, store: object) -> None:
+    def __init__(self, store: object, *, observed_at: datetime = NOW) -> None:
         self._store = store
+        self._observed_at = observed_at
         self.calls = 0
 
     async def read_page(self, tenant_id, run_id, batch, result_index):
@@ -316,7 +317,7 @@ class _ControlledDemandPageReader:
         return PageSnapshot(
             PAGE_TEXT,
             "https://example.test/news",
-            NOW,
+            self._observed_at,
             meta.content_hash,
             meta.artifact_id,
         )
