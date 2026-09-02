@@ -80,6 +80,11 @@ sourcing_admission:
   `policy_status_unknown`。三个状态都必须零 Workflow start。
 - 指令的既有确认、权限、版本、回滚和 `DirectiveActivated` 语义不变；历史 Directive 缺少该段按
   “未配置”解释，不回填。
+- Sourcing admission 提案不是一份局部覆盖补丁：提交时必须复制当前 active Directive 的完整 content，
+  只替换 `sourcing_admission` 段，并在提案记录 `base_directive_version`（无 active 时为 0）。确认时若当前
+  active version 已不等于 base version，提案视为陈旧并拒绝；用户必须基于最新配置重新提交。这样不会
+  因确认寻源准入而清空市场、探索、触达、handoff 或预算配置。
+- 历史提案的 `base_directive_version = NULL` 保持旧确认语义；新 admission 提案必须是非负整数且不可缺失。
 - `SourcingSettings` 仍只控制 V2 外部研究能力是否装配，不能授权自动准入或提供 batch limit。
 
 ## 六、领域模型与持久化
@@ -119,8 +124,8 @@ waiting ──claim──> starting ──canonical Run bound──> admitted
 - `waiting` 才参与排序。
 - `starting` 必须有 claim token 和 UTC lease；`admitted` 必须有 `workflow_run_id`、`admitted_at`、
   `admitted_by`。
-- `blocked` 只接受固定原因，不保存底层异常文本。可修复原因包括 `priority_facts_unavailable`、
-  `priority_facts_invalid`、`case_state_mismatch`；策略未配置/关闭/未知是 driver 周期级停止原因，
+- `blocked` 只接受固定原因，不保存底层异常文本。可修复原因只包括 `priority_facts_invalid`、
+  `case_state_mismatch`；暂时不可读保持 waiting，策略未配置/关闭/未知是 driver 周期级停止原因，
   不批量改写每条 admission。
 - admission 的 `(tenant_id, case_id)` 与 `(tenant_id, need_id)` 均唯一；所有外键带 tenant。
 - Case 仍使用既有业务状态机。admission 状态是“是否获准启动自动流程”，不新增或偷换 CaseState。
@@ -154,7 +159,8 @@ v1 的成员数是该簇累计的已验证 Need 数，不减去已交接或已�
 
 ### 6.3 迁移
 
-新增两张表和所需复合唯一约束、CHECK、tenant-bound FK 及索引。队列索引服务于
+给 `directive_proposals` 增加 nullable `base_directive_version`，历史行保持 NULL；新增 admission 提案必须
+写入非负版本。另新增两张表和所需复合唯一约束、CHECK、tenant-bound FK 及索引。队列索引服务于
 `tenant_id + state + claim_expires_at`；排序不依赖跨域 SQL join，而由应用层读取需求域安全事实后写入
 snapshot，再在 sourcing repository 内排序。
 
@@ -175,8 +181,9 @@ cluster_member_count
 facts_observed_at
 ```
 
-需求域负责核验 Need 存在、属于 tenant、已达到寻源门槛、cluster 成员链完整。它不生成排序键，也不
-导入 sourcing。
+需求域负责核验 Need 存在、属于 tenant、确实是 `Validated Need`、cluster 成员链完整。它不要求用于
+触发刷新的新增成员本身已达到寻源门槛：低完整度但已验证的成员同样会改变簇的累计需求集中度。
+准入入口另行核验目标 Case 的 frozen Need 已达到完整度 3。需求域不生成排序键，也不导入 sourcing。
 
 需求每次首次归入新簇或既有簇时发布 `NeedClusterMembershipChanged`，包含 tenant、cluster、发生变化的
 need、变更后的成员数和发生时间。既有 `NeedClusterFormed` 仍只表达“首次形成多成员簇”，不改变语义。
@@ -253,6 +260,7 @@ API 对每项返回中文解释，例如“该需求簇当前有 8 条已验证�
 - 已存在但没有 Run 的 OPENED Case 不自动猜测 ready time；由一次显式管理员迁移/修复命令按可核实的
   Case `opened_at` 建 admission，并输出逐条结果。普通 migration 不执行业务回填。
 - 旧 Directive 和旧 Sourcing 配置继续可读；缺 admission 段表示没有自动准入授权。
+- admission 提案确认前若其他 Directive 已生效，必须以陈旧提案拒绝，不能覆盖较新的完整配置。
 - 新 trigger 行为和 driver 随新 composition 同时发布，禁止只发布“停止直接启动”而未装配 driver/API 的
   半成品。
 - 为 `NeedClusterMembershipChanged`、Directive 新配置段、旧 trigger 从“直接启动”改为“持久入队”及
@@ -271,6 +279,7 @@ API 对每项返回中文解释，例如“该需求簇当前有 8 条已验证�
 4. 数量不同单位或单位缺失完全不影响 v1 排序，也不被相加比较。
 5. 未配置、关闭、指令读取失败分别返回三种停止原因，Workflow start 调用为零。
 6. 老板确认新 Directive 后按精确 batch limit 启动；回滚产生新版本并在下一周期生效。
+   admission 提案还必须保留原 active content，且 base version 陈旧时确认失败、零配置覆盖。
 7. 两个并发 claim 最多一个成功；scheduler 重启、lease 过期、start 后绑定前崩溃都只产生一个 canonical
    Case 和一个 canonical Run。
 8. transient、permanent、unknown 结果遵守各自恢复语义；日志、事件、API 不出现 DSN、token、claim token
