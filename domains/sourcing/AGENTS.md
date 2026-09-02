@@ -114,6 +114,9 @@ waiting ──claim──> starting ──canonical Run bound──> admitted
 
 - ``admitted`` 是不可改写终态；``starting`` 必须同时有 claim token 和 UTC lease；
   ``blocked`` 只能使用固定原因 ``priority_facts_invalid`` 或 ``case_state_mismatch``。
+- 首次人工 claim 必须原子保存内部 ``admission_requested_by`` 与 ``manual_request_id``；两者跨
+  租约释放保留且不可换 actor/key。scheduler 恢复可轮换短租约 ``claim_token``，但不能改写该
+  人工恢复身份。0056 前 actor-only 历史行不得猜造 key，人工恢复失败关闭、scheduler 仍可收敛。
 - ``SourcingPrioritySnapshot`` 只增不改。v1 唯一允许的排序键是
   ``cluster_member_count DESC → ready_at ASC → need_id ASC``；未归簇的 count 固定为 1。
   禁止加入权重、置信度、数量、国家、利润或 aging threshold。
@@ -122,8 +125,9 @@ waiting ──claim──> starting ──canonical Run bound──> admitted
 - Demand 永久非法簇事实必须复用精确 cluster refresh target 查询：同事务把 waiting 以固定
   ``priority_facts_invalid`` 阻断；既有同原因 blocked 幂等，``case_state_mismatch``、starting、
   admitted 与其他 tenant 均保持不变，不得保存异常文本。
-- admission 的 public read view 不得暴露 claim token、lease、Workflow context、底层异常或完整
-  Need snapshot。内部排序解释只能使用确定性中文模板，禁止由模型生成。
+- admission 的 public read view 不得暴露 claim token、lease、manual request id、内部人工 actor
+  carrier、Workflow context、底层异常或完整 Need snapshot。内部排序解释只能使用确定性中文模板，
+  禁止由模型生成。
 - 本域只维护准入自身不变量，不读取 Directive、Demand 或 Workflow；这些跨域编排留给
   scheduler/application，且它们只能经各域的 public service/schema 合同协作。
 

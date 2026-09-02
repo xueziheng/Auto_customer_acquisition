@@ -307,17 +307,17 @@ async def _seed_need_and_case(
     )
 
 
-async def test_0054_admission_schema_is_tenant_bound_and_matches_head_orm(
+async def test_0056_admission_schema_is_tenant_bound_and_matches_head_orm(
     db_url: str,
 ) -> None:
-    """0053+0054 的准入、快照、actor、复合 FK 与索引匹配 head ORM。"""
+    """0053..0056 的准入、快照、人工恢复身份与 head ORM 同构。"""
     from infra.db.tables import SourcingAdmissionRow, SourcingPrioritySnapshotRow
 
     engine: AsyncEngine | None = None
     try:
         _run_alembic(db_url, "downgrade", "0052")
         assert not (await _current_tables(db_url)) & ADMISSION_TABLES
-        _run_alembic(db_url, "upgrade", "0054")
+        _run_alembic(db_url, "upgrade", "0056")
         engine = create_engine_from(db_url)
 
         def inspect_admission_contract(connection: Connection) -> dict[str, object]:
@@ -475,7 +475,7 @@ async def test_0054_admission_schema_is_tenant_bound_and_matches_head_orm(
                 )
             )
 
-        assert revision == "0054"
+        assert revision == "0056"
         assert ADMISSION_TABLES <= contract["tables"]
         assert contract["admission_columns"] == set(
             SourcingAdmissionRow.__table__.columns.keys()
@@ -706,6 +706,232 @@ async def test_0054_persists_manual_admission_actor_and_refuses_lossy_downgrade(
                     ),
                     {"tenant": TENANT_A},
                 )
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0056_persists_immutable_manual_request_and_preserves_legacy_rows(
+    db_url: str,
+) -> None:
+    """新人工 request 跨租约不可改；0055 actor-only 历史行保持失败关闭。"""
+
+    tenant = "tn_migration_0056"
+    created_at = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    ready_at = created_at - timedelta(days=1)
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0055")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            for suffix in ("legacy", "fresh"):
+                await _seed_need_and_case(
+                    connection,
+                    tenant_id=tenant,
+                    need_id=f"need-0056-{suffix}",
+                    case_id=f"case-0056-{suffix}",
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO sourcing_admissions "
+                        "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                        "current_snapshot_id,admission_requested_by,created_at,updated_at) "
+                        "VALUES (:tenant,:admission,:case,:need,'waiting',:ready,"
+                        ":snapshot,:actor,:created,:created)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "admission": f"adm-0056-{suffix}",
+                        "case": f"case-0056-{suffix}",
+                        "need": f"need-0056-{suffix}",
+                        "snapshot": f"sps-0056-{suffix}",
+                        "actor": "employee-legacy" if suffix == "legacy" else None,
+                        "ready": ready_at,
+                        "created": created_at,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO sourcing_priority_snapshots "
+                        "(tenant_id,snapshot_id,admission_id,case_id,need_id,"
+                        "cluster_member_count,ready_at,ranking_version,facts_observed_at,"
+                        "facts_hash,created_at) VALUES "
+                        "(:tenant,:snapshot,:admission,:case,:need,1,:ready,"
+                        "'need-cluster-admission-v1',:created,:hash,:created)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "snapshot": f"sps-0056-{suffix}",
+                        "admission": f"adm-0056-{suffix}",
+                        "case": f"case-0056-{suffix}",
+                        "need": f"need-0056-{suffix}",
+                        "ready": ready_at,
+                        "created": created_at,
+                        "hash": ("6" if suffix == "legacy" else "7") * 64,
+                    },
+                )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0056")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            columns = await connection.run_sync(
+                lambda sync: {
+                    str(column["name"])
+                    for column in inspect(sync).get_columns("sourcing_admissions")
+                }
+            )
+            trigger_count = await connection.scalar(
+                text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgrelid='sourcing_admissions'::regclass "
+                    "AND tgname='trg_sourcing_admissions_manual_request' "
+                    "AND NOT tgisinternal"
+                )
+            )
+            legacy_request = await connection.scalar(
+                text(
+                    "SELECT manual_request_id FROM sourcing_admissions "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-legacy'"
+                ),
+                {"tenant": tenant},
+            )
+        assert "manual_request_id" in columns
+        assert trigger_count == 1
+        assert legacy_request is None
+
+        async with engine.begin() as connection:
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET admission_requested_by='employee-boss' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'",
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET "
+                    "admission_requested_by='employee-boss',"
+                    "manual_request_id='manual-original' "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'"
+                ),
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET state='starting',"
+                    "claim_token='manual-original',"
+                    "claim_expires_at=:lease,updated_at=:now "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'"
+                ),
+                {
+                    "tenant": tenant,
+                    "lease": created_at + timedelta(minutes=5),
+                    "now": created_at + timedelta(minutes=1),
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET manual_request_id='manual-new' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'",
+                {"tenant": tenant},
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET admission_requested_by='employee-other' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'",
+                {"tenant": tenant},
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET manual_request_id='guessed-key' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-0056-legacy'",
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET state='waiting',claim_token=NULL,"
+                    "claim_expires_at=NULL,updated_at=:now "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'"
+                ),
+                {"tenant": tenant, "now": created_at + timedelta(minutes=5)},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET state='starting',"
+                    "claim_token='scheduler-rotated',claim_expires_at=:lease,"
+                    "updated_at=:now WHERE tenant_id=:tenant "
+                    "AND admission_id='adm-0056-fresh'"
+                ),
+                {
+                    "tenant": tenant,
+                    "lease": created_at + timedelta(minutes=11),
+                    "now": created_at + timedelta(minutes=6),
+                },
+            )
+            identity = (
+                await connection.execute(
+                    text(
+                        "SELECT claim_token,admission_requested_by,manual_request_id "
+                        "FROM sourcing_admissions WHERE tenant_id=:tenant "
+                        "AND admission_id='adm-0056-fresh'"
+                    ),
+                    {"tenant": tenant},
+                )
+            ).one()
+        assert identity == (
+            "scheduler-rotated",
+            "employee-boss",
+            "manual-original",
+        )
+
+        downgrade = _alembic_result(db_url, "downgrade", "0055")
+        assert downgrade.returncode != 0
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET state='blocked',claim_token=NULL,"
+                    "claim_expires_at=NULL,blocked_reason='case_state_mismatch',"
+                    "admission_requested_by=NULL,manual_request_id=NULL,updated_at=:now "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-fresh'"
+                ),
+                {"tenant": tenant, "now": created_at + timedelta(minutes=7)},
+            )
+        await engine.dispose()
+        engine = None
+        _run_alembic(db_url, "downgrade", "0055")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            downgraded_columns = await connection.run_sync(
+                lambda sync: {
+                    str(column["name"])
+                    for column in inspect(sync).get_columns("sourcing_admissions")
+                }
+            )
+            legacy_actor = await connection.scalar(
+                text(
+                    "SELECT admission_requested_by FROM sourcing_admissions "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0056-legacy'"
+                ),
+                {"tenant": tenant},
+            )
+        assert "manual_request_id" not in downgraded_columns
+        assert legacy_actor == "employee-legacy"
+    finally:
+        if engine is not None:
+            async with engine.begin() as connection:
+                await connection.execute(text("SET LOCAL session_replication_role = replica"))
+                for table in (
+                    "workflow_steps",
+                    "workflow_runs",
+                    "sourcing_priority_snapshots",
+                    "sourcing_admissions",
+                    "sourcing_cases",
+                    "validated_needs",
+                ):
+                    await connection.execute(
+                        text(f"DELETE FROM {table} WHERE tenant_id=:tenant"),
+                        {"tenant": tenant},
+                    )
             await engine.dispose()
         _run_alembic(db_url, "upgrade", "head")
 

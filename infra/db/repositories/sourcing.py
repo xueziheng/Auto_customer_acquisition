@@ -502,6 +502,7 @@ def _admission_values(value: SourcingAdmission) -> dict[str, object]:
         "admitted_at": value.admitted_at,
         "admitted_by": value.admitted_by,
         "admission_requested_by": value.admission_requested_by,
+        "manual_request_id": value.manual_request_id,
         "created_at": value.created_at,
         "updated_at": value.updated_at,
     }
@@ -535,6 +536,7 @@ def _row_to_admission(row: SourcingAdmissionRow) -> SourcingAdmission:
         created_at=row.created_at,
         updated_at=row.updated_at,
         admission_requested_by=row.admission_requested_by,
+        manual_request_id=row.manual_request_id,
     )
 
 
@@ -999,6 +1001,16 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             and admission.admission_requested_by != requested_by
         ):
             return admission
+        if (
+            admission.manual_request_id is not None
+            and admission.manual_request_id != claim_token
+        ):
+            return admission
+        if (
+            admission.admission_requested_by is not None
+            and admission.manual_request_id is None
+        ):
+            return admission
 
         changed = (
             await self._session.execute(
@@ -1016,6 +1028,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     admission_requested_by=(
                         admission.admission_requested_by or requested_by
                     ),
+                    manual_request_id=admission.manual_request_id or claim_token,
                     updated_at=now,
                 )
                 .returning(SourcingAdmissionRow)
@@ -1059,6 +1072,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                         system_actor_id,
                     ),
                     admission_requested_by=None,
+                    manual_request_id=None,
                     admitted_at=admitted_at,
                     updated_at=admitted_at,
                 )
@@ -1185,6 +1199,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     claim_expires_at=None,
                     blocked_reason=reason.value,
                     admission_requested_by=None,
+                    manual_request_id=None,
                     updated_at=blocked_at,
                 )
                 .returning(SourcingAdmissionRow)

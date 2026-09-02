@@ -246,7 +246,7 @@ class SourcingService(Protocol):
         claim_expires_at: datetime,
         actor: SourcingActor,
     ) -> SourcingAdmission | None:
-        """boss/sourcing 以原始 request id 精确 claim；同请求可恢复同一启动。"""
+        """boss/sourcing 以原始 request id 精确 claim；跨租约仍只恢复首次请求。"""
         ...
 
     async def complete_admission(

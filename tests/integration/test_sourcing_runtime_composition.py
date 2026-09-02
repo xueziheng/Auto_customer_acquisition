@@ -1147,6 +1147,7 @@ async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
         "system:sourcing-admission", tenant, SourcingScope.SYSTEM, "system"
     )
     human = SourcingActor(employee_id, tenant, SourcingScope.TENANT, role)
+    manual_request_id = f"manual-recovery-{role}"
 
     class NoopStep:
         async def execute(self, run: object) -> tuple[str, None, dict[str, object]]:
@@ -1206,7 +1207,7 @@ async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
             await application.admit_one(
                 tenant,
                 admission_id,
-                request_id=f"manual-recovery-{role}",
+                request_id=manual_request_id,
                 actor=human,
             )
         async with sessions() as session:
@@ -1223,6 +1224,7 @@ async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
             )
         assert before is not None and before.state == "starting"
         assert before.admission_requested_by == employee_id
+        assert before.manual_request_id == manual_request_id
         assert run_count_before == 1
 
         recovered_at = NOW + timedelta(minutes=5)
@@ -1268,6 +1270,7 @@ async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
         assert stored is not None and stored.state == "admitted"
         assert stored.admitted_by == employee_id
         assert stored.admission_requested_by is None
+        assert stored.manual_request_id is None
         assert run_count_after == 1
     finally:
         async with integration_engine.begin() as connection:

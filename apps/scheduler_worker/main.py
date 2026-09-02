@@ -269,6 +269,7 @@ async def _run_cycle(
                 tenant_id=runtime.tenant_id,
                 cycle=cycle,
             )
+        await confirm_lock()
 
     workflow_succeeded = False
     try:
@@ -285,6 +286,9 @@ async def _run_cycle(
         )
 
     if workflow_succeeded and workflow_count > 0:
+        if runtime.sourcing_admission_driver is not None:
+            assert confirm_lock is not None
+            await confirm_lock()
         try:
             post_count = await runtime.outbox.drain()
         except Exception as error:  # noqa: BLE001 - phase 必须隔离并统一脱敏

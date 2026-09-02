@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 import traceback
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -894,12 +895,23 @@ class _Admissions(_MemoryRepo):
             and admission.admission_requested_by != requested_by
         ):
             return copy.deepcopy(admission)
+        if (
+            admission.manual_request_id is not None
+            and admission.manual_request_id != claim_token
+        ):
+            return copy.deepcopy(admission)
+        if (
+            admission.admission_requested_by is not None
+            and admission.manual_request_id is None
+        ):
+            return copy.deepcopy(admission)
         if admission.state is AdmissionState.WAITING:
             admission = replace(
                 admission,
                 admission_requested_by=(
                     admission.admission_requested_by or requested_by
                 ),
+                manual_request_id=admission.manual_request_id or claim_token,
             )
             admission = admission.claim(
                 claim_token,
@@ -1288,13 +1300,14 @@ def _service(
     factory: _Factory,
     evidence_reader: CandidateEvidenceSnapshotReader | None = None,
     provider_usage_reader: ProviderUsageEvidenceReader | None = None,
+    now: Callable[[], datetime] = lambda: NOW,
 ) -> Any:
     return _service_type()(
         factory,
         Phase2SourcingAuthorizer(TENANT),
         evidence_reader or _EvidenceReader(),
         provider_usage_evidence_reader=provider_usage_reader,
-        now=lambda: NOW,
+        now=now,
     )
 
 
@@ -1569,6 +1582,7 @@ async def test_manual_claim_targets_exact_admission_and_replays_same_request() -
     assert claimed.state is AdmissionState.STARTING
     assert claimed.claim_token == "manual-request-1"
     assert claimed.admission_requested_by == BOSS.actor_id
+    assert claimed.manual_request_id == "manual-request-1"
     assert (
         factory.state["admissions"][(TENANT, first_id)].state is AdmissionState.WAITING
     )
@@ -1637,6 +1651,64 @@ async def test_manual_same_request_cannot_be_replayed_by_different_actor() -> No
         )
 
     assert factory.state["admissions"] == before
+
+
+@pytest.mark.asyncio
+async def test_manual_request_identity_is_enforced_after_lease_expiry() -> None:
+    """租约不是人工命令身份；释放后仍只接受原 actor 与原 request id。"""
+
+    factory = _Factory()
+    clock = [NOW]
+    service = _service(factory, now=lambda: clock[0])
+    case_id = await _opened(service)
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+    original = SourcingAdmissionManualStartCommand(request_id="manual-original")
+    await service.claim_manual_admission(
+        TENANT,
+        admission_id,
+        original,
+        claim_expires_at=NOW + timedelta(minutes=1),
+        actor=BOSS,
+    )
+    await service.release_expired_admission_claims(
+        TENANT,
+        now=NOW + timedelta(minutes=1),
+        actor=SYSTEM,
+    )
+    clock[0] = NOW + timedelta(minutes=1)
+    before = copy.deepcopy(factory.state["admissions"])
+
+    with pytest.raises(InvalidStateTransition):
+        await service.claim_manual_admission(
+            TENANT,
+            admission_id,
+            SourcingAdmissionManualStartCommand(request_id="manual-new"),
+            claim_expires_at=NOW + timedelta(minutes=6),
+            actor=BOSS,
+        )
+    with pytest.raises(InvalidStateTransition):
+        await service.claim_manual_admission(
+            TENANT,
+            admission_id,
+            original,
+            claim_expires_at=NOW + timedelta(minutes=6),
+            actor=SOURCING,
+        )
+    assert factory.state["admissions"] == before
+
+    resumed = await service.claim_manual_admission(
+        TENANT,
+        admission_id,
+        original,
+        claim_expires_at=NOW + timedelta(minutes=6),
+        actor=BOSS,
+    )
+
+    assert resumed is not None
+    assert resumed.state is AdmissionState.STARTING
+    assert resumed.claim_token == "manual-original"
+    assert resumed.manual_request_id == "manual-original"
+    assert resumed.admission_requested_by == BOSS.actor_id
 
 
 @pytest.mark.asyncio

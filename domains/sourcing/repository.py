@@ -173,7 +173,7 @@ class SourcingAdmissionRepository(Protocol):
         *,
         requested_by: str,
     ) -> SourcingAdmission | None:
-        """以可信人工 actor 精确 claim；既有 actor 不得被另一员工覆盖。"""
+        """以可信人工 actor/request 精确 claim；首次恢复身份持久且不可替换。"""
         ...
 
     async def complete(

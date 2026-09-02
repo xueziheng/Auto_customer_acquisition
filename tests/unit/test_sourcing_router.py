@@ -534,6 +534,9 @@ def test_manual_admit_rejects_missing_duplicate_or_invalid_raw_key_before_io() -
     assert "admission_requested_by" not in openapi["components"]["schemas"][
         "SourcingAdmissionReadView"
     ]["properties"]
+    assert "manual_request_id" not in openapi["components"]["schemas"][
+        "SourcingAdmissionReadView"
+    ]["properties"]
 
 
 def test_manual_case_mismatch_is_fixed_sanitized_409() -> None:

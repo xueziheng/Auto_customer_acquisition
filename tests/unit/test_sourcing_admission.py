@@ -88,6 +88,7 @@ def _admission(
     admitted_at: datetime | None = None,
     admitted_by: str | None = None,
     admission_requested_by: str | None = None,
+    manual_request_id: str | None = None,
     created_at: datetime = NOW,
     updated_at: datetime = NOW,
 ) -> SourcingAdmission:
@@ -108,6 +109,7 @@ def _admission(
         created_at=created_at,
         updated_at=updated_at,
         admission_requested_by=admission_requested_by,
+        manual_request_id=manual_request_id,
     )
 
 
@@ -224,8 +226,9 @@ def test_priority_snapshot_never_contains_quantity_or_other_aggregated_trade_fie
     assert "provenance" not in names
 
 
-def test_public_admission_view_never_exposes_durable_manual_actor_carrier() -> None:
+def test_public_admission_view_never_exposes_durable_manual_recovery_carriers() -> None:
     assert "admission_requested_by" not in SourcingAdmissionReadView.model_fields
+    assert "manual_request_id" not in SourcingAdmissionReadView.model_fields
 
 
 @pytest.mark.parametrize(
@@ -337,10 +340,13 @@ def test_claim_then_expired_lease_returns_admission_to_waiting() -> None:
     assert claimed.release_expired_claim(now=NOW + timedelta(minutes=5)).state is AdmissionState.WAITING
 
 
-def test_manual_request_actor_survives_release_and_drives_completion_audit() -> None:
-    """删除/清空 durable actor 会让 scheduler 恢复后把人工准入记成 system。"""
+def test_manual_request_identity_survives_release_and_drives_completion_audit() -> None:
+    """短租约释放不能丢掉首个人工 actor/request 审计关联。"""
 
-    claimed = _admission(admission_requested_by="employee-boss").claim(
+    claimed = _admission(
+        admission_requested_by="employee-boss",
+        manual_request_id="manual-request-1",
+    ).claim(
         "manual-request-1",
         claim_expires_at=NOW + timedelta(minutes=5),
         claimed_at=NOW,
@@ -359,13 +365,19 @@ def test_manual_request_actor_survives_release_and_drives_completion_audit() -> 
     )
 
     assert waiting.admission_requested_by == "employee-boss"
+    assert waiting.manual_request_id == "manual-request-1"
     assert reclaimed.admission_requested_by == "employee-boss"
+    assert reclaimed.manual_request_id == "manual-request-1"
     assert completed.admitted_by == "employee-boss"
     assert completed.admission_requested_by is None
+    assert completed.manual_request_id is None
 
 
 def test_block_clears_manual_request_actor_and_terminal_states_reject_it() -> None:
-    claimed = _admission(admission_requested_by="employee-sourcing").claim(
+    claimed = _admission(
+        admission_requested_by="employee-sourcing",
+        manual_request_id="manual-request-2",
+    ).claim(
         "manual-request-2",
         claim_expires_at=NOW + timedelta(minutes=5),
         claimed_at=NOW,
@@ -378,12 +390,24 @@ def test_block_clears_manual_request_actor_and_terminal_states_reject_it() -> No
     )
 
     assert blocked.admission_requested_by is None
+    assert blocked.manual_request_id is None
     with pytest.raises(ValidationError, match="状态与字段组合"):
         _admission(
             state=AdmissionState.BLOCKED,
             blocked_reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
             admission_requested_by="employee-sourcing",
+            manual_request_id="manual-request-2",
         )
+
+
+def test_manual_request_id_requires_actor_but_legacy_actor_only_is_fail_closed() -> None:
+    """新 request 不能脱离 actor；0056 前 actor-only 行仍须可安全读取。"""
+
+    with pytest.raises(ValidationError, match="状态与字段组合"):
+        _admission(manual_request_id="manual-without-actor")
+
+    legacy = _admission(admission_requested_by="employee-legacy")
+    assert legacy.manual_request_id is None
 
 
 def test_starting_block_requires_matching_claim_token_and_waiting_does_not() -> None:

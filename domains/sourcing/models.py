@@ -1027,8 +1027,11 @@ class SourcingAdmission:
     启动。所有状态事实被冻结在返回的新对象中，调用方必须经 Repository 持久化。
     ``waiting`` 必须指向排序快照；无快照的 ``blocked`` 仅表示排序事实永久无效，
     因此 ``case_state_mismatch`` 必须保留它所核对的既有快照。
-    ``admission_requested_by`` 仅保存已鉴权人工 claim 的内部审计意图：租约释放与
-    重领必须保留它；进入 ``admitted`` 时复制到 ``admitted_by``，进入任一终态后清除。
+    ``admission_requested_by`` 与 ``manual_request_id`` 仅保存已鉴权人工 claim 的
+    内部恢复身份：租约释放与 scheduler 重领必须保留它们；短租约 ``claim_token``
+    可以轮换，但人工恢复必须同时匹配首次 actor/request。0056 前 actor-only 历史行
+    可读取并由 scheduler 收敛，但人工路径失败关闭。进入 ``admitted`` 时把 actor
+    复制到 ``admitted_by``，进入任一终态后清除内部恢复身份。
     """
 
     tenant_id: TenantId
@@ -1047,6 +1050,7 @@ class SourcingAdmission:
     created_at: datetime
     updated_at: datetime
     admission_requested_by: str | None = None
+    manual_request_id: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("tenant_id", "admission_id", "case_id", "need_id"):
@@ -1077,10 +1081,14 @@ class SourcingAdmission:
             _require_nonempty_identifier(
                 self.admission_requested_by, "admission_requested_by"
             )
+        if self.manual_request_id is not None:
+            _require_nonempty_identifier(self.manual_request_id, "manual_request_id")
         if self.admitted_at is not None:
             _require_utc_time(self.admitted_at, "admitted_at")
         if self.workflow_run_id is not None:
             _require_nonempty_identifier(self.workflow_run_id, "workflow_run_id")
+        if self.manual_request_id is not None and self.admission_requested_by is None:
+            raise ValidationError("准入状态与字段组合不一致")
 
         if self.state is AdmissionState.WAITING:
             valid = (
@@ -1108,6 +1116,7 @@ class SourcingAdmission:
                 and self.admitted_at == self.updated_at
                 and self.blocked_reason is None
                 and self.admission_requested_by is None
+                and self.manual_request_id is None
             )
         else:
             valid = (
@@ -1120,6 +1129,7 @@ class SourcingAdmission:
                     is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
                 )
                 and self.admission_requested_by is None
+                and self.manual_request_id is None
             )
         if not valid:
             raise ValidationError("准入状态与字段组合不一致")
@@ -1189,6 +1199,7 @@ class SourcingAdmission:
             admitted_by=self.admission_requested_by or system_actor_id,
             admitted_at=admitted_at,
             admission_requested_by=None,
+            manual_request_id=None,
         )
 
     def block(
@@ -1213,6 +1224,7 @@ class SourcingAdmission:
             claim_expires_at=None,
             blocked_reason=reason,
             admission_requested_by=None,
+            manual_request_id=None,
         )
 
     def retry(self, *, retried_at: datetime) -> SourcingAdmission:

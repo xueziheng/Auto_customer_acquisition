@@ -562,12 +562,37 @@ async def test_manual_request_actor_survives_release_reclaim_and_drives_complete
         )
     assert manual is not None
     assert manual.admission_requested_by == "employee-boss"
+    assert manual.manual_request_id == "manual-request-durable"
 
     async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
         released = await uow.admissions.release_expired_claims(
             tenant, NOW + timedelta(minutes=3)
         )
     assert released[0].admission_requested_by == "employee-boss"
+    assert released[0].manual_request_id == "manual-request-durable"
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        wrong_key = await uow.admissions.claim_one(
+            tenant,
+            admission.admission_id,
+            "manual-request-new",
+            NOW + timedelta(minutes=8),
+            NOW + timedelta(minutes=3),
+            requested_by="employee-boss",
+        )
+        wrong_actor = await uow.admissions.claim_one(
+            tenant,
+            admission.admission_id,
+            "manual-request-durable",
+            NOW + timedelta(minutes=8),
+            NOW + timedelta(minutes=3),
+            requested_by="employee-other",
+        )
+
+    assert wrong_key is not None and wrong_key.state is AdmissionState.WAITING
+    assert wrong_actor is not None and wrong_actor.state is AdmissionState.WAITING
+    assert wrong_key.manual_request_id == "manual-request-durable"
+    assert wrong_actor.admission_requested_by == "employee-boss"
 
     async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
         reclaimed = await uow.admissions.claim_ordered(
@@ -587,9 +612,12 @@ async def test_manual_request_actor_survives_release_reclaim_and_drives_complete
         )
 
     assert reclaimed[0].admission_requested_by == "employee-boss"
+    assert reclaimed[0].manual_request_id == "manual-request-durable"
+    assert reclaimed[0].claim_token == "scheduler-recovery"
     assert completed is not None
     assert completed.admitted_by == "employee-boss"
     assert completed.admission_requested_by is None
+    assert completed.manual_request_id is None
 
 
 async def test_manual_claim_does_not_overwrite_other_tenant_or_existing_actor(

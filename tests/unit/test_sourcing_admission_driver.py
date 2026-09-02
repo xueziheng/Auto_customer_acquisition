@@ -193,6 +193,7 @@ def _admission(suffix: str, *, requested_by: str | None = None) -> SourcingAdmis
         created_at=NOW,
         updated_at=NOW,
         admission_requested_by=requested_by,
+        manual_request_id=(f"manual-{suffix}" if requested_by is not None else None),
     )
 
 
@@ -660,6 +661,7 @@ async def test_manual_actor_survives_unknown_bind_and_scheduler_lease_recovery(
     first = await driver.scan_once()
     assert first.pending_recovery_count == 1
     assert sourcing.rows[0].admission_requested_by == requested_by
+    assert sourcing.rows[0].manual_request_id == "manual-manual-crash"
 
     clock.value = NOW + LEASE
     second = await driver.scan_once()
@@ -668,6 +670,7 @@ async def test_manual_actor_survives_unknown_bind_and_scheduler_lease_recovery(
     assert len(engine.runs) == 1
     assert sourcing.rows[0].admitted_by == requested_by
     assert sourcing.rows[0].admission_requested_by is None
+    assert sourcing.rows[0].manual_request_id is None
 
 
 @pytest.mark.asyncio
@@ -686,12 +689,14 @@ async def test_manual_actor_survives_known_transient_release_then_scheduler_retr
     first = await driver.scan_once()
     assert first.returned_to_waiting_count == 1
     assert sourcing.rows[0].admission_requested_by == "employee-boss"
+    assert sourcing.rows[0].manual_request_id == "manual-manual-release"
 
     second = await driver.scan_once()
 
     assert second.admitted_count == 1
     assert sourcing.rows[0].admitted_by == "employee-boss"
     assert sourcing.rows[0].admission_requested_by is None
+    assert sourcing.rows[0].manual_request_id is None
 
 
 @pytest.mark.asyncio

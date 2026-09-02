@@ -32,8 +32,10 @@ Admission；事件自带 member count 不是排序权威。starting/admitted 的
 Provenance 永远不按簇合并。`NeedClusterFormed` 保持第二成员首次形成多成员簇的既有语义，本路径不消费。
 
 runtime 重启、readiness 重放、自动准入和人工准入必须收敛到同一 Case/Run；租约、数据库 admission
-guard、V2 subject 唯一索引和原始人工 `Idempotency-Key` 不能被绕过。结果不确定时先读取 Admission/Run，
-再用原键恢复。历史 V1、0055 前已有 V2 Run 及旧提案继续按原版本解释，不得自动回填或重排；显式历史
+guard、V2 subject 唯一索引和原始人工 `Idempotency-Key` 不能被绕过。首次人工 actor/key 必须持久且与
+可轮换的 scheduler claim token 分离；结果不确定时先读取 Admission/Run，再由同 actor 用原键恢复。
+0056 前 actor-only 历史行不得猜造 key，人工恢复失败关闭但 scheduler 可继续 canonical 收敛。历史 V1、
+0055 前已有 V2 Run 及旧提案继续按原版本解释，不得自动回填或重排；显式历史
 回填只补 Admission/immutable snapshot，仍不启动 Workflow。
 
 `DirectiveActivated`、`SourcingCaseOpened` 与 `OpportunityQualified` 当前采用具名、tenant-bound lifecycle

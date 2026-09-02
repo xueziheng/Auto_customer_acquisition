@@ -144,6 +144,7 @@ def _claimed(actor: SourcingActor = USER) -> SourcingAdmission:
         created_at=NOW - timedelta(days=1),
         updated_at=NOW,
         admission_requested_by=actor.actor_id,
+        manual_request_id="manual-request-1",
     )
 
 
@@ -283,6 +284,7 @@ async def test_manual_admit_persists_authorized_employee_before_shared_starter(
     assert sourcing.calls[2][4] == NOW + LEASE
     assert starter.calls == [_claimed(actor)]
     assert starter.calls[0].admission_requested_by == actor.actor_id
+    assert starter.calls[0].manual_request_id == "manual-request-1"
 
 
 @pytest.mark.asyncio

@@ -624,8 +624,8 @@ Browser 验收；尚未合并、推送、部署或生产启用，不代表整个
 
 ### 正常操作
 
-1. 先按当前合法单 head 完成迁移，并核验 API 与 scheduler 使用同一新版构建；0055 的 Run guard 和
-   subject 唯一索引必须已生效。生产升级、历史回填和回退的完整窗口要求见
+1. 先按当前合法单 head 完成迁移，并核验 API 与 scheduler 使用同一新版构建；0055 的 Run guard、
+   subject 唯一索引及 0056 的人工请求恢复身份保护必须已生效。生产升级、历史回填和回退的完整窗口要求见
    `docs/operations/sourcing-admission.md`。
 2. 完整度达到 3 的 Need 只会经真实 Outbox 建立 canonical V2 Case 和 durable Admission。没有当前
    boss-confirmed `sourcing_admission` Directive、策略关闭或策略状态未知时，scheduler 必须保持零
@@ -639,7 +639,8 @@ Browser 验收；尚未合并、推送、部署或生产启用，不代表整个
    时间、排序版本、Directive 版本、准入人和时间。成员数只表示当前有多少条相似已验证需求，不表示
    集体采购或供应已经确认。
 6. 授权老板或 sourcing 员工可逐条人工准入。每次使用一个非空原始 `Idempotency-Key`；若 HTTP 结果
-   不确定，先 GET 当前 Admission/Run，再以**同一个键**重放，禁止换键制造第二条 Run。
+   不确定，先 GET 当前 Admission/Run，再由**同一个 actor 以同一个键**重放。原键与可轮换的 scheduler
+   租约 token 分离持久；禁止换 actor/key 模糊原命令。0056 前 actor-only 历史行不能人工猜键恢复。
 
 ### 停止
 

@@ -128,10 +128,11 @@ class NeedBecameSourcingReady(DomainEvent):
 
 @dataclass(frozen=True)
 class NeedClusterFormed(DomainEvent):
-    """多条需求归为一簇。
+    """需求簇在第二个成员加入时首次形成多成员簇。
 
-    Phase 1 只记录；Phase 2 用它驱动寻源优先级——八个客户都要同一种
-    产品时，一次寻源服务多个买家，还有谈价筹码。
+    NeedCluster Sourcing Admission 不消费本事件；持续成员变化应读取
+    ``NeedClusterMembershipChanged``。本事件不得用于合并 Need、Case、数量、
+    规格或 Provenance。
     """
 
     cluster_id: str = ""

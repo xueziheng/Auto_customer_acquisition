@@ -621,8 +621,9 @@ async def test_cycle_orders_sourcing_admission_after_expiry_with_fresh_lock_chec
         "quote_expiry",
         "lock",
         "sourcing_admission",
+        "lock",
         "workflow:1",
-    ] + (["drain:2"] if workflow_count else [])
+    ] + (["lock", "drain:2"] if workflow_count else [])
 
 
 @pytest.mark.asyncio
@@ -651,7 +652,7 @@ async def test_sourcing_admission_failure_is_phase_isolated_and_redacted(
     await module._run_cycle(runtime, 4, confirm_lock=confirm_lock)
 
     assert order == ["drain:1", "sourcing_admission", "workflow:1"]
-    assert lock_checks == 1
+    assert lock_checks == 2
     assert "secret" not in caplog.text
     record = next(
         row
@@ -686,6 +687,75 @@ async def test_lock_loss_immediately_before_admission_prevents_it_and_later_phas
     admission.scan_once.assert_not_awaited()
     workflow.poll_due.assert_not_awaited()
     assert outbox.drain.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_loss_after_admission_prevents_workflow_and_post_outbox() -> None:
+    module = _scheduler()
+    order: list[str] = []
+    outbox = _Drainer([1, 1], order)
+    workflow = _Poller([1], order)
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=outbox,
+        workflow=workflow,
+        tenant_id=TenantId("scheduler-admission-lock-loss-after-scan"),
+        config=module.SchedulerConfig(1, 7, 1),
+        sourcing_admission_driver=_AdmissionDriver([object()], order),
+    )
+    checks = 0
+
+    async def confirm_lock() -> None:
+        nonlocal checks
+        checks += 1
+        order.append("lock")
+        if checks == 2:
+            raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+
+    assert order == ["drain:1", "lock", "sourcing_admission", "lock"]
+    assert workflow.calls == []
+    assert outbox.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_loss_after_workflow_prevents_post_outbox() -> None:
+    module = _scheduler()
+    order: list[str] = []
+    outbox = _Drainer([1, 1], order)
+    workflow = _Poller([1], order)
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=outbox,
+        workflow=workflow,
+        tenant_id=TenantId("scheduler-admission-lock-loss-before-post"),
+        config=module.SchedulerConfig(1, 7, 1),
+        sourcing_admission_driver=_AdmissionDriver([object()], order),
+    )
+    checks = 0
+
+    async def confirm_lock() -> None:
+        nonlocal checks
+        checks += 1
+        order.append("lock")
+        if checks == 3:
+            raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+
+    assert order == [
+        "drain:1",
+        "lock",
+        "sourcing_admission",
+        "lock",
+        "workflow:1",
+        "lock",
+    ]
+    assert len(workflow.calls) == 1
+    assert outbox.calls == 1
 
 
 async def test_phase_failure_isolated_and_next_cycle_continues(

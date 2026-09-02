@@ -1459,19 +1459,17 @@ class SourcingServiceImpl:
                 now,
                 requested_by=actor.actor_id,
             )
-            if (
-                admission is not None
-                and admission.state is AdmissionState.STARTING
-                and (
-                    admission.claim_token != command.request_id
-                    or admission.admission_requested_by != actor.actor_id
-                )
-            ) or (
-                admission is not None
-                and admission.state is AdmissionState.WAITING
-                and admission.admission_requested_by not in {None, actor.actor_id}
-            ):
-                raise InvalidStateTransition("寻源准入已由另一人工请求启动")
+            if admission is not None and admission.admission_requested_by is not None:
+                if (
+                    admission.admission_requested_by != actor.actor_id
+                    or admission.manual_request_id != command.request_id
+                ):
+                    raise InvalidStateTransition(
+                        "寻源准入请求与首次恢复身份不匹配"
+                    )
+                return admission
+            if admission is not None and admission.state is AdmissionState.STARTING:
+                raise InvalidStateTransition("寻源准入已由另一请求启动")
             return admission
 
     async def complete_admission(

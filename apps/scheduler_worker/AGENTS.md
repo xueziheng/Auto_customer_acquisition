@@ -40,6 +40,8 @@ QuoteExpiryDriver仅使用显式core.expiry_batch_limit委托expire_overdue；�
 activation返回后及expiry进入前重新确认同一专用锁backend；确认位于普通phase异常捕获外，
 失锁返回LOCK_LOST且未完成轮不计数、不继续workflow/post-outbox。无expiry的旧两参数cycle
 可保留；有expiry缺显式确认回调必须失败关闭。阶段检查不承诺已开始扫描的分布式fencing。
+存在Sourcing Admission driver时，准入扫描前、扫描返回后进入workflow前，以及workflow有推进后进入
+post-outbox前都必须重新确认同一锁；任一确认失锁都不得执行其后的phase。
 
 验证只能由授权真人经 `provider.hunter.validate` 逐次触发，scheduler 不得代跑或自动重试。
 validation passed 后必须重启 singleton scheduler；Settings 只有在 matching
