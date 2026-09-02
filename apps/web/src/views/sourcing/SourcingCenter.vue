@@ -34,13 +34,6 @@ const policyLabel = computed(() => ({
   policy_not_configured: "自动准入未配置",
   policy_status_unknown: "自动准入策略状态未知",
 }[policy.value.status]));
-const representedCases = computed(() => new Set([
-  ...waitingAdmissions.value,
-  ...blockedAdmissions.value,
-  ...activeAdmissions.value,
-].map((item) => item.case_id)));
-const historicalCases = computed(() => cases.value.filter((item) => !representedCases.value.has(item.case_id)));
-
 function formatTime(value: string | null | undefined): string {
   return displayZonedIsoTime(value);
 }
@@ -90,7 +83,7 @@ async function loadAdmissionState(state: AdmissionState, generation: number): Pr
     if (result.response.status === 200 && result.data) {
       if (result.data.items.length < 50) return result.data;
       if (generation === loadGeneration) {
-        error.value ??= "准入队列可能已截断，无法安全区分等待与处理中的 Case";
+        error.value ??= "准入队列可能已截断，无法安全展示等待与处理中的准入记录";
       }
       return null;
     }
@@ -105,8 +98,25 @@ async function loadCases(): Promise<SourcingCase[]> {
   try {
     const result = await client.GET("/sourcing-cases", { params: { query: { limit: 50 } } });
     if (result.response.status === 200 && result.data) return result.data;
-  } catch { /* 历史 Case 与 admission 队列独立展示。 */ }
+  } catch { /* Case 工作台与 admission 队列独立展示。 */ }
   return [];
+}
+
+function hasDuplicateAdmissionIdentity(groups: Admission[][]): boolean {
+  const admissionIds = new Set<string>();
+  const caseIds = new Set<string>();
+  const needIds = new Set<string>();
+  for (const item of groups.flat()) {
+    if (
+      admissionIds.has(item.admission_id)
+      || caseIds.has(item.case_id)
+      || needIds.has(item.need_id)
+    ) return true;
+    admissionIds.add(item.admission_id);
+    caseIds.add(item.case_id);
+    needIds.add(item.need_id);
+  }
+  return false;
 }
 
 async function loadAll(): Promise<void> {
@@ -123,19 +133,27 @@ async function loadAll(): Promise<void> {
     loadCases(),
   ]);
   if (generation !== loadGeneration) return;
+  cases.value = loadedCases;
   if (!waiting || !blocked || !starting || !admitted) {
     waitingAdmissions.value = [];
     blockedAdmissions.value = [];
     activeAdmissions.value = [];
-    cases.value = [];
     policy.value = waiting?.policy ?? blocked?.policy ?? starting?.policy ?? admitted?.policy ?? { status: "policy_status_unknown" };
+    loading.value = false;
+    return;
+  }
+  if (hasDuplicateAdmissionIdentity([waiting.items, blocked.items, starting.items, admitted.items])) {
+    waitingAdmissions.value = [];
+    blockedAdmissions.value = [];
+    activeAdmissions.value = [];
+    policy.value = waiting.policy;
+    error.value = "准入队列状态不一致，已停止展示，请刷新重试";
     loading.value = false;
     return;
   }
   waitingAdmissions.value = waiting?.items ?? [];
   blockedAdmissions.value = blocked?.items ?? [];
   activeAdmissions.value = [...(starting?.items ?? []), ...(admitted?.items ?? [])];
-  cases.value = loadedCases;
   policy.value = waiting?.policy ?? blocked?.policy ?? starting?.policy ?? admitted?.policy ?? { status: "policy_status_unknown" };
   partitionReady.value = true;
   loading.value = false;
@@ -238,7 +256,7 @@ onMounted(() => void loadAll());
     >
       正在读取准入队列…
     </div>
-    <template v-else-if="partitionReady">
+    <template v-if="!loading && partitionReady">
       <section
         class="queue-section"
         data-section="waiting-admission"
@@ -314,23 +332,23 @@ onMounted(() => void loadAll());
 
       <section
         class="queue-section"
-        data-section="active-cases"
+        data-section="active-admissions"
         aria-labelledby="active-title"
       >
         <header>
           <div>
             <p class="phase-eyebrow">
-              ACTIVE CASES
+              ADMISSION IN PROGRESS
             </p><h2 id="active-title">
               处理中
             </h2>
-          </div><span>{{ activeAdmissions.length + historicalCases.length }} 个</span>
+          </div><span>{{ activeAdmissions.length }} 个</span>
         </header>
         <p
-          v-if="!activeAdmissions.length && !historicalCases.length"
+          v-if="!activeAdmissions.length"
           class="empty"
         >
-          当前没有处理中的寻源 Case
+          当前没有处理中的准入记录
         </p>
         <article
           v-for="item in activeAdmissions"
@@ -355,18 +373,44 @@ onMounted(() => void loadAll());
             </RouterLink>
           </nav>
         </article>
-        <RouterLink
-          v-for="item in historicalCases"
-          :key="item.case_id"
-          class="case-row"
-          :to="`/sourcing/${item.case_id}`"
-        >
-          <span><strong>{{ item.case_id }}</strong><small>Need {{ item.need_id }}</small></span>
-          <span>{{ item.state }} · 梯子至 {{ item.ladder_checked_to ?? "未知" }}</span>
-          <span v-if="item.stop">停止：{{ item.stop.code }}</span>
-        </RouterLink>
       </section>
     </template>
+
+    <section
+      v-if="!loading"
+      class="queue-section"
+      data-section="case-workbench"
+      aria-labelledby="case-workbench-title"
+    >
+      <header>
+        <div>
+          <p class="phase-eyebrow">
+            CASE WORKBENCH
+          </p><h2 id="case-workbench-title">
+            Case 工作台
+          </h2>
+        </div><span>{{ cases.length }} 个</span>
+      </header>
+      <p class="case-workbench-note">
+        此处独立展示 Case 记录，不根据准入队列推断其准入状态。
+      </p>
+      <p
+        v-if="!cases.length"
+        class="empty"
+      >
+        当前没有可展示的寻源 Case
+      </p>
+      <RouterLink
+        v-for="item in cases"
+        :key="item.case_id"
+        class="case-row"
+        :to="`/sourcing/${item.case_id}`"
+      >
+        <span><strong>{{ item.case_id }}</strong><small>Need {{ item.need_id }}</small></span>
+        <span>Case 状态：{{ item.state }} · 梯子至 {{ item.ladder_checked_to ?? "未知" }}</span>
+        <span v-if="item.stop">停止：{{ item.stop.code }}</span>
+      </RouterLink>
+    </section>
 
     <div
       v-if="manualTarget"
@@ -422,6 +466,7 @@ onMounted(() => void loadAll());
 .case-row { display: flex; justify-content: space-between; gap: var(--space3); align-items: center; padding: var(--space3) var(--space4); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); text-decoration: none; background: var(--surface); }
 .case-row:hover { border-color: var(--action); }.case-row span { display: grid; gap: 2px; }.case-row small { color: var(--text-secondary); }
 .case-actions { display: flex; flex-wrap: wrap; gap: var(--space2); }.case-actions a { color: var(--action); white-space: nowrap; }
+.case-workbench-note { color: var(--text-secondary); }
 .empty { padding: var(--space5); color: var(--text-secondary); text-align: center; }
 .dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: var(--space4); background: rgba(16, 35, 35, .42); }
 .manual-dialog { width: min(480px, 100%); display: grid; gap: var(--space3); padding: var(--space5); border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 16px 48px rgba(16, 35, 35, .2); }

@@ -48,5 +48,6 @@ src/
 
 - Command Center 的准入提案必须显式提交 `cluster_ranked`、自动准入开关和每轮上限；创建或确认提案都不得显示为已启动 Workflow，确认后只展示生效 Directive version。
 - Sourcing Center 必须原样保留 API 返回顺序，分开显示“等待准入”和“处理中”；需求簇只解释排序，一个 Need 始终对应一个 Case，不能写成合并订单。
+- 四类 admission 响应不是原子快照：跨状态出现重复身份时准入区必须 fail-closed；`/sourcing-cases` 只能作为独立、中性的 Case 工作台展示，不得用 admission 差集推断 Case 是历史记录或正在处理。
 - 人工准入只按后端 `can_current_user_manual_start` 渲染；确认对话框中的原始 Idempotency-Key 只随请求发送，失败恢复时不得换键，也不得在 UI 或日志展示。
 - admission 详情只显示安全不可变排序快照和 admitted actor/time；禁止渲染 claim token、租约、`requested_by`、完整 Workflow context 或底层异常。

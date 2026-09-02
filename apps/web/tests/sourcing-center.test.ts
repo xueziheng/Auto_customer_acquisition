@@ -852,16 +852,19 @@ describe("Sourcing admission queue", () => {
     ]);
     const representedCaseIds = [waitingOneId, waitingEightId, blockedId, startingId, admittedId]
       .map((id) => admissionFixture(id, id === blockedId ? "blocked" : id === admittedId ? "admitted" : id === startingId ? "starting" : "waiting").case_id);
+    const admissionSections = [
+      root.querySelector('[data-section="waiting-admission"]')!,
+      root.querySelector('[data-section="active-admissions"]')!,
+    ];
     for (const representedCaseId of representedCaseIds) {
-      const rows = [...root.querySelectorAll<HTMLElement>("article, .case-row")]
+      const rows = admissionSections.flatMap((section) => [...section.querySelectorAll<HTMLElement>("article.case-row, article.admission-row")])
         .filter((row) => row.textContent?.includes(representedCaseId));
       expect(rows, representedCaseId).toHaveLength(1);
     }
-    const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] .case-row')];
+    const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-admissions"] .case-row')];
     expect(processingRows.map((row) => row.textContent)).toEqual([
       expect.stringContaining(admissionFixture(startingId, "starting").case_id),
       expect.stringContaining(admissionFixture(admittedId, "admitted").case_id),
-      expect.stringContaining(legacyCaseId),
     ]);
     expect(processingRows[0]?.textContent).toContain("自就绪起 1 小时");
     expect(processingRows[0]?.textContent).toContain("该需求尚未归入多成员需求簇");
@@ -870,6 +873,15 @@ describe("Sourcing admission queue", () => {
     expect(processingRows[1]?.textContent).toContain("2026-09-02 09:05:00 UTC");
     const blockedRow = root.querySelector<HTMLElement>(`[data-admission-id="${blockedId}"]`);
     expect(blockedRow?.textContent).toContain("自就绪起 1 小时");
+    const workbenchRows = [...root.querySelectorAll<HTMLElement>('[data-section="case-workbench"] .case-row')];
+    expect(workbenchRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining(admissionFixture(waitingEightId, "waiting").case_id),
+      expect.stringContaining(legacyCaseId),
+      expect.stringContaining(admissionFixture(blockedId, "blocked").case_id),
+      expect.stringContaining(admissionFixture(startingId, "starting").case_id),
+      expect.stringContaining(admissionFixture(admittedId, "admitted").case_id),
+      expect.stringContaining(admissionFixture(waitingOneId, "waiting").case_id),
+    ]);
     expect(root.textContent).toContain("一个 Need 对应一个 Case；需求簇不是合并订单");
   });
 
@@ -879,7 +891,7 @@ describe("Sourcing admission queue", () => {
 
     for (const [id, state] of [[startingId, "starting"], [admittedId, "admitted"]] as const) {
       const item = admissionFixture(id, state);
-      const row = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] .case-row')]
+      const row = [...root.querySelectorAll<HTMLElement>('[data-section="active-admissions"] .case-row')]
         .find((candidate) => candidate.textContent?.includes(item.case_id));
       expect(row).toBeDefined();
       expect(row?.textContent).toContain("准入审计详情");
@@ -899,11 +911,11 @@ describe("Sourcing admission queue", () => {
       stateItems: { waiting: truncatedWaiting },
     }));
 
-    await eventually(() => expect(root.textContent).toContain("准入队列可能已截断，无法安全区分等待与处理中的 Case"));
+    await eventually(() => expect(root.textContent).toContain("准入队列可能已截断，无法安全展示等待与处理中的准入记录"));
     expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
-    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
-    expect(root.textContent).not.toContain(overflowCaseId);
-    expect(root.textContent).not.toContain(legacyCaseId);
+    expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
+    expect(root.querySelector('[data-section="case-workbench"]')?.textContent).toContain(overflowCaseId);
+    expect(root.querySelector('[data-section="case-workbench"]')?.textContent).toContain(legacyCaseId);
   });
 
   it("fails closed when any admission state cannot be read", async () => {
@@ -911,9 +923,43 @@ describe("Sourcing admission queue", () => {
 
     await eventually(() => expect(root.textContent).toContain("寻源准入队列暂不可用"));
     expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
-    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
-    expect(root.textContent).not.toContain(admissionFixture(blockedId, "blocked").case_id);
-    expect(root.textContent).not.toContain(legacyCaseId);
+    expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
+    expect(root.querySelector('[data-section="case-workbench"]')?.textContent)
+      .toContain(admissionFixture(blockedId, "blocked").case_id);
+    expect(root.querySelector('[data-section="case-workbench"]')?.textContent).toContain(legacyCaseId);
+  });
+
+  it("fails closed when one admission appears in two state responses from the same refresh", async () => {
+    const duplicateStarting = admissionFixture(waitingOneId, "starting");
+    const root = await mount("/sourcing", admissionCenterFetch({
+      stateItems: { starting: [duplicateStarting] },
+    }));
+
+    await eventually(() => expect(root.textContent).toContain("准入队列状态不一致，已停止展示，请刷新重试"));
+    expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
+  });
+
+  it("keeps a Case neutral when a state migration makes its admission absent from all four responses", async () => {
+    const root = await mount("/sourcing", admissionCenterFetch({
+      stateItems: {
+        waiting: [admissionFixture(waitingEightId, "waiting")],
+        starting: [admissionFixture(startingId, "starting")],
+      },
+    }));
+
+    await eventually(() => expect(root.querySelector('[data-section="case-workbench"]')).not.toBeNull());
+    const omittedCaseId = admissionFixture(waitingOneId, "waiting").case_id;
+    const admissionSections = [
+      root.querySelector('[data-section="waiting-admission"]')?.textContent ?? "",
+      root.querySelector('[data-section="active-admissions"]')?.textContent ?? "",
+    ].join(" ");
+    const workbench = root.querySelector('[data-section="case-workbench"]')!;
+
+    expect(admissionSections).not.toContain(omittedCaseId);
+    expect(workbench.textContent).toContain(omittedCaseId);
+    expect(workbench.textContent).toContain("Case 状态：opened");
+    expect(workbench.textContent).not.toContain("处理中");
   });
 
   it("closes a stale manual dialog when a refresh cannot rebuild the admission partition", async () => {
@@ -981,7 +1027,7 @@ describe("Sourcing admission queue", () => {
     [...root.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("刷新"))!.click();
     await eventually(() => {
-      const activeText = root.querySelector('[data-section="active-cases"]')?.textContent ?? "";
+      const activeText = root.querySelector('[data-section="active-admissions"]')?.textContent ?? "";
       expect(activeText).toContain(promotedStarting.case_id);
       expect(activeText).toContain(existingAdmitted.case_id);
     });
@@ -989,7 +1035,7 @@ describe("Sourcing admission queue", () => {
     manualResolved = true;
     resolveManual(jsonResponse(promotedAdmitted));
     await eventually(() => {
-      const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-cases"] article.case-row')];
+      const processingRows = [...root.querySelectorAll<HTMLElement>('[data-section="active-admissions"] article.case-row')];
       expect(processingRows.map((row) => row.textContent)).toEqual([
         expect.stringContaining(existingAdmitted.case_id),
         expect.stringContaining(promotedAdmitted.case_id),
@@ -1018,11 +1064,11 @@ describe("Sourcing admission queue", () => {
     await eventually(() => expect(root.textContent).toContain("寻源准入队列暂不可用"));
     expect(root.querySelector('[role="dialog"]')).toBeNull();
     expect(root.querySelector('[data-section="waiting-admission"]')).toBeNull();
-    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
 
     resolveManual(jsonResponse(admissionFixture(waitingOneId, "admitted")));
     await eventually(() => expect(root.textContent).toContain("已准入；这只代表该 Case 获准启动"));
-    expect(root.querySelector('[data-section="active-cases"]')).toBeNull();
+    expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
   });
 
   it.each([
