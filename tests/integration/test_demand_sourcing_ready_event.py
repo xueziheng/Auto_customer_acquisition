@@ -288,9 +288,11 @@ async def test_cluster_assignment_publishes_membership_facts_once_per_need(
     )
     assert first_cluster_id is not None
     assert second_cluster_id == first_cluster_id == duplicate_cluster_id
+    assert len(membership_payloads) == 2
     membership_by_need = {
         payload["changed_need_id"]: payload for payload in membership_payloads
     }
+    assert len(membership_by_need) == 2
     assert membership_by_need[first_need_id]["member_count"] == 1
     assert membership_by_need[second_need_id]["member_count"] == 2
     formed_payloads = await _outbox_payloads(factory, tenant, "NeedClusterFormed")
