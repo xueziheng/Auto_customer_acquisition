@@ -900,6 +900,18 @@ async def test_admission_driver_blocks_real_pg_case_snapshot_hash_drift(
         "blocked",
         "case_state_mismatch",
     )
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
+        )
+        await connection.execute(
+            text("DELETE FROM sourcing_cases WHERE tenant_id = :tenant"),
+            {"tenant": str(tenant)},
+        )
+        await connection.execute(
+            text("DELETE FROM validated_needs WHERE tenant_id = :tenant"),
+            {"tenant": str(tenant)},
+        )
 
 
 @pytest.mark.asyncio
@@ -1539,6 +1551,10 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
         assert Decimal(str(items[0].amount)) == Decimal("1.25")
     assert model.calls == transport.calls == pages.calls == artifacts.calls == 0
     assert playbook.calls == 0
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text("TRUNCATE sourcing_admissions, sourcing_priority_snapshots CASCADE")
+        )
 
 
 @pytest.mark.asyncio

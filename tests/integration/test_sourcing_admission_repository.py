@@ -365,11 +365,11 @@ async def test_append_snapshot_deduplicates_and_recovers_only_priority_invalid(
         created_at=NOW + timedelta(minutes=2),
     )
     async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
-        same_hash_recovered, same_hash_canonical, same_hash_created = (
-            await uow.admissions.append_snapshot_if_changed(
-                tenant, same_hash_repair
-            )
-        )
+        (
+            same_hash_recovered,
+            same_hash_canonical,
+            same_hash_created,
+        ) = await uow.admissions.append_snapshot_if_changed(tenant, same_hash_repair)
     assert same_hash_recovered.state is AdmissionState.WAITING
     assert same_hash_recovered.blocked_reason is None
     assert same_hash_canonical.snapshot_id == canonical.snapshot_id
@@ -501,6 +501,44 @@ async def test_claim_ordered_uses_database_priority_and_claims_once_concurrently
     )
 
 
+async def test_claim_one_targets_exact_row_and_replays_same_token(
+    integration_engine: AsyncEngine,
+) -> None:
+    """人工准入不能借全局排序误 claim 队首，原请求重放返回同一 starting。"""
+
+    tenant = TenantId("tn_admission_manual_claim")
+    sessions = _sessions(integration_engine)
+    high, high_snapshot = _bundle(tenant, "manual_high", 8)
+    target, target_snapshot = _bundle(tenant, "manual_target", 1)
+    await _store_bundle(integration_engine, sessions, high, high_snapshot)
+    await _store_bundle(integration_engine, sessions, target, target_snapshot)
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        claimed = await uow.admissions.claim_one(
+            tenant,
+            target.admission_id,
+            "manual-request-1",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(minutes=1),
+        )
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        replayed = await uow.admissions.claim_one(
+            tenant,
+            target.admission_id,
+            "manual-request-1",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(minutes=1),
+        )
+        untouched = await uow.admissions.get(tenant, high.admission_id)
+
+    assert claimed == replayed
+    assert claimed is not None
+    assert claimed.admission_id == target.admission_id
+    assert claimed.state is AdmissionState.STARTING
+    assert claimed.claim_token == "manual-request-1"
+    assert untouched is not None and untouched.state is AdmissionState.WAITING
+
+
 async def test_claim_ordered_breaks_equal_counts_by_ready_at_then_need_id(
     integration_engine: AsyncEngine,
 ) -> None:
@@ -572,9 +610,7 @@ async def test_list_rejects_non_exact_or_out_of_range_limit_before_io(
     repository = _exploding_repository(tenant)
 
     with pytest.raises(ValidationError, match="limit"):
-        await repository.list_by_state(
-            tenant, AdmissionState.WAITING, cast(int, limit)
-        )
+        await repository.list_by_state(tenant, AdmissionState.WAITING, cast(int, limit))
 
 
 @pytest.mark.parametrize("bad_token", ["", " token", "token\nvalue", "x" * 201])

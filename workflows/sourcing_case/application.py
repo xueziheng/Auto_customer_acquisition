@@ -2,28 +2,51 @@
 
 from __future__ import annotations
 
-from typing import Any
+import unicodedata
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from connectors.search_contracts import SearchCostStatus
+from domains.directives.schemas import DirectiveView
+from domains.directives.service import DirectiveService
 from domains.sourcing.permissions import SourcingActor
 from domains.sourcing.schemas import (
     CaseView,
     PublicSourcingPlanCommand,
+    SourcingAdmissionManualStartCommand,
+    SourcingAdmissionReadView,
+    SourcingCaseReadView,
     SourcingCurrentQuotaReadView,
+    SourcingNeedSnapshot,
     SourcingReviewCommand,
     SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
 )
 from domains.sourcing.service import (
+    AdmissionBlockedReason,
+    AdmissionState,
     PublicPlanStatus,
     PublicSourcingPlan,
+    SourcingAdmission,
     SourcingReview,
     SourcingSearchReconciliation,
     SourcingService,
 )
-from shared.errors import PolicyViolation, TransientError, ValidationError
+from shared.errors import (
+    InvalidStateTransition,
+    PermissionDenied,
+    PolicyViolation,
+    TradeOSError,
+    TransientError,
+    ValidationError,
+)
 from shared.schemas.identifiers import (
     RunId,
+    SourcingAdmissionId,
     SourcingCaseId,
     SourcingPlanId,
     SourcingReviewId,
@@ -37,6 +60,560 @@ from workflows.engine.runner import StepStatus, WorkflowEngine, WorkflowRun
 
 _WORKFLOW_TYPE = "sourcing_case"
 _WORKFLOW_VERSION = 2
+_ADMISSION_READ_ROLES = frozenset({"boss", "product", "sourcing", "finance"})
+_ADMISSION_MANUAL_ROLES = frozenset({"boss", "sourcing"})
+
+SourcingAdmissionAttemptOutcome = Literal[
+    "admitted", "waiting", "blocked", "pending_recovery"
+]
+
+
+@dataclass(frozen=True)
+class SourcingAdmissionPolicyRead:
+    """当前 active Directive 中经二次校验的寻源准入段。"""
+
+    directive_id: str
+    directive_version: int
+    enabled: bool
+    batch_limit: int
+
+
+class SourcingAdmissionPolicyReader(Protocol):
+    async def read(self, tenant_id: TenantId) -> SourcingAdmissionPolicyRead | None: ...
+
+
+class DirectiveSourcingAdmissionPolicyReader:
+    """把 active、老板确认过的 Directive 投影为准入策略。"""
+
+    def __init__(self, directives: DirectiveService) -> None:
+        if not isinstance(directives, DirectiveService):
+            raise ValidationError("寻源准入指令读取器依赖无效")
+        self._directives = directives
+
+    async def read(self, tenant_id: TenantId) -> SourcingAdmissionPolicyRead | None:
+        read_error = False
+        directive: DirectiveView | None = None
+        try:
+            directive = await self._directives.get_active(tenant_id)
+        except Exception:  # noqa: BLE001 - 下层异常可能含连接信息
+            read_error = True
+        if read_error:
+            raise TransientError("寻源准入策略状态暂不可确认") from None
+        if directive is None:
+            return None
+        if not isinstance(directive, DirectiveView):
+            raise TransientError("寻源准入策略状态暂不可确认") from None
+        section = (
+            directive.sourcing_admission_mode,
+            directive.automatic_sourcing_admission_enabled,
+            directive.sourcing_admission_batch_limit,
+        )
+        if section == (None, None, None):
+            return None
+        if (
+            not isinstance(directive.directive_id, str)
+            or not directive.directive_id
+            or directive.directive_id != directive.directive_id.strip()
+            or len(directive.directive_id) > 200
+            or type(directive.version) is not int
+            or directive.version < 1
+            or directive.superseded_at is not None
+            or directive.sourcing_admission_mode != "cluster_ranked"
+            or type(directive.automatic_sourcing_admission_enabled) is not bool
+            or type(directive.sourcing_admission_batch_limit) is not int
+            or not 1 <= directive.sourcing_admission_batch_limit <= 50
+        ):
+            raise TransientError("寻源准入策略状态暂不可确认") from None
+        return SourcingAdmissionPolicyRead(
+            directive_id=directive.directive_id,
+            directive_version=directive.version,
+            enabled=directive.automatic_sourcing_admission_enabled,
+            batch_limit=directive.sourcing_admission_batch_limit,
+        )
+
+
+def sourcing_case_start_context(
+    snapshot: SourcingNeedSnapshot, case_id: str
+) -> dict[str, object]:
+    """只从可信 Need snapshot 生成既有 V2 context，禁止补造业务事实。"""
+
+    if not isinstance(snapshot.product_category.value, str):
+        raise ValidationError("可信寻源需求品类必须是文本")
+
+    def normalize(value: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+    category = normalize(snapshot.product_category.value)
+    if not category:
+        raise ValidationError("可信寻源需求品类不能为空")
+    keywords = sorted(
+        {
+            normalized
+            for fact in (snapshot.application, snapshot.material, snapshot.size_spec)
+            if fact is not None and isinstance(fact.value, str)
+            if (normalized := normalize(fact.value))
+        }
+    )
+    return {
+        "case_id": case_id,
+        "need_id": str(snapshot.need_id),
+        "need_snapshot_hash": snapshot.snapshot_hash,
+        "product_category": category,
+        "keywords": keywords,
+    }
+
+
+class SourcingAdmissionStarter:
+    """单条已 claim admission 的唯一 start/bind 编排。"""
+
+    def __init__(
+        self,
+        *,
+        sourcing: SourcingService,
+        engine: WorkflowEngine,
+        tenant_id: TenantId,
+        sourcing_actor: SourcingActor,
+        now: Callable[[], datetime],
+    ) -> None:
+        required = (
+            (sourcing, "get_admission_case_snapshot"),
+            (sourcing, "complete_admission"),
+            (sourcing, "release_admission_claim"),
+            (sourcing, "block_admission"),
+            (engine, "start"),
+        )
+        if any(not callable(getattr(value, name, None)) for value, name in required):
+            raise ValidationError("寻源准入启动依赖无效")
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or tenant_id != tenant_id.strip()
+            or not isinstance(sourcing_actor, SourcingActor)
+            or sourcing_actor.tenant_id != tenant_id
+            or sourcing_actor.scope.value != "system"
+            or sourcing_actor.role != "system"
+            or not callable(now)
+        ):
+            raise ValidationError("寻源准入启动 tenant、身份或时钟无效")
+        self._sourcing = sourcing
+        self._engine = engine
+        self._tenant_id = tenant_id
+        self._sourcing_actor = sourcing_actor
+        self._now = now
+
+    def _current_time(self) -> datetime:
+        current = self._now()
+        if (
+            not isinstance(current, datetime)
+            or current.tzinfo is None
+            or current.utcoffset() != timedelta(0)
+        ):
+            raise ValidationError("寻源准入时钟必须返回 UTC 时间")
+        return current
+
+    async def admit_one(
+        self, admission: SourcingAdmission
+    ) -> SourcingAdmissionAttemptOutcome:
+        """处理一条已 claim admission；未知提交结果等待租约恢复。"""
+
+        if (
+            not isinstance(admission, SourcingAdmission)
+            or admission.tenant_id != self._tenant_id
+            or admission.state is not AdmissionState.STARTING
+            or admission.claim_token is None
+        ):
+            return "pending_recovery"
+        claim_token = admission.claim_token
+        try:
+            case = await self._sourcing.get_admission_case_snapshot(
+                self._tenant_id,
+                admission.case_id,
+                actor=self._sourcing_actor,
+            )
+        except Exception as error:  # noqa: BLE001 - 未启动前按已知语义处置
+            if isinstance(error, TradeOSError):
+                if error.is_retryable:
+                    return await self._release(admission, claim_token)
+                return await self._block(admission, claim_token)
+            return "pending_recovery"
+        if case is None:
+            return await self._block(admission, claim_token)
+        if not isinstance(case, SourcingCaseReadView):
+            return "pending_recovery"
+        snapshot = case.need_snapshot
+        if (
+            case.case_id != admission.case_id
+            or case.need_id != admission.need_id
+            or type(case.workflow_version) is not int
+            or case.workflow_version != _WORKFLOW_VERSION
+            or case.state != "opened"
+            or not isinstance(snapshot, SourcingNeedSnapshot)
+            or snapshot.need_id != admission.need_id
+            or not isinstance(snapshot.snapshot_hash, str)
+            or len(snapshot.snapshot_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in snapshot.snapshot_hash
+            )
+        ):
+            return await self._block(admission, claim_token)
+        try:
+            safe_context = sourcing_case_start_context(snapshot, str(admission.case_id))
+        except TradeOSError:
+            return await self._block(admission, claim_token)
+
+        try:
+            run_id = await self._engine.start(
+                self._tenant_id,
+                _WORKFLOW_TYPE,
+                str(admission.case_id),
+                safe_context,
+                f"sourcing-case:v2:{self._tenant_id}:{admission.need_id}",
+            )
+        except TradeOSError as error:
+            if error.is_retryable:
+                return await self._release(admission, claim_token)
+            return await self._block(admission, claim_token)
+        except Exception:  # noqa: BLE001 - start 结果未知，严禁即时换键
+            return "pending_recovery"
+        if not isinstance(run_id, str) or not run_id or run_id != run_id.strip():
+            return "pending_recovery"
+        try:
+            await self._sourcing.complete_admission(
+                self._tenant_id,
+                admission.admission_id,
+                claim_token=claim_token,
+                workflow_run_id=RunId(run_id),
+                admitted_by=self._sourcing_actor.actor_id,
+                admitted_at=self._current_time(),
+                actor=self._sourcing_actor,
+            )
+        except Exception:  # noqa: BLE001 - Run 或 bind 可能已提交
+            return "pending_recovery"
+        return "admitted"
+
+    async def _release(
+        self, admission: SourcingAdmission, claim_token: str
+    ) -> SourcingAdmissionAttemptOutcome:
+        try:
+            await self._sourcing.release_admission_claim(
+                self._tenant_id,
+                admission.admission_id,
+                claim_token=claim_token,
+                released_at=self._current_time(),
+                actor=self._sourcing_actor,
+            )
+        except Exception:  # noqa: BLE001 - cleanup 不确定仍保守等待 lease
+            return "pending_recovery"
+        return "waiting"
+
+    async def _block(
+        self, admission: SourcingAdmission, claim_token: str
+    ) -> SourcingAdmissionAttemptOutcome:
+        try:
+            await self._sourcing.block_admission(
+                self._tenant_id,
+                admission.admission_id,
+                reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+                blocked_at=self._current_time(),
+                claim_token=claim_token,
+                actor=self._sourcing_actor,
+            )
+        except Exception:  # noqa: BLE001 - cleanup 不确定仍保守等待 lease
+            return "pending_recovery"
+        return "blocked"
+
+
+class SourcingAdmissionPolicyView(BaseModel):
+    """Directive 策略的安全投影；不把 scheduler 状态写入寻源域。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    status: Literal[
+        "enabled",
+        "policy_not_configured",
+        "automatic_admission_disabled",
+        "policy_status_unknown",
+    ]
+    directive_id: str | None = Field(default=None, max_length=200)
+    directive_version: int | None = Field(default=None, ge=1)
+    automatic_admission_enabled: bool | None = None
+    batch_limit: int | None = Field(default=None, ge=1, le=50)
+
+
+class SourcingAdmissionListView(BaseModel):
+    """保留服务端顺序的准入列表与当前策略状态。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    policy: SourcingAdmissionPolicyView
+    items: tuple[SourcingAdmissionReadView, ...]
+
+
+class SourcingAdmissionDetailView(BaseModel):
+    """单条安全准入事实与当前策略状态。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    policy: SourcingAdmissionPolicyView
+    admission: SourcingAdmissionReadView
+
+
+class SourcingAdmissionApplication:
+    """寻源准入的跨域只读与人工启动编排。"""
+
+    def __init__(
+        self,
+        *,
+        sourcing: SourcingService,
+        policy: SourcingAdmissionPolicyReader,
+        starter: SourcingAdmissionStarter,
+        tenant_id: TenantId,
+        sourcing_actor: SourcingActor,
+        lease_duration: timedelta,
+        now: Callable[[], datetime],
+    ) -> None:
+        required = (
+            (sourcing, "list_admissions"),
+            (sourcing, "get_admission"),
+            (sourcing, "get_admission_case_snapshot"),
+            (sourcing, "claim_manual_admission"),
+            (policy, "read"),
+            (starter, "admit_one"),
+        )
+        if any(not callable(getattr(value, name, None)) for value, name in required):
+            raise ValidationError("寻源准入 application 依赖无效")
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or tenant_id != tenant_id.strip()
+            or not isinstance(sourcing_actor, SourcingActor)
+            or sourcing_actor.tenant_id != tenant_id
+            or sourcing_actor.scope.value != "system"
+            or sourcing_actor.role != "system"
+        ):
+            raise ValidationError("寻源准入 application tenant 或系统身份无效")
+        if not isinstance(lease_duration, timedelta) or lease_duration <= timedelta(0):
+            raise ValidationError("寻源准入 application lease_duration 必须为正时长")
+        if not callable(now):
+            raise ValidationError("寻源准入 application 时钟无效")
+        self._sourcing = sourcing
+        self._policy = policy
+        self._starter = starter
+        self._tenant_id = tenant_id
+        self._sourcing_actor = sourcing_actor
+        self._lease_duration = lease_duration
+        self._now = now
+
+    def _current_time(self) -> datetime:
+        current = self._now()
+        if (
+            not isinstance(current, datetime)
+            or current.tzinfo is None
+            or current.utcoffset() != timedelta(0)
+        ):
+            raise ValidationError("寻源准入 application 时钟必须返回 UTC 时间")
+        return current
+
+    def _require_actor(
+        self,
+        tenant_id: TenantId,
+        actor: SourcingActor,
+        *,
+        roles: frozenset[str],
+    ) -> None:
+        if (
+            tenant_id != self._tenant_id
+            or not isinstance(actor, SourcingActor)
+            or actor.tenant_id != tenant_id
+            or actor.scope.value != "tenant"
+            or actor.role not in roles
+        ):
+            raise PermissionDenied("寻源准入 application 拒绝请求")
+
+    async def _policy_view(self) -> SourcingAdmissionPolicyView:
+        try:
+            policy = await self._policy.read(self._tenant_id)
+        except Exception:  # noqa: BLE001 - policy status 是安全投影，不外泄异常
+            return SourcingAdmissionPolicyView(status="policy_status_unknown")
+        if policy is None:
+            return SourcingAdmissionPolicyView(status="policy_not_configured")
+        if not isinstance(policy, SourcingAdmissionPolicyRead):
+            return SourcingAdmissionPolicyView(status="policy_status_unknown")
+        try:
+            status: Literal["enabled", "automatic_admission_disabled"] = (
+                "enabled" if policy.enabled else "automatic_admission_disabled"
+            )
+            return SourcingAdmissionPolicyView(
+                status=status,
+                directive_id=policy.directive_id,
+                directive_version=policy.directive_version,
+                automatic_admission_enabled=policy.enabled,
+                batch_limit=policy.batch_limit,
+            )
+        except ValueError:
+            return SourcingAdmissionPolicyView(status="policy_status_unknown")
+
+    async def _get_admission(
+        self,
+        admission_id: SourcingAdmissionId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionReadView | None:
+        try:
+            admission = await self._sourcing.get_admission(
+                self._tenant_id,
+                admission_id,
+                actor=actor,
+            )
+        except (PermissionDenied, ValidationError, InvalidStateTransition):
+            raise
+        except Exception:  # noqa: BLE001 - 存储异常不得进入 API
+            raise TransientError("寻源准入状态暂不可用") from None
+        if admission is None:
+            return None
+        if (
+            not isinstance(admission, SourcingAdmissionReadView)
+            or admission.admission_id != admission_id
+        ):
+            raise TransientError("寻源准入状态暂不可用") from None
+        return admission
+
+    async def list_read_view(
+        self,
+        tenant_id: TenantId,
+        *,
+        state: str,
+        limit: int,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionListView:
+        self._require_actor(tenant_id, actor, roles=_ADMISSION_READ_ROLES)
+        try:
+            admission_state = AdmissionState(state)
+        except (TypeError, ValueError):
+            raise ValidationError("admission state 无效") from None
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValidationError("limit 必须是 1..50 的整数")
+        try:
+            admissions = await self._sourcing.list_admissions(
+                self._tenant_id,
+                state=admission_state,
+                limit=limit,
+                now=self._current_time(),
+                actor=actor,
+            )
+        except (PermissionDenied, ValidationError):
+            raise
+        except Exception:  # noqa: BLE001 - 存储异常不得进入 API
+            raise TransientError("寻源准入列表暂不可用") from None
+        if not isinstance(admissions, list) or any(
+            not isinstance(item, SourcingAdmissionReadView) for item in admissions
+        ):
+            raise TransientError("寻源准入列表暂不可用") from None
+        return SourcingAdmissionListView(
+            policy=await self._policy_view(),
+            items=tuple(admissions),
+        )
+
+    async def get_read_view(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionDetailView | None:
+        self._require_actor(tenant_id, actor, roles=_ADMISSION_READ_ROLES)
+        admission = await self._get_admission(admission_id, actor=actor)
+        if admission is None:
+            return None
+        return SourcingAdmissionDetailView(
+            policy=await self._policy_view(),
+            admission=admission,
+        )
+
+    async def admit_one(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        *,
+        request_id: str,
+        actor: SourcingActor,
+    ) -> SourcingAdmissionReadView | None:
+        self._require_actor(tenant_id, actor, roles=_ADMISSION_MANUAL_ROLES)
+        try:
+            command = SourcingAdmissionManualStartCommand(request_id=request_id)
+        except ValueError:
+            raise ValidationError("人工寻源准入 request id 无效") from None
+
+        admission = await self._get_admission(admission_id, actor=actor)
+        if admission is None:
+            return None
+        try:
+            case = await self._sourcing.get_admission_case_snapshot(
+                self._tenant_id,
+                admission.case_id,
+                actor=self._sourcing_actor,
+            )
+        except Exception:  # noqa: BLE001 - canonical Case 读取错误统一脱敏
+            raise TransientError("寻源准入 Case 暂不可确认") from None
+        if admission.state == AdmissionState.BLOCKED.value:
+            raise InvalidStateTransition("寻源准入当前不可人工启动")
+        if (
+            not isinstance(case, SourcingCaseReadView)
+            or case.case_id != admission.case_id
+            or case.need_id != admission.need_id
+        ):
+            raise InvalidStateTransition("寻源准入当前不可人工启动")
+        if admission.state == AdmissionState.ADMITTED.value:
+            return admission
+
+        try:
+            claimed = await self._sourcing.claim_manual_admission(
+                self._tenant_id,
+                admission_id,
+                command,
+                claim_expires_at=self._current_time() + self._lease_duration,
+                actor=actor,
+            )
+        except (PermissionDenied, ValidationError, InvalidStateTransition):
+            raise
+        except Exception:  # noqa: BLE001 - claim 存储异常不得进入 API
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        if claimed is None:
+            return None
+        if (
+            not isinstance(claimed, SourcingAdmission)
+            or claimed.tenant_id != self._tenant_id
+            or claimed.admission_id != admission_id
+            or claimed.case_id != admission.case_id
+            or claimed.need_id != admission.need_id
+        ):
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        if claimed.state is AdmissionState.BLOCKED:
+            raise InvalidStateTransition("寻源准入当前不可人工启动")
+        if claimed.state is AdmissionState.ADMITTED:
+            canonical = await self._get_admission(admission_id, actor=actor)
+            if (
+                canonical is not None
+                and canonical.state == AdmissionState.ADMITTED.value
+            ):
+                return canonical
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        if claimed.state is not AdmissionState.STARTING:
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+
+        try:
+            outcome = await self._starter.admit_one(claimed)
+        except Exception:  # noqa: BLE001 - 共享启动路径的异常统一脱敏
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        if outcome == "blocked":
+            raise InvalidStateTransition("寻源准入当前不可人工启动")
+        if outcome != "admitted":
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        canonical = await self._get_admission(admission_id, actor=actor)
+        if canonical is None or canonical.state != AdmissionState.ADMITTED.value:
+            raise TransientError("寻源准入启动状态暂不可确认") from None
+        return canonical
 
 
 class SourcingPublicSearchBlockedError(PolicyViolation):
@@ -707,7 +1284,17 @@ class SourcingCaseApplication:
 
 
 __all__ = (
+    "DirectiveSourcingAdmissionPolicyReader",
+    "SourcingAdmissionApplication",
+    "SourcingAdmissionAttemptOutcome",
+    "SourcingAdmissionDetailView",
+    "SourcingAdmissionListView",
+    "SourcingAdmissionPolicyRead",
+    "SourcingAdmissionPolicyReader",
+    "SourcingAdmissionPolicyView",
+    "SourcingAdmissionStarter",
     "SourcingCaseApplication",
     "SourcingPlanDeliveryError",
     "SourcingPublicSearchBlockedError",
+    "sourcing_case_start_context",
 )

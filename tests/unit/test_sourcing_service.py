@@ -34,6 +34,7 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingQuery,
     SourcingAdmissionEnqueueCommand,
+    SourcingAdmissionManualStartCommand,
     SourcingMatchInference,
     SourcingNeedSnapshot,
     SourcingObservedFact,
@@ -873,6 +874,28 @@ class _Admissions(_MemoryRepo):
             claimed.append(copy.deepcopy(changed))
         return claimed
 
+    async def claim_one(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        claim_expires_at: datetime,
+        now: datetime,
+    ) -> Any | None:
+        admission = await self.get(tenant_id, admission_id)
+        if admission is None:
+            return None
+        if admission.state is AdmissionState.STARTING:
+            admission = admission.release_expired_claim(now=now)
+        if admission.state is AdmissionState.WAITING:
+            admission = admission.claim(
+                claim_token,
+                claim_expires_at=claim_expires_at,
+                claimed_at=now,
+            )
+            self.state[self.name][(tenant_id, admission_id)] = copy.deepcopy(admission)
+        return copy.deepcopy(admission)
+
     async def complete(
         self,
         tenant_id: TenantId,
@@ -1286,9 +1309,7 @@ async def test_admission_case_snapshot_read_is_system_only_and_tenant_bound() ->
     )
     calls_after_open = factory.calls
 
-    view = await service.get_admission_case_snapshot(
-        TENANT, case_id, actor=SYSTEM
-    )
+    view = await service.get_admission_case_snapshot(TENANT, case_id, actor=SYSTEM)
 
     assert view is not None
     assert view.case_id == case_id
@@ -1325,9 +1346,7 @@ async def test_admission_case_snapshot_read_rejects_three_way_hash_drift(
     else:
         persisted_hash = canonical_hash
         snapshot = snapshot.model_copy(
-            update={
-                "quantity": snapshot.quantity.model_copy(update={"value": 6000})
-            }
+            update={"quantity": snapshot.quantity.model_copy(update={"value": 6000})}
         )
     factory.state["cases"][key] = replace(
         stored,
@@ -1340,6 +1359,7 @@ async def test_admission_case_snapshot_read_rejects_three_way_hash_drift(
         await service.get_admission_case_snapshot(TENANT, case_id, actor=SYSTEM)
 
     assert factory.calls == calls_before_read + 1
+
 
 def _priority_facts(
     need_id: ValidatedNeedId,
@@ -1371,9 +1391,7 @@ async def _enqueue(
         need_id,
         ready_at=ready_at,
         command=SourcingAdmissionEnqueueCommand(
-            facts=_priority_facts(
-                need_id, count=count, cluster_id=cluster_id
-            )
+            facts=_priority_facts(need_id, count=count, cluster_id=cluster_id)
         ),
         actor=SYSTEM,
     )
@@ -1490,6 +1508,92 @@ async def test_non_opened_case_replay_cannot_change_starting_or_admitted_record(
     assert factory.admission_get_or_create_calls == [repository_calls_before]
     assert factory.state["admissions"] == admission_before
     assert factory.state["priority_snapshots"] == snapshots_before
+
+
+@pytest.mark.asyncio
+async def test_manual_claim_targets_exact_admission_and_replays_same_request() -> None:
+    """错误实现若复用全局有序 claim，会启动别的队首 Case 或丢失原请求键。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    first_case = await _opened(service)
+    first_need = _open_command().need.need_id
+    first_id = await _enqueue(
+        service,
+        first_case,
+        first_need,
+        count=8,
+        cluster_id=NeedClusterId("cluster-manual-priority"),
+    )
+    second_need = ValidatedNeedId("need-manual-target")
+    second_command = _open_command().model_copy(
+        update={
+            "need": _open_command().need.model_copy(update={"need_id": second_need}),
+            "trigger_key": f"sourcing-case:v2:{TENANT}:{second_need}",
+        }
+    )
+    second_case = await service.open_case(TENANT, second_command, actor=SYSTEM)
+    second_id = await _enqueue(service, second_case, second_need, count=1)
+    command = SourcingAdmissionManualStartCommand(request_id="manual-request-1")
+
+    claimed = await service.claim_manual_admission(
+        TENANT,
+        second_id,
+        command,
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=BOSS,
+    )
+    replayed = await service.claim_manual_admission(
+        TENANT,
+        second_id,
+        command,
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=BOSS,
+    )
+
+    assert claimed == replayed
+    assert claimed is not None
+    assert claimed.admission_id == second_id
+    assert claimed.state is AdmissionState.STARTING
+    assert claimed.claim_token == "manual-request-1"
+    assert (
+        factory.state["admissions"][(TENANT, first_id)].state is AdmissionState.WAITING
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_claim_rejects_other_request_and_role_before_mutation() -> None:
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+    await service.claim_manual_admission(
+        TENANT,
+        admission_id,
+        SourcingAdmissionManualStartCommand(request_id="manual-owner"),
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=SOURCING,
+    )
+    before = copy.deepcopy(factory.state["admissions"])
+
+    with pytest.raises(InvalidStateTransition):
+        await service.claim_manual_admission(
+            TENANT,
+            admission_id,
+            SourcingAdmissionManualStartCommand(request_id="manual-other"),
+            claim_expires_at=NOW + timedelta(minutes=5),
+            actor=BOSS,
+        )
+    with pytest.raises(PermissionDenied):
+        await service.claim_manual_admission(
+            TENANT,
+            admission_id,
+            SourcingAdmissionManualStartCommand(request_id="manual-owner"),
+            claim_expires_at=NOW + timedelta(minutes=5),
+            actor=PRODUCT,
+        )
+
+    assert factory.state["admissions"] == before
 
 
 @pytest.mark.asyncio
@@ -2124,7 +2228,9 @@ async def test_matching_claim_release_and_expiry_return_to_waiting() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admission_list_preserves_repository_order_and_builds_safe_views() -> None:
+async def test_admission_list_preserves_repository_order_and_builds_safe_views() -> (
+    None
+):
     """服务不得重新排序，也不得暴露租约或 Workflow 字段。"""
 
     factory = _Factory()
@@ -2285,9 +2391,7 @@ async def test_every_admission_entry_authorizes_before_uow(operation: str) -> No
     other_system = SourcingActor(
         "other-system", OTHER_TENANT, SourcingScope.SYSTEM, "system"
     )
-    other_boss = SourcingActor(
-        "other-boss", OTHER_TENANT, SourcingScope.TENANT, "boss"
-    )
+    other_boss = SourcingActor("other-boss", OTHER_TENANT, SourcingScope.TENANT, "boss")
     admission_id = SourcingAdmissionId("sad-forbidden")
     with pytest.raises(PermissionDenied):
         if operation == "refresh":
@@ -2444,9 +2548,7 @@ async def _verifying_case_with_frozen_specs(
     plan = await service.save_public_plan(
         TENANT, case_id, _plan(case_id, 1), actor=BOSS
     )
-    await service.confirm_public_plan(
-        TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
-    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
     return case_id
 
 
@@ -2476,9 +2578,7 @@ async def test_submit_candidate_rejects_model_omitted_from_frozen_need() -> None
     valid = _candidate_with_frozen_required_values()
     submission = valid.model_copy(
         update={
-            "specs": tuple(
-                item for item in valid.specs if item.spec_name != "model"
-            )
+            "specs": tuple(item for item in valid.specs if item.spec_name != "model")
         }
     )
 
@@ -2541,9 +2641,7 @@ async def test_submit_candidate_rejects_material_and_size_not_declared_by_frozen
     plan = await service.save_public_plan(
         TENANT, case_id, _plan(case_id, 1), actor=BOSS
     )
-    await service.confirm_public_plan(
-        TENANT, plan.plan_id, plan.plan_hash, actor=BOSS
-    )
+    await service.confirm_public_plan(TENANT, plan.plan_id, plan.plan_hash, actor=BOSS)
 
     case = factory.state["cases"][(TENANT, case_id)]
     assert case.need_snapshot is not None
@@ -2558,16 +2656,16 @@ async def test_submit_candidate_rejects_material_and_size_not_declared_by_frozen
 
 
 @pytest.mark.asyncio
-async def test_submit_candidate_does_not_require_model_absent_from_frozen_need() -> None:
+async def test_submit_candidate_does_not_require_model_absent_from_frozen_need() -> (
+    None
+):
     factory = _Factory()
     service = _service(factory)
     case_id = await _verifying_case_with_frozen_specs(service, model=None)
     valid = _candidate_with_frozen_required_values()
     no_model = valid.model_copy(
         update={
-            "specs": tuple(
-                item for item in valid.specs if item.spec_name != "model"
-            )
+            "specs": tuple(item for item in valid.specs if item.spec_name != "model")
         }
     )
 

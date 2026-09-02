@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.sourcing.permissions import SourcingActor, SourcingScope
 from domains.sourcing.schemas import (
     PublicSourcingPlanCommand,
     PublicSourcingPlanReadView,
+    SourcingAdmissionReadView,
     SourcingCandidateReadView,
     SourcingCaseReadView,
     SourcingCurrentQuotaReadView,
@@ -21,15 +22,26 @@ from domains.sourcing.schemas import (
     SourcingUncertainExecutionReadView,
     SourcingUncertainReconciliationCommand,
 )
-from domains.sourcing.service import SourcingService
+from domains.sourcing.service import AdmissionState, SourcingService
 from shared.errors import PermissionDenied, TransientError, ValidationError
-from shared.schemas.identifiers import SourcingCaseId, SourcingPlanId
-from workflows.sourcing_case.application import SourcingCaseApplication
+from shared.schemas.identifiers import (
+    SourcingAdmissionId,
+    SourcingCaseId,
+    SourcingPlanId,
+)
+from workflows.sourcing_case.application import (
+    SourcingAdmissionApplication,
+    SourcingAdmissionDetailView,
+    SourcingAdmissionListView,
+    SourcingCaseApplication,
+)
 
 from ..dependencies import (
     ConfiguredApiDependencies,
+    document_idempotency_header,
     get_api_dependencies,
     get_request_identity,
+    raw_idempotency_key,
 )
 from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse
@@ -37,6 +49,7 @@ from ..middleware import ApiErrorResponse
 router = APIRouter()
 
 _CASE_ID = re.compile(r"src_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_ADMISSION_ID = re.compile(r"sad_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _READ_ROLES = frozenset({"boss", "product", "sourcing", "finance"})
 _PLAN_DRAFT_ROLES = frozenset({"boss", "sourcing"})
 _BOSS_ONLY = frozenset({"boss"})
@@ -92,39 +105,82 @@ def _application(dependencies: ConfiguredApiDependencies) -> SourcingCaseApplica
     return dependencies.sourcing_application
 
 
-def _raw_idempotency_key(request: Request) -> str:
-    """强制一条未经框架合并的 Idempotency-Key，避免逗号拼接或隐式修剪。"""
-
-    values = [
-        value.decode("latin-1")
-        for name, value in request.scope.get("headers", [])
-        if name.lower() == b"idempotency-key"
-    ]
-    if len(values) != 1:
-        raise ValidationError("Idempotency-Key 必须且只能出现一次")
-    value = values[0]
-    if (
-        not value
-        or value != value.strip()
-        or len(value) > 200
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValidationError("Idempotency-Key 无效")
-    return value
+def _admission_application(
+    dependencies: ConfiguredApiDependencies,
+) -> SourcingAdmissionApplication:
+    application = getattr(dependencies, "sourcing_admission_application", None)
+    if application is None:
+        raise TransientError("寻源准入编排服务尚未配置")
+    return application
 
 
-def _document_idempotency_header(
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
-) -> None:
-    """仅为 OpenAPI 声明写操作所需的 header；安全校验必须读取原始 ASGI 头。"""
-
-    del idempotency_key
+def _admission_id(value: str) -> SourcingAdmissionId:
+    if _ADMISSION_ID.fullmatch(value) is None:
+        raise ValidationError("寻源准入标识无效")
+    return SourcingAdmissionId(value)
 
 
 def _not_found(value: object) -> object:
     if value is None:
         raise HTTPException(status_code=404)
     return value
+
+
+@router.get(
+    "/sourcing-admissions",
+    response_model=SourcingAdmissionListView,
+    responses=_ERRORS,
+)
+async def list_sourcing_admissions(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    state: AdmissionState = AdmissionState.WAITING,
+    limit: Annotated[int, Query(ge=1, le=50)] = 50,
+) -> SourcingAdmissionListView:
+    actor = _actor(identity, allowed_roles=_READ_ROLES)
+    return await _admission_application(dependencies).list_read_view(
+        identity.tenant_id, state=state.value, limit=limit, actor=actor
+    )
+
+
+@router.get(
+    "/sourcing-admissions/{admission_id}",
+    response_model=SourcingAdmissionDetailView,
+    responses=_ERRORS,
+)
+async def get_sourcing_admission(
+    admission_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> SourcingAdmissionDetailView:
+    actor = _actor(identity, allowed_roles=_READ_ROLES)
+    result = await _admission_application(dependencies).get_read_view(
+        identity.tenant_id, _admission_id(admission_id), actor=actor
+    )
+    return cast(SourcingAdmissionDetailView, _not_found(result))
+
+
+@router.post(
+    "/sourcing-admissions/{admission_id}/admit",
+    response_model=SourcingAdmissionReadView,
+    responses=_ERRORS,
+    dependencies=[Depends(document_idempotency_header)],
+)
+async def manually_admit_sourcing_case(
+    admission_id: str,
+    request: Request,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> SourcingAdmissionReadView:
+    actor = _actor(identity, allowed_roles=frozenset({"boss", "sourcing"}))
+    request_id = raw_idempotency_key(request)
+    result = await _admission_application(dependencies).admit_one(
+        identity.tenant_id,
+        _admission_id(admission_id),
+        request_id=request_id,
+        actor=actor,
+    )
+    return cast(SourcingAdmissionReadView, _not_found(result))
 
 
 @router.get(
@@ -302,7 +358,7 @@ async def create_public_search_plan(
     "/sourcing-cases/{case_id}/public-search-plan/confirm",
     response_model=PublicSourcingPlanReadView,
     responses=_ERRORS,
-    dependencies=[Depends(_document_idempotency_header)],
+    dependencies=[Depends(document_idempotency_header)],
 )
 async def confirm_public_search_plan(
     case_id: str,
@@ -312,7 +368,7 @@ async def confirm_public_search_plan(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> PublicSourcingPlanReadView:
     actor = _actor(identity, allowed_roles=_BOSS_ONLY)
-    _raw_idempotency_key(request)
+    raw_idempotency_key(request)
     normalized_case_id = _case_id(case_id)
     await _application(dependencies).confirm_plan(
         identity.tenant_id,
@@ -331,7 +387,7 @@ async def confirm_public_search_plan(
     "/sourcing-cases/{case_id}/run",
     response_model=PublicSourcingPlanReadView,
     responses=_ERRORS,
-    dependencies=[Depends(_document_idempotency_header)],
+    dependencies=[Depends(document_idempotency_header)],
 )
 async def run_public_search_plan(
     case_id: str,
@@ -341,7 +397,7 @@ async def run_public_search_plan(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> PublicSourcingPlanReadView:
     actor = _actor(identity, allowed_roles=_BOSS_ONLY)
-    _raw_idempotency_key(request)
+    raw_idempotency_key(request)
     normalized_case_id = _case_id(case_id)
     await _application(dependencies).run(
         identity.tenant_id,
@@ -360,7 +416,7 @@ async def run_public_search_plan(
     "/sourcing-cases/{case_id}/review",
     response_model=SourcingReviewReadView,
     responses=_ERRORS,
-    dependencies=[Depends(_document_idempotency_header)],
+    dependencies=[Depends(document_idempotency_header)],
 )
 async def submit_review(
     case_id: str,
@@ -370,7 +426,7 @@ async def submit_review(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> SourcingReviewReadView:
     actor = _actor(identity, allowed_roles=_REVIEW_ROLES)
-    request_id = _raw_idempotency_key(request)
+    request_id = raw_idempotency_key(request)
     normalized_case_id = _case_id(case_id)
     await _application(dependencies).review(
         identity.tenant_id,
@@ -388,7 +444,7 @@ async def submit_review(
 @router.post(
     "/sourcing-cases/{case_id}/reconcile-uncertain-request",
     responses=_ERRORS,
-    dependencies=[Depends(_document_idempotency_header)],
+    dependencies=[Depends(document_idempotency_header)],
 )
 async def reconcile_uncertain_request(
     case_id: str,
@@ -398,7 +454,7 @@ async def reconcile_uncertain_request(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> None:
     actor = _actor(identity, allowed_roles=_BOSS_ONLY)
-    _raw_idempotency_key(request)
+    raw_idempotency_key(request)
     await _application(dependencies).reconcile_uncertain(
         identity.tenant_id, _case_id(case_id), command, actor=actor
     )

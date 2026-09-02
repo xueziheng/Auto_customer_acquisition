@@ -58,3 +58,13 @@ API报价结果仅经原structured_log通知出口，不宣称站内已投递，
 ## Sourcing V2 HTTP
 
 `/sourcing-cases` 只提供 Case/ladder/candidate/public-plan/quota/review/reconciliation 的安全投影和 plan/confirm/run/review/reconcile 命令。所有命令要求相应角色与精确 ID；confirm/run/review/reconcile 还要求原始 `Idempotency-Key`。API 不构造搜索、页面或模型依赖。`lane` 未持久化时必须为 null/unknown，页面公开事实不得显示为 verified contact 或 quoted price；5xx/无权限必须保留局部错误状态，不能伪装为空列表。
+
+## Need Cluster 寻源准入 HTTP
+
+老板通过 `/commands/sourcing-admission-proposals` 提交并确认完整、显式的
+`cluster_ranked` 配置；确认只激活 Directive，绝不直接启动 Workflow。准入列表与详情仅返回
+寻源域安全投影，并由 application 层附加 `policy_not_configured`、
+`automatic_admission_disabled`、`policy_status_unknown` 或 `enabled`，不得把 scheduler 状态写回域。
+人工准入仅允许 boss/sourcing，必须验证恰好一个未经修剪的原始 `Idempotency-Key`，并经
+`workflows/sourcing_case/application.py` 与 scheduler 共用的单项 claim/start/bind 路径；错 tenant
+和错角色须在服务 IO 前拒绝，内部依赖错误统一映射为脱敏 503。

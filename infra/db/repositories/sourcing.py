@@ -610,9 +610,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         admission = _row_to_admission(admission_row)
         if admission.current_snapshot_id is not None and snapshot_row is None:
             raise ValidationError("准入 current snapshot 不存在或不属于当前租户")
-        snapshot = (
-            _row_to_snapshot(snapshot_row) if snapshot_row is not None else None
-        )
+        snapshot = _row_to_snapshot(snapshot_row) if snapshot_row is not None else None
         return admission, snapshot
 
     @staticmethod
@@ -892,9 +890,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         self._require_tenant(tenant_id)
         limit = _require_limit(limit, maximum=50)
         claim_token = _require_bounded_identifier(claim_token, "claim_token")
-        claim_expires_at = _require_utc_datetime(
-            claim_expires_at, "claim_expires_at"
-        )
+        claim_expires_at = _require_utc_datetime(claim_expires_at, "claim_expires_at")
         now = _require_utc_datetime(now, "now")
         if claim_expires_at <= now:
             raise ValidationError("claim_expires_at 必须晚于 now")
@@ -955,6 +951,61 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             if changed is not None:
                 claimed.append(_row_to_admission(changed))
         return claimed
+
+    async def claim_one(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        claim_expires_at: datetime,
+        now: datetime,
+    ) -> SourcingAdmission | None:
+        self._require_tenant(tenant_id)
+        _require_bounded_identifier(admission_id, "admission_id")
+        claim_token = _require_bounded_identifier(claim_token, "claim_token")
+        claim_expires_at = _require_utc_datetime(claim_expires_at, "claim_expires_at")
+        now = _require_utc_datetime(now, "now")
+        if claim_expires_at <= now:
+            raise ValidationError("claim_expires_at 必须晚于 now")
+
+        row = (
+            await self._session.execute(
+                self._admissions()
+                .where(SourcingAdmissionRow.admission_id == str(admission_id))
+                .with_for_update(of=SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        admission = _row_to_admission(row)
+        if admission.state not in {AdmissionState.WAITING, AdmissionState.STARTING}:
+            return admission
+        if (
+            admission.state is AdmissionState.STARTING
+            and admission.claim_expires_at is not None
+            and admission.claim_expires_at > now
+        ):
+            return admission
+
+        changed = (
+            await self._session.execute(
+                update(SourcingAdmissionRow)
+                .where(
+                    SourcingAdmissionRow.tenant_id == str(tenant_id),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                    self._claimable(now),
+                    SourcingAdmissionRow.updated_at <= now,
+                )
+                .values(
+                    state=AdmissionState.STARTING.value,
+                    claim_token=claim_token,
+                    claim_expires_at=claim_expires_at,
+                    updated_at=now,
+                )
+                .returning(SourcingAdmissionRow)
+            )
+        ).scalar_one_or_none()
+        return _row_to_admission(changed) if changed is not None else None
 
     async def complete(
         self,
@@ -1136,21 +1187,18 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             raise ValidationError("admission state 无效")
         limit = _require_limit(limit, maximum=200)
         rows = (
-            (
-                await self._session.execute(
-                    self._admissions_with_current_snapshot()
-                    .where(SourcingAdmissionRow.state == state.value)
-                    .order_by(
-                        SourcingPrioritySnapshotRow.cluster_member_count.desc().nulls_last(),
-                        SourcingAdmissionRow.ready_at,
-                        SourcingAdmissionRow.need_id,
-                        SourcingAdmissionRow.admission_id,
-                    )
-                    .limit(limit)
+            await self._session.execute(
+                self._admissions_with_current_snapshot()
+                .where(SourcingAdmissionRow.state == state.value)
+                .order_by(
+                    SourcingPrioritySnapshotRow.cluster_member_count.desc().nulls_last(),
+                    SourcingAdmissionRow.ready_at,
+                    SourcingAdmissionRow.need_id,
+                    SourcingAdmissionRow.admission_id,
                 )
+                .limit(limit)
             )
-            .all()
-        )
+        ).all()
         return [self._read_pair(row[0], row[1]) for row in rows]
 
 

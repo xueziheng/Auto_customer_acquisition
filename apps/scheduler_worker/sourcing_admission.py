@@ -6,23 +6,23 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal
 from uuid import uuid4
 
 from domains.sourcing.permissions import SourcingActor, SourcingScope
-from domains.sourcing.schemas import SourcingCaseReadView, SourcingNeedSnapshot
 from domains.sourcing.service import (
-    AdmissionBlockedReason,
-    AdmissionState,
     SourcingAdmission,
     SourcingService,
 )
-from shared.errors import TradeOSError, ValidationError
-from shared.schemas.identifiers import RunId, TenantId
+from shared.errors import ValidationError
+from shared.schemas.identifiers import TenantId
 from workflows.engine.runner import WorkflowEngine
-
-from ._sourcing_context import _safe_context
-from .directive_reader import SourcingAdmissionPolicyRead
+from workflows.sourcing_case.application import (
+    SourcingAdmissionAttemptOutcome,
+    SourcingAdmissionPolicyRead,
+    SourcingAdmissionPolicyReader,
+    SourcingAdmissionStarter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +33,6 @@ _StopReason = Literal[
     "admission_status_unknown",
     "batch_processed",
 ]
-_AttemptOutcome = Literal["admitted", "waiting", "blocked", "pending_recovery"]
-
-
-class SourcingAdmissionPolicyReader(Protocol):
-    async def read(
-        self, tenant_id: TenantId
-    ) -> SourcingAdmissionPolicyRead | None: ...
 
 
 @dataclass(frozen=True)
@@ -102,6 +95,13 @@ class SourcingAdmissionDriver:
         self._sourcing_actor = sourcing_actor
         self._lease_duration = lease_duration
         self._now = now
+        self._starter = SourcingAdmissionStarter(
+            sourcing=sourcing,
+            engine=engine,
+            tenant_id=tenant_id,
+            sourcing_actor=sourcing_actor,
+            now=now,
+        )
 
     @property
     def tenant_id(self) -> TenantId:
@@ -124,7 +124,9 @@ class SourcingAdmissionDriver:
             raise ValidationError("寻源准入时钟必须返回 UTC 时间")
         return current
 
-    def _finish(self, result: SourcingAdmissionScanResult) -> SourcingAdmissionScanResult:
+    def _finish(
+        self, result: SourcingAdmissionScanResult
+    ) -> SourcingAdmissionScanResult:
         logger.info(
             "寻源准入扫描完成",
             extra={
@@ -159,9 +161,7 @@ class SourcingAdmissionDriver:
             )
         if not policy.enabled:
             return self._finish(
-                SourcingAdmissionScanResult(
-                    stop_reason="automatic_admission_disabled"
-                )
+                SourcingAdmissionScanResult(stop_reason="automatic_admission_disabled")
             )
 
         now = self._current_time()
@@ -222,125 +222,12 @@ class SourcingAdmissionDriver:
             )
         )
 
-    async def _admit_one(self, admission: SourcingAdmission) -> _AttemptOutcome:
-        """处理一条已 claim admission；启动后的任何不确定性均等待租约恢复。"""
+    async def _admit_one(
+        self, admission: SourcingAdmission
+    ) -> SourcingAdmissionAttemptOutcome:
+        """把批处理中的单项启动委托给 API 共用的 application seam。"""
 
-        if (
-            not isinstance(admission, SourcingAdmission)
-            or admission.tenant_id != self._tenant_id
-            or admission.state is not AdmissionState.STARTING
-            or admission.claim_token is None
-        ):
-            return "pending_recovery"
-        claim_token = admission.claim_token
-        try:
-            case = await self._sourcing.get_admission_case_snapshot(
-                self._tenant_id,
-                admission.case_id,
-                actor=self._sourcing_actor,
-            )
-        except Exception as error:  # noqa: BLE001 - 未启动前按已知语义处置
-            return await self._handle_pre_start_error(admission, claim_token, error)
-        if case is None:
-            return await self._block(admission, claim_token)
-        if (
-            not isinstance(case, SourcingCaseReadView)
-        ):
-            return "pending_recovery"
-        snapshot = case.need_snapshot
-        if (
-            case.case_id != admission.case_id
-            or case.need_id != admission.need_id
-            or type(case.workflow_version) is not int
-            or case.workflow_version != 2
-            or case.state != "opened"
-            or not isinstance(snapshot, SourcingNeedSnapshot)
-            or snapshot.need_id != admission.need_id
-            or not isinstance(snapshot.snapshot_hash, str)
-            or len(snapshot.snapshot_hash) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in snapshot.snapshot_hash
-            )
-        ):
-            return await self._block(admission, claim_token)
-        try:
-            safe_context = _safe_context(snapshot, str(admission.case_id))
-        except TradeOSError:
-            return await self._block(admission, claim_token)
-
-        try:
-            run_id = await self._engine.start(
-                self._tenant_id,
-                "sourcing_case",
-                str(admission.case_id),
-                safe_context,
-                f"sourcing-case:v2:{self._tenant_id}:{admission.need_id}",
-            )
-        except TradeOSError as error:
-            if error.is_retryable:
-                return await self._release(admission, claim_token)
-            return await self._block(admission, claim_token)
-        except Exception:  # noqa: BLE001 - start 结果未知，严禁即时重试或换键
-            return "pending_recovery"
-        if not isinstance(run_id, str) or not run_id or run_id != run_id.strip():
-            return "pending_recovery"
-        try:
-            await self._sourcing.complete_admission(
-                self._tenant_id,
-                admission.admission_id,
-                claim_token=claim_token,
-                workflow_run_id=RunId(run_id),
-                admitted_by=self._sourcing_actor.actor_id,
-                admitted_at=self._current_time(),
-                actor=self._sourcing_actor,
-            )
-        except Exception:  # noqa: BLE001 - Run 或 bind 可能已提交，等待同键恢复
-            return "pending_recovery"
-        return "admitted"
-
-    async def _handle_pre_start_error(
-        self,
-        admission: SourcingAdmission,
-        claim_token: str,
-        error: Exception,
-    ) -> _AttemptOutcome:
-        if isinstance(error, TradeOSError):
-            if error.is_retryable:
-                return await self._release(admission, claim_token)
-            return await self._block(admission, claim_token)
-        return "pending_recovery"
-
-    async def _release(
-        self, admission: SourcingAdmission, claim_token: str
-    ) -> _AttemptOutcome:
-        try:
-            await self._sourcing.release_admission_claim(
-                self._tenant_id,
-                admission.admission_id,
-                claim_token=claim_token,
-                released_at=self._current_time(),
-                actor=self._sourcing_actor,
-            )
-        except Exception:  # noqa: BLE001 - cleanup 不确定仍保守等待 lease
-            return "pending_recovery"
-        return "waiting"
-
-    async def _block(
-        self, admission: SourcingAdmission, claim_token: str
-    ) -> _AttemptOutcome:
-        try:
-            await self._sourcing.block_admission(
-                self._tenant_id,
-                admission.admission_id,
-                reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
-                blocked_at=self._current_time(),
-                claim_token=claim_token,
-                actor=self._sourcing_actor,
-            )
-        except Exception:  # noqa: BLE001 - cleanup 不确定仍保守等待 lease
-            return "pending_recovery"
-        return "blocked"
+        return await self._starter.admit_one(admission)
 
 
 __all__ = (

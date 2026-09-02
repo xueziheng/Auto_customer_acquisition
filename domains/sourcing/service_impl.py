@@ -71,6 +71,7 @@ from domains.sourcing.schemas import (
     PublicSourcingPlanReadView,
     PublicSourcingQueryReadView,
     SourcingAdmissionEnqueueCommand,
+    SourcingAdmissionManualStartCommand,
     SourcingAdmissionReadView,
     SourcingArtifactSummaryView,
     SourcingCandidateProductInput,
@@ -423,9 +424,7 @@ def _candidate_from_submission(
     evidence: EvidenceSnapshot,
 ) -> SupplierCandidate:
     required_specs = dict(_frozen_need_required_specs(case))
-    submitted_names = {
-        _normalize(item.spec_name) for item in submission.specs
-    }
+    submitted_names = {_normalize(item.spec_name) for item in submission.specs}
     for item in submission.specs:
         name = _normalize(item.spec_name)
         # material/size 是候选合格判定的基础客户规格；Need 快照没有该事实时，
@@ -1166,9 +1165,7 @@ class SourcingServiceImpl:
             )
 
         async with self._uow_factory(tenant_id) as uow:
-            case = _case_required(
-                await uow.cases.get_for_update(tenant_id, case_id)
-            )
+            case = _case_required(await uow.cases.get_for_update(tenant_id, case_id))
             if case.workflow_version != 2:
                 raise ValidationError("寻源准入要求 V2 Case")
             if case.state is not CaseState.OPENED:
@@ -1180,8 +1177,8 @@ class SourcingServiceImpl:
                 raise ValidationError("寻源准入 Case、Need 与快照不一致")
             if need_snapshot.completeness < 3:
                 raise ValidationError("寻源准入目标 Need 完整度不足 3")
-            canonical, canonical_snapshot, created = (
-                await uow.admissions.get_or_create(tenant_id, admission, snapshot)
+            canonical, canonical_snapshot, created = await uow.admissions.get_or_create(
+                tenant_id, admission, snapshot
             )
             if (
                 canonical.tenant_id != tenant_id
@@ -1198,11 +1195,11 @@ class SourcingServiceImpl:
                     snapshot,
                     admission_id=canonical.admission_id,
                 )
-                _, canonical_snapshot, _ = (
-                    await uow.admissions.append_snapshot_if_changed(
-                        tenant_id, repaired
-                    )
-                )
+                (
+                    _,
+                    canonical_snapshot,
+                    _,
+                ) = await uow.admissions.append_snapshot_if_changed(tenant_id, repaired)
             return canonical.admission_id
 
     async def refresh_admission(
@@ -1396,6 +1393,44 @@ class SourcingServiceImpl:
                 tenant_id, limit, claim_token, claim_expires_at, now
             )
 
+    async def claim_manual_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        command: SourcingAdmissionManualStartCommand,
+        *,
+        claim_expires_at: datetime,
+        actor: SourcingActor,
+    ) -> SourcingAdmission | None:
+        self._require(
+            tenant_id,
+            actor,
+            SourcingAction.ADMISSION_MANUAL_START,
+            SourcingScope.TENANT,
+        )
+        _bounded_identifier(admission_id, "admission_id")
+        if not isinstance(command, SourcingAdmissionManualStartCommand):
+            raise ValidationError("人工寻源准入命令无效")
+        claim_expires_at = _utc_time(claim_expires_at, "claim_expires_at")
+        now = _utc_time(self._now(), "now")
+        if claim_expires_at <= now:
+            raise ValidationError("claim_expires_at 必须晚于 now")
+        async with self._uow_factory(tenant_id) as uow:
+            admission = await uow.admissions.claim_one(
+                tenant_id,
+                admission_id,
+                command.request_id,
+                claim_expires_at,
+                now,
+            )
+            if (
+                admission is not None
+                and admission.state is AdmissionState.STARTING
+                and admission.claim_token != command.request_id
+            ):
+                raise InvalidStateTransition("寻源准入已由另一请求启动")
+            return admission
+
     async def complete_admission(
         self,
         tenant_id: TenantId,
@@ -1503,13 +1538,9 @@ class SourcingServiceImpl:
                 claim_token=claim_token,
             )
             if blocked is None:
-                raise InvalidStateTransition(
-                    "寻源准入 claim token 与当前状态不匹配"
-                )
+                raise InvalidStateTransition("寻源准入 claim token 与当前状态不匹配")
 
-    def _can_manual_start(
-        self, tenant_id: TenantId, actor: SourcingActor
-    ) -> bool:
+    def _can_manual_start(self, tenant_id: TenantId, actor: SourcingActor) -> bool:
         try:
             self._require(
                 tenant_id,
@@ -1610,8 +1641,7 @@ class SourcingServiceImpl:
                 or not isinstance(persisted_hash, str)
                 or len(persisted_hash) != 64
                 or any(
-                    character not in "0123456789abcdef"
-                    for character in persisted_hash
+                    character not in "0123456789abcdef" for character in persisted_hash
                 )
                 or persisted_hash != snapshot.snapshot_hash
                 or persisted_hash != canonical_sourcing_need_snapshot_hash(snapshot)
@@ -3233,7 +3263,9 @@ class SourcingServiceImpl:
             if _is_opportunity_wait_stop(case):
                 return
             if case.stop_code is not None or case.stop_detail is not None:
-                raise InvalidStateTransition("寻源案例已有停止原因，不能覆盖成本交接等待")
+                raise InvalidStateTransition(
+                    "寻源案例已有停止原因，不能覆盖成本交接等待"
+                )
             case.stop_code = SourcingStopCode.OPPORTUNITY_REQUIRED
             case.stop_detail = SourcingStopDetail(SourcingStopStage.COST_HANDOFF)
             await uow.cases.set_recoverable_stop(

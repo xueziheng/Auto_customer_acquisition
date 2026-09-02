@@ -103,9 +103,7 @@ def _runtime_env(database_url: str) -> dict[str, str]:
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsubscribe.example.test",
         "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "feedback-route-v1",
         "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "2026-v1",
-        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
-            '{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'
-        ),
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": ('{"2026-v1":"UNSUBSCRIBE_HMAC_2026"}'),
         "UNSUBSCRIBE_HMAC_2026": "u" * 32,
         "TRADEOS_TOOL_LEASE_SECONDS": "120",
         "S3_ENDPOINT": "http://127.0.0.1:19000",
@@ -146,7 +144,9 @@ async def test_runtime_accepts_exact_head_and_rejects_downgraded_schema(
     try:
         await module.assert_database_schema_current(engine)
         _run_alembic(str(db_url), "downgrade", "-1")
-        with pytest.raises(module.RuntimeStartupError, match="API runtime 启动检查失败"):
+        with pytest.raises(
+            module.RuntimeStartupError, match="API runtime 启动检查失败"
+        ):
             await module.assert_database_schema_current(engine)
     finally:
         _run_alembic(str(db_url), "upgrade", "head")
@@ -174,7 +174,9 @@ async def test_runtime_rejects_unknown_or_multiple_database_heads(
                     text("INSERT INTO alembic_version(version_num) VALUES (:head)"),
                     {"head": head},
                 )
-        with pytest.raises(module.RuntimeStartupError, match="API runtime 启动检查失败"):
+        with pytest.raises(
+            module.RuntimeStartupError, match="API runtime 启动检查失败"
+        ):
             await module.assert_database_schema_current(engine)
     finally:
         async with engine.begin() as connection:
@@ -212,9 +214,15 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
     monkeypatch.setattr(AsyncEngine, "dispose", recording_dispose)
     app = module.create_runtime_app()
     async with app.router.lifespan_context(app):
+        from domains.demand.service_impl import DemandServiceImpl
         from infra.db.outbox_delivery import OutboxDeliverer
         from infra.db.repositories.notifications import PostgresNotificationDedupStore
         from infra.db.workflow_engine import PostgresWorkflowEngine
+        from workflows.sourcing_case.application import (
+            DirectiveSourcingAdmissionPolicyReader,
+            SourcingAdmissionApplication,
+            SourcingAdmissionStarter,
+        )
 
         dependencies = get_api_dependencies(_request_for(app))
         assert isinstance(dependencies.organization, OrganizationService)
@@ -233,6 +241,34 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         )
         assert snapshot.state is ProviderReadinessState.PROVIDER_NOT_CONFIGURED
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
+        assert isinstance(dependencies.demand_radar._demand, DemandServiceImpl)
+        assert callable(
+            getattr(
+                dependencies.demand_radar._demand,
+                "get_cluster_priority_facts",
+                None,
+            )
+        )
+        assert isinstance(
+            dependencies.sourcing_admission_application,
+            SourcingAdmissionApplication,
+        )
+        assert (
+            dependencies.sourcing_admission_application._sourcing
+            is dependencies.sourcing
+        )
+        assert isinstance(
+            dependencies.sourcing_admission_application._policy,
+            DirectiveSourcingAdmissionPolicyReader,
+        )
+        assert isinstance(
+            dependencies.sourcing_admission_application._starter,
+            SourcingAdmissionStarter,
+        )
+        assert (
+            dependencies.sourcing_admission_application._starter._engine
+            is dependencies.workflow_engine
+        )
         assert {
             definition.version
             for definition in dependencies.workflow_engine._definitions.values()
@@ -240,7 +276,9 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         } == {1, 2}
         assert "ResearchEvidence" in app.openapi()["components"]["schemas"]
         assert isinstance(dependencies.outbox_deliverer, OutboxDeliverer)
-        assert "country_policy_change.assemble" in dependencies.workflow_engine._handlers
+        assert (
+            "country_policy_change.assemble" in dependencies.workflow_engine._handlers
+        )
         assert {
             definition.workflow_type
             for definition in dependencies.workflow_engine._definitions.values()

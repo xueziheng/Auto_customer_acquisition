@@ -36,6 +36,7 @@ from domains.sourcing.schemas import (
     SourcingReviewCommand,
     SourcingAdmissionReadView,
     SourcingAdmissionEnqueueCommand,
+    SourcingAdmissionManualStartCommand,
     SourcingPriorityFactsInput,
     SourcingCaseReadView,
     SourcingCandidateReadView,
@@ -234,6 +235,18 @@ class SourcingService(Protocol):
         actor: SourcingActor,
     ) -> list[SourcingAdmission]:
         """以 repository 固定全局顺序 claim waiting admission，不能在内存重排。"""
+        ...
+
+    async def claim_manual_admission(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        command: SourcingAdmissionManualStartCommand,
+        *,
+        claim_expires_at: datetime,
+        actor: SourcingActor,
+    ) -> SourcingAdmission | None:
+        """boss/sourcing 以原始 request id 精确 claim；同请求可恢复同一启动。"""
         ...
 
     async def complete_admission(

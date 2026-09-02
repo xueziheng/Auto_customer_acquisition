@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Protocol, runtime_checkable
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
@@ -98,7 +98,10 @@ from workflows.employee_work_intake.schemas import (
 )
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
-from workflows.sourcing_case.application import SourcingCaseApplication
+from workflows.sourcing_case.application import (
+    SourcingAdmissionApplication,
+    SourcingCaseApplication,
+)
 
 from .composition.quotations import QuotationHttpComposition
 from .composition.research_accounts import ResearchEvidenceReader
@@ -284,6 +287,7 @@ class ConfiguredApiDependencies:
     quotation: QuotationHttpComposition | None = None
     sourcing: SourcingService | None = None
     sourcing_application: SourcingCaseApplication | None = None
+    sourcing_admission_application: SourcingAdmissionApplication | None = None
     products: ProductService | None = None
     configured: bool = True
 
@@ -343,6 +347,35 @@ def get_api_dependencies(request: Request) -> ConfiguredApiDependencies:
     if not isinstance(dependencies, ConfiguredApiDependencies):
         raise TransientError("API runtime 尚未配置")
     return dependencies
+
+
+def raw_idempotency_key(request: Request) -> str:
+    """强制一条未经框架合并的原始幂等键，不接受隐式修剪或控制字符。"""
+
+    values = [
+        value.decode("latin-1")
+        for name, value in request.scope.get("headers", [])
+        if name.lower() == b"idempotency-key"
+    ]
+    if len(values) != 1:
+        raise ValidationError("Idempotency-Key 必须且只能出现一次")
+    value = values[0]
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError("Idempotency-Key 无效")
+    return value
+
+
+def document_idempotency_header(
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> None:
+    """仅声明 OpenAPI header；安全判断必须读取未经合并的 ASGI 原始头。"""
+
+    del idempotency_key
 
 
 # identity 仅在本模块容器契约定义完成后单向导入；identity 的反向边只用于类型检查。

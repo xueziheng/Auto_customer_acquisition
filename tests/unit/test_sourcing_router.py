@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient, Response
@@ -20,12 +21,14 @@ from domains.opportunities.permissions import OpportunityScope
 from domains.sourcing.schemas import (
     PublicSourcingPlanReadView,
     PublicSourcingQueryReadView,
+    SourcingAdmissionReadView,
 )
 from shared.errors import InvalidStateTransition
 from shared.schemas.identifiers import EmployeeId, SourcingPlanId, TenantId
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
 CASE_ID = "src_01K39P9M5D6K4A91YEQ80EJZ0X"
+ADMISSION_ID = "sad_01K39P9M5D6K4A91YEQ80EJZ0X"
 EMPLOYEE = EmployeeId("emp_01K39P9M5D6K4A91YEQ80EJZ0X")
 
 
@@ -87,6 +90,73 @@ class _PlanApplication:
 
     async def create_plan(self, tenant_id, case_id, command, *, actor) -> None:
         self.command = (tenant_id, case_id, command, actor)
+
+
+def _admission_view(*, state: str = "waiting") -> SourcingAdmissionReadView:
+    return SourcingAdmissionReadView(
+        admission_id=ADMISSION_ID,
+        case_id=CASE_ID,
+        need_id="need_01K39P9M5D6K4A91YEQ80EJZ0X",
+        state=state,
+        snapshot_id="sps_01K39P9M5D6K4A91YEQ80EJZ0X",
+        cluster_id="ncl_01K39P9M5D6K4A91YEQ80EJZ0X",
+        cluster_member_count=8,
+        ready_at=datetime(2026, 9, 1, 12, tzinfo=UTC),
+        facts_observed_at=datetime(2026, 9, 2, 11, tzinfo=UTC),
+        ranking_version="need-cluster-admission-v1",
+        explanation="该需求簇当前有 8 条已验证需求；同规模需求按等待时间排序。",
+        waiting_duration_seconds=86_400,
+        admitted_at=datetime(2026, 9, 2, 12, tzinfo=UTC)
+        if state == "admitted"
+        else None,
+        admitted_by=str(EMPLOYEE) if state == "admitted" else None,
+        can_current_user_manual_start=state == "waiting",
+    )
+
+
+class _AdmissionApplication:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def list_read_view(self, tenant_id, *, state, limit, actor):
+        self.calls.append(("list", tenant_id, state, limit, actor))
+        return {
+            "policy": {
+                "status": "automatic_admission_disabled",
+                "directive_id": "dir-policy",
+                "directive_version": 7,
+                "automatic_admission_enabled": False,
+                "batch_limit": 3,
+            },
+            "items": (_admission_view(),),
+        }
+
+    async def get_read_view(self, tenant_id, admission_id, *, actor):
+        self.calls.append(("get", tenant_id, admission_id, actor))
+        if str(admission_id).endswith("Z0Y"):
+            return None
+        return {
+            "policy": {
+                "status": "policy_not_configured",
+                "directive_id": None,
+                "directive_version": None,
+                "automatic_admission_enabled": None,
+                "batch_limit": None,
+            },
+            "admission": _admission_view(),
+        }
+
+    async def admit_one(self, tenant_id, admission_id, *, request_id, actor):
+        self.calls.append(("admit", tenant_id, admission_id, request_id, actor))
+        return _admission_view(state="admitted")
+
+
+def _dependencies_with_admission(admission: _AdmissionApplication) -> SimpleNamespace:
+    return SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_SourcingApplication(),
+        sourcing_admission_application=admission,
+    )
 
 
 def _identity(role: str) -> RequestIdentity:
@@ -310,3 +380,149 @@ def test_openapi_lists_only_safe_quota_review_and_uncertain_recovery_reads() -> 
     assert "/sourcing-cases/{case_id}/review" in paths
     assert "/sourcing-cases/{case_id}/uncertain-reconciliations" in paths
     assert set(paths["/sourcing-cases/{case_id}/review"]) == {"get", "post"}
+
+
+def test_admission_list_and_detail_use_safe_views_for_existing_read_roles() -> None:
+    for role in ("boss", "product", "sourcing", "finance"):
+        app, _ = _app(role)
+        admission = _AdmissionApplication()
+        app.dependency_overrides[get_api_dependencies] = partial(
+            _dependencies_with_admission, admission
+        )
+
+        listed = _request(app, "GET", "/sourcing-admissions?state=waiting&limit=7")
+        detailed = _request(app, "GET", f"/sourcing-admissions/{ADMISSION_ID}")
+
+        assert listed.status_code == 200
+        assert listed.json()["policy"]["status"] == "automatic_admission_disabled"
+        assert listed.json()["policy"]["batch_limit"] == 3
+        assert listed.json()["items"][0]["cluster_member_count"] == 8
+        assert detailed.status_code == 200
+        assert detailed.json()["policy"]["status"] == "policy_not_configured"
+        assert detailed.json()["admission"]["admission_id"] == ADMISSION_ID
+        assert "claim_token" not in detailed.text
+        assert "claim_expires_at" not in detailed.text
+        assert admission.calls[0][0:4] == ("list", TENANT, "waiting", 7)
+
+
+def test_admission_read_role_and_tenant_gates_run_before_application_io() -> None:
+    app, _ = _app("manager")
+    admission = _AdmissionApplication()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_SourcingApplication(),
+        sourcing_admission_application=admission,
+    )
+
+    denied_role = _request(app, "GET", "/sourcing-admissions")
+
+    async def wrong_tenant() -> Response:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            return await client.get(
+                "/sourcing-admissions",
+                headers=[
+                    ("X-Employee-Id", str(EMPLOYEE)),
+                    ("X-Tenant-Id", "tn_01K39P9M5D6K4A91YEQ80EJZ0Y"),
+                ],
+            )
+
+    denied_tenant = asyncio.run(wrong_tenant())
+
+    assert denied_role.status_code == 403
+    assert denied_tenant.status_code == 403
+    assert admission.calls == []
+
+
+def test_admission_detail_absent_is_404_and_dependency_absence_is_503() -> None:
+    app, _ = _app("boss")
+    admission = _AdmissionApplication()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_SourcingApplication(),
+        sourcing_admission_application=admission,
+    )
+    absent_id = "sad_01K39P9M5D6K4A91YEQ80EJZ0Y"
+
+    absent = _request(app, "GET", f"/sourcing-admissions/{absent_id}")
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_SourcingApplication(),
+        sourcing_admission_application=None,
+    )
+    unavailable = _request(app, "GET", "/sourcing-admissions")
+
+    assert absent.status_code == 404
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {
+        "code": "service_unavailable",
+        "message": "服务暂时不可用",
+    }
+
+
+def test_manual_admit_is_boss_or_sourcing_only_with_exact_raw_request_id() -> None:
+    for role, expected in (("boss", 200), ("sourcing", 200), ("product", 403)):
+        app, _ = _app(role)
+        admission = _AdmissionApplication()
+        app.dependency_overrides[get_api_dependencies] = partial(
+            _dependencies_with_admission, admission
+        )
+
+        response = _request(
+            app,
+            "POST",
+            f"/sourcing-admissions/{ADMISSION_ID}/admit",
+            headers=[("Idempotency-Key", "manual-admit-raw-key")],
+        )
+
+        assert response.status_code == expected
+        if expected == 200:
+            assert response.json()["state"] == "admitted"
+            assert admission.calls[0][0:4] == (
+                "admit",
+                TENANT,
+                ADMISSION_ID,
+                "manual-admit-raw-key",
+            )
+        else:
+            assert admission.calls == []
+
+
+def test_manual_admit_rejects_missing_duplicate_or_invalid_raw_key_before_io() -> None:
+    app, _ = _app("boss")
+    admission = _AdmissionApplication()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(),
+        sourcing_application=_SourcingApplication(),
+        sourcing_admission_application=admission,
+    )
+
+    responses = [
+        _request(app, "POST", f"/sourcing-admissions/{ADMISSION_ID}/admit"),
+        _request(
+            app,
+            "POST",
+            f"/sourcing-admissions/{ADMISSION_ID}/admit",
+            headers=[("Idempotency-Key", "one"), ("Idempotency-Key", "two")],
+        ),
+        _request(
+            app,
+            "POST",
+            f"/sourcing-admissions/{ADMISSION_ID}/admit",
+            headers=[("Idempotency-Key", " padded")],
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [400, 400, 400]
+    assert admission.calls == []
+    operation = app.openapi()["paths"]["/sourcing-admissions/{admission_id}/admit"][
+        "post"
+    ]
+    header = next(
+        item
+        for item in operation["parameters"]
+        if item["in"] == "header" and item["name"] == "Idempotency-Key"
+    )
+    assert header["required"] is True

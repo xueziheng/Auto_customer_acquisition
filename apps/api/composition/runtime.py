@@ -261,7 +261,12 @@ from workflows.quote_approval.flow import (
 )
 from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
 from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
-from workflows.sourcing_case.application import SourcingCaseApplication
+from workflows.sourcing_case.application import (
+    DirectiveSourcingAdmissionPolicyReader,
+    SourcingAdmissionApplication,
+    SourcingAdmissionStarter,
+    SourcingCaseApplication,
+)
 from workflows.sourcing_case.flow import build_sourcing_case_definition
 from workflows.sourcing_case.steps import (
     AwaitPublicPlanStep,
@@ -1457,6 +1462,22 @@ def build_phase1_dependencies(
         quota=PostgresSearchQuotaRepository(factory, tenant, now=now),
         engine=workflow,
     )
+    sourcing_admission_starter = SourcingAdmissionStarter(
+        sourcing=sourcing,
+        engine=workflow,
+        tenant_id=tenant,
+        sourcing_actor=sourcing_system_actor,
+        now=now,
+    )
+    sourcing_admission_application = SourcingAdmissionApplication(
+        sourcing=sourcing,
+        policy=DirectiveSourcingAdmissionPolicyReader(directives),
+        starter=sourcing_admission_starter,
+        tenant_id=tenant,
+        sourcing_actor=sourcing_system_actor,
+        lease_duration=settings.tool_lease,
+        now=now,
+    )
     return ConfiguredApiDependencies(
         opportunities=opportunities,
         outreach=outreach,
@@ -1497,5 +1518,6 @@ def build_phase1_dependencies(
         quotation=quotation,
         sourcing=sourcing,
         sourcing_application=sourcing_application,
+        sourcing_admission_application=sourcing_admission_application,
         products=products,
     )

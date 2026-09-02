@@ -163,6 +163,17 @@ class SourcingAdmissionRepository(Protocol):
         """只按当前快照固定排序 claim 等待项；实现必须跳过并发已锁定记录。"""
         ...
 
+    async def claim_one(
+        self,
+        tenant_id: TenantId,
+        admission_id: SourcingAdmissionId,
+        claim_token: str,
+        claim_expires_at: datetime,
+        now: datetime,
+    ) -> SourcingAdmission | None:
+        """精确 claim 单条 waiting；同 token starting 与 admitted 可安全重放。"""
+        ...
+
     async def complete(
         self,
         tenant_id: TenantId,
