@@ -40,6 +40,7 @@ from domains.demand.schemas import (
     EvidenceSummary,
     HypothesisDiscoveryView,
     HypothesisView,
+    NeedClusterPriorityFacts,
     NeedClusterView,
     NeedFieldView,
     SignalCaptureRequest,
@@ -57,6 +58,7 @@ from shared.events.catalog import (
     DemandSignalCaptured,
     NeedBecameSourcingReady,
     NeedClusterFormed,
+    NeedClusterMembershipChanged,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
@@ -1263,6 +1265,49 @@ class DemandServiceImpl:
             )
         ]
 
+    async def get_cluster_priority_facts(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+    ) -> NeedClusterPriorityFacts:
+        """返回仅供寻源准入刷新使用的、已核验需求簇事实。"""
+        self._validate_radar_query(tenant_id, 1)
+        if (
+            not isinstance(need_id, str)
+            or not need_id
+            or need_id != need_id.strip()
+            or len(need_id) > 40
+        ):
+            raise ValidationError("已验证需求标识无效")
+        observed_at = self._validate_now(self._now())
+        async with self._uow_factory(tenant_id) as uow:
+            need = await uow.needs.get(tenant_id, need_id)
+            if need is None:
+                raise ValidationError("已验证需求不存在")
+            if need.tenant_id != tenant_id:
+                raise ValidationError("已验证需求租户不一致")
+            if need.cluster_id is None:
+                return NeedClusterPriorityFacts(
+                    need_id=str(need.need_id),
+                    cluster_id=None,
+                    cluster_member_count=1,
+                    facts_observed_at=observed_at,
+                )
+            cluster = await uow.clusters.get(tenant_id, need.cluster_id)
+            if cluster is None:
+                raise ValidationError("需求簇不存在")
+            if cluster.tenant_id != tenant_id:
+                raise ValidationError("需求簇租户不一致")
+            members = await self._load_cluster_needs(uow, tenant_id, cluster)
+            if need.need_id not in {member.need_id for member in members}:
+                raise ValidationError("需求簇成员链不完整")
+            return NeedClusterPriorityFacts(
+                need_id=str(need.need_id),
+                cluster_id=str(cluster.cluster_id),
+                cluster_member_count=len(members),
+                facts_observed_at=observed_at,
+            )
+
     async def try_assign_cluster(
         self,
         tenant_id: TenantId,
@@ -1328,18 +1373,29 @@ class DemandServiceImpl:
                 )
                 cluster.updated_at = now
                 await uow.clusters.update(cluster)
-                if len(cluster.member_need_ids) == 2:
-                    await uow.bus.publish(
-                        NeedClusterFormed(
-                            tenant_id=tenant_id,
-                            occurred_at=now,
-                            run_id=None,
-                            cluster_id=str(cluster.cluster_id),
-                            category=cluster.category,
-                            member_count=2,
-                        )
-                    )
             await uow.needs.update(replace(need, cluster_id=cluster.cluster_id))
+            member_count = len(cluster.member_need_ids)
+            if member_count == 2:
+                await uow.bus.publish(
+                    NeedClusterFormed(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        cluster_id=str(cluster.cluster_id),
+                        category=cluster.category,
+                        member_count=2,
+                    )
+                )
+            await uow.bus.publish(
+                NeedClusterMembershipChanged(
+                    tenant_id=tenant_id,
+                    occurred_at=now,
+                    run_id=None,
+                    cluster_id=cluster.cluster_id,
+                    changed_need_id=need.need_id,
+                    member_count=member_count,
+                )
+            )
             return str(cluster.cluster_id)
 
     @staticmethod

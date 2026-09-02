@@ -37,6 +37,7 @@ from domains.demand.schemas import (
     DemandSignalView,
     HypothesisDiscoveryView,
     HypothesisView,
+    NeedClusterPriorityFacts,
     NeedClusterView,
     NeedQuoteFacts,
     NeedUnitAccess,
@@ -441,6 +442,17 @@ class DemandService(Protocol):
     async def list_clusters(
         self, tenant_id: TenantId, *, limit: int = 50
     ) -> list[NeedClusterView]: ...
+
+    async def get_cluster_priority_facts(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> NeedClusterPriorityFacts:
+        """读取经双向成员链核验的需求簇优先级事实。
+
+        未归簇的已验证需求返回 member_count=1；归簇时成员数是该租户内当前
+        完整成员链的累计数。此读取不判断寻源门槛，不生成排序键，也不暴露
+        数量或账户字段。
+        """
+        ...
 
     async def try_assign_cluster(
         self, tenant_id: TenantId, need_id: ValidatedNeedId

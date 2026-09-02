@@ -87,7 +87,7 @@ validated ──→ sourcing_ready ──→ handed_to_sourcing
 
 ## 发布的事件
 
-`DemandSignalCaptured`、`NeedHypothesisCreated`、`NeedHypothesisRejected`、`NeedValidated`、`NeedBecameSourcingReady`、`NeedClusterFormed`
+`DemandSignalCaptured`、`NeedHypothesisCreated`、`NeedHypothesisRejected`、`NeedValidated`、`NeedBecameSourcingReady`、`NeedClusterFormed`、`NeedClusterMembershipChanged`
 
 ## 订阅的事件
 
@@ -149,3 +149,11 @@ NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交
 `NeedValidated`；已验证 Need 在后续补全中第一次跨过该门槛时发布一次
 `NeedBecameSourcingReady`。两个事件仅表达事实变化，不能按 NeedCluster 排序或暗示已经开始询价。
 `model` 为可选 Need 事实，缺失不得由产品或网页补造。
+
+## Phase 2 需求簇准入事实
+
+`get_cluster_priority_facts` 只返回已核验的 Need ID、簇 ID、累计成员数与观察时间；不暴露数量或
+账户字段，也不在此读取入口套用完整度 3 的寻源门槛。未归簇 Need 固定为一成员事实；归簇 Need 必须
+同时满足簇→Need 和 Need→簇的双向成员链。每条 Need 首次归簇后，在同一事务发布
+`NeedClusterMembershipChanged`；既有 `NeedClusterFormed` 仍仅表达第二成员首次形成多成员簇，二者均不
+表示已经开始寻源、询价或报价。

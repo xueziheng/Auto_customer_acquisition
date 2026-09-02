@@ -559,3 +559,17 @@ class NeedClusterView:
     total_potential_quantity: int | None = None
     recurring_demand: bool | None = None
     suggests_catalog_product: bool = False
+
+
+@dataclass(frozen=True)
+class NeedClusterPriorityFacts:
+    """经需求域核验的需求簇优先级事实。
+
+    仅暴露准入排序需要的当前簇归属和成员累计，不暴露数量、账户或任何
+    客户字段。未归簇的已验证需求固定视为其自身这个一成员簇。
+    """
+
+    need_id: str
+    cluster_id: str | None
+    cluster_member_count: int
+    facts_observed_at: datetime
