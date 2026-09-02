@@ -106,8 +106,10 @@ INSERT 时再次核验持久 Admission。若回填先提交 `WAITING`，已经�
 不会形成 `WAITING + RUNNING`。只有领域服务 claim 后的 `STARTING`，配合
 `sourcing-case:v2:{tenant}:{need_id}` canonical key，才可首次创建 Run；同 subject 最多一条。
 若 tenant + idempotency key 已有 Run，则只有 workflow type/version/subject 全部精确一致才允许
-幂等返回，包含 STARTING 未绑定恢复与 ADMITTED 后的精确回放；任何绑定不一致都固定拒绝且不披露
-key、context 或 subject 内容。
+幂等返回，包含 STARTING 未绑定恢复、ADMITTED 后的精确回放，以及 0055 前已启动且按
+兼容规则不补 Admission 的历史 V2 Run。这条历史兼容只复用已有行，不新建 Run 或
+Admission；如果该 Case 已有 Admission，仍必须核验 canonical key 及 STARTING/ADMITTED 的
+Run 绑定。任何绑定不一致都固定拒绝且不披露 key、context 或 subject 内容。
 
 执行成功后：
 

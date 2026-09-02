@@ -55,6 +55,70 @@ def upgrade() -> None:
             reserved_key := left(NEW.idempotency_key, length(reserved_prefix)) =
                             reserved_prefix;
 
+            SELECT run_id, workflow_type, workflow_version, subject_ref
+            INTO existing_run_id, existing_type, existing_version, existing_subject
+            FROM workflow_runs
+            WHERE tenant_id = NEW.tenant_id
+              AND idempotency_key = NEW.idempotency_key;
+
+            IF FOUND THEN
+                IF existing_type <> NEW.workflow_type
+                   OR existing_version <> NEW.workflow_version
+                   OR existing_subject <> NEW.subject_ref THEN
+                    IF reserved_key
+                       OR (
+                            NEW.workflow_type = 'sourcing_case'
+                            AND NEW.workflow_version = 2
+                       )
+                       OR (
+                            existing_type = 'sourcing_case'
+                            AND existing_version = 2
+                       ) THEN
+                        RAISE EXCEPTION USING
+                            ERRCODE = '23514',
+                            MESSAGE = 'sourcing_case v2 workflow start rejected',
+                            CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
+                    END IF;
+                    RETURN NEW;
+                END IF;
+
+                IF existing_type <> 'sourcing_case' OR existing_version <> 2 THEN
+                    RETURN NEW;
+                END IF;
+
+                SELECT need_id, state, workflow_run_id
+                INTO admission_need_id, admission_state, admission_workflow_run_id
+                FROM sourcing_admissions
+                WHERE tenant_id = NEW.tenant_id
+                  AND case_id = NEW.subject_ref;
+
+                IF NOT FOUND THEN
+                    RETURN NEW;
+                END IF;
+
+                IF NOT (
+                    reserved_key
+                    AND NEW.idempotency_key =
+                        reserved_prefix || NEW.tenant_id || ':' || admission_need_id
+                    AND (
+                        (
+                            admission_state = 'starting'
+                            AND admission_workflow_run_id IS NULL
+                        )
+                        OR (
+                            admission_state = 'admitted'
+                            AND admission_workflow_run_id = existing_run_id
+                        )
+                    )
+                ) THEN
+                    RAISE EXCEPTION USING
+                        ERRCODE = '23514',
+                        MESSAGE = 'sourcing_case v2 workflow start rejected',
+                        CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
+                END IF;
+                RETURN NEW;
+            END IF;
+
             IF reserved_key AND (
                 NEW.workflow_type <> 'sourcing_case' OR NEW.workflow_version <> 2
             ) THEN
@@ -75,23 +139,6 @@ def upgrade() -> None:
                     CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
             END IF;
 
-            SELECT run_id, workflow_type, workflow_version, subject_ref
-            INTO existing_run_id, existing_type, existing_version, existing_subject
-            FROM workflow_runs
-            WHERE tenant_id = NEW.tenant_id
-              AND idempotency_key = NEW.idempotency_key;
-
-            IF FOUND THEN
-                IF existing_type <> NEW.workflow_type
-                   OR existing_version <> NEW.workflow_version
-                   OR existing_subject <> NEW.subject_ref THEN
-                    RAISE EXCEPTION USING
-                        ERRCODE = '23514',
-                        MESSAGE = 'sourcing_case v2 workflow start rejected',
-                        CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
-                END IF;
-            END IF;
-
             SELECT need_id, state, workflow_run_id
             INTO admission_need_id, admission_state, admission_workflow_run_id
             FROM sourcing_admissions
@@ -105,22 +152,6 @@ def upgrade() -> None:
                     ERRCODE = '23514',
                     MESSAGE = 'sourcing_case v2 workflow start rejected',
                     CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
-            END IF;
-
-            IF existing_run_id IS NOT NULL THEN
-                IF NOT (
-                    (admission_state = 'starting' AND admission_workflow_run_id IS NULL)
-                    OR (
-                        admission_state = 'admitted'
-                        AND admission_workflow_run_id = existing_run_id
-                    )
-                ) THEN
-                    RAISE EXCEPTION USING
-                        ERRCODE = '23514',
-                        MESSAGE = 'sourcing_case v2 workflow start rejected',
-                        CONSTRAINT = 'ck_workflow_runs_sourcing_v2_admission';
-                END IF;
-                RETURN NEW;
             END IF;
 
             IF admission_state <> 'starting'

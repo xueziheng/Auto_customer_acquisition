@@ -35,6 +35,8 @@ from domains.costing.service_impl import CostingServiceImpl
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tables import Base
+from infra.db.workflow_engine import PostgresWorkflowEngine
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ArtifactId,
     CostSheetId,
@@ -44,6 +46,11 @@ from shared.schemas.identifiers import (
     SourcingSupplyOptionId,
     SupplierCandidateId,
     TenantId,
+)
+from workflows.engine.runner import (
+    StepDefinition,
+    WorkflowDefinition,
+    WorkflowRun,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -110,6 +117,32 @@ class _CostingUowFactory:
 
     def __call__(self, tenant_id: TenantId) -> SqlAlchemyCostingUnitOfWork:
         return SqlAlchemyCostingUnitOfWork(self._sessions, tenant_id)
+
+
+class _MigrationNoopHandler:
+    async def execute(
+        self, run: WorkflowRun
+    ) -> tuple[str, str | None, dict[str, object]]:
+        del run
+        return "complete", None, {}
+
+
+def _migration_workflow_engine(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    workflow_type: str,
+    workflow_version: int,
+) -> PostgresWorkflowEngine:
+    engine = PostgresWorkflowEngine(sessions, {"noop": _MigrationNoopHandler()})
+    engine.register(
+        WorkflowDefinition(
+            workflow_type=workflow_type,
+            version=workflow_version,
+            steps=(StepDefinition(step_name="first", handler_ref="noop"),),
+            transitions={},
+        )
+    )
+    return engine
 
 
 def _run_alembic(db_url: str, *command: str) -> None:
@@ -2881,5 +2914,190 @@ async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
         engine = None
     finally:
         if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0055_preserves_exact_replay_of_historical_v2_run_without_admission(
+    db_url: str,
+) -> None:
+    """0054 历史 V2 Run 无 Admission 时只允许精确幂等重放。"""
+
+    tenant = "tn_migration_0055_legacy"
+    historical_need = "need-migration-0055-legacy"
+    historical_case = "case-migration-0055-legacy"
+    historical_run = "run-migration-0055-legacy"
+    historical_key = f"sourcing-case:v2:{tenant}:{historical_need}"
+    new_need = "need-migration-0055-new"
+    new_case = "case-migration-0055-new"
+    new_key = f"sourcing-case:v2:{tenant}:{new_need}"
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0054")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _seed_need_and_case(
+                connection,
+                tenant_id=tenant,
+                need_id=historical_need,
+                case_id=historical_case,
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=tenant,
+                need_id=new_need,
+                case_id=new_case,
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO workflow_runs "
+                    "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
+                    "current_step,status,context,idempotency_key) VALUES "
+                    "(:run,:tenant,'sourcing_case',2,:case,'first','running','{}',:key)"
+                ),
+                {
+                    "run": historical_run,
+                    "tenant": tenant,
+                    "case": historical_case,
+                    "key": historical_key,
+                },
+            )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0055")
+        engine = create_engine_from(db_url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        v2 = _migration_workflow_engine(
+            sessions,
+            workflow_type="sourcing_case",
+            workflow_version=2,
+        )
+
+        replayed = await v2.start(
+            TenantId(tenant),
+            "sourcing_case",
+            historical_case,
+            {},
+            historical_key,
+        )
+
+        assert str(replayed) == historical_run
+        async with engine.connect() as connection:
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_runs "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 1
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_steps "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 0
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM sourcing_admissions "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 0
+
+        fixed_error = "Sourcing Case V2 准入状态不允许启动"
+        with pytest.raises(ValidationError, match=fixed_error):
+            await v2.start(
+                TenantId(tenant),
+                "sourcing_case",
+                "case-migration-0055-wrong-subject",
+                {},
+                historical_key,
+            )
+
+        wrong_type = _migration_workflow_engine(
+            sessions,
+            workflow_type="other_flow",
+            workflow_version=1,
+        )
+        with pytest.raises(ValidationError, match=fixed_error):
+            await wrong_type.start(
+                TenantId(tenant),
+                "other_flow",
+                historical_case,
+                {},
+                historical_key,
+            )
+
+        wrong_version = _migration_workflow_engine(
+            sessions,
+            workflow_type="sourcing_case",
+            workflow_version=1,
+        )
+        with pytest.raises(ValidationError, match=fixed_error):
+            await wrong_version.start(
+                TenantId(tenant),
+                "sourcing_case",
+                historical_case,
+                {},
+                historical_key,
+            )
+
+        with pytest.raises(ValidationError, match=fixed_error):
+            await v2.start(
+                TenantId(tenant),
+                "sourcing_case",
+                historical_case,
+                {},
+                f"sourcing-case:v2:{tenant}:wrong-need",
+            )
+
+        with pytest.raises(ValidationError, match=fixed_error):
+            await v2.start(
+                TenantId(tenant),
+                "sourcing_case",
+                new_case,
+                {},
+                new_key,
+            )
+
+        async with engine.connect() as connection:
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_runs "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 1
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_steps "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 0
+            assert await connection.scalar(
+                text(
+                    "SELECT count(*) FROM sourcing_admissions "
+                    "WHERE tenant_id=:tenant"
+                ),
+                {"tenant": tenant},
+            ) == 0
+    finally:
+        if engine is not None:
+            async with engine.begin() as connection:
+                for table in (
+                    "workflow_steps",
+                    "workflow_runs",
+                    "sourcing_priority_snapshots",
+                    "sourcing_admissions",
+                    "sourcing_cases",
+                    "validated_needs",
+                ):
+                    await connection.execute(
+                        text(f"DELETE FROM {table} WHERE tenant_id=:tenant"),
+                        {"tenant": tenant},
+                    )
             await engine.dispose()
         _run_alembic(db_url, "upgrade", "head")

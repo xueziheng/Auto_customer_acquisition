@@ -711,6 +711,47 @@ async def test_admitted_exact_start_replay_returns_existing_run(
 
 
 @pytest.mark.asyncio
+async def test_existing_run_replay_rejects_forged_admission_binding(
+    integration_engine: AsyncEngine,
+    db_url: str,
+) -> None:
+    """历史兼容只适用于无 Admission；已有 Admission 仍须绑定 canonical Run。"""
+
+    case_id, need_id, _ = await _seed_case(
+        integration_engine, TENANT, "forged-admission-binding"
+    )
+    report = await run_database_backfill(db_url, TENANT, True)
+    assert report.results[0].status == "applied"
+    await _mark_admission_starting(integration_engine, TENANT, case_id)
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    workflow = _workflow_engine(factory)
+    key = f"sourcing-case:v2:{TENANT}:{need_id}"
+    run_id = await workflow.start(TENANT, "sourcing_case", case_id, {}, key)
+    await _mark_admission_admitted(
+        integration_engine,
+        TENANT,
+        case_id,
+        "run-forged-binding",
+    )
+
+    with pytest.raises(ValidationError) as error:
+        await workflow.start(TENANT, "sourcing_case", case_id, {}, key)
+
+    assert str(error.value) == "Sourcing Case V2 准入状态不允许启动"
+    async with integration_engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    "SELECT run_id FROM workflow_runs "
+                    "WHERE tenant_id = :tenant AND subject_ref = :case"
+                ),
+                {"tenant": str(TENANT), "case": case_id},
+            )
+        ).scalars().all()
+    assert rows == [str(run_id)]
+
+
+@pytest.mark.asyncio
 async def test_non_sourcing_workflow_cannot_reuse_protected_run_key(
     integration_engine: AsyncEngine,
     db_url: str,
