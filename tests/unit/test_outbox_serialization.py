@@ -212,6 +212,8 @@ def test_need_cluster_membership_changed_roundtrips_exact_tenant_bound_payload()
         (NeedClusterId(""), ValidatedNeedId("vnd_0" + "C" * 25), 2),
         (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId(""), 2),
         (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId("vnd_0" + "C" * 25), 0),
+        (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId("vnd_0" + "C" * 25), -1),
+        (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId("vnd_0" + "C" * 25), False),
     ],
 )
 def test_need_cluster_membership_changed_rejects_non_facts_at_outbox_boundary(
@@ -219,7 +221,7 @@ def test_need_cluster_membership_changed_rejects_non_facts_at_outbox_boundary(
     changed_need_id: ValidatedNeedId,
     member_count: int,
 ) -> None:
-    """空关联或零成员不是可供下游消费的需求簇事实。"""
+    """空关联或非正/布尔成员数不是可供下游消费的需求簇事实。"""
     event = NeedClusterMembershipChanged(
         tenant_id=TenantId("tn_0" + "A" * 25),
         occurred_at=_NOW,

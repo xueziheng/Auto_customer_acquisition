@@ -20,10 +20,19 @@ Validated Need 何时归入既有簇，也无法让后续寻源准入逻辑在�
   反序列化边界均拒绝，不能被下游当作有用事实。
 - `NeedClusterFormed`、`NeedValidated`、`NeedBecameSourcingReady` 的字段及其序列化名称
   保持不变；历史 Run 不补发、不改写。
-- Directives 仍是寻源政策的唯一来源；就绪事件仅负责排队，不代表启动寻源。
+- `NeedBecameSourcingReady` 无条件创建持久化、待评估的 admission（入队），不直接启动
+  Workflow；未配置或不可读取的政策也不得丢弃该待评估项。
+- Directives 仍是自动寻源准入政策的唯一来源。可选的 `sourcing_admission` 段必须完整包含
+  `mode: cluster_ranked`、显式的 `automatic_admission_enabled` 与 `batch_limit`；`batch_limit`
+  必须为 `1..50` 的整数，关闭自动准入时也不得省略。只有当前 active Directive 的该段完整且
+  `automatic_admission_enabled=true` 时，准入 driver 才能 claim admission 并启动 Workflow。
+  缺少该段（包括历史 Directive）是 `policy_not_configured`，关闭是
+  `automatic_admission_disabled`，读取状态未知是 `policy_status_unknown`；三种状态均启动
+  零个 Workflow，且保留 waiting admission 供后续评估、政策启用或人工准入。
 - 本决策不包含 catalog proposal。
 
 ## 后果
 
-后续准入消费者可以按新增事件构建 tenant-bound 的审计事实，但必须自行依据当前
-Directive 决定是否入队；不能把成员数或事件投递解释为已开始寻源、询价或报价。
+后续准入消费者必须按 readiness 创建 tenant-bound 的审计 admission；当前 Directive 只在
+自动 admission、claim 与 Workflow start 时生效。成员数、入队或事件投递都不能解释为已经
+开始寻源、询价或报价。
