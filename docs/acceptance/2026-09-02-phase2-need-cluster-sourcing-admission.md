@@ -41,13 +41,15 @@ acknowledgement。它不领取 Admission、不启动 Run、不触发任何外部
 ### 新受控 E2E 的测试装配边界
 
 首轮新 E2E 让 fixture 后台 scheduler 与造数并发，因而读到 7/2/1 的中间快照。这是测试装配竞态，
-不是生产排序错误。验收改为先正常停止 fixture worker，经真实 tenant-bound repository/UoW 提交全部
-Need/cluster 前置事实与真实 readiness/membership Outbox，再用真实 advisory lock 执行一个完整 cycle。
+不是生产排序错误。验收改为先正常停止 fixture worker：12 条前置 `Validated Need` 由测试拥有者在隔离
+PostgreSQL 中通过 SQLAlchemy session 播种，并在同一事务发布真实 readiness Outbox；cluster 与 membership
+事实再经真实 tenant-bound Demand repository/UoW 提交，最后用真实 advisory lock 执行一个完整 cycle。
 
 这里没有发布 `NeedClusterFormed`：该既有事件只表示第二成员首次形成多成员簇，设计明确本准入路径不
-消费；验收所需的排序变更事实是每条 `NeedClusterMembershipChanged`。Need/cluster 事实仍经真实
-repository/UoW 持久化，事件仍经真实事务 Outbox 发布；没有 fake repository、直接 Admission/Run 写入或
-跳过领域门禁。
+消费；验收所需的排序变更事实是每条 `NeedClusterMembershipChanged`。前置 Need 行是明确限定在 fixture
+内的 direct seed；cluster 事实经真实 repository/UoW 持久化，readiness/membership 事件经真实事务 Outbox
+发布，后续 Case、snapshot、Admission、claim、Workflow start 与 replay 全部走生产组合。没有直接写入
+Admission/Run，也没有跳过准入门禁。
 
 ### 全量门禁暴露的既有测试前提
 
@@ -128,11 +130,11 @@ in-progress、`loadError=false`、console error 0。因此它只记录为一次�
 
 批准证据仅有下列非 AppleDouble 文件：
 
-- `output/playwright/t11-need-cluster-admission/01-policy-proposal-before-confirm.png`
-- `output/playwright/t11-need-cluster-admission/02-desktop-queue-exact-two.png`
-- `output/playwright/t11-need-cluster-admission/03-immutable-snapshot-detail.png`
-- `output/playwright/t11-need-cluster-admission/04-manual-admission-replay.png`
-- `output/playwright/t11-need-cluster-admission/05-mobile-390-queue.png`
+- `output/playwright/t11-need-cluster-admission/01-policy-proposal-before-confirm.jpg`
+- `output/playwright/t11-need-cluster-admission/02-desktop-queue-exact-two.jpg`
+- `output/playwright/t11-need-cluster-admission/03-immutable-snapshot-detail.jpg`
+- `output/playwright/t11-need-cluster-admission/04-manual-admission-replay.jpg`
+- `output/playwright/t11-need-cluster-admission/05-mobile-390-queue.jpg`
 
 ## 完整门禁
 
