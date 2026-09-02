@@ -416,7 +416,7 @@ class DirectiveServiceImpl:
                 parsed_by=parsed_by,
                 created_at=now,
                 base_directive_version=(
-                    None if active is None else active.version
+                    0 if active is None else active.version
                 ),
             )
             await uow.proposals.add(proposal)

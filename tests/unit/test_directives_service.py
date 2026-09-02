@@ -358,6 +358,89 @@ async def test_generic_proposal_preserves_active_sourcing_admission_and_baseline
     assert view.sourcing_admission_batch_limit == 11
 
 
+async def test_generic_proposal_without_active_uses_zero_baseline_and_goes_stale() -> (
+    None
+):
+    state = _State()
+    service = _service(state)
+    generic_id = await service.submit_proposal(
+        TENANT,
+        "Set the initial monthly budget.",
+        replace(_full_content(), monthly_budget_credits=1200),
+        "Set ordinary Directive fields only.",
+        ["Monthly budget starts at 1200 credits."],
+        "directive-parser-v1",
+    )
+    assert state.proposals[generic_id].base_directive_version == 0
+    admission_id = await service.submit_sourcing_admission_proposal(
+        TENANT,
+        "Enable bounded cluster-ranked sourcing.",
+        _config(),
+        "Enable cluster-ranked sourcing admission.",
+        ["Up to three waiting cases may be admitted per cycle."],
+        "directive-parser-v1",
+    )
+    await service.confirm_proposal(TENANT, admission_id, BOSS)
+    active = state.active
+    assert active is not None
+    assert active.content.sourcing_admission == SourcingAdmissionConfig(
+        mode="cluster_ranked",
+        automatic_admission_enabled=True,
+        batch_limit=3,
+    )
+    before_directives = list(state.directives)
+    before_events = list(state.events)
+
+    with pytest.raises(InvalidStateTransition, match="陈旧"):
+        await service.confirm_proposal(TENANT, generic_id, BOSS)
+
+    assert state.active == active
+    assert state.directives == before_directives
+    assert state.proposals[generic_id].state is ProposalState.PENDING_CONFIRMATION
+    assert state.events == before_events
+
+
+async def test_generic_without_admission_goes_stale_after_policy_is_enabled() -> None:
+    state = _State()
+    original = _full_content()
+    _active(state, 7, original)
+    service = _service(state)
+    generic_id = await service.submit_proposal(
+        TENANT,
+        "Raise the monthly budget without changing sourcing admission.",
+        replace(original, monthly_budget_credits=1200),
+        "Only the monthly budget changes.",
+        ["Monthly budget increases to 1200 credits."],
+        "directive-parser-v1",
+    )
+    generic = state.proposals[generic_id]
+    assert generic.parsed.sourcing_admission is None
+    assert generic.base_directive_version == 7
+    admission_id = await service.submit_sourcing_admission_proposal(
+        TENANT,
+        "Enable bounded cluster-ranked sourcing.",
+        _config(),
+        "Enable cluster-ranked sourcing admission.",
+        ["Up to three waiting cases may be admitted per cycle."],
+        "directive-parser-v1",
+    )
+    await service.confirm_proposal(TENANT, admission_id, BOSS)
+    active = state.active
+    assert active is not None
+    assert active.version == 8
+    assert active.content.sourcing_admission is not None
+    before_directives = list(state.directives)
+    before_events = list(state.events)
+
+    with pytest.raises(InvalidStateTransition, match="陈旧"):
+        await service.confirm_proposal(TENANT, generic_id, BOSS)
+
+    assert state.active == active
+    assert state.directives == before_directives
+    assert state.proposals[generic_id].state is ProposalState.PENDING_CONFIRMATION
+    assert state.events == before_events
+
+
 async def test_stale_generic_proposal_cannot_clear_or_overwrite_admission() -> None:
     state = _State()
     admission = SourcingAdmissionConfig(
