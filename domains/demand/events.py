@@ -13,6 +13,7 @@ from shared.events.catalog import (
     DemandSignalCaptured,
     NeedBecameSourcingReady,
     NeedClusterFormed,
+    NeedClusterMembershipChanged,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
@@ -26,6 +27,7 @@ PUBLISHES = (
     NeedValidated,
     NeedBecameSourcingReady,
     NeedClusterFormed,
+    NeedClusterMembershipChanged,
 )
 """本域发布的事件。
 

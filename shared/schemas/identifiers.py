@@ -69,6 +69,8 @@ SupplierCandidateId = NewType("SupplierCandidateId", str)
 SourcingPlanId = NewType("SourcingPlanId", str)
 SourcingReviewId = NewType("SourcingReviewId", str)
 SourcingSupplyOptionId = NewType("SourcingSupplyOptionId", str)
+SourcingAdmissionId = NewType("SourcingAdmissionId", str)
+SourcingPrioritySnapshotId = NewType("SourcingPrioritySnapshotId", str)
 
 # --- 成本与报价 ---------------------------------------------------------
 

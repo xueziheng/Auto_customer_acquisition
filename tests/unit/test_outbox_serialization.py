@@ -33,6 +33,7 @@ from shared.events.catalog import (
     HandoffRequested,
     MessageSent,
     NeedBecameSourcingReady,
+    NeedClusterMembershipChanged,
     OpportunityLost,
     OpportunityQualified,
     OpportunityWon,
@@ -53,6 +54,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
     MessageId,
+    NeedClusterId,
     OpportunityId,
     QuoteId,
     RunId,
@@ -119,6 +121,7 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "NeedHypothesisRejected",
         "NeedValidated",
         "NeedBecameSourcingReady",
+        "NeedClusterMembershipChanged",
         "SourcingCaseOpened",
         "SourcingCandidatesVerified",
         "SourcingCandidatesReady",
@@ -175,6 +178,69 @@ def test_phase2_sourcing_events_roundtrip_as_tenant_bound_facts() -> None:
     for event in (ready, verified, candidates, handed):
         assert registry[type(event).__name__] is type(event)
         assert _load("deserialize")(type(event), _load("serialize")(event)) == event
+
+
+def test_need_cluster_membership_changed_roundtrips_exact_tenant_bound_payload() -> None:
+    """需求簇成员变更只传可追溯的簇、Need 与累计成员事实。"""
+    event = NeedClusterMembershipChanged(
+        tenant_id=TenantId("tn_0" + "A" * 25),
+        occurred_at=_NOW,
+        cluster_id=NeedClusterId("ncl_0" + "B" * 25),
+        changed_need_id=ValidatedNeedId("vnd_0" + "C" * 25),
+        member_count=2,
+    )
+
+    payload = _load("serialize")(event)
+
+    assert _load("EVENT_REGISTRY")["NeedClusterMembershipChanged"] is (
+        NeedClusterMembershipChanged
+    )
+    assert payload == {
+        "tenant_id": "tn_0" + "A" * 25,
+        "occurred_at": _NOW.isoformat(),
+        "run_id": None,
+        "cluster_id": "ncl_0" + "B" * 25,
+        "changed_need_id": "vnd_0" + "C" * 25,
+        "member_count": 2,
+    }
+    assert _load("deserialize")(NeedClusterMembershipChanged, payload) == event
+
+
+@pytest.mark.parametrize(
+    ("cluster_id", "changed_need_id", "member_count"),
+    [
+        (NeedClusterId(""), ValidatedNeedId("vnd_0" + "C" * 25), 2),
+        (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId(""), 2),
+        (NeedClusterId("ncl_0" + "B" * 25), ValidatedNeedId("vnd_0" + "C" * 25), 0),
+    ],
+)
+def test_need_cluster_membership_changed_rejects_non_facts_at_outbox_boundary(
+    cluster_id: NeedClusterId,
+    changed_need_id: ValidatedNeedId,
+    member_count: int,
+) -> None:
+    """空关联或零成员不是可供下游消费的需求簇事实。"""
+    event = NeedClusterMembershipChanged(
+        tenant_id=TenantId("tn_0" + "A" * 25),
+        occurred_at=_NOW,
+        cluster_id=cluster_id,
+        changed_need_id=changed_need_id,
+        member_count=member_count,
+    )
+
+    with pytest.raises(ValidationError, match="需求簇成员变更事件载荷无效"):
+        _load("serialize")(event)
+
+    payload = {
+        "tenant_id": "tn_0" + "A" * 25,
+        "occurred_at": _NOW.isoformat(),
+        "run_id": None,
+        "cluster_id": cluster_id,
+        "changed_need_id": changed_need_id,
+        "member_count": member_count,
+    }
+    with pytest.raises(ValidationError, match="需求簇成员变更事件载荷无效"):
+        _load("deserialize")(NeedClusterMembershipChanged, payload)
 
 
 def test_quote_approved_roundtrip_contains_only_safe_ids() -> None:

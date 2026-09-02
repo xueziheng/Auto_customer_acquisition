@@ -51,6 +51,7 @@ from shared.events.catalog import (
     InboundMessageStored,
     MessageSent,
     NeedBecameSourcingReady,
+    NeedClusterMembershipChanged,
     NeedHypothesisCreated,
     NeedHypothesisRejected,
     NeedValidated,
@@ -106,6 +107,7 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     "NeedHypothesisRejected": NeedHypothesisRejected,
     "NeedValidated": NeedValidated,
     "NeedBecameSourcingReady": NeedBecameSourcingReady,
+    "NeedClusterMembershipChanged": NeedClusterMembershipChanged,
     "SourcingCaseOpened": SourcingCaseOpened,
     "SourcingCandidatesVerified": SourcingCandidatesVerified,
     "SourcingCandidatesReady": SourcingCandidatesReady,
@@ -317,10 +319,31 @@ def _validate_outreach_event(event: DomainEvent) -> None:
         raise _invalid_outreach_event()
 
 
+def _invalid_need_cluster_membership_changed() -> ValidationError:
+    return ValidationError("需求簇成员变更事件载荷无效")
+
+
+def _validate_need_cluster_membership_changed(event: DomainEvent) -> None:
+    """阻止空关联或零成员数进入 outbox 或被消费者还原为事实。"""
+    if not isinstance(event, NeedClusterMembershipChanged):
+        return
+    if (
+        not isinstance(event.cluster_id, str)
+        or not event.cluster_id.strip()
+        or not isinstance(event.changed_need_id, str)
+        or not event.changed_need_id.strip()
+        or not isinstance(event.member_count, int)
+        or isinstance(event.member_count, bool)
+        or event.member_count < 1
+    ):
+        raise _invalid_need_cluster_membership_changed()
+
+
 def serialize(event: DomainEvent) -> dict[str, object]:
     """事件 → JSON 可序列化 dict（Round-trip 的序列化半边）。"""
     _validate_sending_identity_event(event)
     _validate_outreach_event(event)
+    _validate_need_cluster_membership_changed(event)
     return {
         f.name: _to_jsonable(getattr(event, f.name)) for f in dataclasses.fields(event)
     }
@@ -392,7 +415,9 @@ def deserialize(
         f.name: _from_jsonable(payload[f.name], hints[f.name])
         for f in dataclasses.fields(event_cls)
     }
-    return cast(DomainEvent, cast(Callable[..., object], event_cls)(**kwargs))
+    event = cast(DomainEvent, cast(Callable[..., object], event_cls)(**kwargs))
+    _validate_need_cluster_membership_changed(event)
+    return event
 
 
 class PostgresEventBus:

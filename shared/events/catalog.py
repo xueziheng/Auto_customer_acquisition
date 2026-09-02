@@ -27,6 +27,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     HandoffId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     OpportunityId,
     OutboundMessageId,
@@ -135,6 +136,15 @@ class NeedClusterFormed(DomainEvent):
 
     cluster_id: str = ""
     category: str = ""
+    member_count: int = 0
+
+
+@dataclass(frozen=True)
+class NeedClusterMembershipChanged(DomainEvent):
+    """一条已验证需求已归入需求簇；成员数是变更后的累计事实。"""
+
+    cluster_id: NeedClusterId | None = None
+    changed_need_id: ValidatedNeedId | None = None
     member_count: int = 0
 
 
