@@ -73,6 +73,7 @@ _POLLABLE_STEP_STATUSES = ("pending", "running")
 _COMMIT_FAILURE_ERROR = "step commit failure"
 _CORRUPTED_CONTEXT_ERROR = "corrupted workflow context"
 _SOURCING_V2_ADMISSION_CONSTRAINT = "ck_workflow_runs_sourcing_v2_admission"
+_SOURCING_V2_SUBJECT_CONSTRAINT = "uq_workflow_runs_sourcing_v2_subject"
 
 
 def _constraint_name(error: BaseException) -> str | None:
@@ -320,7 +321,10 @@ class PostgresWorkflowEngine:
                 )
             except IntegrityError as error:
                 await session.rollback()
-                if _constraint_name(error) == _SOURCING_V2_ADMISSION_CONSTRAINT:
+                if _constraint_name(error) in {
+                    _SOURCING_V2_ADMISSION_CONSTRAINT,
+                    _SOURCING_V2_SUBJECT_CONSTRAINT,
+                }:
                     raise ValidationError(
                         "Sourcing Case V2 准入状态不允许启动"
                     ) from None
@@ -351,14 +355,30 @@ class PostgresWorkflowEngine:
             # 冲突：返回既有 run（Postgres 会等待并发插入的事务落地后才判冲突）。
             existing = (
                 await session.execute(
-                    select(WorkflowRunRow.run_id).where(
+                    select(
+                        WorkflowRunRow.run_id,
+                        WorkflowRunRow.workflow_type,
+                        WorkflowRunRow.workflow_version,
+                        WorkflowRunRow.subject_ref,
+                    ).where(
                         WorkflowRunRow.tenant_id == tenant_id,
                         WorkflowRunRow.idempotency_key == idempotency_key,
                     )
                 )
-            ).scalar_one()
+            ).one_or_none()
+            if (
+                existing is None
+                or existing.workflow_type != workflow_type
+                or existing.workflow_version != definition.version
+                or existing.subject_ref != subject_ref
+            ):
+                await session.rollback()
+                raise ValidationError(
+                    "workflow 幂等键与既有 Run 绑定不一致"
+                ) from None
+            existing_run_id = existing.run_id
             await session.rollback()
-            return RunId(existing)
+            return RunId(existing_run_id)
         finally:
             await session.close()
 

@@ -513,6 +513,67 @@ async def test_start_idempotent_same_tenant_and_isolated_across_tenants(db_url: 
         await handle.dispose()
 
 
+@pytest.mark.parametrize("mismatch", ("subject", "type", "version"))
+async def test_concurrent_start_same_key_rejects_mismatched_binding(
+    db_url: str,
+    mismatch: str,
+) -> None:
+    """并发共 key 只能复用完全一致的 type/version/subject，且错误固定脱敏。"""
+
+    tenant = TenantId(f"tIdemBinding{mismatch}")
+    key = f"private-idempotency-{mismatch}"
+    type_a = "binding-a"
+    type_b = "binding-b" if mismatch == "type" else type_a
+    subject_a = "binding-subject-a"
+    subject_b = "binding-subject-b" if mismatch == "subject" else subject_a
+    version_a = 1
+    version_b = 2 if mismatch == "version" else version_a
+    definition_a = WorkflowDefinition(
+        workflow_type=type_a,
+        version=version_a,
+        steps=(StepDefinition(step_name="first", handler_ref="h"),),
+        transitions={},
+    )
+    definition_b = WorkflowDefinition(
+        workflow_type=type_b,
+        version=version_b,
+        steps=(StepDefinition(step_name="first", handler_ref="h"),),
+        transitions={},
+    )
+    engine_a, handle_a = _make_engine(db_url, {"h": _handler(lambda _: ("complete", None, {}))})
+    engine_b, handle_b = _make_engine(db_url, {"h": _handler(lambda _: ("complete", None, {}))})
+    engine_a.register(definition_a)
+    engine_b.register(definition_b)
+    try:
+        results = await asyncio.gather(
+            engine_a.start(tenant, type_a, subject_a, {"owner": "a"}, key),
+            engine_b.start(tenant, type_b, subject_b, {"owner": "b"}, key),
+            return_exceptions=True,
+        )
+
+        errors = [result for result in results if isinstance(result, ValidationError)]
+        run_ids = [result for result in results if isinstance(result, str)]
+        assert len(errors) == 1
+        assert len(run_ids) == 1
+        assert str(errors[0]) == "workflow 幂等键与既有 Run 绑定不一致"
+        assert key not in str(errors[0])
+        assert subject_b not in str(errors[0])
+        async with handle_a.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM workflow_runs "
+                        "WHERE tenant_id = :tenant AND idempotency_key = :key"
+                    ),
+                    {"tenant": str(tenant), "key": key},
+                )
+                == 1
+            )
+    finally:
+        await handle_a.dispose()
+        await handle_b.dispose()
+
+
 async def test_deployment_keeps_persisted_account_discovery_v1_executable_and_starts_v2(
     db_url: str,
 ) -> None:

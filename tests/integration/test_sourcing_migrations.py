@@ -2630,55 +2630,159 @@ async def test_0050_downgrade_normalizes_all_new_page_categories(db_url: str) ->
 
 
 async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
-    """0055 downgrade/upgrade 精确移除并恢复 V2 Run 准入 trigger。"""
+    """0055 执行真实 start 语义，且有 V2 审计事实时拒绝移除 guard。"""
 
+    tenant = "tn_migration_0055"
+    need_id = "need-migration-0055"
+    case_id = "case-migration-0055"
+    canonical_key = f"sourcing-case:v2:{tenant}:{need_id}"
+    insert_run = (
+        "INSERT INTO workflow_runs "
+        "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,current_step,"
+        "status,context,idempotency_key) VALUES "
+        "(:run,:tenant,'sourcing_case',2,:case,'first','running','{}',:key)"
+    )
     engine: AsyncEngine | None = None
     try:
-        _run_alembic(db_url, "upgrade", "head")
-        engine = create_engine_from(db_url)
-        async with engine.connect() as connection:
-            assert (
-                await connection.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_trigger "
-                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
-                        "AND NOT tgisinternal"
-                    )
-                )
-                == 1
-            )
-        await engine.dispose()
-        engine = None
-
         _run_alembic(db_url, "downgrade", "0054")
         engine = create_engine_from(db_url)
-        async with engine.connect() as connection:
-            assert (
-                await connection.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_trigger "
-                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
-                        "AND NOT tgisinternal"
-                    )
-                )
-                == 0
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(insert_run),
+                {
+                    "run": "run-0054-unguarded",
+                    "tenant": tenant,
+                    "case": case_id,
+                    "key": "wrong-before-0055",
+                },
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM workflow_runs WHERE tenant_id=:tenant "
+                    "AND run_id='run-0054-unguarded'"
+                ),
+                {"tenant": tenant},
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=tenant,
+                need_id=need_id,
+                case_id=case_id,
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_admissions "
+                    "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                    "current_snapshot_id,claim_token,claim_expires_at,created_at,updated_at) "
+                    "VALUES (:tenant,'adm-migration-0055',:case,:need,'starting',"
+                    "now() - interval '1 day','sps-migration-0055','claim-0055',"
+                    "now() + interval '5 minutes',now(),now())"
+                ),
+                {"tenant": tenant, "case": case_id, "need": need_id},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_priority_snapshots "
+                    "(tenant_id,snapshot_id,admission_id,case_id,need_id,"
+                    "cluster_member_count,ready_at,ranking_version,facts_observed_at,"
+                    "facts_hash,created_at) VALUES "
+                    "(:tenant,'sps-migration-0055','adm-migration-0055',:case,:need,1,"
+                    "now() - interval '1 day','need-cluster-admission-v1',now(),"
+                    ":hash,now())"
+                ),
+                {
+                    "tenant": tenant,
+                    "case": case_id,
+                    "need": need_id,
+                    "hash": "5" * 64,
+                },
             )
         await engine.dispose()
         engine = None
 
         _run_alembic(db_url, "upgrade", "0055")
         engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            await _expect_integrity(
+                connection,
+                insert_run,
+                {
+                    "run": "run-0055-wrong-key",
+                    "tenant": tenant,
+                    "case": case_id,
+                    "key": "wrong-after-0055",
+                },
+            )
+            await connection.execute(
+                text(insert_run),
+                {
+                    "run": "run-0055-canonical",
+                    "tenant": tenant,
+                    "case": case_id,
+                    "key": canonical_key,
+                },
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET state='admitted',claim_token=NULL,"
+                    "claim_expires_at=NULL,workflow_run_id='run-0055-canonical',"
+                    "admitted_at=now(),admitted_by='system',updated_at=now() "
+                    "WHERE tenant_id=:tenant AND case_id=:case"
+                ),
+                {"tenant": tenant, "case": case_id},
+            )
+            replay = await connection.execute(
+                text(
+                    insert_run
+                    + " ON CONFLICT (tenant_id,idempotency_key) DO NOTHING"
+                ),
+                {
+                    "run": "run-0055-replay",
+                    "tenant": tenant,
+                    "case": case_id,
+                    "key": canonical_key,
+                },
+            )
+            assert replay.rowcount == 0
+            await connection.execute(text("SET LOCAL session_replication_role = replica"))
+            await _expect_integrity(
+                connection,
+                insert_run,
+                {
+                    "run": "run-0055-second-subject",
+                    "tenant": tenant,
+                    "case": case_id,
+                    "key": "second-key-same-subject",
+                },
+            )
+        await engine.dispose()
+        engine = None
+
+        downgrade = _alembic_result(db_url, "downgrade", "0054")
+        assert downgrade.returncode != 0
+        engine = create_engine_from(db_url)
         async with engine.connect() as connection:
             assert (
-                await connection.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_trigger "
-                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
-                        "AND NOT tgisinternal"
-                    )
-                )
-                == 1
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0055"
             )
+        async with engine.begin() as connection:
+            await connection.execute(text("SET LOCAL session_replication_role = replica"))
+            for table in (
+                "workflow_steps",
+                "workflow_runs",
+                "sourcing_priority_snapshots",
+                "sourcing_admissions",
+                "sourcing_cases",
+                "validated_needs",
+            ):
+                await connection.execute(
+                    text(f"DELETE FROM {table} WHERE tenant_id=:tenant"),
+                    {"tenant": tenant},
+                )
+        await engine.dispose()
+        engine = None
+        _run_alembic(db_url, "downgrade", "0054")
     finally:
         if engine is not None:
             await engine.dispose()
