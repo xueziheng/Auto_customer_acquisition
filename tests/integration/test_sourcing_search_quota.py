@@ -134,6 +134,8 @@ async def test_committed_locator_receipt_rehydrates_exact_batch_without_query_pa
         "sourcing_plan_hash": plan.plan_hash,
     }
     async with integration_engine.begin() as connection:
+        # 本测试构造的是已推进到 public_search 的持久投影，不模拟 Run start。
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
         await connection.execute(
             text(
                 "INSERT INTO validated_needs "

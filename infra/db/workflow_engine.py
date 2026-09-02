@@ -6,6 +6,8 @@
   transition 只允许引用已定义步骤。fail closed，不静默接受畸形定义。
 - ``start`` 用 ``INSERT ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING``
   实现幂等；创建 run 与首步在同一事务原子提交（失败绝不只建一半）。
+  所有 start 先取得 canonical subject transaction lock；数据库迁移 0055 还会在同一
+  事务内要求 ``sourcing_case`` V2 持有 ``STARTING`` Admission，拒绝绕过准入。
 - ``poll_due`` 逐 step 独立事务 + ``FOR UPDATE SKIP LOCKED`` 领取（扫描周期重叠
   不能取到同一批）；一步永久失败记录可观测失败态后继续本批其他步骤。handler 抛
   ``TransientError`` 按 ``retry_backoff * 2^(attempt-1)`` 指数退避更新
@@ -38,6 +40,7 @@ from typing import Any, cast
 
 from sqlalchemy import CursorResult, and_, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.db.tables import WorkflowRunRow, WorkflowStepRow
@@ -69,6 +72,21 @@ _POLLABLE_STEP_STATUSES = ("pending", "running")
 # 固定脱敏错误文本：不依赖具体异常包装类型、不含异常消息/payload（防凭证落库）。
 _COMMIT_FAILURE_ERROR = "step commit failure"
 _CORRUPTED_CONTEXT_ERROR = "corrupted workflow context"
+_SOURCING_V2_ADMISSION_CONSTRAINT = "ck_workflow_runs_sourcing_v2_admission"
+
+
+def _constraint_name(error: BaseException) -> str | None:
+    """从 SQLAlchemy/asyncpg 包装层读取约束名，不检查或泄漏异常原文。"""
+
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        name = getattr(current, "constraint_name", None)
+        if isinstance(name, str):
+            return name
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _valid_history_context_value(value: object) -> bool:
@@ -282,21 +300,31 @@ class PostgresWorkflowEngine:
                 workflow_type,
                 subject_ref,
             )
-            result = await session.execute(
-                insert(WorkflowRunRow)
-                .values(
-                    run_id=run_id,
-                    tenant_id=tenant_id,
-                    workflow_type=workflow_type,
-                    workflow_version=definition.version,
-                    subject_ref=subject_ref,
-                    current_step=first_step.step_name,
-                    status=StepStatus.RUNNING.value,
-                    context=initial_context,
-                    idempotency_key=idempotency_key,
+            try:
+                result = await session.execute(
+                    insert(WorkflowRunRow)
+                    .values(
+                        run_id=run_id,
+                        tenant_id=tenant_id,
+                        workflow_type=workflow_type,
+                        workflow_version=definition.version,
+                        subject_ref=subject_ref,
+                        current_step=first_step.step_name,
+                        status=StepStatus.RUNNING.value,
+                        context=initial_context,
+                        idempotency_key=idempotency_key,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["tenant_id", "idempotency_key"]
+                    )
                 )
-                .on_conflict_do_nothing(index_elements=["tenant_id", "idempotency_key"])
-            )
+            except IntegrityError as error:
+                await session.rollback()
+                if _constraint_name(error) == _SOURCING_V2_ADMISSION_CONSTRAINT:
+                    raise ValidationError(
+                        "Sourcing Case V2 准入状态不允许启动"
+                    ) from None
+                raise
             if cast(CursorResult, result).rowcount > 0:
                 session.add(
                     self._new_step_row(

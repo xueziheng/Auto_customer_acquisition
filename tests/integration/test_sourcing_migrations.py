@@ -2566,6 +2566,8 @@ async def test_0050_downgrade_normalizes_all_new_page_categories(db_url: str) ->
     categories = ("page_access_forbidden", "login_or_captcha", "unsafe_redirect")
     try:
         _run_alembic(db_url, "upgrade", "head")
+
+
         engine = create_engine_from(db_url)
         async with engine.begin() as connection:
             for index, category in enumerate(categories):
@@ -2621,6 +2623,62 @@ async def test_0050_downgrade_normalizes_all_new_page_categories(db_url: str) ->
                 ).scalars()
             )
         assert call_values == event_values == {"provider_permanent"}
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0055_sourcing_v2_start_guard_roundtrip(db_url: str) -> None:
+    """0055 downgrade/upgrade 精确移除并恢复 V2 Run 准入 trigger。"""
+
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "upgrade", "head")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_trigger "
+                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
+                        "AND NOT tgisinternal"
+                    )
+                )
+                == 1
+            )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "downgrade", "0054")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_trigger "
+                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
+                        "AND NOT tgisinternal"
+                    )
+                )
+                == 0
+            )
+        await engine.dispose()
+        engine = None
+
+        _run_alembic(db_url, "upgrade", "0055")
+        engine = create_engine_from(db_url)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_trigger "
+                        "WHERE tgname = 'trg_workflow_runs_sourcing_v2_admission' "
+                        "AND NOT tgisinternal"
+                    )
+                )
+                == 1
+            )
     finally:
         if engine is not None:
             await engine.dispose()

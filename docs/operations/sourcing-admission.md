@@ -23,13 +23,19 @@ Workflow，不会搜索网页、联系供应商、发现联系人、发信、采
 
 ## 执行前
 
-1. 使用已完成本批迁移的部署数据库。命令不自动执行 Alembic migration。
-2. 建议在变更窗口内暂停普通 scheduler 与人工准入，以便核对本次审计结果。这只是降低运维
-   噪声，不是正确性前提：回填写入口与正常 Workflow Run 创建共享同 tenant、同 workflow type、
-   同 Case 的事务互斥锁，并会在锁内重新核验 Run 与 Admission。
-3. 由运维环境加载 `DATABASE_URL`。默认 dry-run 可从 `TRADEOS_TENANT_ID` 读取租户；
+1. **先执行 Alembic 0055 migration**。它为 `sourcing_case` V2 Run 增加数据库级准入 guard：
+   新建 Run 时 Admission 必须处于 `STARTING`；`WAITING`、`BLOCKED`、缺失 Admission 均拒绝。
+   命令不自动执行 migration，不得在 0054 或更早 schema 上运行 apply。
+2. 部署包含同一 canonical subject-lock 协议的新应用版本，停止领取新任务，排空并重启所有旧
+   scheduler / API worker；确认没有旧版本进程后再运行回填。数据库 guard 能拦住旧进程产生
+   未准入的新 Run，但旧进程不使用新版锁 identity，因此**迁移与排空顺序仍是上线前提**，不能
+   用“建议暂停”代替版本切换。
+3. 回填写入口与新版 Workflow Run 创建共用同 tenant、同 workflow type、同 Case 的事务锁，
+   并在锁内重新核验 Run 与 Admission。变更窗口内继续暂停 scheduler 与人工准入，便于把
+   dry-run、apply 和复核作为一个受控批次；恢复前必须完成下方检查。
+4. 由运维环境加载 `DATABASE_URL`。默认 dry-run 可从 `TRADEOS_TENANT_ID` 读取租户；
    `--apply` 不接受该隐式租户，必须在命令行再次写出精确 tenant ID。
-4. 不在聊天、终端历史、工单或报告中粘贴数据库密码、Token、密钥值、Need snapshot 或
+5. 不在聊天、终端历史、工单或报告中粘贴数据库密码、Token、密钥值、Need snapshot 或
    Provenance 原文。命令输出不会包含这些内容。
 
 ## 先运行 dry-run
@@ -91,6 +97,12 @@ Need 在此期间发生的其它状态变化仍由生产领域服务复核；库
 拒绝时固定报告
 `eligibility_changed`，不会绕过域门禁。
 
+0055 的数据库 guard 与锁内校验分工明确：事务锁决定同一 Case 的先后顺序，guard 在 Run
+INSERT 时再次核验持久 Admission。若回填先提交 `WAITING`，已经排队等待锁的 start 也会被拒绝，
+不会形成 `WAITING + RUNNING`。只有领域服务 claim 后的 `STARTING` 可首次创建或恢复 Run；恢复
+还必须使用同 tenant、同幂等键、同 workflow type/version/subject 的既有 Run，且不会新建第二条。
+`ADMITTED` 的接口级幂等直接返回已绑定结果，不再调用 engine.start。
+
 执行成功后：
 
 1. 复核 JSON 计数和每个 Case 的准入详情；
@@ -111,6 +123,8 @@ Need 在此期间发生的其它状态变化仍由生产领域服务复核；库
   再以同一命令重跑。`enqueue_admission` 的 canonical Case/Need 约束使合法重跑保持幂等。
 - 本工具没有业务回滚命令。Admission 和 immutable priority snapshot 是审计证据，不允许通过
   删除记录“撤销”。若录入事实损坏，应修复来源事实并走既有 refresh/block 流程。
+- 不得在回填窗口中 downgrade 0055。确需回退应用时，先停止回填与所有 V2 start，再按变更单
+  评估兼容版本；移除数据库 guard 会重新开放未准入 Run 的写入窗口。
 
 受控测试通过只证明命令与核心服务接线正确，不代表生产已执行回填、启用真实 Sourcing V2，
 或授权任何外部来源调用。

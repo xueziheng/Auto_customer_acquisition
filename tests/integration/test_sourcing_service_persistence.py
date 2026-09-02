@@ -1458,6 +1458,8 @@ async def _public_verification_scenario(
     )
     run_id = RunId(new_id("run"))
     async with integration_engine.begin() as connection:
+        # 场景从 verify_candidates 恢复，不把夹具直写当作正常 Run start。
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
         await connection.execute(
             text(
                 "INSERT INTO workflow_runs "

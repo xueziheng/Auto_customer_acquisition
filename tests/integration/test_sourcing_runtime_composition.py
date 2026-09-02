@@ -1950,6 +1950,8 @@ async def test_run_sourcing_projection_requires_same_tenant_case_v2_binding(
     run_id = RunId(new_id("run"))
     async with integration_engine.connect() as connection:
         transaction = await connection.begin()
+        # 只构造待审计的既存 Run 投影；正常 start 由 admission guard 单独验收。
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
         factory = async_sessionmaker(
             connection,
             expire_on_commit=False,

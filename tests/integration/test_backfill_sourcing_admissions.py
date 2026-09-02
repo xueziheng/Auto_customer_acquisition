@@ -24,7 +24,10 @@ from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
 from infra.db.tables import SourcingAdmissionRow
 from infra.db.workflow_engine import PostgresWorkflowEngine
-from infra.db.workflow_subject_lock import acquire_workflow_subject_lock
+from infra.db.workflow_subject_lock import (
+    acquire_workflow_subject_lock,
+    workflow_subject_lock_identity,
+)
 from scripts.backfill_sourcing_admissions import (
     HistoricalSourcingCase,
     PostgresHistoricalCaseInventory,
@@ -33,6 +36,7 @@ from scripts.backfill_sourcing_admissions import (
     execute_backfill,
     run_database_backfill,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId, ValidatedNeedId
 from shared.schemas.provenance import ProvenanceSummary, SourceType
 from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
@@ -52,9 +56,11 @@ async def _clean_backfill_rows(
             # 前缀的清理语句中关闭 trigger/FK，避免全表 TRUNCATE 污染并行节点。
             await connection.execute(text("SET LOCAL session_replication_role = replica"))
             for table in (
+                "workflow_steps",
                 "workflow_runs",
                 "sourcing_priority_snapshots",
                 "sourcing_admissions",
+                "outbox_events",
                 "sourcing_cases",
                 "validated_needs",
             ):
@@ -167,6 +173,83 @@ async def _admission_count(engine: AsyncEngine, tenant_id: TenantId) -> int:
         )
 
 
+async def _seed_legacy_run_without_admission(
+    engine: AsyncEngine,
+    tenant_id: TenantId,
+    case_id: str,
+) -> None:
+    """构造迁移前可能存在的 Run；新写入口不得再产生这种状态。"""
+
+    async with engine.begin() as connection:
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
+        await connection.execute(
+            text(
+                "INSERT INTO workflow_runs "
+                "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
+                "current_step,status,context,idempotency_key) VALUES "
+                "(:run,:tenant,'sourcing_case',2,:case,'first','running',"
+                "CAST('{}' AS jsonb),:key)"
+            ),
+            {
+                "run": f"run_{case_id}",
+                "tenant": str(tenant_id),
+                "case": case_id,
+                "key": f"legacy:{tenant_id}:{case_id}",
+            },
+        )
+
+
+async def _mark_admission_starting(
+    engine: AsyncEngine,
+    tenant_id: TenantId,
+    case_id: str,
+) -> None:
+    now = datetime.now(UTC)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_admissions SET state = 'starting', "
+                "claim_token = 'controlled-test-claim', "
+                "claim_expires_at = :expires, updated_at = :now "
+                "WHERE tenant_id = :tenant AND case_id = :case"
+            ),
+            {
+                "tenant": str(tenant_id),
+                "case": case_id,
+                "now": now,
+                "expires": now + timedelta(minutes=5),
+            },
+        )
+
+
+_RELATED_TABLES = (
+    "validated_needs",
+    "sourcing_cases",
+    "sourcing_admissions",
+    "sourcing_priority_snapshots",
+    "workflow_runs",
+    "workflow_steps",
+    "outbox_events",
+)
+
+
+async def _related_counts(
+    engine: AsyncEngine,
+    tenant_id: TenantId,
+) -> dict[str, int]:
+    async with engine.connect() as connection:
+        return {
+            table: int(
+                await connection.scalar(
+                    text(f"SELECT count(*) FROM {table} WHERE tenant_id = :tenant"),
+                    {"tenant": str(tenant_id)},
+                )
+                or 0
+            )
+            for table in _RELATED_TABLES
+        }
+
+
 class _NoopHandler:
     async def execute(
         self, run: WorkflowRun
@@ -199,14 +282,16 @@ async def test_database_dry_run_is_exact_tenant_and_zero_write(
 
     owner_case, _, _ = await _seed_case(integration_engine, TENANT, "dry-owner")
     await _seed_case(integration_engine, OTHER_TENANT, "dry-other")
+    owner_before = await _related_counts(integration_engine, TENANT)
+    other_before = await _related_counts(integration_engine, OTHER_TENANT)
 
     report = await run_database_backfill(db_url, TENANT, False)
 
     assert report.to_dict()["results"] == [
         {"case_id": owner_case, "status": "would_create", "reason": "eligible"}
     ]
-    assert await _admission_count(integration_engine, TENANT) == 0
-    assert await _admission_count(integration_engine, OTHER_TENANT) == 0
+    assert await _related_counts(integration_engine, TENANT) == owner_before
+    assert await _related_counts(integration_engine, OTHER_TENANT) == other_before
 
 
 @pytest.mark.asyncio
@@ -231,9 +316,7 @@ async def test_database_apply_filters_states_and_replay_is_idempotent(
     run_case, _, _ = await _seed_case(integration_engine, TENANT, "apply-run")
     await _seed_case(integration_engine, OTHER_TENANT, "apply-other")
     factory = async_sessionmaker(integration_engine, expire_on_commit=False)
-    await _workflow_engine(factory).start(
-        TENANT, "sourcing_case", run_case, {}, "backfill-it-existing-run"
-    )
+    await _seed_legacy_run_without_admission(integration_engine, TENANT, run_case)
 
     first = await run_database_backfill(db_url, TENANT, True)
     second = await run_database_backfill(db_url, TENANT, True)
@@ -272,7 +355,7 @@ class _CapturedInventory:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_run_wins_shared_lock_and_backfill_fails_closed(
+async def test_claimed_run_wins_shared_lock_and_backfill_fails_closed(
     integration_engine: AsyncEngine,
 ) -> None:
     """正常 engine 与回填写入口共享锁；Run 先排队时回填复核并固定跳过。"""
@@ -294,6 +377,16 @@ async def test_concurrent_run_wins_shared_lock_and_backfill_fails_closed(
         now=clock,
     )
     writer = PostgresSourcingAdmissionWriter(factory, service)
+    initial = await execute_backfill(
+        tenant_id=TENANT,
+        apply=True,
+        inventory=_CapturedInventory(stale_rows),
+        demand=demand,
+        sourcing=writer,
+        now=clock,
+    )
+    assert initial.results[0].status == "applied"
+    await _mark_admission_starting(integration_engine, TENANT, case_id)
     workflow = _workflow_engine(factory)
     async with factory() as guard, guard.begin():
         await acquire_workflow_subject_lock(
@@ -332,7 +425,7 @@ async def test_concurrent_run_wins_shared_lock_and_backfill_fails_closed(
             "reason": "workflow_run_exists",
         }
     ]
-    assert await _admission_count(integration_engine, TENANT) == 0
+    assert await _admission_count(integration_engine, TENANT) == 1
 
 
 @pytest.mark.asyncio
@@ -388,3 +481,192 @@ async def test_snapshot_changed_after_inventory_is_rejected_under_case_lock(
         }
     ]
     assert await _admission_count(integration_engine, TENANT) == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_wins_then_waiting_engine_start_is_rejected(
+    integration_engine: AsyncEngine,
+) -> None:
+    """start 已排队也不能在回填提交 WAITING 后创建 V2 Run。"""
+
+    case_id, _, _ = await _seed_case(integration_engine, TENANT, "backfill-wins")
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    inventory = PostgresHistoricalCaseInventory(factory, TENANT)
+    stale_rows = await inventory.list_v2_cases(TENANT)
+    clock = lambda: datetime.now(UTC)
+    demand = DemandServiceImpl(
+        lambda tenant: SqlAlchemyDemandUnitOfWork(factory, tenant, now=clock),
+        now=clock,
+    )
+    service = SourcingServiceImpl(
+        lambda tenant: SqlAlchemySourcingUnitOfWork(factory, tenant),
+        Phase2SourcingAuthorizer(TENANT),
+        _UnavailableCandidateEvidenceReader(),
+        now=clock,
+    )
+    writer = PostgresSourcingAdmissionWriter(factory, service)
+    workflow = _workflow_engine(factory)
+
+    async with factory() as guard, guard.begin():
+        await acquire_workflow_subject_lock(guard, TENANT, "sourcing_case", case_id)
+        backfill_task = asyncio.create_task(
+            execute_backfill(
+                tenant_id=TENANT,
+                apply=True,
+                inventory=_CapturedInventory(stale_rows),
+                demand=demand,
+                sourcing=writer,
+                now=clock,
+            )
+        )
+        await asyncio.sleep(0.05)
+        start_task = asyncio.create_task(
+            workflow.start(
+                TENANT,
+                "sourcing_case",
+                case_id,
+                {},
+                "backfill-it-waiting-start",
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not backfill_task.done()
+        assert not start_task.done()
+
+    report = await backfill_task
+    assert report.to_dict()["results"] == [
+        {
+            "case_id": case_id,
+            "status": "applied",
+            "reason": "admission_ensured",
+        }
+    ]
+    with pytest.raises(ValidationError, match="准入状态不允许启动"):
+        await start_task
+
+    async with factory() as session:
+        run_count = int(
+            await session.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_runs "
+                    "WHERE tenant_id = :tenant AND workflow_type = 'sourcing_case' "
+                    "AND subject_ref = :case"
+                ),
+                {"tenant": str(TENANT), "case": case_id},
+            )
+            or 0
+        )
+        state = await session.scalar(
+            select(SourcingAdmissionRow.state).where(
+                SourcingAdmissionRow.tenant_id == str(TENANT),
+                SourcingAdmissionRow.case_id == case_id,
+            )
+        )
+    assert run_count == 0
+    assert state == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_subject_lock_identity_isolated_and_released_after_cancel(
+    integration_engine: AsyncEngine,
+) -> None:
+    """歧义 tuple 不共锁；等待取消与 rollback 后连接池和锁均释放。"""
+
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    first_tuple = (TenantId("tn_backfill_it_lock:a"), "b", "c")
+    second_tuple = (TenantId("tn_backfill_it_lock"), "a:b", "c")
+    assert workflow_subject_lock_identity(*first_tuple) != workflow_subject_lock_identity(
+        *second_tuple
+    )
+
+    async with factory() as holder:
+        await holder.begin()
+        await acquire_workflow_subject_lock(holder, *first_tuple)
+        async with factory() as isolated, isolated.begin():
+            await isolated.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            await acquire_workflow_subject_lock(isolated, *second_tuple)
+
+        waiter = factory()
+        await waiter.begin()
+        waiting = asyncio.create_task(
+            acquire_workflow_subject_lock(waiter, *first_tuple)
+        )
+        await asyncio.sleep(0.05)
+        assert not waiting.done()
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await waiter.rollback()
+        await waiter.close()
+        await holder.rollback()
+
+    async with factory() as probe, probe.begin():
+        await probe.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        await acquire_workflow_subject_lock(probe, *first_tuple)
+
+    checked_out = getattr(integration_engine.pool, "checkedout", None)
+    if callable(checked_out):
+        assert checked_out() == 0
+
+
+@pytest.mark.asyncio
+async def test_starting_admission_allows_start_and_unbound_recovery_replay(
+    integration_engine: AsyncEngine,
+    db_url: str,
+) -> None:
+    """STARTING 可首次创建；绑定前同键恢复仍返回 canonical Run。"""
+
+    case_id, _, _ = await _seed_case(integration_engine, TENANT, "start-replay")
+    report = await run_database_backfill(db_url, TENANT, True)
+    assert report.results[0].status == "applied"
+    await _mark_admission_starting(integration_engine, TENANT, case_id)
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    workflow = _workflow_engine(factory)
+    key = "backfill-it-start-replay"
+
+    run_id = await workflow.start(TENANT, "sourcing_case", case_id, {}, key)
+    replayed = await workflow.start(TENANT, "sourcing_case", case_id, {}, key)
+
+    assert replayed == run_id
+    async with integration_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM workflow_runs "
+                    "WHERE tenant_id = :tenant AND subject_ref = :case"
+                ),
+                {"tenant": str(TENANT), "case": case_id},
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_blocked_admission_cannot_start_sourcing_v2_run(
+    integration_engine: AsyncEngine,
+    db_url: str,
+) -> None:
+    """BLOCKED 与 WAITING 一样不是 engine.start 的允许状态。"""
+
+    case_id, _, _ = await _seed_case(integration_engine, TENANT, "blocked-start")
+    report = await run_database_backfill(db_url, TENANT, True)
+    assert report.results[0].status == "applied"
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE sourcing_admissions SET state = 'blocked', "
+                "blocked_reason = 'case_state_mismatch', updated_at = now() "
+                "WHERE tenant_id = :tenant AND case_id = :case"
+            ),
+            {"tenant": str(TENANT), "case": case_id},
+        )
+    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+
+    with pytest.raises(ValidationError, match="准入状态不允许启动"):
+        await _workflow_engine(factory).start(
+            TENANT,
+            "sourcing_case",
+            case_id,
+            {},
+            "backfill-it-blocked-start",
+        )

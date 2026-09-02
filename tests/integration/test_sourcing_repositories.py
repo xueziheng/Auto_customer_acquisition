@@ -380,6 +380,8 @@ async def _seed_reconciliation_scope(
     await _seed_artifact(engine, tenant_id, artifact_id, content_hash="e" * 64)
     plan = _plan(tenant_id, case_id)
     async with engine.begin() as connection:
+        # 本 helper 构造既存 public_search 投影，不模拟受准入保护的 Run start。
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
         await connection.execute(
             text(
                 "INSERT INTO workflow_runs "
