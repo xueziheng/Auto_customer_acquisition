@@ -143,6 +143,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/commands/sourcing-admission-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Sourcing Admission Proposal */
+        post: operations["create_sourcing_admission_proposal_commands_sourcing_admission_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/sourcing-admission-proposals/{proposal_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Sourcing Admission Proposal */
+        post: operations["confirm_sourcing_admission_proposal_commands_sourcing_admission_proposals__proposal_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/commitments": {
         parameters: {
             query?: never;
@@ -1631,6 +1665,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sourcing-admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sourcing Admissions */
+        get: operations["list_sourcing_admissions_sourcing_admissions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-admissions/{admission_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sourcing Admission */
+        get: operations["get_sourcing_admission_sourcing_admissions__admission_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sourcing-admissions/{admission_id}/admit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Manually Admit Sourcing Case */
+        post: operations["manually_admit_sourcing_case_sourcing_admissions__admission_id__admit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sourcing-cases": {
         parameters: {
             query?: never;
@@ -1950,6 +2035,12 @@ export interface components {
             /** Workflow Type */
             workflow_type: string;
         };
+        /**
+         * AdmissionState
+         * @description 寻源自动准入状态；与既有 ``CaseState`` 分离。
+         * @enum {string}
+         */
+        AdmissionState: "waiting" | "starting" | "admitted" | "blocked";
         /**
          * ApiErrorResponse
          * @description 所有 HTTP 错误共用的扁平外部契约。
@@ -3056,6 +3147,8 @@ export interface components {
          * @description 保留历史提案字段，增加后端确认依据与计划线路（非已执行线路）。
          */
         DiscoveryProposalView: {
+            /** Automatic Sourcing Admission Enabled */
+            automatic_sourcing_admission_enabled?: boolean | null;
             /**
              * Can Confirm
              * @default false
@@ -3098,6 +3191,10 @@ export interface components {
             /** Raw Text */
             raw_text: string;
             research_access?: components["schemas"]["ResearchAccessView"] | null;
+            /** Sourcing Admission Batch Limit */
+            sourcing_admission_batch_limit?: number | null;
+            /** Sourcing Admission Mode */
+            sourcing_admission_mode?: string | null;
             /** State */
             state: string;
         };
@@ -4769,6 +4866,46 @@ export interface components {
             summary: string;
         };
         /**
+         * ProposalView
+         * @description 提案视图 —— 老板确认界面的数据源。
+         *
+         *     界面必须并排展示三样东西：原话、系统的理解、预计行为变化。
+         *     只展示解析字段的确认界面发现不了误解析。
+         */
+        ProposalView: {
+            /** Automatic Sourcing Admission Enabled */
+            automatic_sourcing_admission_enabled?: boolean | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By Id */
+            decided_by_id?: string | null;
+            /** Decided By Name */
+            decided_by_name?: string | null;
+            /** Expected Behavior Changes */
+            expected_behavior_changes: string[];
+            /** Interpretation Summary */
+            interpretation_summary: string;
+            /** Parsed Fields */
+            parsed_fields: {
+                [key: string]: string;
+            };
+            /** Proposal Id */
+            proposal_id: string;
+            /** Raw Text */
+            raw_text: string;
+            /** Sourcing Admission Batch Limit */
+            sourcing_admission_batch_limit?: number | null;
+            /** Sourcing Admission Mode */
+            sourcing_admission_mode?: string | null;
+            /** State */
+            state: string;
+        };
+        /**
          * ProspectContactDetailView
          * @description 联系人及其联系方式；仅供已判权的内部员工视图。
          */
@@ -6160,6 +6297,121 @@ export interface components {
          */
         SourceType: "conversation" | "web_page" | "upload" | "employee_input" | "agent_inference" | "external_api";
         /**
+         * SourcingAdmissionConfirmationResponse
+         * @description 确认后返回实际生效版本，不包含或启动 Workflow。
+         */
+        SourcingAdmissionConfirmationResponse: {
+            /** Automatic Admission Enabled */
+            automatic_admission_enabled: boolean;
+            /** Batch Limit */
+            batch_limit: number;
+            /** Directive Id */
+            directive_id: string;
+            /** Directive Version */
+            directive_version: number;
+            /** Mode */
+            mode: string;
+            /** Proposal Id */
+            proposal_id: string;
+        };
+        /**
+         * SourcingAdmissionDetailView
+         * @description 单条安全准入事实与当前策略状态。
+         */
+        SourcingAdmissionDetailView: {
+            admission: components["schemas"]["SourcingAdmissionReadView"];
+            policy: components["schemas"]["SourcingAdmissionPolicyView"];
+        };
+        /**
+         * SourcingAdmissionListView
+         * @description 保留服务端顺序的准入列表与当前策略状态。
+         */
+        SourcingAdmissionListView: {
+            /** Items */
+            items: components["schemas"]["SourcingAdmissionReadView"][];
+            policy: components["schemas"]["SourcingAdmissionPolicyView"];
+        };
+        /**
+         * SourcingAdmissionPolicyView
+         * @description Directive 策略的安全投影；不把 scheduler 状态写入寻源域。
+         */
+        SourcingAdmissionPolicyView: {
+            /** Automatic Admission Enabled */
+            automatic_admission_enabled?: boolean | null;
+            /** Batch Limit */
+            batch_limit?: number | null;
+            /** Directive Id */
+            directive_id?: string | null;
+            /** Directive Version */
+            directive_version?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "enabled" | "policy_not_configured" | "automatic_admission_disabled" | "policy_status_unknown";
+        };
+        /**
+         * SourcingAdmissionProposalBody
+         * @description 老板显式提交的完整准入配置；不从文本猜测授权字段。
+         */
+        SourcingAdmissionProposalBody: {
+            /** Automatic Admission Enabled */
+            automatic_admission_enabled: boolean;
+            /** Batch Limit */
+            batch_limit: number;
+            /** Message */
+            message: string;
+            /** Mode */
+            mode: string;
+        };
+        /**
+         * SourcingAdmissionReadView
+         * @description 等待准入/已准入记录的最小安全读取投影。
+         *
+         *     不返回 claim token、租约、Workflow context、完整 Need snapshot 或底层异常；
+         *     这些字段不能帮助人工判断，却会扩大并发控制与业务数据暴露面。
+         */
+        SourcingAdmissionReadView: {
+            /** Admission Id */
+            admission_id: string;
+            /** Admitted At */
+            admitted_at?: string | null;
+            /** Admitted By */
+            admitted_by?: string | null;
+            /** Blocked Reason */
+            blocked_reason?: ("priority_facts_invalid" | "case_state_mismatch") | null;
+            /** Can Current User Manual Start */
+            can_current_user_manual_start: boolean;
+            /** Case Id */
+            case_id: string;
+            /** Cluster Id */
+            cluster_id?: string | null;
+            /** Cluster Member Count */
+            cluster_member_count?: number | null;
+            /** Explanation */
+            explanation?: string | null;
+            /** Facts Observed At */
+            facts_observed_at?: string | null;
+            /** Need Id */
+            need_id: string;
+            /** Ranking Version */
+            ranking_version?: "need-cluster-admission-v1" | null;
+            /**
+             * Ready At
+             * Format: date-time
+             */
+            ready_at: string;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "starting" | "admitted" | "blocked";
+            /** Waiting Duration Seconds */
+            waiting_duration_seconds: number;
+        };
+        /**
          * SourcingArtifactSummaryView
          * @description 候选网页快照的安全索引；不包含页面正文、对象键或联系人。
          */
@@ -7237,6 +7489,144 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_sourcing_admission_proposal_commands_sourcing_admission_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcingAdmissionProposalBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProposalView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_sourcing_admission_proposal_commands_sourcing_admission_proposals__proposal_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingAdmissionConfirmationResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12094,6 +12484,210 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_sourcing_admissions_sourcing_admissions_get: {
+        parameters: {
+            query?: {
+                state?: components["schemas"]["AdmissionState"];
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingAdmissionListView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_sourcing_admission_sourcing_admissions__admission_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingAdmissionDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    manually_admit_sourcing_case_sourcing_admissions__admission_id__admit_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcingAdmissionReadView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

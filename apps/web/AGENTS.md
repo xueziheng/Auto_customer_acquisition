@@ -43,3 +43,10 @@ src/
 ## Sourcing V2 页面
 
 只消费生成的 OpenAPI 类型。计划替换后必须让旧确认失效；展示事实、自述、推断、未知与 `INDICATIVE`/`QUOTED` 的差别。primary 至多一个、alternate 至多两个只是 UX guard，后端仍为最终裁决。`source_only` Product 必须显示来源链和“不可用于客户报价”；Run 页面只能显示安全 counters、quota、stop/reconciliation，不能显示 workflow context、网页原文、联系人或凭证。
+
+## NeedCluster 寻源准入
+
+- Command Center 的准入提案必须显式提交 `cluster_ranked`、自动准入开关和每轮上限；创建或确认提案都不得显示为已启动 Workflow，确认后只展示生效 Directive version。
+- Sourcing Center 必须原样保留 API 返回顺序，分开显示“等待准入”和“处理中”；需求簇只解释排序，一个 Need 始终对应一个 Case，不能写成合并订单。
+- 人工准入只按后端 `can_current_user_manual_start` 渲染；确认对话框中的原始 Idempotency-Key 只随请求发送，失败恢复时不得换键，也不得在 UI 或日志展示。
+- admission 详情只显示安全不可变排序快照和 admitted actor/time；禁止渲染 claim token、租约、`requested_by`、完整 Workflow context 或底层异常。

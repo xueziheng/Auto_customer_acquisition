@@ -15,6 +15,7 @@ type SourcingCandidate = components["schemas"]["SourcingCandidateReadView"];
 type SourcingCase = components["schemas"]["SourcingCaseReadView"];
 type SourcingLadderCheck = components["schemas"]["SourcingLadderCheckReadView"];
 type SourcingReview = components["schemas"]["SourcingReviewReadView"];
+type AdmissionDetail = components["schemas"]["SourcingAdmissionDetailView"];
 type CurrentQuota = components["schemas"]["SourcingCurrentQuotaReadView"];
 type ReconciliationCommand = components["schemas"]["SourcingUncertainReconciliationCommand"];
 type UncertainExecution = components["schemas"]["SourcingUncertainExecutionReadView"];
@@ -27,6 +28,8 @@ type RunAvailability = "available" | "forbidden" | "unavailable" | "paid" | "unk
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route = useRoute();
 const caseId = computed(() => String(route.params.caseId ?? ""));
+const isAdmissionRoute = computed(() => caseId.value.startsWith("sad_"));
+const admissionDetail = ref<AdmissionDetail | null>(null);
 const sourcingCase = ref<SourcingCase | null>(null);
 const candidates = ref<SourcingCandidate[]>([]);
 const checks = ref<SourcingLadderCheck[]>([]);
@@ -138,6 +141,61 @@ function safeError(status: number): string {
   if (status === 404) return "案例不存在或不属于当前租户";
   if (status === 503) return "寻源服务暂不可用";
   return "寻源操作未完成，请核对范围与版本后重试";
+}
+
+function displayTime(value: string | null | undefined): string {
+  if (!value) return "未知";
+  const time = new Date(value);
+  return Number.isNaN(time.getTime()) ? "未知" : value.replace("T", " ").replace("Z", " UTC");
+}
+
+function displayWait(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} 小时 ${remainder} 分钟` : `${hours} 小时`;
+}
+
+function policyLabel(status: AdmissionDetail["policy"]["status"]): string {
+  return ({
+    automatic_admission_disabled: "自动准入已关闭",
+    enabled: "自动准入已启用",
+    policy_not_configured: "自动准入未配置",
+    policy_status_unknown: "自动准入策略状态未知",
+  }[status]);
+}
+
+function blockedReasonLabel(reason: AdmissionDetail["admission"]["blocked_reason"]): string {
+  if (reason === "case_state_mismatch") return "案例状态不匹配";
+  if (reason === "priority_facts_invalid") return "排序事实无效";
+  return "无";
+}
+
+async function loadAdmissionDetail(): Promise<boolean> {
+  loading.value = true;
+  admissionDetail.value = null;
+  error.value = null;
+  try {
+    const result = await client.GET("/sourcing-admissions/{admission_id}", {
+      params: { path: { admission_id: caseId.value } },
+    });
+    if (result.response.status !== 200 || !result.data) {
+      error.value = safeError(result.response.status);
+      return false;
+    }
+    admissionDetail.value = result.data;
+    return true;
+  } catch {
+    error.value = "无法连接寻源准入服务";
+    return false;
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadEntry(): Promise<boolean> {
+  return isAdmissionRoute.value ? loadAdmissionDetail() : loadCase();
 }
 
 function setProjectionState(
@@ -384,7 +442,7 @@ async function mutate(
   }
 }
 
-onMounted(() => void loadCase());
+onMounted(() => void loadEntry());
 </script>
 
 <template>
@@ -394,19 +452,19 @@ onMounted(() => void loadCase());
         <RouterLink to="/sourcing">
           ← 返回寻源中心
         </RouterLink><p class="phase-eyebrow">
-          SOURCING CASE
-        </p><h1>寻源 Case</h1>
+          {{ isAdmissionRoute ? "SOURCING ADMISSION" : "SOURCING CASE" }}
+        </p><h1>{{ isAdmissionRoute ? "寻源准入详情" : "寻源 Case" }}</h1>
       </div>
       <button
         type="button"
         :disabled="loading || mutating"
-        @click="() => loadCase()"
+        @click="() => loadEntry()"
       >
         {{ loading ? "加载中…" : "刷新" }}
       </button>
     </div>
     <div class="safe-banner">
-      <span aria-hidden="true">i</span><div>公开页面参考价（indicative）不可用于客户报价。事实、供应商自述、匹配推断和未知项必须分别阅读。</div>
+      <span aria-hidden="true">i</span><div>{{ isAdmissionRoute ? "一个 Need 对应一个 Case；需求簇不是合并订单。排序快照一经记录不可变。" : "公开页面参考价（indicative）不可用于客户报价。事实、供应商自述、匹配推断和未知项必须分别阅读。" }}</div>
     </div>
     <div
       v-if="error"
@@ -426,8 +484,66 @@ onMounted(() => void loadCase());
       v-if="loading"
       class="empty"
     >
-      正在读取寻源证据…
+      {{ isAdmissionRoute ? "正在读取准入事实…" : "正在读取寻源证据…" }}
     </div>
+    <template v-else-if="admissionDetail">
+      <section class="case-summary detail-panel">
+        <div><span>Admission</span><strong>{{ admissionDetail.admission.admission_id }}</strong></div>
+        <div><span>Case</span><strong>{{ admissionDetail.admission.case_id }}</strong></div>
+        <div>
+          <span>Need</span><RouterLink :to="`/demand/needs/${admissionDetail.admission.need_id}`">
+            {{ admissionDetail.admission.need_id }}
+          </RouterLink>
+        </div>
+        <div><span>状态</span><strong>{{ admissionDetail.admission.state }}</strong></div>
+        <div v-if="admissionDetail.admission.blocked_reason">
+          <span>固定阻断原因</span><strong>{{ blockedReasonLabel(admissionDetail.admission.blocked_reason) }}</strong>
+        </div>
+      </section>
+
+      <section
+        class="detail-panel immutable-snapshot"
+        aria-labelledby="snapshot-title"
+      >
+        <header>
+          <div>
+            <p class="card-kicker">
+              PRIORITY SNAPSHOT
+            </p><h2 id="snapshot-title">
+              不可变排序快照
+            </h2>
+          </div>
+          <span>{{ admissionDetail.admission.ranking_version ?? "无有效快照" }}</span>
+        </header>
+        <dl class="snapshot-grid">
+          <div><dt>Snapshot</dt><dd>{{ admissionDetail.admission.snapshot_id ?? "无" }}</dd></div>
+          <div><dt>需求簇</dt><dd>{{ admissionDetail.admission.cluster_id ?? "尚未归簇" }}</dd></div>
+          <div><dt>成员数</dt><dd>{{ admissionDetail.admission.cluster_member_count ? `${admissionDetail.admission.cluster_member_count} 条已验证需求` : "未知" }}</dd></div>
+          <div><dt>Case 就绪时间</dt><dd>{{ displayTime(admissionDetail.admission.ready_at) }}</dd></div>
+          <div><dt>已等待</dt><dd>{{ displayWait(admissionDetail.admission.waiting_duration_seconds) }}</dd></div>
+          <div><dt>事实观测时间</dt><dd>{{ displayTime(admissionDetail.admission.facts_observed_at) }}</dd></div>
+        </dl>
+        <p class="snapshot-explanation">
+          {{ admissionDetail.admission.explanation ?? "排序事实待修复" }}
+        </p>
+      </section>
+
+      <section class="detail-panel">
+        <header>
+          <div>
+            <p class="card-kicker">
+              ADMISSION AUDIT
+            </p><h2>准入审计</h2>
+          </div><span>{{ policyLabel(admissionDetail.policy.status) }}</span>
+        </header>
+        <dl class="snapshot-grid">
+          <div><dt>生效策略</dt><dd>{{ admissionDetail.policy.directive_version ? `Directive v${admissionDetail.policy.directive_version}` : "无可确认版本" }}</dd></div>
+          <div><dt>每轮上限</dt><dd>{{ admissionDetail.policy.batch_limit ?? "未知" }}</dd></div>
+          <div><dt>准入人</dt><dd>{{ admissionDetail.admission.admitted_by ?? "尚未准入" }}</dd></div>
+          <div><dt>准入时间</dt><dd>{{ displayTime(admissionDetail.admission.admitted_at) }}</dd></div>
+        </dl>
+      </section>
+    </template>
     <template v-else-if="sourcingCase">
       <section class="case-summary detail-panel">
         <div><span>Case</span><strong>{{ sourcingCase.case_id }}</strong></div>
@@ -701,5 +817,8 @@ onMounted(() => void loadCase());
 .candidate-card { border-top: 1px solid var(--border); padding-top: var(--space4); display: grid; gap: var(--space3); }.candidate-card h3 { font-size: 16px; }.candidate-card h4 { color: var(--fact); font-size: 13px; }
 .candidate-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space3); }.candidate-columns section { background: var(--canvas); border-radius: var(--radius-sm); padding: var(--space3); }.candidate-columns dl { display: grid; gap: 2px; }.candidate-columns dt { color: var(--text-secondary); font-size: 12px; }.candidate-columns dd { margin: 0; overflow-wrap: anywhere; }
 .candidate-audit { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); }.candidate-audit h4 { color: var(--fact); font-size: 13px; }.candidate-audit ul { margin: 0; padding-left: 20px; display: grid; gap: var(--space1); }
+.snapshot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space3); }
+.snapshot-grid > div { display: grid; gap: 2px; min-width: 0; }.snapshot-grid dt { color: var(--text-secondary); font-size: 12px; }.snapshot-grid dd { margin: 0; overflow-wrap: anywhere; }
+.immutable-snapshot { border-left: 4px solid var(--fact); }.snapshot-explanation { padding: var(--space3); background: var(--fact-soft); color: var(--fact); border-radius: var(--radius-sm); }
 .indicative { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }.source-warning { display: grid; gap: 2px; }.empty { padding: var(--space5); text-align: center; color: var(--text-secondary); }
 </style>

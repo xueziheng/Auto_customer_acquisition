@@ -4,8 +4,89 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App.vue";
 import { createApiClient } from "../src/api/client";
 import router from "../src/router";
+import type { components } from "../src/api/api";
 
 const caseId = "src_01K39P9M5D6K4A91YEQ80EJZ0X";
+type Admission = components["schemas"]["SourcingAdmissionReadView"];
+type AdmissionPolicy = components["schemas"]["SourcingAdmissionPolicyView"];
+
+const waitingEightId = "sad_01K39P9M5D6K4A91YEQ80EJZ0A";
+const waitingOneId = "sad_01K39P9M5D6K4A91YEQ80EJZ0B";
+const blockedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0C";
+const admittedId = "sad_01K39P9M5D6K4A91YEQ80EJZ0D";
+
+const enabledPolicy: AdmissionPolicy = {
+  automatic_admission_enabled: true,
+  batch_limit: 2,
+  directive_id: "dir_01K39P9M5D6K4A91YEQ80EJZ0X",
+  directive_version: 7,
+  status: "enabled",
+};
+
+function admissionFixture(
+  admissionId: string,
+  state: Admission["state"],
+  overrides: Partial<Admission> = {},
+): Admission {
+  return {
+    admission_id: admissionId,
+    admitted_at: state === "admitted" ? "2026-09-02T09:05:00Z" : null,
+    admitted_by: state === "admitted" ? "emp_sourcing" : null,
+    blocked_reason: state === "blocked" ? "case_state_mismatch" : null,
+    can_current_user_manual_start: state === "waiting",
+    case_id: `src_${admissionId.slice(4)}`,
+    cluster_id: null,
+    cluster_member_count: 1,
+    explanation: "该需求尚未归入多成员需求簇；按等待时间排序。",
+    facts_observed_at: "2026-09-02T09:00:00Z",
+    need_id: `vnd_${admissionId.slice(4)}`,
+    ranking_version: "need-cluster-admission-v1",
+    ready_at: "2026-09-02T08:00:00Z",
+    snapshot_id: `sps_${admissionId.slice(4)}`,
+    state,
+    waiting_duration_seconds: 3600,
+    ...overrides,
+  };
+}
+
+function admissionCenterFetch(options: {
+  manualKeys?: string[];
+  manualStatus?: number;
+  pendingManual?: Promise<Response>;
+} = {}): typeof globalThis.fetch {
+  const waiting = [
+    admissionFixture(waitingOneId, "waiting"),
+    admissionFixture(waitingEightId, "waiting", {
+      cluster_id: "ncl_01K39P9M5D6K4A91YEQ80EJZ0X",
+      cluster_member_count: 8,
+      explanation: "该需求簇当前有 8 条已验证需求；同规模需求按等待时间排序。",
+      waiting_duration_seconds: 7200,
+    }),
+  ];
+  const byState: Record<string, Admission[]> = {
+    admitted: [admissionFixture(admittedId, "admitted")],
+    blocked: [admissionFixture(blockedId, "blocked")],
+    starting: [],
+    waiting,
+  };
+  return vi.fn<typeof globalThis.fetch>(async (input) => {
+    const request = input as Request;
+    const url = new URL(request.url);
+    if (url.pathname === "/notifications") return jsonResponse([]);
+    if (request.method === "GET" && url.pathname === "/sourcing-admissions") {
+      return jsonResponse({ items: byState[url.searchParams.get("state") ?? "waiting"], policy: enabledPolicy });
+    }
+    if (request.method === "GET" && url.pathname === "/sourcing-cases") return jsonResponse([]);
+    if (request.method === "POST" && url.pathname === `/sourcing-admissions/${waitingOneId}/admit`) {
+      const key = request.headers.get("Idempotency-Key");
+      if (key) options.manualKeys?.push(key);
+      if (options.pendingManual) return options.pendingManual;
+      if (options.manualStatus) return jsonResponse({ code: "manual_failed" }, options.manualStatus);
+      return jsonResponse(admissionFixture(waitingOneId, "admitted"));
+    }
+    return jsonResponse({ code: "unexpected", message: url.pathname }, 500);
+  });
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -712,5 +793,68 @@ describe("Sourcing and Product centers", () => {
       `/sourcing-cases/${caseId}/reconcile-uncertain-request`,
     ]));
     expect(caseReads).toBeGreaterThanOrEqual(8);
+  });
+});
+
+describe("Sourcing admission queue", () => {
+  it("keeps server order and separates waiting admission from in-progress cases", async () => {
+    const root = await mount("/sourcing", admissionCenterFetch());
+
+    await eventually(() => {
+      expect(root.textContent).toContain("等待准入");
+      expect(root.textContent).toContain("处理中");
+      expect(root.textContent).toContain("8 条已验证需求");
+      expect(root.textContent).toContain("尚未归簇（按 1 条需求排序）");
+      expect(root.textContent).toContain("案例状态不匹配");
+      expect(root.textContent).toContain("Directive v7");
+    });
+    const waitingRows = [...root.querySelectorAll<HTMLElement>('[data-section="waiting-admission"] [data-admission-id]')];
+    expect(waitingRows.map((row) => row.dataset.admissionId)).toEqual([
+      waitingOneId,
+      waitingEightId,
+      blockedId,
+    ]);
+    expect(root.textContent).toContain("一个 Need 对应一个 Case；需求簇不是合并订单");
+  });
+
+  it("disables only the selected row while manual admission is pending", async () => {
+    let resolveManual!: (response: Response) => void;
+    const pendingManual = new Promise<Response>((resolve) => { resolveManual = resolve; });
+    const root = await mount("/sourcing", admissionCenterFetch({ pendingManual }));
+    await eventually(() => expect(root.querySelectorAll<HTMLButtonElement>("button[data-manual-admit]")).toHaveLength(2));
+
+    const buttons = [...root.querySelectorAll<HTMLButtonElement>("button[data-manual-admit]")];
+    buttons[0]!.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+    [...root.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((button) => button.textContent?.includes("确认准入"))!.click();
+
+    await eventually(() => expect(buttons[0]!.disabled).toBe(true));
+    expect(buttons[1]!.disabled).toBe(false);
+    resolveManual(jsonResponse(admissionFixture(waitingOneId, "admitted")));
+    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该 Case 获准启动"));
+  });
+
+  it.each([
+    [409, "准入状态已变化，请刷新队列后重试"],
+    [503, "寻源准入服务暂不可用，请稍后重试"],
+  ] as const)("restores row controls after a %s manual response", async (status, message) => {
+    const manualKeys: string[] = [];
+    const root = await mount("/sourcing", admissionCenterFetch({ manualKeys, manualStatus: status }));
+    await eventually(() => expect(root.querySelectorAll<HTMLButtonElement>("button[data-manual-admit]")).toHaveLength(2));
+
+    const button = root.querySelector<HTMLButtonElement>("button[data-manual-admit]")!;
+    button.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+    [...root.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("确认准入"))!.click();
+
+    await eventually(() => expect(root.textContent).toContain(message));
+    expect(button.disabled).toBe(false);
+
+    button.click();
+    await eventually(() => expect(root.querySelector('[role="dialog"]')).not.toBeNull());
+    [...root.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((item) => item.textContent?.includes("确认准入"))!.click();
+    await eventually(() => expect(manualKeys).toHaveLength(2));
+    expect(manualKeys[1]).toBe(manualKeys[0]);
+    expect(root.textContent).not.toContain(manualKeys[0]);
   });
 });

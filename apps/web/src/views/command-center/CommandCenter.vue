@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* global Response */
-import { computed, inject, ref } from "vue";
+import { computed, inject, onMounted, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -10,6 +10,9 @@ import { laneLabel, stopLabel } from "../../components/researchLabels";
 type ApiClient = ReturnType<typeof createApiClient>;
 type Proposal = components["schemas"]["DiscoveryProposalView"];
 type Confirmation = components["schemas"]["DiscoveryConfirmationResponse"];
+type AdmissionPolicy = components["schemas"]["SourcingAdmissionPolicyView"];
+type AdmissionProposal = components["schemas"]["ProposalView"];
+type AdmissionConfirmation = components["schemas"]["SourcingAdmissionConfirmationResponse"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const message = ref("");
@@ -22,6 +25,116 @@ const deciding = ref(false);
 const decisionUncertain = ref(false);
 const error = ref<string | null>(null);
 const statusMessage = ref("输入指令后只会生成待确认提案，不会直接启动工作流。");
+const admissionPolicy = ref<AdmissionPolicy>({ status: "policy_status_unknown" });
+const admissionPolicyVisible = ref(true);
+const admissionMessage = ref("按需求簇排序，每轮最多启动 3 个寻源案例");
+const admissionEnabled = ref(true);
+const admissionBatchLimit = ref(3);
+const admissionProposal = ref<AdmissionProposal | null>(null);
+const admissionConfirmation = ref<AdmissionConfirmation | null>(null);
+const admissionSubmitting = ref(false);
+const admissionConfirming = ref(false);
+const admissionError = ref<string | null>(null);
+const admissionConfirmKey = ref<string | null>(null);
+
+const admissionPolicyLabel = computed(() => ({
+  automatic_admission_disabled: "已关闭",
+  enabled: "已启用",
+  policy_not_configured: "未配置",
+  policy_status_unknown: "状态未知",
+}[admissionPolicy.value.status]));
+
+function admissionSafeError(status: number): string {
+  if (status === 403) return "当前身份无权配置寻源准入策略";
+  if (status === 409) return "提案基于的 Directive 已变化，请重新创建提案";
+  if (status === 503) return "寻源准入策略服务暂不可用，请稍后重试";
+  return "寻源准入策略请求未完成，请检查配置后重试";
+}
+
+async function loadAdmissionPolicy(): Promise<void> {
+  try {
+    const result = await client.GET("/sourcing-admissions", {
+      params: { query: { limit: 1, state: "waiting" } },
+    });
+    if (result.response.status === 200 && result.data) {
+      admissionPolicy.value = result.data.policy;
+      admissionPolicyVisible.value = true;
+      return;
+    }
+    if (result.response.status === 403) {
+      admissionPolicyVisible.value = false;
+      return;
+    }
+  } catch { /* 策略读取失败与“未配置”不同。 */ }
+  admissionPolicy.value = { status: "policy_status_unknown" };
+}
+
+async function createAdmissionProposal(): Promise<void> {
+  const raw = admissionMessage.value.trim();
+  if (!raw || admissionSubmitting.value || !Number.isInteger(admissionBatchLimit.value)) return;
+  admissionSubmitting.value = true;
+  admissionError.value = null;
+  admissionProposal.value = null;
+  admissionConfirmation.value = null;
+  admissionConfirmKey.value = null;
+  try {
+    const result = await client.POST("/commands/sourcing-admission-proposals", {
+      body: {
+        automatic_admission_enabled: admissionEnabled.value,
+        batch_limit: admissionBatchLimit.value,
+        message: raw,
+        mode: "cluster_ranked",
+      },
+    });
+    if (result.response.status === 200 && result.data) {
+      admissionProposal.value = result.data;
+      return;
+    }
+    if (result.response.status === 403) admissionPolicyVisible.value = false;
+    admissionError.value = admissionSafeError(result.response.status);
+  } catch {
+    admissionError.value = "无法连接寻源准入策略服务";
+  } finally {
+    admissionSubmitting.value = false;
+  }
+}
+
+async function confirmAdmissionProposal(): Promise<void> {
+  const current = admissionProposal.value;
+  if (!current || current.state !== "pending_confirmation" || admissionConfirming.value) return;
+  admissionConfirming.value = true;
+  admissionError.value = null;
+  admissionConfirmKey.value ??= globalThis.crypto.randomUUID();
+  try {
+    const result = await client.POST(
+      "/commands/sourcing-admission-proposals/{proposal_id}/confirm",
+      {
+        params: {
+          header: { "Idempotency-Key": admissionConfirmKey.value },
+          path: { proposal_id: current.proposal_id },
+        },
+      },
+    );
+    if (result.response.status === 200 && result.data) {
+      admissionConfirmation.value = result.data;
+      admissionProposal.value = { ...current, state: "confirmed" };
+      admissionPolicy.value = {
+        automatic_admission_enabled: result.data.automatic_admission_enabled,
+        batch_limit: result.data.batch_limit,
+        directive_id: result.data.directive_id,
+        directive_version: result.data.directive_version,
+        status: result.data.automatic_admission_enabled ? "enabled" : "automatic_admission_disabled",
+      };
+      admissionConfirmKey.value = null;
+      return;
+    }
+    admissionError.value = admissionSafeError(result.response.status);
+  } catch {
+    admissionError.value = "无法连接寻源准入策略服务";
+  } finally {
+    admissionConfirming.value = false;
+  }
+}
 
 const fieldLabels: Record<string, string> = {
   objective: "总目标",
@@ -249,6 +362,8 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
     deciding.value = false;
   }
 }
+
+onMounted(() => void loadAdmissionPolicy());
 </script>
 
 <template>
@@ -482,6 +597,131 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         查看本次 Run →
       </RouterLink>
     </section>
+
+    <section
+      v-if="admissionPolicyVisible"
+      class="admission-policy"
+      aria-labelledby="admission-policy-title"
+    >
+      <header>
+        <div>
+          <p class="eyebrow">
+            SOURCING ADMISSION
+          </p>
+          <h2 id="admission-policy-title">
+            寻源准入策略
+          </h2>
+        </div>
+        <strong>当前策略：{{ admissionPolicyLabel }}</strong>
+      </header>
+      <p class="admission-boundary">
+        按需求簇规模决定尚未启动 Case 的顺序。一个 Need 仍对应一个 Case，需求簇不是合并订单。
+      </p>
+      <dl
+        v-if="admissionPolicy.directive_version"
+        class="policy-facts"
+      >
+        <div><dt>生效版本</dt><dd>Directive v{{ admissionPolicy.directive_version }}</dd></div>
+        <div><dt>自动准入</dt><dd>{{ admissionPolicy.automatic_admission_enabled ? "启用" : "关闭" }}</dd></div>
+        <div><dt>每轮上限</dt><dd>{{ admissionPolicy.batch_limit }} 个 Case</dd></div>
+      </dl>
+      <form
+        aria-label="寻源准入策略提案"
+        @submit.prevent="createAdmissionProposal"
+      >
+        <label for="admission-message">老板原始指令</label>
+        <textarea
+          id="admission-message"
+          v-model="admissionMessage"
+          name="admission_message"
+          rows="2"
+          :disabled="admissionSubmitting || admissionConfirming"
+        />
+        <div class="admission-fields">
+          <label class="switch-field">
+            <input
+              v-model="admissionEnabled"
+              name="automatic_admission_enabled"
+              type="checkbox"
+              :disabled="admissionSubmitting || admissionConfirming"
+            >
+            自动准入
+          </label>
+          <label for="admission-limit">每轮上限</label>
+          <input
+            id="admission-limit"
+            v-model.number="admissionBatchLimit"
+            name="batch_limit"
+            type="number"
+            min="1"
+            max="50"
+            :disabled="admissionSubmitting || admissionConfirming"
+          >
+          <button
+            class="btn-primary"
+            type="submit"
+            :disabled="!admissionMessage.trim() || admissionBatchLimit < 1 || admissionBatchLimit > 50 || admissionSubmitting || admissionConfirming"
+          >
+            {{ admissionSubmitting ? "正在生成…" : "生成准入提案" }}
+          </button>
+        </div>
+      </form>
+      <div
+        v-if="admissionError"
+        class="control-note danger"
+        role="alert"
+      >
+        {{ admissionError }}
+      </div>
+      <article
+        v-if="admissionProposal"
+        class="admission-proposal"
+      >
+        <div class="comparison-grid">
+          <section class="comparison-card raw-card">
+            <span class="card-label">老板原话 · 事实记录</span><p>{{ admissionProposal.raw_text }}</p>
+          </section>
+          <section class="comparison-card interpretation-card">
+            <span class="card-label">系统理解 · 待确认推断</span><p>{{ admissionProposal.interpretation_summary }}</p>
+          </section>
+          <section class="comparison-card behavior-card">
+            <span class="card-label">确认后的行为变化</span><ul>
+              <li
+                v-for="change in admissionProposal.expected_behavior_changes"
+                :key="change"
+              >
+                {{ change }}
+              </li>
+            </ul>
+          </section>
+        </div>
+        <dl class="policy-facts proposal-policy-facts">
+          <div><dt>排序模式</dt><dd>{{ admissionProposal.sourcing_admission_mode }}</dd></div>
+          <div><dt>自动准入</dt><dd>{{ admissionProposal.automatic_sourcing_admission_enabled ? "启用" : "关闭" }}</dd></div>
+          <div><dt>每轮上限</dt><dd>{{ admissionProposal.sourcing_admission_batch_limit }} 个 Case</dd></div>
+        </dl>
+        <footer class="admission-decision">
+          <span>{{ admissionProposal.state === "confirmed" ? "提案已确认" : "提案不会启动寻源流程" }}</span>
+          <button
+            v-if="admissionProposal.state === 'pending_confirmation'"
+            class="btn-primary"
+            type="button"
+            :disabled="admissionConfirming"
+            @click="confirmAdmissionProposal"
+          >
+            {{ admissionConfirming ? "正在确认…" : "确认提案" }}
+          </button>
+        </footer>
+        <div
+          v-if="admissionConfirmation"
+          class="admission-confirmed"
+          role="status"
+        >
+          <strong>生效 Directive v{{ admissionConfirmation.directive_version }}</strong>
+          <span>确认只更新准入策略，不代表寻源已启动。</span>
+        </div>
+      </article>
+    </section>
   </div>
 </template>
 
@@ -492,7 +732,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
 .command-head > div { display: flex; align-items: baseline; gap: var(--space3); }
 .eyebrow { color: var(--fact); font-size: 11px; font-weight: 800; letter-spacing: .16em; }
 .head-copy { color: var(--text-secondary); max-width: 620px; }
-.composer, .proposal, .run-receipt { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.composer, .proposal, .run-receipt, .admission-policy { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 .composer { display: grid; grid-template-columns: minmax(260px, .7fr) minmax(420px, 1.3fr); gap: var(--space5); padding: var(--space5); }
 .composer-copy, .proposal-head > div { display: flex; gap: var(--space3); align-items: flex-start; }
 .step { display: inline-grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%; background: var(--fact-soft); color: var(--fact); font-size: 12px; font-weight: 800; }
@@ -540,8 +780,25 @@ dd { overflow-wrap: anywhere; }
 .receipt-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--fact); color: white; font-weight: 800; }
 .run-receipt p { color: var(--text-secondary); font-family: ui-monospace, monospace; font-size: 11px; }
 .run-receipt a { color: var(--action); font-weight: 700; text-decoration: none; }
+.admission-policy { display: grid; gap: var(--space3); padding: var(--space5); }
+.admission-policy > header, .admission-decision, .admission-confirmed { display: flex; justify-content: space-between; align-items: center; gap: var(--space3); }
+.admission-policy > header strong { color: var(--fact); }
+.admission-boundary { color: var(--text-secondary); }
+.policy-facts { grid-template-columns: repeat(3, 1fr); margin-top: 0; }
+.policy-facts > div { display: grid; grid-template-columns: 1fr; gap: 2px; }
+.admission-fields { display: flex; align-items: center; gap: var(--space3); margin-top: var(--space3); }
+.admission-fields input[type="number"] { width: 90px; }
+.switch-field { display: flex; align-items: center; gap: var(--space2); margin: 0; }
+.admission-fields button { margin-left: auto; }
+.admission-proposal { display: grid; gap: var(--space3); border-top: 1px solid var(--border); padding-top: var(--space4); }
+.proposal-policy-facts { padding: var(--space3); border: 1px solid var(--border); border-radius: var(--radius); }
+.admission-decision { color: var(--text-secondary); }
+.admission-confirmed { border-left: 4px solid var(--fact); background: var(--fact-soft); color: var(--fact); padding: var(--space3) var(--space4); }
 @media (max-width: 900px) {
-  .composer, .comparison-grid, .proposal-details { grid-template-columns: 1fr; }
-  .decision-bar, .run-receipt { align-items: flex-start; flex-direction: column; }
+  .composer, .comparison-grid, .proposal-details, .policy-facts { grid-template-columns: 1fr; }
+  .decision-bar, .run-receipt, .admission-policy > header, .admission-decision, .admission-confirmed { align-items: flex-start; flex-direction: column; }
+  .admission-fields { align-items: stretch; flex-direction: column; }
+  .admission-fields input[type="number"] { width: 100%; }
+  .admission-fields button { margin-left: 0; }
 }
 </style>
