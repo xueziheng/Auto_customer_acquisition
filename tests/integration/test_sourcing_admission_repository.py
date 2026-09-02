@@ -520,6 +520,7 @@ async def test_claim_one_targets_exact_row_and_replays_same_token(
             "manual-request-1",
             NOW + timedelta(minutes=5),
             NOW + timedelta(minutes=1),
+            requested_by="employee-boss",
         )
     async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
         replayed = await uow.admissions.claim_one(
@@ -528,6 +529,7 @@ async def test_claim_one_targets_exact_row_and_replays_same_token(
             "manual-request-1",
             NOW + timedelta(minutes=5),
             NOW + timedelta(minutes=1),
+            requested_by="employee-boss",
         )
         untouched = await uow.admissions.get(tenant, high.admission_id)
 
@@ -537,6 +539,99 @@ async def test_claim_one_targets_exact_row_and_replays_same_token(
     assert claimed.state is AdmissionState.STARTING
     assert claimed.claim_token == "manual-request-1"
     assert untouched is not None and untouched.state is AdmissionState.WAITING
+
+
+async def test_manual_request_actor_survives_release_reclaim_and_drives_complete(
+    integration_engine: AsyncEngine,
+) -> None:
+    """真实 PG 必须跨事务/租约保存人工 actor，complete 不能接受伪造 admitted_by。"""
+
+    tenant = TenantId("tn_admission_durable_actor")
+    sessions = _sessions(integration_engine)
+    admission, snapshot = _bundle(tenant, "durable_actor", 1)
+    await _store_bundle(integration_engine, sessions, admission, snapshot)
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        manual = await uow.admissions.claim_one(
+            tenant,
+            admission.admission_id,
+            "manual-request-durable",
+            NOW + timedelta(minutes=2),
+            NOW + timedelta(minutes=1),
+            requested_by="employee-boss",
+        )
+    assert manual is not None
+    assert manual.admission_requested_by == "employee-boss"
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        released = await uow.admissions.release_expired_claims(
+            tenant, NOW + timedelta(minutes=3)
+        )
+    assert released[0].admission_requested_by == "employee-boss"
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        reclaimed = await uow.admissions.claim_ordered(
+            tenant,
+            1,
+            "scheduler-recovery",
+            NOW + timedelta(minutes=8),
+            NOW + timedelta(minutes=3),
+        )
+        completed = await uow.admissions.complete(
+            tenant,
+            admission.admission_id,
+            "scheduler-recovery",
+            RunId("run-durable-actor"),
+            "system:sourcing-admission",
+            NOW + timedelta(minutes=4),
+        )
+
+    assert reclaimed[0].admission_requested_by == "employee-boss"
+    assert completed is not None
+    assert completed.admitted_by == "employee-boss"
+    assert completed.admission_requested_by is None
+
+
+async def test_manual_claim_does_not_overwrite_other_tenant_or_existing_actor(
+    integration_engine: AsyncEngine,
+) -> None:
+    tenant = TenantId("tn_admission_actor_owner")
+    other = TenantId("tn_admission_actor_other")
+    sessions = _sessions(integration_engine)
+    admission, snapshot = _bundle(tenant, "actor_owner", 1)
+    await _store_bundle(integration_engine, sessions, admission, snapshot)
+
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        first = await uow.admissions.claim_one(
+            tenant,
+            admission.admission_id,
+            "same-request",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(minutes=1),
+            requested_by="employee-boss",
+        )
+    async with SqlAlchemySourcingUnitOfWork(sessions, tenant) as uow:
+        replay = await uow.admissions.claim_one(
+            tenant,
+            admission.admission_id,
+            "same-request",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(minutes=1),
+            requested_by="employee-sourcing",
+        )
+    async with SqlAlchemySourcingUnitOfWork(sessions, other) as uow:
+        cross_tenant = await uow.admissions.claim_one(
+            other,
+            admission.admission_id,
+            "same-request",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(minutes=1),
+            requested_by="employee-other",
+        )
+
+    assert first is not None and first.admission_requested_by == "employee-boss"
+    assert replay is not None and replay.admission_requested_by == "employee-boss"
+    assert cross_tenant is None
 
 
 async def test_claim_ordered_breaks_equal_counts_by_ready_at_then_need_id(
@@ -655,20 +750,20 @@ async def test_matching_tokens_are_validated_before_io(
             )
 
 
-@pytest.mark.parametrize("bad_admitted_by", [" scheduler", "worker\x7f", "x" * 201])
-async def test_complete_validates_admitted_by_before_io(
-    bad_admitted_by: str,
+@pytest.mark.parametrize("bad_system_actor", [" scheduler", "worker\x7f", "x" * 201])
+async def test_complete_validates_system_actor_before_io(
+    bad_system_actor: str,
 ) -> None:
-    tenant = TenantId("tn_admission_admitted_by")
+    tenant = TenantId("tn_admission_system_actor")
     repository = _exploding_repository(tenant)
 
-    with pytest.raises(ValidationError, match="admitted_by"):
+    with pytest.raises(ValidationError, match="system_actor_id"):
         await repository.complete(
             tenant,
-            SourcingAdmissionId("adm_admitted_by"),
+            SourcingAdmissionId("adm_system_actor"),
             "claim-valid",
-            RunId("run_admitted_by"),
-            bad_admitted_by,
+            RunId("run_system_actor"),
+            bad_system_actor,
             NOW + timedelta(minutes=1),
         )
 

@@ -1027,6 +1027,8 @@ class SourcingAdmission:
     启动。所有状态事实被冻结在返回的新对象中，调用方必须经 Repository 持久化。
     ``waiting`` 必须指向排序快照；无快照的 ``blocked`` 仅表示排序事实永久无效，
     因此 ``case_state_mismatch`` 必须保留它所核对的既有快照。
+    ``admission_requested_by`` 仅保存已鉴权人工 claim 的内部审计意图：租约释放与
+    重领必须保留它；进入 ``admitted`` 时复制到 ``admitted_by``，进入任一终态后清除。
     """
 
     tenant_id: TenantId
@@ -1044,6 +1046,7 @@ class SourcingAdmission:
     admitted_by: str | None
     created_at: datetime
     updated_at: datetime
+    admission_requested_by: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("tenant_id", "admission_id", "case_id", "need_id"):
@@ -1070,6 +1073,10 @@ class SourcingAdmission:
             _require_utc_time(self.claim_expires_at, "claim_expires_at")
         if self.admitted_by is not None:
             _require_nonempty_identifier(self.admitted_by, "admitted_by")
+        if self.admission_requested_by is not None:
+            _require_nonempty_identifier(
+                self.admission_requested_by, "admission_requested_by"
+            )
         if self.admitted_at is not None:
             _require_utc_time(self.admitted_at, "admitted_at")
         if self.workflow_run_id is not None:
@@ -1100,6 +1107,7 @@ class SourcingAdmission:
                 and self.admitted_by is not None
                 and self.admitted_at == self.updated_at
                 and self.blocked_reason is None
+                and self.admission_requested_by is None
             )
         else:
             valid = (
@@ -1111,6 +1119,7 @@ class SourcingAdmission:
                     or self.blocked_reason
                     is AdmissionBlockedReason.PRIORITY_FACTS_INVALID
                 )
+                and self.admission_requested_by is None
             )
         if not valid:
             raise ValidationError("准入状态与字段组合不一致")
@@ -1163,21 +1172,23 @@ class SourcingAdmission:
         claim_token: str,
         *,
         workflow_run_id: RunId,
-        admitted_by: str,
+        system_actor_id: str,
         admitted_at: datetime,
     ) -> SourcingAdmission:
         """以同一租约绑定 canonical Workflow Run，之后准入事实不可改写。"""
 
         if self.state is not AdmissionState.STARTING or claim_token != self.claim_token:
             raise InvalidStateTransition("寻源准入 claim token 与当前 starting 状态不匹配")
+        _require_nonempty_identifier(system_actor_id, "system_actor_id")
         return self._transition(
             AdmissionState.ADMITTED,
             changed_at=admitted_at,
             claim_token=None,
             claim_expires_at=None,
             workflow_run_id=workflow_run_id,
-            admitted_by=admitted_by,
+            admitted_by=self.admission_requested_by or system_actor_id,
             admitted_at=admitted_at,
+            admission_requested_by=None,
         )
 
     def block(
@@ -1201,6 +1212,7 @@ class SourcingAdmission:
             claim_token=None,
             claim_expires_at=None,
             blocked_reason=reason,
+            admission_requested_by=None,
         )
 
     def retry(self, *, retried_at: datetime) -> SourcingAdmission:

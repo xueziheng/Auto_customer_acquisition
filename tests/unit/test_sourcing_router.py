@@ -523,15 +523,17 @@ def test_manual_admit_rejects_missing_duplicate_or_invalid_raw_key_before_io() -
 
     assert [response.status_code for response in responses] == [400, 400, 400]
     assert admission.calls == []
-    operation = app.openapi()["paths"]["/sourcing-admissions/{admission_id}/admit"][
-        "post"
-    ]
+    openapi = app.openapi()
+    operation = openapi["paths"]["/sourcing-admissions/{admission_id}/admit"]["post"]
     header = next(
         item
         for item in operation["parameters"]
         if item["in"] == "header" and item["name"] == "Idempotency-Key"
     )
     assert header["required"] is True
+    assert "admission_requested_by" not in openapi["components"]["schemas"][
+        "SourcingAdmissionReadView"
+    ]["properties"]
 
 
 def test_manual_case_mismatch_is_fixed_sanitized_409() -> None:

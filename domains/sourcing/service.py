@@ -256,11 +256,10 @@ class SourcingService(Protocol):
         *,
         claim_token: str,
         workflow_run_id: RunId,
-        admitted_by: str,
         admitted_at: datetime,
         actor: SourcingActor,
     ) -> None:
-        """用 canonical Run 完成准入；失配租约不得覆盖新的状态。"""
+        """仅 SYSTEM 用 canonical Run 完成准入；执行者由持久人工意图派生。"""
         ...
 
     async def release_expired_admission_claims(

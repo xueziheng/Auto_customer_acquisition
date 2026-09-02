@@ -881,13 +881,26 @@ class _Admissions(_MemoryRepo):
         claim_token: str,
         claim_expires_at: datetime,
         now: datetime,
+        *,
+        requested_by: str,
     ) -> Any | None:
         admission = await self.get(tenant_id, admission_id)
         if admission is None:
             return None
         if admission.state is AdmissionState.STARTING:
             admission = admission.release_expired_claim(now=now)
+        if (
+            admission.admission_requested_by is not None
+            and admission.admission_requested_by != requested_by
+        ):
+            return copy.deepcopy(admission)
         if admission.state is AdmissionState.WAITING:
+            admission = replace(
+                admission,
+                admission_requested_by=(
+                    admission.admission_requested_by or requested_by
+                ),
+            )
             admission = admission.claim(
                 claim_token,
                 claim_expires_at=claim_expires_at,
@@ -902,7 +915,7 @@ class _Admissions(_MemoryRepo):
         admission_id: SourcingAdmissionId,
         claim_token: str,
         workflow_run_id: RunId,
-        admitted_by: str,
+        system_actor_id: str,
         admitted_at: datetime,
     ) -> Any | None:
         admission = await self.get(tenant_id, admission_id)
@@ -915,7 +928,7 @@ class _Admissions(_MemoryRepo):
         changed = admission.complete(
             claim_token,
             workflow_run_id=workflow_run_id,
-            admitted_by=admitted_by,
+            system_actor_id=system_actor_id,
             admitted_at=admitted_at,
         )
         self.state[self.name][(tenant_id, admission_id)] = copy.deepcopy(changed)
@@ -1489,7 +1502,6 @@ async def test_non_opened_case_replay_cannot_change_starting_or_admitted_record(
             admission_id,
             claim_token="claim-case-closed",
             workflow_run_id=RunId("run-case-closed"),
-            admitted_by="system:sourcing",
             admitted_at=NOW + timedelta(minutes=1),
             actor=SYSTEM,
         )
@@ -1556,6 +1568,7 @@ async def test_manual_claim_targets_exact_admission_and_replays_same_request() -
     assert claimed.admission_id == second_id
     assert claimed.state is AdmissionState.STARTING
     assert claimed.claim_token == "manual-request-1"
+    assert claimed.admission_requested_by == BOSS.actor_id
     assert (
         factory.state["admissions"][(TENANT, first_id)].state is AdmissionState.WAITING
     )
@@ -1594,6 +1607,59 @@ async def test_manual_claim_rejects_other_request_and_role_before_mutation() -> 
         )
 
     assert factory.state["admissions"] == before
+
+
+@pytest.mark.asyncio
+async def test_manual_same_request_cannot_be_replayed_by_different_actor() -> None:
+    """request id 不是身份；换员工重放同一 key 不能继承原人工审计意图。"""
+
+    factory = _Factory()
+    service = _service(factory)
+    case_id = await _opened(service)
+    admission_id = await _enqueue(service, case_id, _open_command().need.need_id)
+    command = SourcingAdmissionManualStartCommand(request_id="manual-shared-key")
+    await service.claim_manual_admission(
+        TENANT,
+        admission_id,
+        command,
+        claim_expires_at=NOW + timedelta(minutes=5),
+        actor=BOSS,
+    )
+    before = copy.deepcopy(factory.state["admissions"])
+
+    with pytest.raises(InvalidStateTransition):
+        await service.claim_manual_admission(
+            TENANT,
+            admission_id,
+            command,
+            claim_expires_at=NOW + timedelta(minutes=5),
+            actor=SOURCING,
+        )
+
+    assert factory.state["admissions"] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", [BOSS, SOURCING])
+async def test_tenant_actor_cannot_call_low_level_complete_before_uow(
+    actor: SourcingActor,
+) -> None:
+    """低层 complete 只能由 system 调用，且合同不暴露 admitted_by 注入点。"""
+
+    factory = _Factory()
+    service = _service(factory)
+
+    with pytest.raises(PermissionDenied):
+        await service.complete_admission(
+            TENANT,
+            SourcingAdmissionId("sad-direct-complete"),
+            claim_token="claim-direct-complete",
+            workflow_run_id=RunId("run-direct-complete"),
+            admitted_at=NOW,
+            actor=actor,
+        )
+
+    assert factory.calls == 0
 
 
 @pytest.mark.asyncio
@@ -1668,7 +1734,6 @@ async def test_admitted_refresh_is_a_no_op() -> None:
         admission_id,
         claim_token="claim-1",
         workflow_run_id=RunId("run-admission-1"),
-        admitted_by="system:sourcing",
         admitted_at=NOW + timedelta(minutes=1),
         actor=SYSTEM,
     )
@@ -1790,7 +1855,7 @@ async def test_cluster_refresh_updates_all_eligible_targets_without_state_bypass
     factory.state["admissions"][admitted_key] = admitted_starting.complete(
         "claim-admitted",
         workflow_run_id=RunId("run-refresh-admitted"),
-        admitted_by="system:sourcing",
+        system_actor_id="system:sourcing",
         admitted_at=NOW + timedelta(minutes=1),
     )
     factory.state["admissions"][case_blocked_key] = factory.state["admissions"][
@@ -1926,7 +1991,7 @@ async def test_cluster_block_marks_only_waiting_targets_and_is_idempotent() -> N
     factory.state["admissions"][admitted_key] = admitted_starting.complete(
         "claim-block-admitted",
         workflow_run_id=RunId("run-block-admitted"),
-        admitted_by="system:sourcing",
+        system_actor_id="system:sourcing",
         admitted_at=NOW + timedelta(minutes=1),
     )
     factory.state["admissions"][case_blocked_key] = factory.state["admissions"][
@@ -2164,7 +2229,6 @@ async def test_stale_claim_token_cannot_complete_release_or_block() -> None:
             admission_id,
             claim_token="stale-claim",
             workflow_run_id=RunId("run-stale"),
-            admitted_by="system:sourcing",
             admitted_at=NOW + timedelta(minutes=1),
             actor=SYSTEM,
         )
@@ -2436,7 +2500,6 @@ async def test_every_admission_entry_authorizes_before_uow(operation: str) -> No
                 admission_id,
                 claim_token="claim-forbidden",
                 workflow_run_id=RunId("run-forbidden"),
-                admitted_by="system:sourcing",
                 admitted_at=NOW,
                 actor=other_system,
             )

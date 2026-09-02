@@ -242,17 +242,17 @@ async def _seed_need_and_case(
     )
 
 
-async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
+async def test_0054_admission_schema_is_tenant_bound_and_matches_head_orm(
     db_url: str,
 ) -> None:
-    """0053 的准入、快照、复合 FK 与索引都由数据库真实约束。"""
+    """0053+0054 的准入、快照、actor、复合 FK 与索引匹配 head ORM。"""
     from infra.db.tables import SourcingAdmissionRow, SourcingPrioritySnapshotRow
 
     engine: AsyncEngine | None = None
     try:
         _run_alembic(db_url, "downgrade", "0052")
         assert not (await _current_tables(db_url)) & ADMISSION_TABLES
-        _run_alembic(db_url, "upgrade", "0053")
+        _run_alembic(db_url, "upgrade", "0054")
         engine = create_engine_from(db_url)
 
         def inspect_admission_contract(connection: Connection) -> dict[str, object]:
@@ -410,7 +410,7 @@ async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
                 )
             )
 
-        assert revision == "0053"
+        assert revision == "0054"
         assert ADMISSION_TABLES <= contract["tables"]
         assert contract["admission_columns"] == set(
             SourcingAdmissionRow.__table__.columns.keys()
@@ -515,6 +515,132 @@ async def test_0053_admission_schema_is_tenant_bound_and_matches_orm(
         )
     finally:
         if engine is not None:
+            await engine.dispose()
+        _run_alembic(db_url, "upgrade", "head")
+
+
+async def test_0054_persists_manual_admission_actor_and_refuses_lossy_downgrade(
+    db_url: str,
+) -> None:
+    """0054 内部 actor 字段受状态约束；非空审计意图不能被 downgrade 丢弃。"""
+
+    created_at = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+    ready_at = created_at - timedelta(days=1)
+    engine: AsyncEngine | None = None
+    try:
+        _run_alembic(db_url, "downgrade", "0053")
+        _run_alembic(db_url, "upgrade", "0054")
+        engine = create_engine_from(db_url)
+        async with engine.begin() as connection:
+            columns = await connection.run_sync(
+                lambda sync: {
+                    str(column["name"]): bool(column["nullable"])
+                    for column in inspect(sync).get_columns("sourcing_admissions")
+                }
+            )
+            checks = await connection.run_sync(
+                lambda sync: {
+                    str(item["name"]): "".join(str(item["sqltext"]).split())
+                    for item in inspect(sync).get_check_constraints(
+                        "sourcing_admissions"
+                    )
+                }
+            )
+            await _seed_need_and_case(
+                connection,
+                tenant_id=TENANT_A,
+                need_id="need-0054-audit",
+                case_id="case-0054-audit",
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_admissions "
+                    "(tenant_id,admission_id,case_id,need_id,state,ready_at,"
+                    "current_snapshot_id,admission_requested_by,created_at,updated_at) "
+                    "VALUES (:tenant,'adm-0054-audit','case-0054-audit',"
+                    "'need-0054-audit','waiting',:ready,'sps-0054-audit',"
+                    "'employee-boss',:created,:created)"
+                ),
+                {"tenant": TENANT_A, "ready": ready_at, "created": created_at},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO sourcing_priority_snapshots "
+                    "(tenant_id,snapshot_id,admission_id,case_id,need_id,cluster_id,"
+                    "cluster_member_count,ready_at,ranking_version,facts_observed_at,"
+                    "facts_hash,created_at) VALUES "
+                    "(:tenant,'sps-0054-audit','adm-0054-audit','case-0054-audit',"
+                    "'need-0054-audit',NULL,1,:ready,'need-cluster-admission-v1',"
+                    ":created,:hash,:created)"
+                ),
+                {
+                    "tenant": TENANT_A,
+                    "ready": ready_at,
+                    "created": created_at,
+                    "hash": "d" * 64,
+                },
+            )
+            await _expect_integrity(
+                connection,
+                "UPDATE sourcing_admissions SET state='blocked',"
+                "blocked_reason='case_state_mismatch' "
+                "WHERE tenant_id=:tenant AND admission_id='adm-0054-audit'",
+                {"tenant": TENANT_A},
+            )
+
+        assert columns["admission_requested_by"] is True
+        assert "admission_requested_by" in checks["ck_sourcing_admissions_core"]
+        assert "admission_requested_byISNULL" in checks[
+            "ck_sourcing_admissions_state_fields"
+        ]
+        downgrade = _alembic_result(db_url, "downgrade", "0053")
+        assert downgrade.returncode != 0
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0054"
+            )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE sourcing_admissions SET admission_requested_by=NULL "
+                    "WHERE tenant_id=:tenant AND admission_id='adm-0054-audit'"
+                ),
+                {"tenant": TENANT_A},
+            )
+        _run_alembic(db_url, "downgrade", "0053")
+        async with engine.connect() as connection:
+            downgraded_columns = await connection.run_sync(
+                lambda sync: {
+                    str(column["name"])
+                    for column in inspect(sync).get_columns("sourcing_admissions")
+                }
+            )
+        assert "admission_requested_by" not in downgraded_columns
+        _run_alembic(db_url, "upgrade", "0054")
+    finally:
+        if engine is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "TRUNCATE sourcing_admissions, "
+                        "sourcing_priority_snapshots CASCADE"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM sourcing_cases WHERE tenant_id=:tenant "
+                        "AND case_id='case-0054-audit'"
+                    ),
+                    {"tenant": TENANT_A},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM validated_needs WHERE tenant_id=:tenant "
+                        "AND need_id='need-0054-audit'"
+                    ),
+                    {"tenant": TENANT_A},
+                )
             await engine.dispose()
         _run_alembic(db_url, "upgrade", "head")
 

@@ -174,7 +174,7 @@ def _snapshot(
     )
 
 
-def _admission(suffix: str) -> SourcingAdmission:
+def _admission(suffix: str, *, requested_by: str | None = None) -> SourcingAdmission:
     need_id = ValidatedNeedId(f"need-{suffix}")
     return SourcingAdmission(
         tenant_id=TENANT,
@@ -192,6 +192,7 @@ def _admission(suffix: str) -> SourcingAdmission:
         admitted_by=None,
         created_at=NOW,
         updated_at=NOW,
+        admission_requested_by=requested_by,
     )
 
 
@@ -296,6 +297,8 @@ class _Sourcing:
 
     async def complete_admission(self, tenant_id: TenantId, admission_id, **kwargs):
         assert tenant_id == TENANT
+        assert kwargs["actor"] == SYSTEM
+        assert "admitted_by" not in kwargs
         self.complete_calls.append({"admission_id": admission_id, **kwargs})
         error = self.complete_errors.popleft() if self.complete_errors else None
         if error is not None:
@@ -305,7 +308,7 @@ class _Sourcing:
             row.complete(
                 kwargs["claim_token"],
                 workflow_run_id=kwargs["workflow_run_id"],
-                admitted_by=kwargs["admitted_by"],
+                system_actor_id=kwargs["actor"].actor_id,
                 admitted_at=kwargs["admitted_at"],
             )
         )
@@ -446,9 +449,7 @@ async def test_enabled_policy_claims_exact_policy_limit_and_preserves_repository
     assert (result.claimed_count, result.admitted_count) == (2, 2)
     assert sourcing.rows[2].state is AdmissionState.WAITING
     assert all(call["actor"] == SYSTEM for call in sourcing.complete_calls)
-    assert all(
-        call["admitted_by"] == SYSTEM.actor_id for call in sourcing.complete_calls
-    )
+    assert all(row.admitted_by == SYSTEM.actor_id for row in sourcing.rows[:2])
 
 
 @pytest.mark.asyncio
@@ -637,6 +638,60 @@ async def test_start_before_bind_failure_recovers_one_canonical_run_after_lease(
     assert len(engine.runs) == 1
     assert engine.calls[0][4] == engine.calls[1][4]
     assert sourcing.rows[0].workflow_run_id == next(iter(engine.runs.values()))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_by", ["employee-boss", "employee-sourcing"])
+async def test_manual_actor_survives_unknown_bind_and_scheduler_lease_recovery(
+    requested_by: str,
+) -> None:
+    """跨租约只携带内存 actor 会在 scheduler 恢复时错误记成 system。"""
+
+    row = _admission("manual-crash", requested_by=requested_by)
+    sourcing, engine, clock = _Sourcing([row]), _Engine(), _Clock()
+    sourcing.complete_errors.append(TransientError("bind-private"))
+    driver = _driver(
+        _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
+        sourcing,
+        engine,
+        clock,
+    )
+
+    first = await driver.scan_once()
+    assert first.pending_recovery_count == 1
+    assert sourcing.rows[0].admission_requested_by == requested_by
+
+    clock.value = NOW + LEASE
+    second = await driver.scan_once()
+
+    assert second.admitted_count == 1
+    assert len(engine.runs) == 1
+    assert sourcing.rows[0].admitted_by == requested_by
+    assert sourcing.rows[0].admission_requested_by is None
+
+
+@pytest.mark.asyncio
+async def test_manual_actor_survives_known_transient_release_then_scheduler_retry() -> None:
+    row = _admission("manual-release", requested_by="employee-boss")
+    sourcing = _Sourcing([row])
+    engine = _Engine([TransientError("known-transient")])
+    clock = _Clock()
+    driver = _driver(
+        _Policy(SourcingAdmissionPolicyRead("dir", 1, True, 1)),
+        sourcing,
+        engine,
+        clock,
+    )
+
+    first = await driver.scan_once()
+    assert first.returned_to_waiting_count == 1
+    assert sourcing.rows[0].admission_requested_by == "employee-boss"
+
+    second = await driver.scan_once()
+
+    assert second.admitted_count == 1
+    assert sourcing.rows[0].admitted_by == "employee-boss"
+    assert sourcing.rows[0].admission_requested_by is None
 
 
 @pytest.mark.asyncio

@@ -214,8 +214,6 @@ class SourcingAdmissionStarter:
     async def admit_one(
         self,
         admission: SourcingAdmission,
-        *,
-        completing_actor: SourcingActor,
     ) -> SourcingAdmissionAttemptOutcome:
         """处理一条已 claim admission；未知提交结果等待租约恢复。"""
 
@@ -224,17 +222,6 @@ class SourcingAdmissionStarter:
             or admission.tenant_id != self._tenant_id
             or admission.state is not AdmissionState.STARTING
             or admission.claim_token is None
-            or not isinstance(completing_actor, SourcingActor)
-            or completing_actor.tenant_id != self._tenant_id
-            or (
-                completing_actor.scope.value,
-                completing_actor.role,
-            )
-            not in {
-                ("system", "system"),
-                ("tenant", "boss"),
-                ("tenant", "sourcing"),
-            }
         ):
             return "pending_recovery"
         claim_token = admission.claim_token
@@ -298,9 +285,8 @@ class SourcingAdmissionStarter:
                 admission.admission_id,
                 claim_token=claim_token,
                 workflow_run_id=RunId(run_id),
-                admitted_by=completing_actor.actor_id,
                 admitted_at=self._current_time(),
-                actor=completing_actor,
+                actor=self._sourcing_actor,
             )
         except Exception:  # noqa: BLE001 - Run 或 bind 可能已提交
             return "pending_recovery"
@@ -629,10 +615,7 @@ class SourcingAdmissionApplication:
             raise TransientError("寻源准入启动状态暂不可确认") from None
 
         try:
-            outcome = await self._starter.admit_one(
-                claimed,
-                completing_actor=actor,
-            )
+            outcome = await self._starter.admit_one(claimed)
         except Exception:  # noqa: BLE001 - 共享启动路径的异常统一脱敏
             raise TransientError("寻源准入启动状态暂不可确认") from None
         if outcome == "blocked":

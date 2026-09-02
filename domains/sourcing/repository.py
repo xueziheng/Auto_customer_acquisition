@@ -170,8 +170,10 @@ class SourcingAdmissionRepository(Protocol):
         claim_token: str,
         claim_expires_at: datetime,
         now: datetime,
+        *,
+        requested_by: str,
     ) -> SourcingAdmission | None:
-        """精确 claim 单条 waiting；同 token starting 与 admitted 可安全重放。"""
+        """以可信人工 actor 精确 claim；既有 actor 不得被另一员工覆盖。"""
         ...
 
     async def complete(
@@ -180,10 +182,10 @@ class SourcingAdmissionRepository(Protocol):
         admission_id: SourcingAdmissionId,
         claim_token: str,
         workflow_run_id: RunId,
-        admitted_by: str,
+        system_actor_id: str,
         admitted_at: datetime,
     ) -> SourcingAdmission | None:
-        """仅用匹配租约绑定 canonical Run；失配时不改写同租户记录。"""
+        """匹配租约绑定 Run；审计取持久人工 actor，否则取 system actor。"""
         ...
 
     async def release_expired_claims(

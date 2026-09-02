@@ -4797,6 +4797,8 @@ class SourcingAdmissionRow(Base):
             "AND (current_snapshot_id IS NULL OR btrim(current_snapshot_id) <> '') "
             "AND (claim_token IS NULL OR btrim(claim_token) <> '') "
             "AND (workflow_run_id IS NULL OR btrim(workflow_run_id) <> '') "
+            "AND (admission_requested_by IS NULL "
+            "OR btrim(admission_requested_by) <> '') "
             "AND (admitted_by IS NULL OR btrim(admitted_by) <> '')",
             name="ck_sourcing_admissions_core",
         ),
@@ -4818,10 +4820,11 @@ class SourcingAdmissionRow(Base):
             "AND claim_token IS NULL AND claim_expires_at IS NULL "
             "AND workflow_run_id IS NOT NULL AND admitted_at IS NOT NULL "
             "AND admitted_by IS NOT NULL AND admitted_at = updated_at "
-            "AND blocked_reason IS NULL) OR "
+            "AND admission_requested_by IS NULL AND blocked_reason IS NULL) OR "
             "(state = 'blocked' AND claim_token IS NULL "
             "AND claim_expires_at IS NULL AND workflow_run_id IS NULL "
             "AND admitted_at IS NULL AND admitted_by IS NULL "
+            "AND admission_requested_by IS NULL "
             "AND blocked_reason IS NOT NULL "
             "AND blocked_reason IN ('priority_facts_invalid','case_state_mismatch') "
             "AND (current_snapshot_id IS NOT NULL "
@@ -4849,6 +4852,7 @@ class SourcingAdmissionRow(Base):
     blocked_reason: Mapped[str | None] = mapped_column(String(40))
     admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     admitted_by: Mapped[str | None] = mapped_column(String(200))
+    admission_requested_by: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

@@ -78,6 +78,8 @@ def test_phase2_authorizer_allows_only_explicit_matrix(
         ("system", "SYSTEM", "CASE_READ"),
         ("finance", "TENANT", "ADMISSION_MANUAL_START"),
         ("product", "TENANT", "ADMISSION_MANUAL_START"),
+        ("boss", "TENANT", "ADMISSION_COMPLETE"),
+        ("sourcing", "TENANT", "ADMISSION_COMPLETE"),
     ],
 )
 def test_phase2_authorizer_rejects_unlisted_role_actions(
@@ -146,11 +148,7 @@ def test_phase2_admission_actions_have_no_implicit_role_or_scope_grants() -> Non
         "ADMISSION_ENQUEUE": {("system", "SYSTEM")},
         "ADMISSION_REFRESH": {("system", "SYSTEM")},
         "ADMISSION_CLAIM": {("system", "SYSTEM")},
-        "ADMISSION_COMPLETE": {
-            ("boss", "TENANT"),
-            ("sourcing", "TENANT"),
-            ("system", "SYSTEM"),
-        },
+        "ADMISSION_COMPLETE": {("system", "SYSTEM")},
         "ADMISSION_READ": {
             ("boss", "TENANT"),
             ("product", "TENANT"),

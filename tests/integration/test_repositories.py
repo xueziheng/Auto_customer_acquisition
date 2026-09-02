@@ -1085,6 +1085,12 @@ def test_orm_metadata_parity_with_head() -> None:
             "ix_sourcing_cases_queue": (
                 "tenant_id", "state", "opened_at", "case_id",
             ),
+            "ix_sourcing_admissions_queue": (
+                "tenant_id", "state", "current_snapshot_id",
+            ),
+            "ix_sourcing_priority_snapshots_order": (
+                "tenant_id", "cluster_member_count", "ready_at", "need_id", "snapshot_id",
+            ),
             "uq_sourcing_cases_active_need": (
                 "tenant_id", "need_id", "workflow_version",
             ),

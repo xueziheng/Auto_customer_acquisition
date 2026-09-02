@@ -1422,13 +1422,21 @@ class SourcingServiceImpl:
                 command.request_id,
                 claim_expires_at,
                 now,
+                requested_by=actor.actor_id,
             )
             if (
                 admission is not None
                 and admission.state is AdmissionState.STARTING
-                and admission.claim_token != command.request_id
+                and (
+                    admission.claim_token != command.request_id
+                    or admission.admission_requested_by != actor.actor_id
+                )
+            ) or (
+                admission is not None
+                and admission.state is AdmissionState.WAITING
+                and admission.admission_requested_by not in {None, actor.actor_id}
             ):
-                raise InvalidStateTransition("寻源准入已由另一请求启动")
+                raise InvalidStateTransition("寻源准入已由另一人工请求启动")
             return admission
 
     async def complete_admission(
@@ -1438,7 +1446,6 @@ class SourcingServiceImpl:
         *,
         claim_token: str,
         workflow_run_id: RunId,
-        admitted_by: str,
         admitted_at: datetime,
         actor: SourcingActor,
     ) -> None:
@@ -1446,12 +1453,11 @@ class SourcingServiceImpl:
             tenant_id,
             actor,
             SourcingAction.ADMISSION_COMPLETE,
-            actor.scope,
+            SourcingScope.SYSTEM,
         )
         _bounded_identifier(admission_id, "admission_id")
         _bounded_identifier(claim_token, "claim_token")
         _bounded_identifier(workflow_run_id, "workflow_run_id")
-        _bounded_identifier(admitted_by, "admitted_by")
         admitted_at = _utc_time(admitted_at, "admitted_at")
         async with self._uow_factory(tenant_id) as uow:
             completed = await uow.admissions.complete(
@@ -1459,7 +1465,7 @@ class SourcingServiceImpl:
                 admission_id,
                 claim_token,
                 workflow_run_id,
-                admitted_by,
+                actor.actor_id,
                 admitted_at,
             )
             if completed is None:

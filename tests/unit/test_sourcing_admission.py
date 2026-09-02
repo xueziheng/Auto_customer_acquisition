@@ -87,6 +87,7 @@ def _admission(
     blocked_reason: AdmissionBlockedReason | None = None,
     admitted_at: datetime | None = None,
     admitted_by: str | None = None,
+    admission_requested_by: str | None = None,
     created_at: datetime = NOW,
     updated_at: datetime = NOW,
 ) -> SourcingAdmission:
@@ -106,6 +107,7 @@ def _admission(
         admitted_by=admitted_by,
         created_at=created_at,
         updated_at=updated_at,
+        admission_requested_by=admission_requested_by,
     )
 
 
@@ -214,6 +216,10 @@ def test_priority_snapshot_never_contains_quantity_or_other_aggregated_trade_fie
     assert "country" not in names
     assert "specification" not in names
     assert "provenance" not in names
+
+
+def test_public_admission_view_never_exposes_durable_manual_actor_carrier() -> None:
+    assert "admission_requested_by" not in SourcingAdmissionReadView.model_fields
 
 
 @pytest.mark.parametrize(
@@ -325,6 +331,55 @@ def test_claim_then_expired_lease_returns_admission_to_waiting() -> None:
     assert claimed.release_expired_claim(now=NOW + timedelta(minutes=5)).state is AdmissionState.WAITING
 
 
+def test_manual_request_actor_survives_release_and_drives_completion_audit() -> None:
+    """删除/清空 durable actor 会让 scheduler 恢复后把人工准入记成 system。"""
+
+    claimed = _admission(admission_requested_by="employee-boss").claim(
+        "manual-request-1",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        claimed_at=NOW,
+    )
+    waiting = claimed.release_expired_claim(now=NOW + timedelta(minutes=5))
+    reclaimed = waiting.claim(
+        "scheduler-claim",
+        claim_expires_at=NOW + timedelta(minutes=10),
+        claimed_at=NOW + timedelta(minutes=5),
+    )
+    completed = reclaimed.complete(
+        "scheduler-claim",
+        workflow_run_id=RunId("run-manual-recovery"),
+        system_actor_id="system:sourcing-admission",
+        admitted_at=NOW + timedelta(minutes=6),
+    )
+
+    assert waiting.admission_requested_by == "employee-boss"
+    assert reclaimed.admission_requested_by == "employee-boss"
+    assert completed.admitted_by == "employee-boss"
+    assert completed.admission_requested_by is None
+
+
+def test_block_clears_manual_request_actor_and_terminal_states_reject_it() -> None:
+    claimed = _admission(admission_requested_by="employee-sourcing").claim(
+        "manual-request-2",
+        claim_expires_at=NOW + timedelta(minutes=5),
+        claimed_at=NOW,
+    )
+
+    blocked = claimed.block(
+        AdmissionBlockedReason.CASE_STATE_MISMATCH,
+        blocked_at=NOW + timedelta(minutes=1),
+        claim_token="manual-request-2",
+    )
+
+    assert blocked.admission_requested_by is None
+    with pytest.raises(ValidationError, match="状态与字段组合"):
+        _admission(
+            state=AdmissionState.BLOCKED,
+            blocked_reason=AdmissionBlockedReason.CASE_STATE_MISMATCH,
+            admission_requested_by="employee-sourcing",
+        )
+
+
 def test_starting_block_requires_matching_claim_token_and_waiting_does_not() -> None:
     claimed = _admission().claim(
         "claim-current", claim_expires_at=NOW + timedelta(minutes=5), claimed_at=NOW
@@ -394,7 +449,7 @@ def test_admission_transitions_and_snapshot_refresh_never_move_time_backwards() 
     )
     with pytest.raises(ValidationError, match="updated_at"):
         claimed.complete(
-            "claim-1", workflow_run_id=RunId("run-1"), admitted_by="system:sourcing", admitted_at=NOW - timedelta(seconds=1)
+            "claim-1", workflow_run_id=RunId("run-1"), system_actor_id="system:sourcing", admitted_at=NOW - timedelta(seconds=1)
         )
     with pytest.raises(ValidationError, match="updated_at"):
         _admission().with_current_snapshot(
@@ -518,7 +573,7 @@ def test_safe_view_requires_all_snapshot_facts_and_fixed_explanation() -> None:
 
 def test_admitted_admission_is_immutable_and_cannot_be_reclaimed() -> None:
     admitted = _admission().claim("claim-1", claim_expires_at=NOW + timedelta(minutes=5), claimed_at=NOW).complete(
-        "claim-1", workflow_run_id=RunId("run-1"), admitted_by="system:sourcing", admitted_at=NOW
+        "claim-1", workflow_run_id=RunId("run-1"), system_actor_id="system:sourcing", admitted_at=NOW
     )
 
     with pytest.raises(InvalidStateTransition, match="admitted"):
@@ -536,7 +591,7 @@ def test_stale_claim_token_cannot_complete_or_block_a_starting_admission() -> No
         claimed.complete(
             "claim-stale",
             workflow_run_id=RunId("run-1"),
-            admitted_by="system:sourcing",
+            system_actor_id="system:sourcing",
             admitted_at=NOW,
         )
     with pytest.raises(InvalidStateTransition):

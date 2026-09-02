@@ -433,7 +433,6 @@ async def test_admission_service_persists_canonical_snapshots_and_token_transiti
             second_id,
             claim_token="claim-stale",
             workflow_run_id=RunId(new_id("run")),
-            admitted_by="system:sourcing",
             admitted_at=NOW + timedelta(minutes=3),
             actor=system,
         )
@@ -443,7 +442,6 @@ async def test_admission_service_persists_canonical_snapshots_and_token_transiti
         second_id,
         claim_token="claim-current",
         workflow_run_id=run_id,
-        admitted_by="system:sourcing",
         admitted_at=NOW + timedelta(minutes=3),
         actor=system,
     )
@@ -511,7 +509,7 @@ async def test_admission_service_persists_canonical_snapshots_and_token_transiti
     assert snapshot_count == 3
     assert stored_run == str(run_id)
     assert [item.admission_id for item in admitted] == [second_id]
-    assert admitted[0].admitted_by == "system:sourcing"
+    assert admitted[0].admitted_by == system.actor_id
     assert [item.admission_id for item in blocked] == [first_id]
     assert blocked[0].blocked_reason == "case_state_mismatch"
     assert blocked[0].snapshot_id == changed_snapshot
@@ -646,7 +644,6 @@ async def test_cluster_refresh_targets_are_unbounded_tenant_bound_and_idempotent
         admitted_id,
         claim_token="claim-cluster-refresh",
         workflow_run_id=RunId(new_id("run")),
-        admitted_by="system:sourcing",
         admitted_at=NOW + timedelta(seconds=1),
         actor=system,
     )
@@ -891,7 +888,6 @@ async def test_cluster_block_is_tenant_bound_state_safe_and_idempotent_in_postgr
         admitted_id,
         claim_token="claim-cluster-block",
         workflow_run_id=RunId(new_id("run")),
-        admitted_by="system:sourcing",
         admitted_at=NOW + timedelta(seconds=1),
         actor=system,
     )

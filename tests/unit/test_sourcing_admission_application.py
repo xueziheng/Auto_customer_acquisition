@@ -126,7 +126,7 @@ def _view(
     )
 
 
-def _claimed() -> SourcingAdmission:
+def _claimed(actor: SourcingActor = USER) -> SourcingAdmission:
     return SourcingAdmission(
         tenant_id=TENANT,
         admission_id=ADMISSION_ID,
@@ -143,6 +143,7 @@ def _claimed() -> SourcingAdmission:
         admitted_by=None,
         created_at=NOW - timedelta(days=1),
         updated_at=NOW,
+        admission_requested_by=actor.actor_id,
     )
 
 
@@ -193,7 +194,7 @@ class _Sourcing:
                 actor,
             )
         )
-        return _claimed()
+        return _claimed(actor)
 
 
 class _Starter:
@@ -202,15 +203,10 @@ class _Starter:
     ) -> None:
         self.outcome = outcome
         self.sourcing = sourcing
-        self.calls: list[tuple[SourcingAdmission, SourcingActor]] = []
+        self.calls: list[SourcingAdmission] = []
 
-    async def admit_one(
-        self,
-        admission: SourcingAdmission,
-        *,
-        completing_actor: SourcingActor,
-    ) -> str:
-        self.calls.append((admission, completing_actor))
+    async def admit_one(self, admission: SourcingAdmission) -> str:
+        self.calls.append(admission)
         if self.outcome == "admitted" and self.sourcing is not None:
             self.sourcing.view = _view("admitted")
         return self.outcome
@@ -268,7 +264,7 @@ async def test_list_projects_distinct_safe_policy_states(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("actor", [USER, SOURCING_USER])
-async def test_manual_admit_preserves_authorized_employee_as_completing_actor(
+async def test_manual_admit_persists_authorized_employee_before_shared_starter(
     actor: SourcingActor,
 ) -> None:
     sourcing = _Sourcing()
@@ -285,7 +281,8 @@ async def test_manual_admit_preserves_authorized_employee_as_completing_actor(
     assert [call[0] for call in sourcing.calls] == ["get", "case", "claim", "get"]
     assert sourcing.calls[2][3].request_id == "manual-request-1"
     assert sourcing.calls[2][4] == NOW + LEASE
-    assert starter.calls == [(_claimed(), actor)]
+    assert starter.calls == [_claimed(actor)]
+    assert starter.calls[0].admission_requested_by == actor.actor_id
 
 
 @pytest.mark.asyncio
@@ -375,7 +372,7 @@ async def test_manual_permanent_case_validation_claims_then_blocks_via_shared_st
         )
 
     assert [call[0] for call in sourcing.calls] == ["get", "case", "claim"]
-    assert starter.calls == [(_claimed(), USER)]
+    assert starter.calls == [_claimed(USER)]
 
 
 @pytest.mark.asyncio
@@ -393,4 +390,4 @@ async def test_manual_missing_canonical_case_claims_then_blocks() -> None:
         )
 
     assert [call[0] for call in sourcing.calls] == ["get", "case", "claim"]
-    assert starter.calls == [(_claimed(), USER)]
+    assert starter.calls == [_claimed(USER)]

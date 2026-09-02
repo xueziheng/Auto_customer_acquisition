@@ -112,6 +112,121 @@ async def _isolated_sourcing_admission_evidence(
             )
 
 
+async def _seed_valid_runtime_admission(
+    integration_engine: AsyncEngine,
+    tenant: TenantId,
+) -> tuple[
+    async_sessionmaker,
+    ValidatedNeedId,
+    SourcingCaseId,
+    SourcingAdmissionId,
+]:
+    """写入可由真实 service/starter/engine 启动的最小 canonical admission。"""
+
+    need_id = ValidatedNeedId(new_id("need"))
+    case_id = SourcingCaseId(new_id("src"))
+    admission_id = SourcingAdmissionId(new_id("sad"))
+    priority_snapshot_id = new_id("sps")
+    ready_at = NOW - timedelta(minutes=1)
+    provenance = {
+        "source_type": "conversation",
+        "source_id": "msg-manual-recovery",
+        "extracted_by": "human",
+        "extracted_at": NOW.isoformat(),
+        "confirmed_by": None,
+        "confirmed_at": None,
+        "source_url": None,
+        "page_hash": None,
+        "source_quote": None,
+    }
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO validated_needs "
+                "(tenant_id,need_id,account_id,product_category,source_message_id,"
+                "status,application,material,size_spec,quantity,created_at) VALUES "
+                "(:tenant,:need,'account-manual-recovery',CAST(:category AS jsonb),"
+                "'message-manual-recovery','sourcing_ready',"
+                "CAST(:application AS jsonb),CAST(:material AS jsonb),"
+                "CAST(:size_spec AS jsonb),CAST(:quantity AS jsonb),:now)"
+            ),
+            {
+                "tenant": str(tenant),
+                "need": str(need_id),
+                "category": json.dumps({"value": "hinges", "provenance": provenance}),
+                "application": json.dumps(
+                    {"value": "marine doors", "provenance": provenance}
+                ),
+                "material": json.dumps(
+                    {"value": "stainless steel", "provenance": provenance}
+                ),
+                "size_spec": json.dumps(
+                    {"value": "100 mm", "provenance": provenance}
+                ),
+                "quantity": json.dumps({"value": 5000, "provenance": provenance}),
+                "now": NOW,
+            },
+        )
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    frozen = await PostgresSourcingNeedReader(sessions, tenant).read(tenant, need_id)
+    async with sessions() as session, session.begin():
+        session.add(
+            SourcingCaseRow(
+                tenant_id=str(tenant),
+                case_id=str(case_id),
+                need_id=str(need_id),
+                workflow_version=2,
+                trigger_key=f"sourcing-case:v2:{tenant}:{need_id}",
+                need_snapshot=frozen.model_dump(mode="json"),
+                need_snapshot_hash=frozen.snapshot_hash,
+                state="opened",
+                sealed_candidate_ids=[],
+                version=1,
+                opened_at=NOW,
+                state_changed_at=NOW,
+            )
+        )
+        await session.flush()
+        session.add(
+            SourcingAdmissionRow(
+                tenant_id=str(tenant),
+                admission_id=str(admission_id),
+                case_id=str(case_id),
+                need_id=str(need_id),
+                state="waiting",
+                ready_at=ready_at,
+                current_snapshot_id=priority_snapshot_id,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.flush()
+        session.add(
+            SourcingPrioritySnapshotRow(
+                tenant_id=str(tenant),
+                snapshot_id=priority_snapshot_id,
+                admission_id=str(admission_id),
+                case_id=str(case_id),
+                need_id=str(need_id),
+                cluster_id=None,
+                cluster_member_count=1,
+                ready_at=ready_at,
+                ranking_version="need-cluster-admission-v1",
+                facts_observed_at=ready_at,
+                facts_hash=canonical_priority_facts_hash(
+                    need_id=need_id,
+                    cluster_id=None,
+                    cluster_member_count=1,
+                    ready_at=ready_at,
+                    facts_observed_at=ready_at,
+                    ranking_version="need-cluster-admission-v1",
+                ),
+                created_at=NOW,
+            )
+        )
+    return sessions, need_id, case_id, admission_id
+
+
 def _candidate_submission_for_runtime_need(artifact_id: ArtifactId):
     """使生产装配验收候选逐项复述该测试实际冻结的 Need 规格。"""
 
@@ -989,6 +1104,199 @@ async def test_admission_entrypoints_preserve_actor_and_block_real_pg_case_drift
     if expected_state == "blocked":
         assert engine.calls == []
         assert stored.blocked_reason == "case_state_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "employee_id"),
+    [("boss", "employee-recovery-boss"), ("sourcing", "employee-recovery-sourcing")],
+)
+async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
+    role: str,
+    employee_id: str,
+    integration_engine: AsyncEngine,
+    _isolated_sourcing_admission_evidence: None,
+) -> None:
+    """真实 PG Run 与 admission 跨 service/engine 重建后仍只绑定一次并保留真人。"""
+
+    from apps.scheduler_worker.directive_reader import SourcingAdmissionPolicyRead
+    from apps.scheduler_worker.sourcing_admission import SourcingAdmissionDriver
+    from domains.sourcing.permissions import (
+        Phase2SourcingAuthorizer,
+        SourcingActor,
+        SourcingScope,
+    )
+    from infra.db.sourcing_uow import SqlAlchemySourcingUnitOfWork
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+    from tests.integration.test_sourcing_service_persistence import (
+        _UnusedEvidenceReader,
+    )
+    from workflows.engine.runner import StepDefinition, WorkflowDefinition
+    from workflows.sourcing_case.application import (
+        SourcingAdmissionApplication,
+        SourcingAdmissionStarter,
+    )
+
+    tenant = TenantId(new_id("tn"))
+    sessions, need_id, case_id, admission_id = await _seed_valid_runtime_admission(
+        integration_engine, tenant
+    )
+    system = SourcingActor(
+        "system:sourcing-admission", tenant, SourcingScope.SYSTEM, "system"
+    )
+    human = SourcingActor(employee_id, tenant, SourcingScope.TENANT, role)
+
+    class NoopStep:
+        async def execute(self, run: object) -> tuple[str, None, dict[str, object]]:
+            del run
+            return "complete", None, {}
+
+    definition = WorkflowDefinition(
+        workflow_type="sourcing_case",
+        version=2,
+        steps=(StepDefinition("hold", "test.sourcing-hold"),),
+    )
+
+    def service_at(instant: datetime) -> SourcingServiceImpl:
+        return SourcingServiceImpl(
+            lambda bound: SqlAlchemySourcingUnitOfWork(sessions, bound),
+            Phase2SourcingAuthorizer(tenant),
+            _UnusedEvidenceReader(),
+            now=lambda: instant,
+        )
+
+    first_service = service_at(NOW)
+
+    class UnknownFirstBind:
+        def __init__(self, delegate: SourcingServiceImpl) -> None:
+            self._delegate = delegate
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._delegate, name)
+
+        async def complete_admission(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise TransientError("private bind outcome unknown")
+
+    first_engine = PostgresWorkflowEngine(
+        sessions, {"test.sourcing-hold": NoopStep()}, now=lambda: NOW
+    )
+    first_engine.register(definition)
+    uncertain = UnknownFirstBind(first_service)
+    application = SourcingAdmissionApplication(
+        sourcing=uncertain,  # type: ignore[arg-type]
+        policy=SimpleNamespace(read=lambda _: None),  # type: ignore[arg-type]
+        starter=SourcingAdmissionStarter(
+            sourcing=uncertain,  # type: ignore[arg-type]
+            engine=first_engine,
+            tenant_id=tenant,
+            sourcing_actor=system,
+            now=lambda: NOW,
+        ),
+        tenant_id=tenant,
+        sourcing_actor=system,
+        lease_duration=timedelta(minutes=5),
+        now=lambda: NOW,
+    )
+
+    try:
+        with pytest.raises(TransientError, match="^寻源准入启动状态暂不可确认$"):
+            await application.admit_one(
+                tenant,
+                admission_id,
+                request_id=f"manual-recovery-{role}",
+                actor=human,
+            )
+        async with sessions() as session:
+            before = await session.scalar(
+                select(SourcingAdmissionRow).where(
+                    SourcingAdmissionRow.tenant_id == str(tenant),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                )
+            )
+            run_count_before = await session.scalar(
+                select(text("count(*)")).select_from(WorkflowRunRow).where(
+                    WorkflowRunRow.tenant_id == str(tenant)
+                )
+            )
+        assert before is not None and before.state == "starting"
+        assert before.admission_requested_by == employee_id
+        assert run_count_before == 1
+
+        recovered_at = NOW + timedelta(minutes=5)
+        recovered_service = service_at(recovered_at)
+        recovered_engine = PostgresWorkflowEngine(
+            sessions,
+            {"test.sourcing-hold": NoopStep()},
+            now=lambda: recovered_at,
+        )
+        recovered_engine.register(definition)
+
+        class Policy:
+            async def read(
+                self, requested_tenant: TenantId
+            ) -> SourcingAdmissionPolicyRead:
+                assert requested_tenant == tenant
+                return SourcingAdmissionPolicyRead("dir-recovery", 1, True, 1)
+
+        result = await SourcingAdmissionDriver(
+            policy=Policy(),  # type: ignore[arg-type]
+            sourcing=recovered_service,
+            engine=recovered_engine,
+            tenant_id=tenant,
+            sourcing_actor=system,
+            lease_duration=timedelta(minutes=5),
+            now=lambda: recovered_at,
+        ).scan_once()
+
+        async with sessions() as session:
+            stored = await session.scalar(
+                select(SourcingAdmissionRow).where(
+                    SourcingAdmissionRow.tenant_id == str(tenant),
+                    SourcingAdmissionRow.admission_id == str(admission_id),
+                )
+            )
+            run_count_after = await session.scalar(
+                select(text("count(*)")).select_from(WorkflowRunRow).where(
+                    WorkflowRunRow.tenant_id == str(tenant)
+                )
+            )
+        assert result.expired_released_count == 1
+        assert result.admitted_count == 1
+        assert stored is not None and stored.state == "admitted"
+        assert stored.admitted_by == employee_id
+        assert stored.admission_requested_by is None
+        assert run_count_after == 1
+    finally:
+        async with integration_engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM workflow_steps WHERE tenant_id=:tenant"),
+                {"tenant": str(tenant)},
+            )
+            await connection.execute(
+                text("DELETE FROM workflow_runs WHERE tenant_id=:tenant"),
+                {"tenant": str(tenant)},
+            )
+            await connection.execute(
+                text(
+                    "TRUNCATE sourcing_admissions, "
+                    "sourcing_priority_snapshots CASCADE"
+                )
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM sourcing_cases WHERE tenant_id=:tenant "
+                    "AND case_id=:case"
+                ),
+                {"tenant": str(tenant), "case": str(case_id)},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM validated_needs WHERE tenant_id=:tenant "
+                    "AND need_id=:need"
+                ),
+                {"tenant": str(tenant), "need": str(need_id)},
+            )
 
 
 @pytest.mark.asyncio

@@ -138,3 +138,52 @@ Task 9 新增的唯一真实 PostgreSQL claim 用例受文件级 autouse 前后
 - 提交前 fresh gate：review 相关 unit/directives persistence `121 passed in 8.01s`；六个真实 PG
   scheduler/manual 场景紧接 0053 downgrade `7 passed in 5.64s`；Task 9 API/OpenAPI 四文件
   `77 passed in 9.94s`；随后再次执行 Ruff、mypy、boundaries 与敏感信息扫描均以 0 退出。
+
+## 审查修复第 2 轮（独立后续提交）
+
+### 持久审计方案与权限收口
+
+- 新增内部、nullable 的 `SourcingAdmission.admission_requested_by`，由已通过 tenant/role 鉴权的
+  `claim_manual_admission` 从 `actor.actor_id` 写入，HTTP body/DTO/OpenAPI 均不存在可提交该字段的入口。
+  `waiting`/`starting` 可以持有它，已知 transient release、租约过期 release 与 scheduler reclaim 都
+  原样保留；同 request id 由另一 actor 重放固定冲突。
+- 新增 0054 migration 与 ORM/check parity。进入 `admitted` 时 repository 在单条 UPDATE 中以持久人工
+  actor 优先、SYSTEM actor 为自动路径 fallback 写入 `admitted_by`，随后清空临时字段；进入 `blocked`
+  同样清空。0054 downgrade 在存在任一非空人工审计意图时拒绝，避免静默丢失等待恢复中的证据。
+- boss/sourcing 的低层 `ADMISSION_COMPLETE` 权限已撤回，恢复为仅 SYSTEM。公开 service complete
+  契约不再接收 `admitted_by`；SYSTEM 鉴权发生在 UoW 前。shared starter 始终使用构造时注入且验证过的
+  私有 SYSTEM actor，人工权限只用于精确 claim，因此 tenant actor 不能直调 complete 或伪造 Run 的
+  审计执行者。
+- 真实 PostgreSQL 测试覆盖 boss 与 sourcing：第一次 engine start 已提交 canonical Run、bind 返回未知，
+  随后重新构造 service 与 workflow engine，scheduler 在租约到期后恢复；两种角色都只有一个 Run，
+  最终 `admitted_by` 仍为原人工 actor。另覆盖 transient release 后恢复、自动准入记 SYSTEM、跨 tenant、
+  same-key different-actor 冲突与 tenant actor complete 的 zero-UoW 拒绝。
+
+### RED / GREEN 证据
+
+- 第一组纯 RED：`35 failed, 58 passed`。失败分别指向缺少 durable 字段/0054、manual claim 未写 actor、
+  release/reclaim 后审计丢失、tenant actor 仍可 complete，以及旧 complete/admitted_by 签名。
+- 最小 domain/service/repository/application 实现后：`93 passed`；扩大相关 unit：`265 passed`。
+- 0054 migration、ORM parity 与真实 repository 首轮因新 migration 测试未在断言失败路径清除 0053
+  evidence 得到 `59 passed, 1 failed`；将精确 admissions/snapshots 清理放入 `finally` 后复跑
+  `60 passed`。append-only snapshot 使这两张表只能在仓库默认串行测试边界内成对 TRUNCATE；所有新
+  runtime/迁移证据均有 fixture 或 `finally`，并对各自唯一 tenant 的 Case/Need/Run 做定向删除。
+- 真实 runtime 跨 service/engine 重建：boss/sourcing `2 passed`。
+
+### 最终验证
+
+- Task 8/9 service、API、repository、real PG 组合：`405 passed in 18.69s`。首跑唯一失败是旧测试仍
+  期待已撤除的 caller-supplied `system:sourcing`；修正为可信 SYSTEM actor id 后全绿。
+- Task 4/5/8 brief focused 合并套件：`417 passed in 80.37s`，包含 0054 migration head、check、ORM
+  parity、upgrade/downgrade、并发 repository 与 scheduler lifecycle。
+- Task 9 API/OpenAPI 指定四文件：`63 passed in 16.55s`；额外显式断言
+  `SourcingAdmissionReadView` 的 OpenAPI properties 不含内部 actor carrier。
+- 人为反序验证（先运行两个人工 unknown-bind runtime，再执行全库 head downgrade/upgrade、0054
+  lossy-downgrade guard 和 ORM parity）：`5 passed in 8.95s`，证明测试结束后没有持久 evidence 泄漏。
+- 受影响文件 `ruff check` 通过；15 个 production source 的 `mypy` 通过；boundaries 七项、敏感信息
+  扫描与 `git diff --check` 均通过。
+- 提交前 fresh 相关测试（API、shared starter/driver、service/repository、两角色跨进程恢复、0054 与
+  head roundtrip）：`404 passed in 20.90s`；随后重新执行全部上述静态门禁，均以 0 退出。
+
+仓库仍打印既有 AppleDouble pack index 警告；本轮未读取、修改或清理该共享文件。没有修改 Task 10
+前端或 Tool Gateway。

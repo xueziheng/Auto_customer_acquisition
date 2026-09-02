@@ -111,7 +111,6 @@ _BOSS_ACTIONS = _READ_ACTIONS | frozenset(
         SourcingAction.REVIEW_CONFIRM,
         SourcingAction.REVIEW_SUBMIT,
         SourcingAction.ADMISSION_MANUAL_START,
-        SourcingAction.ADMISSION_COMPLETE,
     }
 ) | _ADMISSION_READ_ACTIONS
 _PRODUCT_ACTIONS = _READ_ACTIONS | frozenset(
@@ -124,7 +123,6 @@ _SOURCING_ACTIONS = _PRODUCT_ACTIONS | frozenset(
     {
         SourcingAction.PLAN_DRAFT,
         SourcingAction.ADMISSION_MANUAL_START,
-        SourcingAction.ADMISSION_COMPLETE,
     }
 )
 _FINANCE_ACTIONS = (

@@ -14,6 +14,7 @@ from sqlalchemy import (
     CursorResult,
     Select,
     and_,
+    func,
     or_,
     select,
     text,
@@ -500,6 +501,7 @@ def _admission_values(value: SourcingAdmission) -> dict[str, object]:
         ),
         "admitted_at": value.admitted_at,
         "admitted_by": value.admitted_by,
+        "admission_requested_by": value.admission_requested_by,
         "created_at": value.created_at,
         "updated_at": value.updated_at,
     }
@@ -532,6 +534,7 @@ def _row_to_admission(row: SourcingAdmissionRow) -> SourcingAdmission:
         admitted_by=row.admitted_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        admission_requested_by=row.admission_requested_by,
     )
 
 
@@ -959,12 +962,17 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         claim_token: str,
         claim_expires_at: datetime,
         now: datetime,
+        *,
+        requested_by: str,
     ) -> SourcingAdmission | None:
         self._require_tenant(tenant_id)
         _require_bounded_identifier(admission_id, "admission_id")
         claim_token = _require_bounded_identifier(claim_token, "claim_token")
         claim_expires_at = _require_utc_datetime(claim_expires_at, "claim_expires_at")
         now = _require_utc_datetime(now, "now")
+        requested_by = _require_bounded_identifier(
+            requested_by, "admission_requested_by"
+        )
         if claim_expires_at <= now:
             raise ValidationError("claim_expires_at 必须晚于 now")
 
@@ -986,6 +994,11 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
             and admission.claim_expires_at > now
         ):
             return admission
+        if (
+            admission.admission_requested_by is not None
+            and admission.admission_requested_by != requested_by
+        ):
+            return admission
 
         changed = (
             await self._session.execute(
@@ -1000,6 +1013,9 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     state=AdmissionState.STARTING.value,
                     claim_token=claim_token,
                     claim_expires_at=claim_expires_at,
+                    admission_requested_by=(
+                        admission.admission_requested_by or requested_by
+                    ),
                     updated_at=now,
                 )
                 .returning(SourcingAdmissionRow)
@@ -1013,13 +1029,15 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
         admission_id: SourcingAdmissionId,
         claim_token: str,
         workflow_run_id: RunId,
-        admitted_by: str,
+        system_actor_id: str,
         admitted_at: datetime,
     ) -> SourcingAdmission | None:
         self._require_tenant(tenant_id)
         claim_token = _require_bounded_identifier(claim_token, "claim_token")
         _require_bounded_identifier(workflow_run_id, "workflow_run_id")
-        admitted_by = _require_bounded_identifier(admitted_by, "admitted_by")
+        system_actor_id = _require_bounded_identifier(
+            system_actor_id, "system_actor_id"
+        )
         admitted_at = _require_utc_datetime(admitted_at, "admitted_at")
         row = (
             await self._session.execute(
@@ -1036,7 +1054,11 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     claim_token=None,
                     claim_expires_at=None,
                     workflow_run_id=str(workflow_run_id),
-                    admitted_by=admitted_by,
+                    admitted_by=func.coalesce(
+                        SourcingAdmissionRow.admission_requested_by,
+                        system_actor_id,
+                    ),
+                    admission_requested_by=None,
                     admitted_at=admitted_at,
                     updated_at=admitted_at,
                 )
@@ -1162,6 +1184,7 @@ class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
                     claim_token=None,
                     claim_expires_at=None,
                     blocked_reason=reason.value,
+                    admission_requested_by=None,
                     updated_at=blocked_at,
                 )
                 .returning(SourcingAdmissionRow)
