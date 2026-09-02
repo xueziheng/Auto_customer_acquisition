@@ -165,7 +165,7 @@ real_external_calls: 0
 - 本结论只在本地 feature worktree 成立；后续合并到本地 `main` 仍需用户明确确认，push/deploy 需要
   另行授权。
 - 既有未跟踪 `output/playwright/t10-99ac25716c954ee8b489bffcb72e9436/` 原样保留且不提交。
-- 挂载盘会生成 ignored `._*.png` AppleDouble 副产物；它们不是批准证据，不暂存。
+- 挂载盘会生成 ignored `._*` AppleDouble 副产物；它们不是批准证据，不暂存。
 - Git 读取仍会报告既有 `._pack-*.idx` non-monotonic warning；本任务没有删除、修改、repack 或修复
   `.git/objects`。
 - lint warning 只能按仓库既有规则如实记录，不能降低 lint/scanner/mypy/boundary 门禁或隐藏 skip。
