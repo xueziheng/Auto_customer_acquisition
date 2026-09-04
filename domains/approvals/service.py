@@ -7,9 +7,26 @@ from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
 from domains.approvals.catalog_contract import (
+    CATALOG_CULTIVATION_NAMESPACE,
+    CATALOG_CULTIVATION_WARNING,
+    CATALOG_POLICY_NAMESPACE,
     CatalogApprovalCommand,
+    CatalogApprovalContractError,
     CatalogApprovalFact,
     CatalogApprovalFactReader,
+    CatalogCultivationApprovalCommand,
+    CatalogEvidenceLocator,
+    CatalogPolicyApprovalChange,
+    CatalogPolicyApprovalCommand,
+    CatalogPolicyContentFact,
+    CatalogPolicyVersionFact,
+    CatalogRuleResultFact,
+    catalog_cultivation_request_hash,
+    catalog_evidence_locator,
+    catalog_package_fields,
+    catalog_policy_content_hash,
+    catalog_policy_request_hash,
+    parse_catalog_evidence_locator,
 )
 from domains.approvals.models import ApprovalState, ApprovalType, BlastRadius
 from domains.approvals.schemas import (
@@ -201,11 +218,29 @@ class ApprovalService(Protocol):
 
 
 __all__ = (
+    "CATALOG_CULTIVATION_NAMESPACE",
+    "CATALOG_CULTIVATION_WARNING",
+    "CATALOG_POLICY_NAMESPACE",
     "ApprovalService",
     "ApprovalState",
     "ApprovalType",
     "BlastRadius",
+    "CatalogApprovalContractError",
+    "CatalogApprovalFact",
     "CatalogApprovalFactReader",
+    "CatalogCultivationApprovalCommand",
+    "CatalogEvidenceLocator",
+    "CatalogPolicyApprovalChange",
+    "CatalogPolicyApprovalCommand",
+    "CatalogPolicyContentFact",
+    "CatalogPolicyVersionFact",
+    "CatalogRuleResultFact",
     "QuoteApprovalAccess",
+    "catalog_cultivation_request_hash",
+    "catalog_evidence_locator",
+    "catalog_package_fields",
+    "catalog_policy_content_hash",
+    "catalog_policy_request_hash",
+    "parse_catalog_evidence_locator",
     "requires_approval",
 )

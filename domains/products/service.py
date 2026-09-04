@@ -6,6 +6,12 @@ import hashlib
 import json
 from typing import Protocol, runtime_checkable
 
+from domains.products.errors import (
+    CatalogPolicyApprovalConflictError,
+    CatalogPolicyDecisionInvalidError,
+    CatalogPolicyNotFoundError,
+    CatalogPolicyStateTransitionError,
+)
 from domains.products.models import (
     CandidateStatus,
     CatalogCultivationCase,
@@ -283,6 +289,10 @@ __all__ = (
     "CandidateStatus",
     "CatalogCultivationCase",
     "CatalogCultivationCaseView",
+    "CatalogPolicyApprovalConflictError",
+    "CatalogPolicyDecisionInvalidError",
+    "CatalogPolicyNotFoundError",
+    "CatalogPolicyStateTransitionError",
     "CatalogProductProposal",
     "CatalogProductProposalState",
     "CatalogProductProposalView",
