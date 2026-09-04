@@ -98,7 +98,10 @@ async function loadCases(): Promise<void> {
     });
     if (!operation.valid()) return;
     if (result.response.status === 200 && result.data) cases.value = result.data;
-    else error.value = safeError(result.response.status);
+    else {
+      if (result.response.status !== 503) cases.value = [];
+      error.value = safeError(result.response.status);
+    }
   } catch {
     if (operation.valid()) error.value = "无法连接培养队列服务";
   } finally {

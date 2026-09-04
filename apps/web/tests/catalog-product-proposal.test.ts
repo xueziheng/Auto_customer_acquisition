@@ -79,14 +79,12 @@ function deferredResponse() {
 async function mountProductsInstance(
   fetch: typeof globalThis.fetch,
   provider: WebIdentityProvider = identityHarness(`default-${mountedApps.length}-${Date.now()}`).provider,
+  client = createApiClient({ baseUrl: "https://tradeos.test", fetch }, provider),
 ): Promise<{ app: VueApp; root: HTMLElement }> {
   const root = document.createElement("div");
   document.body.replaceChildren(root);
   const app = createApp(App);
-  app.provide(
-    "tradeos-api-client",
-    createApiClient({ baseUrl: "https://tradeos.test", fetch }, provider),
-  );
+  app.provide("tradeos-api-client", client);
   app.use(router);
   await router.replace("/products");
   app.mount(root);
@@ -595,6 +593,49 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(root.textContent).toMatch(/ccs_safe/);
   });
 
+  it("purges protected catalog projections on same-identity 403 while only transient reads retain safe data", async () => {
+    let authorizationRevoked = false;
+    let cultivationRevoked = false;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (authorizationRevoked && path.startsWith("/products/catalog-")) {
+        if (path === "/products/catalog-cultivation-cases" && !cultivationRevoked) {
+          return Response.json({}, { status: 503 });
+        }
+        return Response.json({}, { status: 403 });
+      }
+      if (path === "/products/catalog-policies/active") return Response.json(policyView("cpv_revoked", "active", "applied"));
+      if (path === "/products/catalog-policies") return Response.json([policyView("cpv_history_revoked", "superseded", "applied")]);
+      if (path === "/products/catalog-evaluations") return Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_revoked" }]);
+      if (path === "/products/catalog-proposals") return Response.json([proposal("cpp_revoked", "pending_review")]);
+      if (path === "/products/catalog-cultivation-cases") return Response.json([cultivationCase("ccs_revoked")]);
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => {
+      expect(root.textContent).toMatch(/cpv_revoked|cev_revoked|cpp_revoked|ccs_revoked/);
+      expect(root.querySelector('[data-cultivation-case="ccs_revoked"]')?.textContent).toContain("去重客户数：3");
+    });
+
+    authorizationRevoked = true;
+    for (const label of ["刷新策略", "刷新提案", "刷新队列"]) {
+      [...root.querySelectorAll("button")].find((button) => button.textContent?.includes(label))?.click();
+    }
+    await eventually(() => {
+      expect(root.textContent).toContain("当前身份无权读取目录策略");
+      expect(root.textContent).toContain("当前身份无权读取目录评估");
+      expect(root.textContent).toContain("当前身份无权读取目录提案");
+      expect(root.textContent).toContain("培养队列服务暂不可用");
+    });
+    expect(root.textContent).not.toMatch(/cpv_revoked|cpv_history_revoked|cev_revoked|cpp_revoked/);
+    expect(root.querySelector('[data-cultivation-case="ccs_revoked"]')?.textContent).toContain("去重客户数：未知");
+
+    cultivationRevoked = true;
+    [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("刷新队列"))?.click();
+    await eventually(() => expect(root.textContent).toContain("当前身份无权读取培养队列"));
+    expect(root.textContent).not.toContain("ccs_revoked");
+  });
+
   it("prevents older overlapping catalog refreshes from overwriting newer results", async () => {
     const old = new Map<string, ReturnType<typeof deferredResponse>>();
     const calls = new Map<string, number>();
@@ -732,7 +773,7 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(root.textContent).not.toContain(aKey!);
   });
 
-  it("reuses an unresolved same-identity intent after unmount, but form changes create a new key and body", async () => {
+  it("restores and retries the exact non-default same-client intent after remount, then replaces it on form change", async () => {
     const identity = identityHarness("policy-remount");
     const posts: Request[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
@@ -744,28 +785,118 @@ describe("Catalog Product Proposal internal regions", () => {
       }
       return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
     });
-    const first = await mountProductsInstance(fetch, identity.provider);
+    const client = createApiClient({ baseUrl: "https://tradeos.test", fetch }, identity.provider);
+    const first = await mountProductsInstance(fetch, identity.provider, client);
     await eventually(() => expect(first.root.textContent).toContain("未配置即关闭"));
+    setField(first.root, "minimum_distinct_accounts", "4");
+    setField(first.root, "minimum_recurring_accounts", "2");
+    setField(first.root, "minimum_distinct_countries", "5");
+    setField(first.root, "minimum_quantity_unit_accounts", "3");
+    const firstUnified = first.root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')!;
+    firstUnified.checked = true;
+    firstUnified.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
     submitPolicyForm(first.root);
-    await eventually(() => expect(posts).toHaveLength(1));
+    await eventually(() => expect(first.root.textContent).toContain("提交结果未知"));
     const firstKey = posts[0]!.headers.get("Idempotency-Key");
+    const firstBody = await posts[0]!.text();
     mountedApps.splice(mountedApps.indexOf(first.app), 1);
     first.app.unmount();
 
-    const second = await mountProductsInstance(fetch, identity.provider);
+    const second = await mountProductsInstance(fetch, identity.provider, client);
     await eventually(() => expect(second.root.textContent).toContain("未配置即关闭"));
-    submitPolicyForm(second.root);
+    expect(second.root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("4");
+    expect(second.root.querySelector<HTMLInputElement>('[name="minimum_recurring_accounts"]')?.value).toBe("2");
+    expect(second.root.querySelector<HTMLInputElement>('[name="minimum_distinct_countries"]')?.value).toBe("5");
+    expect(second.root.querySelector<HTMLInputElement>('[name="minimum_quantity_unit_accounts"]')?.value).toBe("3");
+    expect(second.root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')?.checked).toBe(true);
+    expect(second.root.querySelector('[data-action="retry-catalog-policy"]')).not.toBeNull();
+    (second.root.querySelector('[data-action="retry-catalog-policy"]') as HTMLButtonElement).click();
     await eventually(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.headers.get("Idempotency-Key")).toBe(firstKey);
-    expect(await posts[1]!.text()).toBe(await posts[0]!.text());
+    expect(await posts[1]!.text()).toBe(firstBody);
 
-    setField(second.root, "minimum_distinct_accounts", "4");
+    setField(second.root, "minimum_distinct_accounts", "5");
     await nextTick();
     submitPolicyForm(second.root);
     await eventually(() => expect(posts).toHaveLength(3));
     expect(posts[2]!.headers.get("Idempotency-Key")).not.toBe(firstKey);
-    expect(await posts[2]!.json()).toMatchObject({ minimum_distinct_accounts: 4 });
+    expect(await posts[2]!.json()).toMatchObject({
+      minimum_distinct_accounts: 5,
+      minimum_distinct_countries: 5,
+      minimum_quantity_unit_accounts: 3,
+      minimum_recurring_accounts: 2,
+      require_unified_unit: true,
+    });
     expect(second.root.textContent).not.toContain(posts[2]!.headers.get("Idempotency-Key")!);
+  });
+
+  it("isolates retained policy intent by the exact injected API client", async () => {
+    const identity = identityHarness("policy-client-isolation");
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        throw new TypeError("controlled uncertainty");
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const firstClient = createApiClient({ baseUrl: "https://tradeos.test", fetch }, identity.provider);
+    const first = await mountProductsInstance(fetch, identity.provider, firstClient);
+    await eventually(() => expect(first.root.querySelector(".policy-form")).not.toBeNull());
+    setField(first.root, "minimum_distinct_accounts", "4");
+    submitPolicyForm(first.root);
+    await eventually(() => expect(first.root.textContent).toContain("提交结果未知"));
+    const firstKey = posts[0]!.headers.get("Idempotency-Key");
+    mountedApps.splice(mountedApps.indexOf(first.app), 1);
+    first.app.unmount();
+
+    const secondClient = createApiClient({ baseUrl: "https://tradeos.test", fetch }, identity.provider);
+    const second = await mountProductsInstance(fetch, identity.provider, secondClient);
+    await eventually(() => expect(second.root.querySelector(".policy-form")).not.toBeNull());
+    setField(second.root, "minimum_distinct_accounts", "4");
+    submitPolicyForm(second.root);
+    await eventually(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.headers.get("Idempotency-Key")).not.toBe(firstKey);
+  });
+
+  it("bounds each client registry to eight identities with deterministic oldest-entry eviction", async () => {
+    const identity = identityHarness("policy-registry-bound");
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        throw new TypeError("controlled uncertainty");
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const client = createApiClient({ baseUrl: "https://tradeos.test", fetch }, identity.provider);
+    const root = (await mountProductsInstance(fetch, identity.provider, client)).root;
+    const keys = new Map<string, string | null>();
+    for (const suffix of ["a", "b", "c", "d", "e", "f", "g", "h", "i"]) {
+      if (suffix !== "a") identity.switchTo(suffix);
+      await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+      submitPolicyForm(root);
+      await eventually(() => expect(posts).toHaveLength(keys.size + 1));
+      keys.set(suffix, posts.at(-1)!.headers.get("Idempotency-Key"));
+      await eventually(() => expect(root.textContent).toContain("提交结果未知"));
+    }
+
+    identity.switchTo("b");
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(10));
+    expect(posts.at(-1)!.headers.get("Idempotency-Key")).toBe(keys.get("b"));
+
+    identity.switchTo("a");
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(11));
+    expect(posts.at(-1)!.headers.get("Idempotency-Key")).not.toBe(keys.get("a"));
   });
 
   it("mirrors every catalog policy integer and cross-field bound before POST and normalizes cleared optionals", async () => {

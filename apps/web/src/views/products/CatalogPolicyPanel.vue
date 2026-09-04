@@ -8,7 +8,32 @@ type RetainedPolicyRequest = {
   serializedBody: string;
 };
 
-const retainedPolicyRequests = new Map<string, RetainedPolicyRequest>();
+const maximumRetainedIdentities = 8;
+const retainedPolicyRequests = new WeakMap<object, Map<string, RetainedPolicyRequest>>();
+
+function retainedRequestFor(client: object, identityKey: string): RetainedPolicyRequest | undefined {
+  return retainedPolicyRequests.get(client)?.get(identityKey);
+}
+
+function retainRequest(client: object, identityKey: string, request: RetainedPolicyRequest): void {
+  let registry = retainedPolicyRequests.get(client);
+  if (!registry) {
+    registry = new Map<string, RetainedPolicyRequest>();
+    retainedPolicyRequests.set(client, registry);
+  }
+  if (!registry.has(identityKey) && registry.size >= maximumRetainedIdentities) {
+    const oldestIdentity = registry.keys().next().value as string | undefined;
+    if (oldestIdentity !== undefined) registry.delete(oldestIdentity);
+  }
+  registry.set(identityKey, request);
+}
+
+function forgetRequest(client: object, identityKey: string): void {
+  const registry = retainedPolicyRequests.get(client);
+  if (!registry) return;
+  registry.delete(identityKey);
+  if (registry.size === 0) retainedPolicyRequests.delete(client);
+}
 </script>
 
 <script setup lang="ts">
@@ -45,6 +70,7 @@ const minimumQuantityUnitAccounts = ref<number | string | null>(null);
 const requireUnifiedUnit = ref(false);
 let retainedIdentityKey: string | null = null;
 let componentMounted = false;
+let restoringRetainedIntent = false;
 
 function resetPanel(): void {
   activePolicy.value = null;
@@ -77,12 +103,13 @@ const formSnapshot = computed(() => JSON.stringify([
 ]));
 
 watch(formSnapshot, () => {
-  if (retainedIdentityKey) retainedPolicyRequests.delete(retainedIdentityKey);
+  if (restoringRetainedIntent) return;
+  if (retainedIdentityKey) forgetRequest(client, retainedIdentityKey);
   retainedIdentityKey = null;
   retryable.value = false;
   actionError.value = null;
   actionNotice.value = null;
-});
+}, { flush: "sync" });
 
 function policyStateLabel(state: PolicyState): string {
   return {
@@ -142,14 +169,33 @@ async function loadPolicies(): Promise<void> {
     }),
   ]);
   if (!operation.valid()) return;
-  if (activeResult.status === "fulfilled") {
-    if (activeResult.value.response.status === 200) activePolicy.value = activeResult.value.data ?? null;
-    else failures.push(safeReadError(activeResult.value.response.status));
-  } else failures.push("无法连接目录策略服务");
-  if (historyResult.status === "fulfilled") {
-    if (historyResult.value.response.status === 200 && historyResult.value.data) history.value = historyResult.value.data;
-    else failures.push(safeReadError(historyResult.value.response.status));
-  } else failures.push("无法连接目录策略服务");
+  const authorizationRevoked = (
+    activeResult.status === "fulfilled" && activeResult.value.response.status === 403
+  ) || (
+    historyResult.status === "fulfilled" && historyResult.value.response.status === 403
+  );
+  if (authorizationRevoked) {
+    activePolicy.value = null;
+    history.value = [];
+    failures.push(safeReadError(403));
+  } else {
+    if (activeResult.status === "fulfilled") {
+      const status = activeResult.value.response.status;
+      if (status === 200) activePolicy.value = activeResult.value.data ?? null;
+      else {
+        if (status !== 503) activePolicy.value = null;
+        failures.push(safeReadError(status));
+      }
+    } else failures.push("无法连接目录策略服务");
+    if (historyResult.status === "fulfilled") {
+      const status = historyResult.value.response.status;
+      if (status === 200 && historyResult.value.data) history.value = historyResult.value.data;
+      else {
+        if (status !== 503) history.value = [];
+        failures.push(safeReadError(status));
+      }
+    } else failures.push("无法连接目录策略服务");
+  }
   error.value = failures[0] ?? null;
   loaded.value = true;
   loading.value = false;
@@ -188,7 +234,6 @@ function exactIdentityKey(): string | null {
     const snapshot = client.identitySnapshot();
     if (!snapshot.identity) return null;
     return JSON.stringify([
-      snapshot.generation,
       snapshot.identity.tenantId,
       snapshot.identity.employeeId,
       snapshot.identity.mode,
@@ -200,10 +245,19 @@ function exactIdentityKey(): string | null {
 
 function restoreRetainedPolicyIntent(): void {
   const identityKey = exactIdentityKey();
-  const body = policyBody();
-  if (!identityKey || !body) return;
-  const request = retainedPolicyRequests.get(identityKey);
-  if (!request || !request.retryable || request.serializedBody !== JSON.stringify(body)) return;
+  if (!identityKey) return;
+  const request = retainedRequestFor(client, identityKey);
+  if (!request || !request.retryable) return;
+  restoringRetainedIntent = true;
+  try {
+    minimumDistinctAccounts.value = request.body.minimum_distinct_accounts;
+    minimumRecurringAccounts.value = request.body.minimum_recurring_accounts;
+    minimumDistinctCountries.value = request.body.minimum_distinct_countries;
+    minimumQuantityUnitAccounts.value = request.body.minimum_quantity_unit_accounts;
+    requireUnifiedUnit.value = request.body.require_unified_unit;
+  } finally {
+    restoringRetainedIntent = false;
+  }
   retainedIdentityKey = identityKey;
   retryable.value = true;
   actionNotice.value = "检测到同一身份尚未核清的原请求；重试将沿用原请求内容";
@@ -220,16 +274,16 @@ async function submitPolicy(): Promise<void> {
   const identityKey = exactIdentityKey();
   if (!operation?.valid() || !identityKey) return;
   const serializedBody = JSON.stringify(body);
-  let request = retainedPolicyRequests.get(identityKey);
+  let request = retainedRequestFor(client, identityKey);
   if (!request || request.serializedBody !== serializedBody) {
-    retainedPolicyRequests.delete(identityKey);
+    forgetRequest(client, identityKey);
     request = {
       body: { ...body },
       key: globalThis.crypto.randomUUID(),
       retryable: false,
       serializedBody,
     };
-    retainedPolicyRequests.set(identityKey, request);
+    retainRequest(client, identityKey, request);
   }
   retainedIdentityKey = identityKey;
   submitting.value = true;
@@ -245,7 +299,7 @@ async function submitPolicy(): Promise<void> {
     });
     if (!operation.valid() || exactIdentityKey() !== identityKey) return;
     if (result.response.status === 202 && result.data) {
-      retainedPolicyRequests.delete(identityKey);
+      forgetRequest(client, identityKey);
       retainedIdentityKey = null;
       actionNotice.value = "策略候选已提交，等待 Approval Center 决定";
       emit("submitted");
@@ -254,6 +308,10 @@ async function submitPolicy(): Promise<void> {
     }
     retryable.value = result.response.status === 503;
     request.retryable = retryable.value;
+    if (!request.retryable) {
+      forgetRequest(client, identityKey);
+      retainedIdentityKey = null;
+    }
     actionError.value = safeSubmitError(result.response.status);
   } catch {
     if (operation.valid() && exactIdentityKey() === identityKey) {

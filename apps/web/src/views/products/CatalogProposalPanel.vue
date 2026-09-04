@@ -128,11 +128,22 @@ async function loadAll(): Promise<void> {
     if (evaluationResult.value.response.status === 200 && evaluationResult.value.data) {
       evaluations.value = evaluationResult.value.data;
       emit("evaluationsLoaded", evaluationResult.value.data);
-    } else evaluationError.value = safeError("evaluation", evaluationResult.value.response.status);
+    } else {
+      const status = evaluationResult.value.response.status;
+      if (status !== 503) {
+        evaluations.value = [];
+        emit("evaluationsLoaded", []);
+      }
+      evaluationError.value = safeError("evaluation", status);
+    }
   } else evaluationError.value = "无法连接目录评估服务";
   if (proposalResult.status === "fulfilled") {
     if (proposalResult.value.response.status === 200 && proposalResult.value.data) proposals.value = proposalResult.value.data;
-    else proposalError.value = safeError("proposal", proposalResult.value.response.status);
+    else {
+      const status = proposalResult.value.response.status;
+      if (status !== 503) proposals.value = [];
+      proposalError.value = safeError("proposal", status);
+    }
   } else proposalError.value = "无法连接目录提案服务";
   evaluationLoaded.value = true;
   proposalLoaded.value = true;
