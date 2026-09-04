@@ -31,7 +31,7 @@ from infra.db.tables import (
     CatalogProposalPolicyVersionRow,
     OutboxEventRow,
 )
-from shared.errors import IdempotencyConflict, TenantIsolationViolation
+from shared.errors import IdempotencyConflict, TenantIsolationViolation, ValidationError
 from shared.events.catalog import CatalogProposalPolicyActivated
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -357,6 +357,324 @@ async def _active_policy(
         return await uow.policies.update(TenantId(values["tenant"]), active)
 
 
+async def _queued_proposal(
+    engine: AsyncEngine,
+    factory: async_sessionmaker,
+    values: dict[str, str],
+    marker: str,
+) -> tuple[CatalogProposalPolicyVersion, CatalogProductProposal]:
+    tenant = TenantId(values["tenant"])
+    policy = await _active_policy(engine, factory, values, marker)
+    evaluation = _evaluation(values, policy, marker[0])
+    proposal = CatalogProductProposal(
+        tenant_id=tenant,
+        proposal_id=CatalogProductProposalId(f"cpr_{marker}"),
+        evaluation_id=evaluation.evaluation_id,
+        cluster_id=evaluation.cluster_id,
+        policy_version_id=evaluation.policy_version_id,
+        facts_hash=evaluation.facts_hash,
+        owner_employee=EmployeeId(values["owner"]),
+        proposed_by_run=RunId(values["run"]),
+        approval_id=None,
+        approval_request_hash=None,
+        state=CatalogProductProposalState.AWAITING_APPROVAL_SUBMISSION,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+        await uow.evaluations.add(tenant, evaluation)
+        await uow.proposals.add(tenant, proposal)
+    approval_id = f"apr_{marker}"
+    await _approval(engine, values, approval_id, policy=policy, proposal=proposal)
+    pending = replace(
+        proposal,
+        approval_id=ApprovalId(approval_id),
+        approval_request_hash=HASH_C,
+        state=CatalogProductProposalState.PENDING_REVIEW,
+        updated_at=NOW + timedelta(seconds=2),
+    )
+    queued = replace(
+        pending,
+        state=CatalogProductProposalState.CULTIVATION_QUEUED,
+        updated_at=NOW + timedelta(seconds=3),
+    )
+    async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+        await uow.proposals.update(tenant, pending)
+    async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+        queued = await uow.proposals.update(tenant, queued)
+    return policy, queued
+
+
+async def _wait_for_for_update_block(
+    engine: AsyncEngine,
+    backend_pid: int,
+    table_name: str,
+    contender: asyncio.Task[object],
+) -> None:
+    async with asyncio.timeout(3):
+        while True:
+            if contender.done():
+                await contender
+                pytest.fail("contender 未在 SELECT FOR UPDATE 等待行锁")
+            async with engine.connect() as connection:
+                activity = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT pg_blocking_pids(pid) AS blockers,wait_event_type,query "
+                                "FROM pg_stat_activity WHERE pid=:pid"
+                            ),
+                            {"pid": backend_pid},
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            query = activity["query"]
+            if activity["blockers"]:
+                assert activity["wait_event_type"] == "Lock"
+                assert isinstance(query, str)
+                assert query.lstrip().upper().startswith("SELECT")
+                assert table_name in query
+                assert "FOR UPDATE" in query.upper()
+                return
+
+
+@pytest.mark.parametrize(
+    "evidence_refs",
+    [
+        "artifact-single",
+        ["artifact-list"],
+        (),
+        ("",),
+        (" artifact",),
+        ("artifact ",),
+        ("artifact\x00ref",),
+        ("x" * 201,),
+        ("artifact", 1),
+        (["nested-list"],),
+        ("artifact", "artifact"),
+    ],
+)
+def test_cultivation_case_rejects_non_tuple_or_unsafe_evidence_refs(
+    evidence_refs: object,
+) -> None:
+    with pytest.raises(ValidationError, match="evidence_refs|evidence_ref"):
+        CatalogCultivationCase(
+            tenant_id=TenantId("tn_evidence_model"),
+            cultivation_case_id=CatalogCultivationCaseId("ccc_evidence_model"),
+            proposal_id=CatalogProductProposalId("cpr_evidence_model"),
+            approval_id=ApprovalId("apr_evidence_model"),
+            cluster_id=NeedClusterId("ncl_evidence_model"),
+            policy_version_id=CatalogProposalPolicyVersionId("cpv_evidence_model"),
+            facts_hash=HASH_A,
+            evidence_refs=evidence_refs,
+            state="queued",
+            queued_at=NOW,
+        )
+
+
+async def test_cultivation_repository_revalidates_before_sql_and_round_trips_tuple(
+    catalog_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_engine, "evidence")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_engine, expire_on_commit=False)
+    try:
+        policy, proposal = await _queued_proposal(
+            catalog_engine, factory, values, "evidence"
+        )
+        cultivation_case = CatalogCultivationCase(
+            tenant_id=tenant,
+            cultivation_case_id=CatalogCultivationCaseId("ccc_evidence"),
+            proposal_id=proposal.proposal_id,
+            approval_id=proposal.approval_id,
+            cluster_id=proposal.cluster_id,
+            policy_version_id=policy.policy_version_id,
+            facts_hash=proposal.facts_hash,
+            evidence_refs=("artifact-a", "artifact-b"),
+            state="queued",
+            queued_at=NOW + timedelta(seconds=4),
+        )
+        malformed = replace(cultivation_case)
+        object.__setattr__(malformed, "evidence_refs", "artifact-split")
+        statements = 0
+
+        def counted(*_args: object) -> None:
+            nonlocal statements
+            statements += 1
+
+        event.listen(catalog_engine.sync_engine, "before_cursor_execute", counted)
+        try:
+            with pytest.raises(ValidationError, match="evidence_refs"):
+                async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                    await uow.cultivation_cases.add(tenant, malformed)
+        finally:
+            event.remove(catalog_engine.sync_engine, "before_cursor_execute", counted)
+        assert statements == 0
+
+        async with catalog_engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(CatalogCultivationCaseRow)
+                    .where(CatalogCultivationCaseRow.tenant_id == str(tenant))
+                )
+                == 0
+            )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            persisted = await uow.cultivation_cases.add(tenant, cultivation_case)
+            loaded = await uow.cultivation_cases.get(
+                tenant, cultivation_case.cultivation_case_id
+            )
+        assert persisted.evidence_refs == ("artifact-a", "artifact-b")
+        assert loaded == cultivation_case
+    finally:
+        await _cleanup(catalog_engine, values["tenant"])
+
+
+async def test_policy_same_row_lock_waits_then_contender_reads_latest_state(
+    catalog_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_engine, "policy_lock")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_engine, expire_on_commit=False)
+    contender: asyncio.Task[object] | None = None
+    try:
+        policy = _policy(values, "policy_lock")
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            await uow.policies.add(tenant, policy)
+        await _approval(catalog_engine, values, "apr_policy_lock", policy=policy)
+        active = replace(
+            policy,
+            approval_id=ApprovalId("apr_policy_lock"),
+            state=CatalogProposalPolicyState.ACTIVE,
+            activated_at=NOW + timedelta(seconds=1),
+        )
+        contender_pid: asyncio.Queue[int] = asyncio.Queue(maxsize=1)
+
+        async def supersede_after_lock() -> object:
+            async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                pid = await uow._session.scalar(text("SELECT pg_backend_pid()"))
+                assert isinstance(pid, int)
+                await contender_pid.put(pid)
+                current = await uow.policies.get_for_update(
+                    tenant, policy.policy_version_id
+                )
+                assert current is not None
+                assert current.state is CatalogProposalPolicyState.ACTIVE
+                superseded = replace(
+                    current,
+                    state=CatalogProposalPolicyState.SUPERSEDED,
+                    terminal_at=NOW + timedelta(seconds=2),
+                )
+                return await uow.policies.update(tenant, superseded)
+
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            await uow.policies.update(tenant, active)
+            contender = asyncio.create_task(supersede_after_lock())
+            pid = await asyncio.wait_for(contender_pid.get(), timeout=3)
+            await _wait_for_for_update_block(
+                catalog_engine,
+                pid,
+                "catalog_proposal_policy_versions",
+                contender,
+            )
+        result = await asyncio.wait_for(contender, timeout=3)
+        assert result.state is CatalogProposalPolicyState.SUPERSEDED
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            stored = await uow.policies.get(tenant, policy.policy_version_id)
+        assert stored == result
+    finally:
+        if contender is not None and not contender.done():
+            contender.cancel()
+            await asyncio.gather(contender, return_exceptions=True)
+        await _cleanup(catalog_engine, values["tenant"])
+
+
+async def test_proposal_same_row_lock_waits_then_contender_reads_latest_state(
+    catalog_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_engine, "proposal_lock")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_engine, expire_on_commit=False)
+    contender: asyncio.Task[object] | None = None
+    try:
+        policy = await _active_policy(catalog_engine, factory, values, "proposal_lock")
+        evaluation = _evaluation(values, policy, "d")
+        proposal = CatalogProductProposal(
+            tenant_id=tenant,
+            proposal_id=CatalogProductProposalId("cpr_proposal_lock"),
+            evaluation_id=evaluation.evaluation_id,
+            cluster_id=evaluation.cluster_id,
+            policy_version_id=evaluation.policy_version_id,
+            facts_hash=evaluation.facts_hash,
+            owner_employee=EmployeeId(values["owner"]),
+            proposed_by_run=RunId(values["run"]),
+            approval_id=None,
+            approval_request_hash=None,
+            state=CatalogProductProposalState.AWAITING_APPROVAL_SUBMISSION,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            await uow.evaluations.add(tenant, evaluation)
+            await uow.proposals.add(tenant, proposal)
+        await _approval(
+            catalog_engine,
+            values,
+            "apr_proposal_lock",
+            policy=policy,
+            proposal=proposal,
+        )
+        pending = replace(
+            proposal,
+            approval_id=ApprovalId("apr_proposal_lock"),
+            approval_request_hash=HASH_C,
+            state=CatalogProductProposalState.PENDING_REVIEW,
+            updated_at=NOW + timedelta(seconds=2),
+        )
+        contender_pid: asyncio.Queue[int] = asyncio.Queue(maxsize=1)
+
+        async def queue_after_lock() -> object:
+            async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                pid = await uow._session.scalar(text("SELECT pg_backend_pid()"))
+                assert isinstance(pid, int)
+                await contender_pid.put(pid)
+                current = await uow.proposals.get_for_update(
+                    tenant, proposal.proposal_id
+                )
+                assert current is not None
+                assert current.state is CatalogProductProposalState.PENDING_REVIEW
+                queued = replace(
+                    current,
+                    state=CatalogProductProposalState.CULTIVATION_QUEUED,
+                    updated_at=NOW + timedelta(seconds=3),
+                )
+                return await uow.proposals.update(tenant, queued)
+
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            await uow.proposals.update(tenant, pending)
+            contender = asyncio.create_task(queue_after_lock())
+            pid = await asyncio.wait_for(contender_pid.get(), timeout=3)
+            await _wait_for_for_update_block(
+                catalog_engine,
+                pid,
+                "catalog_product_proposals",
+                contender,
+            )
+        result = await asyncio.wait_for(contender, timeout=3)
+        assert result.state is CatalogProductProposalState.CULTIVATION_QUEUED
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            stored = await uow.proposals.get(tenant, proposal.proposal_id)
+        assert stored == result
+    finally:
+        if contender is not None and not contender.done():
+            contender.cancel()
+            await asyncio.gather(contender, return_exceptions=True)
+        await _cleanup(catalog_engine, values["tenant"])
+
+
 async def test_round_trip_preserves_full_and_blocked_json_and_uow_atomicity(
     catalog_engine: AsyncEngine,
 ) -> None:
@@ -602,6 +920,241 @@ async def test_stable_bounded_descending_and_reconciliation_pagination(
                 await uow.policies.list_versions(tenant, limit=201)
     finally:
         await _cleanup(catalog_engine, values["tenant"])
+
+
+async def test_every_catalog_stream_uses_complete_stable_composite_pagination(
+    catalog_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_engine, "all_pages")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_engine, expire_on_commit=False)
+    try:
+        active = await _active_policy(catalog_engine, factory, values, "page_active")
+        pending_policies = tuple(
+            _policy(values, f"page_{index}", at=NOW) for index in range(4)
+        )
+        evaluations = tuple(
+            _evaluation(values, active, f"{marker}_page") for marker in "abcd"
+        )
+        proposals = tuple(
+            CatalogProductProposal(
+                tenant_id=tenant,
+                proposal_id=CatalogProductProposalId(f"cpr_page_{marker}"),
+                evaluation_id=evaluation.evaluation_id,
+                cluster_id=evaluation.cluster_id,
+                policy_version_id=evaluation.policy_version_id,
+                facts_hash=evaluation.facts_hash,
+                owner_employee=EmployeeId(values["owner"]),
+                proposed_by_run=RunId(values["run"]),
+                approval_id=None,
+                approval_request_hash=None,
+                state=CatalogProductProposalState.AWAITING_APPROVAL_SUBMISSION,
+                created_at=NOW + timedelta(seconds=2),
+                updated_at=NOW + timedelta(seconds=2),
+            )
+            for marker, evaluation in zip("abcd", evaluations, strict=True)
+        )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            for policy in pending_policies:
+                await uow.policies.add(tenant, policy)
+            for evaluation, proposal in zip(evaluations, proposals, strict=True):
+                await uow.evaluations.add(tenant, evaluation)
+                await uow.proposals.add(tenant, proposal)
+
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            policy_1 = await uow.policies.list_versions(tenant, limit=2)
+            policy_2 = await uow.policies.list_versions(
+                tenant, limit=2, cursor=policy_1.next_cursor
+            )
+            policy_3 = await uow.policies.list_versions(
+                tenant, limit=2, cursor=policy_2.next_cursor
+            )
+            pending_1 = await uow.policies.list_pending_reconciliation(tenant, limit=2)
+            pending_2 = await uow.policies.list_pending_reconciliation(
+                tenant, limit=2, cursor=pending_1.next_cursor
+            )
+            evaluation_1 = await uow.evaluations.list_evaluations(tenant, limit=2)
+            evaluation_2 = await uow.evaluations.list_evaluations(
+                tenant, limit=2, cursor=evaluation_1.next_cursor
+            )
+            awaiting_1 = await uow.proposals.list_awaiting_reconciliation(
+                tenant, limit=2
+            )
+            awaiting_2 = await uow.proposals.list_awaiting_reconciliation(
+                tenant, limit=2, cursor=awaiting_1.next_cursor
+            )
+
+        assert policy_1.next_cursor is not None
+        assert policy_2.next_cursor is not None
+        assert policy_3.next_cursor is None
+        assert [
+            str(item.policy_version_id)
+            for item in (*policy_1.items, *policy_2.items, *policy_3.items)
+        ] == [
+            "cpv_page_active",
+            "cpv_page_3",
+            "cpv_page_2",
+            "cpv_page_1",
+            "cpv_page_0",
+        ]
+        assert pending_1.next_cursor is not None
+        assert pending_2.next_cursor is None
+        assert [
+            str(item.policy_version_id) for item in (*pending_1.items, *pending_2.items)
+        ] == ["cpv_page_0", "cpv_page_1", "cpv_page_2", "cpv_page_3"]
+        assert evaluation_1.next_cursor is not None
+        assert evaluation_2.next_cursor is None
+        assert [
+            str(item.evaluation_id)
+            for item in (*evaluation_1.items, *evaluation_2.items)
+        ] == ["cpe_d_page", "cpe_c_page", "cpe_b_page", "cpe_a_page"]
+        assert awaiting_1.next_cursor is not None
+        assert awaiting_2.next_cursor is None
+        assert [
+            str(item.proposal_id) for item in (*awaiting_1.items, *awaiting_2.items)
+        ] == ["cpr_page_a", "cpr_page_b", "cpr_page_c", "cpr_page_d"]
+
+        queued_proposals: list[CatalogProductProposal] = []
+        for marker, proposal in zip("abcd", proposals, strict=True):
+            approval_id = f"apr_page_{marker}"
+            await _approval(
+                catalog_engine,
+                values,
+                approval_id,
+                policy=active,
+                proposal=proposal,
+            )
+            pending = replace(
+                proposal,
+                approval_id=ApprovalId(approval_id),
+                approval_request_hash=HASH_C,
+                state=CatalogProductProposalState.PENDING_REVIEW,
+                updated_at=NOW + timedelta(seconds=3),
+            )
+            queued = replace(
+                pending,
+                state=CatalogProductProposalState.CULTIVATION_QUEUED,
+                updated_at=NOW + timedelta(seconds=4),
+            )
+            async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                await uow.proposals.update(tenant, pending)
+            async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                queued = await uow.proposals.update(tenant, queued)
+            queued_proposals.append(queued)
+
+        cultivation_cases = tuple(
+            CatalogCultivationCase(
+                tenant_id=tenant,
+                cultivation_case_id=CatalogCultivationCaseId(f"ccc_page_{marker}"),
+                proposal_id=proposal.proposal_id,
+                approval_id=proposal.approval_id,
+                cluster_id=proposal.cluster_id,
+                policy_version_id=proposal.policy_version_id,
+                facts_hash=proposal.facts_hash,
+                evidence_refs=(f"artifact-{marker}",),
+                state="queued",
+                queued_at=NOW + timedelta(seconds=5),
+            )
+            for marker, proposal in zip("abcd", queued_proposals, strict=True)
+        )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            for cultivation_case in cultivation_cases:
+                await uow.cultivation_cases.add(tenant, cultivation_case)
+            proposal_1 = await uow.proposals.list_proposals(tenant, limit=2)
+            proposal_2 = await uow.proposals.list_proposals(
+                tenant, limit=2, cursor=proposal_1.next_cursor
+            )
+            case_1 = await uow.cultivation_cases.list_cases(tenant, limit=2)
+            case_2 = await uow.cultivation_cases.list_cases(
+                tenant, limit=2, cursor=case_1.next_cursor
+            )
+
+        assert proposal_1.next_cursor is not None
+        assert proposal_2.next_cursor is None
+        assert [
+            str(item.proposal_id) for item in (*proposal_1.items, *proposal_2.items)
+        ] == ["cpr_page_d", "cpr_page_c", "cpr_page_b", "cpr_page_a"]
+        assert case_1.next_cursor is not None
+        assert case_2.next_cursor is None
+        assert [
+            str(item.cultivation_case_id) for item in (*case_1.items, *case_2.items)
+        ] == ["ccc_page_d", "ccc_page_c", "ccc_page_b", "ccc_page_a"]
+    finally:
+        await _cleanup(catalog_engine, values["tenant"])
+
+
+async def test_every_catalog_list_rejects_strict_limits_and_mismatched_cursors(
+    catalog_engine: AsyncEngine,
+) -> None:
+    tenant = TenantId("tn_catalog_list_guards")
+    other = TenantId("tn_catalog_list_other")
+    factory = async_sessionmaker(catalog_engine, expire_on_commit=False)
+    async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+        entrances = (
+            (
+                "policies",
+                lambda limit, cursor=None: uow.policies.list_versions(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+            (
+                "pending_policies",
+                lambda limit, cursor=None: uow.policies.list_pending_reconciliation(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+            (
+                "evaluations",
+                lambda limit, cursor=None: uow.evaluations.list_evaluations(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+            (
+                "proposals",
+                lambda limit, cursor=None: uow.proposals.list_proposals(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+            (
+                "awaiting_proposals",
+                lambda limit, cursor=None: uow.proposals.list_awaiting_reconciliation(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+            (
+                "cultivation_cases",
+                lambda limit, cursor=None: uow.cultivation_cases.list_cases(
+                    tenant, limit=limit, cursor=cursor
+                ),
+            ),
+        )
+        for stream, entrance in entrances:
+            for invalid_limit in (True, 0, 201):
+                with pytest.raises(ValueError, match="1..200"):
+                    await entrance(invalid_limit)
+            wrong_stream = "evaluations" if stream == "policies" else "policies"
+            with pytest.raises(ValueError, match="查询流"):
+                await entrance(
+                    1,
+                    CatalogPageCursor(
+                        tenant_id=tenant,
+                        stream=wrong_stream,
+                        position_at=NOW,
+                        entity_id="cursor_entity",
+                    ),
+                )
+            with pytest.raises(TenantIsolationViolation, match="不可跨租户"):
+                await entrance(
+                    1,
+                    CatalogPageCursor(
+                        tenant_id=other,
+                        stream=stream,
+                        position_at=NOW,
+                        entity_id="cursor_entity",
+                    ),
+                )
+        with pytest.raises(ValueError, match="1..200"):
+            await uow.cultivation_cases.list_cases(tenant, limit=-1)
 
 
 async def test_concurrent_evaluation_proposal_and_cultivation_return_one_winner(

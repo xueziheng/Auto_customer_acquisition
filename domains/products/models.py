@@ -242,9 +242,7 @@ class CatalogProposalEvaluation:
             return
         from domains.products.catalog_rules import evaluate_catalog_facts
 
-        expected_result = evaluate_catalog_facts(
-            reconstructed_policy, normal_facts
-        )
+        expected_result = evaluate_catalog_facts(reconstructed_policy, normal_facts)
         if persisted_result != expected_result:
             raise ValidationError("评估规则结果与事实快照不一致")
 
@@ -316,6 +314,21 @@ class CatalogCultivationCase:
             _catalog_identity(getattr(self, field_name), field_name, 40)
         _catalog_hash(self.facts_hash, "facts_hash")
         _catalog_utc(self.queued_at, "queued_at")
+        if type(self.evidence_refs) is not tuple or not self.evidence_refs:
+            raise ValidationError("evidence_refs 必须是非空 tuple")
+        for evidence_ref in self.evidence_refs:
+            if (
+                type(evidence_ref) is not str
+                or not evidence_ref
+                or evidence_ref != evidence_ref.strip()
+                or len(evidence_ref) > 200
+                or any(not character.isprintable() for character in evidence_ref)
+            ):
+                raise ValidationError(
+                    "evidence_ref 必须是非空、无首尾空白或控制字符且不超过 200 字符的字符串"
+                )
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValidationError("evidence_refs 不得重复")
         if self.state != "queued":
             raise ValidationError("培养 Case 状态必须为 queued")
 
