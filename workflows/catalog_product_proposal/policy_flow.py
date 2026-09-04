@@ -137,7 +137,7 @@ class CatalogPolicyApprovalDecidedHandler:
     async def handle(self, event: ApprovalDecided) -> None:
         approval_id = ApprovalId(str(event.approval_id))
         try:
-            fact = await self._approvals.read_catalog_fact(event.tenant_id, approval_id)
+            raw = await self._approvals.read_fact(event.tenant_id, approval_id)
         except CatalogApprovalContractError as error:
             if error.code == "catalog_storage_unavailable":
                 raise TransientError("目录策略审批事件事实暂不可用") from None
@@ -146,8 +146,20 @@ class CatalogPolicyApprovalDecidedHandler:
             raise TransientError("目录策略审批事件事实暂不可用") from None
         except Exception:  # noqa: BLE001 -- 事件投影不得泄露跨域异常文本
             raise TransientError("目录策略审批事件事实暂不可用") from None
-        if fact.approval_type != CATALOG_POLICY_WORKFLOW_TYPE:
+        if raw.approval_type != CATALOG_POLICY_WORKFLOW_TYPE:
             return
+        try:
+            fact = await self._approvals.read_catalog_fact(
+                event.tenant_id, approval_id
+            )
+        except CatalogApprovalContractError as error:
+            if error.code == "catalog_storage_unavailable":
+                raise TransientError("目录策略审批事件事实暂不可用") from None
+            raise ValidationError("目录策略审批事件事实无效") from None
+        except TransientError:
+            raise TransientError("目录策略审批事件事实暂不可用") from None
+        except Exception:  # noqa: BLE001 -- strict reader 异常同样固定脱敏
+            raise TransientError("目录策略审批事件事实暂不可用") from None
         match = _POLICY_REF.fullmatch(fact.change_set_ref)
         if (
             fact.tenant_id != event.tenant_id

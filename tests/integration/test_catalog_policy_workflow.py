@@ -15,7 +15,7 @@ from apps.scheduler_worker.notification_projection import (
 )
 from domains.approvals.catalog_contract import CatalogApprovalActorFact
 from domains.approvals.schemas import ApprovalReaderIdentity
-from domains.approvals.service import ApprovalState
+from domains.approvals.service import ApprovalState, ApprovalType, BlastRadius
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
 from domains.products.permissions import (
@@ -124,6 +124,33 @@ class _LoseResponseOnce:
         return result
 
 
+class _CountingProducts:
+    """保留真实 Products 服务，只记录 durable recovery 穿过 apply 边界。"""
+
+    def __init__(self, delegate: CatalogProposalServiceImpl) -> None:
+        self._delegate = delegate
+        self.apply_calls = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def apply_policy_decision(self, *args, **kwargs):
+        self.apply_calls += 1
+        return await self._delegate.apply_policy_decision(*args, **kwargs)
+
+
+class _RejectEngineUse:
+    def __init__(self) -> None:
+        self.deliveries: list[object] = []
+
+    async def find_active_run(self, *args, **kwargs):
+        raise AssertionError("非 Catalog 事件不得查询 Catalog workflow")
+
+    async def deliver_event(self, *args, **kwargs):
+        self.deliveries.append((args, kwargs))
+        raise AssertionError("非 Catalog 事件不得投递 Catalog workflow")
+
+
 def _content(accounts: int = 3) -> CatalogProposalPolicyContent:
     return CatalogProposalPolicyContent(
         minimum_distinct_accounts=accounts,
@@ -196,8 +223,11 @@ async def _start(
     snapshot = await products.get_policy_change_snapshot(
         tenant, policy_id, actor=system
     )
+    counted_products = _CountingProducts(products)
     handlers = dict(
-        build_catalog_policy_workflow_handlers(products, approvals, system, now=clock)
+        build_catalog_policy_workflow_handlers(
+            counted_products, approvals, system, now=clock
+        )
     )
     if lose_after is not None:
         handlers[lose_after] = _LoseResponseOnce(handlers[lose_after])
@@ -210,7 +240,16 @@ async def _start(
         policy_workflow_context(tenant, snapshot),
         catalog_policy_change_idempotency_key(tenant, policy_id),
     )
-    return tenant, proposer, boss, products, approvals, workflow, run_id, policy_id
+    return (
+        tenant,
+        proposer,
+        boss,
+        counted_products,
+        approvals,
+        workflow,
+        run_id,
+        policy_id,
+    )
 
 
 async def _pending(approvals: ApprovalServiceImpl, tenant: TenantId, boss: EmployeeId):
@@ -315,7 +354,7 @@ async def test_response_loss_after_each_committed_boundary_converges_without_dup
 ) -> None:
     """提交成功但响应丢失时必须读 canonical 状态修复，不能重复业务效果。"""
     clock = _Clock()
-    tenant, _, boss, _, approvals, workflow, _, policy_id = await _start(
+    tenant, _, boss, products, approvals, workflow, _, policy_id = await _start(
         unit_engine, clock=clock, lose_after=lost_handler
     )
     await workflow.poll_due(tenant, 10)
@@ -357,6 +396,46 @@ async def test_response_loss_after_each_committed_boundary_converges_without_dup
         )
     fact = await approvals.read_catalog_fact(tenant, ApprovalId(pending.approval_id))
     assert fact.state is ApprovalState.APPLIED
+    assert products.apply_calls == {
+        "catalog_product_policy.submit": 2,
+        "catalog_product_policy.apply": 3,
+        "catalog_product_policy.mark_applied": 3,
+    }[lost_handler]
+
+
+@pytest.mark.asyncio
+async def test_real_legacy_approval_event_is_ignored_before_strict_catalog_read(
+    unit_engine: AsyncEngine,
+) -> None:
+    """真实中央 legacy 包不能被 Catalog strict reader 误判为坏事件。"""
+    clock = _Clock()
+    tenant, _, boss, _, _, approvals, _ = await _services(unit_engine, clock=clock)
+    approval_id = await approvals.submit(
+        tenant,
+        ApprovalType.PLAYBOOK_CHANGE,
+        "Legacy playbook approval",
+        {"version": "legacy-v1"},
+        "Controlled non-Catalog package",
+        BlastRadius(
+            affected_entities=["legacy playbook"],
+            if_approved="Apply through its own workflow.",
+            if_rejected="Keep the current playbook.",
+            reversible=True,
+        ),
+        proposed_by_employee=None,
+        owner_employee=None,
+    )
+    await approvals.decide(tenant, approval_id, True, boss)
+    fact = await approvals.read_fact(tenant, approval_id)
+    assert fact.approval_type == "playbook_change"
+    assert fact.contract_namespace is None
+    engine = _RejectEngineUse()
+
+    await CatalogPolicyApprovalDecidedHandler(engine, approvals).handle(
+        ApprovalDecided(tenant, clock(), None, str(approval_id), "approve", boss)
+    )
+
+    assert engine.deliveries == []
 
 
 @pytest.mark.asyncio

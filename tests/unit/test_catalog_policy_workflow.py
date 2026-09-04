@@ -21,6 +21,7 @@ from domains.products.schemas import (
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
 )
+from domains.products.service import CatalogPolicyStateTransitionError
 from shared.errors import TransientError, ValidationError
 from shared.events.catalog import ApprovalDecided
 from shared.schemas.identifiers import ApprovalId, EmployeeId, RunId, TenantId
@@ -235,6 +236,10 @@ class _Approvals:
         assert self.fact is not None
         return self.fact
 
+    async def read_fact(self, tenant_id, approval_id):
+        assert self.fact is not None
+        return self.fact
+
     async def expire_overdue(self, tenant_id):
         self.expire_count += 1
         assert self.command is not None
@@ -373,6 +378,25 @@ async def test_submit_creates_or_recovers_exact_package_then_binds_products() ->
     }
 
 
+@pytest.mark.asyncio
+async def test_submit_timeout_rounds_up_and_never_precedes_approval_expiry() -> None:
+    """微秒级提交延迟不得把 durable wait deadline 向下截短。"""
+    products = _Products()
+    approvals = _Approvals()
+    handlers = build_catalog_policy_workflow_handlers(
+        products,
+        approvals,
+        _system(),
+        now=lambda: NOW + timedelta(microseconds=1),
+    )
+
+    result = await handlers["catalog_product_policy.submit"].execute(
+        _run("submit_approval")
+    )
+
+    assert result[2]["approval_timeout_seconds"] == 604800
+
+
 def test_reusable_approval_validator_rejects_any_immutable_mismatch() -> None:
     """canonical 包任一事实改变都不能被同 ID 掩盖。"""
     command = build_policy_approval_command(
@@ -505,6 +529,39 @@ async def test_rejection_and_expiry_update_products_without_marking_applied() ->
 
 
 @pytest.mark.asyncio
+async def test_expire_step_retries_when_scheduler_arrives_before_canonical_expiry() -> (
+    None
+):
+    """scheduler 提前触发且审批仍 pending 时不能把 workflow 永久失败。"""
+    products = _Products()
+    approvals = _Approvals()
+    command = build_policy_approval_command(
+        TENANT, _snapshot(), NOW + timedelta(days=7)
+    )
+    approvals.command = command
+    approvals.fact = _fact(command, ApprovalState.PENDING)
+
+    async def keep_pending(tenant_id):
+        del tenant_id
+        approvals.expire_count += 1
+        return 0
+
+    approvals.expire_overdue = keep_pending  # type: ignore[method-assign]
+    handlers = build_catalog_policy_workflow_handlers(
+        products, approvals, _system(), now=lambda: NOW
+    )
+
+    with pytest.raises(TransientError) as caught:
+        await handlers["catalog_product_policy.expire"].execute(
+            _run("expire_policy")
+        )
+
+    assert str(caught.value) == "目录策略审批过期状态暂不可用"
+    assert approvals.expire_count == 1
+    assert products.decisions == []
+
+
+@pytest.mark.asyncio
 async def test_stale_or_known_business_conflict_uses_one_safe_failure_code() -> None:
     """确定性失败不得无限重试或把底层异常文本持久化。"""
     try:
@@ -571,6 +628,81 @@ async def test_transient_and_unknown_application_outcomes_remain_retryable() -> 
             await handlers["catalog_product_policy.apply"].execute(_run("apply_policy"))
         assert approvals.failed == []
         assert "private dsn" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_unknown_products_terminal_state_is_fixed_retryable_without_failure_receipt() -> (
+    None
+):
+    """合法 Products view 的非预期状态仍是未知提交结果，不能永久失败。"""
+    products = _Products()
+    approvals = _Approvals()
+    command = build_policy_approval_command(
+        TENANT, _snapshot(), NOW + timedelta(days=7)
+    )
+    approvals.command = command
+    approvals.fact = _fact(command, ApprovalState.APPROVED)
+    products.result_state = "pending_approval"
+    handlers = build_catalog_policy_workflow_handlers(
+        products, approvals, _system(), now=lambda: NOW
+    )
+
+    with pytest.raises(TransientError) as caught:
+        await handlers["catalog_product_policy.apply"].execute(_run("apply_policy"))
+
+    assert str(caught.value) == "目录策略应用结果暂不可用"
+    assert approvals.failed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_state", "error"),
+    [
+        ("active", None),
+        ("stale", None),
+        pytest.param(
+            "active",
+            RuntimeError("private product detail"),
+            id="unknown-product-error",
+        ),
+        pytest.param(
+            "active",
+            CatalogPolicyStateTransitionError("private exact conflict detail"),
+            id="exact-product-conflict",
+        ),
+    ],
+)
+async def test_applied_receipt_still_converges_products_and_never_rewrites_failure(
+    result_state: str,
+    error: BaseException | None,
+) -> None:
+    """Approval receipt 不能反向证明 Products 已提交，也不能再改写为 apply_failed。"""
+    products = _Products()
+    approvals = _Approvals()
+    command = build_policy_approval_command(
+        TENANT, _snapshot(), NOW + timedelta(days=7)
+    )
+    approvals.command = command
+    approvals.fact = _fact(command, ApprovalState.APPLIED)
+    products.result_state = result_state
+    products.error = error
+    handlers = build_catalog_policy_workflow_handlers(
+        products, approvals, _system(), now=lambda: NOW
+    )
+
+    if result_state == "active" and error is None:
+        assert await handlers["catalog_product_policy.mark_applied"].execute(
+            _run("mark_applied")
+        ) == ("complete", None, {"application_state": "applied"})
+        assert len(products.decisions) == 1
+    else:
+        with pytest.raises(TransientError) as caught:
+            await handlers["catalog_product_policy.mark_applied"].execute(
+                _run("mark_applied")
+            )
+        assert str(caught.value) == "目录策略应用收据与 Products 状态暂不一致"
+    assert approvals.applied == []
+    assert approvals.failed == []
 
 
 @pytest.mark.asyncio

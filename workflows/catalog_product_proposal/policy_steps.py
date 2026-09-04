@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -217,8 +218,6 @@ async def _apply(
     fact: CatalogApprovalFact,
 ) -> tuple[str, str | None, dict[str, Any]]:
     approval_id = _approval_id(run)
-    if fact.state is ApprovalState.APPLIED:
-        return ("complete", None, {"application_state": "applied"})
     if fact.state is ApprovalState.APPLY_FAILED:
         if fact.application_error_code != _APPLY_FAILED_CODE:
             raise ValidationError("目录策略审批应用失败码无效")
@@ -241,16 +240,32 @@ async def _apply(
         CatalogPolicyDecisionInvalidError,
         CatalogPolicyStateTransitionError,
     ):
+        if fact.state is ApprovalState.APPLIED:
+            raise TransientError(
+                "目录策略应用收据与 Products 状态暂不一致"
+            ) from None
         return await _mark_failed(run, approvals, approval_id)
     except TransientError:
+        if fact.state is ApprovalState.APPLIED:
+            raise TransientError(
+                "目录策略应用收据与 Products 状态暂不一致"
+            ) from None
         raise TransientError("目录策略应用暂不可用") from None
     except Exception:  # noqa: BLE001 -- 未知提交结果必须重试且不得持久化原文
+        if fact.state is ApprovalState.APPLIED:
+            raise TransientError(
+                "目录策略应用收据与 Products 状态暂不一致"
+            ) from None
         raise TransientError("目录策略应用暂不可用") from None
 
     if decision.state == "approved":
         if result.state == "stale":
+            if fact.state is ApprovalState.APPLIED:
+                raise TransientError("目录策略应用收据与 Products 状态暂不一致")
             return await _mark_failed(run, approvals, approval_id)
         if result.state in {"active", "superseded"}:
+            if fact.state is ApprovalState.APPLIED:
+                return ("complete", None, {"application_state": "applied"})
             return (
                 "advance",
                 "mark_applied",
@@ -258,7 +273,9 @@ async def _apply(
             )
     elif result.state == decision.state:
         return ("complete", None, {"application_state": result.state})
-    raise ValidationError("目录策略应用结果与审批决定不匹配")
+    if fact.state is ApprovalState.APPLIED:
+        raise TransientError("目录策略应用收据与 Products 状态暂不一致")
+    raise TransientError("目录策略应用结果暂不可用")
 
 
 class AssemblePackageStep:
@@ -334,7 +351,7 @@ class SubmitApprovalStep:
             or bound.approval_id != approval_id
         ):
             raise ValidationError("目录策略审批绑定结果无效")
-        remaining = int(
+        remaining = math.ceil(
             (expires_at_limit - self._now().astimezone(UTC)).total_seconds()
         )
         if remaining <= 0:
@@ -426,6 +443,8 @@ class ExpirePolicyStep:
             subject="目录策略审批过期处理",
         )
         fact, _ = await _approval(run, self._products, self._approvals, self._actor)
+        if fact.state is ApprovalState.PENDING:
+            raise TransientError("目录策略审批过期状态暂不可用")
         result = await _apply(run, self._products, self._approvals, self._actor, fact)
         if result[0] == "advance" and result[1] == "mark_applied":
             return await _mark_applied_receipt(run, self._approvals, fact)
@@ -454,8 +473,6 @@ class MarkAppliedStep:
 
     async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
         fact, _ = await _approval(run, self._products, self._approvals, self._actor)
-        if fact.state is ApprovalState.APPLIED:
-            return ("complete", None, {"application_state": "applied"})
         result = await _apply(run, self._products, self._approvals, self._actor, fact)
         if result[0] != "advance" or result[1] != "mark_applied":
             return result
