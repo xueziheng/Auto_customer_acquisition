@@ -27,6 +27,18 @@ class ApprovalRepository(Protocol):
         """读取新namespace跨状态唯一包。"""
         ...
 
+    async def lock_catalog_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> None:
+        """Catalog namespace 的 tenant+change_set 事务锁，不复用报价锁名。"""
+        ...
+
+    async def find_catalog_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalPackage | None:
+        """跨状态读取两个明确 Catalog namespace 的唯一 canonical 包。"""
+        ...
+
     async def list_quote_pending_candidates(
         self,
         tenant_id: TenantId,

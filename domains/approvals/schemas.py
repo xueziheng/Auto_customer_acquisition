@@ -41,7 +41,9 @@ class ApprovalFactView(QuoteDTO):
     expires_at: QuoteTime
     expires_at_limit: QuoteTime | None
     request_hash: FactHash | None
-    contract_namespace: Literal["quote-approval-v1"] | None
+    contract_namespace: Literal[
+        "quote-approval-v1", "catalog-policy-v1", "catalog-cultivation-v1"
+    ] | None
     decided_by_employee: EmployeeId | None
     decided_at: QuoteTime | None
     decision_note: str | None

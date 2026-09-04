@@ -256,6 +256,32 @@ class ApprovalRepositoryImpl(_TenantBound, ApprovalRepository):
         ).scalar_one_or_none()
         return _row_to_package(row) if row is not None else None
 
+    async def lock_catalog_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> None:
+        self._require_tenant(tenant_id, "approval_catalog_lock")
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+            {"key": f"approval-catalog-submit-v1:{tenant_id}:{change_set_ref}"},
+        )
+
+    async def find_catalog_by_change_set(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> ApprovalPackage | None:
+        self._require_tenant(tenant_id, "approval_catalog_find")
+        row = (
+            await self._session.execute(
+                select(ApprovalPackageRow).where(
+                    ApprovalPackageRow.tenant_id == str(self._tenant_id),
+                    ApprovalPackageRow.change_set_ref == change_set_ref,
+                    ApprovalPackageRow.contract_namespace.in_(
+                        ("catalog-policy-v1", "catalog-cultivation-v1")
+                    ),
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_package(row) if row is not None else None
+
     async def list_quote_pending_candidates(
         self,
         tenant_id: TenantId,

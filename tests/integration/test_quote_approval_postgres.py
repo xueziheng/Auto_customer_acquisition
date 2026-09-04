@@ -1970,6 +1970,7 @@ async def test_quote_submit_concurrency_original_limit_and_immutable_decision(
             == 1
         )
     before = await service.read_fact(payload.tenant_id, approval_id)
+    assert before.contract_namespace == "quote-approval-v1"
     assert before.expires_at_limit == payload.customer.valid_until
     assert before.expires_at == min(
         before.created_at + timedelta(days=2), before.expires_at_limit

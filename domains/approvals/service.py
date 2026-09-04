@@ -6,6 +6,11 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
+from domains.approvals.catalog_contract import (
+    CatalogApprovalCommand,
+    CatalogApprovalFact,
+    CatalogApprovalFactReader,
+)
 from domains.approvals.models import ApprovalState, ApprovalType, BlastRadius
 from domains.approvals.schemas import (
     ApprovalAccessResult,
@@ -64,6 +69,22 @@ class ApprovalService(Protocol):
         self, tenant_id: TenantId, change_set_ref: str
     ) -> ApprovalFactView | None:
         """受信workflow按精确新版引用恢复原包；校验原请求，不作HTTP出口。"""
+        ...
+
+    async def submit_catalog(self, command: CatalogApprovalCommand) -> ApprovalId:
+        """提交严格 Catalog 审批；同引用仅完整原请求可跨状态复用。"""
+        ...
+
+    async def read_catalog_fact(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> CatalogApprovalFact:
+        """受信 workflow 读取严格 Catalog 事实，不注册 HTTP。"""
+        ...
+
+    async def find_catalog_fact(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> CatalogApprovalFact | None:
+        """按精确 Catalog 引用恢复 canonical 包；底层错误固定脱敏。"""
         ...
 
     async def get_for_reader(
@@ -184,6 +205,7 @@ __all__ = (
     "ApprovalState",
     "ApprovalType",
     "BlastRadius",
+    "CatalogApprovalFactReader",
     "QuoteApprovalAccess",
     "requires_approval",
 )
