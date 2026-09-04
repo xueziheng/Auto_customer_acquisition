@@ -287,6 +287,21 @@ class CatalogClusterFactsInput(_CatalogFrozenModel):
         return self
 
 
+class CatalogBlockedFactsInput(_CatalogFrozenModel):
+    """损坏事实的最小持久化信封；只保存可信定位符与内容指纹。"""
+
+    tenant_id: TenantId
+    cluster_id: NeedClusterId
+    facts_hash: str
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> Self:
+        _bounded_identity(self.tenant_id, "tenant_id", 40)
+        _bounded_identity(self.cluster_id, "cluster_id", 40)
+        _lower_hash(self.facts_hash, "facts_hash")
+        return self
+
+
 class CatalogProposalRuleResult(_CatalogFrozenModel):
     """单条确定性规则结果；只允许固定代码，不容纳模型解释或概率。"""
 
@@ -578,7 +593,7 @@ class CatalogProposalEvaluationView(_CatalogFrozenModel):
     cluster_id: NeedClusterId
     policy_version_id: CatalogProposalPolicyVersionId
     facts_hash: str
-    facts: CatalogClusterFactsInput
+    facts: CatalogClusterFactsInput | CatalogBlockedFactsInput
     rule_results: tuple[CatalogProposalRuleResult, ...]
     overall_passed: bool
     blocked_reason: Literal["catalog_facts_invalid"] | None
@@ -590,6 +605,13 @@ class CatalogProposalEvaluationView(_CatalogFrozenModel):
         _lower_hash(self.facts_hash, "facts_hash")
         if self.facts_hash != self.facts.facts_hash:
             raise ValueError("评估 facts_hash 与事实快照不一致")
+        if self.cluster_id != self.facts.cluster_id:
+            raise ValueError("评估 cluster_id 与事实快照不一致")
+        if self.blocked_reason is None:
+            if type(self.facts) is not CatalogClusterFactsInput:
+                raise ValueError("normal 评估视图必须携带完整事实")
+        elif type(self.facts) is not CatalogBlockedFactsInput:
+            raise ValueError("blocked 评估视图必须携带最小事实信封")
         CatalogProposalEvaluationResult(
             rule_results=self.rule_results,
             overall_passed=self.overall_passed,
@@ -768,6 +790,7 @@ __all__ = (
     "CandidateIndicativePriceRef",
     "CandidateProductCreate",
     "CatalogApprovalDecisionInput",
+    "CatalogBlockedFactsInput",
     "CatalogClusterFactsInput",
     "CatalogCultivationCaseView",
     "CatalogEvidenceSummaryInput",

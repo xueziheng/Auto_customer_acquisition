@@ -13,6 +13,7 @@ from domains.products.catalog_rules import evaluate_catalog_facts
 from domains.products.schemas import (
     CatalogClusterFactsInput,
     CatalogProposalEvaluationResult,
+    CatalogProposalEvaluationView,
     CatalogProposalPolicyContent,
     CatalogProposalRuleResult,
 )
@@ -29,6 +30,15 @@ from shared.schemas.identifiers import (
 
 NOW = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
 HASH_A = "a" * 64
+
+
+def _blocked_facts_type() -> Any:
+    try:
+        return importlib.import_module(
+            "domains.products.schemas"
+        ).CatalogBlockedFactsInput
+    except AttributeError as exc:
+        pytest.fail(f"RED：CatalogBlockedFactsInput 尚未实现（{exc}）")
 
 
 def test_rule_result_rejects_free_form_explanation() -> None:
@@ -274,6 +284,29 @@ def _facts(**changes: object) -> CatalogClusterFactsInput:
     }
     payload.update(changes)
     return CatalogClusterFactsInput.model_validate(payload)
+
+
+def test_blocked_facts_envelope_is_strict_minimal_locator() -> None:
+    """blocked persistence 只能保留可信 locator/hash，不能夹带损坏业务值。"""
+
+    blocked_facts_type = _blocked_facts_type()
+    payload: dict[str, object] = {
+        "tenant_id": TenantId("tn_catalog"),
+        "cluster_id": NeedClusterId("ncl_catalog"),
+        "facts_hash": HASH_A,
+    }
+    envelope = blocked_facts_type.model_validate(payload)
+
+    assert envelope.model_dump(mode="python") == payload
+    for changes in (
+        {"tenant_id": TenantId("")},
+        {"cluster_id": NeedClusterId(" ncl_catalog")},
+        {"facts_hash": "A" * 64},
+        {"facts_hash": "a" * 63},
+        {"member_count": 3},
+    ):
+        with pytest.raises(PydanticValidationError):
+            blocked_facts_type.model_validate({**payload, **changes})
 
 
 def test_controlled_policy_passes_with_non_required_unknown_facts() -> None:
@@ -643,3 +676,111 @@ def test_persisted_evaluation_binds_rules_exactly_to_facts() -> None:
     ):
         with pytest.raises(ValidationError):
             evaluation_type(**{**payload, **changes})
+
+
+def test_persisted_blocked_evaluation_uses_only_minimal_facts_envelope() -> None:
+    """合法 blocked 记录应可持久化，但不得要求或保留损坏业务字段。"""
+
+    facts = _facts()
+    policy = _policy(minimum_recurring_accounts=2)
+    damaged = CatalogClusterFactsInput.model_construct(
+        **{**facts.model_dump(mode="python"), "member_count": 999}
+    )
+    blocked_result = evaluate_catalog_facts(policy, damaged)
+    blocked_facts_type = _blocked_facts_type()
+    envelope = blocked_facts_type(
+        tenant_id=facts.tenant_id,
+        cluster_id=facts.cluster_id,
+        facts_hash=facts.facts_hash,
+    )
+    evaluation_type = cast(
+        Any,
+        importlib.import_module(
+            "domains.products.models"
+        ).CatalogProposalEvaluation,
+    )
+    payload: dict[str, object] = {
+        "tenant_id": facts.tenant_id,
+        "evaluation_id": CatalogProposalEvaluationId("cpe_catalog_blocked"),
+        "cluster_id": facts.cluster_id,
+        "policy_version_id": CatalogProposalPolicyVersionId("cpv_catalog"),
+        "facts_hash": facts.facts_hash,
+        "facts": envelope,
+        "rule_results": blocked_result.rule_results,
+        "overall_passed": blocked_result.overall_passed,
+        "blocked_reason": blocked_result.blocked_reason,
+        "proposed_by_run": RunId("run_catalog"),
+        "created_at": NOW,
+    }
+
+    persisted = evaluation_type(**payload)
+
+    assert persisted.facts == envelope
+    assert set(persisted.facts.model_dump(mode="python")) == {
+        "tenant_id",
+        "cluster_id",
+        "facts_hash",
+    }
+    normal_result = evaluate_catalog_facts(policy, facts)
+    for changes in (
+        {
+            "rule_results": normal_result.rule_results,
+            "overall_passed": normal_result.overall_passed,
+            "blocked_reason": normal_result.blocked_reason,
+        },
+        {"tenant_id": TenantId("tn_other")},
+        {"cluster_id": NeedClusterId("ncl_other")},
+        {"facts_hash": "b" * 64},
+    ):
+        with pytest.raises(ValidationError):
+            evaluation_type(**{**payload, **changes})
+
+
+def test_evaluation_view_preserves_blocked_facts_type_safety() -> None:
+    """安全视图不得把 blocked envelope 伪装成可读取的完整事实。"""
+
+    facts = _facts()
+    damaged = CatalogClusterFactsInput.model_construct(
+        **{**facts.model_dump(mode="python"), "member_count": 999}
+    )
+    blocked_result = evaluate_catalog_facts(_policy(), damaged)
+    normal_result = evaluate_catalog_facts(_policy(), facts)
+    blocked_facts_type = _blocked_facts_type()
+    envelope = blocked_facts_type(
+        tenant_id=facts.tenant_id,
+        cluster_id=facts.cluster_id,
+        facts_hash=facts.facts_hash,
+    )
+    payload: dict[str, object] = {
+        "evaluation_id": CatalogProposalEvaluationId("cpe_catalog_view"),
+        "cluster_id": facts.cluster_id,
+        "policy_version_id": CatalogProposalPolicyVersionId("cpv_catalog"),
+        "facts_hash": facts.facts_hash,
+        "facts": envelope,
+        "rule_results": blocked_result.rule_results,
+        "overall_passed": blocked_result.overall_passed,
+        "blocked_reason": blocked_result.blocked_reason,
+        "proposed_by_run": RunId("run_catalog"),
+        "created_at": NOW,
+    }
+
+    view = CatalogProposalEvaluationView.model_validate(payload)
+
+    assert type(view.facts) is blocked_facts_type
+    for changes in (
+        {
+            "rule_results": normal_result.rule_results,
+            "overall_passed": normal_result.overall_passed,
+            "blocked_reason": normal_result.blocked_reason,
+        },
+        {
+            "facts": facts,
+            "rule_results": blocked_result.rule_results,
+            "overall_passed": blocked_result.overall_passed,
+            "blocked_reason": blocked_result.blocked_reason,
+        },
+    ):
+        with pytest.raises(PydanticValidationError):
+            CatalogProposalEvaluationView.model_validate(
+                {**payload, **changes}
+            )

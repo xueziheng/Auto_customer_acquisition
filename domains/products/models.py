@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import ValidationError as PydanticValidationError
 
 from domains.products.schemas import (
+    CatalogBlockedFactsInput,
     CatalogClusterFactsInput,
     CatalogProposalEvaluationResult,
     CatalogProposalPolicyContent,
@@ -165,7 +166,7 @@ class CatalogProposalEvaluation:
     cluster_id: NeedClusterId
     policy_version_id: CatalogProposalPolicyVersionId
     facts_hash: str
-    facts: CatalogClusterFactsInput
+    facts: CatalogClusterFactsInput | CatalogBlockedFactsInput
     rule_results: tuple[CatalogProposalRuleResult, ...]
     overall_passed: bool
     blocked_reason: Literal["catalog_facts_invalid"] | None
@@ -183,18 +184,6 @@ class CatalogProposalEvaluation:
             _catalog_identity(getattr(self, field_name), field_name, 40)
         _catalog_hash(self.facts_hash, "facts_hash")
         _catalog_utc(self.created_at, "created_at")
-        try:
-            validated_facts = CatalogClusterFactsInput.model_validate(
-                self.facts.model_dump(mode="python")
-            )
-        except (AttributeError, PydanticValidationError, TypeError, ValueError):
-            raise ValidationError("评估 facts 快照无效") from None
-        if self.facts_hash != validated_facts.facts_hash:
-            raise ValidationError("评估 facts_hash 与事实快照不一致")
-        if self.tenant_id != validated_facts.tenant_id:
-            raise ValidationError("评估 tenant_id 与事实快照不一致")
-        if self.cluster_id != validated_facts.cluster_id:
-            raise ValidationError("评估 cluster_id 与事实快照不一致")
         try:
             persisted_result = CatalogProposalEvaluationResult.model_validate(
                 {
@@ -224,10 +213,37 @@ class CatalogProposalEvaluation:
             )
         except (PydanticValidationError, TypeError, ValueError):
             raise ValidationError("评估规则结果无效") from None
+        normal_facts: CatalogClusterFactsInput | None
+        validated_locator: CatalogClusterFactsInput | CatalogBlockedFactsInput
+        try:
+            if persisted_result.blocked_reason is None:
+                if type(self.facts) is not CatalogClusterFactsInput:
+                    raise ValueError("normal 评估必须携带完整事实")
+                normal_facts = CatalogClusterFactsInput.model_validate(
+                    self.facts.model_dump(mode="python")
+                )
+                validated_locator = normal_facts
+            else:
+                if type(self.facts) is not CatalogBlockedFactsInput:
+                    raise ValueError("blocked 评估必须携带最小事实信封")
+                normal_facts = None
+                validated_locator = CatalogBlockedFactsInput.model_validate(
+                    self.facts.model_dump(mode="python")
+                )
+        except (AttributeError, PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("评估 facts 快照无效") from None
+        if self.facts_hash != validated_locator.facts_hash:
+            raise ValidationError("评估 facts_hash 与事实快照不一致")
+        if self.tenant_id != validated_locator.tenant_id:
+            raise ValidationError("评估 tenant_id 与事实快照不一致")
+        if self.cluster_id != validated_locator.cluster_id:
+            raise ValidationError("评估 cluster_id 与事实快照不一致")
+        if normal_facts is None:
+            return
         from domains.products.catalog_rules import evaluate_catalog_facts
 
         expected_result = evaluate_catalog_facts(
-            reconstructed_policy, validated_facts
+            reconstructed_policy, normal_facts
         )
         if persisted_result != expected_result:
             raise ValidationError("评估规则结果与事实快照不一致")
