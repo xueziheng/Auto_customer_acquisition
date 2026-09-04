@@ -39,6 +39,9 @@ from domains.demand.schemas import (
     CatalogClusterIdPage as CatalogClusterIdPage,  # noqa: PLC0414
 )
 from domains.demand.schemas import (
+    CatalogClusterReconciliationItem as CatalogClusterReconciliationItem,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
     CatalogEvidenceSummary as CatalogEvidenceSummary,  # noqa: PLC0414
 )
 from domains.demand.schemas import (

@@ -102,8 +102,11 @@ Sourcing Admission 之后、workflow poll 之前。进入扫描前和返回后�
 
 三流每轮依次处理：`pending_approval` 策略恢复、
 `awaiting_approval_submission` 提案恢复、存在活动策略时的真实需求簇扫描。
-游标只保存 tenant、`created_at` 和稳定实体 ID，按升序 keyset 有界翻页；只有读取和
-整页处理确定成功才推进，末页耗尽后才归零。不得用首页重扫饿死历史行，不得在游标存业务正文。
+游标 checkpoint 必须持久保存 tenant、固定 stream、`created_at`、稳定实体 ID 和 CAS
+version，按升序 keyset 有界翻页；进程或 driver 每轮重建仍从持久位置继续。只有读取和
+整页处理确定成功才以 version+旧位置 CAS 推进，末页耗尽写入 null 位置（不删行）后才归零。
+checkpoint 是恢复进度而不是锁或 leader election；生产仍必须持有同一 singleton scheduler
+专用锁。不得用首页重扫饿死历史行，不得在 checkpoint 存业务正文。
 
 评估必须先用 canonical context 和确定幂等键创建 durable
 `catalog_cluster_evaluation` Run，不得由 scheduler 直接调用 Products 评估。运行时只通过

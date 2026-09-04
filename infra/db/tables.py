@@ -2346,6 +2346,40 @@ class CatalogCultivationCaseRow(Base):
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class CatalogReconciliationCheckpointRow(Base):
+    """scheduler 三流稳定扫描位置；仅含 locator metadata 与 CAS 版本。"""
+
+    __tablename__ = "catalog_reconciliation_checkpoints"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "stream", name="pk_catalog_reconciliation_checkpoints"
+        ),
+        CheckConstraint(
+            "btrim(tenant_id)<>'' AND stream IN "
+            "('pending_policies','awaiting_proposals','catalog_clusters')",
+            name="ck_catalog_reconciliation_checkpoint_scope",
+        ),
+        CheckConstraint(
+            "version>=1 AND ((position_at IS NULL AND entity_id IS NULL) OR "
+            "(position_at IS NOT NULL AND entity_id IS NOT NULL))",
+            name="ck_catalog_reconciliation_checkpoint_position",
+        ),
+        CheckConstraint(
+            "entity_id IS NULL OR "
+            "(stream='pending_policies' AND entity_id ~ '^cpv_') OR "
+            "(stream='awaiting_proposals' AND entity_id ~ '^cpr_') OR "
+            "(stream='catalog_clusters' AND entity_id ~ '^ncl_')",
+            name="ck_catalog_reconciliation_checkpoint_entity",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    stream: Mapped[str] = mapped_column(String(32))
+    position_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entity_id: Mapped[str | None] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(BigInteger)
+
+
 class NeedUnitConfirmationRow(Base):
     """客户单位不可变确认；与Need、原件均以tenant复合外键绑定。"""
 

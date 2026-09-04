@@ -18,7 +18,11 @@ from domains.demand.repository import (
     NeedClusterCatalogSnapshot,
     NeedClusterRepository,
 )
-from domains.demand.schemas import CatalogClusterCursor, CatalogClusterIdPage
+from domains.demand.schemas import (
+    CatalogClusterCursor,
+    CatalogClusterIdPage,
+    CatalogClusterReconciliationItem,
+)
 from infra.db.repositories.need_hypotheses import _row_to_need
 from infra.db.tables import NeedClusterMemberRow, NeedClusterRow, ValidatedNeedRow
 from shared.errors import TenantIsolationViolation, ValidationError
@@ -265,18 +269,25 @@ class NeedClusterRepositoryImpl(NeedClusterRepository):
             ).all()
         )
         selected = rows[:limit]
-        cluster_ids = tuple(NeedClusterId(row.cluster_id) for row in selected)
+        items = tuple(
+            CatalogClusterReconciliationItem(
+                cluster_id=NeedClusterId(row.cluster_id),
+                created_at=row.created_at,
+            )
+            for row in selected
+        )
         next_cursor = None
         if len(rows) > limit:
             last = selected[-1]
             next_cursor = CatalogClusterCursor(
                 tenant_id=self._tenant_id,
+                stream="catalog_clusters",
                 created_at=last.created_at,
                 cluster_id=NeedClusterId(last.cluster_id),
             )
         return CatalogClusterIdPage(
             tenant_id=self._tenant_id,
-            cluster_ids=cluster_ids,
+            items=items,
             next_cursor=next_cursor,
         )
 

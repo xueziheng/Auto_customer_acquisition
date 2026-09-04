@@ -1008,6 +1008,7 @@ class CatalogClusterCursor(_CatalogCursorModel):
     """真实需求簇的升序 keyset 游标；不保存需求事实正文。"""
 
     tenant_id: TenantId
+    stream: Literal["catalog_clusters"]
     created_at: datetime
     cluster_id: NeedClusterId
 
@@ -1024,30 +1025,49 @@ class CatalogClusterCursor(_CatalogCursorModel):
         return self
 
 
+class CatalogClusterReconciliationItem(_CatalogCursorModel):
+    """真实需求簇稳定扫描页的最小定位元数据。"""
+
+    cluster_id: NeedClusterId
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_item(self) -> Self:
+        if (
+            not _is_exact_identity(self.cluster_id)
+            or not self.cluster_id.startswith("ncl_")
+            or not _is_strict_utc(self.created_at)
+        ):
+            raise ValueError("目录需求簇页面项无效")
+        return self
+
+
 class CatalogClusterIdPage(_CatalogCursorModel):
     """只携带真实簇 locator 的租户绑定稳定页。"""
 
     tenant_id: TenantId
-    cluster_ids: tuple[NeedClusterId, ...]
+    items: tuple[CatalogClusterReconciliationItem, ...]
     next_cursor: CatalogClusterCursor | None
 
     @model_validator(mode="after")
     def validate_page(self) -> Self:
-        rendered = tuple(str(value) for value in self.cluster_ids)
+        order = tuple((item.created_at, str(item.cluster_id)) for item in self.items)
         if (
             not _is_exact_identity(self.tenant_id)
             or not self.tenant_id.startswith("tn_")
-            or len(rendered) > 200
-            or len(set(rendered)) != len(rendered)
-            or any(
-                not _is_exact_identity(value) or not value.startswith("ncl_")
-                for value in rendered
-            )
+            or len(order) > 200
+            or tuple(sorted(order)) != order
+            or len(set(order)) != len(order)
             or self.next_cursor is not None
             and (
                 self.next_cursor.tenant_id != self.tenant_id
-                or not rendered
-                or str(self.next_cursor.cluster_id) != rendered[-1]
+                or self.next_cursor.stream != "catalog_clusters"
+                or not order
+                or (
+                    self.next_cursor.created_at,
+                    str(self.next_cursor.cluster_id),
+                )
+                != order[-1]
             )
         ):
             raise ValueError("目录需求簇页面无效")

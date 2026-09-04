@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -9,6 +9,7 @@ from apps.scheduler_worker.catalog_products import CatalogProductDriver
 from domains.demand.service import (
     CatalogClusterCursor,
     CatalogClusterIdPage,
+    CatalogClusterReconciliationItem,
     CatalogEvidenceSummary,
     NeedClusterCatalogFacts,
 )
@@ -31,6 +32,7 @@ from domains.products.service import (
     ProductRole,
 )
 from shared.errors import TransientError, ValidationError
+from shared.schemas.catalog_reconciliation import CatalogReconciliationCheckpoint
 from shared.schemas.identifiers import (
     CatalogProductProposalId,
     CatalogProposalEvaluationId,
@@ -256,11 +258,63 @@ class _Engine:
         return self.result
 
 
-def _driver(demand: _Demand, products: _Products, engine: _Engine):
+class _Checkpoints:
+    def __init__(
+        self,
+        *,
+        fail_load: set[str] | None = None,
+        fail_cas: set[str] | None = None,
+    ) -> None:
+        self.values: dict[str, CatalogReconciliationCheckpoint] = {}
+        self.loads: list[str] = []
+        self.advances: list[tuple[str, datetime | None, str | None]] = []
+        self.fail_load = fail_load or set()
+        self.fail_cas = fail_cas or set()
+
+    async def load(self, tenant_id, stream):
+        assert tenant_id == TENANT
+        self.loads.append(stream)
+        if stream in self.fail_load:
+            raise RuntimeError("secret checkpoint failure")
+        return self.values.get(
+            stream,
+            CatalogReconciliationCheckpoint(
+                tenant_id=TENANT,
+                stream=stream,
+                position_at=None,
+                entity_id=None,
+                version=0,
+            ),
+        )
+
+    async def compare_and_set(
+        self, current, *, next_position_at, next_entity_id
+    ):
+        if current.stream in self.fail_cas:
+            raise RuntimeError("secret checkpoint conflict")
+        desired = CatalogReconciliationCheckpoint(
+            tenant_id=TENANT,
+            stream=current.stream,
+            position_at=next_position_at,
+            entity_id=next_entity_id,
+            version=current.version + 1,
+        )
+        self.values[current.stream] = desired
+        self.advances.append((current.stream, next_position_at, next_entity_id))
+        return desired
+
+
+def _driver(
+    demand: _Demand,
+    products: _Products,
+    engine: _Engine,
+    checkpoints: _Checkpoints | None = None,
+):
     return CatalogProductDriver(
         demand=demand,
         products=products,
         engine=engine,
+        checkpoints=checkpoints or _Checkpoints(),
         system_actor=ProductActor(
             "system:catalog-scheduler", ProductRole.SYSTEM, TENANT
         ),
@@ -302,11 +356,29 @@ def test_public_reconciliation_cursors_reject_wrong_tenant_stream_and_time() -> 
     with pytest.raises(PydanticValidationError):
         CatalogClusterIdPage(
             tenant_id=TENANT,
-            cluster_ids=(),
+            items=(),
             next_cursor=CatalogClusterCursor(
                 tenant_id=OTHER_TENANT,
+                stream="catalog_clusters",
                 created_at=NOW,
                 cluster_id=NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12"),
+            ),
+        )
+    cluster_id = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12")
+    with pytest.raises(PydanticValidationError):
+        CatalogClusterIdPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogClusterReconciliationItem(
+                    cluster_id=cluster_id,
+                    created_at=NOW,
+                ),
+            ),
+            next_cursor=CatalogClusterCursor(
+                tenant_id=TENANT,
+                stream="catalog_clusters",
+                created_at=NOW.replace(year=2027),
+                cluster_id=cluster_id,
             ),
         )
 
@@ -372,22 +444,45 @@ async def test_active_policy_advances_cluster_cursor_then_wraps_without_starvati
     first = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD11")
     second = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12")
     third = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD13")
-    cursor = CatalogClusterCursor(tenant_id=TENANT, created_at=NOW, cluster_id=second)
+    cursor = CatalogClusterCursor(
+        tenant_id=TENANT,
+        stream="catalog_clusters",
+        created_at=NOW,
+        cluster_id=second,
+    )
     demand = _Demand(
         [
             CatalogClusterIdPage(
                 tenant_id=TENANT,
-                cluster_ids=(first, second),
+                items=(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=first, created_at=NOW - timedelta(minutes=1)
+                    ),
+                    CatalogClusterReconciliationItem(
+                        cluster_id=second, created_at=NOW
+                    ),
+                ),
                 next_cursor=cursor,
             ),
             CatalogClusterIdPage(
                 tenant_id=TENANT,
-                cluster_ids=(third,),
+                items=(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=third, created_at=NOW + timedelta(minutes=1)
+                    ),
+                ),
                 next_cursor=None,
             ),
             CatalogClusterIdPage(
                 tenant_id=TENANT,
-                cluster_ids=(first, second),
+                items=(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=first, created_at=NOW - timedelta(minutes=1)
+                    ),
+                    CatalogClusterReconciliationItem(
+                        cluster_id=second, created_at=NOW
+                    ),
+                ),
                 next_cursor=cursor,
             ),
         ]
@@ -397,11 +492,17 @@ async def test_active_policy_advances_cluster_cursor_then_wraps_without_starvati
     products.policy_pages *= 3
     products.proposal_pages *= 3
     engine = _Engine()
-    driver = _driver(demand, products, engine)
+    checkpoints = _Checkpoints()
 
-    assert (await driver.scan_once()).started_evaluation_runs == 2
-    assert (await driver.scan_once()).started_evaluation_runs == 1
-    assert (await driver.scan_once()).started_evaluation_runs == 2
+    assert (
+        await _driver(demand, products, engine, checkpoints).scan_once()
+    ).started_evaluation_runs == 2
+    assert (
+        await _driver(demand, products, engine, checkpoints).scan_once()
+    ).started_evaluation_runs == 1
+    assert (
+        await _driver(demand, products, engine, checkpoints).scan_once()
+    ).started_evaluation_runs == 2
 
     assert demand.page_calls == [None, cursor, None]
     assert [item[2] for item in engine.starts] == [
@@ -419,7 +520,7 @@ async def test_unknown_policy_read_is_fixed_retryable_and_skips_cluster_page() -
     products.active = RuntimeError("secret facts and dsn")
     demand = _Demand([])
 
-    with pytest.raises(TransientError, match="目录产品调度活动策略暂不可用"):
+    with pytest.raises(TransientError, match="目录产品调度部分流暂不可用"):
         await _driver(demand, products, _Engine()).scan_once()
 
     assert demand.page_calls == []
@@ -430,9 +531,12 @@ async def test_malformed_page_does_not_advance_cursor() -> None:
     first = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD11")
     bad = CatalogClusterIdPage(
         tenant_id=TENANT,
-        cluster_ids=(first,),
+        items=(CatalogClusterReconciliationItem(cluster_id=first, created_at=NOW),),
         next_cursor=CatalogClusterCursor(
-            tenant_id=TENANT, created_at=NOW, cluster_id=first
+            tenant_id=TENANT,
+            stream="catalog_clusters",
+            created_at=NOW,
+            cluster_id=first,
         ),
     )
     demand = _Demand([bad, bad])
@@ -442,14 +546,16 @@ async def test_malformed_page_does_not_advance_cursor() -> None:
     products.proposal_pages *= 2
     engine = _Engine()
     engine.result = object()
-    driver = _driver(demand, products, engine)
+    checkpoints = _Checkpoints()
+    driver = _driver(demand, products, engine, checkpoints)
 
-    with pytest.raises(TransientError, match="目录产品调度需求簇评估暂不可用"):
+    with pytest.raises(TransientError, match="目录产品调度部分流暂不可用"):
         await driver.scan_once()
-    with pytest.raises(TransientError, match="目录产品调度需求簇评估暂不可用"):
+    with pytest.raises(TransientError, match="目录产品调度部分流暂不可用"):
         await driver.scan_once()
 
     assert demand.page_calls == [None, None]
+    assert all(stream != "catalog_clusters" for stream, *_ in checkpoints.advances)
 
 
 @pytest.mark.asyncio
@@ -504,12 +610,36 @@ async def test_known_stale_item_does_not_poison_later_policy_item() -> None:
     assert result.started_policy_runs == 1
 
 
+@pytest.mark.asyncio
+async def test_checkpoint_failure_isolated_per_stream_without_cross_advance() -> None:
+    products = _Products()
+    products.active = _policy()
+    demand = _Demand(
+        [CatalogClusterIdPage(tenant_id=TENANT, items=(), next_cursor=None)]
+    )
+    checkpoints = _Checkpoints(
+        fail_load={"pending_policies"},
+        fail_cas={"awaiting_proposals"},
+    )
+
+    with pytest.raises(TransientError, match="目录产品调度部分流暂不可用"):
+        await _driver(demand, products, _Engine(), checkpoints).scan_once()
+
+    assert checkpoints.loads == [
+        "pending_policies",
+        "awaiting_proposals",
+        "catalog_clusters",
+    ]
+    assert checkpoints.advances == [("catalog_clusters", None, None)]
+
+
 def test_driver_rejects_cross_tenant_actor_and_hidden_batch_default() -> None:
     with pytest.raises(ValidationError):
         CatalogProductDriver(
             demand=_Demand([]),
             products=_Products(),
             engine=_Engine(),
+            checkpoints=_Checkpoints(),
             system_actor=ProductActor(
                 "system:catalog-scheduler", ProductRole.SYSTEM, OTHER_TENANT
             ),
@@ -521,6 +651,7 @@ def test_driver_rejects_cross_tenant_actor_and_hidden_batch_default() -> None:
             demand=_Demand([]),
             products=_Products(),
             engine=_Engine(),
+            checkpoints=_Checkpoints(),
             system_actor=ProductActor(
                 "system:catalog-scheduler", ProductRole.SYSTEM, TENANT
             ),

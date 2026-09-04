@@ -11,23 +11,36 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from domains.approvals.service_impl import ApprovalServiceImpl
+from domains.demand.service import (
+    CatalogClusterCursor,
+    CatalogClusterIdPage,
+    CatalogClusterReconciliationItem,
+)
 from domains.demand.service_impl import DemandServiceImpl
 from domains.products.catalog_rules import catalog_policy_content_hash
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
 from domains.products.permissions import Phase2ProductAuthorizer
 from domains.products.service import (
+    CatalogPolicyReconciliationItem,
+    CatalogPolicyReconciliationPage,
     CatalogProposalPolicyContent,
+    CatalogProposalPolicyView,
+    CatalogProposalReconciliationItem,
+    CatalogProposalReconciliationPage,
     CatalogReconciliationCursor,
     ProductActor,
     ProductRole,
 )
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.catalog_products_uow import SqlAlchemyCatalogProductsUnitOfWork
+from infra.db.catalog_reconciliation_checkpoints import (
+    PostgresCatalogReconciliationCheckpointStore,
+)
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.outbox import PostgresEventBus
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.workflow_engine import PostgresWorkflowEngine
-from shared.errors import TradeOSError
+from shared.errors import TradeOSError, ValidationError
 from shared.events.catalog import NeedClusterMembershipChanged
 from shared.schemas.identifiers import NeedClusterId, TenantId, ValidatedNeedId, new_id
 from tests.integration.test_need_units import (
@@ -341,11 +354,15 @@ async def test_demand_cluster_page_uses_created_at_id_keyset_and_wraps(
     )
     wrapped = await service.list_catalog_cluster_id_page(tenant, limit=2, cursor=None)
     legacy = await service.list_catalog_cluster_ids(tenant, limit=3)
-    assert tuple(map(str, first.cluster_ids)) == seeded["cluster_ids"][:2]
-    assert tuple(map(str, second.cluster_ids)) == seeded["cluster_ids"][2:]
+    assert tuple(str(item.cluster_id) for item in first.items) == seeded[
+        "cluster_ids"
+    ][:2]
+    assert tuple(str(item.cluster_id) for item in second.items) == seeded[
+        "cluster_ids"
+    ][2:]
     assert first.next_cursor is not None
     assert second.next_cursor is None
-    assert wrapped.cluster_ids == first.cluster_ids
+    assert wrapped.items == first.items
     assert tuple(map(str, legacy)) == (
         "ncl_cursor_2",
         "ncl_cursor_1",
@@ -359,6 +376,208 @@ async def test_demand_cluster_page_uses_created_at_id_keyset_and_wraps(
     with pytest.raises(TradeOSError):
         await service.list_catalog_cluster_id_page(
             tenant, limit=2, cursor=wrong_tenant_cursor
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_pg_checkpoints_traverse_all_streams_with_fresh_driver_each_cycle(
+    unit_engine: AsyncEngine,
+) -> None:
+    from apps.scheduler_worker.catalog_products import CatalogProductDriver
+
+    tenant = TenantId(new_id("tn"))
+    owner = new_id("emp")
+    policy_ids = tuple(sorted(new_id("cpv") for _ in range(3)))
+    proposal_ids = tuple(sorted(new_id("cpr") for _ in range(3)))
+    cluster_ids = tuple(sorted(new_id("ncl") for _ in range(3)))
+    content = CatalogProposalPolicyContent(
+        minimum_distinct_accounts=3,
+        minimum_recurring_accounts=None,
+        minimum_distinct_countries=None,
+        minimum_quantity_unit_accounts=None,
+        require_unified_unit=False,
+    )
+    active = CatalogProposalPolicyView(
+        policy_version_id=policy_ids[0],
+        content=content,
+        content_hash=catalog_policy_content_hash(content),
+        base_active_version_id=None,
+        proposed_by=owner,
+        approval_id=None,
+        state="active",
+        created_at=NOW,
+        activated_at=NOW,
+        terminal_at=None,
+    )
+
+    class Products:
+        def __init__(self) -> None:
+            self.policy_cursors: list[CatalogReconciliationCursor | None] = []
+            self.proposal_cursors: list[CatalogReconciliationCursor | None] = []
+
+        @staticmethod
+        def offset(
+            values: tuple[str, ...],
+            cursor: CatalogReconciliationCursor | None,
+        ) -> int:
+            if cursor is None:
+                return 0
+            entity_id = str(cursor.entity_id)
+            return values.index(entity_id) + 1
+
+        async def list_pending_policy_reconciliation(
+            self, tenant_id, *, actor, limit, cursor=None
+        ):
+            assert tenant_id == actor.tenant_id == tenant
+            self.policy_cursors.append(cursor)
+            offset = self.offset(policy_ids, cursor)
+            selected = policy_ids[offset : offset + limit]
+            next_cursor = (
+                CatalogReconciliationCursor(
+                    tenant_id=tenant,
+                    stream="pending_policies",
+                    position_at=NOW,
+                    entity_id=selected[-1],
+                )
+                if offset + limit < len(policy_ids)
+                else None
+            )
+            return CatalogPolicyReconciliationPage(
+                tenant_id=tenant,
+                items=tuple(
+                    CatalogPolicyReconciliationItem(
+                        policy_version_id=value, created_at=NOW
+                    )
+                    for value in selected
+                ),
+                next_cursor=next_cursor,
+            )
+
+        async def list_awaiting_proposal_reconciliation(
+            self, tenant_id, *, actor, limit, cursor=None
+        ):
+            assert tenant_id == actor.tenant_id == tenant
+            self.proposal_cursors.append(cursor)
+            offset = self.offset(proposal_ids, cursor)
+            selected = proposal_ids[offset : offset + limit]
+            next_cursor = (
+                CatalogReconciliationCursor(
+                    tenant_id=tenant,
+                    stream="awaiting_proposals",
+                    position_at=NOW,
+                    entity_id=selected[-1],
+                )
+                if offset + limit < len(proposal_ids)
+                else None
+            )
+            return CatalogProposalReconciliationPage(
+                tenant_id=tenant,
+                items=tuple(
+                    CatalogProposalReconciliationItem(
+                        proposal_id=value, created_at=NOW
+                    )
+                    for value in selected
+                ),
+                next_cursor=next_cursor,
+            )
+
+        async def get_policy_change_snapshot(self, *args, **kwargs):
+            del args, kwargs
+            raise ValidationError("stale")
+
+        async def get_proposal(self, *args, **kwargs):
+            del args, kwargs
+            raise ValidationError("stale")
+
+        async def get_evaluation(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("stale proposal 不应读取 evaluation")
+
+        async def get_active_policy(self, tenant_id, *, actor):
+            assert tenant_id == actor.tenant_id == tenant
+            return active
+
+    class Demand:
+        def __init__(self) -> None:
+            self.cursors: list[CatalogClusterCursor | None] = []
+
+        async def list_catalog_cluster_id_page(
+            self, tenant_id, *, limit, cursor=None
+        ):
+            assert tenant_id == tenant
+            self.cursors.append(cursor)
+            offset = 0 if cursor is None else cluster_ids.index(str(cursor.cluster_id)) + 1
+            selected = cluster_ids[offset : offset + limit]
+            next_cursor = (
+                CatalogClusterCursor(
+                    tenant_id=tenant,
+                    stream="catalog_clusters",
+                    created_at=NOW,
+                    cluster_id=selected[-1],
+                )
+                if offset + limit < len(cluster_ids)
+                else None
+            )
+            return CatalogClusterIdPage(
+                tenant_id=tenant,
+                items=tuple(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=value, created_at=NOW
+                    )
+                    for value in selected
+                ),
+                next_cursor=next_cursor,
+            )
+
+        async def get_cluster_catalog_facts(self, *args, **kwargs):
+            del args, kwargs
+            raise ValidationError("stale")
+
+    class Engine:
+        async def start(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("已知 stale item 不应启动 workflow")
+
+    products = Products()
+    demand = Demand()
+    factory = async_sessionmaker(unit_engine, expire_on_commit=False)
+    checkpoints = PostgresCatalogReconciliationCheckpointStore(factory, tenant)
+    actor = ProductActor("system:catalog-scheduler", ProductRole.SYSTEM, tenant)
+    for _ in range(4):
+        await CatalogProductDriver(
+            demand=cast(object, demand),
+            products=cast(object, products),
+            engine=cast(object, Engine()),
+            checkpoints=checkpoints,
+            system_actor=actor,
+            tenant_id=tenant,
+            batch_limit=2,
+        ).scan_once()
+
+    assert [None if value is None else value.entity_id for value in products.policy_cursors] == [
+        None,
+        policy_ids[1],
+        None,
+        policy_ids[1],
+    ]
+    assert [None if value is None else value.entity_id for value in products.proposal_cursors] == [
+        None,
+        proposal_ids[1],
+        None,
+        proposal_ids[1],
+    ]
+    assert [None if value is None else str(value.cluster_id) for value in demand.cursors] == [
+        None,
+        cluster_ids[1],
+        None,
+        cluster_ids[1],
+    ]
+    for stream in ("pending_policies", "awaiting_proposals", "catalog_clusters"):
+        checkpoint = await checkpoints.load(tenant, stream)
+        assert (checkpoint.version, checkpoint.position_at, checkpoint.entity_id) == (
+            4,
+            None,
+            None,
         )
 
 
@@ -537,7 +756,7 @@ async def _seed_pending_policy_recovery_rows(
 
 
 @pytest.mark.asyncio
-async def test_real_scheduler_recovers_committed_policy_pages_across_restart(
+async def test_real_scheduler_recovers_committed_policy_pages_across_reconstructed_drivers(
     unit_engine: AsyncEngine,
 ) -> None:
     from apps.scheduler_worker.catalog_product_runtime import (
@@ -562,20 +781,23 @@ async def test_real_scheduler_recovers_committed_policy_pages_across_restart(
     )
     workflow = PostgresWorkflowEngine(factory, composition.handlers, now=lambda: NOW)
     outbox = OutboxDeliverer(factory, tenant, now=lambda: NOW)
-    runtime = composition.bind(engine=workflow, outbox=outbox, batch_limit=2)
+    composition.bind(engine=workflow, outbox=outbox, batch_limit=2)
 
-    first = await runtime.driver.scan_once()
-    second = await runtime.driver.scan_once()
-    restarted = CatalogProductDriver(
-        demand=composition.demand,
-        products=composition.products,
-        engine=workflow,
-        system_actor=composition.system_actor,
-        tenant_id=tenant,
-        batch_limit=2,
-    )
-    replay_first = await restarted.scan_once()
-    replay_second = await restarted.scan_once()
+    async def scan_with_fresh_driver():
+        return await CatalogProductDriver(
+            demand=composition.demand,
+            products=composition.products,
+            engine=workflow,
+            checkpoints=composition.checkpoints,
+            system_actor=composition.system_actor,
+            tenant_id=tenant,
+            batch_limit=2,
+        ).scan_once()
+
+    first = await scan_with_fresh_driver()
+    second = await scan_with_fresh_driver()
+    replay_first = await scan_with_fresh_driver()
+    replay_second = await scan_with_fresh_driver()
     assert (
         first.started_policy_runs,
         second.started_policy_runs,

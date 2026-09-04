@@ -1610,7 +1610,7 @@ class DemandServiceImpl:
         if (
             not isinstance(page, CatalogClusterIdPage)
             or page.tenant_id != tenant_id
-            or len(page.cluster_ids) > limit
+            or len(page.items) > limit
         ):
             raise ValidationError("目录需求簇页面事实无效")
         return page

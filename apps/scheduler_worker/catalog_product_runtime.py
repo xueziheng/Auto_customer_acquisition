@@ -21,6 +21,9 @@ from domains.products.service import (
 )
 from domains.prospecting.service import ProspectingService
 from infra.db.catalog_products_uow import SqlAlchemyCatalogProductsUnitOfWork
+from infra.db.catalog_reconciliation_checkpoints import (
+    PostgresCatalogReconciliationCheckpointStore,
+)
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from shared.errors import ValidationError
 from shared.events.bus import EventHandler
@@ -50,7 +53,10 @@ from workflows.catalog_product_proposal.account_facts import (
 )
 from workflows.engine.runner import StepHandler, WorkflowEngine
 
-from .catalog_products import CatalogProductDriver
+from .catalog_products import (
+    CatalogProductDriver,
+    CatalogReconciliationCheckpointStore,
+)
 
 
 class CatalogOutboxRegistry(Protocol):
@@ -131,6 +137,7 @@ class CatalogProductComposition:
     approvals: ApprovalService
     system_actor: ProductActor
     tenant_id: TenantId
+    checkpoints: CatalogReconciliationCheckpointStore
     handlers: Mapping[str, StepHandler]
 
     def bind(
@@ -201,6 +208,7 @@ class CatalogProductComposition:
                 demand=self.demand,
                 products=self.products,
                 engine=engine,
+                checkpoints=self.checkpoints,
                 system_actor=self.system_actor,
                 tenant_id=self.tenant_id,
                 batch_limit=batch_limit,
@@ -247,6 +255,7 @@ def build_catalog_product_composition(
         ),
     )
     actor = ProductActor("system:catalog-products", ProductRole.SYSTEM, tenant_id)
+    checkpoints = PostgresCatalogReconciliationCheckpointStore(factory, tenant_id)
     handlers = {
         **build_catalog_policy_workflow_handlers(products, approvals, actor, now=now),
         **build_catalog_evaluation_workflow_handlers(demand, products, actor),
@@ -260,6 +269,7 @@ def build_catalog_product_composition(
         approvals=approvals,
         system_actor=actor,
         tenant_id=tenant_id,
+        checkpoints=checkpoints,
         handlers=handlers,
     )
 
