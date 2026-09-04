@@ -6,6 +6,8 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import TracebackType
+from typing import Any, Self
 
 import pytest
 import pytest_asyncio
@@ -379,6 +381,77 @@ def _service(
     )
 
 
+class _PausedEvaluationRepository:
+    def __init__(
+        self,
+        delegate: Any,
+        guard_returned: asyncio.Event,
+        release_guard: asyncio.Event,
+    ) -> None:
+        self._delegate = delegate
+        self._guard_returned = guard_returned
+        self._release_guard = release_guard
+
+    async def require_trusted_catalog_evaluation_run(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        cluster_id: NeedClusterId,
+    ) -> None:
+        await self._delegate.require_trusted_catalog_evaluation_run(
+            tenant_id, run_id, cluster_id
+        )
+        self._guard_returned.set()
+        await self._release_guard.wait()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+class _PausedGuardUow:
+    def __init__(
+        self,
+        delegate: SqlAlchemyCatalogProductsUnitOfWork,
+        guard_returned: asyncio.Event,
+        release_guard: asyncio.Event,
+    ) -> None:
+        self._delegate = delegate
+        self._guard_returned = guard_returned
+        self._release_guard = release_guard
+
+    async def __aenter__(self) -> Self:
+        entered = await self._delegate.__aenter__()
+        self.policies = entered.policies
+        self.evaluations = _PausedEvaluationRepository(
+            entered.evaluations, self._guard_returned, self._release_guard
+        )
+        self.proposals = entered.proposals
+        self.cultivation_cases = entered.cultivation_cases
+        self.bus = entered.bus
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._delegate.__aexit__(exc_type, exc, tb)
+
+
+async def _wait_for_blocking_pid(engine: AsyncEngine, blocked_pid: int) -> None:
+    async with asyncio.timeout(3):
+        while True:
+            async with engine.connect() as connection:
+                blockers = await connection.scalar(
+                    text("SELECT pg_blocking_pids(:blocked_pid)"),
+                    {"blocked_pid": blocked_pid},
+                )
+            if blockers:
+                return
+            await asyncio.sleep(0.02)
+
+
 async def _proposal(
     engine: AsyncEngine,
     factory: async_sessionmaker,
@@ -524,6 +597,191 @@ async def test_evaluation_requires_exact_persisted_workflow_run(
                 text("DELETE FROM workflow_runs WHERE run_id=:run_id"),
                 {"run_id": values["other_run"]},
             )
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_run_guard_share_lock_blocks_step_update_until_catalog_commit(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "guard_lock")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    guard_returned = asyncio.Event()
+    release_guard = asyncio.Event()
+    evaluation_task: asyncio.Task[Any] | None = None
+    update_task: asyncio.Task[Any] | None = None
+
+    def paused_uow(scoped: TenantId) -> _PausedGuardUow:
+        return _PausedGuardUow(
+            SqlAlchemyCatalogProductsUnitOfWork(factory, scoped),
+            guard_returned,
+            release_guard,
+        )
+
+    service = CatalogProposalServiceImpl(
+        paused_uow,
+        Phase2ProductAuthorizer(tenant),
+        now=lambda: NOW,
+    )
+
+    async def update_step(pid_ready: asyncio.Future[int]) -> None:
+        async with (
+            catalog_proposal_engine.connect() as connection,
+            connection.begin(),
+        ):
+            pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+            assert isinstance(pid, int)
+            pid_ready.set_result(pid)
+            await connection.execute(
+                text(
+                    "UPDATE workflow_runs SET current_step='finish' "
+                    "WHERE tenant_id=:tenant AND run_id=:run"
+                ),
+                {"tenant": values["tenant"], "run": values["run"]},
+            )
+
+    try:
+        evaluation_task = asyncio.create_task(
+            service.evaluate_cluster(
+                tenant,
+                _facts(values),
+                proposed_by_run=RunId(values["run"]),
+                actor=_system(tenant),
+            )
+        )
+        await asyncio.wait_for(guard_returned.wait(), timeout=3)
+        pid_ready = asyncio.get_running_loop().create_future()
+        update_task = asyncio.create_task(update_step(pid_ready))
+        blocked_pid = await asyncio.wait_for(pid_ready, timeout=3)
+
+        await _wait_for_blocking_pid(catalog_proposal_engine, blocked_pid)
+        assert not update_task.done()
+
+        release_guard.set()
+        await asyncio.wait_for(evaluation_task, timeout=3)
+        await asyncio.wait_for(update_task, timeout=3)
+
+        async with catalog_proposal_engine.connect() as connection:
+            step = await connection.scalar(
+                text(
+                    "SELECT current_step FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND run_id=:run"
+                ),
+                {"tenant": values["tenant"], "run": values["run"]},
+            )
+            counts = [
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(row)
+                    .where(row.tenant_id == values["tenant"])
+                )
+                for row in (
+                    CatalogProposalEvaluationRow,
+                    CatalogProductProposalRow,
+                )
+            ]
+            event_count = await connection.scalar(
+                select(func.count())
+                .select_from(OutboxEventRow)
+                .where(
+                    OutboxEventRow.tenant_id == values["tenant"],
+                    OutboxEventRow.event_type == "CatalogProductProposalCreated",
+                )
+            )
+        assert step == "finish"
+        assert counts == [1, 1]
+        assert event_count == 1
+    finally:
+        release_guard.set()
+        for task in (evaluation_task, update_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (evaluation_task, update_task) if task is not None),
+            return_exceptions=True,
+        )
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_committed_step_update_makes_later_evaluation_untrusted(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "guard_reverse")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    service = _service(factory, tenant)
+    try:
+        async with catalog_proposal_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE workflow_runs SET current_step='finish' "
+                    "WHERE tenant_id=:tenant AND run_id=:run"
+                ),
+                {"tenant": values["tenant"], "run": values["run"]},
+            )
+
+        with pytest.raises(ValidationError, match="^目录评估 Run 不可信$"):
+            await service.evaluate_cluster(
+                tenant,
+                _facts(values),
+                proposed_by_run=RunId(values["run"]),
+                actor=_system(tenant),
+            )
+
+        async with catalog_proposal_engine.connect() as connection:
+            counts = [
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(row)
+                    .where(row.tenant_id == values["tenant"])
+                )
+                for row in (
+                    CatalogProposalEvaluationRow,
+                    CatalogProductProposalRow,
+                    OutboxEventRow,
+                )
+            ]
+        assert counts == [0, 0, 0]
+    finally:
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_engine_key_share_is_compatible_with_catalog_share_guard(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "guard_compatible")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    service = _service(factory, tenant)
+    try:
+        async with (
+            catalog_proposal_engine.connect() as engine_connection,
+            engine_connection.begin(),
+        ):
+            await engine_connection.execute(
+                text(
+                    "SELECT run_id FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND run_id=:run FOR KEY SHARE"
+                ),
+                {"tenant": values["tenant"], "run": values["run"]},
+            )
+            result = await asyncio.wait_for(
+                service.evaluate_cluster(
+                    tenant,
+                    _facts(values),
+                    proposed_by_run=RunId(values["run"]),
+                    actor=_system(tenant),
+                ),
+                timeout=3,
+            )
+        assert result.overall_passed is True
+    finally:
         await _cleanup(catalog_proposal_engine, values["tenant"])
 
 

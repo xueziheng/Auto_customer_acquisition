@@ -587,7 +587,8 @@ class CatalogEvaluationRepositoryImpl(_CatalogRepository):
             raise ValidationError("目录评估 Run 不可信")
         trusted = (
             await self._session.execute(
-                self.scoped_query(WorkflowRunRow).where(
+                self.scoped_query(WorkflowRunRow)
+                .where(
                     WorkflowRunRow.run_id == str(run_id),
                     WorkflowRunRow.workflow_type == "catalog_cluster_evaluation",
                     WorkflowRunRow.workflow_version == 1,
@@ -595,6 +596,7 @@ class CatalogEvaluationRepositoryImpl(_CatalogRepository):
                     WorkflowRunRow.status == "running",
                     WorkflowRunRow.current_step == "evaluate",
                 )
+                .with_for_update(read=True)
             )
         ).scalar_one_or_none()
         if trusted is None:

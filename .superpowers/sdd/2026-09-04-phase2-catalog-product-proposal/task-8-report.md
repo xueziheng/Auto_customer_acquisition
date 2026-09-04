@@ -129,3 +129,25 @@ exit 0
 - Task 5–8 Products 相关单元、migration、repository、真实 PostgreSQL：`226 passed in 9.60s`，无 skip。
 - 12 组 hash-covered 字段变化全部落 `stale` 且 case/event 为 0；两个展示字段变化仍只创建一个 queued case。
 - 6 类 persisted run 反例全部固定拒绝；既有正例、并发收敛、blocked 最小 envelope、Approval 原子绑定与 outbox rollback 全部保持 GREEN。
+
+## Fix round 2：可信 Run guard 的 TOCTOU 行锁
+
+### Review 问题与修复
+
+- persisted Run 六字段查询原先只是普通 `SELECT`：guard 返回后、evaluation/proposal/outbox 提交前，另一事务仍可把 `current_step` 或 `status` 更新为不可信终态，形成检查与使用之间的竞态。
+- guard 查询现在使用 SQLAlchemy `with_for_update(read=True)`，在 PostgreSQL 生成 `FOR SHARE`。它与 workflow engine handler 外层持有的 `FOR KEY SHARE` 兼容，不会发生自等待；同时会阻塞 step/status 更新所需的 `NO KEY UPDATE` / `UPDATE`，直到 Products UoW 提交或回滚。
+- 没有使用 `FOR UPDATE` 或 `FOR NO KEY UPDATE`，保留 engine 与 Products 的既有锁协议。
+
+### Strict TDD RED → GREEN
+
+- 真实 PostgreSQL 测试让 guard 返回后暂停 Products 事务，并在另一 session 更新 `current_step='finish'`。旧普通 `SELECT` 下 `pg_blocking_pids` 始终为空，3 秒有界等待稳定 RED；移除 `FOR SHARE` 会恢复同一失败。
+- 加入 read/share lock 后，`pg_blocking_pids` 明确观察到 updater 被阻塞；释放 Products 后 evaluation、proposal 和 created outbox event 原子提交各 1 条，随后 updater 才完成。
+- 反向顺序先提交 `finish` 再 evaluate，固定返回 `目录评估 Run 不可信`，evaluation/proposal/outbox 均为 0。
+- 模拟 engine outer transaction 持 `FOR KEY SHARE` 时，Products `FOR SHARE` 在 3 秒有界等待内立即取得并完成，通过无自等待/死锁证明。
+
+### 回归证据
+
+- TOCTOU 三个真实 PostgreSQL 目标用例（最终复跑）：`3 passed in 4.09s`。
+- Task 8 focused + repository：`79 passed in 5.19s`，无 skip。
+- Task 5–8 Products 相关单元、migration、repository、真实 PostgreSQL（最终复跑）：`229 passed in 9.95s`，无 skip。
+- Ruff check/format、5 个 Task 8 source 的 mypy、`scripts/check_boundaries.py` 与 `git diff --check` 全部通过。
