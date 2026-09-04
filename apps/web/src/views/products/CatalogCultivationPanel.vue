@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Evaluation = components["schemas"]["CatalogProposalEvaluationView"];
@@ -18,6 +19,18 @@ const loading = ref(true);
 const loaded = ref(false);
 const error = ref<string | null>(null);
 const candidateWarning = "这是一项候选产品培养建议，不代表已确认供应、正式产品或可报价价格。";
+let componentMounted = false;
+
+function resetPanel(): void {
+  cases.value = [];
+  loading.value = false;
+  loaded.value = false;
+  error.value = null;
+  if (componentMounted) globalThis.queueMicrotask(() => void loadCases());
+}
+
+onBeforeUnmount(() => { componentMounted = false; });
+const requestGate = useQuoteRequestScope(client, () => [], resetPanel);
 
 function isCatalogFacts(facts: Evaluation["facts"]): facts is CatalogFacts {
   return "distinct_account_count" in facts && "evidence_summaries" in facts;
@@ -74,24 +87,33 @@ const rows = computed(() => cases.value.map((item) => ({
 })));
 
 async function loadCases(): Promise<void> {
-  if (!loaded.value) loading.value = true;
+  const operation = requestGate.begin("cultivation-cases");
+  if (!operation?.valid()) return;
+  loading.value = true;
   error.value = null;
   try {
     const result = await client.GET("/products/catalog-cultivation-cases", {
       params: { query: { limit: 50 } },
+      signal: operation.signal,
     });
+    if (!operation.valid()) return;
     if (result.response.status === 200 && result.data) cases.value = result.data;
     else error.value = safeError(result.response.status);
   } catch {
-    error.value = "无法连接培养队列服务";
+    if (operation.valid()) error.value = "无法连接培养队列服务";
   } finally {
-    loaded.value = true;
-    loading.value = false;
+    if (operation.valid()) {
+      loaded.value = true;
+      loading.value = false;
+    }
   }
 }
 
 watch(() => props.refreshVersion, () => void loadCases());
-onMounted(() => void loadCases());
+onMounted(() => {
+  componentMounted = true;
+  void loadCases();
+});
 </script>
 
 <template>
@@ -141,6 +163,7 @@ onMounted(() => void loadCases());
     <div
       v-else
       class="cultivation-grid"
+      style="grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr))"
     >
       <article
         v-for="row in rows"
@@ -186,7 +209,7 @@ onMounted(() => void loadCases());
 .catalog-region { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space5); display: grid; gap: var(--space4); }
 .region-head, .cultivation-card > header { display: flex; align-items: center; justify-content: space-between; gap: var(--space3); }
 .region-head h2 { font-size: 20px; }
-.cultivation-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: var(--space3); }
+.cultivation-grid { display: grid; gap: var(--space3); }
 .cultivation-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); display: grid; gap: var(--space3); }
 .cultivation-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space2); }
 .cultivation-card dt { color: var(--text-secondary); font-size: 12px; }

@@ -2,7 +2,7 @@ import { createApp, nextTick, type App as VueApp } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../src/App.vue";
-import { createApiClient } from "../src/api/client";
+import { createApiClient, type WebIdentityProvider, type WebRequestIdentity } from "../src/api/client";
 import router from "../src/router";
 
 const mountedApps: VueApp[] = [];
@@ -40,19 +40,79 @@ function catalogPathResponse(path: string): Response | null {
   return null;
 }
 
-async function mountProducts(fetch: typeof globalThis.fetch): Promise<HTMLElement> {
+function identityHarness(name: string) {
+  let current: WebRequestIdentity = {
+    employeeId: `employee-${name}-a`,
+    mode: "authenticated",
+    tenantId: `tenant-${name}-a`,
+  };
+  let generation = 0;
+  const listeners = new Set<() => void>();
+  const provider: WebIdentityProvider = {
+    current: () => current,
+    generation: () => generation,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+  return {
+    provider,
+    switchTo(suffix: string) {
+      current = {
+        employeeId: `employee-${name}-${suffix}`,
+        mode: "authenticated",
+        tenantId: `tenant-${name}-${suffix}`,
+      };
+      generation += 1;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function mountProductsInstance(
+  fetch: typeof globalThis.fetch,
+  provider: WebIdentityProvider = identityHarness(`default-${mountedApps.length}-${Date.now()}`).provider,
+): Promise<{ app: VueApp; root: HTMLElement }> {
   const root = document.createElement("div");
   document.body.replaceChildren(root);
   const app = createApp(App);
   app.provide(
     "tradeos-api-client",
-    createApiClient({ baseUrl: "https://tradeos.test", fetch }),
+    createApiClient({ baseUrl: "https://tradeos.test", fetch }, provider),
   );
   app.use(router);
   await router.replace("/products");
   app.mount(root);
   mountedApps.push(app);
-  return root;
+  return { app, root };
+}
+
+async function mountProducts(
+  fetch: typeof globalThis.fetch,
+  provider?: WebIdentityProvider,
+): Promise<HTMLElement> {
+  return (await mountProductsInstance(fetch, provider)).root;
+}
+
+function setField(root: HTMLElement, name: string, value: string): void {
+  const input = root.querySelector<HTMLInputElement>(`[name="${name}"]`);
+  expect(input, name).not.toBeNull();
+  if (!input) return;
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function submitPolicyForm(root: HTMLElement): void {
+  const form = root.querySelector<HTMLFormElement>(".policy-form");
+  expect(form).not.toBeNull();
+  form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 }
 
 function policyView(
@@ -155,6 +215,46 @@ function proposal(id: string, state: "awaiting_approval_submission" | "pending_r
       state,
       updated_at: "2026-09-05T03:20:00Z",
     },
+  };
+}
+
+function cultivationCase(id: string, approvalId = `apr_${id}`) {
+  return {
+    approval: {
+      approval_id: approvalId,
+      approval_type: "catalog_product_cultivation",
+      state: "approved",
+    },
+    cultivation_case: {
+      approval_id: approvalId,
+      cluster_id: "ncl_catalog_1",
+      cultivation_case_id: id,
+      evidence_refs: ["ev_safe_a"],
+      facts_hash: "facts_catalog_1",
+      policy_version_id: "cpv_active",
+      proposal_id: "cpp_queued",
+      queued_at: "2026-09-05T04:00:00Z",
+      state: "queued",
+    },
+  };
+}
+
+function approvalView(approvalId: string, title: string, state = "applied") {
+  return {
+    affected_entities: ["catalog-product-proposal"],
+    approval_id: approvalId,
+    approval_type: "catalog_product_cultivation",
+    can_current_user_decide: false,
+    created_at: "2026-09-05T00:00:00Z",
+    expires_at: "2026-09-06T00:00:00Z",
+    if_approved: "进入受控培养队列",
+    if_rejected: "保持候选状态",
+    proposed_change_display: { "候选产品": "工业紧固件" },
+    reason: "经人工审批的目录培养建议",
+    reversible: true,
+    state,
+    title,
+    type_label: "目录产品培养",
   };
 }
 
@@ -412,5 +512,368 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(root.querySelector('[data-region="catalog-policy"]')?.textContent).not.toContain("未配置即关闭");
     expect(root.querySelector('[data-region="catalog-proposals"]')?.textContent).not.toContain("当前没有可展示的目录提案");
     expect(root.querySelector('[data-region="catalog-cultivation"]')?.textContent).not.toContain("当前没有排队中的培养 Case");
+  });
+
+  it("clears all catalog data on identity change, aborts every channel, and ignores late A responses", async () => {
+    const identity = identityHarness("lifecycle");
+    const pending = new Map<string, ReturnType<typeof deferredResponse>>();
+    const lateRequests: Request[] = [];
+    let late = false;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (late && request.headers.get("X-Tenant-Id") === "tenant-lifecycle-a" && path.startsWith("/products/catalog-")) {
+        const slot = deferredResponse();
+        pending.set(`${path}-${pending.size}`, slot);
+        lateRequests.push(request);
+        return slot.promise;
+      }
+      if (path === "/products/catalog-policies/active") return Response.json(policyView("cpv_identity_a", "active", "applied"));
+      if (path === "/products/catalog-policies") return Response.json([policyView("cpv_history_a", "superseded", "applied")]);
+      if (path === "/products/catalog-evaluations") return Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_identity_a" }]);
+      if (path === "/products/catalog-proposals") return Response.json([proposal("cpp_identity_a", "pending_review")]);
+      if (path === "/products/catalog-cultivation-cases") return Response.json([cultivationCase("ccs_identity_a")]);
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch, identity.provider);
+    await eventually(() => {
+      expect(root.textContent).toContain("cpv_identity_a");
+      expect(root.textContent).toContain("cev_identity_a");
+      expect(root.textContent).toContain("cpp_identity_a");
+      expect(root.textContent).toContain("ccs_identity_a");
+    });
+
+    late = true;
+    for (const label of ["刷新策略", "刷新提案", "刷新队列"]) {
+      [...root.querySelectorAll("button")].find((button) => button.textContent?.includes(label))?.click();
+    }
+    await eventually(() => expect(pending.size).toBe(5));
+    identity.switchTo("b");
+    await nextTick();
+    expect(lateRequests.every((request) => request.signal.aborted)).toBe(true);
+    expect(root.textContent).not.toMatch(/cpv_identity_a|cev_identity_a|cpp_identity_a|ccs_identity_a/);
+
+    for (const [key, slot] of pending) {
+      if (key.startsWith("/products/catalog-policies/active")) slot.resolve(Response.json(policyView("cpv_late_a", "active", "applied")));
+      else if (key.startsWith("/products/catalog-policies")) slot.resolve(Response.json([policyView("cpv_history_late_a", "superseded", "applied")]));
+      else if (key.startsWith("/products/catalog-evaluations")) slot.resolve(Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_late_a" }]));
+      else if (key.startsWith("/products/catalog-proposals")) slot.resolve(Response.json([proposal("cpp_late_a", "pending_review")]));
+      else slot.resolve(Response.json([cultivationCase("ccs_late_a")]));
+    }
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.textContent).not.toMatch(/late_a/);
+  });
+
+  it("keeps last safe same-identity data visible when refreshes fail", async () => {
+    let failing = false;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (failing && path.startsWith("/products/catalog-")) return Response.json({}, { status: 503 });
+      if (path === "/products/catalog-policies/active") return Response.json(policyView("cpv_safe", "active", "applied"));
+      if (path === "/products/catalog-policies") return Response.json([policyView("cpv_history_safe", "superseded", "applied")]);
+      if (path === "/products/catalog-evaluations") return Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_safe" }]);
+      if (path === "/products/catalog-proposals") return Response.json([proposal("cpp_safe", "pending_review")]);
+      if (path === "/products/catalog-cultivation-cases") return Response.json([cultivationCase("ccs_safe")]);
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => expect(root.textContent).toContain("ccs_safe"));
+    failing = true;
+    for (const label of ["刷新策略", "刷新提案", "刷新队列"]) {
+      [...root.querySelectorAll("button")].find((button) => button.textContent?.includes(label))?.click();
+    }
+    await eventually(() => {
+      expect(root.textContent).toContain("目录策略服务暂不可用");
+      expect(root.textContent).toContain("目录评估服务暂不可用");
+      expect(root.textContent).toContain("目录提案服务暂不可用");
+      expect(root.textContent).toContain("培养队列服务暂不可用");
+    });
+    expect(root.textContent).toMatch(/cpv_safe/);
+    expect(root.textContent).toMatch(/cev_safe/);
+    expect(root.textContent).toMatch(/cpp_safe/);
+    expect(root.textContent).toMatch(/ccs_safe/);
+  });
+
+  it("prevents older overlapping catalog refreshes from overwriting newer results", async () => {
+    const old = new Map<string, ReturnType<typeof deferredResponse>>();
+    const calls = new Map<string, number>();
+    let overlap = false;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (overlap && path.startsWith("/products/catalog-")) {
+        const count = (calls.get(path) ?? 0) + 1;
+        calls.set(path, count);
+        if (count === 1) {
+          const slot = deferredResponse();
+          old.set(path, slot);
+          return slot.promise;
+        }
+        if (path === "/products/catalog-policies/active") return Response.json(policyView("cpv_newer", "active", "applied"));
+        if (path === "/products/catalog-policies") return Response.json([policyView("cpv_history_newer", "superseded", "applied")]);
+        if (path === "/products/catalog-evaluations") return Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_newer" }]);
+        if (path === "/products/catalog-proposals") return Response.json([proposal("cpp_newer", "pending_review")]);
+        return Response.json([cultivationCase("ccs_newer")]);
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
+    overlap = true;
+    for (const label of ["刷新策略", "刷新提案", "刷新队列"]) {
+      const button = [...root.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(label));
+      button?.click();
+      button?.click();
+    }
+    await eventually(() => expect(root.textContent).toContain("ccs_newer"));
+    for (const [path, slot] of old) {
+      if (path === "/products/catalog-policies/active") slot.resolve(Response.json(policyView("cpv_older", "active", "applied")));
+      else if (path === "/products/catalog-policies") slot.resolve(Response.json([policyView("cpv_history_older", "superseded", "applied")]));
+      else if (path === "/products/catalog-evaluations") slot.resolve(Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_older" }]));
+      else if (path === "/products/catalog-proposals") slot.resolve(Response.json([proposal("cpp_older", "pending_review")]));
+      else slot.resolve(Response.json([cultivationCase("ccs_older")]));
+    }
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.textContent).toMatch(/cpv_newer|cev_newer|cpp_newer|ccs_newer/);
+    expect(root.textContent).not.toMatch(/older/);
+  });
+
+  it("lets a submit-triggered refresh supersede in-flight initial proposal and cultivation reads", async () => {
+    const initial = new Map<string, ReturnType<typeof deferredResponse>>();
+    const calls = new Map<string, number>();
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        return Response.json(policyView("cpv_trigger", "pending_approval", "pending"), { status: 202 });
+      }
+      if (["/products/catalog-evaluations", "/products/catalog-proposals", "/products/catalog-cultivation-cases"].includes(path)) {
+        const count = (calls.get(path) ?? 0) + 1;
+        calls.set(path, count);
+        if (count === 1) {
+          const slot = deferredResponse();
+          initial.set(path, slot);
+          return slot.promise;
+        }
+        if (path === "/products/catalog-evaluations") return Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_trigger_new" }]);
+        if (path === "/products/catalog-proposals") return Response.json([proposal("cpp_trigger_new", "pending_review")]);
+        return Response.json([cultivationCase("ccs_trigger_new")]);
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    submitPolicyForm(root);
+    await eventually(() => expect(root.textContent).toContain("ccs_trigger_new"));
+    initial.get("/products/catalog-evaluations")?.resolve(Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_trigger_old" }]));
+    initial.get("/products/catalog-proposals")?.resolve(Response.json([proposal("cpp_trigger_old", "pending_review")]));
+    initial.get("/products/catalog-cultivation-cases")?.resolve(Response.json([cultivationCase("ccs_trigger_old")]));
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.textContent).toMatch(/cev_trigger_new|cpp_trigger_new|ccs_trigger_new/);
+    expect(root.textContent).not.toMatch(/trigger_old/);
+  });
+
+  it("aborts a pending policy mutation and ignores its late receipt after identity change", async () => {
+    const identity = identityHarness("policy-late-action");
+    const pending = deferredResponse();
+    const postRequests: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        postRequests.push(request);
+        return pending.promise;
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch, identity.provider);
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    submitPolicyForm(root);
+    await eventually(() => expect(postRequests).toHaveLength(1));
+    identity.switchTo("b");
+    await nextTick();
+    expect(postRequests[0]!.signal.aborted).toBe(true);
+    pending.resolve(Response.json(policyView("cpv_late_action", "pending_approval", "pending"), { status: 202 }));
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.textContent).not.toContain("策略候选已提交");
+    expect(root.textContent).not.toContain("cpv_late_action");
+  });
+
+  it("never reuses an uncertain A intent under B and clears mutation state on identity switch", async () => {
+    const identity = identityHarness("policy-cross-identity");
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        if (posts.length === 1) throw new TypeError("uncertain A");
+        return Response.json(policyView("cpv_b", "pending_approval", "pending"), { status: 202 });
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch, identity.provider);
+    await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
+    submitPolicyForm(root);
+    await eventually(() => expect(root.textContent).toContain("提交结果未知"));
+    const aKey = posts[0]!.headers.get("Idempotency-Key");
+    identity.switchTo("b");
+    await nextTick();
+    expect(root.textContent).not.toContain("提交结果未知");
+    expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.headers.get("X-Tenant-Id")).toBe("tenant-policy-cross-identity-b");
+    expect(posts[1]!.headers.get("Idempotency-Key")).not.toBe(aKey);
+    expect(root.textContent).not.toContain(aKey!);
+  });
+
+  it("reuses an unresolved same-identity intent after unmount, but form changes create a new key and body", async () => {
+    const identity = identityHarness("policy-remount");
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        throw new TypeError("controlled uncertainty");
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const first = await mountProductsInstance(fetch, identity.provider);
+    await eventually(() => expect(first.root.textContent).toContain("未配置即关闭"));
+    submitPolicyForm(first.root);
+    await eventually(() => expect(posts).toHaveLength(1));
+    const firstKey = posts[0]!.headers.get("Idempotency-Key");
+    mountedApps.splice(mountedApps.indexOf(first.app), 1);
+    first.app.unmount();
+
+    const second = await mountProductsInstance(fetch, identity.provider);
+    await eventually(() => expect(second.root.textContent).toContain("未配置即关闭"));
+    submitPolicyForm(second.root);
+    await eventually(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.headers.get("Idempotency-Key")).toBe(firstKey);
+    expect(await posts[1]!.text()).toBe(await posts[0]!.text());
+
+    setField(second.root, "minimum_distinct_accounts", "4");
+    await nextTick();
+    submitPolicyForm(second.root);
+    await eventually(() => expect(posts).toHaveLength(3));
+    expect(posts[2]!.headers.get("Idempotency-Key")).not.toBe(firstKey);
+    expect(await posts[2]!.json()).toMatchObject({ minimum_distinct_accounts: 4 });
+    expect(second.root.textContent).not.toContain(posts[2]!.headers.get("Idempotency-Key")!);
+  });
+
+  it("mirrors every catalog policy integer and cross-field bound before POST and normalizes cleared optionals", async () => {
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        return Response.json(policyView("cpv_valid", "pending_approval", "pending"), { status: 202 });
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
+    const invalid: Array<[string, string, string?, string?]> = [
+      ["minimum_distinct_accounts", "1"],
+      ["minimum_distinct_accounts", "2147483648"],
+      ["minimum_recurring_accounts", "0"],
+      ["minimum_recurring_accounts", "4"],
+      ["minimum_recurring_accounts", "2147483648"],
+      ["minimum_distinct_countries", "1"],
+      ["minimum_distinct_countries", "2147483648"],
+      ["minimum_quantity_unit_accounts", "0"],
+      ["minimum_quantity_unit_accounts", "4"],
+      ["minimum_quantity_unit_accounts", "2147483648"],
+    ];
+    for (const [name, value] of invalid) {
+      setField(root, "minimum_distinct_accounts", "3");
+      setField(root, "minimum_recurring_accounts", "");
+      setField(root, "minimum_distinct_countries", "");
+      setField(root, "minimum_quantity_unit_accounts", "");
+      const unified = root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')!;
+      unified.checked = false;
+      unified.dispatchEvent(new Event("change", { bubbles: true }));
+      setField(root, name, value);
+      await nextTick();
+      submitPolicyForm(root);
+      await nextTick();
+      expect(posts, `${name}=${value}`).toHaveLength(0);
+    }
+    const unified = root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')!;
+    unified.checked = true;
+    unified.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    submitPolicyForm(root);
+    await nextTick();
+    expect(posts).toHaveLength(0);
+
+    unified.checked = false;
+    unified.dispatchEvent(new Event("change", { bubbles: true }));
+    setField(root, "minimum_distinct_countries", "4");
+    setField(root, "minimum_recurring_accounts", "2");
+    setField(root, "minimum_quantity_unit_accounts", "2");
+    setField(root, "minimum_recurring_accounts", "");
+    setField(root, "minimum_quantity_unit_accounts", "");
+    await nextTick();
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(1));
+    expect(await posts[0]!.json()).toEqual({
+      minimum_distinct_accounts: 3,
+      minimum_distinct_countries: 4,
+      minimum_quantity_unit_accounts: null,
+      minimum_recurring_accounts: null,
+      require_unified_unit: false,
+    });
+    for (const name of ["minimum_distinct_accounts", "minimum_recurring_accounts", "minimum_distinct_countries", "minimum_quantity_unit_accounts"]) {
+      expect(root.querySelector<HTMLInputElement>(`[name="${name}"]`)?.max).toBe("2147483647");
+    }
+  });
+
+  it("opens the exact linked terminal approval even when absent from pending, and follows exact query changes", async () => {
+    const requestedDetails: string[] = [];
+    const target = approvalView("apr_cpv_terminal", "精确终态目录审批");
+    const second = approvalView("apr_cpv_second", "第二个精确目录审批", "rejected");
+    const other = approvalView("apr_other_pending", "待办中的其他审批", "pending");
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/products/catalog-policies") return Response.json([policyView("cpv_terminal", "rejected", "rejected")]);
+      if (path === "/approvals/pending") return Response.json([other]);
+      if (path.startsWith("/approvals/")) {
+        requestedDetails.push(path.slice("/approvals/".length));
+        if (path === "/approvals/apr_cpv_terminal") return Response.json(target);
+        if (path === "/approvals/apr_cpv_second") return Response.json(second);
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 404 });
+    });
+    const root = await mountProducts(fetch);
+    await eventually(() => expect(root.querySelector('a[href="/approvals?approval_id=apr_cpv_terminal"]')).not.toBeNull());
+    (root.querySelector('a[href="/approvals?approval_id=apr_cpv_terminal"]') as HTMLAnchorElement).click();
+    await eventually(() => expect(root.textContent).toContain("精确终态目录审批"));
+    expect(root.querySelector(".approval-packet h2")?.textContent).toBe("精确终态目录审批");
+    expect(root.querySelector(".approval-list")?.textContent).toContain("待办中的其他审批");
+    expect(requestedDetails).toContain("apr_cpv_terminal");
+
+    await router.replace({ path: "/approvals", query: { approval_id: "apr_cpv_second" } });
+    await eventually(() => expect(root.textContent).toContain("第二个精确目录审批"));
+    expect(requestedDetails).toContain("apr_cpv_second");
+  });
+
+  it("uses a cultivation column minimum that cannot overflow a 320px viewport", async () => {
+    const root = await mountProducts(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/products/catalog-cultivation-cases") return Response.json([cultivationCase("ccs_mobile")]);
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    await eventually(() => expect(root.querySelector(".cultivation-grid")).not.toBeNull());
+    expect(root.querySelector<HTMLElement>(".cultivation-grid")?.style.gridTemplateColumns)
+      .toBe("repeat(auto-fit, minmax(min(290px, 100%), 1fr))");
   });
 });

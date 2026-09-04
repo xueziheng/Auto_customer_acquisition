@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /* global URL, window */
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -10,6 +11,7 @@ type ApiClient = ReturnType<typeof createApiClient>;
 type Approval = components["schemas"]["ApprovalView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
 const approvals = ref<Approval[]>([]);
 const selected = ref<Approval | null>(null);
 const loading = ref(true);
@@ -18,7 +20,13 @@ const deciding = ref(false);
 const error = ref<string | null>(null);
 const rejectionReason = ref("");
 const selectedId = ref("");
-const pageGate = useQuoteRequestScope(client, () => [], () => {
+
+function queryApprovalId(): string | null {
+  const value = route.query.approval_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+const pageGate = useQuoteRequestScope(client, () => [route.query.approval_id], () => {
   approvals.value = []; selected.value = null; selectedId.value = ""; rejectionReason.value = "";
   loading.value = false; detailLoading.value = false; deciding.value = false; error.value = null;
 });
@@ -58,6 +66,7 @@ function safeError(status: number): string {
 
 async function loadApprovals(): Promise<void> {
   const op = pageGate.begin("list"); if (!op?.valid()) return;
+  const requestedApprovalId = queryApprovalId();
   loading.value = true;
   error.value = null;
   try {
@@ -68,9 +77,14 @@ async function loadApprovals(): Promise<void> {
     if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
+      if (requestedApprovalId) await loadDetail(requestedApprovalId);
       return;
     }
     approvals.value = result.data;
+    if (requestedApprovalId) {
+      await loadDetail(requestedApprovalId);
+      return;
+    }
     const current = selectedId.value;
     const retained = current && result.data.some((item) => item.approval_id === current)
       ? current
@@ -90,6 +104,7 @@ async function loadDetail(approvalId: string): Promise<void> {
   deciding.value = false;
   const op = detailGate.begin("detail"); if (!op?.valid()) return;
   detailLoading.value = true;
+  error.value = null;
   rejectionReason.value = "";
   try {
     const result = await client.GET("/approvals/{approval_id}", {
@@ -137,6 +152,11 @@ async function decide(decision: "approve" | "reject"): Promise<void> {
   }
 }
 
+watch(() => route.query.approval_id, () => {
+  const approvalId = queryApprovalId();
+  if (approvalId) void loadDetail(approvalId);
+  else void loadApprovals();
+}, { flush: "sync" });
 onMounted(() => void loadApprovals());
 </script>
 

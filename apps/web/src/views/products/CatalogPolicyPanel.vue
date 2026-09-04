@@ -1,9 +1,23 @@
+<script lang="ts">
+import type { components as ApiComponents } from "../../api/api";
+
+type RetainedPolicyRequest = {
+  body: ApiComponents["schemas"]["CatalogProposalPolicyContent"];
+  key: string;
+  retryable: boolean;
+  serializedBody: string;
+};
+
+const retainedPolicyRequests = new Map<string, RetainedPolicyRequest>();
+</script>
+
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type PolicyApiView = components["schemas"]["CatalogPolicyApiView"];
@@ -23,19 +37,36 @@ const actionError = ref<string | null>(null);
 const actionNotice = ref<string | null>(null);
 const retryable = ref(false);
 
-const minimumDistinctAccounts = ref<number | null>(3);
-const minimumRecurringAccounts = ref<number | null>(null);
-const minimumDistinctCountries = ref<number | null>(null);
-const minimumQuantityUnitAccounts = ref<number | null>(null);
+const maximumInteger = 2_147_483_647;
+const minimumDistinctAccounts = ref<number | string | null>(3);
+const minimumRecurringAccounts = ref<number | string | null>(null);
+const minimumDistinctCountries = ref<number | string | null>(null);
+const minimumQuantityUnitAccounts = ref<number | string | null>(null);
 const requireUnifiedUnit = ref(false);
+let retainedIdentityKey: string | null = null;
+let componentMounted = false;
 
-interface RetainedRequest {
-  body: PolicyContent;
-  key: string;
-  serializedBody: string;
+function resetPanel(): void {
+  activePolicy.value = null;
+  history.value = [];
+  loading.value = false;
+  loaded.value = false;
+  error.value = null;
+  submitting.value = false;
+  actionError.value = null;
+  actionNotice.value = null;
+  retryable.value = false;
+  retainedIdentityKey = null;
+  minimumDistinctAccounts.value = 3;
+  minimumRecurringAccounts.value = null;
+  minimumDistinctCountries.value = null;
+  minimumQuantityUnitAccounts.value = null;
+  requireUnifiedUnit.value = false;
+  if (componentMounted) globalThis.queueMicrotask(() => void loadPolicies());
 }
 
-let retainedRequest: RetainedRequest | null = null;
+onBeforeUnmount(() => { componentMounted = false; });
+const requestGate = useQuoteRequestScope(client, () => [], resetPanel);
 
 const formSnapshot = computed(() => JSON.stringify([
   minimumDistinctAccounts.value,
@@ -46,7 +77,8 @@ const formSnapshot = computed(() => JSON.stringify([
 ]));
 
 watch(formSnapshot, () => {
-  retainedRequest = null;
+  if (retainedIdentityKey) retainedPolicyRequests.delete(retainedIdentityKey);
+  retainedIdentityKey = null;
   retryable.value = false;
   actionError.value = null;
   actionNotice.value = null;
@@ -97,91 +129,147 @@ function formatDate(value: string | null): string {
 }
 
 async function loadPolicies(): Promise<void> {
-  if (!loaded.value) loading.value = true;
+  const operation = requestGate.begin("policies");
+  if (!operation?.valid()) return;
+  loading.value = true;
   error.value = null;
   const failures: string[] = [];
-  try {
-    const result = await client.GET("/products/catalog-policies/active");
-    if (result.response.status === 200) activePolicy.value = result.data ?? null;
-    else failures.push(safeReadError(result.response.status));
-  } catch {
-    failures.push("无法连接目录策略服务");
-  }
-  try {
-    const result = await client.GET("/products/catalog-policies", {
+  const [activeResult, historyResult] = await Promise.allSettled([
+    client.GET("/products/catalog-policies/active", { signal: operation.signal }),
+    client.GET("/products/catalog-policies", {
       params: { query: { limit: 50 } },
-    });
-    if (result.response.status === 200 && result.data) history.value = result.data;
-    else failures.push(safeReadError(result.response.status));
-  } catch {
-    failures.push("无法连接目录策略服务");
-  }
+      signal: operation.signal,
+    }),
+  ]);
+  if (!operation.valid()) return;
+  if (activeResult.status === "fulfilled") {
+    if (activeResult.value.response.status === 200) activePolicy.value = activeResult.value.data ?? null;
+    else failures.push(safeReadError(activeResult.value.response.status));
+  } else failures.push("无法连接目录策略服务");
+  if (historyResult.status === "fulfilled") {
+    if (historyResult.value.response.status === 200 && historyResult.value.data) history.value = historyResult.value.data;
+    else failures.push(safeReadError(historyResult.value.response.status));
+  } else failures.push("无法连接目录策略服务");
   error.value = failures[0] ?? null;
   loaded.value = true;
   loading.value = false;
 }
 
+function normalizedOptionalInteger(value: number | string | null): number | null {
+  if (value === "" || value === null) return null;
+  return typeof value === "number" ? value : Number.NaN;
+}
+
+function boundedInteger(value: number | null, minimum: number): value is number {
+  return value !== null && Number.isInteger(value) && value >= minimum && value <= maximumInteger;
+}
+
 function policyBody(): PolicyContent | null {
-  const minimum = minimumDistinctAccounts.value;
-  if (!Number.isInteger(minimum) || minimum === null || minimum < 1) return null;
-  const optionalValues = [
-    minimumDistinctCountries.value,
-    minimumQuantityUnitAccounts.value,
-    minimumRecurringAccounts.value,
-  ];
-  if (optionalValues.some((value) => value !== null && (!Number.isInteger(value) || value < 0))) return null;
+  const minimum = normalizedOptionalInteger(minimumDistinctAccounts.value);
+  const recurring = normalizedOptionalInteger(minimumRecurringAccounts.value);
+  const countries = normalizedOptionalInteger(minimumDistinctCountries.value);
+  const quantity = normalizedOptionalInteger(minimumQuantityUnitAccounts.value);
+  if (!boundedInteger(minimum, 2)) return null;
+  if (recurring !== null && (!boundedInteger(recurring, 1) || recurring > minimum)) return null;
+  if (quantity !== null && (!boundedInteger(quantity, 1) || quantity > minimum)) return null;
+  if (countries !== null && !boundedInteger(countries, 2)) return null;
+  if (requireUnifiedUnit.value && quantity === null) return null;
   return {
     minimum_distinct_accounts: minimum,
-    minimum_distinct_countries: minimumDistinctCountries.value,
-    minimum_quantity_unit_accounts: minimumQuantityUnitAccounts.value,
-    minimum_recurring_accounts: minimumRecurringAccounts.value,
+    minimum_distinct_countries: countries,
+    minimum_quantity_unit_accounts: quantity,
+    minimum_recurring_accounts: recurring,
     require_unified_unit: requireUnifiedUnit.value,
   };
 }
 
+function exactIdentityKey(): string | null {
+  try {
+    const snapshot = client.identitySnapshot();
+    if (!snapshot.identity) return null;
+    return JSON.stringify([
+      snapshot.generation,
+      snapshot.identity.tenantId,
+      snapshot.identity.employeeId,
+      snapshot.identity.mode,
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+function restoreRetainedPolicyIntent(): void {
+  const identityKey = exactIdentityKey();
+  const body = policyBody();
+  if (!identityKey || !body) return;
+  const request = retainedPolicyRequests.get(identityKey);
+  if (!request || !request.retryable || request.serializedBody !== JSON.stringify(body)) return;
+  retainedIdentityKey = identityKey;
+  retryable.value = true;
+  actionNotice.value = "检测到同一身份尚未核清的原请求；重试将沿用原请求内容";
+}
+
 async function submitPolicy(): Promise<void> {
-  if (submitting.value) return;
+  if (submitting.value || !requestGate.hasIdentity.value) return;
   const body = policyBody();
   if (!body) {
-    actionError.value = "策略门槛必须是有效整数";
+    actionError.value = "策略门槛不符合受控范围或字段关系";
     return;
   }
+  const operation = requestGate.begin("submit-policy");
+  const identityKey = exactIdentityKey();
+  if (!operation?.valid() || !identityKey) return;
   const serializedBody = JSON.stringify(body);
-  if (!retainedRequest || retainedRequest.serializedBody !== serializedBody) {
-    retainedRequest = {
+  let request = retainedPolicyRequests.get(identityKey);
+  if (!request || request.serializedBody !== serializedBody) {
+    retainedPolicyRequests.delete(identityKey);
+    request = {
       body: { ...body },
       key: globalThis.crypto.randomUUID(),
+      retryable: false,
       serializedBody,
     };
+    retainedPolicyRequests.set(identityKey, request);
   }
-  const request = retainedRequest;
+  retainedIdentityKey = identityKey;
   submitting.value = true;
   actionError.value = null;
   actionNotice.value = null;
   retryable.value = false;
+  request.retryable = true;
   try {
     const result = await client.POST("/products/catalog-policies", {
       params: { header: { "Idempotency-Key": request.key } },
       body: request.body,
+      signal: operation.signal,
     });
+    if (!operation.valid() || exactIdentityKey() !== identityKey) return;
     if (result.response.status === 202 && result.data) {
-      retainedRequest = null;
+      retainedPolicyRequests.delete(identityKey);
+      retainedIdentityKey = null;
       actionNotice.value = "策略候选已提交，等待 Approval Center 决定";
       emit("submitted");
       await loadPolicies();
       return;
     }
     retryable.value = result.response.status === 503;
+    request.retryable = retryable.value;
     actionError.value = safeSubmitError(result.response.status);
   } catch {
-    retryable.value = true;
-    actionError.value = "提交结果未知，保留原请求；请按原请求重试";
+    if (operation.valid() && exactIdentityKey() === identityKey) {
+      retryable.value = true;
+      actionError.value = "提交结果未知，保留原请求；请按原请求重试";
+    }
   } finally {
-    submitting.value = false;
+    if (operation.valid() && exactIdentityKey() === identityKey) submitting.value = false;
   }
 }
 
-onMounted(() => void loadPolicies());
+onMounted(() => {
+  componentMounted = true;
+  restoreRetainedPolicyIntent();
+  void loadPolicies();
+});
 </script>
 
 <template>
@@ -219,7 +307,7 @@ onMounted(() => void loadPolicies());
     >
       正在读取目录策略…
     </div>
-    <template v-else>
+    <template v-if="loaded">
       <div
         v-if="!error && !activePolicy"
         class="disabled-message"
@@ -257,27 +345,31 @@ onMounted(() => void loadPolicies());
             v-model.number="minimumDistinctAccounts"
             name="minimum_distinct_accounts"
             type="number"
-            min="1"
+            min="2"
+            :max="maximumInteger"
           ></label>
           <label>复购客户数下限（可选）<input
             v-model.number="minimumRecurringAccounts"
             name="minimum_recurring_accounts"
             type="number"
-            min="0"
+            min="1"
+            :max="maximumInteger"
             placeholder="不要求"
           ></label>
           <label>国家数下限（可选）<input
             v-model.number="minimumDistinctCountries"
             name="minimum_distinct_countries"
             type="number"
-            min="0"
+            min="2"
+            :max="maximumInteger"
             placeholder="不要求"
           ></label>
           <label>数量/单位覆盖下限（可选）<input
             v-model.number="minimumQuantityUnitAccounts"
             name="minimum_quantity_unit_accounts"
             type="number"
-            min="0"
+            min="1"
+            :max="maximumInteger"
             placeholder="不要求"
           ></label>
           <label class="checkbox"><input

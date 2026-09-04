@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Evaluation = components["schemas"]["CatalogProposalEvaluationView"];
@@ -25,6 +26,24 @@ const evaluationError = ref<string | null>(null);
 const proposalError = ref<string | null>(null);
 const selectedGroup = ref<ProposalGroup>("pending");
 const candidateWarning = "这是一项候选产品培养建议，不代表已确认供应、正式产品或可报价价格。";
+let componentMounted = false;
+
+function resetPanel(): void {
+  evaluations.value = [];
+  proposals.value = [];
+  evaluationLoading.value = false;
+  proposalLoading.value = false;
+  evaluationLoaded.value = false;
+  proposalLoaded.value = false;
+  evaluationError.value = null;
+  proposalError.value = null;
+  selectedGroup.value = "pending";
+  emit("evaluationsLoaded", []);
+  if (componentMounted) globalThis.queueMicrotask(() => void loadAll());
+}
+
+onBeforeUnmount(() => { componentMounted = false; });
+const requestGate = useQuoteRequestScope(client, () => [], resetPanel);
 
 const groups: { key: ProposalGroup; label: string }[] = [
   { key: "pending", label: "待处理" },
@@ -87,48 +106,45 @@ function displayValue(value: number | string | boolean | null): string {
   return String(value);
 }
 
-async function loadEvaluations(): Promise<void> {
-  if (!evaluationLoaded.value) evaluationLoading.value = true;
-  evaluationError.value = null;
-  try {
-    const result = await client.GET("/products/catalog-evaluations", {
-      params: { query: { limit: 50 } },
-    });
-    if (result.response.status === 200 && result.data) {
-      evaluations.value = result.data;
-      emit("evaluationsLoaded", result.data);
-    } else evaluationError.value = safeError("evaluation", result.response.status);
-  } catch {
-    evaluationError.value = "无法连接目录评估服务";
-  } finally {
-    evaluationLoaded.value = true;
-    evaluationLoading.value = false;
-  }
-}
-
-async function loadProposals(): Promise<void> {
-  if (!proposalLoaded.value) proposalLoading.value = true;
-  proposalError.value = null;
-  try {
-    const result = await client.GET("/products/catalog-proposals", {
-      params: { query: { limit: 50 } },
-    });
-    if (result.response.status === 200 && result.data) proposals.value = result.data;
-    else proposalError.value = safeError("proposal", result.response.status);
-  } catch {
-    proposalError.value = "无法连接目录提案服务";
-  } finally {
-    proposalLoaded.value = true;
-    proposalLoading.value = false;
-  }
-}
-
 async function loadAll(): Promise<void> {
-  await Promise.all([loadEvaluations(), loadProposals()]);
+  const operation = requestGate.begin("catalog-proposals");
+  if (!operation?.valid()) return;
+  evaluationLoading.value = true;
+  proposalLoading.value = true;
+  evaluationError.value = null;
+  proposalError.value = null;
+  const [evaluationResult, proposalResult] = await Promise.allSettled([
+    client.GET("/products/catalog-evaluations", {
+      params: { query: { limit: 50 } },
+      signal: operation.signal,
+    }),
+    client.GET("/products/catalog-proposals", {
+      params: { query: { limit: 50 } },
+      signal: operation.signal,
+    }),
+  ]);
+  if (!operation.valid()) return;
+  if (evaluationResult.status === "fulfilled") {
+    if (evaluationResult.value.response.status === 200 && evaluationResult.value.data) {
+      evaluations.value = evaluationResult.value.data;
+      emit("evaluationsLoaded", evaluationResult.value.data);
+    } else evaluationError.value = safeError("evaluation", evaluationResult.value.response.status);
+  } else evaluationError.value = "无法连接目录评估服务";
+  if (proposalResult.status === "fulfilled") {
+    if (proposalResult.value.response.status === 200 && proposalResult.value.data) proposals.value = proposalResult.value.data;
+    else proposalError.value = safeError("proposal", proposalResult.value.response.status);
+  } else proposalError.value = "无法连接目录提案服务";
+  evaluationLoaded.value = true;
+  proposalLoaded.value = true;
+  evaluationLoading.value = false;
+  proposalLoading.value = false;
 }
 
 watch(() => props.refreshVersion, () => void loadAll());
-onMounted(() => void loadAll());
+onMounted(() => {
+  componentMounted = true;
+  void loadAll();
+});
 </script>
 
 <template>
