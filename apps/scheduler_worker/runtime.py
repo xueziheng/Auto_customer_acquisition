@@ -85,7 +85,8 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
-from domains.prospecting.service import ProspectingService
+from domains.prospecting.service import ContactValueHasher, ProspectingService
+from domains.prospecting.service_impl import ProspectingServiceImpl
 from domains.sending_identity.permissions import (
     Phase1SendingIdentityAuthorizer,
     StandardAuditLogger,
@@ -110,6 +111,7 @@ from infra.db.email_feedback_uow import (
 from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
+from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
@@ -282,6 +284,10 @@ from .campaign_events import (
     AccountDiscoveryCampaignEventHandlers,
     CampaignEventHandlers,
 )
+from .catalog_product_runtime import (
+    CatalogProductComposition,
+    build_catalog_product_composition,
+)
 from .config import SchedulerWorkerConfig
 from .directive_reader import (
     DirectiveSourcingAdmissionPolicyReader,
@@ -336,6 +342,19 @@ class CompleteOutboxRegistry(Protocol):
 
 _HEALTH_CHECKPOINTS = frozenset({"config", "schema", "database", "registry"})
 _SOURCING_ADMISSION_LEASE_DURATION = timedelta(minutes=5)
+
+
+class _DomainSeparatedContactValueHasher(ContactValueHasher):
+    """复用 scheduler HMAC key，但以固定域标签隔离联系方式指纹。"""
+
+    def __init__(self, provider: HmacFingerprintProvider) -> None:
+        self._provider = provider
+
+    def fingerprint(self, canonical_value: str) -> str:
+        digest, _version = self._provider.fingerprint(
+            (b"contact-value-v1", canonical_value.encode("utf-8"))
+        )
+        return digest
 
 
 class _NoSignalUvicornServer(uvicorn.Server):
@@ -1141,6 +1160,22 @@ class SchedulerRuntimeFactory:
                 if quote_domain is None
                 else quote_domain.approval_access,
             )
+            catalog_prospecting = ProspectingServiceImpl(
+                lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
+                    factory, requested_tenant, now=self._now
+                ),
+                _DomainSeparatedContactValueHasher(fingerprints),
+                now=self._now,
+            )
+            catalog_products: CatalogProductComposition = (
+                build_catalog_product_composition(
+                    factory=factory,
+                    prospecting=catalog_prospecting,
+                    approvals=change_approvals,
+                    tenant_id=config.tenant_id,
+                    now=self._now,
+                )
+            )
             playbook_organization = OrganizationServiceImpl(
                 lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
                     factory, requested_tenant
@@ -1443,6 +1478,7 @@ class SchedulerRuntimeFactory:
                     **country_policy_handlers,
                     **sourcing_handlers,
                     **quote_handlers,
+                    **catalog_products.handlers,
                 },
                 now=self._now,
             )
@@ -1478,6 +1514,11 @@ class SchedulerRuntimeFactory:
             )
             register_playbook_change(workflow, outbox, change_approvals)
             register_country_policy_change(workflow, outbox, change_approvals)
+            catalog_runtime = catalog_products.bind(
+                engine=workflow,
+                outbox=outbox,
+                batch_limit=config.batch_limit,
+            )
             if sourcing_composition is not None:
                 sourcing_composition.register(
                     workflow,
@@ -1602,6 +1643,7 @@ class SchedulerRuntimeFactory:
                     else None
                 ),
                 sourcing_admission_driver=sourcing_admission_driver,
+                catalog_product_driver=catalog_runtime.driver,
             )
         except BaseException as error:
             primary = error

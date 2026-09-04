@@ -82,6 +82,7 @@ CatalogProposalState = Literal[
     "expired",
     "stale",
 ]
+CatalogReconciliationStream = Literal["pending_policies", "awaiting_proposals"]
 
 
 def _bounded_text(value: str, field_name: str, maximum: int) -> str:
@@ -108,9 +109,7 @@ def _bounded_identity(value: str, field_name: str, maximum: int = 200) -> str:
 
 def _storage_safe_count(value: int, field_name: str, minimum: int = 0) -> int:
     if type(value) is not int or not minimum <= value <= _PG_SIGNED_INT_MAX:
-        raise ValueError(
-            f"{field_name} 必须是 {minimum}..{_PG_SIGNED_INT_MAX} 的整数"
-        )
+        raise ValueError(f"{field_name} 必须是 {minimum}..{_PG_SIGNED_INT_MAX} 的整数")
     return value
 
 
@@ -156,10 +155,7 @@ class CatalogProposalPolicyContent(_CatalogFrozenModel):
                 "minimum_distinct_countries",
                 minimum=2,
             )
-        if (
-            self.require_unified_unit
-            and self.minimum_quantity_unit_accounts is None
-        ):
+        if self.require_unified_unit and self.minimum_quantity_unit_accounts is None:
             raise ValueError("统一单位要求只能在数量单位门槛启用时设置")
         return self
 
@@ -447,10 +443,7 @@ class CatalogProposalEvaluationResult(_CatalogFrozenModel):
         unified_required = cast(bool | None, self.rule_results[5].required_value)
         if (
             (recurring_required is not None and recurring_required > distinct_required)
-            or (
-                quantity_required is not None
-                and quantity_required > distinct_required
-            )
+            or (quantity_required is not None and quantity_required > distinct_required)
             or (unified_required is True and quantity_required is None)
         ):
             raise ValueError("评估的策略 required 形状不一致")
@@ -576,6 +569,123 @@ class CatalogProposalPolicyView(_CatalogFrozenModel):
                 _strict_utc(value, field_name)
                 if value < self.created_at:
                     raise ValueError(f"{field_name} 不得早于 created_at")
+        return self
+
+
+class CatalogReconciliationCursor(_CatalogFrozenModel):
+    """公开的升序恢复游标；只保存租户、流、持久时间和实体定位。"""
+
+    tenant_id: TenantId
+    stream: CatalogReconciliationStream
+    position_at: datetime
+    entity_id: str
+
+    @model_validator(mode="after")
+    def validate_cursor(self) -> Self:
+        _bounded_identity(self.tenant_id, "tenant_id", 40)
+        if not self.tenant_id.startswith("tn_"):
+            raise ValueError("tenant_id 无效")
+        _strict_utc(self.position_at, "position_at")
+        expected_prefix = "cpv_" if self.stream == "pending_policies" else "cpr_"
+        _bounded_identity(self.entity_id, "entity_id", 40)
+        if not self.entity_id.startswith(expected_prefix):
+            raise ValueError("Catalog 恢复游标实体类型与查询流不匹配")
+        return self
+
+
+class CatalogPolicyReconciliationItem(_CatalogFrozenModel):
+    """待恢复策略的最小 locator，不暴露策略正文或审批请求摘要。"""
+
+    policy_version_id: CatalogProposalPolicyVersionId
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_item(self) -> Self:
+        _bounded_identity(self.policy_version_id, "policy_version_id", 40)
+        if not self.policy_version_id.startswith("cpv_"):
+            raise ValueError("policy_version_id 无效")
+        _strict_utc(self.created_at, "created_at")
+        return self
+
+
+class CatalogProposalReconciliationItem(_CatalogFrozenModel):
+    """待恢复提案的最小 locator，不暴露需求事实或证据正文。"""
+
+    proposal_id: CatalogProductProposalId
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_item(self) -> Self:
+        _bounded_identity(self.proposal_id, "proposal_id", 40)
+        if not self.proposal_id.startswith("cpr_"):
+            raise ValueError("proposal_id 无效")
+        _strict_utc(self.created_at, "created_at")
+        return self
+
+
+class CatalogPolicyReconciliationPage(_CatalogFrozenModel):
+    """待审批策略的稳定升序恢复页。"""
+
+    tenant_id: TenantId
+    items: tuple[CatalogPolicyReconciliationItem, ...]
+    next_cursor: CatalogReconciliationCursor | None
+
+    @model_validator(mode="after")
+    def validate_page(self) -> Self:
+        _bounded_identity(self.tenant_id, "tenant_id", 40)
+        order = tuple(
+            (item.created_at, str(item.policy_version_id)) for item in self.items
+        )
+        if (
+            not self.tenant_id.startswith("tn_")
+            or len(self.items) > 200
+            or tuple(sorted(order)) != order
+            or len(set(order)) != len(order)
+            or self.next_cursor is not None
+            and (
+                self.next_cursor.tenant_id != self.tenant_id
+                or self.next_cursor.stream != "pending_policies"
+                or not order
+                or (
+                    self.next_cursor.position_at,
+                    self.next_cursor.entity_id,
+                )
+                != order[-1]
+            )
+        ):
+            raise ValueError("Catalog 策略恢复页无效")
+        return self
+
+
+class CatalogProposalReconciliationPage(_CatalogFrozenModel):
+    """待提交培养审批提案的稳定升序恢复页。"""
+
+    tenant_id: TenantId
+    items: tuple[CatalogProposalReconciliationItem, ...]
+    next_cursor: CatalogReconciliationCursor | None
+
+    @model_validator(mode="after")
+    def validate_page(self) -> Self:
+        _bounded_identity(self.tenant_id, "tenant_id", 40)
+        order = tuple((item.created_at, str(item.proposal_id)) for item in self.items)
+        if (
+            not self.tenant_id.startswith("tn_")
+            or len(self.items) > 200
+            or tuple(sorted(order)) != order
+            or len(set(order)) != len(order)
+            or self.next_cursor is not None
+            and (
+                self.next_cursor.tenant_id != self.tenant_id
+                or self.next_cursor.stream != "awaiting_proposals"
+                or not order
+                or (
+                    self.next_cursor.position_at,
+                    self.next_cursor.entity_id,
+                )
+                != order[-1]
+            )
+        ):
+            raise ValueError("Catalog 提案恢复页无效")
         return self
 
 

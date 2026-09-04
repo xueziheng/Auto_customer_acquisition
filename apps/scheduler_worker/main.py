@@ -57,6 +57,12 @@ class SourcingAdmissionDriverProtocol(Protocol):
     async def scan_once(self) -> object: ...
 
 
+class CatalogProductDriverProtocol(Protocol):
+    """目录产品恢复与评估扫描的租户绑定驱动。"""
+
+    async def scan_once(self) -> object: ...
+
+
 class RuntimeActivation(Protocol):
     """仅由已持有并确认 dedicated scheduler 锁的副本执行的启动事实。"""
 
@@ -106,6 +112,7 @@ class SchedulerRuntime:
     activation: RuntimeActivation | None = None
     quote_expiry_driver: QuoteExpiryDriver | None = None
     sourcing_admission_driver: SourcingAdmissionDriverProtocol | None = None
+    catalog_product_driver: CatalogProductDriverProtocol | None = None
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():
@@ -118,6 +125,10 @@ class SchedulerRuntime:
             getattr(self.sourcing_admission_driver, "scan_once", None)
         ):
             raise ValidationError("scheduler sourcing admission driver 无效")
+        if self.catalog_product_driver is not None and not callable(
+            getattr(self.catalog_product_driver, "scan_once", None)
+        ):
+            raise ValidationError("scheduler catalog product driver 无效")
 
 
 class RuntimeFactory(Protocol):
@@ -211,11 +222,12 @@ async def _run_cycle(
     """执行一个固定顺序 cycle；各 phase 隔离且不跨 phase 回滚。
 
     顺序：outbox 前置投递 → Campaign 到期扫描 → 报价到期 → 寻源准入 →
-    workflow 推进 → 有推进时 outbox 后置投递。
+    Catalog 恢复/评估 → workflow 推进 → 有推进时 outbox 后置投递。
     """
     if (
         runtime.quote_expiry_driver is not None
         or runtime.sourcing_admission_driver is not None
+        or runtime.catalog_product_driver is not None
     ) and confirm_lock is None:
         raise RuntimeError("单副本阶段扫描缺少 scheduler 锁确认")
     pre_count = 0
@@ -271,6 +283,20 @@ async def _run_cycle(
             )
         await confirm_lock()
 
+    if runtime.catalog_product_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.catalog_product_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - phase独立失败、固定类型日志
+            _log_phase_error(
+                phase="catalog_products",
+                error=error,
+                tenant_id=runtime.tenant_id,
+                cycle=cycle,
+            )
+        await confirm_lock()
+
     workflow_succeeded = False
     try:
         workflow_count = await runtime.workflow.poll_due(
@@ -286,7 +312,10 @@ async def _run_cycle(
         )
 
     if workflow_succeeded and workflow_count > 0:
-        if runtime.sourcing_admission_driver is not None:
+        if (
+            runtime.sourcing_admission_driver is not None
+            or runtime.catalog_product_driver is not None
+        ):
             assert confirm_lock is not None
             await confirm_lock()
         try:

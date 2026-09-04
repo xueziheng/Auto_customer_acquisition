@@ -36,6 +36,8 @@ from domains.demand.models import (
 )
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import (
+    CatalogClusterCursor,
+    CatalogClusterIdPage,
     CatalogEvidenceSummary,
     CustomerReplyEvidenceClaim,
     DemandCatalogAccountFact,
@@ -188,9 +190,7 @@ def _coerce_field_value(name: str, value: object) -> object:
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise ValidationError("需求字段类型无效") from exc
     if name in _TEXT_PROMOTE_FIELDS and (
-        not isinstance(value, str)
-        or not value.strip()
-        or value != value.strip()
+        not isinstance(value, str) or not value.strip() or value != value.strip()
     ):
         raise ValidationError("需求字段类型无效")
     return value
@@ -317,11 +317,7 @@ class DemandServiceImpl:
     ) -> str | None:
         if can_be_none and value is None:
             return None
-        if (
-            not isinstance(value, str)
-            or not value.strip()
-            or value != value.strip()
-        ):
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
             raise ValidationError(f"{label}无效")
         if max_len is not None and len(value) > max_len:
             raise ValidationError(f"{label}超长")
@@ -342,7 +338,9 @@ class DemandServiceImpl:
         entity_name = self._require_text(request.entity_name, "信号企业名", max_len=200)
         raw_observation = self._require_text(request.raw_observation, "信号观察内容")
         source_id = self._require_text(request.source_id, "信号来源", max_len=200)
-        extracted_by = self._require_text(request.extracted_by, "信号提取者", max_len=64)
+        extracted_by = self._require_text(
+            request.extracted_by, "信号提取者", max_len=64
+        )
         # 必填字段（can_be_none=False 已保证非 None）：显式收窄以通过 mypy
         assert entity_name is not None and raw_observation is not None
         assert source_id is not None and extracted_by is not None
@@ -445,7 +443,8 @@ class DemandServiceImpl:
                 source_id,
                 **(
                     {"discovery_key": request.research_evidence.discovery_key}
-                    if request.research_evidence is not None else {}
+                    if request.research_evidence is not None
+                    else {}
                 ),
             )
             if winner is None:
@@ -478,7 +477,9 @@ class DemandServiceImpl:
         if len(signal_id) > 32:
             raise ValidationError("信号标识超长")
         reason_text = self._require_text(reason, "丢弃原因")
-        assert reason_text is not None  # can_be_none=False 已保证非 None：收窄以通过 mypy
+        assert (
+            reason_text is not None
+        )  # can_be_none=False 已保证非 None：收窄以通过 mypy
         async with self._uow_factory(tenant_id) as uow:
             snapshot = await uow.signals.discard(
                 tenant_id, DemandSignalId(signal_id), reason_text
@@ -545,7 +546,10 @@ class DemandServiceImpl:
                     raise ValidationError("需求信号不存在")
                 if signal.status is SignalStatus.DISCARDED:
                     raise ValidationError("需求信号已丢弃")
-                if signal.research_evidence is not None and signal.research_evidence.identity_status != "self_described":
+                if (
+                    signal.research_evidence is not None
+                    and signal.research_evidence.identity_status != "self_described"
+                ):
                     raise ValidationError("待核验研究信号不能创建需求假设")
                 evidence.append(
                     EvidenceItem(
@@ -706,9 +710,7 @@ class DemandServiceImpl:
                 need_id=ValidatedNeedId(new_id("need")),
                 tenant_id=tenant_id,
                 account_id=hypothesis.account_id,
-                product_category=cast(
-                    FactualField[str], fields["product_category"]
-                ),
+                product_category=cast(FactualField[str], fields["product_category"]),
                 source_message_id=MessageId(source_message_id),
                 created_at=now,
                 source_conversation_id=None,
@@ -717,12 +719,8 @@ class DemandServiceImpl:
                 size_spec=cast(FactualField[str] | None, fields.get("size_spec")),
                 quantity=cast(FactualField[int] | None, fields.get("quantity")),
                 packaging=cast(FactualField[str] | None, fields.get("packaging")),
-                destination=cast(
-                    FactualField[str] | None, fields.get("destination")
-                ),
-                required_by=cast(
-                    FactualField[date] | None, fields.get("required_by")
-                ),
+                destination=cast(FactualField[str] | None, fields.get("destination")),
+                required_by=cast(FactualField[date] | None, fields.get("required_by")),
                 target_price=cast(
                     FactualField[Money] | None, fields.get("target_price")
                 ),
@@ -918,9 +916,7 @@ class DemandServiceImpl:
         }
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
-            need = await uow.needs.get_for_update(
-                tenant_id, ValidatedNeedId(need_id)
-            )
+            need = await uow.needs.get_for_update(tenant_id, ValidatedNeedId(need_id))
             if need is None:
                 raise ValidationError("已验证需求不存在")
             if need.status in (
@@ -939,7 +935,10 @@ class DemandServiceImpl:
             catalog_change_kinds: list[str] = []
             for name, value in coerced.items():
                 current = cast(FactualField[object] | None, getattr(need, name))
-                if current is not None and current.provenance.source_id == source_message_id:
+                if (
+                    current is not None
+                    and current.provenance.source_id == source_message_id
+                ):
                     if (
                         current.value == value
                         and current.provenance.source_quote == extracted[name][1]
@@ -949,9 +948,7 @@ class DemandServiceImpl:
                     ):
                         continue
                     raise ValidationError("同一消息字段证据冲突，拒绝覆盖")
-                old_text = _factual_value_to_text(
-                    current
-                )
+                old_text = _factual_value_to_text(current)
                 new_field = FactualField(
                     value=value,
                     provenance=Provenance(
@@ -1031,9 +1028,7 @@ class DemandServiceImpl:
         if len(need_id) > 40:
             raise ValidationError("已验证需求标识超长")
         async with self._uow_factory(tenant_id) as uow:
-            need = await uow.needs.get_for_update(
-                tenant_id, ValidatedNeedId(need_id)
-            )
+            need = await uow.needs.get_for_update(tenant_id, ValidatedNeedId(need_id))
             if need is None:
                 raise ValidationError("已验证需求不存在")
             if need.status in (
@@ -1052,9 +1047,7 @@ class DemandServiceImpl:
                     "完整度不足，不能进寻源：还缺 "
                     + "、".join(need.missing_fields_for_sourcing())
                 )
-            await uow.needs.update(
-                replace(need, status=NeedStatus.SOURCING_READY)
-            )
+            await uow.needs.update(replace(need, status=NeedStatus.SOURCING_READY))
 
     async def get_confidence(
         self,
@@ -1252,8 +1245,7 @@ class DemandServiceImpl:
             tuple(need.account_id for need in needs),
         )
         return [
-            self._validated_need_view(need, names[need.account_id])
-            for need in needs
+            self._validated_need_view(need, names[need.account_id]) for need in needs
         ]
 
     async def get_need(
@@ -1307,9 +1299,7 @@ class DemandServiceImpl:
                 for cluster in clusters
             ]
         account_ids = tuple(
-            need.account_id
-            for needs in needs_by_cluster
-            for need in needs
+            need.account_id for needs in needs_by_cluster for need in needs
         )
         names = await self._load_account_names(tenant_id, account_ids)
         return [
@@ -1442,9 +1432,7 @@ class DemandServiceImpl:
             raise ValidationError("需求目录账户事实依赖未配置")
 
         sorted_needs = tuple(sorted(needs, key=lambda item: str(item.need_id)))
-        account_ids = tuple(
-            sorted({need.account_id for need in sorted_needs}, key=str)
-        )
+        account_ids = tuple(sorted({need.account_id for need in sorted_needs}, key=str))
         account_facts: dict[ProspectAccountId, DemandCatalogAccountFact] = {}
         for account_id in account_ids:
             fact = await self._catalog_accounts.get_account_catalog_fact(
@@ -1600,9 +1588,32 @@ class DemandServiceImpl:
     ) -> tuple[NeedClusterId, ...]:
         self._validate_catalog_query(tenant_id, None, limit)
         async with self._uow_factory(tenant_id) as uow:
-            return await uow.clusters.list_catalog_cluster_ids(
-                tenant_id, limit=limit
+            return await uow.clusters.list_catalog_cluster_ids(tenant_id, limit=limit)
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage:
+        self._validate_catalog_query(tenant_id, None, limit)
+        if cursor is not None and (
+            not isinstance(cursor, CatalogClusterCursor)
+            or cursor.tenant_id != tenant_id
+        ):
+            raise ValidationError("目录需求簇游标与租户不匹配")
+        async with self._uow_factory(tenant_id) as uow:
+            page = await uow.clusters.list_catalog_cluster_id_page(
+                tenant_id, limit=limit, cursor=cursor
             )
+        if (
+            not isinstance(page, CatalogClusterIdPage)
+            or page.tenant_id != tenant_id
+            or len(page.cluster_ids) > limit
+        ):
+            raise ValidationError("目录需求簇页面事实无效")
+        return page
 
     async def list_catalog_cluster_ids_for_account(
         self,
@@ -1739,12 +1750,8 @@ class DemandServiceImpl:
                     cluster.member_need_ids,
                     [need.need_id],
                 )
-                cluster.keywords = list(
-                    dict.fromkeys([*cluster.keywords, *keywords])
-                )
-                cluster.countries = list(
-                    dict.fromkeys([*cluster.countries, country])
-                )
+                cluster.keywords = list(dict.fromkeys([*cluster.keywords, *keywords]))
+                cluster.countries = list(dict.fromkeys([*cluster.countries, country]))
                 cluster.total_potential_quantity = (
                     None
                     if existing_total is None and quantity is None
@@ -1918,8 +1925,7 @@ class DemandServiceImpl:
             member_count=len(needs),
             countries=list(cluster.countries),
             member_needs=[
-                cls._validated_need_view(need, names[need.account_id])
-                for need in needs
+                cls._validated_need_view(need, names[need.account_id]) for need in needs
             ],
             total_potential_quantity=cluster.total_potential_quantity,
             recurring_demand=cluster.recurring_demand,

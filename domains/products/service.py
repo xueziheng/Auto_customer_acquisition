@@ -38,7 +38,7 @@ from domains.products.models import (
     ProductSpecRequirement,
     QualifiedProductMatch,
 )
-from domains.products.permissions import ProductActor
+from domains.products.permissions import ProductActor, ProductRole
 from domains.products.schemas import (
     CandidateProductCreate,
     CatalogApprovalDecisionInput,
@@ -46,11 +46,17 @@ from domains.products.schemas import (
     CatalogCultivationCaseView,
     CatalogEvidenceSummaryInput,
     CatalogPolicyChangeSnapshot,
+    CatalogPolicyReconciliationItem,
+    CatalogPolicyReconciliationPage,
     CatalogProductProposalView,
     CatalogProposalEvaluationView,
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
+    CatalogProposalReconciliationItem,
+    CatalogProposalReconciliationPage,
     CatalogProposalRuleResult,
+    CatalogReconciliationCursor,
+    CatalogReconciliationStream,
     ProductSupplyCardView,
 )
 from shared.errors import ValidationError
@@ -200,6 +206,17 @@ class CatalogProposalService(Protocol):
         self, tenant_id: TenantId, *, actor: ProductActor, limit: int
     ) -> tuple[CatalogProposalPolicyView, ...]: ...
 
+    async def list_pending_policy_reconciliation(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        limit: int,
+        cursor: CatalogReconciliationCursor | None = None,
+    ) -> CatalogPolicyReconciliationPage:
+        """按创建时间与策略 ID 升序读取待启动审批流程的 locator。"""
+        ...
+
     async def get_policy_change_snapshot(
         self,
         tenant_id: TenantId,
@@ -260,6 +277,17 @@ class CatalogProposalService(Protocol):
         self, tenant_id: TenantId, *, actor: ProductActor, limit: int
     ) -> tuple[CatalogProductProposalView, ...]: ...
 
+    async def list_awaiting_proposal_reconciliation(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        limit: int,
+        cursor: CatalogReconciliationCursor | None = None,
+    ) -> CatalogProposalReconciliationPage:
+        """按创建时间与提案 ID 升序读取待启动培养流程的 locator。"""
+        ...
+
     async def bind_proposal_approval(
         self,
         tenant_id: TenantId,
@@ -303,8 +331,11 @@ __all__ = (
     "CatalogEvaluationConflictError",
     "CatalogEvidenceSummaryInput",
     "CatalogPolicyApprovalConflictError",
+    "CatalogPolicyChangeSnapshot",
     "CatalogPolicyDecisionInvalidError",
     "CatalogPolicyNotFoundError",
+    "CatalogPolicyReconciliationItem",
+    "CatalogPolicyReconciliationPage",
     "CatalogPolicyStateTransitionError",
     "CatalogProductProposal",
     "CatalogProductProposalState",
@@ -318,15 +349,20 @@ __all__ = (
     "CatalogProposalPolicyState",
     "CatalogProposalPolicyVersion",
     "CatalogProposalPolicyView",
+    "CatalogProposalReconciliationItem",
+    "CatalogProposalReconciliationPage",
     "CatalogProposalRuleResult",
     "CatalogProposalService",
     "CatalogProposalStateTransitionError",
+    "CatalogReconciliationCursor",
+    "CatalogReconciliationStream",
     "Product",
     "ProductActor",
     "ProductCustomerView",
     "ProductInternalView",
     "ProductMatchResult",
     "ProductPool",
+    "ProductRole",
     "ProductSalesView",
     "ProductService",
     "ProductSpecComparison",

@@ -33,6 +33,12 @@ from domains.demand.http_schemas import (
     NeedUnitPreparationView as NeedUnitPreparationView,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.demand.schemas import (
+    CatalogClusterCursor as CatalogClusterCursor,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    CatalogClusterIdPage as CatalogClusterIdPage,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
     CatalogEvidenceSummary as CatalogEvidenceSummary,  # noqa: PLC0414
 )
 from domains.demand.schemas import (
@@ -499,6 +505,16 @@ class DemandService(Protocol):
         limit: int = 50,
     ) -> tuple[NeedClusterId, ...]:
         """按稳定持久顺序列出真实需求簇，不伪造未归簇单成员簇。"""
+        ...
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage:
+        """按 created_at 与 cluster_id 升序读取 tenant-bound 稳定游标页。"""
         ...
 
     async def list_catalog_cluster_ids_for_account(

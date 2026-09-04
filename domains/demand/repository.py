@@ -17,6 +17,7 @@ from domains.demand.models import (
     NeedHypothesis,
     ValidatedNeed,
 )
+from domains.demand.schemas import CatalogClusterCursor, CatalogClusterIdPage
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -276,6 +277,14 @@ class NeedClusterRepository(Protocol):
         *,
         limit: int,
     ) -> tuple[NeedClusterId, ...]: ...
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage: ...
 
     async def list_catalog_cluster_ids_for_account(
         self,

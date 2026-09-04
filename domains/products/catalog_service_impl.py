@@ -42,18 +42,24 @@ from domains.products.permissions import (
     ProductActor,
     ProductAuthorizer,
 )
-from domains.products.repository import CatalogProductsUnitOfWork
+from domains.products.repository import CatalogPageCursor, CatalogProductsUnitOfWork
 from domains.products.schemas import (
     CatalogApprovalDecisionInput,
     CatalogBlockedFactsInput,
     CatalogClusterFactsInput,
     CatalogCultivationCaseView,
     CatalogPolicyChangeSnapshot,
+    CatalogPolicyReconciliationItem,
+    CatalogPolicyReconciliationPage,
     CatalogProductProposalView,
     CatalogProposalEvaluationResult,
     CatalogProposalEvaluationView,
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
+    CatalogProposalReconciliationItem,
+    CatalogProposalReconciliationPage,
+    CatalogReconciliationCursor,
+    CatalogReconciliationStream,
 )
 from domains.products.service import (
     catalog_cultivation_change_set_ref,
@@ -601,6 +607,47 @@ def _raise_storage_error(error: Exception) -> NoReturn:
     raise TransientError(_POLICY_UNAVAILABLE) from None
 
 
+def _reconciliation_cursor(
+    tenant_id: TenantId,
+    cursor: CatalogReconciliationCursor | None,
+    stream: CatalogReconciliationStream,
+) -> CatalogPageCursor | None:
+    if cursor is None:
+        return None
+    if (
+        not isinstance(cursor, CatalogReconciliationCursor)
+        or cursor.tenant_id != tenant_id
+        or cursor.stream != stream
+    ):
+        raise ValidationError("Catalog 恢复游标与查询不匹配")
+    return CatalogPageCursor(
+        tenant_id=tenant_id,
+        stream=cursor.stream,
+        position_at=cursor.position_at,
+        entity_id=cursor.entity_id,
+    )
+
+
+def _public_reconciliation_cursor(
+    cursor: CatalogPageCursor | None,
+    tenant_id: TenantId,
+    stream: CatalogReconciliationStream,
+) -> CatalogReconciliationCursor | None:
+    if cursor is None:
+        return None
+    if cursor.tenant_id != tenant_id or cursor.stream != stream:
+        raise TransientError("Catalog 恢复页暂不可用")
+    try:
+        return CatalogReconciliationCursor(
+            tenant_id=tenant_id,
+            stream=stream,
+            position_at=cursor.position_at,
+            entity_id=cursor.entity_id,
+        )
+    except (PydanticValidationError, TypeError, ValueError):
+        raise TransientError("Catalog 恢复页暂不可用") from None
+
+
 class CatalogProposalServiceImpl:
     """策略创建、读取与决定应用；所有写入及事件共享一个 Products UoW。"""
 
@@ -726,6 +773,40 @@ class CatalogProposalServiceImpl:
                 return tuple(
                     _view(_policy_fact(item, tenant_id)) for item in page.items
                 )
+        except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
+            _raise_storage_error(error)
+
+    async def list_pending_policy_reconciliation(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        limit: int,
+        cursor: CatalogReconciliationCursor | None = None,
+    ) -> CatalogPolicyReconciliationPage:
+        self._require(tenant_id, actor, ProductAction.CATALOG_POLICY_READ)
+        _limit(limit, "Catalog 策略恢复页")
+        checked_cursor = _reconciliation_cursor(tenant_id, cursor, "pending_policies")
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                page = await uow.policies.list_pending_reconciliation(
+                    tenant_id, limit=limit, cursor=checked_cursor
+                )
+            if len(page.items) > limit:
+                raise TransientError(_POLICY_UNAVAILABLE)
+            return CatalogPolicyReconciliationPage(
+                tenant_id=tenant_id,
+                items=tuple(
+                    CatalogPolicyReconciliationItem(
+                        policy_version_id=item.policy_version_id,
+                        created_at=item.created_at,
+                    )
+                    for item in (_policy_fact(value, tenant_id) for value in page.items)
+                ),
+                next_cursor=_public_reconciliation_cursor(
+                    page.next_cursor, tenant_id, "pending_policies"
+                ),
+            )
         except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
             _raise_storage_error(error)
 
@@ -1096,6 +1177,42 @@ class CatalogProposalServiceImpl:
                     _proposal_view(_proposal_fact(item, tenant_id))
                     for item in page.items
                 )
+        except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
+            _raise_storage_error(error)
+
+    async def list_awaiting_proposal_reconciliation(
+        self,
+        tenant_id: TenantId,
+        *,
+        actor: ProductActor,
+        limit: int,
+        cursor: CatalogReconciliationCursor | None = None,
+    ) -> CatalogProposalReconciliationPage:
+        self._require(tenant_id, actor, ProductAction.CATALOG_PROPOSAL_READ)
+        _limit(limit, "Catalog 提案恢复页")
+        checked_cursor = _reconciliation_cursor(tenant_id, cursor, "awaiting_proposals")
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                page = await uow.proposals.list_awaiting_reconciliation(
+                    tenant_id, limit=limit, cursor=checked_cursor
+                )
+            if len(page.items) > limit:
+                raise TransientError(_PROPOSAL_UNAVAILABLE)
+            return CatalogProposalReconciliationPage(
+                tenant_id=tenant_id,
+                items=tuple(
+                    CatalogProposalReconciliationItem(
+                        proposal_id=item.proposal_id,
+                        created_at=item.created_at,
+                    )
+                    for item in (
+                        _proposal_fact(value, tenant_id) for value in page.items
+                    )
+                ),
+                next_cursor=_public_reconciliation_cursor(
+                    page.next_cursor, tenant_id, "awaiting_proposals"
+                ),
+            )
         except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
             _raise_storage_error(error)
 

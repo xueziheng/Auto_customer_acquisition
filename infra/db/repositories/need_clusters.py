@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
@@ -18,6 +18,7 @@ from domains.demand.repository import (
     NeedClusterCatalogSnapshot,
     NeedClusterRepository,
 )
+from domains.demand.schemas import CatalogClusterCursor, CatalogClusterIdPage
 from infra.db.repositories.need_hypotheses import _row_to_need
 from infra.db.tables import NeedClusterMemberRow, NeedClusterRow, ValidatedNeedRow
 from shared.errors import TenantIsolationViolation, ValidationError
@@ -224,6 +225,60 @@ class NeedClusterRepositoryImpl(NeedClusterRepository):
             )
         ).scalars().all()
         return tuple(NeedClusterId(value) for value in values)
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage:
+        self._require_tenant(tenant_id, "need_cluster_list_catalog_id_page")
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValidationError("目录需求簇页面 limit 必须为 1..200")
+        if cursor is not None and (
+            not isinstance(cursor, CatalogClusterCursor)
+            or cursor.tenant_id != self._tenant_id
+        ):
+            raise TenantIsolationViolation("目录需求簇游标不可跨租户使用")
+        statement = select(
+            NeedClusterRow.cluster_id, NeedClusterRow.created_at
+        ).where(NeedClusterRow.tenant_id == str(self._tenant_id))
+        if cursor is not None:
+            statement = statement.where(
+                or_(
+                    NeedClusterRow.created_at > cursor.created_at,
+                    and_(
+                        NeedClusterRow.created_at == cursor.created_at,
+                        NeedClusterRow.cluster_id > str(cursor.cluster_id),
+                    ),
+                )
+            )
+        rows = list(
+            (
+                await self._session.execute(
+                    statement.order_by(
+                        NeedClusterRow.created_at.asc(),
+                        NeedClusterRow.cluster_id.asc(),
+                    ).limit(limit + 1)
+                )
+            ).all()
+        )
+        selected = rows[:limit]
+        cluster_ids = tuple(NeedClusterId(row.cluster_id) for row in selected)
+        next_cursor = None
+        if len(rows) > limit:
+            last = selected[-1]
+            next_cursor = CatalogClusterCursor(
+                tenant_id=self._tenant_id,
+                created_at=last.created_at,
+                cluster_id=NeedClusterId(last.cluster_id),
+            )
+        return CatalogClusterIdPage(
+            tenant_id=self._tenant_id,
+            cluster_ids=cluster_ids,
+            next_cursor=next_cursor,
+        )
 
     async def list_catalog_cluster_ids_for_account(
         self,

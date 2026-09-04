@@ -91,3 +91,25 @@ starting/admitted 不变，priority-invalid 可恢复，case-state-mismatch 只�
 永久非法排序结构在 readiness 路径只能形成固定 `priority_facts_invalid`，在 membership 路径必须复用
 精确 refresh targets 将同簇 waiting 固定阻断；valid 但当前 cluster 为空或不同才是 stale no-op。三类
 结果不得混同，且禁止保存原异常或自由文本。
+
+## Catalog Product Proposal 组合
+
+Catalog 恢复扫描只能在同一 singleton scheduler 专用锁下运行，位于
+Sourcing Admission 之后、workflow poll 之前。进入扫描前和返回后必须分别重新确认
+同一 backend；存在 Catalog 驱动却缺少确认回调时，任何 phase 开始前失败关闭。
+扫描普通失败只记录固定 `catalog_products` 阶段和类别/租户/cycle，不得记录异常原文、
+业务 ID、事实、证据、hash、URL、价格、凭证或 DSN。
+
+三流每轮依次处理：`pending_approval` 策略恢复、
+`awaiting_approval_submission` 提案恢复、存在活动策略时的真实需求簇扫描。
+游标只保存 tenant、`created_at` 和稳定实体 ID，按升序 keyset 有界翻页；只有读取和
+整页处理确定成功才推进，末页耗尽后才归零。不得用首页重扫饿死历史行，不得在游标存业务正文。
+
+评估必须先用 canonical context 和确定幂等键创建 durable
+`catalog_cluster_evaluation` Run，不得由 scheduler 直接调用 Products 评估。运行时只通过
+Demand/Products/Approvals 公开服务协作，不得导入其 repository、model 或 UoW 绕过领域服务。
+必须注册三个 Catalog workflow 定义及精确 metadata-only 事件 consumer；
+`NeedClusterMembershipChanged` 同时保留 `sourcing_case.cluster_membership` 与
+`catalog_products.need_cluster_membership_changed` 两个不同 durable consumer。`ApprovalDecided`
+继续按审批类型鉴别，不得以 Catalog handler 死信其他审批。组合与恢复不得创建
+Product、Sourcing、供应商/联系人、发送、报价、价格、外部 provider 或 Tool Gateway 动作，也不得创建测试策略。
