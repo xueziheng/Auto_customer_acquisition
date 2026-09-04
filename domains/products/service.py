@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Protocol, runtime_checkable
 
 from domains.products.models import (
@@ -43,10 +45,40 @@ from shared.schemas.identifiers import (
     CatalogProductProposalId,
     CatalogProposalEvaluationId,
     CatalogProposalPolicyVersionId,
+    EmployeeId,
     ProductId,
     RunId,
     TenantId,
 )
+
+
+def catalog_policy_creation_request_hash(
+    content: CatalogProposalPolicyContent,
+    proposed_by: EmployeeId,
+    base_active_version_id: CatalogProposalPolicyVersionId | None,
+) -> str:
+    """计算策略创建与后续审批共同复核的规范请求摘要。
+
+    摘要只绑定不可变业务请求：严格策略内容、服务端认证得到的提交人和
+    在创建事务锁内读取的当前活动版本。原始幂等键、客户端字段和读取时间
+    不进入摘要，避免把传输重放身份误当业务事实。
+    """
+
+    payload = {
+        "schema_version": "catalog-policy-create-v1",
+        "content": content.model_dump(mode="json"),
+        "proposed_by": str(proposed_by),
+        "base_active_version_id": (
+            None if base_active_version_id is None else str(base_active_version_id)
+        ),
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 @runtime_checkable
@@ -217,6 +249,7 @@ class CatalogProposalService(Protocol):
         self, tenant_id: TenantId, *, actor: ProductActor, limit: int
     ) -> tuple[CatalogCultivationCaseView, ...]: ...
 
+
 __all__ = (
     "CandidateStatus",
     "CatalogCultivationCase",
@@ -245,4 +278,5 @@ __all__ = (
     "ProductSpecRequirement",
     "ProductSupplyCardView",
     "QualifiedProductMatch",
+    "catalog_policy_creation_request_hash",
 )
