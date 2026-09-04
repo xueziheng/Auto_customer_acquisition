@@ -7,10 +7,16 @@ import json
 from typing import Protocol, runtime_checkable
 
 from domains.products.errors import (
+    CatalogCultivationConflictError,
+    CatalogEvaluationConflictError,
     CatalogPolicyApprovalConflictError,
     CatalogPolicyDecisionInvalidError,
     CatalogPolicyNotFoundError,
     CatalogPolicyStateTransitionError,
+    CatalogProposalApprovalConflictError,
+    CatalogProposalDecisionInvalidError,
+    CatalogProposalNotFoundError,
+    CatalogProposalStateTransitionError,
 )
 from domains.products.models import (
     CandidateStatus,
@@ -38,11 +44,13 @@ from domains.products.schemas import (
     CatalogApprovalDecisionInput,
     CatalogClusterFactsInput,
     CatalogCultivationCaseView,
+    CatalogEvidenceSummaryInput,
     CatalogPolicyChangeSnapshot,
     CatalogProductProposalView,
     CatalogProposalEvaluationView,
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
+    CatalogProposalRuleResult,
     ProductSupplyCardView,
 )
 from shared.errors import ValidationError
@@ -287,8 +295,13 @@ class CatalogProposalService(Protocol):
 
 __all__ = (
     "CandidateStatus",
+    "CatalogApprovalDecisionInput",
+    "CatalogClusterFactsInput",
     "CatalogCultivationCase",
     "CatalogCultivationCaseView",
+    "CatalogCultivationConflictError",
+    "CatalogEvaluationConflictError",
+    "CatalogEvidenceSummaryInput",
     "CatalogPolicyApprovalConflictError",
     "CatalogPolicyDecisionInvalidError",
     "CatalogPolicyNotFoundError",
@@ -296,13 +309,18 @@ __all__ = (
     "CatalogProductProposal",
     "CatalogProductProposalState",
     "CatalogProductProposalView",
+    "CatalogProposalApprovalConflictError",
+    "CatalogProposalDecisionInvalidError",
     "CatalogProposalEvaluation",
     "CatalogProposalEvaluationView",
+    "CatalogProposalNotFoundError",
     "CatalogProposalPolicyContent",
     "CatalogProposalPolicyState",
     "CatalogProposalPolicyVersion",
     "CatalogProposalPolicyView",
+    "CatalogProposalRuleResult",
     "CatalogProposalService",
+    "CatalogProposalStateTransitionError",
     "Product",
     "ProductActor",
     "ProductCustomerView",

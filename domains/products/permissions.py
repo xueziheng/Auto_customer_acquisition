@@ -110,6 +110,7 @@ class Phase2ProductAuthorizer:
         ),
         ProductAction.CATALOG_POLICY_READ: frozenset(
             {
+                ProductRole.SYSTEM,
                 ProductRole.BOSS,
                 ProductRole.PRODUCT,
                 ProductRole.SOURCING,
@@ -119,6 +120,7 @@ class Phase2ProductAuthorizer:
         ProductAction.CATALOG_EVALUATE: frozenset({ProductRole.SYSTEM}),
         ProductAction.CATALOG_PROPOSAL_READ: frozenset(
             {
+                ProductRole.SYSTEM,
                 ProductRole.BOSS,
                 ProductRole.PRODUCT,
                 ProductRole.SOURCING,
