@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -49,7 +50,7 @@ async def _contract(engine, table_name: str) -> dict[str, object]:
                     for column in inspect(sync).get_columns(table_name)
                 },
                 "checks": {
-                    str(item["name"])
+                    str(item["name"]): _normalize_sql(str(item["sqltext"]))
                     for item in inspect(sync).get_check_constraints(table_name)
                 },
                 "fks": {
@@ -78,6 +79,209 @@ async def _contract(engine, table_name: str) -> dict[str, object]:
                 },
             }
         )
+
+
+def _normalize_sql(value: str) -> str:
+    return re.sub(r"\s+", " ", value.lower().replace('"', "")).strip()
+
+
+async def _catalog_guards(connection) -> dict[tuple[str, str], dict[str, str]]:
+    result = await connection.execute(
+        text(
+            "SELECT c.relname,t.tgname,pg_get_triggerdef(t.oid,true),p.proname,"
+            "pg_get_functiondef(p.oid) FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid=t.tgrelid "
+            "JOIN pg_proc p ON p.oid=t.tgfoid "
+            "WHERE NOT t.tgisinternal AND c.relname IN "
+            "('approval_packages','catalog_proposal_policy_versions',"
+            "'catalog_proposal_evaluations','catalog_product_proposals',"
+            "'catalog_cultivation_cases')"
+        )
+    )
+    return {
+        (str(row.relname), str(row.tgname)): {
+            "trigger": _normalize_sql(str(row.pg_get_triggerdef)),
+            "function_name": str(row.proname),
+            "function": _normalize_sql(str(row.pg_get_functiondef)),
+        }
+        for row in result
+    }
+
+
+def _assert_catalog_check_and_guard_contracts(
+    contracts: dict[str, dict[str, object]],
+    guards: dict[tuple[str, str], dict[str, str]],
+) -> None:
+    expected_checks = {
+        "validated_needs": {
+            "ck_validated_needs_recurring_requirement_jsonb": (
+                "recurring_requirement is null",
+                "jsonb_typeof(recurring_requirement) = 'object'",
+            ),
+        },
+        "approval_packages": {
+            "ck_approval_quote_contract": (
+                "contract_namespace is null",
+                "quote-approval-v1",
+                "catalog-policy-v1",
+                "catalog-cultivation-v1",
+                "request_hash",
+                "catalog-policy:",
+                "catalog-cultivation:",
+            ),
+        },
+        "catalog_proposal_policy_versions": {
+            "ck_catalog_policy_core": ("^cpv_",),
+            "ck_catalog_policy_content_jsonb": (
+                "jsonb_typeof(content) = 'object'",
+            ),
+            "ck_catalog_policy_hashes": (
+                "content_hash",
+                "creation_request_hash",
+                "^[0-9a-f]{64}$",
+            ),
+            "ck_catalog_policy_state": ("= any", "pending_approval", "superseded"),
+            "ck_catalog_policy_times": (
+                "activated_at >= created_at",
+                "terminal_at >= created_at",
+                "terminal_at >= activated_at",
+            ),
+            "ck_catalog_policy_lifecycle": (
+                "pending_approval",
+                "active",
+                "approval_id is not null",
+            ),
+        },
+        "catalog_proposal_evaluations": {
+            "ck_catalog_evaluation_core": (
+                "^cpe_",
+                "^[0-9a-f]{64}$",
+            ),
+            "ck_catalog_evaluation_jsonb": (
+                "jsonb_typeof(facts) = 'object'",
+                "jsonb_typeof(rule_results) = 'array'",
+            ),
+            "ck_catalog_evaluation_safe_quantity": (
+                "safe_total_quantity",
+                "jsonb_typeof",
+                "= 'number'",
+            ),
+            "ck_catalog_evaluation_result": (
+                "overall_passed",
+                "blocked_reason is null",
+            ),
+        },
+        "catalog_product_proposals": {
+            "ck_catalog_product_proposal_core": (
+                "^cpr_",
+                "^[0-9a-f]{64}$",
+            ),
+            "ck_catalog_product_proposal_hash": (
+                "approval_request_hash",
+                "^[0-9a-f]{64}$",
+            ),
+            "ck_catalog_product_proposal_state": (
+                "= any",
+                "awaiting_approval_submission",
+                "cultivation_queued",
+            ),
+            "ck_catalog_product_proposal_times": ("updated_at >= created_at",),
+            "ck_catalog_product_proposal_lifecycle": (
+                "awaiting_approval_submission",
+                "approval_id is null",
+                "approval_request_hash is not null",
+            ),
+        },
+        "catalog_cultivation_cases": {
+            "ck_catalog_cultivation_core": (
+                "^ccc_",
+                "^[0-9a-f]{64}$",
+            ),
+            "ck_catalog_cultivation_evidence_jsonb": (
+                "jsonb_typeof(evidence_refs) = 'array'",
+            ),
+            "ck_catalog_cultivation_state": ("queued",),
+        },
+    }
+    for table, checks in expected_checks.items():
+        installed = contracts[table]["checks"]
+        assert isinstance(installed, dict)
+        for name, fragments in checks.items():
+            assert name in installed
+            expression = installed[name]
+            assert all(fragment in expression for fragment in fragments), (name, expression)
+
+    expected_guards = {
+        ("approval_packages", "trg_catalog_approval_namespace"): (
+            "guard_catalog_approval_namespace",
+            ("before", "insert"),
+            (
+                "catalog approval namespace required",
+                "catalog-policy:%",
+                "catalog-cultivation:%",
+            ),
+        ),
+        ("catalog_proposal_policy_versions", "trg_catalog_policy_version_guard"): (
+            "guard_catalog_policy_version",
+            ("before", "insert", "update", "delete"),
+            (
+                "catalog-policy-v1",
+                "catalog_proposal_policy_change",
+                "policy_version_id",
+                "content_hash",
+                "request_hash",
+                "change_set_ref",
+                "approval.state",
+                "approved",
+                "invalid initial state",
+            ),
+        ),
+        ("catalog_proposal_evaluations", "trg_catalog_evaluation_immutable"): (
+            "guard_catalog_evaluation",
+            ("before", "insert", "update", "delete"),
+            ("policy_state is distinct from", "active", "catalog evaluation is immutable"),
+        ),
+        ("catalog_product_proposals", "trg_catalog_product_proposal_guard"): (
+            "guard_catalog_product_proposal",
+            ("before", "insert", "update", "delete"),
+            (
+                "catalog-cultivation-v1",
+                "catalog_product_cultivation",
+                "proposal_id",
+                "policy_version_id",
+                "facts_hash",
+                "change_set_ref",
+                "evaluation_passed is distinct from true",
+                "approval.request_hash",
+                "new.approval_request_hash",
+            ),
+        ),
+        ("catalog_cultivation_cases", "trg_catalog_cultivation_immutable"): (
+            "guard_catalog_cultivation_case",
+            ("before", "insert", "update", "delete"),
+            (
+                "catalog-cultivation-v1",
+                "catalog_product_cultivation",
+                "proposal_id",
+                "policy_version_id",
+                "facts_hash",
+                "change_set_ref",
+                "proposal_state is distinct from",
+                "cultivation_queued",
+                "approval.state is distinct from",
+                "approved",
+                "catalog cultivation case is immutable",
+            ),
+        ),
+    }
+    for key, (function_name, trigger_fragments, function_fragments) in expected_guards.items():
+        assert key in guards
+        guard = guards[key]
+        assert guard["function_name"] == function_name
+        assert all(fragment in guard["trigger"] for fragment in trigger_fragments)
+        assert all(
+            fragment in guard["function"] for fragment in function_fragments
+        ), (key, guard["function"])
 
 
 async def test_0057_upgrade_from_prior_head_has_tenant_bound_schema_and_orm_parity(
@@ -191,6 +395,23 @@ async def test_0057_upgrade_from_prior_head_has_tenant_bound_schema_and_orm_pari
             await engine.dispose()
     finally:
         _alembic(db_url, "upgrade", "head")
+
+
+async def test_0057_installs_semantic_checks_and_trigger_guards(db_url: str) -> None:
+    """关键 CHECK 表达式与 INSERT/UPDATE/DELETE guard 必须实际安装。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    try:
+        contracts = {
+            table: await _contract(engine, table)
+            for table in ("validated_needs", "approval_packages", *_TABLES)
+        }
+        async with engine.connect() as connection:
+            guards = await _catalog_guards(connection)
+            _assert_catalog_check_and_guard_contracts(contracts, guards)
+    finally:
+        await engine.dispose()
 
 
 async def _seed_parents(connection, *, tenant: str, suffix: str) -> None:
@@ -1510,6 +1731,193 @@ async def test_0057_concurrent_creation_proposal_and_cultivation_keys(
         assert sorted(case_results) == [False, True]
     finally:
         async with engine.begin() as connection:
+            await _delete_catalog_rows(connection, tenant=tenant)
+            await _delete_approvals(connection, tenant=tenant)
+            await connection.execute(
+                text("DELETE FROM workflow_runs WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text("DELETE FROM need_clusters WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
+            await connection.execute(
+                text("DELETE FROM employees WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
+        await engine.dispose()
+
+
+async def test_0057_concurrent_policy_and_proposal_approval_bindings(
+    db_url: str,
+) -> None:
+    """两个独立事务竞争同租户 approval_id 时，两个 partial index 各一个赢家。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_catalog_approval_races"
+    suffix = "catalog_approval_races"
+
+    async def attempt(statement, values: dict[str, object]) -> bool:
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(statement, values)
+            return True
+        except IntegrityError:
+            return False
+
+    try:
+        async with engine.begin() as connection:
+            await _seed_parents(connection, tenant=tenant, suffix=suffix)
+            active_policy = await _activate_policy(
+                connection, tenant=tenant, suffix=suffix
+            )
+            for label in ("a", "b"):
+                await connection.execute(
+                    _INSERT_POLICY,
+                    _policy_values(
+                        tenant=tenant,
+                        suffix=suffix,
+                        policy=f"cpv_approval_race_{label}",
+                    )
+                    | {"key": f"approval-race-{label}"},
+                )
+            await _insert_catalog_approval(
+                connection,
+                tenant=tenant,
+                approval_id="apr_policy_race_shared",
+                namespace="catalog-policy-v1",
+                policy_id="cpv_approval_race_a",
+            )
+            # Exact-subject guards intentionally make two valid subjects impossible;
+            # disabling only this guard isolates the partial-index race in this test.
+            await connection.execute(
+                text(
+                    "ALTER TABLE catalog_proposal_policy_versions DISABLE TRIGGER "
+                    "trg_catalog_policy_version_guard"
+                )
+            )
+
+        policy_bind = text(
+            "UPDATE catalog_proposal_policy_versions SET "
+            "approval_id='apr_policy_race_shared' WHERE tenant_id=:tenant "
+            "AND policy_version_id=:policy"
+        )
+        policy_results = await asyncio.gather(
+            attempt(
+                policy_bind,
+                {"tenant": tenant, "policy": "cpv_approval_race_a"},
+            ),
+            attempt(
+                policy_bind,
+                {"tenant": tenant, "policy": "cpv_approval_race_b"},
+            ),
+        )
+        assert sorted(policy_results) == [False, True]
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE catalog_proposal_policy_versions ENABLE TRIGGER "
+                    "trg_catalog_policy_version_guard"
+                )
+            )
+            for label, facts_hash in (("a", "1" * 64), ("b", "2" * 64)):
+                await connection.execute(
+                    text(
+                        "INSERT INTO catalog_proposal_evaluations "
+                        "(tenant_id,evaluation_id,cluster_id,policy_version_id,"
+                        "facts_hash,facts,rule_results,overall_passed,blocked_reason,"
+                        "proposed_by_run,created_at) VALUES "
+                        "(:tenant,:evaluation,:cluster,:policy,:hash,'{}'::jsonb,"
+                        "'[]'::jsonb,true,NULL,:run,:now)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "evaluation": f"cpe_approval_race_{label}",
+                        "cluster": f"ncl_{suffix}",
+                        "policy": active_policy,
+                        "hash": facts_hash,
+                        "run": f"run_{suffix}",
+                        "now": _NOW,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO catalog_product_proposals "
+                        "(tenant_id,proposal_id,evaluation_id,cluster_id,"
+                        "policy_version_id,facts_hash,owner_employee,proposed_by_run,"
+                        "approval_id,approval_request_hash,state,created_at,updated_at) "
+                        "VALUES (:tenant,:proposal,:evaluation,:cluster,:policy,:hash,"
+                        ":employee,:run,NULL,NULL,'awaiting_approval_submission',:now,:now)"
+                    ),
+                    {
+                        "tenant": tenant,
+                        "proposal": f"cpr_approval_race_{label}",
+                        "evaluation": f"cpe_approval_race_{label}",
+                        "cluster": f"ncl_{suffix}",
+                        "policy": active_policy,
+                        "hash": facts_hash,
+                        "employee": f"emp_{suffix}",
+                        "run": f"run_{suffix}",
+                        "now": _NOW,
+                    },
+                )
+            await _insert_catalog_approval(
+                connection,
+                tenant=tenant,
+                approval_id="apr_proposal_race_shared",
+                namespace="catalog-cultivation-v1",
+                policy_id=active_policy,
+                proposal_id="cpr_approval_race_a",
+                facts_hash="1" * 64,
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE catalog_product_proposals DISABLE TRIGGER "
+                    "trg_catalog_product_proposal_guard"
+                )
+            )
+
+        proposal_bind = text(
+            "UPDATE catalog_product_proposals SET "
+            "approval_id='apr_proposal_race_shared',"
+            "approval_request_hash=:request_hash,state='pending_review' "
+            "WHERE tenant_id=:tenant AND proposal_id=:proposal"
+        )
+        proposal_results = await asyncio.gather(
+            attempt(
+                proposal_bind,
+                {
+                    "tenant": tenant,
+                    "proposal": "cpr_approval_race_a",
+                    "request_hash": "d" * 64,
+                },
+            ),
+            attempt(
+                proposal_bind,
+                {
+                    "tenant": tenant,
+                    "proposal": "cpr_approval_race_b",
+                    "request_hash": "d" * 64,
+                },
+            ),
+        )
+        assert sorted(proposal_results) == [False, True]
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "ALTER TABLE catalog_proposal_policy_versions ENABLE TRIGGER "
+                    "trg_catalog_policy_version_guard"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE catalog_product_proposals ENABLE TRIGGER "
+                    "trg_catalog_product_proposal_guard"
+                )
+            )
             await _delete_catalog_rows(connection, tenant=tenant)
             await _delete_approvals(connection, tenant=tenant)
             await connection.execute(
