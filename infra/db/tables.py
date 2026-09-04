@@ -373,11 +373,7 @@ class ApprovalPackageRow(Base):
         CheckConstraint(
             """(contract_namespace IS NULL AND request_hash IS NULL AND NOT
             (lower(btrim(coalesce(change_set_ref,''))) LIKE 'quote:%' OR
-             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'quote-approval%') AND NOT
-            (lower(btrim(coalesce(change_set_ref,''))) LIKE 'catalog-policy:%' OR
-             lower(btrim(coalesce(change_set_ref,''))) LIKE 'catalog-cultivation:%' OR
-             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'catalog-policy%' OR
-             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'catalog-cultivation%')) OR
+             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'quote-approval%')) OR
             coalesce((contract_namespace='quote-approval-v1' AND request_hash ~ '^[0-9a-f]{64}$'
               AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
               AND proposed_change->>'schema_version'='quote-approval-v1'
@@ -2237,7 +2233,7 @@ class CatalogProposalPolicyVersionRow(Base):
         CheckConstraint("jsonb_typeof(content)='object'", name="ck_catalog_policy_content_jsonb"),
         CheckConstraint("content_hash ~ '^[0-9a-f]{64}$' AND creation_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_policy_hashes"),
         CheckConstraint("state IN ('pending_approval','active','superseded','rejected','expired','stale')", name="ck_catalog_policy_state"),
-        CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at)", name="ck_catalog_policy_times"),
+        CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at) AND (activated_at IS NULL OR terminal_at IS NULL OR terminal_at>=activated_at)", name="ck_catalog_policy_times"),
         CheckConstraint("(state='pending_approval' AND activated_at IS NULL AND terminal_at IS NULL) OR (state='active' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NULL) OR (state='superseded' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NOT NULL) OR (state IN ('rejected','expired','stale') AND approval_id IS NOT NULL AND activated_at IS NULL AND terminal_at IS NOT NULL)", name="ck_catalog_policy_lifecycle"),
         Index("uq_catalog_policy_active", "tenant_id", unique=True, postgresql_where=text("state='active'")),
         Index("uq_catalog_policy_approval", "tenant_id", "approval_id", unique=True, postgresql_where=text("approval_id IS NOT NULL")),

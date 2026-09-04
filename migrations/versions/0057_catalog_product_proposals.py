@@ -69,8 +69,7 @@ _LEGACY_APPROVAL_CHECK = f"""
 """
 
 _CATALOG_APPROVAL_CHECK = f"""
-  (contract_namespace IS NULL AND request_hash IS NULL
-   AND NOT {_QUOTE_MARKED} AND NOT {_CATALOG_MARKED}) OR
+  (contract_namespace IS NULL AND request_hash IS NULL AND NOT {_QUOTE_MARKED}) OR
   coalesce({_QUOTE_BRANCH},false) OR
   coalesce({_CATALOG_POLICY_BRANCH},false) OR
   coalesce({_CATALOG_CULTIVATION_BRANCH},false)
@@ -79,26 +78,76 @@ _CATALOG_APPROVAL_CHECK = f"""
 
 def _create_guards() -> None:
     op.execute(
+        f"""
+        CREATE FUNCTION guard_catalog_approval_namespace() RETURNS trigger AS $$
+        BEGIN
+          IF TG_OP='INSERT' AND NEW.contract_namespace IS NULL
+             AND NEW.request_hash IS NULL AND {_CATALOG_MARKED.replace('change_set_ref', 'NEW.change_set_ref').replace('proposed_change', 'NEW.proposed_change')}
+          THEN RAISE EXCEPTION 'catalog approval namespace required'; END IF;
+          RETURN NEW;
+        END; $$ LANGUAGE plpgsql;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_catalog_approval_namespace
+        BEFORE INSERT ON approval_packages
+        FOR EACH ROW EXECUTE FUNCTION guard_catalog_approval_namespace();
+        """
+    )
+    op.execute(
         """
         CREATE FUNCTION guard_catalog_policy_version() RETURNS trigger AS $$
+        DECLARE approval approval_packages%ROWTYPE;
         BEGIN
           IF TG_OP='DELETE' THEN RAISE EXCEPTION 'catalog policy version is immutable'; END IF;
+          IF TG_OP='INSERT' THEN
+            IF NEW.state<>'pending_approval' OR NEW.approval_id IS NOT NULL
+               OR NEW.activated_at IS NOT NULL OR NEW.terminal_at IS NOT NULL
+            THEN RAISE EXCEPTION 'catalog policy invalid initial state'; END IF;
+            RETURN NEW;
+          END IF;
           IF (to_jsonb(OLD)-ARRAY['approval_id','state','activated_at','terminal_at'])
              IS DISTINCT FROM
              (to_jsonb(NEW)-ARRAY['approval_id','state','activated_at','terminal_at'])
              OR (OLD.approval_id IS NOT NULL AND NEW.approval_id IS DISTINCT FROM OLD.approval_id)
           THEN RAISE EXCEPTION 'catalog policy immutable fields changed'; END IF;
+          IF NEW.approval_id IS NOT NULL THEN
+            SELECT * INTO approval FROM approval_packages
+            WHERE tenant_id=NEW.tenant_id AND approval_id=NEW.approval_id;
+            IF NOT FOUND
+               OR approval.contract_namespace IS DISTINCT FROM 'catalog-policy-v1'
+               OR approval.approval_type IS DISTINCT FROM 'catalog_proposal_policy_change'
+               OR approval.proposed_change->>'tenant_id' IS DISTINCT FROM NEW.tenant_id
+               OR approval.proposed_change->>'policy_version_id' IS DISTINCT FROM NEW.policy_version_id
+               OR approval.proposed_change->>'content_hash' IS DISTINCT FROM NEW.content_hash
+               OR approval.proposed_change->>'request_hash' IS DISTINCT FROM approval.request_hash
+               OR approval.change_set_ref IS DISTINCT FROM
+                  'catalog-policy:'||NEW.policy_version_id||':'||NEW.content_hash
+            THEN RAISE EXCEPTION 'catalog policy approval binding rejected'; END IF;
+          END IF;
           IF OLD.state='pending_approval' AND NEW.state='pending_approval'
              AND OLD.approval_id IS NULL AND NEW.approval_id IS NOT NULL
+             AND approval.state IN ('pending','approved','rejected','expired')
              AND NEW.activated_at IS NULL AND NEW.terminal_at IS NULL THEN RETURN NEW; END IF;
           IF OLD.state='pending_approval' AND NEW.state='active'
              AND NEW.approval_id IS NOT NULL AND NEW.activated_at IS NOT NULL
+             AND approval.state='approved'
              AND NEW.terminal_at IS NULL THEN RETURN NEW; END IF;
-          IF OLD.state='pending_approval' AND NEW.state IN ('rejected','expired','stale')
+          IF OLD.state='pending_approval' AND NEW.state='rejected'
+             AND NEW.approval_id IS NOT NULL AND NEW.activated_at IS NULL
+             AND approval.state='rejected'
+             AND NEW.terminal_at IS NOT NULL THEN RETURN NEW; END IF;
+          IF OLD.state='pending_approval' AND NEW.state='expired'
+             AND NEW.approval_id IS NOT NULL AND NEW.activated_at IS NULL
+             AND approval.state='expired'
+             AND NEW.terminal_at IS NOT NULL THEN RETURN NEW; END IF;
+          IF OLD.state='pending_approval' AND NEW.state='stale'
              AND NEW.approval_id IS NOT NULL AND NEW.activated_at IS NULL
              AND NEW.terminal_at IS NOT NULL THEN RETURN NEW; END IF;
           IF OLD.state='active' AND NEW.state='superseded'
              AND NEW.approval_id=OLD.approval_id
+             AND approval.state IN ('approved','applied')
              AND NEW.activated_at=OLD.activated_at AND NEW.terminal_at IS NOT NULL
           THEN RETURN NEW; END IF;
           RAISE EXCEPTION 'catalog policy invalid transition';
@@ -108,29 +157,55 @@ def _create_guards() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_catalog_policy_version_guard
-        BEFORE UPDATE OR DELETE ON catalog_proposal_policy_versions
+        BEFORE INSERT OR UPDATE OR DELETE ON catalog_proposal_policy_versions
         FOR EACH ROW EXECUTE FUNCTION guard_catalog_policy_version();
         """
     )
     op.execute(
         """
-        CREATE FUNCTION reject_catalog_evaluation_mutation() RETURNS trigger AS $$
-        BEGIN RAISE EXCEPTION 'catalog evaluation is immutable'; END;
+        CREATE FUNCTION guard_catalog_evaluation() RETURNS trigger AS $$
+        DECLARE policy_state text;
+        BEGIN
+          IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'catalog evaluation is immutable'; END IF;
+          SELECT state INTO policy_state FROM catalog_proposal_policy_versions
+          WHERE tenant_id=NEW.tenant_id AND policy_version_id=NEW.policy_version_id;
+          IF policy_state IS DISTINCT FROM 'active'
+          THEN RAISE EXCEPTION 'catalog evaluation requires active policy'; END IF;
+          RETURN NEW;
+        END;
         $$ LANGUAGE plpgsql;
         """
     )
     op.execute(
         """
         CREATE TRIGGER trg_catalog_evaluation_immutable
-        BEFORE UPDATE OR DELETE ON catalog_proposal_evaluations
-        FOR EACH ROW EXECUTE FUNCTION reject_catalog_evaluation_mutation();
+        BEFORE INSERT OR UPDATE OR DELETE ON catalog_proposal_evaluations
+        FOR EACH ROW EXECUTE FUNCTION guard_catalog_evaluation();
         """
     )
     op.execute(
         """
         CREATE FUNCTION guard_catalog_product_proposal() RETURNS trigger AS $$
+        DECLARE approval approval_packages%ROWTYPE; evaluation_passed boolean;
+          policy_state text;
         BEGIN
           IF TG_OP='DELETE' THEN RAISE EXCEPTION 'catalog product proposal is immutable'; END IF;
+          IF TG_OP='INSERT' THEN
+            IF NEW.state<>'awaiting_approval_submission' OR NEW.approval_id IS NOT NULL
+               OR NEW.approval_request_hash IS NOT NULL OR NEW.updated_at<>NEW.created_at
+            THEN RAISE EXCEPTION 'catalog proposal invalid initial state'; END IF;
+            SELECT overall_passed INTO evaluation_passed
+            FROM catalog_proposal_evaluations
+            WHERE tenant_id=NEW.tenant_id AND evaluation_id=NEW.evaluation_id
+              AND cluster_id=NEW.cluster_id
+              AND policy_version_id=NEW.policy_version_id
+              AND facts_hash=NEW.facts_hash;
+            SELECT state INTO policy_state FROM catalog_proposal_policy_versions
+            WHERE tenant_id=NEW.tenant_id AND policy_version_id=NEW.policy_version_id;
+            IF evaluation_passed IS DISTINCT FROM true OR policy_state IS DISTINCT FROM 'active'
+            THEN RAISE EXCEPTION 'catalog proposal prerequisites rejected'; END IF;
+            RETURN NEW;
+          END IF;
           IF (to_jsonb(OLD)-ARRAY['approval_id','approval_request_hash','state','updated_at'])
              IS DISTINCT FROM
              (to_jsonb(NEW)-ARRAY['approval_id','approval_request_hash','state','updated_at'])
@@ -138,12 +213,43 @@ def _create_guards() -> None:
              OR (OLD.approval_request_hash IS NOT NULL AND NEW.approval_request_hash IS DISTINCT FROM OLD.approval_request_hash)
              OR NEW.updated_at < OLD.updated_at
           THEN RAISE EXCEPTION 'catalog proposal immutable fields changed'; END IF;
+          IF NEW.approval_id IS NOT NULL THEN
+            SELECT * INTO approval FROM approval_packages
+            WHERE tenant_id=NEW.tenant_id AND approval_id=NEW.approval_id;
+            IF NOT FOUND
+               OR approval.contract_namespace IS DISTINCT FROM 'catalog-cultivation-v1'
+               OR approval.approval_type IS DISTINCT FROM 'catalog_product_cultivation'
+               OR approval.request_hash IS DISTINCT FROM NEW.approval_request_hash
+               OR approval.proposed_change->>'request_hash' IS DISTINCT FROM NEW.approval_request_hash
+               OR approval.proposed_change->>'tenant_id' IS DISTINCT FROM NEW.tenant_id
+               OR approval.proposed_change->>'proposal_id' IS DISTINCT FROM NEW.proposal_id
+               OR approval.proposed_change->>'policy_version_id' IS DISTINCT FROM NEW.policy_version_id
+               OR approval.proposed_change->>'facts_hash' IS DISTINCT FROM NEW.facts_hash
+               OR approval.change_set_ref IS DISTINCT FROM
+                  'catalog-cultivation:'||NEW.proposal_id||':'||NEW.policy_version_id||':'||NEW.facts_hash
+            THEN RAISE EXCEPTION 'catalog proposal approval binding rejected'; END IF;
+          END IF;
           IF OLD.state='awaiting_approval_submission' AND NEW.state='pending_review'
              AND OLD.approval_id IS NULL AND OLD.approval_request_hash IS NULL
              AND NEW.approval_id IS NOT NULL AND NEW.approval_request_hash IS NOT NULL
+             AND approval.state IN ('pending','approved','rejected','expired')
           THEN RETURN NEW; END IF;
-          IF OLD.state='pending_review'
-             AND NEW.state IN ('cultivation_queued','rejected','expired','stale')
+          IF OLD.state='pending_review' AND NEW.state='cultivation_queued'
+             AND NEW.approval_id=OLD.approval_id
+             AND NEW.approval_request_hash=OLD.approval_request_hash
+             AND approval.state='approved'
+          THEN RETURN NEW; END IF;
+          IF OLD.state='pending_review' AND NEW.state='rejected'
+             AND NEW.approval_id=OLD.approval_id
+             AND NEW.approval_request_hash=OLD.approval_request_hash
+             AND approval.state='rejected'
+          THEN RETURN NEW; END IF;
+          IF OLD.state='pending_review' AND NEW.state='expired'
+             AND NEW.approval_id=OLD.approval_id
+             AND NEW.approval_request_hash=OLD.approval_request_hash
+             AND approval.state='expired'
+          THEN RETURN NEW; END IF;
+          IF OLD.state='pending_review' AND NEW.state='stale'
              AND NEW.approval_id=OLD.approval_id
              AND NEW.approval_request_hash=OLD.approval_request_hash
           THEN RETURN NEW; END IF;
@@ -154,22 +260,50 @@ def _create_guards() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_catalog_product_proposal_guard
-        BEFORE UPDATE OR DELETE ON catalog_product_proposals
+        BEFORE INSERT OR UPDATE OR DELETE ON catalog_product_proposals
         FOR EACH ROW EXECUTE FUNCTION guard_catalog_product_proposal();
         """
     )
     op.execute(
         """
-        CREATE FUNCTION reject_catalog_cultivation_mutation() RETURNS trigger AS $$
-        BEGIN RAISE EXCEPTION 'catalog cultivation case is immutable'; END;
+        CREATE FUNCTION guard_catalog_cultivation_case() RETURNS trigger AS $$
+        DECLARE proposal_state text; proposal_approval_id text;
+          proposal_request_hash text; approval approval_packages%ROWTYPE;
+        BEGIN
+          IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'catalog cultivation case is immutable'; END IF;
+          IF NEW.state<>'queued' THEN RAISE EXCEPTION 'catalog cultivation invalid initial state'; END IF;
+          SELECT state,approval_id,approval_request_hash
+          INTO proposal_state,proposal_approval_id,proposal_request_hash
+          FROM catalog_product_proposals
+          WHERE tenant_id=NEW.tenant_id AND proposal_id=NEW.proposal_id
+            AND cluster_id=NEW.cluster_id AND policy_version_id=NEW.policy_version_id
+            AND facts_hash=NEW.facts_hash;
+          SELECT * INTO approval FROM approval_packages
+          WHERE tenant_id=NEW.tenant_id AND approval_id=NEW.approval_id;
+          IF proposal_state IS DISTINCT FROM 'cultivation_queued'
+             OR proposal_approval_id IS DISTINCT FROM NEW.approval_id
+             OR approval.contract_namespace IS DISTINCT FROM 'catalog-cultivation-v1'
+             OR approval.approval_type IS DISTINCT FROM 'catalog_product_cultivation'
+             OR approval.state IS DISTINCT FROM 'approved'
+             OR approval.request_hash IS DISTINCT FROM proposal_request_hash
+             OR approval.proposed_change->>'request_hash' IS DISTINCT FROM proposal_request_hash
+             OR approval.proposed_change->>'tenant_id' IS DISTINCT FROM NEW.tenant_id
+             OR approval.proposed_change->>'proposal_id' IS DISTINCT FROM NEW.proposal_id
+             OR approval.proposed_change->>'policy_version_id' IS DISTINCT FROM NEW.policy_version_id
+             OR approval.proposed_change->>'facts_hash' IS DISTINCT FROM NEW.facts_hash
+             OR approval.change_set_ref IS DISTINCT FROM
+                'catalog-cultivation:'||NEW.proposal_id||':'||NEW.policy_version_id||':'||NEW.facts_hash
+          THEN RAISE EXCEPTION 'catalog cultivation approval binding rejected'; END IF;
+          RETURN NEW;
+        END;
         $$ LANGUAGE plpgsql;
         """
     )
     op.execute(
         """
         CREATE TRIGGER trg_catalog_cultivation_immutable
-        BEFORE UPDATE OR DELETE ON catalog_cultivation_cases
-        FOR EACH ROW EXECUTE FUNCTION reject_catalog_cultivation_mutation();
+        BEFORE INSERT OR UPDATE OR DELETE ON catalog_cultivation_cases
+        FOR EACH ROW EXECUTE FUNCTION guard_catalog_cultivation_case();
         """
     )
 
@@ -213,7 +347,7 @@ def upgrade() -> None:
         sa.CheckConstraint("jsonb_typeof(content)='object'", name="ck_catalog_policy_content_jsonb"),
         sa.CheckConstraint("content_hash ~ '^[0-9a-f]{64}$' AND creation_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_policy_hashes"),
         sa.CheckConstraint("state IN ('pending_approval','active','superseded','rejected','expired','stale')", name="ck_catalog_policy_state"),
-        sa.CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at)", name="ck_catalog_policy_times"),
+        sa.CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at) AND (activated_at IS NULL OR terminal_at IS NULL OR terminal_at>=activated_at)", name="ck_catalog_policy_times"),
         sa.CheckConstraint("(state='pending_approval' AND activated_at IS NULL AND terminal_at IS NULL) OR (state='active' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NULL) OR (state='superseded' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NOT NULL) OR (state IN ('rejected','expired','stale') AND approval_id IS NOT NULL AND activated_at IS NULL AND terminal_at IS NOT NULL)", name="ck_catalog_policy_lifecycle"),
     )
     op.create_index("uq_catalog_policy_active", "catalog_proposal_policy_versions", ["tenant_id"], unique=True, postgresql_where=sa.text("state='active'"))
@@ -300,25 +434,31 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        """
+        f"""
         DO $$ BEGIN
           IF EXISTS (SELECT 1 FROM catalog_cultivation_cases LIMIT 1)
              OR EXISTS (SELECT 1 FROM catalog_product_proposals LIMIT 1)
              OR EXISTS (SELECT 1 FROM catalog_proposal_evaluations LIMIT 1)
              OR EXISTS (SELECT 1 FROM catalog_proposal_policy_versions LIMIT 1)
              OR EXISTS (SELECT 1 FROM validated_needs WHERE recurring_requirement IS NOT NULL LIMIT 1)
+             OR EXISTS (
+               SELECT 1 FROM approval_packages
+               WHERE NOT coalesce(({_LEGACY_APPROVAL_CHECK}),false) LIMIT 1
+             )
           THEN RAISE EXCEPTION '0057 refuses destructive catalog downgrade'; END IF;
         END $$;
         """
     )
     op.execute("DROP TRIGGER trg_catalog_cultivation_immutable ON catalog_cultivation_cases")
-    op.execute("DROP FUNCTION reject_catalog_cultivation_mutation()")
+    op.execute("DROP FUNCTION guard_catalog_cultivation_case()")
     op.execute("DROP TRIGGER trg_catalog_product_proposal_guard ON catalog_product_proposals")
     op.execute("DROP FUNCTION guard_catalog_product_proposal()")
     op.execute("DROP TRIGGER trg_catalog_evaluation_immutable ON catalog_proposal_evaluations")
-    op.execute("DROP FUNCTION reject_catalog_evaluation_mutation()")
+    op.execute("DROP FUNCTION guard_catalog_evaluation()")
     op.execute("DROP TRIGGER trg_catalog_policy_version_guard ON catalog_proposal_policy_versions")
     op.execute("DROP FUNCTION guard_catalog_policy_version()")
+    op.execute("DROP TRIGGER trg_catalog_approval_namespace ON approval_packages")
+    op.execute("DROP FUNCTION guard_catalog_approval_namespace()")
     op.drop_table("catalog_cultivation_cases")
     op.drop_table("catalog_product_proposals")
     op.drop_table("catalog_proposal_evaluations")
