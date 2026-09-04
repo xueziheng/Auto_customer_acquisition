@@ -773,6 +773,54 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(root.textContent).not.toContain(aKey!);
   });
 
+  it("restores the exact unresolved A intent after switching A to B and back within one component", async () => {
+    const identity = identityHarness("policy-identity-return");
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        throw new TypeError("controlled uncertainty");
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const client = createApiClient({ baseUrl: "https://tradeos.test", fetch }, identity.provider);
+    const root = (await mountProductsInstance(fetch, identity.provider, client)).root;
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    setField(root, "minimum_distinct_accounts", "4");
+    setField(root, "minimum_recurring_accounts", "2");
+    setField(root, "minimum_distinct_countries", "5");
+    setField(root, "minimum_quantity_unit_accounts", "3");
+    const unified = root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')!;
+    unified.checked = true;
+    unified.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    submitPolicyForm(root);
+    await eventually(() => expect(root.textContent).toContain("提交结果未知"));
+    const originalKey = posts[0]!.headers.get("Idempotency-Key");
+    const originalBody = await posts[0]!.text();
+
+    identity.switchTo("b");
+    await eventually(() => {
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("3");
+      expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
+    });
+    identity.switchTo("a");
+    await eventually(() => {
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("4");
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_recurring_accounts"]')?.value).toBe("2");
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_countries"]')?.value).toBe("5");
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_quantity_unit_accounts"]')?.value).toBe("3");
+      expect(root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')?.checked).toBe(true);
+      expect(root.querySelector('[data-action="retry-catalog-policy"]')).not.toBeNull();
+    });
+    (root.querySelector('[data-action="retry-catalog-policy"]') as HTMLButtonElement).click();
+    await eventually(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.headers.get("Idempotency-Key")).toBe(originalKey);
+    expect(await posts[1]!.text()).toBe(originalBody);
+  });
+
   it("restores and retries the exact non-default same-client intent after remount, then replaces it on form change", async () => {
     const identity = identityHarness("policy-remount");
     const posts: Request[] = [];
@@ -860,6 +908,46 @@ describe("Catalog Product Proposal internal regions", () => {
     submitPolicyForm(second.root);
     await eventually(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.headers.get("Idempotency-Key")).not.toBe(firstKey);
+  });
+
+  it.each([
+    [403, "当前身份无权提交目录策略"],
+    [404, "目录策略依赖记录不存在或不属于当前租户"],
+    [409, "策略基线或请求内容已冲突，请核对当前版本"],
+    [422, "策略内容无效，请检查所有门槛"],
+  ])("retains the exact policy intent after HTTP %i for an unchanged ordinary resubmit", async (status, errorMessage) => {
+    const identity = identityHarness(`policy-http-${status}`);
+    const posts: Request[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/products/catalog-policies" && request.method === "POST") {
+        posts.push(request.clone());
+        return Response.json({}, { status });
+      }
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch, identity.provider);
+    await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    setField(root, "minimum_distinct_accounts", "4");
+    setField(root, "minimum_recurring_accounts", "2");
+    setField(root, "minimum_distinct_countries", "5");
+    setField(root, "minimum_quantity_unit_accounts", "3");
+    const unified = root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')!;
+    unified.checked = true;
+    unified.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(1));
+    const originalKey = posts[0]!.headers.get("Idempotency-Key");
+    const originalBody = await posts[0]!.text();
+    await eventually(() => expect(root.textContent).toContain(errorMessage));
+    expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
+
+    submitPolicyForm(root);
+    await eventually(() => expect(posts).toHaveLength(2));
+    expect(posts[1]!.headers.get("Idempotency-Key")).toBe(originalKey);
+    expect(await posts[1]!.text()).toBe(originalBody);
   });
 
   it("bounds each client registry to eight identities with deterministic oldest-entry eviction", async () => {

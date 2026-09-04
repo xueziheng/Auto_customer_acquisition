@@ -88,6 +88,7 @@ function resetPanel(): void {
   minimumDistinctCountries.value = null;
   minimumQuantityUnitAccounts.value = null;
   requireUnifiedUnit.value = false;
+  restoreRetainedPolicyIntent();
   if (componentMounted) globalThis.queueMicrotask(() => void loadPolicies());
 }
 
@@ -247,7 +248,7 @@ function restoreRetainedPolicyIntent(): void {
   const identityKey = exactIdentityKey();
   if (!identityKey) return;
   const request = retainedRequestFor(client, identityKey);
-  if (!request || !request.retryable) return;
+  if (!request) return;
   restoringRetainedIntent = true;
   try {
     minimumDistinctAccounts.value = request.body.minimum_distinct_accounts;
@@ -259,7 +260,7 @@ function restoreRetainedPolicyIntent(): void {
     restoringRetainedIntent = false;
   }
   retainedIdentityKey = identityKey;
-  retryable.value = true;
+  retryable.value = request.retryable;
   actionNotice.value = "检测到同一身份尚未核清的原请求；重试将沿用原请求内容";
 }
 
@@ -308,10 +309,6 @@ async function submitPolicy(): Promise<void> {
     }
     retryable.value = result.response.status === 503;
     request.retryable = retryable.value;
-    if (!request.retryable) {
-      forgetRequest(client, identityKey);
-      retainedIdentityKey = null;
-    }
     actionError.value = safeSubmitError(result.response.status);
   } catch {
     if (operation.valid() && exactIdentityKey() === identityKey) {
