@@ -359,6 +359,10 @@ _CATALOG_PRODUCT_EVENTS = (
     CatalogCultivationQueued,
 )
 _CATALOG_CHANGE_KINDS = frozenset({"quantity", "unit", "recurring_requirement"})
+_CATALOG_ID_PATTERNS = {
+    prefix: re.compile(rf"{prefix}_[^\s]+\Z")
+    for prefix in ("cpv", "cpe", "cpr", "ccc")
+}
 
 
 def _invalid_catalog_product_event() -> ValidationError:
@@ -367,6 +371,10 @@ def _invalid_catalog_product_event() -> ValidationError:
 
 def _is_nonblank_id(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _matches_catalog_id(value: object, prefix: str) -> bool:
+    return isinstance(value, str) and _CATALOG_ID_PATTERNS[prefix].fullmatch(value) is not None
 
 
 def _validate_catalog_product_event(event: DomainEvent) -> None:
@@ -394,7 +402,7 @@ def _validate_catalog_product_event(event: DomainEvent) -> None:
         return
     if isinstance(event, CatalogProposalPolicyActivated):
         if (
-            not _is_nonblank_id(event.policy_version_id)
+            not _matches_catalog_id(event.policy_version_id, "cpv")
             or not isinstance(event.content_hash, str)
             or _LOWER_HEX_64_RE.fullmatch(event.content_hash) is None
         ):
@@ -402,18 +410,18 @@ def _validate_catalog_product_event(event: DomainEvent) -> None:
         return
     if isinstance(event, CatalogProductProposalCreated):
         if (
-            not _is_nonblank_id(event.proposal_id)
-            or not _is_nonblank_id(event.evaluation_id)
+            not _matches_catalog_id(event.proposal_id, "cpr")
+            or not _matches_catalog_id(event.evaluation_id, "cpe")
             or not _is_nonblank_id(event.cluster_id)
-            or not _is_nonblank_id(event.policy_version_id)
+            or not _matches_catalog_id(event.policy_version_id, "cpv")
             or not isinstance(event.facts_hash, str)
             or _LOWER_HEX_64_RE.fullmatch(event.facts_hash) is None
         ):
             raise _invalid_catalog_product_event()
         return
     if (
-        not _is_nonblank_id(event.cultivation_case_id)
-        or not _is_nonblank_id(event.proposal_id)
+        not _matches_catalog_id(event.cultivation_case_id, "ccc")
+        or not _matches_catalog_id(event.proposal_id, "cpr")
     ):
         raise _invalid_catalog_product_event()
 

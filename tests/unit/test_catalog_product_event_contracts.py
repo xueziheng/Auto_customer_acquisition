@@ -206,3 +206,61 @@ def test_catalog_product_events_reject_invalid_locator_shapes(event: object) -> 
     """改成空定位、非 UTC 时间、非白名单事实种类或非摘要哈希时必须拒绝。"""
     with pytest.raises(ValidationError, match="目录产品提案事件载荷无效"):
         serialize(event)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        CatalogProposalPolicyActivated(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            policy_version_id=CatalogProposalPolicyVersionId(str(EVALUATION_ID)),
+            content_hash="a" * 64,
+        ),
+        CatalogProductProposalCreated(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            proposal_id=CatalogProductProposalId(str(EVALUATION_ID)),
+            evaluation_id=EVALUATION_ID,
+            cluster_id=CLUSTER_ID,
+            policy_version_id=POLICY_VERSION_ID,
+            facts_hash="b" * 64,
+        ),
+        CatalogProductProposalCreated(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            proposal_id=PROPOSAL_ID,
+            evaluation_id=CatalogProposalEvaluationId(str(PROPOSAL_ID)),
+            cluster_id=CLUSTER_ID,
+            policy_version_id=POLICY_VERSION_ID,
+            facts_hash="b" * 64,
+        ),
+        CatalogProductProposalCreated(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            proposal_id=PROPOSAL_ID,
+            evaluation_id=EVALUATION_ID,
+            cluster_id=CLUSTER_ID,
+            policy_version_id=CatalogProposalPolicyVersionId(str(CULTIVATION_CASE_ID)),
+            facts_hash="b" * 64,
+        ),
+        CatalogCultivationQueued(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            cultivation_case_id=CatalogCultivationCaseId(str(PROPOSAL_ID)),
+            proposal_id=PROPOSAL_ID,
+        ),
+        CatalogCultivationQueued(
+            tenant_id=TENANT_ID,
+            occurred_at=NOW,
+            cultivation_case_id=CULTIVATION_CASE_ID,
+            proposal_id=CatalogProductProposalId(str(CULTIVATION_CASE_ID)),
+        ),
+    ],
+)
+def test_catalog_product_events_reject_wrong_or_cross_contract_id_prefixes(
+    event: object,
+) -> None:
+    """各目录提案定位 ID 必须使用自己的前缀，不能借用另一契约的 ID。"""
+    with pytest.raises(ValidationError, match="目录产品提案事件载荷无效"):
+        serialize(event)
