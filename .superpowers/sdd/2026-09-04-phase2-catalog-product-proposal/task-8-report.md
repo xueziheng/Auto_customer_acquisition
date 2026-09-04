@@ -151,3 +151,25 @@ exit 0
 - Task 8 focused + repository：`79 passed in 5.19s`，无 skip。
 - Task 5–8 Products 相关单元、migration、repository、真实 PostgreSQL（最终复跑）：`229 passed in 9.95s`，无 skip。
 - Ruff check/format、5 个 Task 8 source 的 mypy、`scripts/check_boundaries.py` 与 `git diff --check` 全部通过。
+
+## Fix round 3：workflow engine 真正的 Run `FOR KEY SHARE`
+
+### 前一假设错误与修正
+
+- Round 2 的 controller 假设 engine 已对 Run 行持 PostgreSQL `FOR KEY SHARE`，只验证了手写 SQL `FOR KEY SHARE` 与 Products `FOR SHARE` 的锁矩阵；但实际 engine 两处使用的是 SQLAlchemy `.with_for_update(key_share=True)`，它在 PostgreSQL 编译为 `FOR NO KEY UPDATE`。
+- 因此真实 `poll_due` / `deliver_event` 在 handler 外层持有会排斥 Products `FOR SHARE` 的锁；handler 再开独立 Products UoW 时会等待自身外层事务，形成死锁式自等待。
+- `poll_due` 与 `deliver_event` 的 Run-row 查询均改为 `.with_for_update(read=True, key_share=True)`，即真正的 PostgreSQL `FOR KEY SHARE`。step-row `FOR UPDATE`、`SKIP LOCKED` 与 step→run 锁序均未改变；Products guard 保持 `FOR SHARE`。
+
+### Strict TDD 与 mutation 证据
+
+- 新增真实 `PostgresWorkflowEngine` 回归，注册 `catalog_cluster_evaluation` v1 definition，并让 `evaluate` handler 在独立 Products UoW 调用 Task 8 `evaluate_cluster`。
+- 旧 engine 锁下，`poll_due` 和 `deliver_event` 两条路径分别在 Products guard 处等待，3 秒有界调用均稳定 `TimeoutError`：`2 failed, 18 deselected in 10.31s`。
+- 修复后两条路径均在界限内完成，run 与 evaluate step 正常进入 `completed`，evaluation、唯一 proposal、`CatalogProductProposalCreated` 各 1 条：`2 passed, 18 deselected in 3.83s`。
+- 逐点 mutation 分别只把 `poll_due` 或 `deliver_event` 还原为旧参数；对应独立测试各自恢复 3 秒超时，证明任一锁点退化都会被测试杀死。恢复修复后连同 round 2 三项锁测试：`5 passed, 15 deselected in 3.85s`。
+
+### 回归证据
+
+- Workflow engine 全文件（含 poll/deliver/cancel/commit failure/锁序）：`54 passed in 7.53s`。
+- Catalog proposal 真实 PostgreSQL integration：`20 passed in 4.94s`，无 skip。
+- Task 5–8 Products + workflow engine 最终合并复跑：`285 passed in 13.90s`，无 skip。
+- Ruff check、6 个相关 source 的 mypy、Task 8 adapter/test format check、`scripts/check_boundaries.py` 与 `git diff --check` 全部通过。

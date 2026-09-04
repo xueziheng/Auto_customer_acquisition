@@ -42,6 +42,7 @@ from infra.db.tables import (
     ProductRow,
     SourcingCaseRow,
 )
+from infra.db.workflow_engine import PostgresWorkflowEngine
 from shared.errors import TenantIsolationViolation, TransientError, ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -52,6 +53,7 @@ from shared.schemas.identifiers import (
     RunId,
     TenantId,
 )
+from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 HASH_A = "a" * 64
@@ -439,6 +441,25 @@ class _PausedGuardUow:
         await self._delegate.__aexit__(exc_type, exc, tb)
 
 
+class _CatalogEvaluationWorkflowHandler:
+    def __init__(
+        self,
+        service: CatalogProposalServiceImpl,
+        values: dict[str, str],
+    ) -> None:
+        self._service = service
+        self._values = values
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        await self._service.evaluate_cluster(
+            run.tenant_id,
+            _facts(self._values),
+            proposed_by_run=run.run_id,
+            actor=_system(run.tenant_id),
+        )
+        return ("complete", None, {})
+
+
 async def _wait_for_blocking_pid(engine: AsyncEngine, blocked_pid: int) -> None:
     async with asyncio.timeout(3):
         while True:
@@ -450,6 +471,53 @@ async def _wait_for_blocking_pid(engine: AsyncEngine, blocked_pid: int) -> None:
             if blockers:
                 return
             await asyncio.sleep(0.02)
+
+
+async def _assert_completed_catalog_evaluation_workflow(
+    engine: AsyncEngine,
+    values: dict[str, str],
+    run_id: RunId,
+) -> None:
+    async with engine.connect() as connection:
+        run_state = (
+            await connection.execute(
+                text(
+                    "SELECT current_step,status FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND run_id=:run"
+                ),
+                {"tenant": values["tenant"], "run": str(run_id)},
+            )
+        ).one()
+        step_state = await connection.scalar(
+            text(
+                "SELECT status FROM workflow_steps "
+                "WHERE tenant_id=:tenant AND run_id=:run AND step_name='evaluate'"
+            ),
+            {"tenant": values["tenant"], "run": str(run_id)},
+        )
+        counts = [
+            await connection.scalar(
+                select(func.count())
+                .select_from(row)
+                .where(row.tenant_id == values["tenant"])
+            )
+            for row in (
+                CatalogProposalEvaluationRow,
+                CatalogProductProposalRow,
+            )
+        ]
+        event_count = await connection.scalar(
+            select(func.count())
+            .select_from(OutboxEventRow)
+            .where(
+                OutboxEventRow.tenant_id == values["tenant"],
+                OutboxEventRow.event_type == "CatalogProductProposalCreated",
+            )
+        )
+    assert tuple(run_state) == ("evaluate", "completed")
+    assert step_state == "completed"
+    assert counts == [1, 1]
+    assert event_count == 1
 
 
 async def _proposal(
@@ -781,6 +849,107 @@ async def test_engine_key_share_is_compatible_with_catalog_share_guard(
                 timeout=3,
             )
         assert result.overall_passed is True
+    finally:
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_poll_due_catalog_evaluation_handler_can_open_products_uow(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "engine_poll")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    handler = _CatalogEvaluationWorkflowHandler(_service(factory, tenant), values)
+    workflow = PostgresWorkflowEngine(
+        factory,
+        {"catalog_evaluate": handler},
+        now=lambda: NOW,
+    )
+    workflow.register(
+        WorkflowDefinition(
+            workflow_type="catalog_cluster_evaluation",
+            version=1,
+            steps=(
+                StepDefinition(
+                    step_name="evaluate",
+                    handler_ref="catalog_evaluate",
+                ),
+            ),
+        )
+    )
+    try:
+        run_id = await workflow.start(
+            tenant,
+            "catalog_cluster_evaluation",
+            values["cluster"],
+            {},
+            "catalog-engine-poll",
+        )
+
+        assert await asyncio.wait_for(workflow.poll_due(tenant, 1), timeout=3) == 1
+
+        await _assert_completed_catalog_evaluation_workflow(
+            catalog_proposal_engine,
+            values,
+            run_id,
+        )
+    finally:
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_deliver_event_catalog_evaluation_handler_can_open_products_uow(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "engine_deliver")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    handler = _CatalogEvaluationWorkflowHandler(_service(factory, tenant), values)
+    workflow = PostgresWorkflowEngine(
+        factory,
+        {"catalog_evaluate": handler},
+        now=lambda: NOW,
+    )
+    workflow.register(
+        WorkflowDefinition(
+            workflow_type="catalog_cluster_evaluation",
+            version=1,
+            steps=(
+                StepDefinition(
+                    step_name="evaluate",
+                    handler_ref="catalog_evaluate",
+                    wait_event_type="catalog_evaluate_now",
+                ),
+            ),
+        )
+    )
+    try:
+        run_id = await workflow.start(
+            tenant,
+            "catalog_cluster_evaluation",
+            values["cluster"],
+            {},
+            "catalog-engine-deliver",
+        )
+
+        assert await asyncio.wait_for(
+            workflow.deliver_event(
+                tenant,
+                run_id,
+                "catalog_evaluate_now",
+                {"trigger": "test"},
+            ),
+            timeout=3,
+        )
+
+        await _assert_completed_catalog_evaluation_workflow(
+            catalog_proposal_engine,
+            values,
+            run_id,
+        )
     finally:
         await _cleanup(catalog_proposal_engine, values["tenant"])
 
