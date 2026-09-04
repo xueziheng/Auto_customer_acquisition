@@ -121,7 +121,7 @@ def _decode_value(value: object, kind: str) -> object:
             raise ValueError("布尔事实类型无效")
         return value
     if kind == "quantity":
-        if type(value) is not int or value <= 0:
+        if type(value) is not int:
             raise ValueError("数量事实类型无效")
         return value
     if kind == "unit":

@@ -51,6 +51,7 @@ from domains.demand.schemas import (
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
+    _unit_text,
     catalog_evidence_summary,
 )
 from domains.demand.service import (
@@ -1410,6 +1411,24 @@ class DemandServiceImpl:
                 or need.product_category.value != cluster.category
             ):
                 raise ValidationError("需求簇成员链不完整")
+            quantity = need.quantity
+            unit = need.unit
+            try:
+                if quantity is not None and (
+                    not isinstance(quantity, FactualField)
+                    or type(quantity.value) is not int
+                ):
+                    raise ValueError
+                if unit is not None:
+                    if (
+                        not isinstance(unit, FactualField)
+                        or type(unit.value) is not str
+                        or len(unit.value) > 64
+                    ):
+                        raise ValueError
+                    _unit_text(unit.value)
+            except (AttributeError, TypeError, ValueError):
+                raise NeedUnitError("facts_corrupt") from None
 
         created_at = self._priority_fact_version_time(
             cluster.created_at, "需求簇事实版本时间无效"

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from domains.demand.errors import NeedUnitError
 from domains.demand.schemas import (
     CatalogEvidenceSummary,
     DemandCatalogAccountFact,
@@ -167,8 +168,6 @@ def _need(
         ("quantity", True),
         ("quantity", 1.5),
         ("quantity", "10"),
-        ("quantity", 0),
-        ("quantity", -1),
         ("unit", 10),
     ],
 )
@@ -188,6 +187,28 @@ def test_catalog_snapshot_decoder_rejects_malformed_quantity_and_unit(
         _row_to_need(row)
 
     assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize("quantity", [0, -1])
+async def test_catalog_snapshot_decoder_round_trips_historical_integer_quantity(
+    quantity: int,
+) -> None:
+    """Treating a historical non-positive integer as corruption would break old Need reads."""
+    need = _need("history", "acc_history", quantity=10, unit=None, recurring=None)
+    historical = replace(
+        need,
+        quantity=FactualField(quantity, _provenance("msg_quantity_history")),
+    )
+
+    restored = _row_to_need(_need_to_row(historical))
+
+    assert restored.quantity is not None
+    assert restored.quantity.value == quantity
+    facts = await _service((restored,), {"acc_history": None}).get_cluster_catalog_facts(
+        TENANT, CLUSTER_ID
+    )
+    assert facts.quantity_unit_covered_account_count == 0
+    assert facts.safe_total_quantity is None
 
 
 @dataclass(frozen=True)
@@ -278,6 +299,47 @@ def _service(
         now=lambda: NOW + timedelta(days=30),
         catalog_accounts=_Accounts(countries),
     )
+
+
+@pytest.mark.parametrize("quantity", [True, "10", 1.5])
+async def test_service_rejects_malformed_quantity_before_catalog_hash(
+    quantity: object,
+) -> None:
+    """An in-memory reader must not bypass strict quantity fact corruption checks."""
+    need = _need("bad_quantity", "acc_bad", quantity=10, unit=None, recurring=None)
+    malformed = replace(
+        need,
+        quantity=FactualField(quantity, _provenance("msg_bad_quantity")),
+    )
+
+    with pytest.raises(NeedUnitError) as caught:
+        await _service((malformed,), {"acc_bad": None}).get_cluster_catalog_facts(
+            TENANT, CLUSTER_ID
+        )
+
+    assert caught.value.code == "facts_corrupt"
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [10, "", " pcs", "pcs ", "p\x00cs", "p\x80cs", "x" * 65],
+)
+async def test_service_rejects_malformed_unit_before_catalog_hash(unit: object) -> None:
+    """Invalid unit text from a non-SQL reader must fail instead of becoming coverage."""
+    need = _need("bad_unit", "acc_bad", quantity=10, unit="pcs", recurring=None)
+    malformed = replace(
+        need,
+        unit=FactualField(unit, _provenance("msg_bad_unit")),
+    )
+
+    with pytest.raises(NeedUnitError) as caught:
+        await _service((malformed,), {"acc_bad": None}).get_cluster_catalog_facts(
+            TENANT, CLUSTER_ID
+        )
+
+    assert caught.value.code == "facts_corrupt"
+    assert caught.value.__cause__ is None
 
 
 async def test_matching_current_units_total_once_per_distinct_account() -> None:
