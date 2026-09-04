@@ -4,15 +4,25 @@ import { RouterLink } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import CatalogCultivationPanel from "./CatalogCultivationPanel.vue";
+import CatalogPolicyPanel from "./CatalogPolicyPanel.vue";
+import CatalogProposalPanel from "./CatalogProposalPanel.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type ProductSupplyCard = components["schemas"]["ProductSupplyCardView"];
+type CatalogEvaluation = components["schemas"]["CatalogProposalEvaluationView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const cards = ref<ProductSupplyCard[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const sourceOnly = ref(false);
+const catalogEvaluations = ref<CatalogEvaluation[]>([]);
+const catalogRefreshVersion = ref(0);
+
+function refreshCatalogDependents(): void {
+  catalogRefreshVersion.value += 1;
+}
 
 function safeError(status: number): string {
   if (status === 403) return "当前身份无权读取内部供应卡";
@@ -100,6 +110,21 @@ onMounted(() => void loadCards());
         </template>
       </article>
     </section>
+
+    <div
+      class="catalog-regions"
+      aria-label="目录候选产品内部管理"
+    >
+      <CatalogPolicyPanel @submitted="refreshCatalogDependents" />
+      <CatalogProposalPanel
+        :refresh-version="catalogRefreshVersion"
+        @evaluations-loaded="catalogEvaluations = $event"
+      />
+      <CatalogCultivationPanel
+        :evaluations="catalogEvaluations"
+        :refresh-version="catalogRefreshVersion"
+      />
+    </div>
   </div>
 </template>
 
@@ -118,4 +143,5 @@ dd { margin: 0; font-weight: 600; }
 .indicative-prices { padding-left: 20px; }
 .empty { padding: var(--space5); color: var(--text-secondary); text-align: center; }
 .source-filter { display: flex; align-items: center; gap: var(--space2); color: var(--text-secondary); font-size: 13px; }
+.catalog-regions { display: grid; gap: var(--space5); margin-top: var(--space6); }
 </style>

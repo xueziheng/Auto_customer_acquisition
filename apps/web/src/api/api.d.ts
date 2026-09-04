@@ -1390,6 +1390,143 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/products/catalog-cultivation-cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Catalog Cultivation Cases */
+        get: operations["list_catalog_cultivation_cases_products_catalog_cultivation_cases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-cultivation-cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Catalog Cultivation Case */
+        get: operations["get_catalog_cultivation_case_products_catalog_cultivation_cases__case_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-evaluations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Catalog Evaluations */
+        get: operations["list_catalog_evaluations_products_catalog_evaluations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-evaluations/{evaluation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Catalog Evaluation */
+        get: operations["get_catalog_evaluation_products_catalog_evaluations__evaluation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Catalog Policies */
+        get: operations["list_catalog_policies_products_catalog_policies_get"];
+        put?: never;
+        /** Submit Catalog Policy */
+        post: operations["submit_catalog_policy_products_catalog_policies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-policies/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Active Catalog Policy */
+        get: operations["get_active_catalog_policy_products_catalog_policies_active_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Catalog Proposals */
+        get: operations["list_catalog_proposals_products_catalog_proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/catalog-proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Catalog Proposal */
+        get: operations["get_catalog_proposal_products_catalog_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/products/{product_id}/customer": {
         parameters: {
             query?: never;
@@ -2065,6 +2202,11 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * ApprovalState
+         * @enum {string}
+         */
+        ApprovalState: "pending" | "approved" | "applied" | "apply_failed" | "rejected" | "expired";
+        /**
          * ApprovalView
          * @description 审批视图 —— 审批人看到的全部内容。
          *
@@ -2357,6 +2499,280 @@ export interface components {
             today_new_contacts_reserved: number;
             /** Version */
             version: number;
+        };
+        /**
+         * CatalogApprovalLinkState
+         * @description Products 内部视图可联结的最小 Catalog 审批状态。
+         */
+        CatalogApprovalLinkState: {
+            /** Approval Id */
+            approval_id: string;
+            /**
+             * Approval Type
+             * @enum {string}
+             */
+            approval_type: "catalog_proposal_policy_change" | "catalog_product_cultivation";
+            state: components["schemas"]["ApprovalState"];
+        };
+        /**
+         * CatalogBlockedFactsInput
+         * @description 损坏事实的最小持久化信封；只保存可信定位符与内容指纹。
+         */
+        CatalogBlockedFactsInput: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Facts Hash */
+            facts_hash: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
+         * CatalogClusterFactsInput
+         * @description workflow 显式映射给 Products 的事实快照，不依赖 Demand 类型。
+         */
+        CatalogClusterFactsInput: {
+            /** Cluster Category */
+            cluster_category: string;
+            /** Cluster Id */
+            cluster_id: string;
+            /** Display Codes */
+            display_codes: string[];
+            /** Distinct Account Count */
+            distinct_account_count: number;
+            /** Distinct Account Ids */
+            distinct_account_ids: string[];
+            /** Evidence Summaries */
+            evidence_summaries: components["schemas"]["CatalogEvidenceSummaryInput"][];
+            /** Facts Hash */
+            facts_hash: string;
+            /**
+             * Facts Observed At
+             * Format: date-time
+             */
+            facts_observed_at: string;
+            /** Known Country Codes */
+            known_country_codes: string[];
+            /** Member Count */
+            member_count: number;
+            /** Member Need Ids */
+            member_need_ids: string[];
+            /** Quantity Unit Covered Account Count */
+            quantity_unit_covered_account_count: number;
+            /** Recurring False Account Count */
+            recurring_false_account_count: number;
+            /** Recurring True Account Count */
+            recurring_true_account_count: number;
+            /** Recurring Unknown Account Count */
+            recurring_unknown_account_count: number;
+            /** Safe Total Quantity */
+            safe_total_quantity: number | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Unified Unit */
+            unified_unit: string | null;
+            /** Unknown Country Account Count */
+            unknown_country_account_count: number;
+        };
+        /** CatalogCultivationApiView */
+        CatalogCultivationApiView: {
+            approval: components["schemas"]["CatalogApprovalLinkState"];
+            cultivation_case: components["schemas"]["CatalogCultivationCaseView"];
+        };
+        /** CatalogCultivationCaseView */
+        CatalogCultivationCaseView: {
+            /** Approval Id */
+            approval_id: string;
+            /** Cluster Id */
+            cluster_id: string;
+            /** Cultivation Case Id */
+            cultivation_case_id: string;
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Facts Hash */
+            facts_hash: string;
+            /** Policy Version Id */
+            policy_version_id: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /**
+             * Queued At
+             * Format: date-time
+             */
+            queued_at: string;
+            /**
+             * State
+             * @default queued
+             * @constant
+             */
+            state: "queued";
+        };
+        /**
+         * CatalogEvidenceSummaryInput
+         * @description Products 自有的安全 Evidence 指纹；不承载事实值或原文。
+         */
+        CatalogEvidenceSummaryInput: {
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /** Content Hash */
+            content_hash: string;
+            /** Extracted By */
+            extracted_by: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Source Id */
+            source_id: string;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "conversation" | "web_page" | "upload" | "employee_input" | "external_api";
+        };
+        /** CatalogPolicyApiView */
+        CatalogPolicyApiView: {
+            approval: components["schemas"]["CatalogApprovalLinkState"] | null;
+            policy: components["schemas"]["CatalogProposalPolicyView"];
+        };
+        /** CatalogProductProposalView */
+        CatalogProductProposalView: {
+            /** Approval Id */
+            approval_id: string | null;
+            /** Cluster Id */
+            cluster_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Evaluation Id */
+            evaluation_id: string;
+            /** Facts Hash */
+            facts_hash: string;
+            /** Owner Employee */
+            owner_employee: string;
+            /** Policy Version Id */
+            policy_version_id: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Proposed By Run */
+            proposed_by_run: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "awaiting_approval_submission" | "pending_review" | "cultivation_queued" | "rejected" | "expired" | "stale";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** CatalogProposalApiView */
+        CatalogProposalApiView: {
+            approval: components["schemas"]["CatalogApprovalLinkState"] | null;
+            proposal: components["schemas"]["CatalogProductProposalView"];
+        };
+        /** CatalogProposalEvaluationView */
+        CatalogProposalEvaluationView: {
+            /** Blocked Reason */
+            blocked_reason: "catalog_facts_invalid" | null;
+            /** Cluster Id */
+            cluster_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Evaluation Id */
+            evaluation_id: string;
+            /** Facts */
+            facts: components["schemas"]["CatalogClusterFactsInput"] | components["schemas"]["CatalogBlockedFactsInput"];
+            /** Facts Hash */
+            facts_hash: string;
+            /** Overall Passed */
+            overall_passed: boolean;
+            /** Policy Version Id */
+            policy_version_id: string;
+            /** Proposed By Run */
+            proposed_by_run: string;
+            /** Rule Results */
+            rule_results: components["schemas"]["CatalogProposalRuleResult"][];
+        };
+        /**
+         * CatalogProposalPolicyContent
+         * @description 必须经人工审批的目录提案策略内容；生产环境没有默认实例。
+         */
+        CatalogProposalPolicyContent: {
+            /** Minimum Distinct Accounts */
+            minimum_distinct_accounts: number;
+            /** Minimum Distinct Countries */
+            minimum_distinct_countries: number | null;
+            /** Minimum Quantity Unit Accounts */
+            minimum_quantity_unit_accounts: number | null;
+            /** Minimum Recurring Accounts */
+            minimum_recurring_accounts: number | null;
+            /** Require Unified Unit */
+            require_unified_unit: boolean;
+        };
+        /**
+         * CatalogProposalPolicyView
+         * @description 策略安全视图；不公开幂等键或请求 hash。
+         */
+        CatalogProposalPolicyView: {
+            /** Activated At */
+            activated_at: string | null;
+            /** Approval Id */
+            approval_id: string | null;
+            /** Base Active Version Id */
+            base_active_version_id: string | null;
+            content: components["schemas"]["CatalogProposalPolicyContent"];
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Policy Version Id */
+            policy_version_id: string;
+            /** Proposed By */
+            proposed_by: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending_approval" | "active" | "superseded" | "rejected" | "expired" | "stale";
+            /** Terminal At */
+            terminal_at: string | null;
+        };
+        /**
+         * CatalogProposalRuleResult
+         * @description 单条确定性规则结果；只允许固定代码，不容纳模型解释或概率。
+         */
+        CatalogProposalRuleResult: {
+            /** Actual Value */
+            actual_value: number | string | boolean | null;
+            /**
+             * Explanation Code
+             * @enum {string}
+             */
+            explanation_code: "目录事实损坏，评估已阻断" | "成员关系与品类完整一致" | "成员关系或品类不一致" | "去重客户数达到策略门槛" | "去重客户数未达到策略门槛" | "复购客户数达到策略门槛" | "复购客户数未达到策略门槛" | "复购客户事实不完整" | "策略不要求复购客户数" | "已知国家数达到策略门槛" | "已知国家数未达到策略门槛" | "客户国家事实不完整" | "策略不要求已知国家数" | "数量单位覆盖达到策略门槛" | "数量单位覆盖未达到策略门槛" | "数量单位事实不完整" | "策略不要求数量单位覆盖" | "有效数量单位已经统一" | "统一单位事实不完整" | "有效数量单位不统一" | "统一单位事实未知" | "策略不要求统一单位";
+            /** Required Value */
+            required_value: number | string | boolean | null;
+            /**
+             * Rule
+             * @enum {string}
+             */
+            rule: "membership_integrity" | "distinct_accounts" | "recurring_accounts" | "distinct_countries" | "quantity_unit_coverage" | "unified_unit";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "passed" | "failed" | "unknown" | "not_required";
         };
         /**
          * ClassificationCorrectionAccepted
@@ -7042,6 +7458,8 @@ export interface components {
             product_category: string;
             /** Quantity */
             quantity?: number | null;
+            /** Recurring Requirement */
+            recurring_requirement?: boolean | null;
             /** Required By */
             required_by?: string | null;
             /** Status */
@@ -11833,6 +12251,559 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProductSupplyCardView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_catalog_cultivation_cases_products_catalog_cultivation_cases_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogCultivationApiView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_catalog_cultivation_case_products_catalog_cultivation_cases__case_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogCultivationApiView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_catalog_evaluations_products_catalog_evaluations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProposalEvaluationView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_catalog_evaluation_products_catalog_evaluations__evaluation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evaluation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProposalEvaluationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_catalog_policies_products_catalog_policies_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogPolicyApiView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    submit_catalog_policy_products_catalog_policies_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Minimum Distinct Accounts */
+                    minimum_distinct_accounts: number;
+                    /** Minimum Distinct Countries */
+                    minimum_distinct_countries: number | null;
+                    /** Minimum Quantity Unit Accounts */
+                    minimum_quantity_unit_accounts: number | null;
+                    /** Minimum Recurring Accounts */
+                    minimum_recurring_accounts: number | null;
+                    /** Require Unified Unit */
+                    require_unified_unit: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogPolicyApiView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_active_catalog_policy_products_catalog_policies_active_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogPolicyApiView"] | null;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_catalog_proposals_products_catalog_proposals_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProposalApiView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_catalog_proposal_products_catalog_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProposalApiView"];
                 };
             };
             /** @description 请求参数无效 */
