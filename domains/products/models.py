@@ -196,15 +196,41 @@ class CatalogProposalEvaluation:
         if self.cluster_id != validated_facts.cluster_id:
             raise ValidationError("评估 cluster_id 与事实快照不一致")
         try:
-            CatalogProposalEvaluationResult.model_validate(
+            persisted_result = CatalogProposalEvaluationResult.model_validate(
                 {
                     "rule_results": self.rule_results,
                     "overall_passed": self.overall_passed,
                     "blocked_reason": self.blocked_reason,
                 }
             )
+            reconstructed_policy = CatalogProposalPolicyContent.model_validate(
+                {
+                    "minimum_distinct_accounts": persisted_result.rule_results[
+                        1
+                    ].required_value,
+                    "minimum_recurring_accounts": persisted_result.rule_results[
+                        2
+                    ].required_value,
+                    "minimum_distinct_countries": persisted_result.rule_results[
+                        3
+                    ].required_value,
+                    "minimum_quantity_unit_accounts": persisted_result.rule_results[
+                        4
+                    ].required_value,
+                    "require_unified_unit": (
+                        persisted_result.rule_results[5].required_value is True
+                    ),
+                }
+            )
         except (PydanticValidationError, TypeError, ValueError):
             raise ValidationError("评估规则结果无效") from None
+        from domains.products.catalog_rules import evaluate_catalog_facts
+
+        expected_result = evaluate_catalog_facts(
+            reconstructed_policy, validated_facts
+        )
+        if persisted_result != expected_result:
+            raise ValidationError("评估规则结果与事实快照不一致")
 
 
 @dataclass(frozen=True)

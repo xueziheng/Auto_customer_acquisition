@@ -100,6 +100,13 @@ def test_rule_result_rejects_free_form_explanation() -> None:
         },
         {
             "rule": "recurring_accounts",
+            "status": "unknown",
+            "actual_value": 2,
+            "required_value": 2,
+            "explanation_code": "复购客户事实不完整",
+        },
+        {
+            "rule": "recurring_accounts",
             "status": "not_required",
             "actual_value": 1,
             "required_value": 2,
@@ -577,6 +584,61 @@ def test_persisted_evaluation_revalidates_rule_result_contract() -> None:
             "facts": CatalogClusterFactsInput.model_construct(
                 **{**facts.model_dump(mode="python"), "member_count": 999}
             )
+        },
+    ):
+        with pytest.raises(ValidationError):
+            evaluation_type(**{**payload, **changes})
+
+
+def test_persisted_evaluation_binds_rules_exactly_to_facts() -> None:
+    """内部规则即使自身合法，也不能伪造 facts 计数或阻断正常事实。"""
+
+    facts = _facts(
+        recurring_true_account_count=1,
+        recurring_false_account_count=2,
+        recurring_unknown_account_count=0,
+    )
+    policy = _policy(minimum_recurring_accounts=1)
+    result = evaluate_catalog_facts(policy, facts)
+    fraudulent_rule = CatalogProposalRuleResult(
+        rule="recurring_accounts",
+        status="passed",
+        actual_value=2,
+        required_value=1,
+        explanation_code="复购客户数达到策略门槛",
+    )
+    fraudulent_rules = list(result.rule_results)
+    fraudulent_rules[2] = fraudulent_rule
+    damaged = CatalogClusterFactsInput.model_construct(
+        **{**facts.model_dump(mode="python"), "member_count": 999}
+    )
+    false_blocked = evaluate_catalog_facts(policy, damaged)
+    payload: dict[str, object] = {
+        "tenant_id": facts.tenant_id,
+        "evaluation_id": CatalogProposalEvaluationId("cpe_catalog_binding"),
+        "cluster_id": facts.cluster_id,
+        "policy_version_id": CatalogProposalPolicyVersionId("cpv_catalog"),
+        "facts_hash": facts.facts_hash,
+        "facts": facts,
+        "rule_results": result.rule_results,
+        "overall_passed": result.overall_passed,
+        "blocked_reason": result.blocked_reason,
+        "proposed_by_run": RunId("run_catalog"),
+        "created_at": NOW,
+    }
+    evaluation_type = cast(
+        Any,
+        importlib.import_module(
+            "domains.products.models"
+        ).CatalogProposalEvaluation,
+    )
+
+    for changes in (
+        {"rule_results": tuple(fraudulent_rules)},
+        {
+            "rule_results": false_blocked.rule_results,
+            "overall_passed": false_blocked.overall_passed,
+            "blocked_reason": false_blocked.blocked_reason,
         },
     ):
         with pytest.raises(ValidationError):

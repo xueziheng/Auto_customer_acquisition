@@ -374,6 +374,12 @@ class CatalogProposalRuleResult(_CatalogFrozenModel):
                 and actual_value is None
             ):
                 raise ValueError("合法 unknown count 必须携带已确认 actual_value")
+            if (
+                actual_value is not None
+                and required_value is not None
+                and actual_value >= required_value
+            ):
+                raise ValueError("required count 已达门槛时不得标记 unknown")
             return
         if self.status == "not_required":
             if required_value is not None:
