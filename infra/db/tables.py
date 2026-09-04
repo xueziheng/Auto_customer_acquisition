@@ -373,7 +373,11 @@ class ApprovalPackageRow(Base):
         CheckConstraint(
             """(contract_namespace IS NULL AND request_hash IS NULL AND NOT
             (lower(btrim(coalesce(change_set_ref,''))) LIKE 'quote:%' OR
-             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'quote-approval%')) OR
+             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'quote-approval%') AND NOT
+            (lower(btrim(coalesce(change_set_ref,''))) LIKE 'catalog-policy:%' OR
+             lower(btrim(coalesce(change_set_ref,''))) LIKE 'catalog-cultivation:%' OR
+             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'catalog-policy%' OR
+             lower(btrim(coalesce(proposed_change->>'schema_version',''))) LIKE 'catalog-cultivation%')) OR
             coalesce((contract_namespace='quote-approval-v1' AND request_hash ~ '^[0-9a-f]{64}$'
               AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
               AND proposed_change->>'schema_version'='quote-approval-v1'
@@ -387,7 +391,30 @@ class ApprovalPackageRow(Base):
               AND proposed_change->>'content_hash' ~ '^[0-9a-f]{64}$'
               AND approval_type IN ('quote_send','margin_floor_override','discount','delivery_commitment','payment_terms','certification_commitment')
               AND change_set_ref='quote:'||(proposed_change->>'quote_id')||':'||
-                  (proposed_change->>'content_hash')||':'||approval_type),false)""",
+                  (proposed_change->>'content_hash')||':'||approval_type),false) OR
+            coalesce((contract_namespace='catalog-policy-v1' AND request_hash ~ '^[0-9a-f]{64}$'
+              AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
+              AND approval_type='catalog_proposal_policy_change'
+              AND proposed_change->>'schema_version'='catalog-policy-v1'
+              AND proposed_change->>'tenant_id'=tenant_id
+              AND proposed_change->>'approval_type'=approval_type
+              AND proposed_change->>'policy_version_id' ~ '^cpv_'
+              AND proposed_change->>'content_hash' ~ '^[0-9a-f]{64}$'
+              AND proposed_change->>'request_hash'=request_hash
+              AND change_set_ref='catalog-policy:'||(proposed_change->>'policy_version_id')||':'||
+                  (proposed_change->>'content_hash')),false) OR
+            coalesce((contract_namespace='catalog-cultivation-v1' AND request_hash ~ '^[0-9a-f]{64}$'
+              AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
+              AND approval_type='catalog_product_cultivation'
+              AND proposed_change->>'schema_version'='catalog-cultivation-v1'
+              AND proposed_change->>'tenant_id'=tenant_id
+              AND proposed_change->>'approval_type'=approval_type
+              AND proposed_change->>'proposal_id' ~ '^cpr_'
+              AND proposed_change->>'policy_version_id' ~ '^cpv_'
+              AND proposed_change->>'facts_hash' ~ '^[0-9a-f]{64}$'
+              AND proposed_change->>'request_hash'=request_hash
+              AND change_set_ref='catalog-cultivation:'||(proposed_change->>'proposal_id')||':'||
+                  (proposed_change->>'policy_version_id')||':'||(proposed_change->>'facts_hash')),false)""",
             name="ck_approval_quote_contract",
         ),
         CheckConstraint(
@@ -2139,6 +2166,10 @@ class ValidatedNeedRow(Base):
             "(certification_required IS NULL) OR jsonb_typeof(certification_required) = 'object'",
             name="ck_validated_needs_certification_required_jsonb",
         ),
+        CheckConstraint(
+            "recurring_requirement IS NULL OR jsonb_typeof(recurring_requirement) = 'object'",
+            name="ck_validated_needs_recurring_requirement_jsonb",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(40))
@@ -2181,12 +2212,142 @@ class ValidatedNeedRow(Base):
     certification_required: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(none_as_null=True)
     )
+    recurring_requirement: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
     confirmed_by: Mapped[str | None] = mapped_column(String(40))
     cluster_id: Mapped[str | None] = mapped_column(String(40))
 
     unit: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
     unit_quantity_fact_hash: Mapped[str | None] = mapped_column(String(64))
     unit_confirmation_id: Mapped[str | None] = mapped_column(String(40))
+
+
+class CatalogProposalPolicyVersionRow(Base):
+    """目录产品提案策略版本；内容不可变，数据库只允许声明的生命周期推进。"""
+
+    __tablename__ = "catalog_proposal_policy_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "policy_version_id", name="pk_catalog_proposal_policy_versions"),
+        UniqueConstraint("tenant_id", "proposed_by", "creation_key", name="uq_catalog_policy_creation_key"),
+        ForeignKeyConstraint(["tenant_id", "base_active_version_id"], ["catalog_proposal_policy_versions.tenant_id", "catalog_proposal_policy_versions.policy_version_id"], name="fk_catalog_policy_base_active", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by"], ["employees.tenant_id", "employees.employee_id"], name="fk_catalog_policy_proposer", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_policy_approval", ondelete="RESTRICT"),
+        CheckConstraint("btrim(tenant_id)<>'' AND policy_version_id ~ '^cpv_' AND btrim(proposed_by)<>'' AND btrim(creation_key)<>''", name="ck_catalog_policy_core"),
+        CheckConstraint("jsonb_typeof(content)='object'", name="ck_catalog_policy_content_jsonb"),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$' AND creation_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_policy_hashes"),
+        CheckConstraint("state IN ('pending_approval','active','superseded','rejected','expired','stale')", name="ck_catalog_policy_state"),
+        CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at)", name="ck_catalog_policy_times"),
+        CheckConstraint("(state='pending_approval' AND activated_at IS NULL AND terminal_at IS NULL) OR (state='active' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NULL) OR (state='superseded' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NOT NULL) OR (state IN ('rejected','expired','stale') AND approval_id IS NOT NULL AND activated_at IS NULL AND terminal_at IS NOT NULL)", name="ck_catalog_policy_lifecycle"),
+        Index("uq_catalog_policy_active", "tenant_id", unique=True, postgresql_where=text("state='active'")),
+        Index("uq_catalog_policy_approval", "tenant_id", "approval_id", unique=True, postgresql_where=text("approval_id IS NOT NULL")),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    content: Mapped[dict] = mapped_column(postgresql.JSONB)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    base_active_version_id: Mapped[str | None] = mapped_column(String(40))
+    proposed_by: Mapped[str] = mapped_column(String(40))
+    creation_key: Mapped[str] = mapped_column(String(200))
+    creation_request_hash: Mapped[str] = mapped_column(String(64))
+    approval_id: Mapped[str | None] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogProposalEvaluationRow(Base):
+    """目录产品提案的确定性事实评估快照；整行只增不改。"""
+
+    __tablename__ = "catalog_proposal_evaluations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "evaluation_id", name="pk_catalog_proposal_evaluations"),
+        UniqueConstraint("tenant_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_evaluation_facts"),
+        UniqueConstraint("tenant_id", "evaluation_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_evaluation_subject"),
+        ForeignKeyConstraint(["tenant_id", "cluster_id"], ["need_clusters.tenant_id", "need_clusters.cluster_id"], name="fk_catalog_evaluation_cluster", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "policy_version_id"], ["catalog_proposal_policy_versions.tenant_id", "catalog_proposal_policy_versions.policy_version_id"], name="fk_catalog_evaluation_policy", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by_run"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_catalog_evaluation_run", ondelete="RESTRICT"),
+        CheckConstraint("evaluation_id ~ '^cpe_' AND facts_hash ~ '^[0-9a-f]{64}$' AND (blocked_reason IS NULL OR btrim(blocked_reason)<>'')", name="ck_catalog_evaluation_core"),
+        CheckConstraint("jsonb_typeof(facts)='object' AND jsonb_typeof(rule_results)='array'", name="ck_catalog_evaluation_jsonb"),
+        CheckConstraint("NOT (facts ? 'safe_total_quantity') OR facts->'safe_total_quantity'='null'::jsonb OR (jsonb_typeof(facts->'safe_total_quantity')='number' AND facts->>'safe_total_quantity' ~ '^(0|[1-9][0-9]*)$')", name="ck_catalog_evaluation_safe_quantity"),
+        CheckConstraint("(overall_passed AND blocked_reason IS NULL) OR NOT overall_passed", name="ck_catalog_evaluation_result"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    evaluation_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    facts: Mapped[dict] = mapped_column(postgresql.JSONB)
+    rule_results: Mapped[list] = mapped_column(postgresql.JSONB)
+    overall_passed: Mapped[bool] = mapped_column(Boolean)
+    blocked_reason: Mapped[str | None] = mapped_column(String(100))
+    proposed_by_run: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogProductProposalRow(Base):
+    """内部培养建议；它不表示 Product、供应、报价或外部发送。"""
+
+    __tablename__ = "catalog_product_proposals"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "proposal_id", name="pk_catalog_product_proposals"),
+        UniqueConstraint("tenant_id", "evaluation_id", name="uq_catalog_product_proposal_evaluation"),
+        UniqueConstraint("tenant_id", "proposal_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_product_proposal_subject"),
+        ForeignKeyConstraint(["tenant_id", "evaluation_id", "cluster_id", "policy_version_id", "facts_hash"], ["catalog_proposal_evaluations.tenant_id", "catalog_proposal_evaluations.evaluation_id", "catalog_proposal_evaluations.cluster_id", "catalog_proposal_evaluations.policy_version_id", "catalog_proposal_evaluations.facts_hash"], name="fk_catalog_product_proposal_evaluation", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "owner_employee"], ["employees.tenant_id", "employees.employee_id"], name="fk_catalog_product_proposal_owner", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by_run"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_catalog_product_proposal_run", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_product_proposal_approval", ondelete="RESTRICT"),
+        CheckConstraint("proposal_id ~ '^cpr_' AND facts_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_product_proposal_core"),
+        CheckConstraint("approval_request_hash IS NULL OR approval_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_product_proposal_hash"),
+        CheckConstraint("state IN ('awaiting_approval_submission','pending_review','cultivation_queued','rejected','expired','stale')", name="ck_catalog_product_proposal_state"),
+        CheckConstraint("updated_at>=created_at", name="ck_catalog_product_proposal_times"),
+        CheckConstraint("(state='awaiting_approval_submission' AND approval_id IS NULL AND approval_request_hash IS NULL) OR (state<>'awaiting_approval_submission' AND approval_id IS NOT NULL AND approval_request_hash IS NOT NULL)", name="ck_catalog_product_proposal_lifecycle"),
+        Index("uq_catalog_product_proposal_approval", "tenant_id", "approval_id", unique=True, postgresql_where=text("approval_id IS NOT NULL")),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    evaluation_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    owner_employee: Mapped[str] = mapped_column(String(40))
+    proposed_by_run: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str | None] = mapped_column(String(40))
+    approval_request_hash: Mapped[str | None] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogCultivationCaseRow(Base):
+    """批准后的内部培养队列事实；本切片只允许固定 ``queued`` 状态。"""
+
+    __tablename__ = "catalog_cultivation_cases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "cultivation_case_id", name="pk_catalog_cultivation_cases"),
+        UniqueConstraint("tenant_id", "proposal_id", name="uq_catalog_cultivation_proposal"),
+        UniqueConstraint("tenant_id", "approval_id", name="uq_catalog_cultivation_approval"),
+        ForeignKeyConstraint(["tenant_id", "proposal_id", "cluster_id", "policy_version_id", "facts_hash"], ["catalog_product_proposals.tenant_id", "catalog_product_proposals.proposal_id", "catalog_product_proposals.cluster_id", "catalog_product_proposals.policy_version_id", "catalog_product_proposals.facts_hash"], name="fk_catalog_cultivation_proposal", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_cultivation_approval", ondelete="RESTRICT"),
+        CheckConstraint("cultivation_case_id ~ '^ccc_' AND facts_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_cultivation_core"),
+        CheckConstraint("jsonb_typeof(evidence_refs)='array'", name="ck_catalog_cultivation_evidence_jsonb"),
+        CheckConstraint("state='queued'", name="ck_catalog_cultivation_state"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cultivation_case_id: Mapped[str] = mapped_column(String(40))
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    evidence_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+    state: Mapped[str] = mapped_column(String(20), server_default=text("'queued'"))
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class NeedUnitConfirmationRow(Base):
