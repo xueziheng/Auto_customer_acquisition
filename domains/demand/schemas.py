@@ -32,6 +32,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     EnrollmentId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     OpportunityId,
     OutboundMessageId,
@@ -536,6 +537,15 @@ class ValidatedNeedView:
     destination: str | None = None
     required_by: date | None = None
     target_price: Money | None = None
+    recurring_requirement: bool | None = None
+
+
+@dataclass(frozen=True)
+class NeedCatalogEventLocator:
+    """目录事实事件的最小定位结果；租户只用于约束查询，不进入结果。"""
+
+    need_id: ValidatedNeedId
+    cluster_id: NeedClusterId | None
 
 
 @dataclass(frozen=True)

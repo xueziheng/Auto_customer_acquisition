@@ -159,3 +159,11 @@ NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交
 表示已经开始寻源、询价或报价。优先级事实的观察时间是底层版本：归簇后必须使用经双向成员链核验、
 严格 UTC 且不早于创建时间的 `NeedCluster.updated_at`；未归簇时使用严格 UTC 的
 `ValidatedNeed.created_at`。禁止用读取时钟制造新版本，也禁止在遗留时间缺失/非法时回退当前时间。
+
+## Phase 2 目录提案需求事实
+
+`recurring_requirement` 是客户明确表达的三态事实：`True`、`False` 与未知 `None` 不得合并，
+并须沿用 `FactualField`/`Provenance` 的直接来源门禁。它不参与完整度 0–5、寻源或报价准备推导，
+也不推进 Need 状态。quantity、unit 或 recurrence 真正变化后，业务事实、历史与
+`NeedCatalogFactsChanged` 必须在同一租户事务提交；相同命令重放不得重复发布。事件只携带
+Need/当前簇定位与变更种类，未归簇时 `cluster_id=None`，不得伪造单成员 Catalog 簇。

@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -36,6 +36,7 @@ from domains.demand.errors import (
 from domains.demand.service import (
     DemandService,
     NeedUnitService,
+    assess_quote_preparation,
     quantity_fact_hash,
     require_current_unit,
 )
@@ -44,6 +45,9 @@ from infra.db.need_unit_uow import SqlAlchemyNeedUnitUnitOfWork
 from infra.db.tables import (
     ConversationRow,
     MessageRow,
+    NeedClusterMemberRow,
+    NeedClusterRow,
+    OutboxEventRow,
     RawArtifactRow,
     ValidatedNeedFieldHistoryRow,
     ValidatedNeedRow,
@@ -232,6 +236,20 @@ class UnitDbCase:
                 )
             ).scalar_one()
 
+    async def catalog_payloads(self) -> list[dict[str, object]]:
+        """新连接只读当前租户的目录事实事件。"""
+        async with self.sessions() as session:
+            return list(
+                (
+                    await session.scalars(
+                        select(OutboxEventRow.event_payload).where(
+                            OutboxEventRow.tenant_id == self.tenant,
+                            OutboxEventRow.event_type == "NeedCatalogFactsChanged",
+                        )
+                    )
+                ).all()
+            )
+
     async def confirm(
         self,
         *,
@@ -411,6 +429,100 @@ async def test_two_same_keys_commit_one_receipt(unit_db_case: UnitDbCase) -> Non
     assert (
         await c.service.get_facts(c.tenant, c.need_id, actor_id=c.actor_id)
     ).unit == first.unit
+    assert await c.catalog_payloads() == [
+        {
+            "tenant_id": str(c.tenant),
+            "occurred_at": NOW.isoformat(),
+            "run_id": None,
+            "need_id": str(c.need_id),
+            "cluster_id": None,
+            "change_kind": "unit",
+        }
+    ]
+
+
+async def test_unit_event_uses_current_cluster_locator(
+    unit_db_case: UnitDbCase,
+) -> None:
+    """若 locator 读取被删或缓存旧值，事件会错误报告未归簇。"""
+    c = unit_db_case
+    cluster_id = new_id("ncl")
+    async with c.sessions.begin() as session:
+        session.add(
+            NeedClusterRow(
+                tenant_id=c.tenant,
+                cluster_id=cluster_id,
+                category="hinges",
+                keywords=["hinges"],
+                countries=[],
+                total_potential_quantity=500,
+                recurring_demand=None,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+        await session.flush()
+        await session.execute(
+            update(ValidatedNeedRow)
+            .where(
+                ValidatedNeedRow.tenant_id == c.tenant,
+                ValidatedNeedRow.need_id == c.need_id,
+            )
+            .values(cluster_id=cluster_id)
+        )
+        session.add(
+            NeedClusterMemberRow(
+                tenant_id=c.tenant,
+                cluster_id=cluster_id,
+                need_id=c.need_id,
+                assigned_at=NOW,
+            )
+        )
+
+    await c.confirm()
+
+    assert (await c.catalog_payloads())[0]["cluster_id"] == cluster_id
+
+
+async def test_recurrence_change_does_not_change_quote_preparation(
+    unit_db_case: UnitDbCase,
+) -> None:
+    """recurrence 只能供目录评估，不能改变既有报价准备分类或 Need 状态。"""
+    c = unit_db_case
+    before_facts = await c.service.get_facts(
+        c.tenant, c.need_id, actor_id=c.actor_id
+    )
+    before = assess_quote_preparation(before_facts)
+
+    await c.demand.update_need_fields(
+        c.tenant,
+        c.need_id,
+        {"recurring_requirement": False},
+        source_message_id="msg_customer_changed",
+        updated_by=str(c.actor_id),
+    )
+
+    after_facts = await c.service.get_facts(
+        c.tenant, c.need_id, actor_id=c.actor_id
+    )
+    after = assess_quote_preparation(after_facts)
+    assert after == before
+    async with SqlAlchemyDemandUnitOfWork(c.sessions, c.tenant) as uow:
+        need = await uow.needs.get(c.tenant, c.need_id)
+    assert need is not None
+    assert need.status.value == "validated"
+    assert need.recurring_requirement is not None
+    assert need.recurring_requirement.value is False
+    assert await c.catalog_payloads() == [
+        {
+            "tenant_id": str(c.tenant),
+            "occurred_at": NOW.isoformat(),
+            "run_id": None,
+            "need_id": str(c.need_id),
+            "cluster_id": None,
+            "change_kind": "recurring_requirement",
+        }
+    ]
 
 
 @pytest.mark.parametrize("same_key", [True, False])
@@ -493,6 +605,32 @@ async def test_history_failure_rolls_back_three_writes(
     assert (
         await c.service.get_facts(c.tenant, c.need_id, actor_id=c.actor_id)
     ).unit is None
+    assert await c.catalog_payloads() == []
+
+
+async def test_unit_event_failure_rolls_back_fact_history_receipt_and_outbox(
+    unit_db_case: UnitDbCase, monkeypatch
+) -> None:
+    """真实 outbox add 后的失败不能留下任一单位写入。"""
+    c = unit_db_case
+    bus_type = importlib.import_module("infra.db.outbox").PostgresEventBus
+    original = bus_type.publish
+
+    async def fail_after_add(self, event) -> None:
+        await original(self, event)
+        if type(event).__name__ == "NeedCatalogFactsChanged":
+            raise NeedUnitError("invalid_input")
+
+    monkeypatch.setattr(bus_type, "publish", fail_after_add)
+
+    with pytest.raises(NeedUnitError):
+        await c.confirm()
+
+    assert await c.confirmation_count() == await c.unit_history_count() == 0
+    assert await c.catalog_payloads() == []
+    assert (
+        await c.service.get_facts(c.tenant, c.need_id, actor_id=c.actor_id)
+    ).unit is None
 
 
 @pytest.mark.parametrize(
@@ -542,6 +680,8 @@ async def test_repository_tenant_mismatch_audited_and_hidden(
     async with c.factory(c.tenant) as uow:
         with pytest.raises(TenantIsolationViolation):
             await uow.units.read_facts(TenantId("other"), c.need_id)
+        with pytest.raises(TenantIsolationViolation):
+            await uow.units.read_event_locator(TenantId("other"), c.need_id)
     assert "跨租户" in caplog.text
 
 

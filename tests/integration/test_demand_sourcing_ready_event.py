@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Self
 
@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.demand.service import DemandService
+from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId, ValidatedNeedId, new_id
 
 NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
@@ -108,12 +109,63 @@ class _FailAfterReadinessPublishUnitOfWork:
         await self._inner.__aexit__(exc_type, exc, tb)
 
 
+class _FailAfterCatalogPublishBus:
+    """先加入真实 outbox，再模拟目录事实发布路径失败。"""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    async def publish(self, event: object) -> None:
+        await self._inner.publish(event)
+        if type(event).__name__ == "NeedCatalogFactsChanged":
+            raise _ReadinessPublicationFailed("force catalog publish failure")
+
+
+class _FailAfterCatalogPublishUnitOfWork:
+    """保留真实仓储/事务，只在目录事实 outbox 写入后中断。"""
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        tenant: TenantId,
+        clock: MutableClock,
+    ) -> None:
+        uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+        self._inner = uow_type(factory, tenant, now=clock.now)
+
+    async def __aenter__(self) -> Self:
+        inner = await self._inner.__aenter__()
+        self.needs = inner.needs
+        self.bus = _FailAfterCatalogPublishBus(inner.bus)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        await self._inner.__aexit__(exc_type, exc, tb)
+
+
 def _failing_service(
     factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
 ) -> DemandService:
     service_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
     return service_type(
         lambda requested: _FailAfterReadinessPublishUnitOfWork(
+            factory, requested, clock
+        ),
+        now=clock.now,
+    )
+
+
+def _failing_catalog_service(
+    factory: async_sessionmaker[AsyncSession], tenant: TenantId, clock: MutableClock
+) -> DemandService:
+    service_type = importlib.import_module("domains.demand.service_impl").DemandServiceImpl
+    return service_type(
+        lambda requested: _FailAfterCatalogPublishUnitOfWork(
             factory, requested, clock
         ),
         now=clock.now,
@@ -226,6 +278,19 @@ async def test_later_first_transition_publishes_one_readiness_fact(
     event_types = await _outbox_types(factory, tenant)
     assert event_types.count("NeedValidated") == 1
     assert event_types.count("NeedBecameSourcingReady") == 1
+    catalog_payloads = await _outbox_payloads(
+        factory, tenant, "NeedCatalogFactsChanged"
+    )
+    assert catalog_payloads == [
+        {
+            "tenant_id": str(tenant),
+            "occurred_at": NOW.isoformat(),
+            "run_id": None,
+            "need_id": str(need_id),
+            "cluster_id": None,
+            "change_kind": "quantity",
+        }
+    ]
 
 
 async def test_readiness_publication_failure_rolls_back_need_and_outbox(
@@ -254,6 +319,202 @@ async def test_readiness_publication_failure_rolls_back_need_and_outbox(
     assert persisted_need.completeness == 2
     assert persisted_need.quantity is None
     assert "NeedBecameSourcingReady" not in await _outbox_types(factory, tenant)
+
+
+async def test_recurring_requirement_roundtrips_history_and_is_idempotent(
+    demand_db: AsyncEngine,
+) -> None:
+    """False/True/缺失保持三态；相同消息重放不追加历史或事件。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    need_id = await _promote_need(
+        service,
+        tenant,
+        {
+            "product_category": "hinges",
+            "application": "marine",
+            "recurring_requirement": False,
+        },
+    )
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        initial = await uow.needs.get(tenant, ValidatedNeedId(need_id))
+    assert initial is not None and initial.recurring_requirement is not None
+    assert initial.recurring_requirement.value is False
+    assert initial.completeness == 2
+    assert initial.status.value == "validated"
+    assert await _outbox_payloads(factory, tenant, "NeedCatalogFactsChanged") == []
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {
+            "recurring_requirement": {
+                "value": True,
+                "quote": "We reorder these every quarter.",
+                "extracted_by": "reply-model-v3",
+            }
+        },
+        "msg_recurring_2",
+        "emp-1",
+    )
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {
+            "recurring_requirement": {
+                "value": True,
+                "quote": "We reorder these every quarter.",
+                "extracted_by": "reply-model-v3",
+            }
+        },
+        "msg_recurring_2",
+        "emp-1",
+    )
+
+    tables = importlib.import_module("infra.db.tables")
+    async with factory() as session:
+        row = await session.get(
+            tables.ValidatedNeedRow, (str(tenant), str(need_id))
+        )
+        history = (
+            await session.scalars(
+                select(tables.ValidatedNeedFieldHistoryRow).where(
+                    tables.ValidatedNeedFieldHistoryRow.tenant_id == str(tenant),
+                    tables.ValidatedNeedFieldHistoryRow.need_id == str(need_id),
+                    tables.ValidatedNeedFieldHistoryRow.field_name
+                    == "recurring_requirement",
+                )
+            )
+        ).all()
+    assert row is not None
+    assert row.recurring_requirement["value"] is True
+    assert row.status == "validated"
+    assert len(history) == 1
+    assert history[0].old_value == "False"
+    assert history[0].new_value == "True"
+    payloads = await _outbox_payloads(factory, tenant, "NeedCatalogFactsChanged")
+    assert payloads == [
+        {
+            "tenant_id": str(tenant),
+            "occurred_at": NOW.isoformat(),
+            "run_id": None,
+            "need_id": str(need_id),
+            "cluster_id": None,
+            "change_kind": "recurring_requirement",
+        }
+    ]
+    assert "NeedBecameSourcingReady" not in await _outbox_types(factory, tenant)
+
+
+@pytest.mark.parametrize("value", ["true", "false", "True", "False"])
+async def test_recurring_requirement_update_rejects_bool_like_strings(
+    demand_db: AsyncEngine, value: str
+) -> None:
+    """字符串不得经 Python truthiness 或自定义转换成为 recurrence。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _service(factory, tenant, MutableClock(NOW))
+    need_id = await _promote_need(
+        service, tenant, {"product_category": "hinges", "application": "marine"}
+    )
+
+    with pytest.raises(ValidationError, match="需求字段类型无效"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"recurring_requirement": value},
+            "msg_recurrence",
+            None,
+        )
+
+
+async def test_recurring_requirement_update_rejects_missing_source_message(
+    demand_db: AsyncEngine,
+) -> None:
+    """删除来源消息前置校验会写入无法定位客户证据的 recurrence。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    service = _service(factory, tenant, MutableClock(NOW))
+    need_id = await _promote_need(
+        service, tenant, {"product_category": "hinges", "application": "marine"}
+    )
+
+    with pytest.raises(ValidationError, match="来源消息无效"):
+        await service.update_need_fields(
+            tenant,
+            need_id,
+            {"recurring_requirement": True},
+            "",
+            None,
+        )
+
+
+async def test_recurring_requirement_update_preserves_existing_need_state(
+    demand_db: AsyncEngine,
+) -> None:
+    """recurrence 不能借既有完整度修正或推进当前 Need 状态。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    service = _service(factory, tenant, clock)
+    need_id = await _promote_need(
+        service,
+        tenant,
+        {"product_category": "hinges", "application": "marine", "quantity": 500},
+    )
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    models = importlib.import_module("domains.demand.models")
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        need = await uow.needs.get_for_update(tenant, ValidatedNeedId(need_id))
+        assert need is not None
+        await uow.needs.update(replace(need, status=models.NeedStatus.VALIDATED))
+
+    await service.update_need_fields(
+        tenant,
+        need_id,
+        {"recurring_requirement": True},
+        "msg_recurring_state",
+        "emp-1",
+    )
+
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        persisted = await uow.needs.get(tenant, ValidatedNeedId(need_id))
+    assert persisted is not None
+    assert persisted.completeness == 3
+    assert persisted.status is models.NeedStatus.VALIDATED
+
+
+async def test_catalog_publication_failure_rolls_back_recurrence_and_outbox(
+    demand_db: AsyncEngine,
+) -> None:
+    """目录事件写入后失败必须同时回滚 fact、history 与 outbox。"""
+    factory = async_sessionmaker(demand_db, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    clock = MutableClock(NOW)
+    need_id = await _promote_need(
+        _service(factory, tenant, clock),
+        tenant,
+        {"product_category": "hinges", "application": "marine"},
+    )
+
+    with pytest.raises(_ReadinessPublicationFailed):
+        await _failing_catalog_service(factory, tenant, clock).update_need_fields(
+            tenant,
+            need_id,
+            {"recurring_requirement": True},
+            "msg_recurring_failure",
+            "emp-1",
+        )
+
+    uow_type = importlib.import_module("infra.db.demand_uow").SqlAlchemyDemandUnitOfWork
+    async with uow_type(factory, tenant, now=clock.now) as uow:
+        persisted = await uow.needs.get(tenant, ValidatedNeedId(need_id))
+    assert persisted is not None
+    assert persisted.recurring_requirement is None
+    assert await _outbox_payloads(factory, tenant, "NeedCatalogFactsChanged") == []
 
 
 async def test_cluster_assignment_publishes_membership_facts_once_per_need(
@@ -299,6 +560,26 @@ async def test_cluster_assignment_publishes_membership_facts_once_per_need(
     assert len(formed_payloads) == 1
     assert formed_payloads[0]["cluster_id"] == first_cluster_id
     assert formed_payloads[0]["member_count"] == 2
+
+    await service.update_need_fields(
+        tenant,
+        second_need_id,
+        {"quantity": 250},
+        "msg_clustered_quantity",
+        None,
+    )
+    catalog_payloads = await _outbox_payloads(
+        factory, tenant, "NeedCatalogFactsChanged"
+    )
+    assert len(catalog_payloads) == 1
+    assert catalog_payloads[0] == {
+        "tenant_id": str(tenant),
+        "occurred_at": NOW.isoformat(),
+        "run_id": None,
+        "need_id": str(second_need_id),
+        "cluster_id": str(first_cluster_id),
+        "change_kind": "quantity",
+    }
 
 
 async def test_priority_facts_change_only_when_cluster_membership_version_changes(

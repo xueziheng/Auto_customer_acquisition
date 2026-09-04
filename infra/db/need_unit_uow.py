@@ -10,6 +10,7 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.demand.errors import NeedUnitError, NeedUnitUnavailableError
+from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.need_units import NeedUnitRepositoryImpl
 from shared.schemas.identifiers import TenantId
 
@@ -62,6 +63,7 @@ class SqlAlchemyNeedUnitUnitOfWork:
                 {"timeout": f"{self._statement_timeout}ms"},
             )
             self.units = NeedUnitRepositoryImpl(self._session, self._tenant)
+            self.bus = PostgresEventBus(self._session, self._tenant)
             return self
         except BaseException as exc:  # 取消也必须释放已借出连接
             await self._cleanup_entry_failure()

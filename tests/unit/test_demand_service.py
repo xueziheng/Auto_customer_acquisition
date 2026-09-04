@@ -12,10 +12,14 @@ import pytest
 
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    EmployeeId,
+    MessageId,
     NeedClusterId,
+    ProspectAccountId,
     TenantId,
     ValidatedNeedId,
 )
+from shared.schemas.provenance import FactualField, Provenance, SourceType
 
 NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
 TENANT = TenantId("tn_priority")
@@ -25,6 +29,8 @@ OTHER_NEED_ID = ValidatedNeedId("vnd_other")
 THIRD_NEED_ID = ValidatedNeedId("vnd_third")
 MISSING_NEED_ID = ValidatedNeedId("vnd_missing")
 CLUSTER_ID = NeedClusterId("ncl_priority")
+ACTOR_ID = EmployeeId("emp_recurrence")
+SOURCE_MESSAGE_ID = MessageId("msg_recurrence")
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,112 @@ def _priority_facts_type() -> type[object]:
     facts_type = getattr(schema, "NeedClusterPriorityFacts", None)
     assert facts_type is not None, "RED：NeedClusterPriorityFacts 尚未创建"
     return facts_type
+
+
+def _validated_need(*, recurring_requirement: object = None) -> object:
+    """用真实需求实体证明 recurrence 不进入任何就绪推导。"""
+    models = importlib.import_module("domains.demand.models")
+    provenance = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id=str(SOURCE_MESSAGE_ID),
+        extracted_by=str(ACTOR_ID),
+        extracted_at=NOW,
+        confirmed_by=ACTOR_ID,
+        confirmed_at=NOW,
+    )
+    return models.ValidatedNeed(
+        need_id=NEED_ID,
+        tenant_id=TENANT,
+        account_id=ProspectAccountId("acc_recurrence"),
+        product_category=FactualField("hinges", provenance),
+        source_message_id=SOURCE_MESSAGE_ID,
+        created_at=NOW,
+        status=models.NeedStatus.VALIDATED,
+        application=FactualField("marine", provenance),
+        recurring_requirement=recurring_requirement,
+    )
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_recurring_requirement_accepts_real_boolean_without_changing_readiness(
+    value: bool,
+) -> None:
+    """若 recurrence 被纳入完整度/寻源门槛，level-2 Need 会被错误推进。"""
+    provenance = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id=str(SOURCE_MESSAGE_ID),
+        extracted_by=str(ACTOR_ID),
+        extracted_at=NOW,
+        confirmed_by=ACTOR_ID,
+        confirmed_at=NOW,
+    )
+    missing = _validated_need()
+    present = _validated_need(
+        recurring_requirement=FactualField(value=value, provenance=provenance)
+    )
+
+    assert present.recurring_requirement is not None
+    assert present.recurring_requirement.value is value
+    assert missing.recurring_requirement is None
+    assert present.completeness == missing.completeness == 2
+    assert present.is_sourcing_ready() is missing.is_sourcing_ready() is False
+    assert present.status is missing.status
+
+
+@pytest.mark.parametrize("value", ["true", "false", "True", "False"])
+def test_recurring_requirement_rejects_bool_like_strings(value: str) -> None:
+    """删除严格 bool 校验会把客户原文字符串伪装成已确认布尔事实。"""
+    provenance = Provenance(
+        source_type=SourceType.CONVERSATION,
+        source_id=str(SOURCE_MESSAGE_ID),
+        extracted_by=str(ACTOR_ID),
+        extracted_at=NOW,
+        confirmed_by=ACTOR_ID,
+        confirmed_at=NOW,
+    )
+
+    with pytest.raises(ValidationError, match="重复采购事实类型无效"):
+        _validated_need(
+            recurring_requirement=FactualField(value=value, provenance=provenance)
+        )
+
+
+def test_recurring_requirement_rejects_web_provenance() -> None:
+    """公开网页只能形成需求信号，不能写成客户明确表达的重复采购事实。"""
+    provenance = Provenance(
+        source_type=SourceType.WEB_PAGE,
+        source_id="a" * 64,
+        extracted_by="research-model",
+        extracted_at=NOW,
+        source_url="https://example.test/catalog",
+        page_hash="a" * 64,
+    )
+
+    with pytest.raises(ValidationError, match="重复采购事实来源无效"):
+        _validated_need(
+            recurring_requirement=FactualField(value=True, provenance=provenance)
+        )
+
+
+def test_recurring_requirement_reuses_factual_provenance_guards() -> None:
+    """Agent inference 与空来源必须由共享事实/来源契约拦截。"""
+    with pytest.raises(ValidationError, match="AGENT_INFERENCE"):
+        FactualField(
+            value=True,
+            provenance=Provenance(
+                source_type=SourceType.AGENT_INFERENCE,
+                source_id="inf_1",
+                extracted_by="model-v1",
+                extracted_at=NOW,
+            ),
+        )
+    with pytest.raises(ValidationError, match="source_id 不能为空"):
+        Provenance(
+            source_type=SourceType.CONVERSATION,
+            source_id="",
+            extracted_by=str(ACTOR_ID),
+            extracted_at=NOW,
+        )
 
 
 async def test_cluster_priority_facts_reject_invalid_tenant_before_opening_uow() -> None:

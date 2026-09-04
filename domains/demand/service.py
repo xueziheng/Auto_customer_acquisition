@@ -171,6 +171,7 @@ _PROMOTABLE_NEED_FIELDS = (
     "target_price",
     "current_supply_issue",
     "certification_required",
+    "recurring_requirement",
 )
 
 
@@ -329,8 +330,8 @@ class DemandService(Protocol):
         实现要求：
         - 每个 ``extracted_fields`` 的值都要包成 ``FactualField``，
           ``provenance.source_id`` 指向 ``source_message_id``
-        - ``extracted_fields`` 键 ⊆ {product_category} ∪ 10 个可变更业务字段
-          （11 键白名单）；product_category 必填且创建后不可变
+        - ``extracted_fields`` 键 ⊆ {product_category} ∪ 11 个可变更业务字段
+          （12 键白名单）；product_category 必填且创建后不可变
         - 完整度由字段推导，不接受传入
         - 假设状态转为 ``validated``
         - 发布 ``NeedValidated``
@@ -351,8 +352,9 @@ class DemandService(Protocol):
         - 每个新字段都要有自己的 provenance，指向说这句话的消息
         - **字段值变更要保留历史**，不能直接覆盖。客户把数量从 5000
           改成 3000 是重要的商业信息（可能预算收紧），覆盖掉就丢了。
-        - 跨过 3 级门槛自动置 sourcing_ready，**不发事件**（catalog 无匹配
-          schema，最小语义）
+        - 跨过 3 级门槛自动置 sourcing_ready，并仅首次发布就绪事实事件
+        - quantity/recurring_requirement 真正变化时，在同一事务发布
+          metadata-only ``NeedCatalogFactsChanged``；幂等重放不重复发布
         """
         ...
 

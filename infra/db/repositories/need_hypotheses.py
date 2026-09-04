@@ -116,6 +116,10 @@ def _factual_to_json(field: FactualField[Any] | None) -> dict[str, object] | Non
 
 
 def _decode_value(value: object, kind: str) -> object:
+    if kind == "bool":
+        if type(value) is not bool:
+            raise ValueError("布尔事实类型无效")
+        return value
     if kind == "quantity":
         return int(cast(int | str, value))
     if kind == "required_by":
@@ -395,6 +399,7 @@ _FIELD_KINDS: dict[str, str] = {
     "target_price": "target_price",
     "current_supply_issue": "str",
     "certification_required": "str",
+    "recurring_requirement": "bool",
 }
 
 
@@ -461,6 +466,9 @@ def _row_to_need(row: ValidatedNeedRow) -> ValidatedNeed:
         ),
         certification_required=cast(
             FactualField[str] | None, field("certification_required")
+        ),
+        recurring_requirement=cast(
+            FactualField[bool] | None, field("recurring_requirement")
         ),
         confirmed_by=EmployeeId(row.confirmed_by) if row.confirmed_by else None,
         cluster_id=(

@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Protocol, Self
 
 from domains.demand.schemas import (
+    NeedCatalogEventLocator,
     NeedQuoteFacts,
     NeedUnitConfirmationView,
     NeedUnitStoredConfirmation,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import TenantId, ValidatedNeedId
 from shared.schemas.provenance import FactualField
 
@@ -26,6 +28,12 @@ class NeedUnitRepository(Protocol):
         self, tenant_id: TenantId, need_id: ValidatedNeedId
     ) -> NeedQuoteFacts | None:
         """FOR UPDATE锁Need；原文IO不在此事务内。"""
+        ...
+
+    async def read_event_locator(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> NeedCatalogEventLocator | None:
+        """同一事务只读事件所需 need/cluster 定位，不暴露客户事实。"""
         ...
 
     async def find_operation(
@@ -70,6 +78,7 @@ class NeedUnitUnitOfWork(Protocol):
     """成功退出提交；异常全部回滚；未知提交只用原键恢复。"""
 
     units: NeedUnitRepository
+    bus: EventBus
 
     async def __aenter__(self) -> Self:
         """进入短事务。"""

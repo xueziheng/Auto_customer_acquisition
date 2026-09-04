@@ -143,6 +143,27 @@ def test_catalog_product_events_roundtrip_only_locator_metadata(
         assert forbidden_key not in json.loads(rendered)
 
 
+def test_unclustered_need_catalog_change_roundtrips_without_fabricated_cluster() -> None:
+    """把 optional locator 改成必填会迫使 producer 伪造单成员 Catalog 簇。"""
+    event = NeedCatalogFactsChanged(
+        tenant_id=TENANT_ID,
+        occurred_at=NOW,
+        need_id=NEED_ID,
+        cluster_id=None,
+        change_kind="quantity",
+    )
+
+    assert deserialize(NeedCatalogFactsChanged, serialize(event)) == event
+    assert serialize(event) == {
+        "tenant_id": str(TENANT_ID),
+        "occurred_at": NOW.isoformat(),
+        "run_id": None,
+        "need_id": str(NEED_ID),
+        "cluster_id": None,
+        "change_kind": "quantity",
+    }
+
+
 @pytest.mark.parametrize(
     "event",
     [

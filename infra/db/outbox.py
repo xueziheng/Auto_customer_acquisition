@@ -391,7 +391,10 @@ def _validate_catalog_product_event(event: DomainEvent) -> None:
     if isinstance(event, NeedCatalogFactsChanged):
         if (
             not _is_nonblank_id(event.need_id)
-            or not _is_nonblank_id(event.cluster_id)
+            or (
+                event.cluster_id is not None
+                and not _is_nonblank_id(event.cluster_id)
+            )
             or event.change_kind not in _CATALOG_CHANGE_KINDS
         ):
             raise _invalid_catalog_product_event()

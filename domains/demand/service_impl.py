@@ -57,6 +57,7 @@ from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
     NeedBecameSourcingReady,
+    NeedCatalogFactsChanged,
     NeedClusterFormed,
     NeedClusterMembershipChanged,
     NeedHypothesisCreated,
@@ -103,6 +104,7 @@ _PROMOTABLE_SOURCE_TYPES = frozenset(
 _PROMOTE_FIELD_WHITELIST = frozenset(promotable_need_field_names())
 _TEXT_PROMOTE_FIELDS = _PROMOTE_FIELD_WHITELIST - {
     "quantity",
+    "recurring_requirement",
     "required_by",
     "target_price",
 }
@@ -149,6 +151,10 @@ def _merge_need_ids(
 
 def _coerce_field_value(name: str, value: object) -> object:
     """把外部字段转成域模型要求的确定性类型。"""
+    if name == "recurring_requirement":
+        if type(value) is not bool:
+            raise ValidationError("需求字段类型无效")
+        return value
     if name == "quantity":
         if isinstance(value, bool):
             raise ValidationError("需求字段类型无效")
@@ -711,6 +717,10 @@ class DemandServiceImpl:
                     FactualField[str] | None,
                     fields.get("certification_required"),
                 ),
+                recurring_requirement=cast(
+                    FactualField[bool] | None,
+                    fields.get("recurring_requirement"),
+                ),
                 confirmed_by=confirmer,
                 cluster_id=None,
             )
@@ -909,6 +919,8 @@ class DemandServiceImpl:
             updater = EmployeeId(updated_by) if updated_by else None
             updated = replace(need)
             changed = False
+            readiness_eligible_change = False
+            catalog_change_kinds: list[str] = []
             for name, value in coerced.items():
                 current = cast(FactualField[object] | None, getattr(need, name))
                 if current is not None and current.provenance.source_id == source_message_id:
@@ -949,10 +961,15 @@ class DemandServiceImpl:
                 )
                 setattr(updated, name, new_field)
                 changed = True
+                if name != "recurring_requirement":
+                    readiness_eligible_change = True
+                if name in {"quantity", "recurring_requirement"}:
+                    catalog_change_kinds.append(name)
             if not changed:
                 return
             if (
-                updated.status is NeedStatus.VALIDATED
+                readiness_eligible_change
+                and updated.status is NeedStatus.VALIDATED
                 and updated.completeness >= 3
             ):
                 updated.status = NeedStatus.SOURCING_READY
@@ -969,6 +986,17 @@ class DemandServiceImpl:
                         run_id=None,
                         need_id=updated.need_id,
                         completeness=updated.completeness,
+                    )
+                )
+            for change_kind in catalog_change_kinds:
+                await uow.bus.publish(
+                    NeedCatalogFactsChanged(
+                        tenant_id=tenant_id,
+                        occurred_at=now,
+                        run_id=None,
+                        need_id=updated.need_id,
+                        cluster_id=updated.cluster_id,
+                        change_kind=change_kind,
                     )
                 )
 
@@ -1659,5 +1687,10 @@ class DemandServiceImpl:
             ),
             target_price=(
                 need.target_price.value if need.target_price is not None else None
+            ),
+            recurring_requirement=(
+                need.recurring_requirement.value
+                if need.recurring_requirement is not None
+                else None
             ),
         )

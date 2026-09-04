@@ -29,6 +29,7 @@ from domains.demand.service import NeedUnitAuthorizer, NeedUnitEvidenceReader
 from domains.demand.unit_facts import canonical_hash, quantity_fact_hash
 from domains.demand.unit_repository import NeedUnitUnitOfWork
 from shared.errors import PermissionDenied, TradeOSError
+from shared.events.catalog import NeedCatalogFactsChanged
 from shared.schemas.identifiers import EmployeeId, TenantId, ValidatedNeedId, new_id
 from shared.schemas.provenance import FactualField, Provenance, SourceType
 
@@ -181,6 +182,19 @@ class NeedUnitServiceImpl:
                     await uow.units.apply_current_unit(tenant_id, need_id, result)
                     await uow.units.append_unit_history(
                         tenant_id, need_id, locked.unit, result
+                    )
+                    locator = await uow.units.read_event_locator(tenant_id, need_id)
+                    if locator is None or locator.need_id != need_id:
+                        raise NeedUnitUnavailableError("storage_unknown")
+                    await uow.bus.publish(
+                        NeedCatalogFactsChanged(
+                            tenant_id=tenant_id,
+                            occurred_at=confirmed_at,
+                            run_id=None,
+                            need_id=locator.need_id,
+                            cluster_id=locator.cluster_id,
+                            change_kind="unit",
+                        )
                     )
         if winner is not None:
             return await self._replay(guarded, winner, request_hash)

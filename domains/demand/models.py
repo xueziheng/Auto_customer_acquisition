@@ -260,6 +260,7 @@ class ValidatedNeed:
         destination:        目的地
         required_by:        交付时间
         target_price:       目标价（``Money``）
+        recurring_requirement: 客户是否明确表达重复采购要求
         current_supply_issue: 现有供应方案的问题——**最有价值的字段之一**，
                             它直接说明我们凭什么能赢
         certification_required
@@ -285,12 +286,23 @@ class ValidatedNeed:
     target_price: FactualField[Money] | None = None
     current_supply_issue: FactualField[str] | None = None
     certification_required: FactualField[str] | None = None
+    recurring_requirement: FactualField[bool] | None = None
     confirmed_by: EmployeeId | None = None
     cluster_id: NeedClusterId | None = None
 
     unit: FactualField[str] | None = None
     unit_quantity_fact_hash: str | None = None
     unit_confirmation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """重复采购是客户合格事实：严格布尔且仅接受可晋升的直接来源。"""
+        recurring = self.recurring_requirement
+        if recurring is None:
+            return
+        if not isinstance(recurring, FactualField) or type(recurring.value) is not bool:
+            raise ValidationError("重复采购事实类型无效")
+        if recurring.provenance.source_type not in _PROMOTABLE_SOURCE_TYPES:
+            raise ValidationError("重复采购事实来源无效")
 
     @property
     def completeness(self) -> int:
