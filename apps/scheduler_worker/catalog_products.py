@@ -322,16 +322,19 @@ class CatalogProductDriver:
                 proposal = await self._products.get_proposal(
                     self._tenant_id, item.proposal_id, actor=self._actor
                 )
+                policy = await self._products.get_active_policy(
+                    self._tenant_id, actor=self._actor
+                )
+                if (
+                    policy is None
+                    or policy.policy_version_id != proposal.policy_version_id
+                ):
+                    continue
                 evaluation = await self._products.get_evaluation(
                     self._tenant_id,
                     proposal.evaluation_id,
                     actor=self._actor,
                 )
-                policy = await self._products.get_active_policy(
-                    self._tenant_id, actor=self._actor
-                )
-                if policy is None:
-                    continue
                 current = await self._demand.get_cluster_catalog_facts(
                     self._tenant_id, proposal.cluster_id
                 )

@@ -405,6 +405,39 @@ def test_public_reconciliation_cursors_reject_wrong_tenant_stream_and_time() -> 
             ),
             next_cursor=None,
         )
+    with pytest.raises(PydanticValidationError):
+        CatalogPolicyReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogPolicyReconciliationItem(
+                    policy_version_id=POLICY_ID,
+                    created_at=NOW,
+                ),
+                CatalogPolicyReconciliationItem(
+                    policy_version_id=POLICY_ID,
+                    created_at=NOW + timedelta(minutes=1),
+                ),
+            ),
+            next_cursor=None,
+        )
+    proposal_id = CatalogProductProposalId(
+        "cpr_01M0VKA9S6KX7HRBG3G3ETYD12"
+    )
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogProposalReconciliationItem(
+                    proposal_id=proposal_id,
+                    created_at=NOW,
+                ),
+                CatalogProposalReconciliationItem(
+                    proposal_id=proposal_id,
+                    created_at=NOW + timedelta(minutes=1),
+                ),
+            ),
+            next_cursor=None,
+        )
 
 
 @pytest.mark.asyncio
@@ -459,6 +492,45 @@ async def test_no_active_policy_still_recovers_policy_and_proposal_runs() -> Non
     ]
     assert products.proposal_calls == [None]
     assert demand.page_calls == []
+
+
+@pytest.mark.asyncio
+async def test_proposal_from_superseded_policy_is_determinate_stale() -> None:
+    cluster_id = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12")
+    proposal, evaluation = _proposal(
+        cluster_id,
+        suffix="01M0VKA9S6KX7HRBG3G3ETYD12",
+    )
+    products = _Products()
+    products.active = _policy(
+        policy_id=CatalogProposalPolicyVersionId(
+            "cpv_01M0VKA9S6KX7HRBG3G3ETYD13"
+        )
+    )
+    products.proposal_pages = [
+        CatalogProposalReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogProposalReconciliationItem(
+                    proposal_id=proposal.proposal_id,
+                    created_at=proposal.created_at,
+                ),
+            ),
+            next_cursor=None,
+        )
+    ]
+    products.proposals[proposal.proposal_id] = proposal
+    products.evaluations[evaluation.evaluation_id] = evaluation
+    checkpoints = _Checkpoints()
+    engine = _Engine()
+
+    result = await _driver(
+        _Demand([]), products, engine, checkpoints
+    )._recover_proposals()
+
+    assert result == 0
+    assert engine.starts == []
+    assert checkpoints.advances == [("awaiting_proposals", None, None)]
 
 
 @pytest.mark.asyncio

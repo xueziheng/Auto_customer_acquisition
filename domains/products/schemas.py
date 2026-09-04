@@ -636,11 +636,13 @@ class CatalogPolicyReconciliationPage(_CatalogFrozenModel):
         order = tuple(
             (item.created_at, str(item.policy_version_id)) for item in self.items
         )
+        entity_ids = tuple(str(item.policy_version_id) for item in self.items)
         if (
             not self.tenant_id.startswith("tn_")
             or len(self.items) > 200
             or tuple(sorted(order)) != order
             or len(set(order)) != len(order)
+            or len(set(entity_ids)) != len(entity_ids)
             or self.next_cursor is not None
             and (
                 self.next_cursor.tenant_id != self.tenant_id
@@ -668,11 +670,13 @@ class CatalogProposalReconciliationPage(_CatalogFrozenModel):
     def validate_page(self) -> Self:
         _bounded_identity(self.tenant_id, "tenant_id", 40)
         order = tuple((item.created_at, str(item.proposal_id)) for item in self.items)
+        entity_ids = tuple(str(item.proposal_id) for item in self.items)
         if (
             not self.tenant_id.startswith("tn_")
             or len(self.items) > 200
             or tuple(sorted(order)) != order
             or len(set(order)) != len(order)
+            or len(set(entity_ids)) != len(entity_ids)
             or self.next_cursor is not None
             and (
                 self.next_cursor.tenant_id != self.tenant_id
