@@ -173,3 +173,27 @@ exit 0
 - Catalog proposal 真实 PostgreSQL integration：`20 passed in 4.94s`，无 skip。
 - Task 5–8 Products + workflow engine 最终合并复跑：`285 passed in 13.90s`，无 skip。
 - Ruff check、6 个相关 source 的 mypy、Task 8 adapter/test format check、`scripts/check_boundaries.py` 与 `git diff --check` 全部通过。
+
+## Fix round 4：恢复 engine execution lease，并以专用 advisory 消除 Run TOCTOU
+
+### Critical 修正
+
+- Round 3 把 engine 的 Run 锁改成真正的 `FOR KEY SHARE`，虽然解决了 Catalog handler 的独立事务自等待，却放宽了既有 workflow execution lease：它不再排斥 Run 非键状态写，违背 ADR 0018 与 quote workflow 的既有锁契约。
+- `poll_due` / `deliver_event` 两处恢复 `.with_for_update(key_share=True)`，即 PostgreSQL `FOR NO KEY UPDATE`；step-row `FOR UPDATE`、`SKIP LOCKED` 与 step→run 锁序保持不变。
+- 0057 为 `catalog_cluster_evaluation` Run 增加专用 `BEFORE UPDATE OR DELETE` trigger。它只对 OLD/NEW catalog workflow identity 取得 `pg_advisory_xact_lock(hashtextextended('catalog-evaluation-run-v1:'||tenant_id||':'||run_id,0))`，不影响其他 workflow type；downgrade 精确删除 trigger/function。
+- Products guard 的顺序固定为：tenant/run 身份 `FOR KEY SHARE` → 同 key exclusive advisory → 新 statement 重读并验证 type/version/subject/status/step。身份行锁先于 advisory，避免与 DELETE trigger 形成锁环；advisory 后重读使用 READ COMMITTED 新快照，拒绝等待期间已提交的非键 mutation。
+
+### Strict TDD 与 mutation 证据
+
+- trigger 缺失时，guard introspection、upgrade/downgrade 生命周期、catalog UPDATE/DELETE advisory 阻塞共 4 项 RED；同一阶段 non-catalog update 正确不等待，证明失败来自缺少专用 catalog trigger。
+- 恢复 engine `FOR NO KEY UPDATE` 后，真实 `poll_due` / `deliver_event` handler 内独立 Products UoW 均在 3 秒界限内完成；Products-first UPDATE/DELETE 被阻塞至 evaluation/proposal/event 提交，mutation-first UPDATE 在 advisory 释放后被新快照重读拒绝且 0 业务记录。
+- 临时删除 guard 的最终重读后，mutation-first 测试从固定拒绝变为错误成功并落库，稳定失败；恢复重读后重新通过。
+- 删除 0057 trigger 的基线 RED 会使 introspection、生命周期和 UPDATE/DELETE advisory 行为测试失败；非 catalog 专用范围测试保持通过。
+
+### 最终回归证据
+
+- Round 4 Catalog migration + proposal service 真实 PostgreSQL：`42 passed in 10.09s`。
+- Workflow engine 全回归（poll/deliver/cancel/commit failure/lock order）：`54 passed in 7.25s`。
+- 完整 quote approval PostgreSQL（含 execution lease write/delete/cancel）：`44 passed in 70.57s`。
+- Task 5–8 Products 相关单元、migration、repository、真实 PostgreSQL：`237 passed in 11.56s`，无 skip。
+- 本轮 5 个授权 Python 文件 Ruff、6 个相关 source 的 mypy、`scripts/check_boundaries.py`、授权范围及全工作树 `git diff --check` 全部通过。

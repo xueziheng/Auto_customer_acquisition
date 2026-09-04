@@ -78,6 +78,37 @@ _CATALOG_APPROVAL_CHECK = f"""
 
 def _create_guards() -> None:
     op.execute(
+        """
+        CREATE FUNCTION lock_catalog_evaluation_run_mutation() RETURNS trigger AS $$
+        BEGIN
+          IF OLD.workflow_type='catalog_cluster_evaluation' THEN
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+              'catalog-evaluation-run-v1:'||OLD.tenant_id||':'||OLD.run_id, 0
+            ));
+          END IF;
+          IF TG_OP='UPDATE'
+             AND NEW.workflow_type='catalog_cluster_evaluation'
+             AND (OLD.workflow_type IS DISTINCT FROM NEW.workflow_type
+                  OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
+                  OR OLD.run_id IS DISTINCT FROM NEW.run_id)
+          THEN
+            PERFORM pg_advisory_xact_lock(hashtextextended(
+              'catalog-evaluation-run-v1:'||NEW.tenant_id||':'||NEW.run_id, 0
+            ));
+          END IF;
+          IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+          RETURN NEW;
+        END; $$ LANGUAGE plpgsql;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_catalog_evaluation_run_mutation_lock
+        BEFORE UPDATE OR DELETE ON workflow_runs
+        FOR EACH ROW EXECUTE FUNCTION lock_catalog_evaluation_run_mutation();
+        """
+    )
+    op.execute(
         f"""
         CREATE FUNCTION guard_catalog_approval_namespace() RETURNS trigger AS $$
         BEGIN
@@ -449,6 +480,10 @@ def downgrade() -> None:
         END $$;
         """
     )
+    op.execute(
+        "DROP TRIGGER trg_catalog_evaluation_run_mutation_lock ON workflow_runs"
+    )
+    op.execute("DROP FUNCTION lock_catalog_evaluation_run_mutation()")
     op.execute("DROP TRIGGER trg_catalog_cultivation_immutable ON catalog_cultivation_cases")
     op.execute("DROP FUNCTION guard_catalog_cultivation_case()")
     op.execute("DROP TRIGGER trg_catalog_product_proposal_guard ON catalog_product_proposals")

@@ -93,7 +93,7 @@ async def _catalog_guards(connection) -> dict[tuple[str, str], dict[str, str]]:
             "JOIN pg_class c ON c.oid=t.tgrelid "
             "JOIN pg_proc p ON p.oid=t.tgfoid "
             "WHERE NOT t.tgisinternal AND c.relname IN "
-            "('approval_packages','catalog_proposal_policy_versions',"
+            "('workflow_runs','approval_packages','catalog_proposal_policy_versions',"
             "'catalog_proposal_evaluations','catalog_product_proposals',"
             "'catalog_cultivation_cases')"
         )
@@ -212,6 +212,18 @@ def _assert_catalog_check_and_guard_contracts(
             assert all(fragment in expression for fragment in fragments), (name, expression)
 
     expected_guards = {
+        ("workflow_runs", "trg_catalog_evaluation_run_mutation_lock"): (
+            "lock_catalog_evaluation_run_mutation",
+            ("before", "update", "delete"),
+            (
+                "catalog_cluster_evaluation",
+                "catalog-evaluation-run-v1:",
+                "pg_advisory_xact_lock",
+                "hashtextextended",
+                "old.workflow_type",
+                "new.workflow_type",
+            ),
+        ),
         ("approval_packages", "trg_catalog_approval_namespace"): (
             "guard_catalog_approval_namespace",
             ("before", "insert"),
@@ -411,6 +423,191 @@ async def test_0057_installs_semantic_checks_and_trigger_guards(db_url: str) -> 
             guards = await _catalog_guards(connection)
             _assert_catalog_check_and_guard_contracts(contracts, guards)
     finally:
+        await engine.dispose()
+
+
+async def _catalog_run_mutation_guard_exists(connection) -> bool:
+    return bool(
+        await connection.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM pg_trigger t "
+                "JOIN pg_class c ON c.oid=t.tgrelid "
+                "WHERE NOT t.tgisinternal AND c.relname='workflow_runs' "
+                "AND t.tgname='trg_catalog_evaluation_run_mutation_lock')"
+            )
+        )
+    )
+
+
+async def test_0057_catalog_run_mutation_guard_upgrade_downgrade_round_trip(
+    db_url: str,
+) -> None:
+    """0057 升降级必须精确安装/移除 catalog Run mutation advisory guard。"""
+    from infra.db.session import create_engine_from
+
+    try:
+        _alembic(db_url, "downgrade", "0056")
+        engine = create_engine_from(db_url)
+        try:
+            async with engine.connect() as connection:
+                assert not await _catalog_run_mutation_guard_exists(connection)
+        finally:
+            await engine.dispose()
+
+        _alembic(db_url, "upgrade", "0057")
+        engine = create_engine_from(db_url)
+        try:
+            async with engine.connect() as connection:
+                assert await _catalog_run_mutation_guard_exists(connection)
+        finally:
+            await engine.dispose()
+
+        _alembic(db_url, "downgrade", "0056")
+        engine = create_engine_from(db_url)
+        try:
+            async with engine.connect() as connection:
+                assert not await _catalog_run_mutation_guard_exists(connection)
+        finally:
+            await engine.dispose()
+
+        _alembic(db_url, "upgrade", "0057")
+        engine = create_engine_from(db_url)
+        try:
+            async with engine.connect() as connection:
+                assert await _catalog_run_mutation_guard_exists(connection)
+        finally:
+            await engine.dispose()
+    finally:
+        _alembic(db_url, "upgrade", "head")
+
+
+async def _wait_for_blocking_pid(engine, blocked_pid: int) -> None:
+    async with asyncio.timeout(3):
+        while True:
+            async with engine.connect() as connection:
+                blockers = await connection.scalar(
+                    text("SELECT pg_blocking_pids(:pid)"),
+                    {"pid": blocked_pid},
+                )
+            if blockers:
+                return
+            await asyncio.sleep(0.02)
+
+
+@pytest.mark.parametrize("operation", ["update", "delete"])
+async def test_0057_catalog_run_mutations_take_dedicated_advisory_lock(
+    db_url: str,
+    operation: str,
+) -> None:
+    """删 trigger 或漏掉 UPDATE/DELETE 任一路径都会让 mutation 不再等待。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = f"tn_catalog_run_{operation}"
+    run_id = f"run_catalog_run_{operation}"
+    lock_key = f"catalog-evaluation-run-v1:{tenant}:{run_id}"
+    mutation_task: asyncio.Task[None] | None = None
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO workflow_runs "
+                    "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
+                    "current_step,status,context,idempotency_key) VALUES "
+                    "(:run,:tenant,'catalog_cluster_evaluation',1,'ncl_lock',"
+                    "'evaluate','running','{}'::jsonb,:key)"
+                ),
+                {"run": run_id, "tenant": tenant, "key": f"lock:{operation}"},
+            )
+
+        async with engine.connect() as blocker, blocker.begin():
+            await blocker.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+                {"key": lock_key},
+            )
+            pid_ready = asyncio.get_running_loop().create_future()
+
+            async def mutate() -> None:
+                async with engine.begin() as connection:
+                    pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+                    assert isinstance(pid, int)
+                    pid_ready.set_result(pid)
+                    statement = (
+                        "UPDATE workflow_runs SET current_step='finish' "
+                        "WHERE tenant_id=:tenant AND run_id=:run"
+                        if operation == "update"
+                        else "DELETE FROM workflow_runs "
+                        "WHERE tenant_id=:tenant AND run_id=:run"
+                    )
+                    await connection.execute(
+                        text(statement),
+                        {"tenant": tenant, "run": run_id},
+                    )
+
+            mutation_task = asyncio.create_task(mutate())
+            blocked_pid = await asyncio.wait_for(pid_ready, timeout=3)
+            await _wait_for_blocking_pid(engine, blocked_pid)
+            assert not mutation_task.done()
+
+        await asyncio.wait_for(mutation_task, timeout=3)
+    finally:
+        if mutation_task is not None and not mutation_task.done():
+            mutation_task.cancel()
+            await asyncio.gather(mutation_task, return_exceptions=True)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM workflow_runs WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
+        await engine.dispose()
+
+
+async def test_0057_non_catalog_run_update_ignores_catalog_advisory_lock(
+    db_url: str,
+) -> None:
+    """专用 trigger 不得扩大到其他 workflow type。"""
+    from infra.db.session import create_engine_from
+
+    engine = create_engine_from(db_url)
+    tenant = "tn_non_catalog_run_lock"
+    run_id = "run_non_catalog_run_lock"
+    lock_key = f"catalog-evaluation-run-v1:{tenant}:{run_id}"
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO workflow_runs "
+                    "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
+                    "current_step,status,context,idempotency_key) VALUES "
+                    "(:run,:tenant,'outreach_campaign',1,'cmp_lock','send','running',"
+                    "'{}'::jsonb,'non-catalog-lock')"
+                ),
+                {"run": run_id, "tenant": tenant},
+            )
+
+        async with engine.connect() as blocker, blocker.begin():
+            await blocker.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+                {"key": lock_key},
+            )
+
+            async def update_non_catalog() -> None:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "UPDATE workflow_runs SET current_step='wait' "
+                            "WHERE tenant_id=:tenant AND run_id=:run"
+                        ),
+                        {"tenant": tenant, "run": run_id},
+                    )
+
+            await asyncio.wait_for(update_non_catalog(), timeout=1)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM workflow_runs WHERE tenant_id=:tenant"),
+                {"tenant": tenant},
+            )
         await engine.dispose()
 
 

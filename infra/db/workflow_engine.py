@@ -609,9 +609,9 @@ class PostgresWorkflowEngine:
                             WorkflowRunRow.tenant_id == tenant_id,
                             WorkflowRunRow.run_id == step_row.run_id,
                         )
-                        # step 行锁负责引擎推进串行；Run 的真 KEY SHARE 允许 handler
-                        # 独立事务取 SHARE，同时仍排斥删行与键更新。
-                        .with_for_update(read=True, key_share=True)
+                        # step 行锁负责领取；Run 的 NO KEY UPDATE 串行化状态推进。
+                        # Catalog handler 先取兼容的 KEY SHARE，再由专用 advisory 协调。
+                        .with_for_update(key_share=True)
                     )
                 ).scalars().first()
                 if run_row is None:
@@ -1049,9 +1049,9 @@ class PostgresWorkflowEngine:
                         WorkflowRunRow.tenant_id == tenant_id,
                         WorkflowRunRow.run_id == run_id,
                     )
-                    # 与 poll 一致：step 行锁负责引擎推进串行；Run 的真 KEY SHARE
-                    # 不阻塞 handler 独立 Products 事务取得 SHARE。
-                    .with_for_update(read=True, key_share=True)
+                    # 与 poll 一致：Run 的 NO KEY UPDATE 串行化状态推进；Catalog
+                    # handler 通过兼容 KEY SHARE + 专用 advisory 使用独立事务。
+                    .with_for_update(key_share=True)
                 )
             ).scalars().first()
             if run_row is None or run_row.status in _TERMINAL_STATUSES:

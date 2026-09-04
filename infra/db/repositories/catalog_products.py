@@ -585,10 +585,22 @@ class CatalogEvaluationRepositoryImpl(_CatalogRepository):
     ) -> None:
         if not self._read_allowed(tenant_id):
             raise ValidationError("目录评估 Run 不可信")
-        trusted = (
+        identity = (
             await self._session.execute(
                 self.scoped_query(WorkflowRunRow)
-                .where(
+                .where(WorkflowRunRow.run_id == str(run_id))
+                .with_for_update(read=True, key_share=True)
+            )
+        ).scalar_one_or_none()
+        if identity is None:
+            raise ValidationError("目录评估 Run 不可信")
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": f"catalog-evaluation-run-v1:{tenant_id}:{run_id}"},
+        )
+        trusted = (
+            await self._session.execute(
+                self.scoped_query(WorkflowRunRow).where(
                     WorkflowRunRow.run_id == str(run_id),
                     WorkflowRunRow.workflow_type == "catalog_cluster_evaluation",
                     WorkflowRunRow.workflow_version == 1,
@@ -596,7 +608,6 @@ class CatalogEvaluationRepositoryImpl(_CatalogRepository):
                     WorkflowRunRow.status == "running",
                     WorkflowRunRow.current_step == "evaluate",
                 )
-                .with_for_update(read=True)
             )
         ).scalar_one_or_none()
         if trusted is None:
