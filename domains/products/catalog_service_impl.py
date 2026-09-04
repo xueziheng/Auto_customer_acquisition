@@ -6,7 +6,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import NoReturn
+from typing import NoReturn, cast
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -62,6 +62,7 @@ from domains.products.service import (
 from shared.errors import (
     IdempotencyConflict,
     InvalidStateTransition,
+    TenantIsolationViolation,
     TradeOSError,
     TransientError,
     ValidationError,
@@ -97,6 +98,7 @@ _PROPOSAL_APPROVAL_CONFLICT = "目录产品提案审批绑定冲突"
 _PROPOSAL_DECISION_INVALID = "目录产品提案审批事实不匹配"
 _CULTIVATION_NOT_FOUND = "目录产品培养 Case 不存在"
 _CULTIVATION_CONFLICT = "目录产品培养 Case 不可变 subject 冲突"
+_FACTS_INVALID = "目录评估当前事实无效"
 
 
 def _clock(value: datetime) -> datetime:
@@ -298,6 +300,79 @@ def _evaluation_snapshot(
     if snapshot.tenant_id != tenant_id:
         raise ValidationError("目录评估事实租户不匹配")
     return snapshot
+
+
+def _evaluation_locator(
+    tenant_id: TenantId, facts: CatalogClusterFactsInput
+) -> CatalogBlockedFactsInput:
+    try:
+        locator = CatalogBlockedFactsInput.model_validate(
+            {
+                "tenant_id": facts.tenant_id,
+                "cluster_id": facts.cluster_id,
+                "facts_hash": facts.facts_hash,
+            }
+        )
+    except (AttributeError, PydanticValidationError, TypeError, ValueError):
+        raise ValidationError("目录评估事实定位符无效") from None
+    if locator.tenant_id != tenant_id:
+        raise TenantIsolationViolation("跨租户目录评估事实访问被拒绝")
+    return locator
+
+
+def _current_facts(
+    tenant_id: TenantId, facts: CatalogClusterFactsInput
+) -> CatalogClusterFactsInput:
+    try:
+        checked = CatalogClusterFactsInput.model_validate(
+            facts.model_dump(mode="python")
+        )
+    except (AttributeError, PydanticValidationError, TypeError, ValueError):
+        raise ValidationError(_FACTS_INVALID) from None
+    if checked.tenant_id != tenant_id:
+        raise TenantIsolationViolation("跨租户目录评估事实访问被拒绝")
+    return checked
+
+
+def _same_hash_covered_facts(
+    current: CatalogClusterFactsInput,
+    historical: CatalogClusterFactsInput,
+) -> bool:
+    fields = (
+        "cluster_category",
+        "member_need_ids",
+        "distinct_account_ids",
+        "member_count",
+        "distinct_account_count",
+        "known_country_codes",
+        "unknown_country_account_count",
+        "recurring_true_account_count",
+        "recurring_false_account_count",
+        "recurring_unknown_account_count",
+        "quantity_unit_covered_account_count",
+        "unified_unit",
+        "safe_total_quantity",
+        "evidence_summaries",
+    )
+    return all(
+        getattr(current, field) == getattr(historical, field) for field in fields
+    )
+
+
+def _proposal_matches_passed_evaluation(
+    proposal: CatalogProductProposal,
+    evaluation: CatalogProposalEvaluation,
+) -> bool:
+    return (
+        evaluation.overall_passed
+        and evaluation.blocked_reason is None
+        and type(evaluation.facts) is CatalogClusterFactsInput
+        and proposal.evaluation_id == evaluation.evaluation_id
+        and proposal.cluster_id == evaluation.cluster_id
+        and proposal.policy_version_id == evaluation.policy_version_id
+        and proposal.facts_hash == evaluation.facts_hash
+        and proposal.proposed_by_run == evaluation.proposed_by_run
+    )
 
 
 def _same_evaluation(
@@ -845,9 +920,13 @@ class CatalogProposalServiceImpl:
         actor: ProductActor,
     ) -> CatalogProposalEvaluationView:
         self._require(tenant_id, actor, ProductAction.CATALOG_EVALUATE)
+        locator = _evaluation_locator(tenant_id, facts)
         _run_id(proposed_by_run)
         try:
             async with self._uow_factory(tenant_id) as uow:
+                await uow.evaluations.require_trusted_catalog_evaluation_run(
+                    tenant_id, proposed_by_run, locator.cluster_id
+                )
                 await uow.policies.lock_policy_namespace(tenant_id)
                 policy = _active_fact(
                     await uow.policies.get_active(tenant_id, for_update=True),
@@ -1082,6 +1161,7 @@ class CatalogProposalServiceImpl:
         actor: ProductActor,
     ) -> CatalogProductProposalView:
         self._require(tenant_id, actor, ProductAction.CATALOG_SYSTEM_APPLY)
+        checked_current = _current_facts(tenant_id, current_facts)
         _catalog_id(proposal_id, "cpr", "目录产品提案 ID")
         try:
             checked_decision = _decision(decision)
@@ -1097,6 +1177,8 @@ class CatalogProposalServiceImpl:
                 if proposal is None:
                     raise CatalogProposalNotFoundError(_PROPOSAL_NOT_FOUND)
                 proposal = _proposal_fact(proposal, tenant_id, expected_id=proposal_id)
+                if checked_current.cluster_id != proposal.cluster_id:
+                    raise ValidationError(_FACTS_INVALID)
                 active = _active_fact(
                     await uow.policies.get_active(tenant_id, for_update=True),
                     tenant_id,
@@ -1104,6 +1186,26 @@ class CatalogProposalServiceImpl:
                 _require_exact_cultivation_decision(
                     proposal, checked_decision, applied_at
                 )
+                try:
+                    evaluation = await uow.evaluations.get(
+                        tenant_id, proposal.evaluation_id
+                    )
+                    if evaluation is None:
+                        raise ValueError("evaluation missing")
+                    evaluation = _evaluation_fact(evaluation, tenant_id)
+                except (
+                    PydanticValidationError,
+                    TransientError,
+                    ValidationError,
+                    TypeError,
+                    ValueError,
+                ):
+                    raise CatalogCultivationConflictError(
+                        _CULTIVATION_CONFLICT
+                    ) from None
+                if not _proposal_matches_passed_evaluation(proposal, evaluation):
+                    raise CatalogCultivationConflictError(_CULTIVATION_CONFLICT)
+                historical_facts = cast(CatalogClusterFactsInput, evaluation.facts)
                 matching_terminal = {
                     "approved": {
                         CatalogProductProposalState.CULTIVATION_QUEUED,
@@ -1114,15 +1216,7 @@ class CatalogProposalServiceImpl:
                 }[checked_decision.state]
                 if proposal.state in matching_terminal:
                     if proposal.state is CatalogProductProposalState.CULTIVATION_QUEUED:
-                        evaluation = await uow.evaluations.get(
-                            tenant_id, proposal.evaluation_id
-                        )
-                        if evaluation is None:
-                            raise TransientError(_EVALUATION_UNAVAILABLE)
-                        evaluation = _evaluation_fact(evaluation, tenant_id)
-                        if type(evaluation.facts) is not CatalogClusterFactsInput:
-                            raise TransientError(_EVALUATION_UNAVAILABLE)
-                        evidence_refs = _cultivation_evidence_refs(evaluation.facts)
+                        evidence_refs = _cultivation_evidence_refs(historical_facts)
                         cultivation = await uow.cultivation_cases.get_by_proposal(
                             tenant_id, proposal.proposal_id
                         )
@@ -1161,25 +1255,11 @@ class CatalogProposalServiceImpl:
                         )
                     )
 
-                current: CatalogClusterFactsInput | None
-                try:
-                    current = CatalogClusterFactsInput.model_validate(
-                        current_facts.model_dump(mode="python")
-                    )
-                except (
-                    AttributeError,
-                    PydanticValidationError,
-                    TypeError,
-                    ValueError,
-                ):
-                    current = None
                 if (
                     active is None
                     or active.policy_version_id != proposal.policy_version_id
-                    or current is None
-                    or current.tenant_id != tenant_id
-                    or current.cluster_id != proposal.cluster_id
-                    or current.facts_hash != proposal.facts_hash
+                    or checked_current.facts_hash != proposal.facts_hash
+                    or not _same_hash_covered_facts(checked_current, historical_facts)
                 ):
                     stale = await uow.proposals.update(
                         tenant_id,
@@ -1191,20 +1271,9 @@ class CatalogProposalServiceImpl:
                     )
                     return _proposal_view(stale)
 
-                evaluation = await uow.evaluations.get(
-                    tenant_id, proposal.evaluation_id
-                )
-                if evaluation is None:
-                    raise TransientError(_EVALUATION_UNAVAILABLE)
-                evaluation = _evaluation_fact(evaluation, tenant_id)
-                if (
-                    not evaluation.overall_passed
-                    or evaluation.blocked_reason is not None
-                    or type(evaluation.facts) is not CatalogClusterFactsInput
-                    or not _same_proposal(proposal, evaluation, active.proposed_by)
-                ):
-                    raise TransientError(_EVALUATION_UNAVAILABLE)
-                evidence_refs = _cultivation_evidence_refs(evaluation.facts)
+                if not _same_proposal(proposal, evaluation, active.proposed_by):
+                    raise CatalogCultivationConflictError(_CULTIVATION_CONFLICT)
+                evidence_refs = _cultivation_evidence_refs(historical_facts)
                 if not evidence_refs:
                     raise TransientError(_EVALUATION_UNAVAILABLE)
                 queued = _proposal_fact(

@@ -95,3 +95,37 @@ exit 0
 - 当前 mapped facts 来自可信 SYSTEM workflow 边界；如果未来暴露为外部 API，必须在应用层继续保持 SYSTEM-only 和 typed validation，不得把客户端 facts 当作可信事实。
 - Git 读取对象时持续输出既有 AppleDouble pack 索引告警（`._pack-*.idx: non-monotonic index`），但所有 Git 命令均成功退出；应由独立仓库维护任务清理。
 - 工作树原有未跟踪目录 `output/playwright/t10-2f6ab75a1aee427f82a6e7581b3a31da/` 未读取、未修改、未暂存。
+
+## Fix round 1：current facts 与可信 workflow run 加固
+
+### Review 问题与修复
+
+1. **current facts 精确绑定历史 evaluation**
+   - apply 在打开 UoW 前重新执行完整 `CatalogClusterFactsInput` model validation；损坏 model 固定拒绝，不再把输入错误写成 proposal stale。
+   - tenant 不匹配在 run / decision 校验前固定抛租户隔离错误且不进入 UoW。proposal cluster 只能在锁定 proposal 后获知，因此 cluster 不匹配在该锁后固定拒绝，事务不产生任何业务写或状态变化。
+   - `facts_hash` 保持独立精确比较；此外逐字段比较 cluster category、稳定 Need/account/country 集、全部 counts、unified unit、safe total quantity 与完整 evidence summaries。
+   - `display_codes` 和 `facts_observed_at` 明确排除在决策比较之外；只改变这两个展示字段仍可使用同一受审 facts subject。
+   - proposal 对应 evaluation 必须是结构自洽的 passed 完整快照；缺失、blocked、failed 或损坏 evaluation 统一为固定 cultivation conflict，而不是继续排队或泄漏底层异常。
+2. **跨租户 pre-I/O**
+   - evaluate 先安全提取最小 locator，再进行 run 校验和 UoW 访问；同租户业务字段损坏仍可形成只含 locator/hash 的 blocked evaluation。
+   - apply 先完整验证 current facts 及 tenant，再读取 proposal；真实 PostgreSQL SQL spy 证明跨租户 evaluate/apply 没有 INSERT、UPDATE 或 DELETE，原 proposal 仍为 `pending_review`。
+3. **可信 Run 持久化 guard**
+   - `CatalogEvaluationRepository` 新增 tenant-bound guard；PostgreSQL adapter 查询 `WorkflowRunRow` 并精确要求 `catalog_cluster_evaluation`、version 1、subject=cluster、status=`running`、step=`evaluate`。
+   - tenant、type、version、subject、status、step 任一不符均返回固定 `目录评估 Run 不可信`，且不创建 evaluation、proposal 或 outbox event；不向上泄漏原始行内容。
+
+### Strict TDD RED 证据
+
+- 同一自报 `facts_hash` 下改变 `cluster_category` 的 reviewer probe，旧实现返回 `cultivation_queued`；其余 11 组 hash-covered 字段参数化用例同样错误排队。
+- cross-tenant evaluation 旧实现进入 UoW 后才发现租户不符；cross-tenant apply 旧实现把 proposal 更新为 `stale`。加入无 I/O / 无写入断言后稳定 RED。
+- tenant/type/version/subject/status/step 不匹配的真实 workflow run 在旧实现中仍尝试持久化 evaluation；其中 foreign-tenant run 由 FK 偶然阻断，其余 run 会实际写入，证明只检查 `run_` 前缀不足。
+- 损坏历史 evaluation 的旧路径返回 transient unavailable，而不是要求的固定 corruption/conflict。
+- RED 阶段发现一项测试 fixture marker 超过数据库 `varchar(32)`；缩短合法测试标识后重新确认失败来自业务缺口，不把 fixture 错误计作功能 RED。
+
+### GREEN 与最终回归证据
+
+- Task 8 unit：`37 passed in 0.17s`。
+- Task 8 real PostgreSQL integration：`15 passed in 4.39s`，无 skip。
+- Task 8 focused + repository：`76 passed in 5.29s`，无 skip。
+- Task 5–8 Products 相关单元、migration、repository、真实 PostgreSQL：`226 passed in 9.60s`，无 skip。
+- 12 组 hash-covered 字段变化全部落 `stale` 且 case/event 为 0；两个展示字段变化仍只创建一个 queued case。
+- 6 类 persisted run 反例全部固定拒绝；既有正例、并发收敛、blocked 最小 envelope、Approval 原子绑定与 outbox rollback 全部保持 GREEN。

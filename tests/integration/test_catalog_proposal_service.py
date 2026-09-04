@@ -40,7 +40,7 @@ from infra.db.tables import (
     ProductRow,
     SourcingCaseRow,
 )
-from shared.errors import TransientError
+from shared.errors import TenantIsolationViolation, TransientError, ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
     CatalogProductProposalId,
@@ -457,6 +457,76 @@ async def test_concurrent_evaluation_replay_converges_with_one_proposal_and_even
         await _cleanup(catalog_proposal_engine, values["tenant"])
 
 
+@pytest.mark.parametrize(
+    ("column", "invalid_value"),
+    [
+        ("tenant_id", "tn_cps_run_foreign"),
+        ("workflow_type", "outreach_campaign"),
+        ("workflow_version", 2),
+        ("subject_ref", "ncl_cps_unrelated"),
+        ("status", "completed"),
+        ("current_step", "collect"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_evaluation_requires_exact_persisted_workflow_run(
+    catalog_proposal_engine: AsyncEngine,
+    column: str,
+    invalid_value: str | int,
+) -> None:
+    marker = {
+        "tenant_id": "rtn",
+        "workflow_type": "rty",
+        "workflow_version": "rvr",
+        "subject_ref": "rsu",
+        "status": "rst",
+        "current_step": "rsp",
+    }[column]
+    values = await _seed_parents(catalog_proposal_engine, marker)
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    await _active_policy(catalog_proposal_engine, factory, values)
+    service = _service(factory, tenant)
+    try:
+        async with catalog_proposal_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f"UPDATE workflow_runs SET {column}=:invalid WHERE run_id=:run_id"
+                ),
+                {"invalid": invalid_value, "run_id": values["other_run"]},
+            )
+
+        with pytest.raises(ValidationError, match="^目录评估 Run 不可信$"):
+            await service.evaluate_cluster(
+                tenant,
+                _facts(values),
+                proposed_by_run=RunId(values["other_run"]),
+                actor=_system(tenant),
+            )
+
+        async with catalog_proposal_engine.connect() as connection:
+            counts = [
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(row)
+                    .where(row.tenant_id == values["tenant"])
+                )
+                for row in (
+                    CatalogProposalEvaluationRow,
+                    CatalogProductProposalRow,
+                    OutboxEventRow,
+                )
+            ]
+        assert counts == [0, 0, 0]
+    finally:
+        async with catalog_proposal_engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM workflow_runs WHERE run_id=:run_id"),
+                {"run_id": values["other_run"]},
+            )
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
 @pytest.mark.asyncio
 async def test_failed_and_blocked_evaluations_persist_without_proposals(
     catalog_proposal_engine: AsyncEngine,
@@ -752,6 +822,152 @@ async def test_stale_facts_commit_terminal_without_case(
                 == 0
             )
     finally:
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_same_reported_hash_with_changed_category_is_stale_without_case(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "category_probe")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    try:
+        service, proposal_id, policy_id = await _proposal(
+            catalog_proposal_engine, factory, values
+        )
+        approval_id = await _insert_cultivation_approval(
+            catalog_proposal_engine,
+            values,
+            proposal_id,
+            policy_id,
+            approval_id="apr_cps_category_probe",
+        )
+        await service.bind_proposal_approval(
+            tenant, proposal_id, approval_id, HASH_C, actor=_system(tenant)
+        )
+        changed = _facts(values).model_copy(
+            update={"cluster_category": "electric_three_wheelers"}
+        )
+
+        result = await service.apply_cultivation_decision(
+            tenant,
+            proposal_id,
+            _decision(values, proposal_id, policy_id, approval_id),
+            changed,
+            actor=_system(tenant),
+        )
+
+        assert result.state == "stale"
+        async with catalog_proposal_engine.connect() as connection:
+            case_count = await connection.scalar(
+                select(func.count())
+                .select_from(CatalogCultivationCaseRow)
+                .where(CatalogCultivationCaseRow.tenant_id == values["tenant"])
+            )
+            event_count = await connection.scalar(
+                select(func.count())
+                .select_from(OutboxEventRow)
+                .where(
+                    OutboxEventRow.tenant_id == values["tenant"],
+                    OutboxEventRow.event_type == "CatalogCultivationQueued",
+                )
+            )
+        assert (case_count, event_count) == (0, 0)
+    finally:
+        await _cleanup(catalog_proposal_engine, values["tenant"])
+
+
+@pytest.mark.asyncio
+async def test_cross_tenant_facts_are_rejected_without_business_sql_writes(
+    catalog_proposal_engine: AsyncEngine,
+) -> None:
+    values = await _seed_parents(catalog_proposal_engine, "tenant_pre_io")
+    tenant = TenantId(values["tenant"])
+    factory = async_sessionmaker(catalog_proposal_engine, expire_on_commit=False)
+    writes: list[str] = []
+
+    def capture_business_writes(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: object,
+    ) -> None:
+        normalized = statement.lstrip().upper()
+        if normalized.startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    try:
+        service, proposal_id, policy_id = await _proposal(
+            catalog_proposal_engine, factory, values
+        )
+        approval_id = await _insert_cultivation_approval(
+            catalog_proposal_engine,
+            values,
+            proposal_id,
+            policy_id,
+            approval_id="apr_cps_tenant_pre_io",
+        )
+        await service.bind_proposal_approval(
+            tenant, proposal_id, approval_id, HASH_C, actor=_system(tenant)
+        )
+        foreign_facts = _facts(values).model_copy(
+            update={"tenant_id": TenantId("tn_cps_foreign_input")}
+        )
+        event.listen(
+            catalog_proposal_engine.sync_engine,
+            "before_cursor_execute",
+            capture_business_writes,
+        )
+
+        with pytest.raises(TenantIsolationViolation, match="跨租户"):
+            await service.evaluate_cluster(
+                tenant,
+                foreign_facts,
+                proposed_by_run=RunId(values["run"]),
+                actor=_system(tenant),
+            )
+        with pytest.raises(TenantIsolationViolation, match="跨租户"):
+            await service.apply_cultivation_decision(
+                tenant,
+                proposal_id,
+                _decision(values, proposal_id, policy_id, approval_id),
+                foreign_facts,
+                actor=_system(tenant),
+            )
+        assert writes == []
+        event.remove(
+            catalog_proposal_engine.sync_engine,
+            "before_cursor_execute",
+            capture_business_writes,
+        )
+
+        async with catalog_proposal_engine.connect() as connection:
+            state = await connection.scalar(
+                select(CatalogProductProposalRow.state).where(
+                    CatalogProductProposalRow.tenant_id == values["tenant"],
+                    CatalogProductProposalRow.proposal_id == str(proposal_id),
+                )
+            )
+            case_count = await connection.scalar(
+                select(func.count())
+                .select_from(CatalogCultivationCaseRow)
+                .where(CatalogCultivationCaseRow.tenant_id == values["tenant"])
+            )
+        assert (state, case_count) == ("pending_review", 0)
+    finally:
+        if event.contains(
+            catalog_proposal_engine.sync_engine,
+            "before_cursor_execute",
+            capture_business_writes,
+        ):
+            event.remove(
+                catalog_proposal_engine.sync_engine,
+                "before_cursor_execute",
+                capture_business_writes,
+            )
         await _cleanup(catalog_proposal_engine, values["tenant"])
 
 

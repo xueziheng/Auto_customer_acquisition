@@ -39,6 +39,7 @@ from infra.db.tables import (
     CatalogProductProposalRow,
     CatalogProposalEvaluationRow,
     CatalogProposalPolicyVersionRow,
+    WorkflowRunRow,
 )
 from shared.errors import (
     IdempotencyConflict,
@@ -576,6 +577,29 @@ class CatalogPolicyRepositoryImpl(_CatalogRepository):
 
 
 class CatalogEvaluationRepositoryImpl(_CatalogRepository):
+    async def require_trusted_catalog_evaluation_run(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        cluster_id: NeedClusterId,
+    ) -> None:
+        if not self._read_allowed(tenant_id):
+            raise ValidationError("目录评估 Run 不可信")
+        trusted = (
+            await self._session.execute(
+                self.scoped_query(WorkflowRunRow).where(
+                    WorkflowRunRow.run_id == str(run_id),
+                    WorkflowRunRow.workflow_type == "catalog_cluster_evaluation",
+                    WorkflowRunRow.workflow_version == 1,
+                    WorkflowRunRow.subject_ref == str(cluster_id),
+                    WorkflowRunRow.status == "running",
+                    WorkflowRunRow.current_step == "evaluate",
+                )
+            )
+        ).scalar_one_or_none()
+        if trusted is None:
+            raise ValidationError("目录评估 Run 不可信")
+
     async def add(
         self, tenant_id: TenantId, evaluation: CatalogProposalEvaluation
     ) -> CatalogProposalEvaluation:

@@ -30,6 +30,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     NeedClusterId,
     ProductId,
+    RunId,
     SourcingCaseId,
     SupplierCandidateId,
     TenantId,
@@ -129,6 +130,15 @@ class CatalogPolicyRepository(Protocol):
 
 @runtime_checkable
 class CatalogEvaluationRepository(Protocol):
+    async def require_trusted_catalog_evaluation_run(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        cluster_id: NeedClusterId,
+    ) -> None:
+        """验证运行中的目录评估 workflow 精确绑定当前租户、簇和步骤。"""
+        ...
+
     async def add(
         self, tenant_id: TenantId, evaluation: CatalogProposalEvaluation
     ) -> CatalogProposalEvaluation: ...

@@ -15,6 +15,7 @@ from domains.products.catalog_rules import (
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
 from domains.products.errors import (
     CatalogCultivationCaseNotFoundError,
+    CatalogCultivationConflictError,
     CatalogEvaluationConflictError,
     CatalogEvaluationNotFoundError,
     CatalogProposalApprovalConflictError,
@@ -48,6 +49,7 @@ from shared.errors import (
     IdempotencyConflict,
     InvalidStateTransition,
     PermissionDenied,
+    TenantIsolationViolation,
     TransientError,
     ValidationError,
 )
@@ -218,6 +220,8 @@ class _Store:
         self.enter_count = 0
         self.namespace_lock_count = 0
         self.active_lock_count = 0
+        self.run_guard_count = 0
+        self.run_guard_error: Exception | None = None
         self.read_error: Exception | None = None
 
 
@@ -258,6 +262,19 @@ class _Policies:
 class _Evaluations:
     def __init__(self, store: _Store) -> None:
         self._store = store
+
+    async def require_trusted_catalog_evaluation_run(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        cluster_id: NeedClusterId,
+    ) -> None:
+        assert tenant_id == TENANT
+        assert str(run_id).startswith("run_")
+        assert cluster_id == NeedClusterId("ncl_catalog_unit")
+        self._store.run_guard_count += 1
+        if self._store.run_guard_error is not None:
+            raise self._store.run_guard_error
 
     async def add(
         self, tenant_id: TenantId, evaluation: CatalogProposalEvaluation
@@ -645,6 +662,42 @@ async def test_evaluation_requires_system_actor_trusted_run_and_active_policy() 
 
 
 @pytest.mark.asyncio
+async def test_evaluation_rejects_cross_tenant_locator_before_uow() -> None:
+    store = _Store()
+    service = _service(store)
+
+    with pytest.raises(TenantIsolationViolation, match="跨租户"):
+        await service.evaluate_cluster(
+            TENANT,
+            _facts(tenant_id=OTHER_TENANT),
+            proposed_by_run=RunId("not_a_run"),
+            actor=_system(),
+        )
+
+    assert store.enter_count == 0
+    assert store.run_guard_count == 0
+
+
+@pytest.mark.asyncio
+async def test_evaluation_requires_persisted_trusted_run_before_writes() -> None:
+    store = _Store()
+    policy = _active_policy()
+    store.policies[policy.policy_version_id] = policy
+    store.run_guard_error = ValidationError("目录评估 Run 不可信")
+    service = _service(store)
+
+    with pytest.raises(ValidationError, match="^目录评估 Run 不可信$"):
+        await service.evaluate_cluster(
+            TENANT, _facts(), proposed_by_run=RUN, actor=_system()
+        )
+
+    assert store.run_guard_count == 1
+    assert store.evaluations == {}
+    assert store.proposals == {}
+    assert store.events == []
+
+
+@pytest.mark.asyncio
 async def test_passed_evaluation_copies_snapshot_and_creates_owned_proposal_event() -> (
     None
 ):
@@ -668,6 +721,7 @@ async def test_passed_evaluation_copies_snapshot_and_creates_owned_proposal_even
     assert proposal.state is CatalogProductProposalState.AWAITING_APPROVAL_SUBMISSION
     assert store.namespace_lock_count == 1
     assert store.active_lock_count == 1
+    assert store.run_guard_count == 1
     assert len(store.events) == 1
     event = store.events[0]
     assert isinstance(event, CatalogProductProposalCreated)
@@ -839,15 +893,221 @@ async def test_stale_policy_or_facts_closes_proposal_without_case() -> None:
         else:
             current_facts = _facts().model_copy(update={"member_count": 99})
 
-        result = await service.apply_cultivation_decision(
+        if stale_kind == "damaged_facts":
+            before_io = store.enter_count
+            with pytest.raises(ValidationError):
+                await service.apply_cultivation_decision(
+                    TENANT,
+                    bound.proposal_id,
+                    _decision(bound),
+                    current_facts,
+                    actor=_system(),
+                )
+            assert store.enter_count == before_io
+        else:
+            result = await service.apply_cultivation_decision(
+                TENANT,
+                bound.proposal_id,
+                _decision(bound),
+                current_facts,
+                actor=_system(),
+            )
+            assert result.state == "stale"
+        assert store.cases == {}
+
+
+def _changed_decision_facts(marker: str) -> CatalogClusterFactsInput:
+    facts = _facts()
+    changes: dict[str, object] = {
+        "cluster_category": "electric_three_wheelers",
+        "member_need_ids": ("need_1", "need_2", "need_other"),
+        "distinct_account_ids": ("acc_1", "acc_2", "acc_other"),
+        "member_count": 4,
+        "distinct_account_count": 2,
+        "known_country_codes": ("UG",),
+        "unknown_country_account_count": 1,
+        "recurring_counts": 1,
+        "quantity_unit_covered_account_count": 1,
+        "unified_unit": "units",
+        "safe_total_quantity": 30,
+        "evidence_summaries": (_evidence("other"),),
+    }
+    if marker == "member_count":
+        return facts.model_copy(
+            update={
+                "member_need_ids": ("need_1", "need_2", "need_3", "need_4"),
+                "member_count": 4,
+            }
+        )
+    if marker == "distinct_account_count":
+        return facts.model_copy(
+            update={
+                "distinct_account_ids": ("acc_1", "acc_2"),
+                "distinct_account_count": 2,
+                "unknown_country_account_count": 1,
+                "recurring_unknown_account_count": 2,
+            }
+        )
+    if marker == "recurring_counts":
+        return facts.model_copy(
+            update={
+                "recurring_true_account_count": 1,
+                "recurring_unknown_account_count": 2,
+            }
+        )
+    if marker == "safe_total_quantity":
+        return facts.model_copy(
+            update={
+                "quantity_unit_covered_account_count": 3,
+                "unified_unit": "units",
+                "safe_total_quantity": 30,
+            }
+        )
+    return facts.model_copy(update={marker: changes[marker]})
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "cluster_category",
+        "member_need_ids",
+        "distinct_account_ids",
+        "member_count",
+        "distinct_account_count",
+        "known_country_codes",
+        "unknown_country_account_count",
+        "recurring_counts",
+        "quantity_unit_covered_account_count",
+        "unified_unit",
+        "safe_total_quantity",
+        "evidence_summaries",
+    ],
+)
+@pytest.mark.asyncio
+async def test_hash_covered_current_facts_must_match_historical_snapshot(
+    changed_field: str,
+) -> None:
+    store = _Store()
+    service, proposal = await _evaluate(store)
+    bound = await _bind(store, service, proposal)
+
+    result = await service.apply_cultivation_decision(
+        TENANT,
+        bound.proposal_id,
+        _decision(bound),
+        _changed_decision_facts(changed_field),
+        actor=_system(),
+    )
+
+    assert result.state == "stale"
+    assert store.cases == {}
+    assert not any(isinstance(item, CatalogCultivationQueued) for item in store.events)
+
+
+@pytest.mark.asyncio
+async def test_display_only_current_facts_changes_do_not_stale_proposal() -> None:
+    store = _Store()
+    service, proposal = await _evaluate(store)
+    bound = await _bind(store, service, proposal)
+    display_only = _facts().model_copy(
+        update={
+            "display_codes": ("display_changed",),
+            "facts_observed_at": NOW,
+        }
+    )
+
+    result = await service.apply_cultivation_decision(
+        TENANT,
+        bound.proposal_id,
+        _decision(bound),
+        display_only,
+        actor=_system(),
+    )
+
+    assert result.state == "cultivation_queued"
+    assert len(store.cases) == 1
+
+
+@pytest.mark.asyncio
+async def test_proposal_with_corrupt_non_full_evaluation_is_fixed_conflict() -> None:
+    store = _Store()
+    service, proposal = await _evaluate(store)
+    bound = await _bind(store, service, proposal)
+    evaluation = store.evaluations[bound.evaluation_id]
+    object.__setattr__(
+        evaluation,
+        "facts",
+        CatalogBlockedFactsInput(
+            tenant_id=TENANT,
+            cluster_id=bound.cluster_id,
+            facts_hash=bound.facts_hash,
+        ),
+    )
+
+    with pytest.raises(CatalogCultivationConflictError):
+        await service.apply_cultivation_decision(
             TENANT,
             bound.proposal_id,
             _decision(bound),
-            current_facts,
+            _facts(),
             actor=_system(),
         )
-        assert result.state == "stale"
-        assert store.cases == {}
+
+    assert store.proposals[bound.proposal_id] == bound
+    assert store.cases == {}
+
+
+@pytest.mark.parametrize(
+    ("facts", "expected_error", "expected_uow_entries"),
+    [
+        (_facts(tenant_id=OTHER_TENANT), TenantIsolationViolation, 0),
+        (
+            _facts().model_copy(update={"cluster_id": NeedClusterId("ncl_other")}),
+            ValidationError,
+            1,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_apply_rejects_foreign_locator_without_mutation(
+    facts: CatalogClusterFactsInput,
+    expected_error: type[Exception],
+    expected_uow_entries: int,
+) -> None:
+    store = _Store()
+    service, proposal = await _evaluate(store)
+    bound = await _bind(store, service, proposal)
+    before_io = store.enter_count
+
+    with pytest.raises(expected_error):
+        await service.apply_cultivation_decision(
+            TENANT,
+            bound.proposal_id,
+            _decision(bound),
+            facts,
+            actor=_system(),
+        )
+
+    assert store.enter_count == before_io + expected_uow_entries
+    assert store.proposals[bound.proposal_id] == bound
+    assert store.cases == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_foreign_tenant_precedes_untrusted_decision() -> None:
+    store = _Store()
+    service = _service(store)
+
+    with pytest.raises(TenantIsolationViolation, match="跨租户"):
+        await service.apply_cultivation_decision(
+            TENANT,
+            CatalogProductProposalId("cpr_missing"),
+            CatalogApprovalDecisionInput.model_construct(),
+            _facts(tenant_id=OTHER_TENANT),
+            actor=_system(),
+        )
+
+    assert store.enter_count == 0
 
 
 @pytest.mark.parametrize(
