@@ -94,7 +94,7 @@ def test_rule_result_rejects_free_form_explanation() -> None:
         {
             "rule": "recurring_accounts",
             "status": "unknown",
-            "actual_value": 1,
+            "actual_value": None,
             "required_value": 2,
             "explanation_code": "复购客户事实不完整",
         },
@@ -110,10 +110,25 @@ def test_rule_result_rejects_free_form_explanation() -> None:
 def test_count_rule_result_rejects_non_exact_or_incoherent_values(
     payload: dict[str, object],
 ) -> None:
-    """公共规则 DTO 不能接纳 bool、溢出值、猜测值或矛盾比较。"""
+    """公共规则 DTO 拒绝宽松数值、缺失确认计数或矛盾比较。"""
 
     with pytest.raises(PydanticValidationError):
         CatalogProposalRuleResult.model_validate(payload)
+
+
+def test_count_rule_unknown_accepts_confirmed_actual_value() -> None:
+    """unknown 表示未知账户可能改变结论，不表示已确认计数不可信。"""
+
+    result = CatalogProposalRuleResult(
+        rule="recurring_accounts",
+        status="unknown",
+        actual_value=1,
+        required_value=2,
+        explanation_code="复购客户事实不完整",
+    )
+
+    assert result.actual_value == 1
+    assert result.required_value == 2
 
 
 @pytest.mark.parametrize(
@@ -279,6 +294,7 @@ def test_controlled_policy_passes_with_non_required_unknown_facts() -> None:
     assert result.blocked_reason is None
     assert result.rule_results[1].actual_value == 3
     assert result.rule_results[1].required_value == 3
+    assert [item.actual_value for item in result.rule_results[2:5]] == [0, 1, 0]
     assert all(item.explanation_code for item in result.rule_results)
     assert all(
         "probability" not in type(item).model_fields for item in result.rule_results
@@ -339,6 +355,8 @@ def test_required_failed_and_unknown_rules_both_block() -> None:
     assert failed.rule_results[2].status == "failed"
     assert failed.overall_passed is False
     assert unknown.rule_results[2].status == "unknown"
+    assert unknown.rule_results[2].actual_value == 1
+    assert unknown.rule_results[2].required_value == 2
     assert unknown.overall_passed is False
 
 
@@ -421,6 +439,16 @@ def test_damaged_facts_return_one_fixed_blocked_shape_without_guessed_zeroes() -
         None,
         None,
     ]
+    tampered_rules = list(result.rule_results)
+    tampered_rules[2] = result.rule_results[2].model_copy(
+        update={"actual_value": 1}
+    )
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=tuple(tampered_rules),
+            overall_passed=False,
+            blocked_reason="catalog_facts_invalid",
+        )
 
 
 def test_evaluation_result_rejects_blocked_and_normal_shape_crossovers() -> None:

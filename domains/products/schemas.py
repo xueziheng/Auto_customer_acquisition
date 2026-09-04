@@ -369,8 +369,11 @@ class CatalogProposalRuleResult(_CatalogFrozenModel):
         if self.rule == "distinct_accounts" and required_value is None:
             raise ValueError("distinct_accounts.required_value 是固定必需门槛")
         if self.status == "unknown":
-            if actual_value is not None:
-                raise ValueError("unknown count 规则不得携带猜测 actual_value")
+            if (
+                self.explanation_code != "目录事实损坏，评估已阻断"
+                and actual_value is None
+            ):
+                raise ValueError("合法 unknown count 必须携带已确认 actual_value")
             return
         if self.status == "not_required":
             if required_value is not None:

@@ -64,12 +64,12 @@ def _count_result(
 ) -> CatalogProposalRuleResult:
     if required is None:
         if unknown_count:
-            return _result(rule, "unknown", None, None, unknown_code)
+            return _result(rule, "unknown", actual, None, unknown_code)
         return _result(rule, "not_required", actual, None, not_required_code)
     if actual >= required:
         return _result(rule, "passed", actual, required, passed_code)
     if unknown_count:
-        return _result(rule, "unknown", None, required, unknown_code)
+        return _result(rule, "unknown", actual, required, unknown_code)
     return _result(rule, "failed", actual, required, failed_code)
 
 
