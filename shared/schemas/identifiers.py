@@ -97,6 +97,14 @@ CountryPolicyVersionId = NewType("CountryPolicyVersionId", str)
 """不可变国家政策候选版本 ID；值使用 ``cpp_`` 前缀。"""
 CountryPolicyActivationId = NewType("CountryPolicyActivationId", str)
 """append-only 国家政策激活事实 ID；值使用 ``cpa_`` 前缀。"""
+CatalogProposalPolicyVersionId = NewType("CatalogProposalPolicyVersionId", str)
+"""目录产品提案策略版本 ID；值使用 ``cpv_`` 前缀。"""
+CatalogProposalEvaluationId = NewType("CatalogProposalEvaluationId", str)
+"""目录产品提案评估 ID；值使用 ``cpe_`` 前缀。"""
+CatalogProductProposalId = NewType("CatalogProductProposalId", str)
+"""目录产品培育提案 ID；值使用 ``cpr_`` 前缀。"""
+CatalogCultivationCaseId = NewType("CatalogCultivationCaseId", str)
+"""目录产品培育案例 ID；值使用 ``ccc_`` 前缀。"""
 NotificationJobId = NewType("NotificationJobId", str)
 NotificationId = NewType("NotificationId", str)
 AuthenticationCheckRequestId = NewType("AuthenticationCheckRequestId", str)

@@ -20,6 +20,10 @@ from shared.schemas.evidence import ConfidenceTier, EvidenceLevel
 from shared.schemas.identifiers import (
     AuthenticationCheckRequestId,
     CampaignId,
+    CatalogCultivationCaseId,
+    CatalogProductProposalId,
+    CatalogProposalEvaluationId,
+    CatalogProposalPolicyVersionId,
     ContactPointId,
     ConversationId,
     CountryPolicyVersionId,
@@ -149,6 +153,15 @@ class NeedClusterMembershipChanged(DomainEvent):
     member_count: int = 0
 
 
+@dataclass(frozen=True)
+class NeedCatalogFactsChanged(DomainEvent):
+    """已验证需求的目录提案评估所需事实发生变更。"""
+
+    need_id: ValidatedNeedId | None = None
+    cluster_id: NeedClusterId | None = None
+    change_kind: str = ""
+
+
 # --- 客户开发与触达 -----------------------------------------------------
 
 
@@ -158,6 +171,13 @@ class ProspectAccountQualified(DomainEvent):
 
     account_id: ProspectAccountId = None  # type: ignore[assignment]
     assigned_to: EmployeeId | None = None
+
+
+@dataclass(frozen=True)
+class AccountCountryFactsChanged(DomainEvent):
+    """潜在企业的国家事实发生变更。"""
+
+    account_id: ProspectAccountId | None = None
 
 
 @dataclass(frozen=True)
@@ -508,6 +528,33 @@ class SourcingCaseHandedToCosting(DomainEvent):
     need_id: ValidatedNeedId = None  # type: ignore[assignment]
     opportunity_id: OpportunityId = None  # type: ignore[assignment]
     review_id: SourcingReviewId = None  # type: ignore[assignment]
+
+
+@dataclass(frozen=True)
+class CatalogProposalPolicyActivated(DomainEvent):
+    """目录产品提案策略版本已激活。"""
+
+    policy_version_id: CatalogProposalPolicyVersionId | None = None
+    content_hash: str = ""
+
+
+@dataclass(frozen=True)
+class CatalogProductProposalCreated(DomainEvent):
+    """已创建仅供内部培育使用的目录产品提案。"""
+
+    proposal_id: CatalogProductProposalId | None = None
+    evaluation_id: CatalogProposalEvaluationId | None = None
+    cluster_id: NeedClusterId | None = None
+    policy_version_id: CatalogProposalPolicyVersionId | None = None
+    facts_hash: str = ""
+
+
+@dataclass(frozen=True)
+class CatalogCultivationQueued(DomainEvent):
+    """目录产品培育案例已进入待处理队列。"""
+
+    cultivation_case_id: CatalogCultivationCaseId | None = None
+    proposal_id: CatalogProductProposalId | None = None
 
 
 @dataclass(frozen=True)

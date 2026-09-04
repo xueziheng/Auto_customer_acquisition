@@ -128,6 +128,11 @@ def test_event_registry_is_explicit_whitelist() -> None:
         "SourcingCandidatesVerified",
         "SourcingCandidatesReady",
         "SourcingCaseHandedToCosting",
+        "NeedCatalogFactsChanged",
+        "AccountCountryFactsChanged",
+        "CatalogProposalPolicyActivated",
+        "CatalogProductProposalCreated",
+        "CatalogCultivationQueued",
     }
     assert EVENT_REGISTRY["OpportunityWon"] is OpportunityWon
     assert EVENT_REGISTRY["QuoteApproved"] is QuoteApproved
