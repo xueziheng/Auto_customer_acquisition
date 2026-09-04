@@ -5,6 +5,7 @@ from __future__ import annotations
 from domains.demand.service import DemandService
 from domains.products.service import (
     CatalogProposalPolicyContent,
+    CatalogProposalPolicyView,
     CatalogProposalService,
     ProductActor,
 )
@@ -94,7 +95,7 @@ class CatalogProductApplication:
         *,
         idempotency_key: str,
         actor: ProductActor,
-    ) -> CatalogProposalPolicyVersionId:
+    ) -> CatalogProposalPolicyView:
         try:
             policy_id = await self._products.create_policy_candidate(
                 tenant_id,
@@ -121,6 +122,14 @@ class CatalogProductApplication:
         except Exception:  # noqa: BLE001 -- commit 结果未知须原键重试
             raise TransientError("目录策略候选暂不可用") from None
         try:
+            candidate = CatalogProposalPolicyView.model_validate(
+                snapshot.candidate.model_dump(mode="python")
+            )
+            if candidate.policy_version_id != policy_id:
+                raise ValueError("catalog policy snapshot subject mismatch")
+        except Exception:  # noqa: BLE001 -- 适配器返回损坏/错对象须脱敏重试
+            raise TransientError("目录策略候选暂不可用") from None
+        try:
             await self._engine.start(
                 tenant_id,
                 CATALOG_POLICY_WORKFLOW_TYPE,
@@ -130,7 +139,7 @@ class CatalogProductApplication:
             )
         except Exception:  # noqa: BLE001 -- Products 已提交，不回滚或泄露异常
             raise TransientError("目录策略审批流程启动暂不可用") from None
-        return policy_id
+        return candidate
 
     async def _evaluate_cluster(
         self, tenant_id: TenantId, cluster_id: NeedClusterId

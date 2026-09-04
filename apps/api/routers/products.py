@@ -37,8 +37,8 @@ from shared.schemas.identifiers import (
     CatalogCultivationCaseId,
     CatalogProductProposalId,
     CatalogProposalEvaluationId,
-    CatalogProposalPolicyVersionId,
     ProductId,
+    TenantId,
 )
 from workflows.catalog_product_proposal.application import CatalogProductApplication
 
@@ -55,7 +55,6 @@ from ..middleware import ApiErrorResponse
 router = APIRouter()
 
 _PRODUCT_ID = re.compile(r"prd_[0-7][0-9A-HJKMNP-TV-Z]{25}")
-_POLICY_ID = re.compile(r"cpv_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _EVALUATION_ID = re.compile(r"cpe_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _PROPOSAL_ID = re.compile(r"cpr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _CASE_ID = re.compile(r"ccc_[0-7][0-9A-HJKMNP-TV-Z]{25}")
@@ -161,17 +160,29 @@ async def _approval_link(
         result = CatalogApprovalLinkState.model_validate(
             linked.model_dump(mode="python")
         )
-        if result.approval_type != expected_type:
+        if result.approval_id != approval_id or result.approval_type != expected_type:
             raise ValueError("catalog approval subject mismatch")
         return result
     except Exception:  # noqa: BLE001 -- 联结失败不得伪装为空或泄露审批包
         raise TransientError("目录审批关联暂不可用") from None
 
 
-async def _catalog_get(awaitable, model):
+async def _catalog_get(
+    awaitable,
+    model,
+    *,
+    expected_field: str,
+    expected_id: str,
+    tenant_id: TenantId | None = None,
+):
     try:
         value = await awaitable
-        return model.model_validate(value.model_dump(mode="python"))
+        result = model.model_validate(value.model_dump(mode="python"))
+        if getattr(result, expected_field) != expected_id:
+            raise ValueError("catalog detail subject mismatch")
+        if tenant_id is not None and result.facts.tenant_id != tenant_id:
+            raise ValueError("catalog evaluation tenant mismatch")
+        return result
     except ProductNotFoundError as error:
         raise HTTPException(status_code=404) from error
     except HTTPException:
@@ -224,7 +235,7 @@ async def submit_catalog_policy(
     except Exception:  # noqa: BLE001 -- body 契约失败固定为安全 422
         raise HTTPException(status_code=422) from None
     try:
-        policy_id = await _catalog_application(
+        candidate = await _catalog_application(
             dependencies
         ).submit_policy_candidate(
             identity.tenant_id,
@@ -234,20 +245,11 @@ async def submit_catalog_policy(
         )
     except IdempotencyConflict as error:
         raise HTTPException(status_code=409) from error
-    checked_policy_id = _catalog_id(
-        str(policy_id), _POLICY_ID, CatalogProposalPolicyVersionId
-    )
-    policies = await _catalog_list(
-        _catalog_products(dependencies).list_policy_versions(
-            identity.tenant_id, actor=actor, limit=200
-        ),
-        CatalogProposalPolicyView,
-    )
-    policy = next(
-        (item for item in policies if item.policy_version_id == checked_policy_id),
-        None,
-    )
-    if policy is None:
+    try:
+        policy = CatalogProposalPolicyView.model_validate(
+            candidate.model_dump(mode="python")
+        )
+    except Exception:  # noqa: BLE001 -- 应用边界未知态固定脱敏为可重试失败
         raise TransientError("目录策略候选读取暂不可用")
     return CatalogPolicyApiView(
         policy=policy,
@@ -312,6 +314,7 @@ async def list_catalog_policies(
             identity.tenant_id, actor=actor, limit=limit
         ),
         CatalogProposalPolicyView,
+        limit=limit,
     )
     return [
         CatalogPolicyApiView(
@@ -344,6 +347,8 @@ async def list_catalog_evaluations(
                 identity.tenant_id, actor=actor, limit=limit
             ),
             CatalogProposalEvaluationView,
+            limit=limit,
+            tenant_id=identity.tenant_id,
         )
     )
 
@@ -359,13 +364,19 @@ async def get_catalog_evaluation(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> CatalogProposalEvaluationView:
     actor = _actor(identity, allowed_roles=_INTERNAL_ROLES)
+    checked_evaluation_id = _catalog_id(
+        evaluation_id, _EVALUATION_ID, CatalogProposalEvaluationId
+    )
     return await _catalog_get(
         _catalog_products(dependencies).get_evaluation(
             identity.tenant_id,
-            _catalog_id(evaluation_id, _EVALUATION_ID, CatalogProposalEvaluationId),
+            checked_evaluation_id,
             actor=actor,
         ),
         CatalogProposalEvaluationView,
+        expected_field="evaluation_id",
+        expected_id=checked_evaluation_id,
+        tenant_id=identity.tenant_id,
     )
 
 
@@ -385,6 +396,7 @@ async def list_catalog_proposals(
             identity.tenant_id, actor=actor, limit=limit
         ),
         CatalogProductProposalView,
+        limit=limit,
     )
     return [
         CatalogProposalApiView(
@@ -411,13 +423,18 @@ async def get_catalog_proposal(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> CatalogProposalApiView:
     actor = _actor(identity, allowed_roles=_INTERNAL_ROLES)
+    checked_proposal_id = _catalog_id(
+        proposal_id, _PROPOSAL_ID, CatalogProductProposalId
+    )
     proposal = await _catalog_get(
         _catalog_products(dependencies).get_proposal(
             identity.tenant_id,
-            _catalog_id(proposal_id, _PROPOSAL_ID, CatalogProductProposalId),
+            checked_proposal_id,
             actor=actor,
         ),
         CatalogProductProposalView,
+        expected_field="proposal_id",
+        expected_id=checked_proposal_id,
     )
     return CatalogProposalApiView(
         proposal=proposal,
@@ -446,6 +463,7 @@ async def list_catalog_cultivation_cases(
             identity.tenant_id, actor=actor, limit=limit
         ),
         CatalogCultivationCaseView,
+        limit=limit,
     )
     return [
         CatalogCultivationApiView(
@@ -469,13 +487,16 @@ async def get_catalog_cultivation_case(
     dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> CatalogCultivationApiView:
     actor = _actor(identity, allowed_roles=_INTERNAL_ROLES)
+    checked_case_id = _catalog_id(case_id, _CASE_ID, CatalogCultivationCaseId)
     case = await _catalog_get(
         _catalog_products(dependencies).get_cultivation_case(
             identity.tenant_id,
-            _catalog_id(case_id, _CASE_ID, CatalogCultivationCaseId),
+            checked_case_id,
             actor=actor,
         ),
         CatalogCultivationCaseView,
+        expected_field="cultivation_case_id",
+        expected_id=checked_case_id,
     )
     approval = await _required_approval_link(
         dependencies, identity, case.approval_id
@@ -483,12 +504,25 @@ async def get_catalog_cultivation_case(
     return CatalogCultivationApiView(cultivation_case=case, approval=approval)
 
 
-async def _catalog_list(awaitable, model):
+async def _catalog_list(
+    awaitable,
+    model,
+    *,
+    limit: int,
+    tenant_id: TenantId | None = None,
+):
     try:
         values = await awaitable
-        return tuple(
+        if len(values) > limit:
+            raise ValueError("catalog list limit overrun")
+        results = tuple(
             model.model_validate(value.model_dump(mode="python")) for value in values
         )
+        if tenant_id is not None and any(
+            result.facts.tenant_id != tenant_id for result in results
+        ):
+            raise ValueError("catalog evaluation tenant mismatch")
+        return results
     except Exception:  # noqa: BLE001 -- 真实空集合之外不得伪装为空
         raise TransientError("目录产品读取暂不可用") from None
 

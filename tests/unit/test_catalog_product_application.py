@@ -436,7 +436,7 @@ async def test_submit_policy_forwards_original_key_and_starts_after_commit() -> 
         TENANT, _content(), idempotency_key=" original-key ", actor=actor
     )
 
-    assert result == POLICY_ID
+    assert result == products.snapshot.candidate
     assert products.created_key == " original-key "
     assert engine.starts[0][1:3] == ("catalog_proposal_policy_change", str(POLICY_ID))
     assert engine.starts[0][4] == f"catalog-policy-change:{TENANT}:{POLICY_ID}"
@@ -472,6 +472,34 @@ async def test_submit_policy_only_preserves_idempotency_conflict_from_create() -
             TENANT, _content(), idempotency_key="new-key", actor=actor
         )
     assert "private" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_submit_policy_binds_canonical_snapshot_to_created_policy() -> None:
+    demand, products, engine = _Demand(), _Products(), _Engine()
+    products.snapshot = products.snapshot.model_copy(
+        update={
+            "candidate": products.snapshot.candidate.model_copy(
+                update={
+                    "policy_version_id": CatalogProposalPolicyVersionId(
+                        "cpv_01K00000000000000000000099"
+                    )
+                }
+            )
+        }
+    )
+    app = _application(demand, products, engine)
+
+    with pytest.raises(TransientError) as failure:
+        await app.submit_policy_candidate(
+            TENANT,
+            _content(),
+            idempotency_key="snapshot-binding",
+            actor=ProductActor(str(OWNER), ProductRole.PRODUCT, TENANT),
+        )
+
+    assert "00099" not in str(failure.value)
+    assert engine.starts == []
 
 
 @pytest.mark.asyncio

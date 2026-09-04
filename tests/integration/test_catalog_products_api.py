@@ -176,9 +176,9 @@ async def test_catalog_policy_http_replay_converges_and_mismatch_conflicts(
         202,
         409,
     )
-    assert first.json()["policy"]["policy_version_id"] == replay.json()["policy"][
-        "policy_version_id"
-    ]
+    assert first.json()["policy"] == replay.json()["policy"]
+    assert first.json()["policy"]["content"] == body
+    assert first.json()["policy"]["state"] == "pending_approval"
     assert await _count(sessions, tenant) == 1
     assert workflow.calls == 2
 
@@ -203,4 +203,6 @@ async def test_catalog_policy_http_unknown_workflow_start_recovers_with_same_key
     assert uncertain.status_code == 503
     assert "workflow database detail" not in uncertain.text
     assert recovered.status_code == 202
+    assert recovered.json()["policy"]["content"] == body
+    assert recovered.json()["policy"]["state"] == "pending_approval"
     assert await _count(sessions, tenant) == 1

@@ -44,14 +44,21 @@ from shared.schemas.identifiers import (
 )
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
+OTHER_TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0Y")
 EMPLOYEE = EmployeeId("emp_01K39P9M5D6K4A91YEQ80EJZ0X")
 NOW = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
 POLICY_ID = CatalogProposalPolicyVersionId("cpv_01K39P9M5D6K4A91YEQ80EJZ0X")
 EVALUATION_ID = CatalogProposalEvaluationId("cpe_01K39P9M5D6K4A91YEQ80EJZ0X")
 PROPOSAL_ID = CatalogProductProposalId("cpr_01K39P9M5D6K4A91YEQ80EJZ0X")
 CASE_ID = CatalogCultivationCaseId("ccc_01K39P9M5D6K4A91YEQ80EJZ0X")
+OTHER_EVALUATION_ID = CatalogProposalEvaluationId(
+    "cpe_01K39P9M5D6K4A91YEQ80EJZ0Y"
+)
+OTHER_PROPOSAL_ID = CatalogProductProposalId("cpr_01K39P9M5D6K4A91YEQ80EJZ0Y")
+OTHER_CASE_ID = CatalogCultivationCaseId("ccc_01K39P9M5D6K4A91YEQ80EJZ0Y")
 APPROVAL_ID = ApprovalId("apr_01K39P9M5D6K4A91YEQ80EJZ0X")
 POLICY_APPROVAL_ID = ApprovalId("apr_01K39P9M5D6K4A91YEQ80EJZ0Y")
+OTHER_APPROVAL_ID = ApprovalId("apr_01K39P9M5D6K4A91YEQ80EJZ0Z")
 CLUSTER_ID = NeedClusterId("ncl_01K39P9M5D6K4A91YEQ80EJZ0X")
 RUN_ID = RunId("run_01K39P9M5D6K4A91YEQ80EJZ0X")
 HASH = "a" * 64
@@ -252,8 +259,11 @@ class _CatalogProducts:
         self.failure: Exception | None = None
         self.active_policy = _policy()
         self.policies = (_policy(),)
+        self.evaluation = _evaluation()
         self.evaluations = (_evaluation(),)
+        self.proposal = _proposal()
         self.proposals = (_proposal(),)
+        self.case = _cultivation()
         self.cases = (_cultivation(),)
 
     async def _value(self, name, value, tenant_id, actor, limit=None):
@@ -282,21 +292,21 @@ class _CatalogProducts:
 
     async def get_evaluation(self, tenant_id, evaluation_id, *, actor):
         assert evaluation_id == EVALUATION_ID
-        return await self._value("evaluation", _evaluation(), tenant_id, actor)
+        return await self._value("evaluation", self.evaluation, tenant_id, actor)
 
     async def list_proposals(self, tenant_id, *, actor, limit):
         return await self._value("proposals", self.proposals, tenant_id, actor, limit)
 
     async def get_proposal(self, tenant_id, proposal_id, *, actor):
         assert proposal_id == PROPOSAL_ID
-        return await self._value("proposal", _proposal(), tenant_id, actor)
+        return await self._value("proposal", self.proposal, tenant_id, actor)
 
     async def list_cultivation_cases(self, tenant_id, *, actor, limit):
         return await self._value("cases", self.cases, tenant_id, actor, limit)
 
     async def get_cultivation_case(self, tenant_id, case_id, *, actor):
         assert case_id == CASE_ID
-        return await self._value("case", _cultivation(), tenant_id, actor)
+        return await self._value("case", self.case, tenant_id, actor)
 
 
 class _CatalogApplication:
@@ -307,7 +317,7 @@ class _CatalogApplication:
         self, tenant_id, content, *, idempotency_key, actor
     ):
         self.calls.append((tenant_id, content, idempotency_key, actor))
-        return POLICY_ID
+        return _policy()
 
 
 class _Approvals:
@@ -315,6 +325,7 @@ class _Approvals:
         self.calls: list[tuple[object, ...]] = []
         self.failure: Exception | None = None
         self.approval_type: str | None = None
+        self.returned_approval_id: ApprovalId | None = None
 
     async def get_catalog_link_state_for_reader(
         self, tenant_id, approval_id, *, reader
@@ -323,7 +334,7 @@ class _Approvals:
         if self.failure is not None:
             raise self.failure
         return CatalogApprovalLinkState(
-            approval_id=approval_id,
+            approval_id=self.returned_approval_id or approval_id,
             approval_type=self.approval_type
             or (
                 "catalog_proposal_policy_change"
@@ -411,7 +422,7 @@ def test_catalog_openapi_exposes_only_the_nine_approved_operations() -> None:
 def test_catalog_policy_submit_uses_trusted_actor_and_preserves_raw_key() -> None:
     body = _policy().content.model_dump(mode="json")
     for role in ("product", "sourcing"):
-        app, _, application, _ = _catalog_app(role)
+        app, catalog, application, approvals = _catalog_app(role)
         response = _request(
             app,
             "POST",
@@ -421,6 +432,8 @@ def test_catalog_policy_submit_uses_trusted_actor_and_preserves_raw_key() -> Non
         )
         assert response.status_code == 202
         assert response.json()["policy"]["policy_version_id"] == POLICY_ID
+        assert catalog.calls == []
+        assert len(approvals.calls) == 1
         tenant_id, content, key, actor = application.calls[0]
         assert tenant_id == TENANT
         assert content == _policy().content
@@ -623,3 +636,86 @@ def test_catalog_malformed_domain_or_wrong_approval_type_is_redacted_503() -> No
     mismatched = _get(app, f"/products/catalog-proposals/{PROPOSAL_ID}")
     assert mismatched.status_code == 503
     assert "catalog_proposal_policy_change" not in mismatched.text
+
+
+def test_catalog_evaluations_bind_nested_facts_to_request_tenant() -> None:
+    app, catalog, _, approvals = _catalog_app("boss")
+    other_tenant_facts = _evaluation().facts.model_copy(
+        update={"tenant_id": OTHER_TENANT}
+    )
+    catalog.evaluation = _evaluation().model_copy(
+        update={"facts": other_tenant_facts}
+    )
+    catalog.evaluations = (catalog.evaluation,)
+
+    responses = (
+        _get(app, "/products/catalog-evaluations"),
+        _get(app, f"/products/catalog-evaluations/{EVALUATION_ID}"),
+    )
+
+    assert [response.status_code for response in responses] == [503, 503]
+    assert all(str(OTHER_TENANT) not in response.text for response in responses)
+    assert approvals.calls == []
+
+
+def test_catalog_detail_responses_bind_canonical_id_to_path_id() -> None:
+    app, catalog, _, approvals = _catalog_app("boss")
+    catalog.evaluation = _evaluation().model_copy(
+        update={"evaluation_id": OTHER_EVALUATION_ID}
+    )
+    catalog.proposal = _proposal().model_copy(
+        update={"proposal_id": OTHER_PROPOSAL_ID}
+    )
+    catalog.case = _cultivation().model_copy(
+        update={"cultivation_case_id": OTHER_CASE_ID}
+    )
+
+    responses = (
+        _get(app, f"/products/catalog-evaluations/{EVALUATION_ID}"),
+        _get(app, f"/products/catalog-proposals/{PROPOSAL_ID}"),
+        _get(app, f"/products/catalog-cultivation-cases/{CASE_ID}"),
+    )
+
+    assert [response.status_code for response in responses] == [503, 503, 503]
+    assert all("01K39P9M5D6K4A91YEQ80EJZ0Y" not in response.text for response in responses)
+    assert approvals.calls == []
+
+
+def test_catalog_approval_link_binds_returned_id_and_exact_type() -> None:
+    app, _, _, approvals = _catalog_app("boss")
+    approvals.returned_approval_id = OTHER_APPROVAL_ID
+
+    response = _get(app, f"/products/catalog-proposals/{PROPOSAL_ID}")
+
+    assert response.status_code == 503
+    assert str(OTHER_APPROVAL_ID) not in response.text
+
+
+def test_catalog_lists_reject_backend_overrun_before_any_approval_join() -> None:
+    scenarios = (
+        ("/products/catalog-policies?limit=1", "policies", (_policy(), _policy())),
+        (
+            "/products/catalog-evaluations?limit=1",
+            "evaluations",
+            (_evaluation(), _evaluation()),
+        ),
+        (
+            "/products/catalog-proposals?limit=1",
+            "proposals",
+            (_proposal(), _proposal()),
+        ),
+        (
+            "/products/catalog-cultivation-cases?limit=1",
+            "cases",
+            (_cultivation(), _cultivation()),
+        ),
+    )
+    for path, attribute, values in scenarios:
+        app, catalog, _, approvals = _catalog_app("boss")
+        setattr(catalog, attribute, values)
+
+        response = _get(app, path)
+
+        assert response.status_code == 503
+        assert response.json()["code"] == "service_unavailable"
+        assert approvals.calls == []
