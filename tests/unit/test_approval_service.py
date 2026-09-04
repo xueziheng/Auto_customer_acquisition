@@ -956,6 +956,115 @@ class _CatalogActorReader:
 
 
 @pytest.mark.asyncio
+async def test_catalog_link_state_is_a_strict_four_role_projection() -> None:
+    from domains.approvals.schemas import (
+        ApprovalReaderIdentity,
+        CatalogApprovalLinkState,
+    )
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+
+    for role in ("boss", "product", "sourcing", "finance"):
+        actors.role = role
+        linked = await service.get_catalog_link_state_for_reader(
+            TENANT,
+            approval_id,
+            reader=ApprovalReaderIdentity(employee_id=APPROVER, role=role),
+        )
+        assert type(linked) is CatalogApprovalLinkState
+        assert linked.model_dump(mode="json") == {
+            "approval_id": str(approval_id),
+            "approval_type": "catalog_proposal_policy_change",
+            "state": "pending",
+        }
+
+    for role in ("manager", "sales", "viewer"):
+        actors.role = role
+        with pytest.raises(PermissionDenied):
+            await service.get_catalog_link_state_for_reader(
+                TENANT,
+                approval_id,
+                reader=ApprovalReaderIdentity(employee_id=APPROVER, role=role),
+            )
+
+    actors.role = "product"
+    product = ApprovalReaderIdentity(employee_id=APPROVER, role="product")
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, approval_id, reader=product)
+    assert await service.list_for_reader(TENANT, reader=product) == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_link_state_revalidates_current_employee_and_catalog_subject() -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    actors.role = "product"
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    reader = ApprovalReaderIdentity(employee_id=APPROVER, role="product")
+
+    for mutation in (
+        {"error": RuntimeError("postgres://secret-password")},
+        {"tenant_id": TenantId("tn_other")},
+        {"employee_id": EmployeeId("emp_other")},
+        {"role": "finance"},
+        {"active": False},
+        {"eligible": False},
+    ):
+        current = _CatalogActorReader()
+        current.role = "product"
+        for field, value in mutation.items():
+            setattr(current, field, value)
+        guarded = ApprovalServiceImpl(
+            factory, catalog_actor_reader=current, now=lambda: NOW
+        )
+        with pytest.raises(PermissionDenied) as denied:
+            await guarded.get_catalog_link_state_for_reader(
+                TENANT, approval_id, reader=reader
+            )
+        assert "password" not in str(denied.value)
+
+    without_reader = ApprovalServiceImpl(factory, now=lambda: NOW)
+    with pytest.raises(PermissionDenied):
+        await without_reader.get_catalog_link_state_for_reader(
+            TENANT, approval_id, reader=reader
+        )
+
+    missing = ApprovalId("apr_01K00000000000000000000009")
+    with pytest.raises(CatalogApprovalContractError) as missing_error:
+        await service.get_catalog_link_state_for_reader(TENANT, missing, reader=reader)
+    assert missing_error.value.code == "catalog_approval_not_found"
+
+    legacy_id = await service.submit(
+        TENANT,
+        ApprovalType.PLAYBOOK_CHANGE,
+        "legacy",
+        {"version": "one"},
+        "legacy",
+        BlastRadius(["playbook"], "apply", "keep", True),
+        proposed_by_employee=PROPOSER,
+        owner_employee=PROPOSER,
+    )
+    with pytest.raises(CatalogApprovalContractError) as type_error:
+        await service.get_catalog_link_state_for_reader(
+            TENANT, legacy_id, reader=reader
+        )
+    assert type_error.value.code == "catalog_contract_invalid"
+
+
+@pytest.mark.asyncio
 async def test_catalog_submit_uses_strict_command_and_exact_fact_reads() -> None:
     from domains.approvals.catalog_contract import CatalogApprovalContractError
 

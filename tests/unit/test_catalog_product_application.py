@@ -21,7 +21,7 @@ from domains.products.schemas import (
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import IdempotencyConflict, TransientError, ValidationError
 from shared.events.catalog import (
     AccountCountryFactsChanged,
     CatalogProductProposalCreated,
@@ -440,6 +440,38 @@ async def test_submit_policy_forwards_original_key_and_starts_after_commit() -> 
     assert products.created_key == " original-key "
     assert engine.starts[0][1:3] == ("catalog_proposal_policy_change", str(POLICY_ID))
     assert engine.starts[0][4] == f"catalog-policy-change:{TENANT}:{POLICY_ID}"
+
+
+@pytest.mark.asyncio
+async def test_submit_policy_only_preserves_idempotency_conflict_from_create() -> None:
+    demand, products, engine = _Demand(), _Products(), _Engine()
+    app = _application(demand, products, engine)
+    actor = ProductActor(str(OWNER), ProductRole.PRODUCT, TENANT)
+
+    async def create_conflict(*args, **kwargs):
+        del args, kwargs
+        raise IdempotencyConflict("private key binding detail")
+
+    products.create_policy_candidate = create_conflict  # type: ignore[method-assign]
+    with pytest.raises(IdempotencyConflict):
+        await app.submit_policy_candidate(
+            TENANT, _content(), idempotency_key="same-key", actor=actor
+        )
+    assert engine.starts == []
+
+    products = _Products()
+    app = _application(demand, products, engine)
+
+    async def snapshot_conflict(*args, **kwargs):
+        del args, kwargs
+        raise IdempotencyConflict("private approval binding detail")
+
+    products.get_policy_change_snapshot = snapshot_conflict  # type: ignore[method-assign]
+    with pytest.raises(TransientError) as failure:
+        await app.submit_policy_candidate(
+            TENANT, _content(), idempotency_key="new-key", actor=actor
+        )
+    assert "private" not in str(failure.value)
 
 
 @pytest.mark.asyncio

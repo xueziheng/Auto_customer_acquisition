@@ -209,15 +209,22 @@ def _cultivation_command():
 
 
 class _BossReader:
+    def __init__(self) -> None:
+        self.role = "boss"
+        self.active = True
+        self.eligible = True
+        self.tenant_id = TENANT
+        self.employee_id = BOSS
+
     async def read_actor(self, tenant_id, employee_id):
         from domains.approvals.catalog_contract import CatalogApprovalActorFact
 
         return CatalogApprovalActorFact(
-            tenant_id=tenant_id,
-            employee_id=employee_id,
-            current_role="boss",
-            active=True,
-            eligible=True,
+            tenant_id=self.tenant_id,
+            employee_id=self.employee_id,
+            current_role=self.role,
+            active=self.active,
+            eligible=self.eligible,
         )
 
 
@@ -677,3 +684,55 @@ async def test_catalog_postgres_concurrent_replay_converges_across_all_states(
     assert (
         await service.find_catalog_fact("tn_other", cultivation.change_set_ref) is None
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_postgres_link_state_rechecks_reader_without_expanding_package_read(
+    unit_engine,
+) -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
+    actors = _BossReader()
+    service = ApprovalServiceImpl(
+        lambda tenant: SqlAlchemyApprovalUnitOfWork(
+            sessions, tenant, now=lambda: NOW
+        ),
+        catalog_actor_reader=actors,
+        now=lambda: NOW,
+    )
+    approval_id = await service.submit_catalog(_policy_command())
+
+    for role in ("boss", "product", "sourcing", "finance"):
+        actors.role = role
+        linked = await service.get_catalog_link_state_for_reader(
+            TENANT,
+            approval_id,
+            reader=ApprovalReaderIdentity(employee_id=BOSS, role=role),
+        )
+        assert linked.model_dump(mode="json") == {
+            "approval_id": str(approval_id),
+            "approval_type": "catalog_proposal_policy_change",
+            "state": "pending",
+        }
+
+    actors.role = "product"
+    product = ApprovalReaderIdentity(employee_id=BOSS, role="product")
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, approval_id, reader=product)
+
+    actors.role = "finance"
+    with pytest.raises(PermissionDenied):
+        await service.get_catalog_link_state_for_reader(
+            TENANT,
+            approval_id,
+            reader=ApprovalReaderIdentity(employee_id=BOSS, role="product"),
+        )
+
+    actors.role = "product"
+    actors.active = False
+    with pytest.raises(PermissionDenied):
+        await service.get_catalog_link_state_for_reader(
+            TENANT, approval_id, reader=product
+        )

@@ -47,6 +47,7 @@ from domains.approvals.schemas import (
     ApprovalFactView,
     ApprovalReaderIdentity,
     ApprovalView,
+    CatalogApprovalLinkState,
 )
 from domains.approvals.service import QuoteApprovalAccess
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
@@ -487,6 +488,71 @@ class ApprovalServiceImpl:
                 raise ValidationError("审批不存在")
         return await self._read_view(
             package, employee_id=reader.employee_id, reader=reader
+        )
+
+    async def get_catalog_link_state_for_reader(
+        self,
+        tenant_id: TenantId,
+        approval_id: ApprovalId,
+        *,
+        reader: ApprovalReaderIdentity,
+    ) -> CatalogApprovalLinkState:
+        """只暴露当前内部 Catalog 读者可见的审批标识、类型和状态。"""
+        self._tenant(tenant_id)
+        try:
+            checked_reader = ApprovalReaderIdentity.model_validate(reader)
+        except (TypeError, ValueError):
+            raise PermissionDenied("目录审批关联状态读取身份无效") from None
+        allowed_roles = frozenset({"boss", "product", "sourcing", "finance"})
+        if checked_reader.role not in allowed_roles:
+            raise PermissionDenied("当前员工无目录审批关联状态读取资格")
+        try:
+            async with self._uow_factory(tenant_id) as uow:
+                package = await uow.approvals.get(tenant_id, approval_id)
+                if package is None:
+                    raise CatalogApprovalContractError(
+                        "catalog_approval_not_found"
+                    )
+                if (
+                    package.tenant_id != tenant_id
+                    or package.approval_id != approval_id
+                ):
+                    raise CatalogApprovalContractError(
+                        "catalog_approval_not_found"
+                    )
+                fact = self._catalog_fact(package)
+                if fact is None:
+                    raise CatalogApprovalContractError("catalog_contract_invalid")
+        except CatalogApprovalContractError:
+            raise
+        except Exception:  # noqa: BLE001 -- 仓储异常不得泄露到 API 联结
+            raise CatalogApprovalContractError("catalog_storage_unavailable") from None
+
+        if self._catalog_actor_reader is None:
+            raise PermissionDenied("目录审批关联状态读取人事实不可用")
+        try:
+            actor = CatalogApprovalActorFact.model_validate(
+                (
+                    await self._catalog_actor_reader.read_actor(
+                        tenant_id, checked_reader.employee_id
+                    )
+                ).model_dump(mode="python")
+            )
+        except Exception:  # noqa: BLE001 -- 员工源异常固定脱敏
+            raise PermissionDenied("目录审批关联状态读取人事实不可用") from None
+        if (
+            actor.tenant_id != tenant_id
+            or actor.employee_id != checked_reader.employee_id
+            or actor.current_role != checked_reader.role
+            or actor.current_role not in allowed_roles
+            or not actor.active
+            or not actor.eligible
+        ):
+            raise PermissionDenied("当前员工无目录审批关联状态读取资格")
+        return CatalogApprovalLinkState(
+            approval_id=fact.approval_id,
+            approval_type=fact.approval_type,
+            state=fact.state,
         )
 
     async def list_for_reader(

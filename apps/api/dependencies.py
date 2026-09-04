@@ -50,7 +50,7 @@ from domains.outreach.permissions import (
     ScopeLevel as OutreachScopeLevel,
 )
 from domains.outreach.service import OutreachService
-from domains.products.service import ProductService
+from domains.products.service import CatalogProposalService, ProductService
 from domains.prospecting.service import ProspectingService
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
@@ -89,6 +89,7 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessPermission,
     ProviderReadinessService,
 )
+from workflows.catalog_product_proposal.application import CatalogProductApplication
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 from workflows.employee_work_intake.schemas import (
     ExtractionPayload,
@@ -289,6 +290,8 @@ class ConfiguredApiDependencies:
     sourcing_application: SourcingCaseApplication | None = None
     sourcing_admission_application: SourcingAdmissionApplication | None = None
     products: ProductService | None = None
+    catalog_products: CatalogProposalService | None = None
+    catalog_product_application: CatalogProductApplication | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

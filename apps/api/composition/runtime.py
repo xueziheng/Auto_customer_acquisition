@@ -32,7 +32,12 @@ from connectors.object_store.config import S3ObjectStoreSettings
 from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
 from connectors.object_store.quote_pdf import S3QuotePdfObjectBlobTransport
 from connectors.openai import OpenAIJsonModelClient
-from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
+from domains.approvals.service import (
+    ApprovalService,
+    ApprovalState,
+    ApprovalType,
+    CatalogApprovalActorFact,
+)
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.commitments.service_impl import CommitmentServiceImpl
 from domains.compliance.permissions import Phase1ComplianceAuthorizer
@@ -102,7 +107,13 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
-from domains.products.permissions import Phase2ProductAuthorizer
+from domains.products.catalog_service_impl import CatalogProposalServiceImpl
+from domains.products.permissions import (
+    Phase2ProductAuthorizer,
+    ProductActor,
+    ProductRole,
+)
+from domains.products.service import CatalogProposalService
 from domains.products.service_impl import ProductServiceImpl
 from domains.prospecting.service import ContactValueHasher
 from domains.prospecting.service_impl import ProspectingServiceImpl
@@ -133,6 +144,7 @@ from domains.sourcing.service import CandidateEvidenceSnapshot
 from domains.sourcing.service_impl import SourcingServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+from infra.db.catalog_products_uow import SqlAlchemyCatalogProductsUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
@@ -235,6 +247,18 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessServiceImpl,
 )
 from workflows.account_discovery.flow import build_account_discovery_definition
+from workflows.catalog_product_proposal import (
+    CatalogProductApplication,
+    build_catalog_evaluation_workflow_definition,
+    build_catalog_evaluation_workflow_handlers,
+    build_catalog_policy_workflow_definition,
+    build_catalog_policy_workflow_handlers,
+    build_catalog_product_workflow_definition,
+    build_catalog_product_workflow_handlers,
+)
+from workflows.catalog_product_proposal.account_facts import (
+    ProspectingDemandCatalogAccountFactsReader,
+)
 from workflows.country_policy_change import build_country_policy_change_definition
 from workflows.demand_discovery.flow import build_demand_discovery_definition
 from workflows.email_feedback.repository import FeedbackPageUnitOfWork
@@ -376,6 +400,37 @@ class RequestScopedDirectiveEmployeeReader:
             for employee in employees
             if employee.employee_id in wanted
         }
+
+
+class RequestScopedCatalogApprovalActorReader:
+    """每次联结读取都从员工服务重取当前 Catalog 内部读资格。"""
+
+    _ROLES = frozenset({"boss", "product", "sourcing", "finance"})
+
+    def __init__(
+        self,
+        scope: EmployeeServiceScope,
+        actor: EmployeeActor,
+    ) -> None:
+        self._scope = scope
+        self._actor = actor
+
+    async def read_actor(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> CatalogApprovalActorFact:
+        async with self._scope(tenant_id) as service:
+            employee = await service.get_employee(
+                tenant_id, employee_id, actor=self._actor
+            )
+        return CatalogApprovalActorFact.model_validate(
+            {
+                "tenant_id": employee.tenant_id,
+                "employee_id": employee.employee_id,
+                "current_role": employee.role,
+                "active": employee.is_active,
+                "eligible": employee.is_active and employee.role in self._ROLES,
+            }
+        )
 
 
 class _DomainSeparatedContactValueHasher(ContactValueHasher):
@@ -906,6 +961,11 @@ def build_phase1_dependencies(
         authorizer=employee_authorizer,
         audit=employee_audit,
     )
+    employee_system_actor = EmployeeActor(
+        "system:phase1-handoff",
+        EmployeeScope.SYSTEM,
+        "system",
+    )
     opportunities = OpportunityServiceImpl(
         # 可写 Protocol 属性不协变；具体 UoW 的仓储/总线逐项实现同一公共契约。
         lambda: SqlAlchemyOpportunityUnitOfWork(  # type: ignore[arg-type, return-value]
@@ -1037,6 +1097,9 @@ def build_phase1_dependencies(
         ),
         now=now,
         quote_access=None if quote_domain is None else quote_domain.approval_access,
+        catalog_actor_reader=RequestScopedCatalogApprovalActorReader(
+            employees, employee_system_actor
+        ),
     )
     organization = OrganizationServiceImpl(
         lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
@@ -1180,6 +1243,7 @@ def build_phase1_dependencies(
             ),
             now=now,
             account_names=ProspectingDemandAccountNames(prospecting),
+            catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
         ),
     )
     demand_radar = AuthorizedDemandRadarService(
@@ -1199,11 +1263,6 @@ def build_phase1_dependencies(
             now=now,
         ),
         now=now,
-    )
-    employee_system_actor = EmployeeActor(
-        "system:phase1-handoff",
-        EmployeeScope.SYSTEM,
-        "system",
     )
     directive_employees = RequestScopedDirectiveEmployeeReader(
         employees, employee_system_actor
@@ -1315,6 +1374,19 @@ def build_phase1_dependencies(
         SourcingScope.SYSTEM,
         "system",
     )
+    catalog_products = cast(
+        CatalogProposalService,
+        CatalogProposalServiceImpl(
+            lambda requested_tenant: SqlAlchemyCatalogProductsUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory, requested_tenant
+            ),
+            Phase2ProductAuthorizer(tenant),
+            now=now,
+        ),
+    )
+    catalog_system_actor = ProductActor(
+        "system:api-catalog-products", ProductRole.SYSTEM, tenant
+    )
     sourcing_definition = build_sourcing_case_definition()
     handlers = dict(
         build_human_handoff_step_handlers(
@@ -1345,6 +1417,25 @@ def build_phase1_dependencies(
                 sourcing_actor=sourcing_system_actor,
             ),
         }
+    )
+    handlers.update(
+        build_catalog_policy_workflow_handlers(
+            catalog_products, approvals, catalog_system_actor, now=now
+        )
+    )
+    handlers.update(
+        build_catalog_evaluation_workflow_handlers(
+            demand, catalog_products, catalog_system_actor
+        )
+    )
+    handlers.update(
+        build_catalog_product_workflow_handlers(
+            demand,
+            catalog_products,
+            approvals,
+            catalog_system_actor,
+            now=now,
+        )
     )
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
@@ -1380,6 +1471,9 @@ def build_phase1_dependencies(
         )
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
     engine_ref = workflow
+    catalog_product_application = CatalogProductApplication(
+        demand, catalog_products, workflow, catalog_system_actor
+    )
     run_audit = RunAuditService(
         PostgresRunAuditRepository(factory),
         Phase1RunAuditAuthorizer(tenant),
@@ -1423,6 +1517,9 @@ def build_phase1_dependencies(
     workflow.register(playbook_definition)
     workflow.register(country_policy_definition)
     workflow.register(sourcing_definition)
+    workflow.register(build_catalog_policy_workflow_definition())
+    workflow.register(build_catalog_evaluation_workflow_definition())
+    workflow.register(build_catalog_product_workflow_definition())
     provider_readiness_actor = ProviderReadinessActor(
         actor_id="system:api-provider-readiness",
         tenant_id=tenant,
@@ -1520,4 +1617,6 @@ def build_phase1_dependencies(
         sourcing_application=sourcing_application,
         sourcing_admission_application=sourcing_admission_application,
         products=products,
+        catalog_products=catalog_products,
+        catalog_product_application=catalog_product_application,
     )

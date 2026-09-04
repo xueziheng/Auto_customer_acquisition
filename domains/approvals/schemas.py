@@ -84,6 +84,16 @@ class ApprovalReaderIdentity(QuoteDTO):
     ]
 
 
+class CatalogApprovalLinkState(QuoteDTO):
+    """Products 内部视图可联结的最小 Catalog 审批状态。"""
+
+    approval_id: ApprovalId
+    approval_type: Literal[
+        "catalog_proposal_policy_change", "catalog_product_cultivation"
+    ]
+    state: ApprovalState
+
+
 @dataclass(frozen=True)
 class ApprovalView:
     """审批视图 —— 审批人看到的全部内容。

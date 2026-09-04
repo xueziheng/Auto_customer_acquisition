@@ -10,6 +10,8 @@ from domains.approvals.catalog_contract import (
     CATALOG_CULTIVATION_NAMESPACE,
     CATALOG_CULTIVATION_WARNING,
     CATALOG_POLICY_NAMESPACE,
+    CatalogApprovalActorFact,
+    CatalogApprovalActorReader,
     CatalogApprovalCommand,
     CatalogApprovalContractError,
     CatalogApprovalFact,
@@ -35,6 +37,7 @@ from domains.approvals.schemas import (
     ApprovalQuoteSubject,
     ApprovalReaderIdentity,
     ApprovalView,
+    CatalogApprovalLinkState,
 )
 from shared.schemas.identifiers import ApprovalId, EmployeeId, RunId, TenantId
 
@@ -112,6 +115,16 @@ class ApprovalService(Protocol):
         reader: ApprovalReaderIdentity,
     ) -> ApprovalView:
         """新包当前guard，旧包保持boss/manager门。"""
+        ...
+
+    async def get_catalog_link_state_for_reader(
+        self,
+        tenant_id: TenantId,
+        approval_id: ApprovalId,
+        *,
+        reader: ApprovalReaderIdentity,
+    ) -> CatalogApprovalLinkState:
+        """按当前员工事实返回 Products 联结所需的最小 Catalog 状态。"""
         ...
 
     async def list_for_reader(
@@ -225,9 +238,12 @@ __all__ = (
     "ApprovalState",
     "ApprovalType",
     "BlastRadius",
+    "CatalogApprovalActorFact",
+    "CatalogApprovalActorReader",
     "CatalogApprovalContractError",
     "CatalogApprovalFact",
     "CatalogApprovalFactReader",
+    "CatalogApprovalLinkState",
     "CatalogCultivationApprovalCommand",
     "CatalogEvidenceLocator",
     "CatalogPolicyApprovalChange",

@@ -8,7 +8,7 @@ from domains.products.service import (
     CatalogProposalService,
     ProductActor,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import IdempotencyConflict, TransientError, ValidationError
 from shared.events.catalog import (
     AccountCountryFactsChanged,
     CatalogProductProposalCreated,
@@ -102,6 +102,15 @@ class CatalogProductApplication:
                 idempotency_key=idempotency_key,
                 actor=actor,
             )
+        except IdempotencyConflict:
+            raise
+        except ValidationError:
+            raise
+        except TransientError:
+            raise TransientError("目录策略候选暂不可用") from None
+        except Exception:  # noqa: BLE001 -- commit 结果未知须原键重试
+            raise TransientError("目录策略候选暂不可用") from None
+        try:
             snapshot = await self._products.get_policy_change_snapshot(
                 tenant_id, policy_id, actor=self._system_actor
             )

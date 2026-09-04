@@ -140,6 +140,14 @@ _EXPECTED_API_PATHS = {
     "/notifications",
     "/notifications/{notification_id}/read",
     "/products",
+    "/products/catalog-cultivation-cases",
+    "/products/catalog-cultivation-cases/{case_id}",
+    "/products/catalog-evaluations",
+    "/products/catalog-evaluations/{evaluation_id}",
+    "/products/catalog-policies",
+    "/products/catalog-policies/active",
+    "/products/catalog-proposals",
+    "/products/catalog-proposals/{proposal_id}",
     "/products/{product_id}/customer",
     "/products/{product_id}/internal",
     "/products/{product_id}/sales",
@@ -558,6 +566,17 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
         "/opportunities/{opportunity_id}/mark-lost",
     }
     assert set(schema["paths"]) == _EXPECTED_API_PATHS
+    assert set(schema["paths"]["/products/catalog-policies"]) == {"get", "post"}
+    for path in (
+        "/products/catalog-policies/active",
+        "/products/catalog-evaluations",
+        "/products/catalog-evaluations/{evaluation_id}",
+        "/products/catalog-proposals",
+        "/products/catalog-proposals/{proposal_id}",
+        "/products/catalog-cultivation-cases",
+        "/products/catalog-cultivation-cases/{case_id}",
+    ):
+        assert set(schema["paths"][path]) == {"get"}
     create_responses = schema["paths"]["/crm/opportunities"]["post"]["responses"]
     assert set(schema["paths"]["/crm/opportunities"]) == {"get", "post"}
     assert "201" in create_responses
@@ -614,10 +633,10 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     assert "ManualEmailSendResponse" in schema["components"]["schemas"]
     for path, path_item in schema["paths"].items():
         for method, operation in path_item.items():
-            if (path, method) == (
-                "/settings/country-policies/proposals",
-                "post",
-            ):
+            if (path, method) in {
+                ("/settings/country-policies/proposals", "post"),
+                ("/products/catalog-policies", "post"),
+            }:
                 assert operation["responses"]["422"]["content"]["application/json"][
                     "schema"
                 ] == {"$ref": "#/components/schemas/ApiErrorResponse"}
