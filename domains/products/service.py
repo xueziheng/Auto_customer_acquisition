@@ -39,6 +39,7 @@ from domains.products.schemas import (
     CatalogProposalPolicyView,
     ProductSupplyCardView,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
     CatalogCultivationCaseId,
@@ -79,6 +80,34 @@ def catalog_policy_creation_request_hash(
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def catalog_cultivation_change_set_ref(
+    proposal_id: CatalogProductProposalId,
+    policy_version_id: CatalogProposalPolicyVersionId,
+    facts_hash: str,
+) -> str:
+    """构造目录产品培养审批的唯一不可变 subject 引用。"""
+
+    for value, prefix, field_name in (
+        (proposal_id, "cpr", "目录产品提案 ID"),
+        (policy_version_id, "cpv", "目录提案策略版本 ID"),
+    ):
+        if (
+            not isinstance(value, str)
+            or not value.startswith(f"{prefix}_")
+            or len(value) <= len(prefix) + 1
+            or len(value) > 40
+            or value != value.strip()
+        ):
+            raise ValidationError(f"{field_name} 无效")
+    if (
+        not isinstance(facts_hash, str)
+        or len(facts_hash) != 64
+        or any(character not in "0123456789abcdef" for character in facts_hash)
+    ):
+        raise ValidationError("目录事实摘要无效")
+    return f"catalog-cultivation:{proposal_id}:{policy_version_id}:{facts_hash}"
 
 
 @runtime_checkable
@@ -278,5 +307,6 @@ __all__ = (
     "ProductSpecRequirement",
     "ProductSupplyCardView",
     "QualifiedProductMatch",
+    "catalog_cultivation_change_set_ref",
     "catalog_policy_creation_request_hash",
 )

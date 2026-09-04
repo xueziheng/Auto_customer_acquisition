@@ -47,13 +47,53 @@ class CatalogPolicyStateTransitionError(InvalidStateTransition):
     """策略已处于不允许应用当前决定的终态。"""
 
 
+class CatalogEvaluationNotFoundError(ProductNotFoundError):
+    """同租户缺失与跨租户隐藏统一的目录评估缺失结果。"""
+
+
+class CatalogEvaluationConflictError(IdempotencyConflict):
+    """评估唯一 subject 已绑定不同的快照或系统 Run。"""
+
+
+class CatalogProposalNotFoundError(ProductNotFoundError):
+    """同租户缺失与跨租户隐藏统一的目录产品提案缺失结果。"""
+
+
+class CatalogProposalApprovalConflictError(IdempotencyConflict):
+    """提案审批 ID、请求摘要或持久化 subject 不精确匹配。"""
+
+
+class CatalogProposalDecisionInvalidError(PolicyViolation):
+    """workflow 提供的中央审批事实与提案 subject 不精确匹配。"""
+
+
+class CatalogProposalStateTransitionError(InvalidStateTransition):
+    """提案已处于不允许应用当前决定的终态。"""
+
+
+class CatalogCultivationCaseNotFoundError(ProductNotFoundError):
+    """同租户缺失与跨租户隐藏统一的培养 Case 缺失结果。"""
+
+
+class CatalogCultivationConflictError(IdempotencyConflict):
+    """培养 Case 唯一 subject 已绑定不同不可变内容。"""
+
+
 __all__ = (
     "CandidateNotVerifiedError",
+    "CatalogCultivationCaseNotFoundError",
+    "CatalogCultivationConflictError",
+    "CatalogEvaluationConflictError",
+    "CatalogEvaluationNotFoundError",
     "CatalogPolicyApprovalConflictError",
     "CatalogPolicyDecisionInvalidError",
     "CatalogPolicyIdempotencyConflictError",
     "CatalogPolicyNotFoundError",
     "CatalogPolicyStateTransitionError",
+    "CatalogProposalApprovalConflictError",
+    "CatalogProposalDecisionInvalidError",
+    "CatalogProposalNotFoundError",
+    "CatalogProposalStateTransitionError",
     "ProductNotFoundError",
     "ViewLeakError",
 )

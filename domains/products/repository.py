@@ -176,6 +176,17 @@ class CatalogProductProposalRepository(Protocol):
         self, tenant_id: TenantId, proposal: CatalogProductProposal
     ) -> CatalogProductProposal: ...
 
+    async def bind_approval(
+        self,
+        tenant_id: TenantId,
+        proposal_id: CatalogProductProposalId,
+        approval_id: ApprovalId,
+        expected_request_hash: str,
+        bound_at: datetime,
+    ) -> CatalogProductProposal | None:
+        """锁定提案与中央 Approval，原子核对完整不可变 subject 后绑定。"""
+        ...
+
     async def list_proposals(
         self,
         tenant_id: TenantId,

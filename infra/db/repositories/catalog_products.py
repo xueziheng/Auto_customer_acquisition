@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, TypeVar, cast
 
 from sqlalchemy import Select, and_, or_, select, text, update
@@ -623,6 +624,7 @@ class CatalogEvaluationRepositoryImpl(_CatalogRepository):
                 and item.rule_results == evaluation.rule_results
                 and item.overall_passed == evaluation.overall_passed
                 and item.blocked_reason == evaluation.blocked_reason
+                and item.proposed_by_run == evaluation.proposed_by_run
             ),
             conflict_message="评估唯一键已绑定不同不可变快照",
         )
@@ -877,6 +879,77 @@ class CatalogProductProposalRepositoryImpl(_CatalogRepository):
                 raise IdempotencyConflict("提案审批已绑定不同不可变 subject") from None
             return canonical
         return _proposal_from_row(row)
+
+    async def bind_approval(
+        self,
+        tenant_id: TenantId,
+        proposal_id: CatalogProductProposalId,
+        approval_id: ApprovalId,
+        expected_request_hash: str,
+        bound_at: datetime,
+    ) -> CatalogProductProposal | None:
+        self._require_write_tenant(tenant_id, tenant_id)
+        proposal = await self.get_for_update(tenant_id, proposal_id)
+        if proposal is None:
+            return None
+        approval = (
+            await self._session.execute(
+                select(ApprovalPackageRow)
+                .where(
+                    ApprovalPackageRow.tenant_id == str(self._tenant_id),
+                    ApprovalPackageRow.approval_id == str(approval_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        change = None if approval is None else approval.proposed_change
+        expected_change_set = (
+            f"catalog-cultivation:{proposal.proposal_id}:"
+            f"{proposal.policy_version_id}:{proposal.facts_hash}"
+        )
+        if (
+            approval is None
+            or not isinstance(change, dict)
+            or approval.contract_namespace != "catalog-cultivation-v1"
+            or approval.approval_type != "catalog_product_cultivation"
+            or approval.request_hash != expected_request_hash
+            or change.get("schema_version") != "catalog-cultivation-v1"
+            or change.get("tenant_id") != str(tenant_id)
+            or change.get("approval_type") != approval.approval_type
+            or change.get("proposal_id") != str(proposal.proposal_id)
+            or change.get("policy_version_id") != str(proposal.policy_version_id)
+            or change.get("facts_hash") != proposal.facts_hash
+            or change.get("request_hash") != expected_request_hash
+            or approval.change_set_ref != expected_change_set
+            or approval.proposed_by_employee is not None
+            or approval.proposed_by_run != str(proposal.proposed_by_run)
+            or approval.owner_employee != str(proposal.owner_employee)
+        ):
+            raise IdempotencyConflict("提案审批不可变 subject 不匹配")
+        if proposal.approval_id is not None:
+            if (
+                proposal.approval_id != approval_id
+                or proposal.approval_request_hash != expected_request_hash
+            ):
+                raise IdempotencyConflict("提案审批已绑定不同不可变 subject")
+            return proposal
+        if (
+            proposal.state
+            is not CatalogProductProposalState.AWAITING_APPROVAL_SUBMISSION
+        ):
+            raise InvalidStateTransition("提案状态不允许绑定审批")
+        if approval.state not in {"pending", "approved", "rejected", "expired"}:
+            raise InvalidStateTransition("审批状态不允许首次绑定提案")
+        return await self.update(
+            tenant_id,
+            replace(
+                proposal,
+                approval_id=approval_id,
+                approval_request_hash=expected_request_hash,
+                state=CatalogProductProposalState.PENDING_REVIEW,
+                updated_at=bound_at,
+            ),
+        )
 
     async def _page(
         self,
