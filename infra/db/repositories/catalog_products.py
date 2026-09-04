@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, TypeVar, cast
 
-from sqlalchemy import Select, and_, or_, select, update
+from sqlalchemy import Select, and_, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -32,6 +33,7 @@ from domains.products.schemas import (
 )
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    ApprovalPackageRow,
     CatalogCultivationCaseRow,
     CatalogProductProposalRow,
     CatalogProposalEvaluationRow,
@@ -39,6 +41,7 @@ from infra.db.tables import (
 )
 from shared.errors import (
     IdempotencyConflict,
+    InvalidStateTransition,
     TenantIsolationViolation,
     ValidationError,
 )
@@ -239,6 +242,13 @@ class _CatalogRepository(TenantScopedRepository):
 
 
 class CatalogPolicyRepositoryImpl(_CatalogRepository):
+    async def lock_policy_namespace(self, tenant_id: TenantId) -> None:
+        self._require_write_tenant(tenant_id, tenant_id)
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": f"tradeos:catalog-policy-v1:{tenant_id}"},
+        )
+
     async def add(
         self, tenant_id: TenantId, policy: CatalogProposalPolicyVersion
     ) -> CatalogProposalPolicyVersion:
@@ -420,6 +430,62 @@ class CatalogPolicyRepositoryImpl(_CatalogRepository):
                 raise IdempotencyConflict("策略审批已绑定不同不可变 subject") from None
             return canonical
         return _policy_from_row(row)
+
+    async def bind_approval(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        approval_id: ApprovalId,
+        expected_request_hash: str,
+    ) -> CatalogProposalPolicyVersion | None:
+        self._require_write_tenant(tenant_id, tenant_id)
+        policy = await self.get_for_update(tenant_id, policy_version_id)
+        if policy is None:
+            return None
+        if policy.creation_request_hash != expected_request_hash:
+            raise IdempotencyConflict("策略审批请求摘要不匹配")
+        approval = (
+            await self._session.execute(
+                select(ApprovalPackageRow)
+                .where(
+                    ApprovalPackageRow.tenant_id == str(self._tenant_id),
+                    ApprovalPackageRow.approval_id == str(approval_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        change = None if approval is None else approval.proposed_change
+        if (
+            approval is None
+            or not isinstance(change, dict)
+            or approval.contract_namespace != "catalog-policy-v1"
+            or approval.approval_type != "catalog_proposal_policy_change"
+            or approval.request_hash != expected_request_hash
+            or change.get("schema_version") != "catalog-policy-v1"
+            or change.get("tenant_id") != str(tenant_id)
+            or change.get("approval_type") != approval.approval_type
+            or change.get("policy_version_id") != str(policy.policy_version_id)
+            or change.get("content_hash") != policy.content_hash
+            or change.get("request_hash") != expected_request_hash
+            or approval.change_set_ref
+            != f"catalog-policy:{policy.policy_version_id}:{policy.content_hash}"
+            or approval.proposed_by_run is not None
+            or approval.proposed_by_employee != str(policy.proposed_by)
+            or approval.owner_employee != str(policy.proposed_by)
+        ):
+            raise IdempotencyConflict("策略审批不可变 subject 不匹配")
+        if policy.approval_id is not None:
+            if policy.approval_id != approval_id:
+                raise IdempotencyConflict("策略审批已绑定不同不可变 subject")
+            return policy
+        if policy.state is not CatalogProposalPolicyState.PENDING_APPROVAL:
+            raise InvalidStateTransition("策略状态不允许绑定审批")
+        if approval.state not in {"pending", "approved", "rejected", "expired"}:
+            raise InvalidStateTransition("审批状态不允许首次绑定策略")
+        return await self.update(
+            tenant_id,
+            replace(policy, approval_id=approval_id),
+        )
 
     async def _page(
         self,

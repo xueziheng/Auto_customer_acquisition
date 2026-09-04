@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Self
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
+from domains.products.errors import CatalogPolicyApprovalConflictError
 from domains.products.permissions import (
     Phase2ProductAuthorizer,
     ProductActor,
@@ -22,9 +24,14 @@ from domains.products.schemas import (
     CatalogProposalPolicyContent,
 )
 from infra.db.catalog_products_uow import SqlAlchemyCatalogProductsUnitOfWork
+from infra.db.repositories.catalog_products import CatalogPolicyRepositoryImpl
 from infra.db.tables import CatalogProposalPolicyVersionRow, OutboxEventRow
 from shared.errors import TransientError
-from shared.schemas.identifiers import ApprovalId, TenantId
+from shared.schemas.identifiers import (
+    ApprovalId,
+    CatalogProposalPolicyVersionId,
+    TenantId,
+)
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 
@@ -35,6 +42,72 @@ class _Clock:
 
     def __call__(self) -> datetime:
         return self.value
+
+
+class _NamespaceBarrierRepository(CatalogPolicyRepositoryImpl):
+    def __init__(
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        barrier: asyncio.Barrier,
+        label: str,
+        acquisition_order: list[str],
+    ) -> None:
+        super().__init__(session, tenant_id, session_factory)
+        self._barrier = barrier
+        self._label = label
+        self._acquisition_order = acquisition_order
+        self._namespace_locked = False
+
+    async def lock_policy_namespace(self, tenant_id: TenantId) -> None:
+        await self._barrier.wait()
+        await super().lock_policy_namespace(tenant_id)
+        self._namespace_locked = True
+        self._acquisition_order.append(self._label)
+
+    async def get_for_update(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+    ):
+        if not self._namespace_locked:
+            raise AssertionError("policy row lock preceded namespace lock")
+        return await super().get_for_update(tenant_id, policy_version_id)
+
+    async def get_active(self, tenant_id: TenantId, *, for_update: bool = False):
+        if for_update and not self._namespace_locked:
+            raise AssertionError("active row lock preceded namespace lock")
+        return await super().get_active(tenant_id, for_update=for_update)
+
+
+class _NamespaceBarrierUow(SqlAlchemyCatalogProductsUnitOfWork):
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tenant_id: TenantId,
+        *,
+        barrier: asyncio.Barrier,
+        label: str,
+        acquisition_order: list[str],
+    ) -> None:
+        super().__init__(session_factory, tenant_id)
+        self._barrier = barrier
+        self._label = label
+        self._acquisition_order = acquisition_order
+
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
+        self.policies = _NamespaceBarrierRepository(
+            self._session,
+            self._tenant_id,
+            self._factory,
+            barrier=self._barrier,
+            label=self._label,
+            acquisition_order=self._acquisition_order,
+        )
+        return self
 
 
 @pytest_asyncio.fixture
@@ -74,6 +147,28 @@ def _service(
     return CatalogProposalServiceImpl(
         lambda scoped_tenant: SqlAlchemyCatalogProductsUnitOfWork(
             factory, scoped_tenant
+        ),
+        Phase2ProductAuthorizer(tenant),
+        now=clock,
+    )
+
+
+def _barrier_service(
+    factory: async_sessionmaker[AsyncSession],
+    tenant: TenantId,
+    clock: _Clock,
+    *,
+    barrier: asyncio.Barrier,
+    label: str,
+    acquisition_order: list[str],
+) -> CatalogProposalServiceImpl:
+    return CatalogProposalServiceImpl(
+        lambda scoped_tenant: _NamespaceBarrierUow(
+            factory,
+            scoped_tenant,
+            barrier=barrier,
+            label=label,
+            acquisition_order=acquisition_order,
         ),
         Phase2ProductAuthorizer(tenant),
         now=clock,
@@ -371,6 +466,88 @@ async def _stored_request_hash(
         return policy.creation_request_hash
 
 
+async def test_binding_atomically_rejects_persisted_approval_with_another_hash(
+    policy_engine: AsyncEngine,
+) -> None:
+    tenant = TenantId("tn_catalog_policy_binding_hash")
+    proposer = "emp_catalog_binding_owner"
+    reviewer = "emp_catalog_binding_boss"
+    await _seed_employees(policy_engine, str(tenant), proposer, reviewer)
+    factory = async_sessionmaker(policy_engine, expire_on_commit=False)
+    service = _service(factory, tenant, _Clock())
+    try:
+        policy_id = await service.create_policy_candidate(
+            tenant,
+            _content(),
+            idempotency_key="approval-hash-policy",
+            actor=_product(tenant, proposer),
+        )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            policy = await uow.policies.get(tenant, policy_id)
+            assert policy is not None
+        wrong_hash = "f" * 64
+        assert wrong_hash != policy.creation_request_hash
+        await _approval(
+            policy_engine,
+            tenant=str(tenant),
+            policy_id=str(policy_id),
+            content_hash=policy.content_hash,
+            request_hash=wrong_hash,
+            approval_id="apr_catalog_wrong_persisted_hash",
+            proposer=proposer,
+            reviewer=reviewer,
+        )
+
+        with pytest.raises(CatalogPolicyApprovalConflictError):
+            await service.bind_policy_approval(
+                tenant,
+                policy_id,
+                ApprovalId("apr_catalog_wrong_persisted_hash"),
+                policy.creation_request_hash,
+                actor=_system(tenant),
+            )
+        async with policy_engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    select(CatalogProposalPolicyVersionRow.approval_id).where(
+                        CatalogProposalPolicyVersionRow.tenant_id == str(tenant),
+                        CatalogProposalPolicyVersionRow.policy_version_id
+                        == str(policy_id),
+                    )
+                )
+                is None
+            )
+
+        await _approval(
+            policy_engine,
+            tenant=str(tenant),
+            policy_id=str(policy_id),
+            content_hash=policy.content_hash,
+            request_hash=policy.creation_request_hash,
+            approval_id="apr_catalog_exact_persisted_hash",
+            proposer=proposer,
+            reviewer=reviewer,
+        )
+        first = await service.bind_policy_approval(
+            tenant,
+            policy_id,
+            ApprovalId("apr_catalog_exact_persisted_hash"),
+            policy.creation_request_hash,
+            actor=_system(tenant),
+        )
+        replay = await service.bind_policy_approval(
+            tenant,
+            policy_id,
+            ApprovalId("apr_catalog_exact_persisted_hash"),
+            policy.creation_request_hash,
+            actor=_system(tenant),
+        )
+        assert first == replay
+        assert replay.approval_id == "apr_catalog_exact_persisted_hash"
+    finally:
+        await _cleanup(policy_engine, str(tenant))
+
+
 async def test_concurrent_approved_replay_has_one_transition_and_one_event(
     policy_engine: AsyncEngine,
 ) -> None:
@@ -545,6 +722,254 @@ async def test_base_race_marks_loser_stale_and_never_emits_for_it(
                     )
                 )
                 == 2
+            )
+    finally:
+        await _cleanup(policy_engine, str(tenant))
+
+
+async def test_empty_active_concurrent_approvals_converge_to_active_and_stale(
+    policy_engine: AsyncEngine,
+) -> None:
+    tenant = TenantId("tn_catalog_policy_empty_race")
+    proposer = "emp_catalog_empty_race_owner"
+    reviewer = "emp_catalog_empty_race_boss"
+    await _seed_employees(policy_engine, str(tenant), proposer, reviewer)
+    factory = async_sessionmaker(policy_engine, expire_on_commit=False)
+    normal = _service(factory, tenant, _Clock())
+    try:
+        first_id = await normal.create_policy_candidate(
+            tenant,
+            _content(),
+            idempotency_key="empty-race-first",
+            actor=_product(tenant, proposer),
+        )
+        second_id = await normal.create_policy_candidate(
+            tenant,
+            _content(4),
+            idempotency_key="empty-race-second",
+            actor=_product(tenant, proposer),
+        )
+        subjects = []
+        for policy_id, approval_id in (
+            (first_id, "apr_catalog_empty_race_first"),
+            (second_id, "apr_catalog_empty_race_second"),
+        ):
+            async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+                policy = await uow.policies.get(tenant, policy_id)
+                assert policy is not None
+            assert policy.base_active_version_id is None
+            subjects.append((policy, approval_id))
+            await _approval(
+                policy_engine,
+                tenant=str(tenant),
+                policy_id=str(policy_id),
+                content_hash=policy.content_hash,
+                request_hash=policy.creation_request_hash,
+                approval_id=approval_id,
+                proposer=proposer,
+                reviewer=reviewer,
+            )
+            await normal.bind_policy_approval(
+                tenant,
+                policy_id,
+                ApprovalId(approval_id),
+                policy.creation_request_hash,
+                actor=_system(tenant),
+            )
+
+        barrier = asyncio.Barrier(2)
+        acquisition_order: list[str] = []
+        concurrent = _barrier_service(
+            factory,
+            tenant,
+            _Clock(),
+            barrier=barrier,
+            label="apply",
+            acquisition_order=acquisition_order,
+        )
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    concurrent.apply_policy_decision(
+                        tenant,
+                        policy.policy_version_id,
+                        _decision(
+                            policy_id=str(policy.policy_version_id),
+                            content_hash=policy.content_hash,
+                            request_hash=policy.creation_request_hash,
+                            approval_id=approval_id,
+                            proposer=proposer,
+                            reviewer=reviewer,
+                        ),
+                        actor=_system(tenant),
+                    )
+                    for policy, approval_id in subjects
+                )
+            ),
+            timeout=5,
+        )
+
+        assert sorted(item.state for item in results) == ["active", "stale"]
+        assert acquisition_order == ["apply", "apply"]
+        async with policy_engine.connect() as connection:
+            states = (
+                (
+                    await connection.execute(
+                        select(CatalogProposalPolicyVersionRow.state)
+                        .where(
+                            CatalogProposalPolicyVersionRow.tenant_id == str(tenant),
+                            CatalogProposalPolicyVersionRow.policy_version_id.in_(
+                                [str(first_id), str(second_id)]
+                            ),
+                        )
+                        .order_by(CatalogProposalPolicyVersionRow.state)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert states == ["active", "stale"]
+            assert (
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(OutboxEventRow)
+                    .where(
+                        OutboxEventRow.tenant_id == str(tenant),
+                        OutboxEventRow.event_type == "CatalogProposalPolicyActivated",
+                    )
+                )
+                == 1
+            )
+    finally:
+        await _cleanup(policy_engine, str(tenant))
+
+
+async def test_policy_namespace_lock_does_not_block_another_tenant(
+    policy_engine: AsyncEngine,
+) -> None:
+    factory = async_sessionmaker(policy_engine, expire_on_commit=False)
+    first_tenant = TenantId("tn_cat_lock_first")
+    second_tenant = TenantId("tn_cat_lock_second")
+    first_acquired = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def hold_first() -> None:
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, first_tenant) as uow:
+            await uow.policies.lock_policy_namespace(first_tenant)
+            first_acquired.set()
+            await release_first.wait()
+
+    task = asyncio.create_task(hold_first())
+    await asyncio.wait_for(first_acquired.wait(), timeout=2)
+    try:
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, second_tenant) as uow:
+            await asyncio.wait_for(
+                uow.policies.lock_policy_namespace(second_tenant), timeout=1
+            )
+    finally:
+        release_first.set()
+        await asyncio.wait_for(task, timeout=2)
+
+
+async def test_create_and_activation_overlap_linearizes_base_without_deadlock(
+    policy_engine: AsyncEngine,
+) -> None:
+    tenant = TenantId("tn_cat_create_active")
+    proposer = "emp_cat_create_active_owner"
+    reviewer = "emp_cat_create_active_boss"
+    await _seed_employees(policy_engine, str(tenant), proposer, reviewer)
+    factory = async_sessionmaker(policy_engine, expire_on_commit=False)
+    normal = _service(factory, tenant, _Clock())
+    try:
+        activating_id = await normal.create_policy_candidate(
+            tenant,
+            _content(),
+            idempotency_key="create-activate-first",
+            actor=_product(tenant, proposer),
+        )
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            activating = await uow.policies.get(tenant, activating_id)
+            assert activating is not None
+        await _approval(
+            policy_engine,
+            tenant=str(tenant),
+            policy_id=str(activating_id),
+            content_hash=activating.content_hash,
+            request_hash=activating.creation_request_hash,
+            approval_id="apr_catalog_create_activate",
+            proposer=proposer,
+            reviewer=reviewer,
+        )
+        await normal.bind_policy_approval(
+            tenant,
+            activating_id,
+            ApprovalId("apr_catalog_create_activate"),
+            activating.creation_request_hash,
+            actor=_system(tenant),
+        )
+
+        barrier = asyncio.Barrier(2)
+        acquisition_order: list[str] = []
+        applying = _barrier_service(
+            factory,
+            tenant,
+            _Clock(),
+            barrier=barrier,
+            label="activation",
+            acquisition_order=acquisition_order,
+        )
+        creating = _barrier_service(
+            factory,
+            tenant,
+            _Clock(),
+            barrier=barrier,
+            label="create",
+            acquisition_order=acquisition_order,
+        )
+        activated, created_id = await asyncio.wait_for(
+            asyncio.gather(
+                applying.apply_policy_decision(
+                    tenant,
+                    activating_id,
+                    _decision(
+                        policy_id=str(activating_id),
+                        content_hash=activating.content_hash,
+                        request_hash=activating.creation_request_hash,
+                        approval_id="apr_catalog_create_activate",
+                        proposer=proposer,
+                        reviewer=reviewer,
+                    ),
+                    actor=_system(tenant),
+                ),
+                creating.create_policy_candidate(
+                    tenant,
+                    _content(4),
+                    idempotency_key="create-during-activation",
+                    actor=_product(tenant, proposer),
+                ),
+            ),
+            timeout=5,
+        )
+
+        assert activated.state == "active"
+        assert len(acquisition_order) == 2
+        async with SqlAlchemyCatalogProductsUnitOfWork(factory, tenant) as uow:
+            created = await uow.policies.get(tenant, created_id)
+            assert created is not None
+        expected_base = activating_id if acquisition_order[0] == "activation" else None
+        assert created.base_active_version_id == expected_base
+        assert created.state.value == "pending_approval"
+        async with policy_engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    select(func.count())
+                    .select_from(OutboxEventRow)
+                    .where(
+                        OutboxEventRow.tenant_id == str(tenant),
+                        OutboxEventRow.event_type == "CatalogProposalPolicyActivated",
+                    )
+                )
+                == 1
             )
     finally:
         await _cleanup(policy_engine, str(tenant))

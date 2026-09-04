@@ -30,7 +30,13 @@ from domains.products.schemas import (
     CatalogProposalPolicyContent,
 )
 from domains.products.service import catalog_policy_creation_request_hash
-from shared.errors import PermissionDenied, TransientError, ValidationError
+from shared.errors import (
+    IdempotencyConflict,
+    InvalidStateTransition,
+    PermissionDenied,
+    TransientError,
+    ValidationError,
+)
 from shared.schemas.identifiers import (
     ApprovalId,
     CatalogProposalPolicyVersionId,
@@ -104,8 +110,10 @@ class _Store:
         self.events: list[object] = []
         self.enter_count = 0
         self.active_lock_reads = 0
+        self.namespace_lock_reads = 0
         self.policy_locks: dict[CatalogProposalPolicyVersionId, asyncio.Lock] = {}
         self.active_lock = asyncio.Lock()
+        self.namespace_lock = asyncio.Lock()
         self.read_error: Exception | None = None
 
 
@@ -113,6 +121,12 @@ class _Policies:
     def __init__(self, store: _Store, uow: _Uow) -> None:
         self._store = store
         self._uow = uow
+
+    async def lock_policy_namespace(self, tenant_id: TenantId) -> None:
+        assert tenant_id == TENANT
+        await self._store.namespace_lock.acquire()
+        self._uow.locks.append(self._store.namespace_lock)
+        self._store.namespace_lock_reads += 1
 
     async def add(
         self, tenant_id: TenantId, policy: CatalogProposalPolicyVersion
@@ -185,6 +199,28 @@ class _Policies:
         assert tenant_id == policy.tenant_id
         self._store.policies[policy.policy_version_id] = policy
         return policy
+
+    async def bind_approval(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        approval_id: ApprovalId,
+        expected_request_hash: str,
+    ) -> CatalogProposalPolicyVersion | None:
+        candidate = await self.get_for_update(tenant_id, policy_version_id)
+        if candidate is None:
+            return None
+        if candidate.creation_request_hash != expected_request_hash:
+            raise IdempotencyConflict("wrong approval hash")
+        if candidate.approval_id is not None:
+            if candidate.approval_id != approval_id:
+                raise IdempotencyConflict("wrong approval id")
+            return candidate
+        if candidate.state is not CatalogProposalPolicyState.PENDING_APPROVAL:
+            raise InvalidStateTransition("terminal policy")
+        bound = replace(candidate, approval_id=approval_id)
+        self._store.policies[policy_version_id] = bound
+        return bound
 
     async def list_versions(
         self, tenant_id: TenantId, *, limit: int, cursor: object = None
@@ -584,16 +620,34 @@ async def test_base_mismatch_marks_candidate_stale_without_touching_current_or_e
     service = _service(store, _Clock(NOW + timedelta(minutes=2)))
     bound = await _bind(service, candidate, "apr_stale")
 
+    decision = _decision(bound)
     view = await service.apply_policy_decision(
         TENANT,
         bound.policy_version_id,
-        _decision(bound),
+        decision,
         actor=_system(),
     )
 
     assert view.state == "stale"
     assert store.policies[current.policy_version_id] == current
     assert store.events == []
+
+    replay = await service.apply_policy_decision(
+        TENANT,
+        bound.policy_version_id,
+        decision,
+        actor=_system(),
+    )
+    assert replay == view
+    assert store.events == []
+
+    with pytest.raises(CatalogPolicyDecisionInvalidError):
+        await service.apply_policy_decision(
+            TENANT,
+            bound.policy_version_id,
+            _decision(bound, request_hash="e" * 64),
+            actor=_system(),
+        )
 
 
 @pytest.mark.parametrize(

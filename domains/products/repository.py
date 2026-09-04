@@ -72,6 +72,10 @@ class CatalogPage[T_co]:
 
 @runtime_checkable
 class CatalogPolicyRepository(Protocol):
+    async def lock_policy_namespace(self, tenant_id: TenantId) -> None:
+        """串行化同租户策略 base 读取与生命周期转换，覆盖 active 缺行场景。"""
+        ...
+
     async def add(
         self, tenant_id: TenantId, policy: CatalogProposalPolicyVersion
     ) -> CatalogProposalPolicyVersion: ...
@@ -95,6 +99,16 @@ class CatalogPolicyRepository(Protocol):
     async def update(
         self, tenant_id: TenantId, policy: CatalogProposalPolicyVersion
     ) -> CatalogProposalPolicyVersion: ...
+
+    async def bind_approval(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        approval_id: ApprovalId,
+        expected_request_hash: str,
+    ) -> CatalogProposalPolicyVersion | None:
+        """锁定策略并原子核对中央 Approval 的不可变 subject 与请求摘要。"""
+        ...
 
     async def list_versions(
         self,

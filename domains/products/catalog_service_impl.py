@@ -37,6 +37,7 @@ from domains.products.schemas import (
 from domains.products.service import catalog_policy_creation_request_hash
 from shared.errors import (
     IdempotencyConflict,
+    InvalidStateTransition,
     TradeOSError,
     TransientError,
     ValidationError,
@@ -242,6 +243,8 @@ def _raise_storage_error(error: Exception) -> NoReturn:
         raise error
     if isinstance(error, IdempotencyConflict):
         raise CatalogPolicyApprovalConflictError(_APPROVAL_CONFLICT) from None
+    if isinstance(error, InvalidStateTransition):
+        raise CatalogPolicyStateTransitionError("目录提案策略状态转换冲突") from None
     if isinstance(error, (ValidationError, TransientError)):
         raise error
     if isinstance(error, TradeOSError):
@@ -289,6 +292,7 @@ class CatalogProposalServiceImpl:
         proposed_by = EmployeeId(actor.actor_id)
         try:
             async with self._uow_factory(tenant_id) as uow:
+                await uow.policies.lock_policy_namespace(tenant_id)
                 existing = await uow.policies.get_by_creation_key(
                     tenant_id, proposed_by, checked_key
                 )
@@ -432,26 +436,23 @@ class CatalogProposalServiceImpl:
         _request_hash(request_hash)
         try:
             async with self._uow_factory(tenant_id) as uow:
-                candidate = await uow.policies.get_for_update(
-                    tenant_id, policy_version_id
+                candidate = await uow.policies.bind_approval(
+                    tenant_id,
+                    policy_version_id,
+                    approval_id,
+                    request_hash,
                 )
                 if candidate is None:
                     raise CatalogPolicyNotFoundError(_POLICY_NOT_FOUND)
                 candidate = _policy_fact(
                     candidate, tenant_id, expected_id=policy_version_id
                 )
-                if request_hash != candidate.creation_request_hash:
+                if (
+                    candidate.approval_id != approval_id
+                    or candidate.creation_request_hash != request_hash
+                ):
                     raise CatalogPolicyApprovalConflictError(_APPROVAL_CONFLICT)
-                if candidate.approval_id is not None:
-                    if candidate.approval_id != approval_id:
-                        raise CatalogPolicyApprovalConflictError(_APPROVAL_CONFLICT)
-                    return _view(candidate)
-                if candidate.state is not CatalogProposalPolicyState.PENDING_APPROVAL:
-                    raise CatalogPolicyStateTransitionError(
-                        "目录提案策略状态不允许绑定审批"
-                    )
-                bound = replace(candidate, approval_id=approval_id)
-                return _view(await uow.policies.update(tenant_id, bound))
+                return _view(candidate)
         except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
             _raise_storage_error(error)
 
@@ -469,6 +470,7 @@ class CatalogProposalServiceImpl:
         applied_at = self._clock()
         try:
             async with self._uow_factory(tenant_id) as uow:
+                await uow.policies.lock_policy_namespace(tenant_id)
                 candidate = await uow.policies.get_for_update(
                     tenant_id, policy_version_id
                 )
@@ -482,6 +484,7 @@ class CatalogProposalServiceImpl:
                     "approved": {
                         CatalogProposalPolicyState.ACTIVE,
                         CatalogProposalPolicyState.SUPERSEDED,
+                        CatalogProposalPolicyState.STALE,
                     },
                     "rejected": {CatalogProposalPolicyState.REJECTED},
                     "expired": {CatalogProposalPolicyState.EXPIRED},
