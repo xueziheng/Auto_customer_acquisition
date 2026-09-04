@@ -154,6 +154,8 @@ class _Products:
     def __init__(self) -> None:
         self.active: CatalogProposalPolicyView | None = _policy()
         self.created_key: str | None = None
+        self.created_policy_id = POLICY_ID
+        self.snapshot_reads: list[tuple[object, ...]] = []
         self.snapshot = CatalogPolicyChangeSnapshot(
             base=None, current=None, candidate=_policy("pending_approval"), base_is_current=True
         )
@@ -209,9 +211,10 @@ class _Products:
 
     async def create_policy_candidate(self, tenant_id, content, *, idempotency_key, actor):
         self.created_key = idempotency_key
-        return POLICY_ID
+        return self.created_policy_id
 
     async def get_policy_change_snapshot(self, tenant_id, policy_version_id, *, actor):
+        self.snapshot_reads.append((tenant_id, policy_version_id, actor))
         return self.snapshot
 
     async def get_proposal(self, tenant_id, proposal_id, *, actor):
@@ -499,6 +502,33 @@ async def test_submit_policy_binds_canonical_snapshot_to_created_policy() -> Non
         )
 
     assert "00099" not in str(failure.value)
+    assert engine.starts == []
+
+
+@pytest.mark.asyncio
+async def test_submit_policy_rejects_malformed_create_id_before_snapshot_io() -> None:
+    demand, products, engine = _Demand(), _Products(), _Engine()
+    malformed_id = CatalogProposalPolicyVersionId("cpv_bad")
+    products.created_policy_id = malformed_id
+    products.snapshot = products.snapshot.model_copy(
+        update={
+            "candidate": products.snapshot.candidate.model_copy(
+                update={"policy_version_id": malformed_id}
+            )
+        }
+    )
+    app = _application(demand, products, engine)
+
+    with pytest.raises(TransientError) as failure:
+        await app.submit_policy_candidate(
+            TENANT,
+            _content(),
+            idempotency_key="malformed-create-id",
+            actor=ProductActor(str(OWNER), ProductRole.PRODUCT, TENANT),
+        )
+
+    assert "cpv_bad" not in str(failure.value)
+    assert products.snapshot_reads == []
     assert engine.starts == []
 
 

@@ -312,12 +312,13 @@ class _CatalogProducts:
 class _CatalogApplication:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
+        self.candidate = _policy()
 
     async def submit_policy_candidate(
         self, tenant_id, content, *, idempotency_key, actor
     ):
         self.calls.append((tenant_id, content, idempotency_key, actor))
-        return _policy()
+        return self.candidate
 
 
 class _Approvals:
@@ -500,6 +501,26 @@ def test_catalog_policy_submit_rejects_invalid_body_and_raw_headers_before_io() 
         )
         assert response.status_code == 422
         assert catalog.calls == application.calls == approvals.calls == []
+
+
+def test_catalog_policy_submit_rejects_malformed_application_policy_id() -> None:
+    app, catalog, application, approvals = _catalog_app("product")
+    application.candidate = _policy().model_copy(
+        update={"policy_version_id": CatalogProposalPolicyVersionId("cpv_bad")}
+    )
+
+    response = _request(
+        app,
+        "POST",
+        "/products/catalog-policies",
+        json=_policy().content.model_dump(mode="json"),
+        headers=[("Idempotency-Key", "malformed-application-id")],
+    )
+
+    assert response.status_code == 503
+    assert "cpv_bad" not in response.text
+    assert catalog.calls == []
+    assert approvals.calls == []
 
 
 def test_catalog_read_routes_are_role_gated_join_approval_and_bound_limits() -> None:

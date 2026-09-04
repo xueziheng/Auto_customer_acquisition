@@ -55,6 +55,7 @@ from ..middleware import ApiErrorResponse
 router = APIRouter()
 
 _PRODUCT_ID = re.compile(r"prd_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+_POLICY_ID = re.compile(r"cpv_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _EVALUATION_ID = re.compile(r"cpe_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _PROPOSAL_ID = re.compile(r"cpr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _CASE_ID = re.compile(r"ccc_[0-7][0-9A-HJKMNP-TV-Z]{25}")
@@ -249,6 +250,8 @@ async def submit_catalog_policy(
         policy = CatalogProposalPolicyView.model_validate(
             candidate.model_dump(mode="python")
         )
+        if _POLICY_ID.fullmatch(str(policy.policy_version_id)) is None:
+            raise ValueError("catalog policy id malformed")
     except Exception:  # noqa: BLE001 -- 应用边界未知态固定脱敏为可重试失败
         raise TransientError("目录策略候选读取暂不可用")
     return CatalogPolicyApiView(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from domains.demand.service import DemandService
 from domains.products.service import (
     CatalogProposalPolicyContent,
@@ -44,6 +46,14 @@ from workflows.catalog_product_proposal.proposal_flow import (
     catalog_cultivation_idempotency_key,
 )
 from workflows.engine.runner import WorkflowEngine
+
+_POLICY_ID = re.compile(r"cpv_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+
+
+def _policy_id(value: object) -> CatalogProposalPolicyVersionId:
+    if not isinstance(value, str) or _POLICY_ID.fullmatch(value) is None:
+        raise ValueError("catalog policy id malformed")
+    return CatalogProposalPolicyVersionId(value)
 
 
 def _id(value: object, prefix: str, subject: str) -> str:
@@ -112,8 +122,12 @@ class CatalogProductApplication:
         except Exception:  # noqa: BLE001 -- commit 结果未知须原键重试
             raise TransientError("目录策略候选暂不可用") from None
         try:
+            checked_policy_id = _policy_id(policy_id)
+        except Exception:  # noqa: BLE001 -- create 返回未知 ID 不得继续任何下游 IO
+            raise TransientError("目录策略候选暂不可用") from None
+        try:
             snapshot = await self._products.get_policy_change_snapshot(
-                tenant_id, policy_id, actor=self._system_actor
+                tenant_id, checked_policy_id, actor=self._system_actor
             )
         except ValidationError:
             raise
@@ -125,7 +139,8 @@ class CatalogProductApplication:
             candidate = CatalogProposalPolicyView.model_validate(
                 snapshot.candidate.model_dump(mode="python")
             )
-            if candidate.policy_version_id != policy_id:
+            candidate_policy_id = _policy_id(candidate.policy_version_id)
+            if candidate_policy_id != checked_policy_id:
                 raise ValueError("catalog policy snapshot subject mismatch")
         except Exception:  # noqa: BLE001 -- 适配器返回损坏/错对象须脱敏重试
             raise TransientError("目录策略候选暂不可用") from None
@@ -133,9 +148,9 @@ class CatalogProductApplication:
             await self._engine.start(
                 tenant_id,
                 CATALOG_POLICY_WORKFLOW_TYPE,
-                str(policy_id),
+                str(checked_policy_id),
                 policy_workflow_context(tenant_id, snapshot),
-                catalog_policy_change_idempotency_key(tenant_id, policy_id),
+                catalog_policy_change_idempotency_key(tenant_id, checked_policy_id),
             )
         except Exception:  # noqa: BLE001 -- Products 已提交，不回滚或泄露异常
             raise TransientError("目录策略审批流程启动暂不可用") from None
